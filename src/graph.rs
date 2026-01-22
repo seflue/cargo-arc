@@ -79,7 +79,7 @@ pub fn build_graph(crates: &[CrateInfo], modules: &[ModuleTree]) -> ArcGraph {
     for (from_path, deps) in &module_deps {
         if let Some(&from_idx) = module_map.get(from_path) {
             for dep in deps {
-                if let Some(&to_idx) = module_map.get(&dep.target) {
+                if let Some(&to_idx) = module_map.get(&dep.module_target()) {
                     let locations = vec![SourceLocation {
                         file: dep.source_file.clone(),
                         line: dep.line,
@@ -318,7 +318,9 @@ mod tests {
                         full_path: "crate::bar".to_string(),
                         children: vec![],
                         dependencies: vec![DependencyRef {
-                            target: "crate::foo".to_string(),
+                            target_crate: "crate".to_string(),
+                            target_module: "foo".to_string(),
+                            target_item: None,
                             source_file: PathBuf::from("src/bar.rs"),
                             line: 1,
                         }],

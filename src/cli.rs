@@ -8,6 +8,7 @@ use crate::analyze::{analyze_modules, analyze_workspace, load_workspace_hir};
 use crate::graph::build_graph;
 use crate::layout::{build_layout, detect_cycles, topo_sort};
 use crate::render::{RenderConfig, render};
+use std::collections::HashSet;
 
 #[derive(Parser)]
 #[command(name = "cargo-arc", about = "Visualize workspace dependencies")]
@@ -25,13 +26,16 @@ pub fn run(args: Args) -> Result<()> {
     // 1. Analyze workspace
     let crates = analyze_workspace(&args.manifest_path)?;
 
-    // 2. Load rust-analyzer ONCE for the entire workspace
+    // 2. Build workspace crate names set for inter-crate dependency detection
+    let workspace_crates: HashSet<String> = crates.iter().map(|c| c.name.clone()).collect();
+
+    // 3. Load rust-analyzer ONCE for the entire workspace
     let (host, vfs) = load_workspace_hir(&args.manifest_path)?;
 
-    // 3. Analyze modules for each crate (reusing loaded workspace)
+    // 4. Analyze modules for each crate (reusing loaded workspace)
     let modules: Vec<_> = crates
         .iter()
-        .filter_map(|c| analyze_modules(c, &host, &vfs).ok())
+        .filter_map(|c| analyze_modules(c, &host, &vfs, &workspace_crates).ok())
         .collect();
 
     // 3. Build dependency graph
