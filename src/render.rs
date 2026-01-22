@@ -82,6 +82,7 @@ pub fn render(ir: &LayoutIR, config: &RenderConfig) -> String {
     svg.push_str(&render_tree_lines(&positioned, ir));
     svg.push_str(&render_nodes(&positioned));
     svg.push_str(&render_edges(&positioned, ir));
+    svg.push_str(&render_script());
     svg.push_str("</svg>\n");
     svg
 }
@@ -155,7 +156,70 @@ fn render_styles() -> String {
     .dep-arrow { fill: #9c27b0; }
     .cycle-arc { fill: none; stroke: #f44336; stroke-width: 1.5; }
     .cycle-arrow { fill: #f44336; }
+    /* Interactive highlighting */
+    .highlighted { stroke: #ff9800 !important; stroke-width: 3 !important; }
+    .highlighted-node { fill: #fff176 !important; stroke: #ff9800 !important; stroke-width: 3 !important; }
+    .highlighted-arrow { fill: #ff9800 !important; }
+    .dimmed { opacity: 0.3; }
+    .crate, .module, .dep-arc, .cycle-arc { cursor: pointer; }
   </style>
+"#
+    .to_string()
+}
+
+fn render_script() -> String {
+    r#"  <script><![CDATA[
+(function() {
+  function clearHighlights() {
+    document.querySelectorAll('.highlighted, .highlighted-node, .highlighted-arrow, .dimmed')
+      .forEach(el => el.classList.remove('highlighted', 'highlighted-node', 'highlighted-arrow', 'dimmed'));
+  }
+
+  function highlightEdge(from, to) {
+    clearHighlights();
+    document.getElementById('node-' + from)?.classList.add('highlighted-node');
+    document.getElementById('node-' + to)?.classList.add('highlighted-node');
+    document.getElementById('edge-' + from + '-' + to)?.classList.add('highlighted');
+    document.querySelectorAll('[data-edge="' + from + '-' + to + '"]')
+      .forEach(el => el.classList.add('highlighted-arrow'));
+    document.querySelectorAll('rect:not(.highlighted-node), path:not(.highlighted), polygon:not(.highlighted-arrow)')
+      .forEach(el => el.classList.add('dimmed'));
+  }
+
+  function highlightNode(nodeId) {
+    clearHighlights();
+    document.getElementById('node-' + nodeId)?.classList.add('highlighted-node');
+    document.querySelectorAll('[data-from="' + nodeId + '"], [data-to="' + nodeId + '"]')
+      .forEach(edge => {
+        edge.classList.add('highlighted');
+        const from = edge.dataset.from;
+        const to = edge.dataset.to;
+        document.getElementById('node-' + from)?.classList.add('highlighted-node');
+        document.getElementById('node-' + to)?.classList.add('highlighted-node');
+        document.querySelectorAll('[data-edge="' + from + '-' + to + '"]')
+          .forEach(arr => arr.classList.add('highlighted-arrow'));
+      });
+    document.querySelectorAll('rect:not(.highlighted-node), path:not(.highlighted), polygon:not(.highlighted-arrow)')
+      .forEach(el => el.classList.add('dimmed'));
+  }
+
+  document.querySelectorAll('.crate, .module').forEach(node => {
+    node.addEventListener('click', e => {
+      e.stopPropagation();
+      highlightNode(node.id.replace('node-', ''));
+    });
+  });
+
+  document.querySelectorAll('.dep-arc, .cycle-arc').forEach(arc => {
+    arc.addEventListener('click', e => {
+      e.stopPropagation();
+      highlightEdge(arc.dataset.from, arc.dataset.to);
+    });
+  });
+
+  document.querySelector('svg').addEventListener('click', clearHighlights);
+})();
+]]></script>
 "#
     .to_string()
 }
@@ -215,8 +279,8 @@ fn render_nodes(positioned: &[PositionedItem]) -> String {
         let text_y = item.y + item.height / 2.0 + 4.0;
 
         nodes.push_str(&format!(
-            "    <rect class=\"{class}\" x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" rx=\"{rx}\"/>\n",
-            item.x, item.y, item.width, item.height
+            "    <rect class=\"{class}\" id=\"node-{}\" x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" rx=\"{rx}\"/>\n",
+            item.id, item.x, item.y, item.width, item.height
         ));
         nodes.push_str(&format!(
             "    <text class=\"label\" x=\"{text_x}\" y=\"{text_y}\">{label}</text>\n"
@@ -274,17 +338,19 @@ fn render_edges(positioned: &[PositionedItem], ir: &LayoutIR) -> String {
                 }
             };
 
+            let edge_id = format!("{}-{}", edge.from, edge.to);
             edges.push_str(&format!(
-                "    <path class=\"{arc_class}\" d=\"{path}\"{extra_style}/>\n"
+                "    <path class=\"{arc_class}\" id=\"edge-{edge_id}\" data-from=\"{}\" data-to=\"{}\" d=\"{path}\"{extra_style}/>\n",
+                edge.from, edge.to
             ));
 
             // Arrow head pointing to target
-            let arrow = render_arrow(to_x, to_y, arrow_class);
+            let arrow = render_arrow(to_x, to_y, arrow_class, &edge_id);
             edges.push_str(&arrow);
 
             // For DirectCycle, add reverse arrow
             if edge.kind == EdgeKind::DirectCycle {
-                let reverse_arrow = render_arrow(from_x, from_y, arrow_class);
+                let reverse_arrow = render_arrow(from_x, from_y, arrow_class, &edge_id);
                 edges.push_str(&reverse_arrow);
             }
         }
@@ -294,13 +360,13 @@ fn render_edges(positioned: &[PositionedItem], ir: &LayoutIR) -> String {
     edges
 }
 
-fn render_arrow(x: f32, y: f32, class: &str) -> String {
+fn render_arrow(x: f32, y: f32, class: &str, edge_id: &str) -> String {
     // Arrow pointing left (toward the node at x)
     // Tip at x, base at x+8
     let p1 = format!("{},{}", x + 8.0, y - 4.0); // top-right
     let p2 = format!("{},{}", x, y); // tip (left, pointing at node)
     let p3 = format!("{},{}", x + 8.0, y + 4.0); // bottom-right
-    format!("    <polygon class=\"{class}\" points=\"{p1} {p2} {p3}\"/>\n")
+    format!("    <polygon class=\"{class}\" data-edge=\"{edge_id}\" points=\"{p1} {p2} {p3}\"/>\n")
 }
 
 fn escape_xml(s: &str) -> String {
@@ -528,6 +594,65 @@ mod tests {
             widths[0], widths[1],
             "All boxes should have same width: {:?}",
             widths
+        );
+    }
+
+    #[test]
+    fn test_nodes_have_ids() {
+        let mut ir = LayoutIR::new();
+        let c = ir.add_item(ItemKind::Crate, "c".into());
+        ir.add_item(
+            ItemKind::Module {
+                nesting: 1,
+                parent: c,
+            },
+            "m".into(),
+        );
+        let svg = render(&ir, &RenderConfig::default());
+        assert!(svg.contains(r#"id="node-0""#), "Crate should have id");
+        assert!(svg.contains(r#"id="node-1""#), "Module should have id");
+    }
+
+    #[test]
+    fn test_edges_have_data_attributes() {
+        let mut ir = LayoutIR::new();
+        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let a = ir.add_item(
+            ItemKind::Module {
+                nesting: 1,
+                parent: c,
+            },
+            "a".into(),
+        );
+        let b = ir.add_item(
+            ItemKind::Module {
+                nesting: 1,
+                parent: c,
+            },
+            "b".into(),
+        );
+        ir.add_edge(a, b, EdgeKind::Normal);
+        let svg = render(&ir, &RenderConfig::default());
+        assert!(svg.contains(r#"id="edge-1-2""#), "Edge should have id");
+        assert!(
+            svg.contains(r#"data-from="1""#),
+            "Edge should have data-from"
+        );
+        assert!(svg.contains(r#"data-to="2""#), "Edge should have data-to");
+    }
+
+    #[test]
+    fn test_svg_has_script() {
+        let ir = LayoutIR::new();
+        let svg = render(&ir, &RenderConfig::default());
+        assert!(svg.contains("<script>"), "SVG should contain script tag");
+        assert!(
+            svg.contains("highlightNode"),
+            "Script should contain highlightNode function"
+        );
+        assert!(
+            svg.contains("highlightEdge"),
+            "Script should contain highlightEdge function"
         );
     }
 }
