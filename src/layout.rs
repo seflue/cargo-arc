@@ -316,6 +316,7 @@ fn collect_children_recursive(
 
 /// Build LayoutIR from graph, sorted order, and cycle information.
 /// Converts graph nodes to LayoutItems with proper nesting and edges with cycle markers.
+/// CrateDep edges are skipped when ModuleDep edges exist between the same crates.
 pub fn build_layout(graph: &ArcGraph, order: &[NodeIndex], cycles: &[Cycle]) -> LayoutIR {
     use crate::graph::Node;
     use std::collections::{HashMap, HashSet};
@@ -405,11 +406,39 @@ pub fn build_layout(graph: &ArcGraph, order: &[NodeIndex], cycles: &[Cycle]) -> 
         node_map.insert(idx, layout_id);
     }
 
+    // Build set of crate pairs that have ModuleDep edges between them
+    let mut crates_with_module_deps: HashSet<(NodeIndex, NodeIndex)> = HashSet::new();
+    for edge_idx in graph.edge_indices() {
+        if let Edge::ModuleDep(_) = &graph[edge_idx] {
+            let (src, dst) = graph.edge_endpoints(edge_idx).unwrap();
+            // Get crate_idx for both modules
+            if let (
+                Node::Module {
+                    crate_idx: src_crate,
+                    ..
+                },
+                Node::Module {
+                    crate_idx: dst_crate,
+                    ..
+                },
+            ) = (&graph[src], &graph[dst])
+            {
+                if src_crate != dst_crate {
+                    crates_with_module_deps.insert((*src_crate, *dst_crate));
+                }
+            }
+        }
+    }
+
     // Add dependency edges (CrateDep and ModuleDep only)
     for edge_idx in graph.edge_indices() {
         match &graph[edge_idx] {
             Edge::CrateDep => {
                 let (src, dst) = graph.edge_endpoints(edge_idx).unwrap();
+                // Skip CrateDep if ModuleDeps already show this relationship
+                if crates_with_module_deps.contains(&(src, dst)) {
+                    continue;
+                }
                 if let (Some(&from), Some(&to)) = (node_map.get(&src), node_map.get(&dst)) {
                     let kind = if cycle_pairs.contains(&(src, dst)) {
                         EdgeKind::TransitiveCycle
@@ -866,6 +895,15 @@ mod tests {
         // Crate B's modules should appear after Crate B
         assert!(pos_crate_b < pos_mod_b1, "mod_b1 should be after crate_b");
         assert!(pos_crate_b < pos_mod_b2, "mod_b2 should be after crate_b");
+
+        // CrateDep edge should be present (no ModuleDeps between crates)
+        assert_eq!(
+            ir.edges.len(),
+            1,
+            "Should have CrateDep edge (no ModuleDeps between crates)"
+        );
+        assert_eq!(ir.edges[0].from, pos_crate_a);
+        assert_eq!(ir.edges[0].to, pos_crate_b);
     }
 
     // === Layout Item Tests ===

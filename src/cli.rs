@@ -47,7 +47,7 @@ pub fn run(args: Args) -> Result<()> {
     // 5. Topological sort
     let order = topo_sort(&graph, &cycles);
 
-    // 6. Build layout
+    // 6. Build layout (CrateDep edges skipped when ModuleDeps exist between crates)
     let layout = build_layout(&graph, &order, &cycles);
 
     // 7. Render to SVG
