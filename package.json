@@ -1,0 +1,10 @@
+{
+  "name": "cargo-arc-js",
+  "version": "1.0.0",
+  "description": "JavaScript tests for cargo-arc SVG interactivity",
+  "type": "module",
+  "scripts": {
+    "test": "bun test"
+  },
+  "devDependencies": {}
+}

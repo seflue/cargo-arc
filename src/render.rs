@@ -29,6 +29,15 @@ const ARC_BASE: f32 = 20.0;
 const ARC_SCALE: f32 = 15.0;
 const ARROW_SIZE: f32 = 8.0;
 
+/// Padding inside tooltip (matches JavaScript)
+const TOOLTIP_PADDING: f32 = 6.0;
+
+/// Offset from cursor to tooltip (matches JavaScript: x + 10)
+const TOOLTIP_OFFSET: f32 = 10.0;
+
+/// Separator for tooltip lines (newlines get normalized in XML attributes)
+const TOOLTIP_LINE_SEP: &str = "|";
+
 /// Calculate maximum arc width from edges
 fn calculate_max_arc_width(positioned: &[PositionedItem], ir: &LayoutIR, row_height: f32) -> f32 {
     ir.edges
@@ -42,31 +51,68 @@ fn calculate_max_arc_width(positioned: &[PositionedItem], ir: &LayoutIR, row_hei
         .fold(0.0_f32, |a, b| a.max(b))
 }
 
-/// Format a SourceLocation for display, including symbols with truncation.
+/// Format source locations grouped by symbol.
 ///
-/// Examples:
-/// - No symbols: "src/cli.rs:7"
-/// - Single symbol: "src/cli.rs:7 -> ModuleInfo"
-/// - Multiple symbols: "src/cli.rs:7 -> A, B, C"
-/// - Truncated (>5): "src/cli.rs:7 -> A, B, C, D, E, +2 more"
-fn format_source_location(loc: &SourceLocation) -> String {
-    let base = format!("{}:{}", loc.file.display(), loc.line);
-    if loc.symbols.is_empty() {
-        return base;
+/// Inverts the Location→Symbols structure to Symbol→Locations for clearer display.
+///
+/// Example output (column-aligned):
+/// ```text
+/// ModuleInfo      ← src/cli.rs:7
+///                 ← src/render.rs:12
+/// analyze_module  ← src/cli.rs:7
+/// ```
+fn format_source_locations_by_symbol(locs: &[SourceLocation]) -> String {
+    use std::collections::BTreeMap;
+
+    if locs.is_empty() {
+        return String::new();
     }
 
-    const MAX_SYMBOLS: usize = 5;
-    if loc.symbols.len() <= MAX_SYMBOLS {
-        format!("{} -> {}", base, loc.symbols.join(", "))
-    } else {
-        let shown = loc.symbols[..MAX_SYMBOLS].join(", ");
-        format!(
-            "{} -> {}, +{} more",
-            base,
-            shown,
-            loc.symbols.len() - MAX_SYMBOLS
-        )
+    // Invert: Symbol → Vec<file:line>
+    let mut by_symbol: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut bare_locations: Vec<String> = Vec::new();
+
+    for loc in locs {
+        let file_line = format!("{}:{}", loc.file.display(), loc.line);
+        if loc.symbols.is_empty() {
+            // Location without symbols - collect separately
+            bare_locations.push(file_line);
+        } else {
+            for symbol in &loc.symbols {
+                by_symbol
+                    .entry(symbol.clone())
+                    .or_default()
+                    .push(file_line.clone());
+            }
+        }
     }
+
+    // Find max symbol length for column alignment
+    let max_symbol_len = by_symbol.keys().map(|s| s.len()).max().unwrap_or(0);
+
+    let mut lines = Vec::new();
+
+    // First: bare locations (without symbols)
+    for loc in bare_locations {
+        lines.push(loc);
+    }
+
+    // Then: symbol-grouped locations in aligned columns
+    for (symbol, locations) in by_symbol {
+        for (i, loc) in locations.iter().enumerate() {
+            if i == 0 {
+                // First line: symbol + padding + arrow + location
+                let padding = " ".repeat(max_symbol_len - symbol.len() + 2);
+                lines.push(format!("{}{}← {}", symbol, padding, loc));
+            } else {
+                // Continuation: spaces + arrow + location
+                let spaces = " ".repeat(max_symbol_len + 2);
+                lines.push(format!("{}← {}", spaces, loc));
+            }
+        }
+    }
+
+    lines.join(TOOLTIP_LINE_SEP)
 }
 
 /// Configuration for SVG rendering
@@ -103,7 +149,14 @@ pub fn render(ir: &LayoutIR, config: &RenderConfig) -> String {
     let box_width = calculate_box_width(ir);
     let positioned = calculate_positions(ir, config, box_width);
     let max_arc_width = calculate_max_arc_width(&positioned, ir, config.row_height);
-    let (width, height) = calculate_canvas_size(&positioned, config, max_arc_width);
+    let (max_tooltip_width, max_tooltip_height) = calculate_max_tooltip_size(ir);
+    let (width, height) = calculate_canvas_size(
+        &positioned,
+        config,
+        max_arc_width,
+        max_tooltip_width,
+        max_tooltip_height,
+    );
 
     // Collect all node IDs that are parents (have children)
     let parents: HashSet<NodeId> = ir
@@ -156,24 +209,60 @@ fn calculate_positions(
         .collect()
 }
 
+/// Line height in tooltip (matches JavaScript)
+const TOOLTIP_LINE_HEIGHT: f32 = 14.0;
+
+/// Calculate tooltip dimensions for the tallest/widest tooltip
+fn calculate_max_tooltip_size(ir: &LayoutIR) -> (f32, f32) {
+    let (max_width, max_height) = ir
+        .edges
+        .iter()
+        .filter(|e| !e.source_locations.is_empty())
+        .map(|edge| {
+            let tooltip_text = format_source_locations_by_symbol(&edge.source_locations);
+            let line_count = tooltip_text.split(TOOLTIP_LINE_SEP).count();
+            let max_line_len = tooltip_text
+                .split(TOOLTIP_LINE_SEP)
+                .map(|line| line.len())
+                .max()
+                .unwrap_or(0);
+            let width = calculate_text_width(&"x".repeat(max_line_len));
+            let height = line_count as f32 * TOOLTIP_LINE_HEIGHT;
+            (width, height)
+        })
+        .fold((0.0_f32, 0.0_f32), |(aw, ah), (w, h)| {
+            (aw.max(w), ah.max(h))
+        });
+
+    (
+        max_width + TOOLTIP_PADDING * 2.0 + TOOLTIP_OFFSET,
+        max_height + TOOLTIP_PADDING,
+    )
+}
+
 fn calculate_canvas_size(
     positioned: &[PositionedItem],
     config: &RenderConfig,
     max_arc_width: f32,
+    max_tooltip_width: f32,
+    max_tooltip_height: f32,
 ) -> (f32, f32) {
-    let height = if positioned.is_empty() {
+    let base_height = if positioned.is_empty() {
         config.margin * 2.0
     } else {
         config.margin * 2.0 + positioned.len() as f32 * config.row_height
     };
-    // Width: max(box_right_edge) + arc_space + margin
+    // Add tooltip height for bottom overflow
+    let height = base_height + max_tooltip_height;
+
+    // Width: max(box_right_edge) + arc_space + tooltip_width + margin
     let max_x = positioned
         .iter()
         .map(|p| p.x + p.width)
         .fold(0.0_f32, |a, b| a.max(b));
     // Use calculated max_arc_width, with a minimum buffer for short/no edges
     let arc_space = max_arc_width.max(50.0);
-    let width = max_x + arc_space + config.margin;
+    let width = max_x + arc_space + max_tooltip_width + config.margin;
     (width, height)
 }
 
@@ -218,575 +307,10 @@ fn render_styles() -> String {
 }
 
 fn render_script(config: &RenderConfig) -> String {
-    format!(
-        r#"  <script><![CDATA[
-(function() {{
-  const ROW_HEIGHT = {row_height};
-  const MARGIN = {margin};
-
-  // === Floating label for source locations ===
-  let floatingLabel = null;
-
-  function showFloatingLabel(text, x, y) {{
-    hideFloatingLabel();
-    const svg = document.querySelector('svg');
-    floatingLabel = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-    floatingLabel.setAttribute('class', 'floating-label');
-
-    const padding = 6;
-    const lineHeight = 14;
-    const lines = text.split(', ');
-
-    const textEl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-    textEl.setAttribute('x', x + padding);
-    textEl.setAttribute('y', y + lineHeight);
-
-    // Create tspan for each line
-    lines.forEach((line, i) => {{
-      const tspan = document.createElementNS('http://www.w3.org/2000/svg', 'tspan');
-      tspan.setAttribute('x', x + padding);
-      tspan.setAttribute('dy', i === 0 ? 0 : lineHeight);
-      tspan.textContent = line;
-      textEl.appendChild(tspan);
-    }});
-
-    // Measure width
-    svg.appendChild(textEl);
-    const bbox = textEl.getBBox();
-    svg.removeChild(textEl);
-
-    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-    rect.setAttribute('x', x);
-    rect.setAttribute('y', y);
-    rect.setAttribute('width', bbox.width + padding * 2);
-    rect.setAttribute('height', lines.length * lineHeight + padding);
-
-    floatingLabel.appendChild(rect);
-    floatingLabel.appendChild(textEl);
-    svg.appendChild(floatingLabel);
-  }}
-
-  function hideFloatingLabel() {{
-    if (floatingLabel) {{ floatingLabel.remove(); floatingLabel = null; }}
-  }}
-
-  // === Highlight functionality ===
-  let pinnedHighlight = null; // {{type: 'node'|'edge', id: string}} or null
-
-  function clearHighlights() {{
-    document.querySelectorAll('.highlighted, .highlighted-node, .highlighted-arrow, .dimmed')
-      .forEach(el => el.classList.remove('highlighted', 'highlighted-node', 'highlighted-arrow', 'dimmed'));
-  }}
-
-  function applyEdgeHighlight(from, to) {{
-    document.getElementById('node-' + from)?.classList.add('highlighted-node');
-    document.getElementById('node-' + to)?.classList.add('highlighted-node');
-    document.getElementById('edge-' + from + '-' + to)?.classList.add('highlighted');
-    document.querySelectorAll('[data-edge="' + from + '-' + to + '"]')
-      .forEach(el => el.classList.add('highlighted-arrow'));
-    document.querySelectorAll('rect:not(.highlighted-node), path:not(.highlighted), polygon:not(.highlighted-arrow)')
-      .forEach(el => el.classList.add('dimmed'));
-  }}
-
-  function applyNodeHighlight(nodeId) {{
-    document.getElementById('node-' + nodeId)?.classList.add('highlighted-node');
-    document.querySelectorAll('[data-from="' + nodeId + '"], [data-to="' + nodeId + '"]')
-      .forEach(edge => {{
-        edge.classList.add('highlighted');
-        const from = edge.dataset.from;
-        const to = edge.dataset.to;
-        document.getElementById('node-' + from)?.classList.add('highlighted-node');
-        document.getElementById('node-' + to)?.classList.add('highlighted-node');
-        document.querySelectorAll('[data-edge="' + from + '-' + to + '"]')
-          .forEach(arr => arr.classList.add('highlighted-arrow'));
-      }});
-    document.querySelectorAll('rect:not(.highlighted-node), path:not(.highlighted), polygon:not(.highlighted-arrow)')
-      .forEach(el => el.classList.add('dimmed'));
-  }}
-
-  function highlightEdge(from, to, pin) {{
-    const edgeId = from + '-' + to;
-    // Toggle-check: if same edge is already pinned, deselect
-    if (pin && pinnedHighlight && pinnedHighlight.type === 'edge' && pinnedHighlight.id === edgeId) {{
-      pinnedHighlight = null;
-      clearHighlights();
-      return;
-    }}
-    clearHighlights();
-    applyEdgeHighlight(from, to);
-    if (pin) pinnedHighlight = {{type: 'edge', id: edgeId}};
-  }}
-
-  function highlightNode(nodeId, pin) {{
-    // Toggle-check: if same node is already pinned, deselect
-    if (pin && pinnedHighlight && pinnedHighlight.type === 'node' && pinnedHighlight.id === nodeId) {{
-      pinnedHighlight = null;
-      clearHighlights();
-      return;
-    }}
-    clearHighlights();
-    applyNodeHighlight(nodeId);
-    if (pin) pinnedHighlight = {{type: 'node', id: nodeId}};
-  }}
-
-  function handleMouseEnter(type, id) {{
-    if (pinnedHighlight) return; // Don't preview if something is pinned
-    clearHighlights();
-    if (type === 'node') applyNodeHighlight(id);
-    else if (type === 'edge') {{
-      const [from, to] = id.split('-');
-      applyEdgeHighlight(from, to);
-    }}
-  }}
-
-  function handleMouseLeave() {{
-    if (pinnedHighlight) return; // Keep pinned highlight
-    clearHighlights();
-  }}
-
-  // === Collapse functionality ===
-  const collapseState = new Map(); // nodeId -> boolean (collapsed)
-  const originalPositions = new Map(); // nodeId -> {{x, y}}
-
-  // Store original positions on load
-  document.querySelectorAll('.crate, .module').forEach(node => {{
-    const id = node.id.replace('node-', '');
-    originalPositions.set(id, {{
-      x: parseFloat(node.getAttribute('x')),
-      y: parseFloat(node.getAttribute('y'))
-    }});
-  }});
-
-  // Get all descendants recursively (transitive)
-  function getDescendants(nodeId) {{
-    const descendants = [];
-    document.querySelectorAll('[data-parent="' + nodeId + '"]').forEach(child => {{
-      if (child.tagName === 'rect') {{
-        const childId = child.id.replace('node-', '');
-        descendants.push(childId);
-        descendants.push(...getDescendants(childId));
-      }}
-    }});
-    return descendants;
-  }}
-
-  // Find the nearest visible ancestor (node without .collapsed class)
-  function getVisibleAncestor(nodeId) {{
-    const node = document.getElementById('node-' + nodeId);
-    if (!node) return null;
-    // If this node is hidden, find its visible parent
-    if (node.classList.contains('collapsed')) {{
-      const parentId = node.dataset.parent;
-      if (!parentId) return null;  // No visible ancestor
-      return getVisibleAncestor(parentId);
-    }}
-    return nodeId;  // This node is visible
-  }}
-
-  // Count all descendants
-  function countDescendants(nodeId) {{
-    return getDescendants(nodeId).length;
-  }}
-
-  // Update tree lines for a node at new Y position
-  function updateTreeLines(nodeId, newY, nodeHeight) {{
-    // Update lines where this node is the child
-    document.querySelectorAll('line[data-child="' + nodeId + '"]').forEach(line => {{
-      const midY = newY + nodeHeight / 2;
-      if (line.getAttribute('x1') === line.getAttribute('x2')) {{
-        // Vertical line - update y2
-        line.setAttribute('y2', midY);
-      }} else {{
-        // Horizontal line - update both y1 and y2
-        line.setAttribute('y1', midY);
-        line.setAttribute('y2', midY);
-      }}
-    }});
-
-    // Update lines where this node is the parent (vertical line y1)
-    document.querySelectorAll('line[data-parent="' + nodeId + '"]').forEach(line => {{
-      if (line.getAttribute('x1') === line.getAttribute('x2')) {{
-        // Vertical line - update y1 (parent bottom)
-        line.setAttribute('y1', newY + nodeHeight);
-      }}
-    }});
-  }}
-
-  // Relayout visible nodes
-  function relayout() {{
-    let currentY = MARGIN;
-
-    // Get all nodes sorted by original Y position
-    const items = [...document.querySelectorAll('.crate, .module')]
-      .sort((a, b) => {{
-        const aId = a.id.replace('node-', '');
-        const bId = b.id.replace('node-', '');
-        return originalPositions.get(aId).y - originalPositions.get(bId).y;
-      }});
-
-    items.forEach(node => {{
-      if (node.classList.contains('collapsed')) return;
-
-      const nodeId = node.id.replace('node-', '');
-      const height = parseFloat(node.getAttribute('height'));
-
-      // Update rect position
-      node.setAttribute('y', currentY);
-
-      // Update label position (next text sibling)
-      const label = node.nextElementSibling;
-      if (label && label.tagName === 'text' && label.classList.contains('label')) {{
-        label.setAttribute('y', currentY + height / 2 + 4);
-      }}
-
-      // Update toggle icon position (if exists)
-      const toggle = document.querySelector('.collapse-toggle[data-target="' + nodeId + '"]');
-      if (toggle) {{
-        toggle.setAttribute('y', currentY + height / 2 + 4);
-      }}
-
-      // Update tree lines
-      updateTreeLines(nodeId, currentY, height);
-
-      currentY += ROW_HEIGHT;
-    }});
-
-    recalculateVirtualEdges();
-  }}
-
-  // Helper: Calculate arc path between two nodes
-  function calculateArcPath(fromNode, toNode, yOffset) {{
-    const fromX = parseFloat(fromNode.getAttribute('x')) + parseFloat(fromNode.getAttribute('width'));
-    const fromY = parseFloat(fromNode.getAttribute('y')) + parseFloat(fromNode.getAttribute('height')) / 2 + yOffset;
-    const toX = parseFloat(toNode.getAttribute('x')) + parseFloat(toNode.getAttribute('width'));
-    const toY = parseFloat(toNode.getAttribute('y')) + parseFloat(toNode.getAttribute('height')) / 2 - yOffset;
-
-    // Find rightmost visible node for arc positioning
-    let maxRight = 0;
-    document.querySelectorAll('.crate, .module').forEach(n => {{
-      if (!n.classList.contains('collapsed')) {{
-        const right = parseFloat(n.getAttribute('x')) + parseFloat(n.getAttribute('width'));
-        if (right > maxRight) maxRight = right;
-      }}
-    }});
-
-    const hops = Math.max(1, Math.round(Math.abs(toY - fromY) / ROW_HEIGHT));
-    const arcOffset = 20 + (hops * 15);
-    const ctrlX = maxRight + arcOffset;
-    const midY = (fromY + toY) / 2;
-
-    return {{
-      path: `M ${{fromX}},${{fromY}} Q ${{ctrlX}},${{fromY}} ${{ctrlX}},${{midY}} Q ${{ctrlX}},${{toY}} ${{toX}},${{toY}}`,
-      toX, toY, ctrlX, midY
-    }};
-  }}
-
-  // Recalculate and show virtual edges for collapsed nodes
-  function recalculateVirtualEdges() {{
-    // Remove existing virtual edges
-    document.querySelectorAll('.virtual-arc, .arc-count').forEach(el => el.remove());
-
-    // FIRST: Reset ALL edges and arrows to visible
-    document.querySelectorAll('.dep-arc, .cycle-arc').forEach(edge => {{
-      edge.style.display = '';
-    }});
-    document.querySelectorAll('.dep-arrow, .cycle-arrow').forEach(arrow => {{
-      arrow.style.display = '';
-    }});
-
-    // Find all original edges and update their paths / determine which need to be hidden
-    const edges = document.querySelectorAll('.dep-arc, .cycle-arc');
-    const virtualEdges = new Map(); // "visibleFrom-visibleTo" -> {{ count, hiddenEdgeData }}
-
-    edges.forEach(edge => {{
-      const fromId = edge.dataset.from;
-      const toId = edge.dataset.to;
-      const fromNode = document.getElementById('node-' + fromId);
-      const toNode = document.getElementById('node-' + toId);
-
-      // Check if nodes are hidden (have .collapsed class)
-      const fromHidden = fromNode && fromNode.classList.contains('collapsed');
-      const toHidden = toNode && toNode.classList.contains('collapsed');
-
-      if (fromHidden || toHidden) {{
-        // Hide original edge and its arrows
-        edge.style.display = 'none';
-        document.querySelectorAll('[data-edge="' + fromId + '-' + toId + '"]')
-          .forEach(arr => arr.style.display = 'none');
-
-        // Calculate visible endpoints for virtual edge
-        const visibleFrom = fromHidden ? getVisibleAncestor(fromId) : fromId;
-        const visibleTo = toHidden ? getVisibleAncestor(toId) : toId;
-
-        if (visibleFrom && visibleTo && visibleFrom !== visibleTo) {{
-          const key = visibleFrom + '-' + visibleTo;
-          const existing = virtualEdges.get(key) || {{ count: 0, hiddenEdgeData: [] }};
-          existing.count++;
-          // Collect source locations from hidden edge
-          const locs = edge.dataset.sourceLocations;
-          if (locs) existing.hiddenEdgeData.push(locs);
-          virtualEdges.set(key, existing);
-        }}
-      }} else if (fromNode && toNode) {{
-        // Both endpoints visible - update arc path to current node positions
-        const arc = calculateArcPath(fromNode, toNode, 3);
-        edge.setAttribute('d', arc.path);
-
-        // Update arrow position
-        const arrows = document.querySelectorAll('[data-edge="' + fromId + '-' + toId + '"]');
-        arrows.forEach(arrow => {{
-          arrow.setAttribute('points', `${{arc.toX + 8}},${{arc.toY - 4}} ${{arc.toX}},${{arc.toY}} ${{arc.toX + 8}},${{arc.toY + 4}}`);
-        }});
-      }}
-    }});
-
-    // Create virtual edges
-    const depsGroup = document.getElementById('dependencies');
-    virtualEdges.forEach((data, key) => {{
-      const [fromId, toId] = key.split('-');
-      const fromNode = document.getElementById('node-' + fromId);
-      const toNode = document.getElementById('node-' + toId);
-
-      if (fromNode && toNode) {{
-        const fromX = parseFloat(fromNode.getAttribute('x')) + parseFloat(fromNode.getAttribute('width'));
-        const fromY = parseFloat(fromNode.getAttribute('y')) + parseFloat(fromNode.getAttribute('height')) / 2 + 3;
-        const toX = parseFloat(toNode.getAttribute('x')) + parseFloat(toNode.getAttribute('width'));
-        const toY = parseFloat(toNode.getAttribute('y')) + parseFloat(toNode.getAttribute('height')) / 2 - 3;
-
-        // Find rightmost node edge for arc positioning
-        let maxRight = 0;
-        document.querySelectorAll('.crate, .module').forEach(n => {{
-          if (!n.classList.contains('collapsed')) {{
-            const right = parseFloat(n.getAttribute('x')) + parseFloat(n.getAttribute('width'));
-            if (right > maxRight) maxRight = right;
-          }}
-        }});
-
-        const hops = Math.max(1, Math.round(Math.abs(toY - fromY) / ROW_HEIGHT));
-        const arcOffset = 20 + (hops * 15);
-        const ctrlX = maxRight + arcOffset;
-        const midY = (fromY + toY) / 2;
-
-        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-        path.setAttribute('class', 'virtual-arc');
-        path.setAttribute('d', `M ${{fromX}},${{fromY}} Q ${{ctrlX}},${{fromY}} ${{ctrlX}},${{midY}} Q ${{ctrlX}},${{toY}} ${{toX}},${{toY}}`);
-        path.setAttribute('data-from', fromId);
-        path.setAttribute('data-to', toId);
-        // Set aggregated source locations from hidden edges
-        if (data.hiddenEdgeData.length > 0) {{
-          path.dataset.sourceLocations = data.hiddenEdgeData.join(', ');
-        }}
-        path.style.cursor = 'pointer';
-        // Click handler for highlighting
-        path.addEventListener('click', e => {{
-          e.stopPropagation();
-          highlightVirtualEdge(fromId, toId, data.count);
-        }});
-        // Hover handlers for floating label
-        path.addEventListener('mouseenter', (e) => {{
-          handleMouseEnter('edge', fromId + '-' + toId);
-          const locs = path.dataset.sourceLocations;
-          if (locs) {{
-            const svg = document.querySelector('svg');
-            const pt = svg.createSVGPoint();
-            pt.x = e.clientX; pt.y = e.clientY;
-            const svgPt = pt.matrixTransform(svg.getScreenCTM().inverse());
-            showFloatingLabel(locs, svgPt.x + 10, svgPt.y - 20);
-          }}
-        }});
-        path.addEventListener('mouseleave', () => {{
-          handleMouseLeave();
-          hideFloatingLabel();
-        }});
-        depsGroup.appendChild(path);
-
-        // Arrow
-        const arrow = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
-        arrow.setAttribute('class', 'virtual-arc virtual-arrow');
-        arrow.setAttribute('data-vedge', fromId + '-' + toId);
-        arrow.setAttribute('points', `${{toX + 8}},${{toY - 4}} ${{toX}},${{toY}} ${{toX + 8}},${{toY + 4}}`);
-        arrow.style.fill = '#9c27b0';
-        arrow.style.cursor = 'pointer';
-        arrow.addEventListener('click', e => {{
-          e.stopPropagation();
-          highlightVirtualEdge(fromId, toId, data.count);
-        }});
-        depsGroup.appendChild(arrow);
-
-        // Count label if multiple edges merged
-        if (data.count > 1) {{
-          const countLabel = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-          countLabel.setAttribute('class', 'arc-count');
-          countLabel.setAttribute('data-vedge', fromId + '-' + toId);
-          countLabel.setAttribute('x', ctrlX + 5);
-          countLabel.setAttribute('y', midY + 3);
-          countLabel.textContent = '(' + data.count + ')';
-          countLabel.style.cursor = 'pointer';
-          countLabel.addEventListener('click', e => {{
-            e.stopPropagation();
-            highlightVirtualEdge(fromId, toId, data.count);
-          }});
-          depsGroup.appendChild(countLabel);
-        }}
-      }}
-    }});
-  }}
-
-  // Highlight virtual (aggregated) edge
-  function highlightVirtualEdge(fromId, toId, count) {{
-    const edgeId = fromId + '-' + toId;
-    // Toggle-check: if same edge is already pinned, deselect
-    if (pinnedHighlight && pinnedHighlight.type === 'edge' && pinnedHighlight.id === edgeId) {{
-      pinnedHighlight = null;
-      clearHighlights();
-      return;
-    }}
-    clearHighlights();
-    pinnedHighlight = {{type: 'edge', id: edgeId}};
-    document.getElementById('node-' + fromId)?.classList.add('highlighted-node');
-    document.getElementById('node-' + toId)?.classList.add('highlighted-node');
-    // Highlight the virtual arc
-    document.querySelectorAll('.virtual-arc[data-from="' + fromId + '"][data-to="' + toId + '"]')
-      .forEach(el => el.classList.add('highlighted'));
-    document.querySelectorAll('.virtual-arrow[data-vedge="' + fromId + '-' + toId + '"]')
-      .forEach(el => el.classList.add('highlighted-arrow'));
-    // Dim everything else
-    document.querySelectorAll('rect:not(.highlighted-node), path:not(.highlighted), polygon:not(.highlighted-arrow)')
-      .forEach(el => el.classList.add('dimmed'));
-  }}
-
-  // Toggle collapse state
-  function toggleCollapse(nodeId) {{
-    const collapsed = !collapseState.get(nodeId);
-    collapseState.set(nodeId, collapsed);
-
-    const descendants = getDescendants(nodeId);
-
-    // Toggle visibility of descendants
-    descendants.forEach(descId => {{
-      const node = document.getElementById('node-' + descId);
-      const label = node?.nextElementSibling;
-      const toggle = document.querySelector('.collapse-toggle[data-target="' + descId + '"]');
-
-      if (collapsed) {{
-        node?.classList.add('collapsed');
-        label?.classList.add('collapsed');
-        toggle?.classList.add('collapsed');
-      }} else {{
-        // Only show if no ancestor is collapsed
-        let ancestorCollapsed = false;
-        let checkId = descId;
-        while (true) {{
-          const checkNode = document.getElementById('node-' + checkId);
-          const parentId = checkNode?.dataset.parent;
-          if (!parentId) break;
-          if (collapseState.get(parentId) && parentId !== nodeId) {{
-            ancestorCollapsed = true;
-            break;
-          }}
-          checkId = parentId;
-        }}
-        if (!ancestorCollapsed) {{
-          node?.classList.remove('collapsed');
-          label?.classList.remove('collapsed');
-          toggle?.classList.remove('collapsed');
-        }}
-      }}
-
-      // Hide/show tree lines for descendants
-      document.querySelectorAll('line[data-child="' + descId + '"]').forEach(line => {{
-        if (collapsed) {{
-          line.classList.add('collapsed');
-        }} else if (!document.getElementById('node-' + descId)?.classList.contains('collapsed')) {{
-          line.classList.remove('collapsed');
-        }}
-      }});
-    }});
-
-    // Update toggle icon
-    const toggleIcon = document.querySelector('.collapse-toggle[data-target="' + nodeId + '"]');
-    if (toggleIcon) {{
-      toggleIcon.textContent = collapsed ? '+' : '−';
-    }}
-
-    // Update child count label
-    const countLabel = document.getElementById('count-' + nodeId);
-    if (countLabel) {{
-      if (collapsed) {{
-        const count = countDescendants(nodeId);
-        countLabel.textContent = ' (+' + count + ')';
-      }} else {{
-        countLabel.textContent = '';
-      }}
-    }}
-
-    relayout();
-  }}
-
-  // === Event handlers ===
-  document.querySelectorAll('.crate, .module').forEach(node => {{
-    const nodeId = node.id.replace('node-', '');
-
-    node.addEventListener('click', e => {{
-      e.stopPropagation();
-      highlightNode(nodeId, true); // pin
-    }});
-
-    node.addEventListener('mouseenter', () => handleMouseEnter('node', nodeId));
-    node.addEventListener('mouseleave', handleMouseLeave);
-
-    // Double-click to toggle collapse (only for parents)
-    if (node.dataset.hasChildren === 'true') {{
-      node.addEventListener('dblclick', e => {{
-        e.stopPropagation();
-        toggleCollapse(nodeId);
-      }});
-    }}
-  }});
-
-  document.querySelectorAll('.collapse-toggle').forEach(toggle => {{
-    toggle.addEventListener('click', e => {{
-      e.stopPropagation();
-      toggleCollapse(toggle.dataset.target);
-    }});
-  }});
-
-  document.querySelectorAll('.dep-arc, .cycle-arc').forEach(arc => {{
-    const edgeId = arc.dataset.from + '-' + arc.dataset.to;
-
-    arc.addEventListener('click', e => {{
-      e.stopPropagation();
-      highlightEdge(arc.dataset.from, arc.dataset.to, true); // pin
-    }});
-
-    arc.addEventListener('mouseenter', (e) => {{
-      handleMouseEnter('edge', edgeId);
-      const locs = arc.dataset.sourceLocations;
-      if (locs) {{
-        const svg = document.querySelector('svg');
-        const pt = svg.createSVGPoint();
-        pt.x = e.clientX; pt.y = e.clientY;
-        const svgPt = pt.matrixTransform(svg.getScreenCTM().inverse());
-        showFloatingLabel(locs, svgPt.x + 10, svgPt.y - 20);
-      }}
-    }});
-
-    arc.addEventListener('mouseleave', () => {{
-      handleMouseLeave();
-      hideFloatingLabel();
-    }});
-  }});
-
-  document.querySelector('svg').addEventListener('click', () => {{
-    pinnedHighlight = null;
-    clearHighlights();
-  }});
-}})();
-]]></script>
-"#,
-        row_height = config.row_height,
-        margin = config.margin
-    )
+    let script = include_str!("svg_script.js")
+        .replace("__ROW_HEIGHT__", &config.row_height.to_string())
+        .replace("__MARGIN__", &config.margin.to_string());
+    format!("  <script><![CDATA[\n{}\n]]></script>\n", script)
 }
 
 fn render_tree_lines(
@@ -935,13 +459,8 @@ fn render_edges(positioned: &[PositionedItem], ir: &LayoutIR) -> String {
                 }
             };
 
-            // Build data-source-locations attribute
-            let locations_str = edge
-                .source_locations
-                .iter()
-                .map(format_source_location)
-                .collect::<Vec<_>>()
-                .join(", ");
+            // Build data-source-locations attribute (symbol-grouped format)
+            let locations_str = format_source_locations_by_symbol(&edge.source_locations);
             let data_loc_attr = if !locations_str.is_empty() {
                 format!(r#" data-source-locations="{}""#, escape_xml(&locations_str))
             } else {
@@ -1531,81 +1050,106 @@ mod tests {
     }
 
     #[test]
-    fn test_format_source_location_no_symbols() {
+    fn test_format_source_locations_by_symbol_empty() {
+        let locs: Vec<SourceLocation> = vec![];
+        assert_eq!(format_source_locations_by_symbol(&locs), "");
+    }
+
+    #[test]
+    fn test_format_source_locations_by_symbol_no_symbols() {
         use crate::graph::SourceLocation;
         use std::path::PathBuf;
 
-        let loc = SourceLocation {
+        let locs = vec![SourceLocation {
             file: PathBuf::from("src/cli.rs"),
             line: 7,
             symbols: vec![],
-        };
-        assert_eq!(format_source_location(&loc), "src/cli.rs:7");
+        }];
+        assert_eq!(format_source_locations_by_symbol(&locs), "src/cli.rs:7");
     }
 
     #[test]
-    fn test_format_source_location_with_symbol() {
+    fn test_format_source_locations_by_symbol_single() {
         use crate::graph::SourceLocation;
         use std::path::PathBuf;
 
-        let loc = SourceLocation {
+        let locs = vec![SourceLocation {
             file: PathBuf::from("src/cli.rs"),
             line: 7,
             symbols: vec!["ModuleInfo".to_string()],
-        };
-        assert_eq!(format_source_location(&loc), "src/cli.rs:7 -> ModuleInfo");
-    }
-
-    #[test]
-    fn test_format_source_location_multiple_symbols() {
-        use crate::graph::SourceLocation;
-        use std::path::PathBuf;
-
-        let loc = SourceLocation {
-            file: PathBuf::from("src/cli.rs"),
-            line: 7,
-            symbols: vec!["ModuleInfo".to_string(), "analyze_module".to_string()],
-        };
+        }];
+        // Column-aligned: symbol + padding + arrow + location
         assert_eq!(
-            format_source_location(&loc),
-            "src/cli.rs:7 -> ModuleInfo, analyze_module"
+            format_source_locations_by_symbol(&locs),
+            "ModuleInfo  ← src/cli.rs:7"
         );
     }
 
     #[test]
-    fn test_format_source_location_glob() {
+    fn test_format_source_locations_by_symbol_grouped() {
         use crate::graph::SourceLocation;
         use std::path::PathBuf;
 
-        let loc = SourceLocation {
-            file: PathBuf::from("src/cli.rs"),
-            line: 7,
-            symbols: vec!["*".to_string()],
-        };
-        assert_eq!(format_source_location(&loc), "src/cli.rs:7 -> *");
+        // Same symbol from multiple locations
+        let locs = vec![
+            SourceLocation {
+                file: PathBuf::from("src/cli.rs"),
+                line: 7,
+                symbols: vec!["ModuleInfo".to_string()],
+            },
+            SourceLocation {
+                file: PathBuf::from("src/render.rs"),
+                line: 12,
+                symbols: vec!["ModuleInfo".to_string()],
+            },
+        ];
+        // Column-aligned: continuation lines have spaces instead of symbol
+        assert_eq!(
+            format_source_locations_by_symbol(&locs),
+            "ModuleInfo  ← src/cli.rs:7|            ← src/render.rs:12"
+        );
     }
 
     #[test]
-    fn test_format_source_location_truncation() {
+    fn test_format_source_locations_by_symbol_multiple_symbols() {
         use crate::graph::SourceLocation;
         use std::path::PathBuf;
 
-        let loc = SourceLocation {
+        // Multiple symbols from same location (multi-import)
+        let locs = vec![SourceLocation {
             file: PathBuf::from("src/cli.rs"),
             line: 7,
-            symbols: vec![
-                "A".to_string(),
-                "B".to_string(),
-                "C".to_string(),
-                "D".to_string(),
-                "E".to_string(),
-                "F".to_string(),
-                "G".to_string(),
-            ],
-        };
+            symbols: vec!["ModuleInfo".to_string(), "analyze_module".to_string()],
+        }];
+        // Column-aligned: symbols padded to max length (analyze_module = 14 chars)
         assert_eq!(
-            format_source_location(&loc),
-            "src/cli.rs:7 -> A, B, C, D, E, +2 more"
+            format_source_locations_by_symbol(&locs),
+            "ModuleInfo      ← src/cli.rs:7|analyze_module  ← src/cli.rs:7"
+        );
+    }
+
+    #[test]
+    fn test_format_source_locations_by_symbol_complex() {
+        use crate::graph::SourceLocation;
+        use std::path::PathBuf;
+
+        // Complex case: multiple symbols, multiple locations
+        let locs = vec![
+            SourceLocation {
+                file: PathBuf::from("src/cli.rs"),
+                line: 7,
+                symbols: vec!["ModuleInfo".to_string(), "analyze_module".to_string()],
+            },
+            SourceLocation {
+                file: PathBuf::from("src/render.rs"),
+                line: 12,
+                symbols: vec!["ModuleInfo".to_string()],
+            },
+        ];
+        // Column-aligned: ModuleInfo has 2 locations, analyze_module has 1
+        assert_eq!(
+            format_source_locations_by_symbol(&locs),
+            "ModuleInfo      ← src/cli.rs:7|                ← src/render.rs:12|analyze_module  ← src/cli.rs:7"
         );
     }
 }
