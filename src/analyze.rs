@@ -440,6 +440,7 @@ fn main() {}
     }
 
     #[test]
+    #[ignore] // Smoke test - requires rust-analyzer (~30s)
     fn test_analyze_modules_self() {
         let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
         let crates = analyze_workspace(&manifest).expect("should analyze workspace");
@@ -476,6 +477,7 @@ fn main() {}
     }
 
     #[test]
+    #[ignore] // Smoke test - requires rust-analyzer (~30s)
     fn test_module_full_path() {
         let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
         let crates = analyze_workspace(&manifest).expect("should analyze workspace");
@@ -498,6 +500,7 @@ fn main() {}
     }
 
     #[test]
+    #[ignore] // Smoke test - requires rust-analyzer (~30s)
     fn test_module_dependencies() {
         let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
         let crates = analyze_workspace(&manifest).expect("should analyze workspace");
