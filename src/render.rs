@@ -227,12 +227,25 @@ fn render_script(config: &RenderConfig) -> String {
   }}
 
   function highlightEdge(from, to, pin) {{
+    const edgeId = from + '-' + to;
+    // Toggle-check: if same edge is already pinned, deselect
+    if (pin && pinnedHighlight && pinnedHighlight.type === 'edge' && pinnedHighlight.id === edgeId) {{
+      pinnedHighlight = null;
+      clearHighlights();
+      return;
+    }}
     clearHighlights();
     applyEdgeHighlight(from, to);
-    if (pin) pinnedHighlight = {{type: 'edge', id: from + '-' + to}};
+    if (pin) pinnedHighlight = {{type: 'edge', id: edgeId}};
   }}
 
   function highlightNode(nodeId, pin) {{
+    // Toggle-check: if same node is already pinned, deselect
+    if (pin && pinnedHighlight && pinnedHighlight.type === 'node' && pinnedHighlight.id === nodeId) {{
+      pinnedHighlight = null;
+      clearHighlights();
+      return;
+    }}
     clearHighlights();
     applyNodeHighlight(nodeId);
     if (pin) pinnedHighlight = {{type: 'node', id: nodeId}};
@@ -518,7 +531,15 @@ fn render_script(config: &RenderConfig) -> String {
 
   // Highlight virtual (aggregated) edge
   function highlightVirtualEdge(fromId, toId, count) {{
+    const edgeId = fromId + '-' + toId;
+    // Toggle-check: if same edge is already pinned, deselect
+    if (pinnedHighlight && pinnedHighlight.type === 'edge' && pinnedHighlight.id === edgeId) {{
+      pinnedHighlight = null;
+      clearHighlights();
+      return;
+    }}
     clearHighlights();
+    pinnedHighlight = {{type: 'edge', id: edgeId}};
     document.getElementById('node-' + fromId)?.classList.add('highlighted-node');
     document.getElementById('node-' + toId)?.classList.add('highlighted-node');
     // Highlight the virtual arc
@@ -1289,6 +1310,22 @@ mod tests {
         assert!(
             svg.contains("mouseleave"),
             "Script should register mouseleave events"
+        );
+    }
+
+    #[test]
+    fn test_render_script_has_toggle_deselect() {
+        let ir = LayoutIR::new();
+        let svg = render(&ir, &RenderConfig::default());
+        // highlightNode toggle-check
+        assert!(
+            svg.contains("pinnedHighlight.id === nodeId"),
+            "highlightNode should have toggle-check for same node"
+        );
+        // highlightEdge toggle-check
+        assert!(
+            svg.contains("pinnedHighlight.id === edgeId"),
+            "highlightEdge should have toggle-check for same edge"
         );
     }
 }
