@@ -64,12 +64,19 @@ fn package_to_crate_info(pkg: &Package, workspace_members: &HashSet<&str>) -> Cr
 // Module Hierarchy Analysis (via ra_ap_hir)
 // ============================================================================
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct DependencyRef {
+    pub target: String,
+    pub source_file: PathBuf,
+    pub line: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct ModuleInfo {
     pub name: String,
     pub full_path: String,
     pub children: Vec<ModuleInfo>,
-    pub dependencies: Vec<String>,
+    pub dependencies: Vec<DependencyRef>,
 }
 
 #[derive(Debug, Clone)]
@@ -90,7 +97,7 @@ pub fn analyze_modules(
 
     // Walk module tree starting from crate root
     let root_module = krate.root_module();
-    let root = walk_module(root_module, db, vfs, "crate");
+    let root = walk_module(root_module, db, vfs, "crate", &crate_info.path);
 
     Ok(ModuleTree { root })
 }
@@ -100,6 +107,7 @@ fn walk_module(
     db: &ide::RootDatabase,
     vfs: &ra_ap_vfs::Vfs,
     parent_path: &str,
+    crate_root: &Path,
 ) -> ModuleInfo {
     let name = if module.is_crate_root() {
         module
@@ -122,14 +130,14 @@ fn walk_module(
     };
 
     // Extract module dependencies from imports/uses in this module's scope
-    let dependencies = extract_module_dependencies(module, db, vfs);
+    let dependencies = extract_module_dependencies(module, db, vfs, crate_root);
 
     let children: Vec<ModuleInfo> = module
         .declarations(db)
         .into_iter()
         .filter_map(|decl| {
             if let hir::ModuleDef::Module(child_module) = decl {
-                Some(walk_module(child_module, db, vfs, &full_path))
+                Some(walk_module(child_module, db, vfs, &full_path, crate_root))
             } else {
                 None
             }
@@ -144,32 +152,18 @@ fn walk_module(
     }
 }
 
-/// Extract module-level dependencies by parsing use statements from source
-fn extract_module_dependencies(
-    module: hir::Module,
-    db: &ide::RootDatabase,
-    vfs: &ra_ap_vfs::Vfs,
-) -> Vec<String> {
-    let mut deps = HashSet::new();
+/// Parse use statements from source code, extracting crate-internal dependencies.
+/// Returns a list of (target module path, line number) pairs.
+///
+/// Matches patterns like:
+/// - `use crate::foo;`
+/// - `use crate::foo::bar;`
+/// - `use crate::foo::{...};`
+pub fn parse_crate_dependencies(source: &str) -> Vec<(String, usize)> {
+    let mut deps: Vec<(String, usize)> = Vec::new();
 
-    // Get the source file for this module
-    let source = module.definition_source(db);
-    let editioned_file_id = source.file_id.original_file(db);
-    let file_id = editioned_file_id.file_id(db);
-
-    // Get file path from VFS and read from disk
-    let vfs_path = vfs.file_path(file_id);
-    let Some(abs_path) = vfs_path.as_path() else {
-        return Vec::new();
-    };
-    let source_text = match std::fs::read_to_string(abs_path.as_str()) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
-
-    // Parse "use crate::module" statements
-    // Matches: use crate::foo, use crate::foo::bar, use crate::foo::{...}
-    for line in source_text.lines() {
+    for (line_idx, line) in source.lines().enumerate() {
+        let line_num = line_idx + 1; // 1-indexed
         let line = line.trim();
         if !line.starts_with("use crate::") {
             continue;
@@ -186,12 +180,55 @@ fn extract_module_dependencies(
                 .trim_end_matches('{')
                 .trim();
             if !module_name.is_empty() {
-                deps.insert(format!("crate::{}", module_name));
+                let target = format!("crate::{}", module_name);
+                // Only add if we don't already have this target (dedup by target)
+                if !deps.iter().any(|(t, _)| t == &target) {
+                    deps.push((target, line_num));
+                }
             }
         }
     }
 
-    deps.into_iter().collect()
+    deps
+}
+
+/// Extract module-level dependencies by parsing use statements from source
+fn extract_module_dependencies(
+    module: hir::Module,
+    db: &ide::RootDatabase,
+    vfs: &ra_ap_vfs::Vfs,
+    crate_root: &Path,
+) -> Vec<DependencyRef> {
+    // Get the source file for this module
+    let source = module.definition_source(db);
+    let editioned_file_id = source.file_id.original_file(db);
+    let file_id = editioned_file_id.file_id(db);
+
+    // Get file path from VFS and read from disk
+    let vfs_path = vfs.file_path(file_id);
+    let Some(abs_path) = vfs_path.as_path() else {
+        return Vec::new();
+    };
+    // Make path relative to crate root
+    let abs_path_buf = PathBuf::from(abs_path.as_str());
+    let source_file = abs_path_buf
+        .strip_prefix(crate_root)
+        .map(|p| p.to_path_buf())
+        .unwrap_or(abs_path_buf);
+    let source_text = match std::fs::read_to_string(abs_path.as_str()) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+
+    // Use the pure parsing function and convert to DependencyRef
+    parse_crate_dependencies(&source_text)
+        .into_iter()
+        .map(|(target, line)| DependencyRef {
+            target,
+            source_file: source_file.clone(),
+            line,
+        })
+        .collect()
 }
 
 /// Loads the entire workspace into rust-analyzer once.
@@ -264,6 +301,120 @@ fn find_crate_in_workspace(
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn test_dependency_ref_struct() {
+        let dep = DependencyRef {
+            target: "crate::graph".to_string(),
+            source_file: PathBuf::from("src/cli.rs"),
+            line: 42,
+        };
+        assert_eq!(dep.target, "crate::graph");
+        assert_eq!(dep.source_file, PathBuf::from("src/cli.rs"));
+        assert_eq!(dep.line, 42);
+    }
+
+    #[test]
+    fn test_module_info_has_dependency_refs() {
+        let module = ModuleInfo {
+            name: "cli".to_string(),
+            full_path: "crate::cli".to_string(),
+            children: vec![],
+            dependencies: vec![DependencyRef {
+                target: "crate::graph".to_string(),
+                source_file: PathBuf::from("src/cli.rs"),
+                line: 5,
+            }],
+        };
+        assert!(
+            module
+                .dependencies
+                .iter()
+                .any(|d| d.target == "crate::graph")
+        );
+    }
+
+    // ========================================================================
+    // parse_crate_dependencies() unit tests - fast, no rust-analyzer
+    // ========================================================================
+
+    #[test]
+    fn test_parse_crate_dependencies_simple() {
+        let source = r#"
+use crate::graph;
+use crate::analyze;
+"#;
+        let deps = parse_crate_dependencies(source);
+        assert_eq!(deps.len(), 2);
+        assert!(deps.iter().any(|(t, _)| t == "crate::graph"));
+        assert!(deps.iter().any(|(t, _)| t == "crate::analyze"));
+    }
+
+    #[test]
+    fn test_parse_crate_dependencies_nested() {
+        let source = r#"
+use crate::analyze::{CrateInfo, ModuleInfo};
+use crate::graph::build_graph;
+use crate::layout::{build_layout, detect_cycles};
+"#;
+        let deps = parse_crate_dependencies(source);
+        assert_eq!(deps.len(), 3);
+        assert!(deps.iter().any(|(t, _)| t == "crate::analyze"));
+        assert!(deps.iter().any(|(t, _)| t == "crate::graph"));
+        assert!(deps.iter().any(|(t, _)| t == "crate::layout"));
+    }
+
+    #[test]
+    fn test_parse_crate_dependencies_dedup() {
+        let source = r#"
+use crate::graph::build_graph;
+use crate::graph::Node;
+use crate::graph;
+"#;
+        let deps = parse_crate_dependencies(source);
+        assert_eq!(deps.len(), 1, "should deduplicate by target");
+        assert_eq!(deps[0].0, "crate::graph");
+        assert_eq!(deps[0].1, 2, "should keep first occurrence line number");
+    }
+
+    #[test]
+    fn test_parse_crate_dependencies_line_numbers() {
+        let source = r#"// Comment
+use std::path::Path;
+use crate::foo;
+// Another comment
+use crate::bar;
+"#;
+        let deps = parse_crate_dependencies(source);
+        assert_eq!(deps.len(), 2);
+        let foo = deps.iter().find(|(t, _)| t == "crate::foo").unwrap();
+        let bar = deps.iter().find(|(t, _)| t == "crate::bar").unwrap();
+        assert_eq!(foo.1, 3, "crate::foo on line 3");
+        assert_eq!(bar.1, 5, "crate::bar on line 5");
+    }
+
+    #[test]
+    fn test_parse_crate_dependencies_ignores_external() {
+        let source = r#"
+use std::collections::HashMap;
+use anyhow::Result;
+use crate::analyze;
+use petgraph::Graph;
+"#;
+        let deps = parse_crate_dependencies(source);
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].0, "crate::analyze");
+    }
+
+    #[test]
+    fn test_parse_crate_dependencies_empty() {
+        let source = r#"
+// No use statements
+fn main() {}
+"#;
+        let deps = parse_crate_dependencies(source);
+        assert!(deps.is_empty());
+    }
 
     #[test]
     fn test_analyze_workspace_self() {
@@ -365,7 +516,8 @@ mod tests {
         assert!(
             graph_module
                 .dependencies
-                .contains(&"crate::analyze".to_string()),
+                .iter()
+                .any(|d| d.target == "crate::analyze"),
             "graph should depend on analyze, found: {:?}",
             graph_module.dependencies
         );
@@ -380,14 +532,16 @@ mod tests {
         assert!(
             cli_module
                 .dependencies
-                .contains(&"crate::analyze".to_string()),
+                .iter()
+                .any(|d| d.target == "crate::analyze"),
             "cli should depend on analyze, found: {:?}",
             cli_module.dependencies
         );
         assert!(
             cli_module
                 .dependencies
-                .contains(&"crate::graph".to_string()),
+                .iter()
+                .any(|d| d.target == "crate::graph"),
             "cli should depend on graph, found: {:?}",
             cli_module.dependencies
         );
@@ -402,7 +556,8 @@ mod tests {
         assert!(
             render_module
                 .dependencies
-                .contains(&"crate::layout".to_string()),
+                .iter()
+                .any(|d| d.target == "crate::layout"),
             "render should depend on layout, found: {:?}",
             render_module.dependencies
         );

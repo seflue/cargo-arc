@@ -59,7 +59,7 @@ pub fn topo_sort(graph: &ArcGraph, cycles: &[Cycle]) -> Vec<NodeIndex> {
     // Add edges (only CrateDep and ModuleDep, mapped to representatives)
     for edge_idx in graph.edge_indices() {
         match graph[edge_idx] {
-            Edge::CrateDep | Edge::ModuleDep => {
+            Edge::CrateDep | Edge::ModuleDep(_) => {
                 let (src, dst) = graph.edge_endpoints(edge_idx).unwrap();
                 let src_rep = node_to_rep[&src];
                 let dst_rep = node_to_rep[&dst];
@@ -257,15 +257,29 @@ pub fn build_layout(graph: &ArcGraph, order: &[NodeIndex], cycles: &[Cycle]) -> 
 
     // Add dependency edges (CrateDep and ModuleDep only)
     for edge_idx in graph.edge_indices() {
-        match graph[edge_idx] {
-            Edge::CrateDep | Edge::ModuleDep => {
+        match &graph[edge_idx] {
+            Edge::CrateDep => {
+                let (src, dst) = graph.edge_endpoints(edge_idx).unwrap();
+                if let (Some(&from), Some(&to)) = (node_map.get(&src), node_map.get(&dst)) {
+                    let kind = if cycle_pairs.contains(&(src, dst)) {
+                        EdgeKind::TransitiveCycle
+                    } else {
+                        EdgeKind::Normal
+                    };
+                    ir.add_edge(from, to, kind, vec![]);
+                }
+            }
+            Edge::ModuleDep(locations) => {
                 let (src, dst) = graph.edge_endpoints(edge_idx).unwrap();
                 if let (Some(&from), Some(&to)) = (node_map.get(&src), node_map.get(&dst)) {
                     let kind = if cycle_pairs.contains(&(src, dst)) {
                         // Check if it's a direct cycle (A->B and B->A both exist)
                         if cycle_pairs.contains(&(dst, src))
                             && graph.contains_edge(dst, src)
-                            && matches!(graph[graph.find_edge(dst, src).unwrap()], Edge::ModuleDep)
+                            && matches!(
+                                graph[graph.find_edge(dst, src).unwrap()],
+                                Edge::ModuleDep(_)
+                            )
                         {
                             EdgeKind::DirectCycle
                         } else {
@@ -274,7 +288,7 @@ pub fn build_layout(graph: &ArcGraph, order: &[NodeIndex], cycles: &[Cycle]) -> 
                     } else {
                         EdgeKind::Normal
                     };
-                    ir.add_edge(from, to, kind);
+                    ir.add_edge(from, to, kind, locations.clone());
                 }
             }
             Edge::Contains => {} // Skip hierarchy edges
@@ -299,9 +313,9 @@ pub fn detect_cycles(graph: &ArcGraph) -> Vec<Cycle> {
 
     // Copy only ModuleDep edges
     for edge_idx in graph.edge_indices() {
-        if matches!(graph[edge_idx], Edge::ModuleDep) {
+        if matches!(graph[edge_idx], Edge::ModuleDep(_)) {
             let (src, dst) = graph.edge_endpoints(edge_idx).unwrap();
-            filtered.add_edge(node_map[&src], node_map[&dst], Edge::ModuleDep);
+            filtered.add_edge(node_map[&src], node_map[&dst], Edge::ModuleDep(vec![]));
         }
     }
 
@@ -341,11 +355,14 @@ pub enum EdgeKind {
     TransitiveCycle,
 }
 
+use crate::graph::SourceLocation;
+
 #[derive(Debug, Clone)]
 pub struct LayoutEdge {
     pub from: NodeId,
     pub to: NodeId,
     pub kind: EdgeKind,
+    pub source_locations: Vec<SourceLocation>,
 }
 
 #[derive(Debug, Default)]
@@ -365,16 +382,43 @@ impl LayoutIR {
         id
     }
 
-    pub fn add_edge(&mut self, from: NodeId, to: NodeId, kind: EdgeKind) {
-        self.edges.push(LayoutEdge { from, to, kind });
+    pub fn add_edge(
+        &mut self,
+        from: NodeId,
+        to: NodeId,
+        kind: EdgeKind,
+        source_locations: Vec<SourceLocation>,
+    ) {
+        self.edges.push(LayoutEdge {
+            from,
+            to,
+            kind,
+            source_locations,
+        });
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::{ArcGraph, Edge, Node};
+    use crate::graph::{ArcGraph, Edge, Node, SourceLocation};
     use petgraph::graph::NodeIndex;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_layout_edge_has_source_locations() {
+        let edge = LayoutEdge {
+            from: 0,
+            to: 1,
+            kind: EdgeKind::Normal,
+            source_locations: vec![SourceLocation {
+                file: PathBuf::from("src/cli.rs"),
+                line: 42,
+            }],
+        };
+        assert_eq!(edge.source_locations.len(), 1);
+        assert_eq!(edge.source_locations[0].line, 42);
+    }
 
     // === Cycle Detection Tests ===
 
@@ -394,8 +438,8 @@ mod tests {
             name: "c".to_string(),
             crate_idx: NodeIndex::new(0),
         });
-        graph.add_edge(a, b, Edge::ModuleDep);
-        graph.add_edge(b, c, Edge::ModuleDep);
+        graph.add_edge(a, b, Edge::ModuleDep(vec![]));
+        graph.add_edge(b, c, Edge::ModuleDep(vec![]));
 
         let cycles = detect_cycles(&graph);
         assert!(cycles.is_empty(), "Linear graph should have no cycles");
@@ -413,8 +457,8 @@ mod tests {
             name: "b".to_string(),
             crate_idx: NodeIndex::new(0),
         });
-        graph.add_edge(a, b, Edge::ModuleDep);
-        graph.add_edge(b, a, Edge::ModuleDep);
+        graph.add_edge(a, b, Edge::ModuleDep(vec![]));
+        graph.add_edge(b, a, Edge::ModuleDep(vec![]));
 
         let cycles = detect_cycles(&graph);
         assert_eq!(cycles.len(), 1, "Should detect one cycle");
@@ -439,9 +483,9 @@ mod tests {
             name: "c".to_string(),
             crate_idx: NodeIndex::new(0),
         });
-        graph.add_edge(a, b, Edge::ModuleDep);
-        graph.add_edge(b, c, Edge::ModuleDep);
-        graph.add_edge(c, a, Edge::ModuleDep);
+        graph.add_edge(a, b, Edge::ModuleDep(vec![]));
+        graph.add_edge(b, c, Edge::ModuleDep(vec![]));
+        graph.add_edge(c, a, Edge::ModuleDep(vec![]));
 
         let cycles = detect_cycles(&graph);
         assert_eq!(cycles.len(), 1, "Should detect one cycle");
@@ -466,8 +510,8 @@ mod tests {
             name: "c".to_string(),
             crate_idx: NodeIndex::new(0),
         });
-        graph.add_edge(a, b, Edge::ModuleDep);
-        graph.add_edge(b, c, Edge::ModuleDep);
+        graph.add_edge(a, b, Edge::ModuleDep(vec![]));
+        graph.add_edge(b, c, Edge::ModuleDep(vec![]));
 
         let cycles: Vec<Cycle> = vec![];
         let sorted = topo_sort(&graph, &cycles);
@@ -504,10 +548,10 @@ mod tests {
             name: "d".to_string(),
             crate_idx: NodeIndex::new(0),
         });
-        graph.add_edge(d, a, Edge::ModuleDep);
-        graph.add_edge(a, b, Edge::ModuleDep);
-        graph.add_edge(b, a, Edge::ModuleDep); // cycle
-        graph.add_edge(b, c, Edge::ModuleDep);
+        graph.add_edge(d, a, Edge::ModuleDep(vec![]));
+        graph.add_edge(a, b, Edge::ModuleDep(vec![]));
+        graph.add_edge(b, a, Edge::ModuleDep(vec![])); // cycle
+        graph.add_edge(b, c, Edge::ModuleDep(vec![]));
 
         let cycles = vec![Cycle { nodes: vec![a, b] }];
         let sorted = topo_sort(&graph, &cycles);
@@ -556,7 +600,7 @@ mod tests {
         });
         graph.add_edge(crate_idx, mod_a, Edge::Contains);
         graph.add_edge(crate_idx, mod_b, Edge::Contains);
-        graph.add_edge(mod_a, mod_b, Edge::ModuleDep);
+        graph.add_edge(mod_a, mod_b, Edge::ModuleDep(vec![]));
 
         let cycles: Vec<Cycle> = vec![];
         let order = topo_sort(&graph, &cycles);
@@ -581,8 +625,8 @@ mod tests {
             name: "b".to_string(),
             crate_idx: NodeIndex::new(0),
         });
-        graph.add_edge(a, b, Edge::ModuleDep);
-        graph.add_edge(b, a, Edge::ModuleDep); // cycle
+        graph.add_edge(a, b, Edge::ModuleDep(vec![]));
+        graph.add_edge(b, a, Edge::ModuleDep(vec![])); // cycle
 
         let cycles = detect_cycles(&graph);
         let order = topo_sort(&graph, &cycles);
@@ -708,16 +752,19 @@ mod tests {
             from: 0,
             to: 1,
             kind: EdgeKind::Normal,
+            source_locations: vec![],
         };
         let direct = LayoutEdge {
             from: 1,
             to: 0,
             kind: EdgeKind::DirectCycle,
+            source_locations: vec![],
         };
         let trans = LayoutEdge {
             from: 2,
             to: 3,
             kind: EdgeKind::TransitiveCycle,
+            source_locations: vec![],
         };
 
         assert_eq!(normal.from, 0);
@@ -737,7 +784,7 @@ mod tests {
             },
             "my_module".to_string(),
         );
-        ir.add_edge(crate_id, mod_id, EdgeKind::Normal);
+        ir.add_edge(crate_id, mod_id, EdgeKind::Normal, vec![]);
 
         assert_eq!(ir.items.len(), 2);
         assert_eq!(ir.edges.len(), 1);

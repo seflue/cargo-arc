@@ -1,6 +1,6 @@
 //! Graph Types & Builder
 
-use crate::analyze::{CrateInfo, ModuleInfo, ModuleTree};
+use crate::analyze::{CrateInfo, DependencyRef, ModuleInfo, ModuleTree};
 use petgraph::graph::{DiGraph, NodeIndex};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -11,9 +11,15 @@ pub enum Node {
     Module { name: String, crate_idx: NodeIndex },
 }
 
+#[derive(Debug, Clone)]
+pub struct SourceLocation {
+    pub file: PathBuf,
+    pub line: usize,
+}
+
 pub enum Edge {
     CrateDep,
-    ModuleDep,
+    ModuleDep(Vec<SourceLocation>),
     Contains,
 }
 
@@ -24,7 +30,7 @@ pub fn build_graph(crates: &[CrateInfo], modules: &[ModuleTree]) -> ArcGraph {
     let mut graph = DiGraph::new();
     let mut crate_map: HashMap<String, NodeIndex> = HashMap::new();
     let mut module_map: HashMap<String, NodeIndex> = HashMap::new();
-    let mut module_deps: Vec<(String, Vec<String>)> = Vec::new();
+    let mut module_deps: Vec<(String, Vec<DependencyRef>)> = Vec::new();
 
     // Phase 1: Add all Crate nodes
     for crate_info in crates {
@@ -72,9 +78,13 @@ pub fn build_graph(crates: &[CrateInfo], modules: &[ModuleTree]) -> ArcGraph {
     // Phase 4: Add ModuleDep edges
     for (from_path, deps) in &module_deps {
         if let Some(&from_idx) = module_map.get(from_path) {
-            for dep_path in deps {
-                if let Some(&to_idx) = module_map.get(dep_path) {
-                    graph.add_edge(from_idx, to_idx, Edge::ModuleDep);
+            for dep in deps {
+                if let Some(&to_idx) = module_map.get(&dep.target) {
+                    let locations = vec![SourceLocation {
+                        file: dep.source_file.clone(),
+                        line: dep.line,
+                    }];
+                    graph.add_edge(from_idx, to_idx, Edge::ModuleDep(locations));
                 }
             }
         }
@@ -90,7 +100,7 @@ fn add_modules_recursive(
     crate_idx: NodeIndex,
     parent_idx: NodeIndex,
     module_map: &mut HashMap<String, NodeIndex>,
-    module_deps: &mut Vec<(String, Vec<String>)>,
+    module_deps: &mut Vec<(String, Vec<DependencyRef>)>,
 ) {
     // Add this module as a node
     let module_idx = graph.add_node(Node::Module {
@@ -116,8 +126,39 @@ fn add_modules_recursive(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analyze::{CrateInfo, ModuleTree};
+    use crate::analyze::{CrateInfo, DependencyRef, ModuleTree};
     use std::path::PathBuf;
+
+    #[test]
+    fn test_source_location_struct() {
+        let loc = SourceLocation {
+            file: PathBuf::from("src/cli.rs"),
+            line: 42,
+        };
+        assert_eq!(loc.file, PathBuf::from("src/cli.rs"));
+        assert_eq!(loc.line, 42);
+    }
+
+    #[test]
+    fn test_moduledep_edge_carries_locations() {
+        let edge = Edge::ModuleDep(vec![
+            SourceLocation {
+                file: PathBuf::from("src/cli.rs"),
+                line: 5,
+            },
+            SourceLocation {
+                file: PathBuf::from("src/cli.rs"),
+                line: 12,
+            },
+        ]);
+        if let Edge::ModuleDep(locs) = edge {
+            assert_eq!(locs.len(), 2);
+            assert_eq!(locs[0].line, 5);
+            assert_eq!(locs[1].line, 12);
+        } else {
+            panic!("Expected ModuleDep");
+        }
+    }
 
     #[test]
     fn test_node_creation() {
@@ -142,7 +183,7 @@ mod tests {
 
     #[test]
     fn test_edge_types() {
-        let edges = [Edge::CrateDep, Edge::ModuleDep, Edge::Contains];
+        let edges = [Edge::CrateDep, Edge::ModuleDep(vec![]), Edge::Contains];
         assert_eq!(edges.len(), 3);
     }
 
@@ -276,7 +317,11 @@ mod tests {
                         name: "bar".to_string(),
                         full_path: "crate::bar".to_string(),
                         children: vec![],
-                        dependencies: vec!["crate::foo".to_string()],
+                        dependencies: vec![DependencyRef {
+                            target: "crate::foo".to_string(),
+                            source_file: PathBuf::from("src/bar.rs"),
+                            line: 1,
+                        }],
                     },
                 ],
                 dependencies: vec![],
@@ -297,7 +342,7 @@ mod tests {
         for edge_idx in graph.edge_indices() {
             match graph[edge_idx] {
                 Edge::Contains => contains_count += 1,
-                Edge::ModuleDep => module_dep_count += 1,
+                Edge::ModuleDep(_) => module_dep_count += 1,
                 _ => {}
             }
         }

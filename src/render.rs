@@ -180,6 +180,10 @@ fn render_styles() -> String {
     .virtual-arc { fill: none; stroke: #9c27b0; stroke-width: 2; stroke-dasharray: 4,2; }
     .arc-count { font-family: monospace; font-size: 10px; fill: #9c27b0; text-anchor: middle; }
     .child-count { font-size: 10px; fill: #888; }
+    /* Floating label for source locations */
+    .floating-label { pointer-events: none; }
+    .floating-label rect { fill: #1a1a2e; fill-opacity: 0.95; rx: 4; }
+    .floating-label text { fill: #e0e0e0; font-family: monospace; font-size: 11px; }
   </style>
 "#
     .to_string()
@@ -191,6 +195,52 @@ fn render_script(config: &RenderConfig) -> String {
 (function() {{
   const ROW_HEIGHT = {row_height};
   const MARGIN = {margin};
+
+  // === Floating label for source locations ===
+  let floatingLabel = null;
+
+  function showFloatingLabel(text, x, y) {{
+    hideFloatingLabel();
+    const svg = document.querySelector('svg');
+    floatingLabel = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    floatingLabel.setAttribute('class', 'floating-label');
+
+    const padding = 6;
+    const lineHeight = 14;
+    const lines = text.split(', ');
+
+    const textEl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    textEl.setAttribute('x', x + padding);
+    textEl.setAttribute('y', y + lineHeight);
+
+    // Create tspan for each line
+    lines.forEach((line, i) => {{
+      const tspan = document.createElementNS('http://www.w3.org/2000/svg', 'tspan');
+      tspan.setAttribute('x', x + padding);
+      tspan.setAttribute('dy', i === 0 ? 0 : lineHeight);
+      tspan.textContent = line;
+      textEl.appendChild(tspan);
+    }});
+
+    // Measure width
+    svg.appendChild(textEl);
+    const bbox = textEl.getBBox();
+    svg.removeChild(textEl);
+
+    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    rect.setAttribute('x', x);
+    rect.setAttribute('y', y);
+    rect.setAttribute('width', bbox.width + padding * 2);
+    rect.setAttribute('height', lines.length * lineHeight + padding);
+
+    floatingLabel.appendChild(rect);
+    floatingLabel.appendChild(textEl);
+    svg.appendChild(floatingLabel);
+  }}
+
+  function hideFloatingLabel() {{
+    if (floatingLabel) {{ floatingLabel.remove(); floatingLabel = null; }}
+  }}
 
   // === Highlight functionality ===
   let pinnedHighlight = null; // {{type: 'node'|'edge', id: string}} or null
@@ -418,7 +468,7 @@ fn render_script(config: &RenderConfig) -> String {
 
     // Find all original edges and update their paths / determine which need to be hidden
     const edges = document.querySelectorAll('.dep-arc, .cycle-arc');
-    const virtualEdges = new Map(); // "visibleFrom-visibleTo" -> count
+    const virtualEdges = new Map(); // "visibleFrom-visibleTo" -> {{ count, hiddenEdgeData }}
 
     edges.forEach(edge => {{
       const fromId = edge.dataset.from;
@@ -442,7 +492,12 @@ fn render_script(config: &RenderConfig) -> String {
 
         if (visibleFrom && visibleTo && visibleFrom !== visibleTo) {{
           const key = visibleFrom + '-' + visibleTo;
-          virtualEdges.set(key, (virtualEdges.get(key) || 0) + 1);
+          const existing = virtualEdges.get(key) || {{ count: 0, hiddenEdgeData: [] }};
+          existing.count++;
+          // Collect source locations from hidden edge
+          const locs = edge.dataset.sourceLocations;
+          if (locs) existing.hiddenEdgeData.push(locs);
+          virtualEdges.set(key, existing);
         }}
       }} else if (fromNode && toNode) {{
         // Both endpoints visible - update arc path to current node positions
@@ -459,7 +514,7 @@ fn render_script(config: &RenderConfig) -> String {
 
     // Create virtual edges
     const depsGroup = document.getElementById('dependencies');
-    virtualEdges.forEach((count, key) => {{
+    virtualEdges.forEach((data, key) => {{
       const [fromId, toId] = key.split('-');
       const fromNode = document.getElementById('node-' + fromId);
       const toNode = document.getElementById('node-' + toId);
@@ -489,11 +544,31 @@ fn render_script(config: &RenderConfig) -> String {
         path.setAttribute('d', `M ${{fromX}},${{fromY}} Q ${{ctrlX}},${{fromY}} ${{ctrlX}},${{midY}} Q ${{ctrlX}},${{toY}} ${{toX}},${{toY}}`);
         path.setAttribute('data-from', fromId);
         path.setAttribute('data-to', toId);
+        // Set aggregated source locations from hidden edges
+        if (data.hiddenEdgeData.length > 0) {{
+          path.dataset.sourceLocations = data.hiddenEdgeData.join(', ');
+        }}
         path.style.cursor = 'pointer';
         // Click handler for highlighting
         path.addEventListener('click', e => {{
           e.stopPropagation();
-          highlightVirtualEdge(fromId, toId, count);
+          highlightVirtualEdge(fromId, toId, data.count);
+        }});
+        // Hover handlers for floating label
+        path.addEventListener('mouseenter', (e) => {{
+          handleMouseEnter('edge', fromId + '-' + toId);
+          const locs = path.dataset.sourceLocations;
+          if (locs) {{
+            const svg = document.querySelector('svg');
+            const pt = svg.createSVGPoint();
+            pt.x = e.clientX; pt.y = e.clientY;
+            const svgPt = pt.matrixTransform(svg.getScreenCTM().inverse());
+            showFloatingLabel(locs, svgPt.x + 10, svgPt.y - 20);
+          }}
+        }});
+        path.addEventListener('mouseleave', () => {{
+          handleMouseLeave();
+          hideFloatingLabel();
         }});
         depsGroup.appendChild(path);
 
@@ -506,22 +581,22 @@ fn render_script(config: &RenderConfig) -> String {
         arrow.style.cursor = 'pointer';
         arrow.addEventListener('click', e => {{
           e.stopPropagation();
-          highlightVirtualEdge(fromId, toId, count);
+          highlightVirtualEdge(fromId, toId, data.count);
         }});
         depsGroup.appendChild(arrow);
 
         // Count label if multiple edges merged
-        if (count > 1) {{
+        if (data.count > 1) {{
           const countLabel = document.createElementNS('http://www.w3.org/2000/svg', 'text');
           countLabel.setAttribute('class', 'arc-count');
           countLabel.setAttribute('data-vedge', fromId + '-' + toId);
           countLabel.setAttribute('x', ctrlX + 5);
           countLabel.setAttribute('y', midY + 3);
-          countLabel.textContent = '(' + count + ')';
+          countLabel.textContent = '(' + data.count + ')';
           countLabel.style.cursor = 'pointer';
           countLabel.addEventListener('click', e => {{
             e.stopPropagation();
-            highlightVirtualEdge(fromId, toId, count);
+            highlightVirtualEdge(fromId, toId, data.count);
           }});
           depsGroup.appendChild(countLabel);
         }}
@@ -656,8 +731,22 @@ fn render_script(config: &RenderConfig) -> String {
       highlightEdge(arc.dataset.from, arc.dataset.to, true); // pin
     }});
 
-    arc.addEventListener('mouseenter', () => handleMouseEnter('edge', edgeId));
-    arc.addEventListener('mouseleave', handleMouseLeave);
+    arc.addEventListener('mouseenter', (e) => {{
+      handleMouseEnter('edge', edgeId);
+      const locs = arc.dataset.sourceLocations;
+      if (locs) {{
+        const svg = document.querySelector('svg');
+        const pt = svg.createSVGPoint();
+        pt.x = e.clientX; pt.y = e.clientY;
+        const svgPt = pt.matrixTransform(svg.getScreenCTM().inverse());
+        showFloatingLabel(locs, svgPt.x + 10, svgPt.y - 20);
+      }}
+    }});
+
+    arc.addEventListener('mouseleave', () => {{
+      handleMouseLeave();
+      hideFloatingLabel();
+    }});
   }});
 
   document.querySelector('svg').addEventListener('click', () => {{
@@ -818,9 +907,22 @@ fn render_edges(positioned: &[PositionedItem], ir: &LayoutIR) -> String {
                 }
             };
 
+            // Build data-source-locations attribute
+            let locations_str = edge
+                .source_locations
+                .iter()
+                .map(|loc| format!("{}:{}", loc.file.display(), loc.line))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let data_loc_attr = if !locations_str.is_empty() {
+                format!(r#" data-source-locations="{}""#, escape_xml(&locations_str))
+            } else {
+                String::new()
+            };
+
             let edge_id = format!("{}-{}", edge.from, edge.to);
             edges.push_str(&format!(
-                "    <path class=\"{arc_class}\" id=\"edge-{edge_id}\" data-from=\"{}\" data-to=\"{}\" d=\"{path}\"{extra_style}/>\n",
+                "    <path class=\"{arc_class}\" id=\"edge-{edge_id}\" data-from=\"{}\" data-to=\"{}\" d=\"{path}\"{extra_style}{data_loc_attr}/>\n",
                 edge.from, edge.to
             ));
 
@@ -896,7 +998,7 @@ mod tests {
             },
             "b".into(),
         );
-        ir.add_edge(a, b, EdgeKind::Normal);
+        ir.add_edge(a, b, EdgeKind::Normal, vec![]);
         let svg = render(&ir, &RenderConfig::default());
         assert!(svg.contains(" Q ")); // Bezier
         assert!(svg.contains("<polygon")); // Arrow
@@ -922,7 +1024,7 @@ mod tests {
         );
 
         // Test DirectCycle
-        ir.add_edge(a, b, EdgeKind::DirectCycle);
+        ir.add_edge(a, b, EdgeKind::DirectCycle, vec![]);
         let svg = render(&ir, &RenderConfig::default());
         assert!(svg.contains("cycle-arc"));
         // DirectCycle should have two arrows (bidirectional)
@@ -946,7 +1048,7 @@ mod tests {
             },
             "b".into(),
         );
-        ir2.add_edge(a2, b2, EdgeKind::TransitiveCycle);
+        ir2.add_edge(a2, b2, EdgeKind::TransitiveCycle, vec![]);
         let svg2 = render(&ir2, &RenderConfig::default());
         assert!(svg2.contains("cycle-arc"));
         assert!(svg2.contains("stroke-dasharray"));
@@ -1016,7 +1118,7 @@ mod tests {
             );
         }
         // Edge von erstem zu letztem Modul (9 Hops)
-        ir.add_edge(1, 10, EdgeKind::Normal);
+        ir.add_edge(1, 10, EdgeKind::Normal, vec![]);
 
         let svg = render(&ir, &RenderConfig::default());
         // Parse viewBox width
@@ -1111,7 +1213,7 @@ mod tests {
             },
             "b".into(),
         );
-        ir.add_edge(a, b, EdgeKind::Normal);
+        ir.add_edge(a, b, EdgeKind::Normal, vec![]);
         let svg = render(&ir, &RenderConfig::default());
         assert!(svg.contains(r#"id="edge-1-2""#), "Edge should have id");
         assert!(
@@ -1326,6 +1428,76 @@ mod tests {
         assert!(
             svg.contains("pinnedHighlight.id === edgeId"),
             "highlightEdge should have toggle-check for same edge"
+        );
+    }
+
+    #[test]
+    fn test_render_edge_has_data_source_locations() {
+        use crate::graph::SourceLocation;
+        use std::path::PathBuf;
+
+        let mut ir = LayoutIR::new();
+        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let a = ir.add_item(
+            ItemKind::Module {
+                nesting: 1,
+                parent: c,
+            },
+            "a".into(),
+        );
+        let b = ir.add_item(
+            ItemKind::Module {
+                nesting: 1,
+                parent: c,
+            },
+            "b".into(),
+        );
+        ir.add_edge(
+            a,
+            b,
+            EdgeKind::Normal,
+            vec![SourceLocation {
+                file: PathBuf::from("src/a.rs"),
+                line: 5,
+            }],
+        );
+        let svg = render(&ir, &RenderConfig::default());
+        assert!(svg.contains(r#"data-source-locations="#));
+        assert!(svg.contains("src/a.rs:5"));
+    }
+
+    #[test]
+    fn test_render_has_floating_label_css() {
+        let ir = LayoutIR::new();
+        let svg = render(&ir, &RenderConfig::default());
+        assert!(svg.contains(".floating-label"));
+    }
+
+    #[test]
+    fn test_render_script_has_floating_label_functions() {
+        let ir = LayoutIR::new();
+        let svg = render(&ir, &RenderConfig::default());
+        assert!(svg.contains("showFloatingLabel"));
+        assert!(svg.contains("hideFloatingLabel"));
+        assert!(svg.contains("floatingLabel"));
+    }
+
+    #[test]
+    fn test_render_script_arc_hover_shows_locations() {
+        let ir = LayoutIR::new();
+        let svg = render(&ir, &RenderConfig::default());
+        assert!(svg.contains("dataset.sourceLocations"));
+        assert!(svg.contains("showFloatingLabel"));
+    }
+
+    #[test]
+    fn test_render_script_virtual_arc_aggregates_locations() {
+        let ir = LayoutIR::new();
+        let svg = render(&ir, &RenderConfig::default());
+        // Virtual arcs should aggregate source locations from hidden edges
+        assert!(
+            svg.contains("aggregatedLocations") || svg.contains("hiddenEdgeData"),
+            "Script should collect locations from hidden edges for virtual arcs"
         );
     }
 }
