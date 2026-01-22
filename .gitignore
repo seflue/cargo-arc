@@ -1,1 +1,3 @@
 /target
+/tests/fixtures/multi_crate/target
+

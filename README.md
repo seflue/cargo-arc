@@ -27,6 +27,19 @@ cargo clippy
 cargo fmt
 ```
 
+## Testing
+
+```bash
+# Fast unit tests (<1s)
+cargo test
+
+# Slow smoke tests only (~60s, requires rust-analyzer)
+cargo test -- --ignored
+
+# All tests
+cargo test -- --include-ignored
+```
+
 ## License
 
 MIT OR Apache-2.0

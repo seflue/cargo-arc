@@ -70,6 +70,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore] // Smoke test - requires rust-analyzer (~30s)
     fn test_run_with_output_file() {
         let temp = tempfile::NamedTempFile::new().unwrap();
         let args = Args {
