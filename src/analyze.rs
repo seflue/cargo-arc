@@ -127,11 +127,13 @@ pub fn analyze_modules(
     // Walk module tree starting from crate root
     let root_module = krate.root_module();
     let crate_name = &crate_info.name;
+    // Use actual crate name (normalized) as root path for inter-crate dependency resolution
+    let normalized_crate_name = normalize_crate_name(crate_name);
     let root = walk_module(
         root_module,
         db,
         vfs,
-        "crate",
+        &normalized_crate_name,
         &crate_info.path,
         crate_name,
         workspace_crates,
@@ -250,9 +252,9 @@ fn process_use_statement(
             None
         };
 
-        let _ = current_crate; // crate-local uses "crate" keyword
+        // Use actual crate name (normalized) for consistent module_map lookup
         return Some(DependencyRef {
-            target_crate: "crate".to_string(),
+            target_crate: normalize_crate_name(current_crate),
             target_module: module.to_string(),
             target_item: item,
             source_file: source_file.to_path_buf(),
@@ -540,8 +542,8 @@ mod tests {
             Path::new("src/cli.rs"),
         );
         let dep = dep.expect("should parse crate-local import");
-        // Crate-local imports use "crate" keyword to match module_map keys
-        assert_eq!(dep.target_crate, "crate");
+        // Crate-local imports use actual crate name for inter-crate module_map lookup
+        assert_eq!(dep.target_crate, "my_crate");
         assert_eq!(dep.target_module, "graph");
         assert_eq!(dep.target_item, Some("build".to_string()));
     }
@@ -557,8 +559,8 @@ mod tests {
             Path::new("src/lib.rs"),
         );
         let dep = dep.expect("should parse crate-local module import");
-        // Crate-local imports use "crate" keyword to match module_map keys
-        assert_eq!(dep.target_crate, "crate");
+        // Crate-local imports use actual crate name for inter-crate module_map lookup
+        assert_eq!(dep.target_crate, "my_crate");
         assert_eq!(dep.target_module, "graph");
         assert!(dep.target_item.is_none());
         assert_eq!(dep.line, 5);
@@ -662,12 +664,12 @@ use std::collections::HashMap;
         let ws: HashSet<String> = HashSet::from(["my_crate".into(), "other_crate".into()]);
         let deps = parse_workspace_dependencies(source, "my_crate", &ws, Path::new("src/lib.rs"));
 
-        // Should have 2 deps: crate::graph and other_crate::utils
+        // Should have 2 deps: my_crate::graph and other_crate::utils
         assert_eq!(deps.len(), 2, "found: {:?}", deps);
-        // Crate-local uses "crate" keyword, workspace crates use actual name
+        // Both crate-local and workspace crates use actual crate names
         assert!(
             deps.iter()
-                .any(|d| d.target_crate == "crate" && d.target_module == "graph")
+                .any(|d| d.target_crate == "my_crate" && d.target_module == "graph")
         );
         assert!(
             deps.iter()

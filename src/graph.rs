@@ -351,4 +351,88 @@ mod tests {
         assert_eq!(contains_count, 2, "expected 2 Contains edges");
         assert_eq!(module_dep_count, 1, "expected 1 ModuleDep edge");
     }
+
+    #[test]
+    fn test_build_graph_inter_crate_module_deps() {
+        use crate::analyze::ModuleInfo;
+
+        // Two crates: crate_a depends on crate_b
+        let crates = vec![
+            CrateInfo {
+                name: "crate_a".to_string(),
+                path: PathBuf::from("/path/to/a"),
+                dependencies: vec!["crate_b".to_string()],
+            },
+            CrateInfo {
+                name: "crate_b".to_string(),
+                path: PathBuf::from("/path/to/b"),
+                dependencies: vec![],
+            },
+        ];
+
+        // crate_a::beta depends on crate_b::gamma (inter-crate module dep)
+        let modules = vec![
+            ModuleTree {
+                root: ModuleInfo {
+                    name: "crate_a".to_string(),
+                    full_path: "crate_a".to_string(),
+                    children: vec![ModuleInfo {
+                        name: "beta".to_string(),
+                        full_path: "crate_a::beta".to_string(),
+                        children: vec![],
+                        dependencies: vec![DependencyRef {
+                            target_crate: "crate_b".to_string(),
+                            target_module: "gamma".to_string(),
+                            target_item: None,
+                            source_file: PathBuf::from("src/beta.rs"),
+                            line: 1,
+                        }],
+                    }],
+                    dependencies: vec![],
+                },
+            },
+            ModuleTree {
+                root: ModuleInfo {
+                    name: "crate_b".to_string(),
+                    full_path: "crate_b".to_string(),
+                    children: vec![ModuleInfo {
+                        name: "gamma".to_string(),
+                        full_path: "crate_b::gamma".to_string(),
+                        children: vec![],
+                        dependencies: vec![],
+                    }],
+                    dependencies: vec![],
+                },
+            },
+        ];
+
+        let graph = build_graph(&crates, &modules);
+
+        // 2 Crates + 2 Modules = 4 nodes
+        assert_eq!(graph.node_count(), 4);
+
+        // 1 CrateDep + 2 Contains + 1 ModuleDep = 4 edges
+        assert_eq!(graph.edge_count(), 4);
+
+        // Count edge types
+        let mut crate_dep_count = 0;
+        let mut contains_count = 0;
+        let mut module_dep_count = 0;
+        for edge_idx in graph.edge_indices() {
+            match &graph[edge_idx] {
+                Edge::CrateDep => crate_dep_count += 1,
+                Edge::Contains => contains_count += 1,
+                Edge::ModuleDep(locs) => {
+                    module_dep_count += 1;
+                    // Verify source location is preserved
+                    assert_eq!(locs.len(), 1);
+                    assert_eq!(locs[0].file, PathBuf::from("src/beta.rs"));
+                    assert_eq!(locs[0].line, 1);
+                }
+            }
+        }
+        assert_eq!(crate_dep_count, 1, "expected 1 CrateDep edge");
+        assert_eq!(contains_count, 2, "expected 2 Contains edges");
+        assert_eq!(module_dep_count, 1, "expected 1 inter-crate ModuleDep edge");
+    }
 }
