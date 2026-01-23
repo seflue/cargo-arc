@@ -38,6 +38,9 @@ const TOOLTIP_OFFSET: f32 = 10.0;
 /// Separator for tooltip lines (newlines get normalized in XML attributes)
 const TOOLTIP_LINE_SEP: &str = "|";
 
+/// Height reserved for the toolbar at the top of the SVG
+const TOOLBAR_HEIGHT: f32 = 40.0;
+
 /// Calculate maximum arc width from edges
 fn calculate_max_arc_width(positioned: &[PositionedItem], ir: &LayoutIR, row_height: f32) -> f32 {
     ir.edges
@@ -179,6 +182,7 @@ pub fn render(ir: &LayoutIR, config: &RenderConfig) -> String {
     svg.push_str(&render_tree_lines(&positioned, ir));
     svg.push_str(&render_nodes(&positioned, &parents));
     svg.push_str(&render_edges(&positioned, ir));
+    svg.push_str(&render_toolbar(width));
     svg.push_str(&render_script(config));
     svg.push_str("</svg>\n");
     svg
@@ -204,7 +208,7 @@ fn calculate_positions(
             PositionedItem {
                 id: item.id,
                 x: config.margin + (nesting as f32 * config.indent_size),
-                y: config.margin + (index as f32 * config.row_height),
+                y: config.margin + TOOLBAR_HEIGHT + (index as f32 * config.row_height),
                 width: box_width,
                 height,
                 label: item.label.clone(),
@@ -257,8 +261,8 @@ fn calculate_canvas_size(
     } else {
         config.margin * 2.0 + positioned.len() as f32 * config.row_height
     };
-    // Add tooltip height for bottom overflow
-    let height = base_height + max_tooltip_height;
+    // Add toolbar height and tooltip height for bottom overflow
+    let height = base_height + TOOLBAR_HEIGHT + max_tooltip_height;
 
     // Width: max(box_right_edge) + arc_space + tooltip_width + margin
     let max_x = positioned
@@ -296,28 +300,104 @@ fn render_styles() -> String {
     .highlighted { stroke: #ff9800 !important; stroke-width: 3 !important; }
     .highlighted-node { fill: #fff176 !important; stroke: #ff9800 !important; stroke-width: 3 !important; }
     .highlighted-arrow { fill: #ff9800 !important; }
-    .dimmed { opacity: 0.3; }
+    .dimmed { opacity: 0.3; pointer-events: none; }
     .crate, .module, .dep-arc, .cycle-arc { cursor: pointer; }
     /* Collapse functionality */
     .collapse-toggle { font-family: monospace; font-size: 14px; cursor: pointer; fill: #666; }
     .collapse-toggle:hover { fill: #1976d2; }
     .collapsed { display: none; }
     .virtual-arc { fill: none; stroke: #9c27b0; stroke-width: 2; stroke-dasharray: 4,2; }
+    .virtual-arrow { fill: #9c27b0; cursor: pointer; }
     .arc-count { font-family: monospace; font-size: 10px; fill: #9c27b0; text-anchor: middle; }
     .child-count { font-size: 10px; fill: #888; }
     /* Floating label for source locations */
     .floating-label { pointer-events: none; }
     .floating-label rect { fill: #1a1a2e; fill-opacity: 0.95; rx: 4; }
     .floating-label text { fill: #e0e0e0; font-family: monospace; font-size: 11px; }
+    /* Toolbar */
+    .view-options { cursor: default; }
+    .toolbar-btn { fill: #f5f5f5; stroke: #666; rx: 3; cursor: pointer; }
+    .toolbar-btn:hover { fill: #e0e0e0; }
+    .toolbar-btn-text { font-family: sans-serif; font-size: 11px; text-anchor: middle; }
+    .toolbar-checkbox { fill: #fff; stroke: #666; rx: 2; cursor: pointer; }
+    .toolbar-checkbox.checked { fill: #1976d2; }
+    .toolbar-label { font-family: sans-serif; font-size: 11px; cursor: pointer; }
+    .toolbar-separator { stroke: #ccc; }
+    .toolbar-disabled { opacity: 0.4; pointer-events: none; }
+    /* Filter visibility */
+    .hidden-by-filter { display: none; }
   </style>
 "#
     .to_string()
 }
 
+fn render_toolbar(width: f32) -> String {
+    let mut toolbar = String::new();
+    toolbar.push_str("  <g class=\"view-options\">\n");
+
+    // Background rect (full width, 40px height)
+    toolbar.push_str(&format!(
+        "    <rect x=\"0\" y=\"0\" width=\"{}\" height=\"{}\" fill=\"#fafafa\" stroke=\"#e0e0e0\"/>\n",
+        width, TOOLBAR_HEIGHT
+    ));
+
+    // Collapse/Expand All button (x=10, centered vertically)
+    let btn_x = 10.0;
+    let btn_y = 8.0;
+    let btn_width = 80.0;
+    let btn_height = 24.0;
+    toolbar.push_str(&format!(
+        "    <rect id=\"collapse-toggle-btn\" class=\"toolbar-btn\" x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"/>\n",
+        btn_x, btn_y, btn_width, btn_height
+    ));
+    toolbar.push_str(&format!(
+        "    <text id=\"collapse-toggle-label\" class=\"toolbar-btn-text\" x=\"{}\" y=\"{}\" dominant-baseline=\"middle\">Collapse All</text>\n",
+        btn_x + btn_width / 2.0,
+        btn_y + btn_height / 2.0
+    ));
+
+    // Separator
+    let sep_x = btn_x + btn_width + 15.0;
+    toolbar.push_str(&format!(
+        "    <line class=\"toolbar-separator\" x1=\"{}\" y1=\"8\" x2=\"{}\" y2=\"32\"/>\n",
+        sep_x, sep_x
+    ));
+
+    // CrateDep checkbox (checked by default)
+    let cb1_x = sep_x + 15.0;
+    let cb_y = 12.0;
+    let cb_size = 16.0;
+    toolbar.push_str(&format!(
+        "    <rect id=\"crate-dep-checkbox\" class=\"toolbar-checkbox checked\" x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"/>\n",
+        cb1_x, cb_y, cb_size, cb_size
+    ));
+    toolbar.push_str(&format!(
+        "    <text class=\"toolbar-label\" x=\"{}\" y=\"{}\">CrateDep</text>\n",
+        cb1_x + cb_size + 6.0,
+        cb_y + cb_size / 2.0 + 4.0
+    ));
+
+    // Tests checkbox (disabled)
+    let cb2_x = cb1_x + 190.0;
+    toolbar.push_str(&format!(
+        "    <rect class=\"toolbar-checkbox toolbar-disabled\" x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"/>\n",
+        cb2_x, cb_y, cb_size, cb_size
+    ));
+    toolbar.push_str(&format!(
+        "    <text class=\"toolbar-label toolbar-disabled\" x=\"{}\" y=\"{}\">Tests</text>\n",
+        cb2_x + cb_size + 6.0,
+        cb_y + cb_size / 2.0 + 4.0
+    ));
+
+    toolbar.push_str("  </g>\n");
+    toolbar
+}
+
 fn render_script(config: &RenderConfig) -> String {
     let script = include_str!("svg_script.js")
         .replace("__ROW_HEIGHT__", &config.row_height.to_string())
-        .replace("__MARGIN__", &config.margin.to_string());
+        .replace("__MARGIN__", &config.margin.to_string())
+        .replace("__TOOLBAR_HEIGHT__", &TOOLBAR_HEIGHT.to_string());
     format!("  <script><![CDATA[\n{}\n]]></script>\n", script)
 }
 
@@ -459,12 +539,20 @@ fn render_edges(positioned: &[PositionedItem], ir: &LayoutIR) -> String {
                 "M {from_x},{from_y} Q {ctrl_x},{from_y} {ctrl_x},{mid_y} Q {ctrl_x},{to_y} {to_x},{to_y}"
             );
 
-            let (arc_class, arrow_class, extra_style) = match edge.kind {
+            let (base_arc_class, arrow_class, extra_style) = match edge.kind {
                 EdgeKind::Normal => ("dep-arc", "dep-arrow", ""),
                 EdgeKind::DirectCycle => ("cycle-arc", "cycle-arrow", ""),
                 EdgeKind::TransitiveCycle => {
                     ("cycle-arc", "cycle-arrow", " stroke-dasharray=\"4,2\"")
                 }
+            };
+
+            // Add crate-dep-arc class for Crate-to-Crate edges
+            let is_crate_dep = matches!((&from.kind, &to.kind), (ItemKind::Crate, ItemKind::Crate));
+            let arc_class = if is_crate_dep {
+                format!("{} crate-dep-arc", base_arc_class)
+            } else {
+                base_arc_class.to_string()
             };
 
             // Build data-source-locations attribute (symbol-grouped format)
@@ -721,10 +809,13 @@ mod tests {
         );
 
         let svg = render(&ir, &RenderConfig::default());
-        // Extract all rect widths
+        // Extract widths of node rects (crate/module boxes, not toolbar rects)
         let widths: Vec<f32> = svg
             .lines()
-            .filter(|l| l.contains("<rect"))
+            .filter(|l| {
+                l.contains("<rect")
+                    && (l.contains("class=\"crate\"") || l.contains("class=\"module\""))
+            })
             .filter_map(|l| {
                 let start = l.find("width=\"")? + 7;
                 let rest = &l[start..];
@@ -733,7 +824,7 @@ mod tests {
             })
             .collect();
 
-        assert_eq!(widths.len(), 2, "Expected 2 rects");
+        assert_eq!(widths.len(), 2, "Expected 2 node rects");
         assert_eq!(
             widths[0], widths[1],
             "All boxes should have same width: {:?}",
@@ -1238,6 +1329,88 @@ mod tests {
         assert!(
             hitarea_line.contains("data-to="),
             "Hitarea should have data-to"
+        );
+    }
+
+    #[test]
+    fn test_render_toolbar_contains_elements() {
+        let ir = LayoutIR::new();
+        let svg = render(&ir, &RenderConfig::default());
+        // Toolbar group
+        assert!(
+            svg.contains(r#"class="view-options""#),
+            "Should have view-options group"
+        );
+        // Collapse toggle button
+        assert!(
+            svg.contains(r#"id="collapse-toggle-btn""#),
+            "Should have collapse toggle button"
+        );
+        assert!(
+            svg.contains(r#"id="collapse-toggle-label""#),
+            "Should have collapse toggle label"
+        );
+        assert!(
+            svg.contains("Collapse All"),
+            "Should have 'Collapse All' text"
+        );
+        // CrateDep checkbox
+        assert!(
+            svg.contains(r#"id="crate-dep-checkbox""#),
+            "Should have crate-dep checkbox"
+        );
+        assert!(svg.contains("CrateDep"), "Should have 'CrateDep' label");
+        // Tests checkbox (disabled)
+        assert!(
+            svg.contains("toolbar-disabled"),
+            "Should have disabled Tests checkbox"
+        );
+        assert!(svg.contains("Tests"), "Should have 'Tests' label");
+    }
+
+    #[test]
+    fn test_crate_dep_edges_have_class() {
+        let mut ir = LayoutIR::new();
+        let c1 = ir.add_item(ItemKind::Crate, "crate_a".into());
+        let c2 = ir.add_item(ItemKind::Crate, "crate_b".into());
+        ir.add_edge(c1, c2, EdgeKind::Normal, vec![]);
+        let svg = render(&ir, &RenderConfig::default());
+        // Crate-to-crate edges should have crate-dep-arc class
+        assert!(
+            svg.contains("crate-dep-arc"),
+            "Crate-to-crate edges should have crate-dep-arc class"
+        );
+    }
+
+    #[test]
+    fn test_canvas_includes_toolbar_height() {
+        let mut ir = LayoutIR::new();
+        ir.add_item(ItemKind::Crate, "test".into());
+        let config = RenderConfig::default();
+        let svg = render(&ir, &config);
+
+        // Parse viewBox height
+        let viewbox_height: f32 = svg
+            .lines()
+            .find(|l| l.contains("viewBox"))
+            .and_then(|l| {
+                let start = l.find("viewBox=\"0 0 ")? + 13;
+                let rest = &l[start..];
+                // Skip width, get height
+                let after_width = rest.find(' ')? + 1;
+                let height_str = &rest[after_width..];
+                let end = height_str.find('"')?;
+                height_str[..end].parse().ok()
+            })
+            .unwrap();
+
+        // Height should include TOOLBAR_HEIGHT (40) + margin (20*2) + 1 row (30) + tooltip space
+        // Base: margin*2 + rows*row_height + toolbar + tooltip
+        assert!(
+            viewbox_height >= TOOLBAR_HEIGHT + config.margin * 2.0 + config.row_height,
+            "Canvas height {} should include toolbar height {}",
+            viewbox_height,
+            TOOLBAR_HEIGHT
         );
     }
 }

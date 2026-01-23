@@ -139,6 +139,7 @@ if (typeof document !== 'undefined') {
 (function() {
   const ROW_HEIGHT = __ROW_HEIGHT__;
   const MARGIN = __MARGIN__;
+  const TOOLBAR_HEIGHT = __TOOLBAR_HEIGHT__;
 
   // === Floating label for source locations ===
   let floatingLabel = null;
@@ -204,6 +205,17 @@ if (typeof document !== 'undefined') {
     );
   }
 
+  // Dim all non-highlighted elements (except toolbar and hitareas)
+  function dimNonHighlighted() {
+    document.querySelectorAll(
+      'rect:not(.highlighted-node):not(.toolbar-btn):not(.toolbar-checkbox), ' +
+      'path:not(.highlighted):not(.arc-hitarea):not(.virtual-hitarea), ' +
+      'polygon:not(.highlighted-arrow)'
+    ).forEach(el => {
+      if (!el.closest('.view-options')) el.classList.add('dimmed');
+    });
+  }
+
   function applyEdgeHighlight(from, to) {
     const arcId = from + '-' + to;
     document.getElementById('node-' + from)?.classList.add('highlighted-node');
@@ -217,8 +229,7 @@ if (typeof document !== 'undefined') {
       .forEach(el => el.classList.add('highlighted-arrow'));
     document.querySelectorAll('[data-vedge="' + arcId + '"]')
       .forEach(el => el.classList.add('highlighted-arrow'));
-    document.querySelectorAll('rect:not(.highlighted-node), path:not(.highlighted), polygon:not(.highlighted-arrow)')
-      .forEach(el => el.classList.add('dimmed'));
+    dimNonHighlighted();
   }
 
   function applyNodeHighlight(nodeId) {
@@ -247,8 +258,7 @@ if (typeof document !== 'undefined') {
         document.querySelectorAll('[data-vedge="' + from + '-' + to + '"]')
           .forEach(arr => arr.classList.add('highlighted-arrow'));
       });
-    document.querySelectorAll('rect:not(.highlighted-node), path:not(.highlighted), polygon:not(.highlighted-arrow)')
-      .forEach(el => el.classList.add('dimmed'));
+    dimNonHighlighted();
   }
 
   function highlightEdge(from, to, pin) {
@@ -361,7 +371,7 @@ if (typeof document !== 'undefined') {
 
   // Relayout visible nodes
   function relayout() {
-    let currentY = MARGIN;
+    let currentY = MARGIN + TOOLBAR_HEIGHT;
 
     // Get all nodes sorted by original Y position
     const items = [...document.querySelectorAll('.crate, .module')]
@@ -373,6 +383,7 @@ if (typeof document !== 'undefined') {
 
     items.forEach(node => {
       if (node.classList.contains('collapsed')) return;
+      if (node.classList.contains('hidden-by-filter')) return;
 
       const nodeId = node.id.replace('node-', '');
       const height = parseFloat(node.getAttribute('height'));
@@ -399,6 +410,16 @@ if (typeof document !== 'undefined') {
     });
 
     recalculateVirtualEdges();
+
+    // Re-apply pinned highlight after edges were recreated
+    if (pinnedHighlight) {
+      if (pinnedHighlight.type === 'node') {
+        applyNodeHighlight(pinnedHighlight.id);
+      } else if (pinnedHighlight.type === 'edge') {
+        const [from, to] = pinnedHighlight.id.split('-');
+        applyEdgeHighlight(from, to);
+      }
+    }
   }
 
   // Helper: Calculate arc path between two DOM nodes (uses ArcLogic)
@@ -423,7 +444,7 @@ if (typeof document !== 'undefined') {
   // Recalculate and show virtual edges for collapsed nodes
   function recalculateVirtualEdges() {
     // Remove existing virtual elements (hitareas, visible arcs, counts)
-    document.querySelectorAll('.virtual-arc, .virtual-hitarea, .arc-count').forEach(el => el.remove());
+    document.querySelectorAll('.virtual-arc, .virtual-hitarea, .virtual-arrow, .arc-count').forEach(el => el.remove());
 
     // FIRST: Reset ALL edges (hitareas + visible) and arrows to visible
     document.querySelectorAll('.arc-hitarea, .dep-arc, .cycle-arc').forEach(edge => {
@@ -562,11 +583,11 @@ if (typeof document !== 'undefined') {
 
         // Arrow
         const arrow = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
-        arrow.setAttribute('class', 'virtual-arc virtual-arrow');
+        arrow.setAttribute('class', 'virtual-arrow');
         arrow.setAttribute('data-vedge', fromId + '-' + toId);
+        arrow.setAttribute('data-from', fromId);
+        arrow.setAttribute('data-to', toId);
         arrow.setAttribute('points', `${arc.toX + 8},${arc.toY - 4} ${arc.toX},${arc.toY} ${arc.toX + 8},${arc.toY + 4}`);
-        arrow.style.fill = '#9c27b0';
-        arrow.style.cursor = 'pointer';
         arrow.addEventListener('click', e => {
           e.stopPropagation();
           highlightVirtualEdge(fromId, toId, data.count);
@@ -611,8 +632,7 @@ if (typeof document !== 'undefined') {
     document.querySelectorAll('.virtual-arrow[data-vedge="' + fromId + '-' + toId + '"]')
       .forEach(el => el.classList.add('highlighted-arrow'));
     // Dim everything else
-    document.querySelectorAll('rect:not(.highlighted-node), path:not(.highlighted), polygon:not(.highlighted-arrow)')
-      .forEach(el => el.classList.add('dimmed'));
+    dimNonHighlighted();
   }
 
   // Toggle collapse state
@@ -683,6 +703,113 @@ if (typeof document !== 'undefined') {
     relayout();
   }
 
+  // Toggle collapse/expand all parent nodes
+  function toggleCollapseAll() {
+    const allExpanded = [...document.querySelectorAll('[data-has-children="true"]')]
+      .every(node => !collapseState.get(node.id.replace('node-', '')));
+
+    document.querySelectorAll('[data-has-children="true"]').forEach(node => {
+      const nodeId = node.id.replace('node-', '');
+      if (allExpanded) {
+        // Collapse all
+        collapseState.set(nodeId, true);
+        getDescendants(nodeId).forEach(descId => {
+          const descNode = document.getElementById('node-' + descId);
+          const label = descNode?.nextElementSibling;
+          const toggle = document.querySelector('.collapse-toggle[data-target="' + descId + '"]');
+          descNode?.classList.add('collapsed');
+          label?.classList.add('collapsed');
+          toggle?.classList.add('collapsed');
+          document.querySelectorAll('line[data-child="' + descId + '"]').forEach(line => {
+            line.classList.add('collapsed');
+          });
+        });
+        // Update toggle icon
+        const toggleIcon = document.querySelector('.collapse-toggle[data-target="' + nodeId + '"]');
+        if (toggleIcon) toggleIcon.textContent = '+';
+        // Update child count
+        const countLabel = document.getElementById('count-' + nodeId);
+        if (countLabel) countLabel.textContent = ' (+' + countDescendants(nodeId) + ')';
+      } else {
+        // Expand all
+        collapseState.set(nodeId, false);
+        getDescendants(nodeId).forEach(descId => {
+          const descNode = document.getElementById('node-' + descId);
+          const label = descNode?.nextElementSibling;
+          const toggle = document.querySelector('.collapse-toggle[data-target="' + descId + '"]');
+          descNode?.classList.remove('collapsed');
+          label?.classList.remove('collapsed');
+          toggle?.classList.remove('collapsed');
+          document.querySelectorAll('line[data-child="' + descId + '"]').forEach(line => {
+            line.classList.remove('collapsed');
+          });
+        });
+        // Update toggle icon
+        const toggleIcon = document.querySelector('.collapse-toggle[data-target="' + nodeId + '"]');
+        if (toggleIcon) toggleIcon.textContent = '−';
+        // Clear child count
+        const countLabel = document.getElementById('count-' + nodeId);
+        if (countLabel) countLabel.textContent = '';
+      }
+    });
+
+    // Update button label
+    const label = document.getElementById('collapse-toggle-label');
+    if (label) label.textContent = allExpanded ? 'Expand All' : 'Collapse All';
+
+    relayout();
+  }
+
+  // Toggle visibility of crate-to-crate dependency arcs
+  function toggleCrateDepVisibility() {
+    const checkbox = document.querySelector('#crate-dep-checkbox');
+    if (!checkbox) return;
+
+    const isChecked = checkbox.classList.toggle('checked');
+
+    document.querySelectorAll('.crate-dep-arc').forEach(arc => {
+      if (isChecked) {
+        arc.classList.remove('hidden-by-filter');
+      } else {
+        arc.classList.add('hidden-by-filter');
+      }
+    });
+
+    // Also hide/show associated hitareas and arrows
+    document.querySelectorAll('.arc-hitarea').forEach(hitarea => {
+      const arcId = hitarea.dataset.arcId;
+      const visibleArc = document.querySelector(`.crate-dep-arc[data-arc-id="${arcId}"]`);
+      if (visibleArc) {
+        if (isChecked) {
+          hitarea.classList.remove('hidden-by-filter');
+        } else {
+          hitarea.classList.add('hidden-by-filter');
+        }
+        // Also handle arrows
+        document.querySelectorAll(`[data-edge="${arcId}"]`).forEach(arrow => {
+          if (isChecked) {
+            arrow.classList.remove('hidden-by-filter');
+          } else {
+            arrow.classList.add('hidden-by-filter');
+          }
+        });
+      }
+    });
+  }
+
+  // Update toolbar position to stay at top when scrolling
+  function updateToolbarPosition() {
+    const toolbar = document.querySelector('.view-options');
+    const svg = document.querySelector('svg');
+    if (!toolbar || !svg) return;
+
+    const rect = svg.getBoundingClientRect();
+    const scrollTop = Math.max(0, -rect.top);
+    toolbar.setAttribute('transform', `translate(0, ${scrollTop})`);
+  }
+
+  window.addEventListener('scroll', updateToolbarPosition);
+
   // === Event handlers ===
   document.querySelectorAll('.crate, .module').forEach(node => {
     const nodeId = node.id.replace('node-', '');
@@ -700,6 +827,7 @@ if (typeof document !== 'undefined') {
       node.addEventListener('dblclick', e => {
         e.stopPropagation();
         toggleCollapse(nodeId);
+        updateToolbarPosition();
       });
     }
   });
@@ -708,7 +836,25 @@ if (typeof document !== 'undefined') {
     toggle.addEventListener('click', e => {
       e.stopPropagation();
       toggleCollapse(toggle.dataset.target);
+      updateToolbarPosition();
     });
+  });
+
+  // Toolbar button event handlers
+  document.querySelector('#collapse-toggle-btn')?.addEventListener('click', e => {
+    e.stopPropagation();
+    toggleCollapseAll();
+    updateToolbarPosition();
+  });
+  document.querySelector('#collapse-toggle-label')?.addEventListener('click', e => {
+    e.stopPropagation();
+    toggleCollapseAll();
+    updateToolbarPosition();
+  });
+
+  document.querySelector('#crate-dep-checkbox')?.addEventListener('click', e => {
+    e.stopPropagation();
+    toggleCrateDepVisibility();
   });
 
   // Event handlers on hit-area paths (invisible, 12px wide)
