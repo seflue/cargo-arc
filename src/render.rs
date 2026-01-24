@@ -309,6 +309,9 @@ fn render_styles() -> String {
     .virtual-arc { fill: none; stroke: #9c27b0; stroke-width: 2; stroke-dasharray: 4,2; }
     .virtual-arrow { fill: #9c27b0; cursor: pointer; }
     .arc-count { font-family: monospace; font-size: 10px; fill: #9c27b0; text-anchor: middle; }
+    .arc-count-bg { fill: #ffffff; rx: 2; }
+    .arc-count.highlighted { fill: #ff9800; font-size: 12px; font-weight: bold; stroke: none !important; }
+    .arc-count.dimmed { opacity: 0.3; }
     .child-count { font-size: 10px; fill: #888; }
     /* Floating label for source locations */
     .floating-label { pointer-events: none; }
