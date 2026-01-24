@@ -1,0 +1,17 @@
+[package]
+name = "web-utils"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+web = ["dep:core"]
+
+[dependencies]
+core = { workspace = true, optional = true }
+testlib = { workspace = true }  # Case 3: testlib as Normal dep (also in dev-deps!)
+
+[dev-dependencies]
+core-utils = { workspace = true }
+testlib = { workspace = true }   # Case 3: testlib as Dev dep (also in deps!)
+shared-lib = { workspace = true }  # Case 1: shared-lib as Dev dep (Normal in core-utils)

@@ -37,24 +37,34 @@ pub struct Args {
     #[arg(long)]
     pub all_features: bool,
 
+    /// Do not activate the `default` feature
+    #[arg(long)]
+    pub no_default_features: bool,
+
     /// Cfg flag to enable (e.g., --cfg test to include test code)
     #[arg(long = "cfg", value_name = "CFG")]
     pub cfg: Vec<String>,
+
+    /// Enable debug output to stderr (shows filtering decisions)
+    #[arg(long)]
+    pub debug: bool,
 }
 
 pub fn run(args: Args) -> Result<()> {
-    // 1. Analyze workspace
-    let crates = analyze_workspace(&args.manifest_path)?;
-
-    // 2. Build workspace crate names set for inter-crate dependency detection
-    let workspace_crates: HashSet<String> = crates.iter().map(|c| c.name.clone()).collect();
-
-    // 3. Build feature config from CLI args
+    // 1. Build feature config from CLI args (needed for both analyze_workspace and load_workspace_hir)
     let feature_config = FeatureConfig {
         features: args.features,
         all_features: args.all_features,
+        no_default_features: args.no_default_features,
         cfg_flags: args.cfg,
+        debug: args.debug,
     };
+
+    // 2. Analyze workspace with feature config
+    let crates = analyze_workspace(&args.manifest_path, &feature_config)?;
+
+    // 3. Build workspace crate names set for inter-crate dependency detection
+    let workspace_crates: HashSet<String> = crates.iter().map(|c| c.name.clone()).collect();
 
     // 4. Load rust-analyzer ONCE for the entire workspace
     let (host, vfs) = load_workspace_hir(&args.manifest_path, &feature_config)?;
@@ -125,6 +135,12 @@ mod tests {
     }
 
     #[test]
+    fn test_cli_no_default_features_flag() {
+        let args = parse_args(&["cargo", "arc", "--no-default-features"]);
+        assert!(args.no_default_features);
+    }
+
+    #[test]
     #[ignore] // Smoke test - requires rust-analyzer (~30s)
     fn test_run_with_output_file() {
         let temp = tempfile::NamedTempFile::new().unwrap();
@@ -133,7 +149,9 @@ mod tests {
             manifest_path: PathBuf::from("Cargo.toml"),
             features: vec![],
             all_features: false,
+            no_default_features: false,
             cfg: vec![],
+            debug: false,
         };
         let result = run(args);
         assert!(result.is_ok());

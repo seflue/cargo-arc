@@ -1,0 +1,14 @@
+[package]
+name = "server-utils"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+server = ["dep:core"]
+
+[dependencies]
+core = { workspace = true, optional = true }
+
+[build-dependencies]
+build-helper = { workspace = true }  # Case 2: build-dependency

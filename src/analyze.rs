@@ -1,7 +1,7 @@
 //! Workspace & Module Analysis
 
 use anyhow::{Context, Result};
-use cargo_metadata::{MetadataCommand, Package};
+use cargo_metadata::MetadataCommand;
 use ra_ap_cfg::{CfgAtom, CfgDiff};
 use ra_ap_hir as hir;
 use ra_ap_ide as ide;
@@ -17,7 +17,99 @@ use crate::model::{CrateInfo, DependencyRef, ModuleInfo, ModuleTree};
 pub struct FeatureConfig {
     pub features: Vec<String>,
     pub all_features: bool,
+    pub no_default_features: bool,
     pub cfg_flags: Vec<String>,
+    pub debug: bool,
+}
+
+/// Resolved dependency from cargo metadata's resolve section.
+/// Contains the actual dependency graph after feature resolution.
+#[derive(Debug, Clone)]
+pub struct ResolvedDependency {
+    pub name: String,
+    pub pkg_id: String,
+    pub dep_kinds: Vec<ResolvedDepKind>,
+}
+
+/// Dependency kind info from resolve section.
+#[derive(Debug, Clone)]
+pub struct ResolvedDepKind {
+    pub kind: Option<String>,
+    pub target: Option<String>,
+}
+
+// --- Dependency filtering types ---
+
+/// Dependency kind for filtering (internal use)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DepKind {
+    Normal,
+    Dev,
+    Build,
+    Unknown,
+}
+
+/// Dependency scope for filtering (internal use)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DepScope {
+    Workspace,
+    External,
+}
+
+/// Extracted dependency info for filtering and debugging
+#[derive(Debug)]
+struct DepInfo<'a> {
+    name: &'a str,
+    kind: DepKind,
+    scope: DepScope,
+}
+
+impl<'a> DepInfo<'a> {
+    /// Extract dependency info from a cargo metadata NodeDep
+    fn from_node_dep(dep: &'a cargo_metadata::NodeDep, workspace_members: &HashSet<&str>) -> Self {
+        let name = dep.name.as_str();
+
+        let kind = if dep
+            .dep_kinds
+            .iter()
+            .any(|dk| matches!(dk.kind, cargo_metadata::DependencyKind::Normal))
+        {
+            DepKind::Normal
+        } else if dep
+            .dep_kinds
+            .iter()
+            .any(|dk| matches!(dk.kind, cargo_metadata::DependencyKind::Development))
+        {
+            DepKind::Dev
+        } else if dep
+            .dep_kinds
+            .iter()
+            .any(|dk| matches!(dk.kind, cargo_metadata::DependencyKind::Build))
+        {
+            DepKind::Build
+        } else {
+            DepKind::Unknown
+        };
+
+        // Normalize for comparison: cargo metadata uses underscores (core_utils),
+        // but Cargo.toml names may have hyphens (core-utils)
+        let normalized_name = name.replace('-', "_");
+        let scope = if workspace_members
+            .iter()
+            .any(|ws| ws.replace('-', "_") == normalized_name)
+        {
+            DepScope::Workspace
+        } else {
+            DepScope::External
+        };
+
+        Self { name, kind, scope }
+    }
+
+    /// Check if this dependency should be included in the workspace graph
+    fn is_included(&self) -> bool {
+        matches!(self.kind, DepKind::Normal) && matches!(self.scope, DepScope::Workspace)
+    }
 }
 
 /// Creates a CargoConfig with feature and cfg overrides.
@@ -25,26 +117,40 @@ pub struct FeatureConfig {
 pub fn cargo_config_with_features(config: &FeatureConfig) -> project_model::CargoConfig {
     let features = if config.all_features {
         project_model::CargoFeatures::All
-    } else if config.features.is_empty() {
+    } else if config.features.is_empty() && !config.no_default_features {
         project_model::CargoFeatures::default()
     } else {
         project_model::CargoFeatures::Selected {
             features: config.features.clone(),
-            no_default_features: false,
+            no_default_features: config.no_default_features,
         }
     };
 
+    // Build enable list: features as KeyValue atoms, optionally test flag
+    let mut enable_cfgs: Vec<CfgAtom> = config
+        .features
+        .iter()
+        .map(|f| CfgAtom::KeyValue {
+            key: hir::Symbol::intern("feature"),
+            value: hir::Symbol::intern(f),
+        })
+        .collect();
+
     let include_test = config.cfg_flags.contains(&"test".to_string());
-    let cfg_overrides = if include_test {
-        project_model::CfgOverrides {
-            global: CfgDiff::new(vec![CfgAtom::Flag(hir::Symbol::intern("test"))], Vec::new()),
-            selective: Default::default(),
-        }
+    if include_test {
+        enable_cfgs.push(CfgAtom::Flag(hir::Symbol::intern("test")));
+    }
+
+    // Build disable list: test flag unless explicitly enabled
+    let disable_cfgs = if include_test {
+        Vec::new()
     } else {
-        project_model::CfgOverrides {
-            global: CfgDiff::new(Vec::new(), vec![CfgAtom::Flag(hir::Symbol::intern("test"))]),
-            selective: Default::default(),
-        }
+        vec![CfgAtom::Flag(hir::Symbol::intern("test"))]
+    };
+
+    let cfg_overrides = project_model::CfgOverrides {
+        global: CfgDiff::new(enable_cfgs, disable_cfgs),
+        selective: Default::default(),
     };
 
     project_model::CargoConfig {
@@ -55,47 +161,281 @@ pub fn cargo_config_with_features(config: &FeatureConfig) -> project_model::Carg
     }
 }
 
+/// Parses a feature string that may have a crate prefix.
+/// Returns (crate_filter, feature_name) where crate_filter is Some if format is "crate/feature".
+fn parse_feature(feature: &str) -> (Option<&str>, &str) {
+    match feature.split_once('/') {
+        Some((crate_name, feat)) => (Some(crate_name), feat),
+        None => (None, feature),
+    }
+}
+
+/// Finds seed crates that define the requested features.
+/// Returns all workspace members if no features specified or all_features is set.
+fn find_seed_crates(
+    metadata: &cargo_metadata::Metadata,
+    feature_config: &FeatureConfig,
+    workspace_members: &HashSet<&str>,
+) -> HashSet<String> {
+    let debug = feature_config.debug;
+
+    if debug {
+        eprintln!("[DEBUG] find_seed_crates:");
+        eprintln!("  requested features: {:?}", feature_config.features);
+        eprintln!("  all_features: {}", feature_config.all_features);
+        eprintln!("  workspace_members: {:?}", workspace_members);
+    }
+
+    if feature_config.features.is_empty() || feature_config.all_features {
+        if debug {
+            eprintln!("  -> returning ALL workspace members (no feature filter)");
+        }
+        return workspace_members.iter().map(|s| s.to_string()).collect();
+    }
+
+    let seeds: HashSet<String> = metadata
+        .packages
+        .iter()
+        .filter(|pkg| {
+            let pkg_name = pkg.name.as_str();
+            let is_workspace = workspace_members.contains(pkg_name);
+            let pkg_features: Vec<&str> = pkg.features.keys().map(|s| s.as_str()).collect();
+
+            if debug && is_workspace {
+                eprintln!("  checking pkg '{}': features={:?}", pkg_name, pkg_features);
+            }
+
+            let matches = is_workspace && feature_config.features.iter().any(|f| {
+                let (crate_filter, feature_name) = parse_feature(f);
+                let crate_matches = crate_filter.map(|c| c == pkg_name).unwrap_or(true);
+                let feature_exists = pkg.features.contains_key(feature_name);
+
+                if debug && is_workspace {
+                    eprintln!(
+                        "    feature '{}': crate_filter={:?}, crate_matches={}, feature_exists={}",
+                        f, crate_filter, crate_matches, feature_exists
+                    );
+                }
+
+                crate_matches && feature_exists
+            });
+
+            if debug && is_workspace {
+                eprintln!("    -> matches={}", matches);
+            }
+
+            matches
+        })
+        .map(|pkg| pkg.name.clone())
+        .collect();
+
+    if debug {
+        eprintln!("  SEEDS FOUND: {:?}", seeds);
+    }
+
+    seeds
+}
+
+/// Collects all crates reachable from seeds via BFS through dependencies.
+/// Only includes workspace members.
+fn collect_reachable_crates(
+    seeds: HashSet<String>,
+    resolved_deps: &std::collections::HashMap<&str, Vec<String>>,
+    workspace_members: &HashSet<&str>,
+    debug: bool,
+) -> HashSet<String> {
+    use std::collections::VecDeque;
+
+    if debug {
+        eprintln!("[DEBUG] collect_reachable_crates:");
+        eprintln!("  seeds: {:?}", seeds);
+        eprintln!("  resolved_deps:");
+        for (pkg, deps) in resolved_deps {
+            eprintln!("    {} -> {:?}", pkg, deps);
+        }
+    }
+
+    let mut reachable: HashSet<String> = seeds.clone();
+    let mut queue: VecDeque<String> = seeds.into_iter().collect();
+
+    while let Some(crate_name) = queue.pop_front() {
+        if let Some(deps) = resolved_deps.get(crate_name.as_str()) {
+            for dep in deps {
+                if workspace_members.contains(dep.as_str()) && !reachable.contains(dep) {
+                    if debug {
+                        eprintln!("  BFS: {} -> {} (adding)", crate_name, dep);
+                    }
+                    reachable.insert(dep.clone());
+                    queue.push_back(dep.clone());
+                }
+            }
+        }
+    }
+
+    if debug {
+        eprintln!("  REACHABLE: {:?}", reachable);
+    }
+
+    reachable
+}
+
 /// Analyzes a workspace and returns all member crates.
 /// `manifest_path` should point to a Cargo.toml.
-pub fn analyze_workspace(manifest_path: &Path) -> Result<Vec<CrateInfo>> {
-    let metadata = MetadataCommand::new()
-        .manifest_path(manifest_path)
-        .exec()
-        .context("Failed to run cargo metadata")?;
+/// `feature_config` controls which features are activated for dependency resolution.
+pub fn analyze_workspace(
+    manifest_path: &Path,
+    feature_config: &FeatureConfig,
+) -> Result<Vec<CrateInfo>> {
+    let mut cmd = MetadataCommand::new();
+    cmd.manifest_path(manifest_path);
 
-    // Collect workspace member names for dependency filtering
-    let workspace_members: HashSet<&str> = metadata
+    // Configure features for cargo metadata
+    if feature_config.all_features {
+        cmd.features(cargo_metadata::CargoOpt::AllFeatures);
+    } else if !feature_config.features.is_empty() {
+        cmd.features(cargo_metadata::CargoOpt::SomeFeatures(
+            feature_config.features.clone(),
+        ));
+    }
+    if feature_config.no_default_features {
+        cmd.features(cargo_metadata::CargoOpt::NoDefaultFeatures);
+    }
+
+    let metadata = cmd.exec().context("Failed to run cargo metadata")?;
+
+    // Get resolve section for actual dependency resolution (feature-aware)
+    let resolve = metadata
+        .resolve
+        .as_ref()
+        .context("No resolve section in cargo metadata")?;
+
+    // Build package ID -> package name mapping
+    let pkg_id_to_name: std::collections::HashMap<&str, &str> = metadata
+        .packages
+        .iter()
+        .map(|p| (p.id.repr.as_str(), p.name.as_str()))
+        .collect();
+
+    // Collect workspace member package IDs
+    let workspace_member_ids: HashSet<&str> = metadata
+        .workspace_members
+        .iter()
+        .map(|id| id.repr.as_str())
+        .collect();
+
+    // Collect workspace member names for filtering
+    let workspace_member_names: HashSet<&str> = metadata
         .workspace_packages()
         .iter()
         .map(|p| p.name.as_str())
         .collect();
 
+    // Build resolved dependencies from resolve section
+    let mut resolved_deps: std::collections::HashMap<&str, Vec<String>> =
+        std::collections::HashMap::new();
+
+    let debug = feature_config.debug;
+    if debug {
+        eprintln!("[DEBUG] Building resolved_deps from cargo metadata:");
+        eprintln!("  workspace_member_names: {:?}", workspace_member_names);
+    }
+
+    for node in &resolve.nodes {
+        let node_id = node.id.repr.as_str();
+        if !workspace_member_ids.contains(node_id) {
+            continue;
+        }
+
+        let pkg_name_for_debug = pkg_id_to_name.get(node_id).copied().unwrap_or("?");
+        if debug {
+            eprintln!("  [{}] deps:", pkg_name_for_debug);
+        }
+
+        let deps: Vec<String> = node
+            .deps
+            .iter()
+            .filter_map(|dep| {
+                let info = DepInfo::from_node_dep(dep, &workspace_member_names);
+                if debug {
+                    eprintln!(
+                        "    {}  kind:{:?}  scope:{:?}",
+                        info.name, info.kind, info.scope
+                    );
+                }
+                info.is_included().then(|| info.name.to_string())
+            })
+            .collect();
+
+        if let Some(pkg_name) = pkg_id_to_name.get(node_id) {
+            resolved_deps.insert(*pkg_name, deps);
+        }
+    }
+
+    // Find seed crates (those defining requested features) and collect reachable crates
+    let seeds = find_seed_crates(&metadata, feature_config, &workspace_member_names);
+
+    if seeds.is_empty() && !feature_config.features.is_empty() {
+        eprintln!(
+            "warning: No workspace crates define feature(s): {}",
+            feature_config.features.join(", ")
+        );
+    }
+
+    let reachable = collect_reachable_crates(
+        seeds,
+        &resolved_deps,
+        &workspace_member_names,
+        feature_config.debug,
+    );
+
+    if feature_config.debug {
+        eprintln!("[DEBUG] Final crate filtering:");
+        eprintln!(
+            "  features.is_empty(): {}",
+            feature_config.features.is_empty()
+        );
+        eprintln!("  all_features: {}", feature_config.all_features);
+    }
+
     let crates: Vec<CrateInfo> = metadata
         .workspace_packages()
         .into_iter()
-        .map(|pkg| package_to_crate_info(pkg, &workspace_members))
+        .filter(|pkg| {
+            let dominated_by_features = feature_config.features.is_empty();
+            let dominated_by_all = feature_config.all_features;
+            let in_reachable = reachable.contains(&pkg.name);
+            let include = dominated_by_features || dominated_by_all || in_reachable;
+
+            if feature_config.debug {
+                eprintln!(
+                    "  crate '{}': features_empty={}, all_features={}, in_reachable={} -> include={}",
+                    pkg.name, dominated_by_features, dominated_by_all, in_reachable, include
+                );
+            }
+
+            include
+        })
+        .map(|pkg| {
+            let dependencies = resolved_deps
+                .get(pkg.name.as_str())
+                .cloned()
+                .unwrap_or_default();
+            CrateInfo {
+                name: pkg.name.clone(),
+                path: pkg.manifest_path.parent().unwrap().into(),
+                dependencies,
+            }
+        })
         .collect();
+
+    if feature_config.debug {
+        eprintln!("[DEBUG] Final result: {} crates", crates.len());
+        for c in &crates {
+            eprintln!("  - {} (deps: {:?})", c.name, c.dependencies);
+        }
+    }
 
     Ok(crates)
-}
-
-fn package_to_crate_info(pkg: &Package, workspace_members: &HashSet<&str>) -> CrateInfo {
-    use cargo_metadata::DependencyKind;
-
-    let dependencies: Vec<String> = pkg
-        .dependencies
-        .iter()
-        // Only normal dependencies (exclude dev and build deps to avoid false cycles)
-        .filter(|dep| dep.kind == DependencyKind::Normal)
-        .filter(|dep| workspace_members.contains(dep.name.as_str()))
-        .map(|dep| dep.name.clone())
-        .collect();
-
-    CrateInfo {
-        name: pkg.name.clone(),
-        path: pkg.manifest_path.parent().unwrap().into(),
-        dependencies,
-    }
 }
 
 // ============================================================================
@@ -570,6 +910,48 @@ mod tests {
         assert!(config.features.is_empty());
         assert!(!config.all_features);
         assert!(config.cfg_flags.is_empty());
+        assert!(!config.no_default_features);
+    }
+
+    #[test]
+    fn test_feature_config_no_default_features() {
+        let config = FeatureConfig {
+            no_default_features: true,
+            ..Default::default()
+        };
+        assert!(config.no_default_features);
+    }
+
+    #[test]
+    fn test_resolved_dependency_construction() {
+        let dep = ResolvedDependency {
+            name: "core".to_string(),
+            pkg_id: "core 0.1.0 (path+file:///workspace/core)".to_string(),
+            dep_kinds: vec![ResolvedDepKind {
+                kind: None,
+                target: None,
+            }],
+        };
+        assert_eq!(dep.name, "core");
+        assert_eq!(dep.dep_kinds.len(), 1);
+        assert!(dep.dep_kinds[0].kind.is_none());
+    }
+
+    #[test]
+    fn test_cfg_overrides_include_features() {
+        let config = FeatureConfig {
+            features: vec!["server".to_string()],
+            ..Default::default()
+        };
+        let cargo_config = cargo_config_with_features(&config);
+
+        // CfgDiff Display should show the feature being enabled
+        let diff_str = format!("{}", cargo_config.cfg_overrides.global);
+        assert!(
+            diff_str.contains("feature") && diff_str.contains("server"),
+            "Expected feature = \"server\" in cfg_overrides, got: {}",
+            diff_str
+        );
     }
 
     #[test]
@@ -614,6 +996,27 @@ mod tests {
         match cargo_config.features {
             project_model::CargoFeatures::Selected { features, .. } => {
                 assert_eq!(features, vec!["web"]);
+            }
+            _ => panic!("expected Selected"),
+        }
+    }
+
+    #[test]
+    fn test_cargo_features_no_default() {
+        let config = FeatureConfig {
+            features: vec!["x".to_string()],
+            no_default_features: true,
+            ..Default::default()
+        };
+        let cargo_config = cargo_config_with_features(&config);
+
+        match cargo_config.features {
+            project_model::CargoFeatures::Selected {
+                features,
+                no_default_features,
+            } => {
+                assert_eq!(features, vec!["x"]);
+                assert!(no_default_features, "no_default_features should be true");
             }
             _ => panic!("expected Selected"),
         }
@@ -917,7 +1320,8 @@ use crate::graph;
     fn test_analyze_workspace_self() {
         // Test with cargo-arc itself as workspace
         let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-        let crates = analyze_workspace(&manifest).expect("should analyze");
+        let crates =
+            analyze_workspace(&manifest, &FeatureConfig::default()).expect("should analyze");
 
         // cargo-arc should find itself
         assert!(!crates.is_empty());
@@ -928,7 +1332,8 @@ use crate::graph;
     #[test]
     fn test_crate_info_fields() {
         let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-        let crates = analyze_workspace(&manifest).expect("should analyze");
+        let crates =
+            analyze_workspace(&manifest, &FeatureConfig::default()).expect("should analyze");
 
         let cargo_arc = crates.iter().find(|c| c.name == "cargo-arc").unwrap();
         assert!(cargo_arc.path.exists(), "path should exist");
@@ -936,11 +1341,137 @@ use crate::graph;
         // (only external: clap, petgraph, etc.)
     }
 
+    // ========================================================================
+    // Feature filtering tests (using feature_test_workspace fixture)
+    // ========================================================================
+
+    fn feature_test_manifest() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/feature_test_workspace/Cargo.toml")
+    }
+
+    #[test]
+    fn test_feature_filtering_shows_all_crates() {
+        // Without any features, all crates should be present
+        let manifest = feature_test_manifest();
+        let crates =
+            analyze_workspace(&manifest, &FeatureConfig::default()).expect("should analyze");
+
+        let names: Vec<&str> = crates.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"core"), "should have core");
+        assert!(names.contains(&"core-utils"), "should have core-utils");
+        assert!(names.contains(&"server-utils"), "should have server-utils");
+        assert!(names.contains(&"web-utils"), "should have web-utils");
+    }
+
+    #[test]
+    fn test_feature_filtering_core_utils_depends_on_core() {
+        // core-utils always depends on core (not optional)
+        let manifest = feature_test_manifest();
+        let crates =
+            analyze_workspace(&manifest, &FeatureConfig::default()).expect("should analyze");
+
+        let core_utils = crates.iter().find(|c| c.name == "core-utils").unwrap();
+        assert!(
+            core_utils.dependencies.contains(&"core".to_string()),
+            "core-utils should depend on core, got: {:?}",
+            core_utils.dependencies
+        );
+    }
+
+    #[test]
+    fn test_feature_filtering_server_without_feature() {
+        // Without server feature, server-utils should NOT depend on core
+        let manifest = feature_test_manifest();
+        let crates =
+            analyze_workspace(&manifest, &FeatureConfig::default()).expect("should analyze");
+
+        let server_utils = crates.iter().find(|c| c.name == "server-utils").unwrap();
+        assert!(
+            !server_utils.dependencies.contains(&"core".to_string()),
+            "server-utils should NOT depend on core without feature, got: {:?}",
+            server_utils.dependencies
+        );
+    }
+
+    #[test]
+    fn test_feature_filtering_server_with_feature() {
+        // With server feature, server-utils SHOULD depend on core
+        let manifest = feature_test_manifest();
+        let config = FeatureConfig {
+            features: vec!["server-utils/server".to_string()],
+            ..Default::default()
+        };
+        let crates = analyze_workspace(&manifest, &config).expect("should analyze");
+
+        let server_utils = crates.iter().find(|c| c.name == "server-utils").unwrap();
+        assert!(
+            server_utils.dependencies.contains(&"core".to_string()),
+            "server-utils SHOULD depend on core with server feature, got: {:?}",
+            server_utils.dependencies
+        );
+    }
+
+    #[test]
+    fn test_feature_filtering_web_with_feature() {
+        // With web feature, web-utils SHOULD depend on core
+        let manifest = feature_test_manifest();
+        let config = FeatureConfig {
+            features: vec!["web-utils/web".to_string()],
+            ..Default::default()
+        };
+        let crates = analyze_workspace(&manifest, &config).expect("should analyze");
+
+        let web_utils = crates.iter().find(|c| c.name == "web-utils").unwrap();
+        assert!(
+            web_utils.dependencies.contains(&"core".to_string()),
+            "web-utils SHOULD depend on core with web feature, got: {:?}",
+            web_utils.dependencies
+        );
+    }
+
+    #[test]
+    fn test_node_id_matching_substring_names() {
+        // Verify "core" and "core-utils" are correctly distinguished
+        // This tests the Node-ID edge case mentioned in the plan
+        let manifest = feature_test_manifest();
+        let crates =
+            analyze_workspace(&manifest, &FeatureConfig::default()).expect("should analyze");
+
+        let core = crates.iter().find(|c| c.name == "core").unwrap();
+        let core_utils = crates.iter().find(|c| c.name == "core-utils").unwrap();
+
+        // core should have no workspace dependencies
+        assert!(
+            core.dependencies.is_empty(),
+            "core should have no deps, got: {:?}",
+            core.dependencies
+        );
+
+        // core-utils should depend on core and shared-lib (both normal workspace deps)
+        assert!(
+            core_utils.dependencies.contains(&"core".to_string()),
+            "core-utils should depend on core, got: {:?}",
+            core_utils.dependencies
+        );
+        assert!(
+            core_utils.dependencies.contains(&"shared_lib".to_string()),
+            "core-utils should depend on shared-lib (normalized: shared_lib), got: {:?}",
+            core_utils.dependencies
+        );
+        assert_eq!(
+            core_utils.dependencies.len(),
+            2,
+            "core-utils should have exactly 2 deps"
+        );
+    }
+
     #[test]
     #[ignore] // Smoke test - requires rust-analyzer (~30s)
     fn test_analyze_modules_self() {
         let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-        let crates = analyze_workspace(&manifest).expect("should analyze workspace");
+        let crates = analyze_workspace(&manifest, &FeatureConfig::default())
+            .expect("should analyze workspace");
         let workspace_crates: HashSet<String> = crates.iter().map(|c| c.name.clone()).collect();
         let cargo_arc = crates.iter().find(|c| c.name == "cargo-arc").unwrap();
 
@@ -980,7 +1511,8 @@ use crate::graph;
     #[ignore] // Smoke test - requires rust-analyzer (~30s)
     fn test_module_full_path() {
         let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-        let crates = analyze_workspace(&manifest).expect("should analyze workspace");
+        let crates = analyze_workspace(&manifest, &FeatureConfig::default())
+            .expect("should analyze workspace");
         let workspace_crates: HashSet<String> = crates.iter().map(|c| c.name.clone()).collect();
         let cargo_arc = crates.iter().find(|c| c.name == "cargo-arc").unwrap();
 
@@ -1006,7 +1538,8 @@ use crate::graph;
     #[ignore] // Smoke test - requires rust-analyzer (~30s)
     fn test_module_dependencies() {
         let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-        let crates = analyze_workspace(&manifest).expect("should analyze workspace");
+        let crates = analyze_workspace(&manifest, &FeatureConfig::default())
+            .expect("should analyze workspace");
         let workspace_crates: HashSet<String> = crates.iter().map(|c| c.name.clone()).collect();
         let cargo_arc = crates.iter().find(|c| c.name == "cargo-arc").unwrap();
 
@@ -1070,5 +1603,255 @@ use crate::graph;
             "render should depend on layout, found: {:?}",
             render_module.dependencies
         );
+    }
+
+    // ========================================================================
+    // parse_feature() tests
+    // ========================================================================
+
+    #[test]
+    fn test_parse_feature_simple() {
+        let (crate_filter, feature_name) = parse_feature("web");
+        assert_eq!(crate_filter, None);
+        assert_eq!(feature_name, "web");
+    }
+
+    #[test]
+    fn test_parse_feature_with_crate_prefix() {
+        let (crate_filter, feature_name) = parse_feature("app/web");
+        assert_eq!(crate_filter, Some("app"));
+        assert_eq!(feature_name, "web");
+    }
+
+    // ========================================================================
+    // collect_reachable_crates() tests
+    // ========================================================================
+
+    #[test]
+    fn test_collect_reachable_crates_bfs() {
+        // A -> B -> C should traverse all three
+        let seeds: HashSet<String> = ["A".to_string()].into_iter().collect();
+        let mut resolved_deps: std::collections::HashMap<&str, Vec<String>> =
+            std::collections::HashMap::new();
+        resolved_deps.insert("A", vec!["B".to_string()]);
+        resolved_deps.insert("B", vec!["C".to_string()]);
+        let workspace: HashSet<&str> = ["A", "B", "C"].into_iter().collect();
+
+        let reachable = collect_reachable_crates(seeds, &resolved_deps, &workspace, false);
+
+        assert!(reachable.contains("A"));
+        assert!(reachable.contains("B"));
+        assert!(reachable.contains("C"));
+        assert_eq!(reachable.len(), 3);
+    }
+
+    #[test]
+    fn test_collect_reachable_stops_at_non_workspace() {
+        // A -> B -> external (not in workspace) should stop at B
+        let seeds: HashSet<String> = ["A".to_string()].into_iter().collect();
+        let mut resolved_deps: std::collections::HashMap<&str, Vec<String>> =
+            std::collections::HashMap::new();
+        resolved_deps.insert("A", vec!["B".to_string()]);
+        resolved_deps.insert("B", vec!["external".to_string()]);
+        let workspace: HashSet<&str> = ["A", "B"].into_iter().collect();
+
+        let reachable = collect_reachable_crates(seeds, &resolved_deps, &workspace, false);
+
+        assert!(reachable.contains("A"));
+        assert!(reachable.contains("B"));
+        assert!(!reachable.contains("external"));
+        assert_eq!(reachable.len(), 2);
+    }
+
+    #[test]
+    fn test_collect_reachable_handles_cycles() {
+        // A -> B -> A (cycle) should terminate
+        let seeds: HashSet<String> = ["A".to_string()].into_iter().collect();
+        let mut resolved_deps: std::collections::HashMap<&str, Vec<String>> =
+            std::collections::HashMap::new();
+        resolved_deps.insert("A", vec!["B".to_string()]);
+        resolved_deps.insert("B", vec!["A".to_string()]);
+        let workspace: HashSet<&str> = ["A", "B"].into_iter().collect();
+
+        let reachable = collect_reachable_crates(seeds, &resolved_deps, &workspace, false);
+
+        assert!(reachable.contains("A"));
+        assert!(reachable.contains("B"));
+        assert_eq!(reachable.len(), 2);
+    }
+
+    // ========================================================================
+    // Feature-based crate filtering tests (ACCEPTANCE CRITERIA)
+    // ========================================================================
+
+    #[test]
+    fn test_feature_filtering_web_only_filters_crates() {
+        // --features web: Only web-utils (defines "web") + its dependencies
+        // web-utils has: core (optional, activated by "web"), testlib (normal dep)
+        // Should NOT include: server-utils, core-utils, shared-lib, build-helper
+        let manifest = feature_test_manifest();
+        let config = FeatureConfig {
+            features: vec!["web".to_string()],
+            ..Default::default()
+        };
+        let crates = analyze_workspace(&manifest, &config).expect("should analyze");
+
+        let names: Vec<&str> = crates.iter().map(|c| c.name.as_str()).collect();
+        assert!(
+            names.contains(&"web-utils"),
+            "should have web-utils, got: {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"core"),
+            "should have core (dependency), got: {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"testlib"),
+            "should have testlib (normal dep of web-utils), got: {:?}",
+            names
+        );
+        assert!(
+            !names.contains(&"server-utils"),
+            "should NOT have server-utils, got: {:?}",
+            names
+        );
+        assert!(
+            !names.contains(&"core-utils"),
+            "should NOT have core-utils, got: {:?}",
+            names
+        );
+        assert_eq!(names.len(), 3, "expected 3 crates, got: {:?}", names);
+    }
+
+    #[test]
+    fn test_feature_filtering_server_only_filters_crates() {
+        // --features server: Only server-utils (defines "server") + core (dependency)
+        let manifest = feature_test_manifest();
+        let config = FeatureConfig {
+            features: vec!["server".to_string()],
+            ..Default::default()
+        };
+        let crates = analyze_workspace(&manifest, &config).expect("should analyze");
+
+        let names: Vec<&str> = crates.iter().map(|c| c.name.as_str()).collect();
+        assert!(
+            names.contains(&"server-utils"),
+            "should have server-utils, got: {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"core"),
+            "should have core (dependency), got: {:?}",
+            names
+        );
+        assert!(
+            !names.contains(&"web-utils"),
+            "should NOT have web-utils, got: {:?}",
+            names
+        );
+        assert!(
+            !names.contains(&"core-utils"),
+            "should NOT have core-utils, got: {:?}",
+            names
+        );
+        assert_eq!(names.len(), 2, "expected 2 crates, got: {:?}", names);
+    }
+
+    // ========================================================================
+    // Edge case tests
+    // ========================================================================
+
+    #[test]
+    fn test_feature_filtering_unknown_feature_returns_error() {
+        // Unknown feature causes cargo metadata to fail (cargo validates features)
+        let manifest = feature_test_manifest();
+        let config = FeatureConfig {
+            features: vec!["nonexistent".to_string()],
+            ..Default::default()
+        };
+        let result = analyze_workspace(&manifest, &config);
+
+        assert!(
+            result.is_err(),
+            "unknown feature should cause cargo metadata to fail"
+        );
+    }
+
+    #[test]
+    fn test_feature_filtering_all_features_shows_all() {
+        // --all-features should show all workspace crates
+        let manifest = feature_test_manifest();
+        let config = FeatureConfig {
+            all_features: true,
+            ..Default::default()
+        };
+        let crates = analyze_workspace(&manifest, &config).expect("should analyze");
+
+        let names: Vec<&str> = crates.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"core"), "should have core");
+        assert!(names.contains(&"core-utils"), "should have core-utils");
+        assert!(names.contains(&"server-utils"), "should have server-utils");
+        assert!(names.contains(&"web-utils"), "should have web-utils");
+        assert!(names.contains(&"testlib"), "should have testlib");
+        assert!(names.contains(&"shared-lib"), "should have shared-lib");
+        assert!(names.contains(&"build-helper"), "should have build-helper");
+        assert_eq!(names.len(), 7, "expected all 7 crates, got: {:?}", names);
+    }
+
+    // --- DepInfo unit tests ---
+
+    #[test]
+    fn test_dep_info_normal_workspace_is_included() {
+        let info = DepInfo {
+            name: "foo",
+            kind: DepKind::Normal,
+            scope: DepScope::Workspace,
+        };
+        assert!(info.is_included(), "Normal + Workspace should be included");
+    }
+
+    #[test]
+    fn test_dep_info_dev_workspace_is_excluded() {
+        let info = DepInfo {
+            name: "foo",
+            kind: DepKind::Dev,
+            scope: DepScope::Workspace,
+        };
+        assert!(!info.is_included(), "Dev + Workspace should be excluded");
+    }
+
+    #[test]
+    fn test_dep_info_build_workspace_is_excluded() {
+        let info = DepInfo {
+            name: "foo",
+            kind: DepKind::Build,
+            scope: DepScope::Workspace,
+        };
+        assert!(!info.is_included(), "Build + Workspace should be excluded");
+    }
+
+    #[test]
+    fn test_dep_info_normal_external_is_excluded() {
+        let info = DepInfo {
+            name: "serde",
+            kind: DepKind::Normal,
+            scope: DepScope::External,
+        };
+        assert!(
+            !info.is_included(),
+            "Normal + External should be excluded from workspace graph"
+        );
+    }
+
+    #[test]
+    fn test_dep_info_dev_external_is_excluded() {
+        let info = DepInfo {
+            name: "test-helper",
+            kind: DepKind::Dev,
+            scope: DepScope::External,
+        };
+        assert!(!info.is_included(), "Dev + External should be excluded");
     }
 }

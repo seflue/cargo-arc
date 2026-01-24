@@ -1,0 +1,10 @@
+[workspace]
+members = ["core", "core-utils", "server-utils", "web-utils", "testlib", "shared-lib", "build-helper"]
+resolver = "2"
+
+[workspace.dependencies]
+core = { path = "core" }
+core-utils = { path = "core-utils" }
+testlib = { path = "testlib" }
+shared-lib = { path = "shared-lib" }
+build-helper = { path = "build-helper" }

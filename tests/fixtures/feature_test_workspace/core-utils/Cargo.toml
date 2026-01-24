@@ -1,0 +1,8 @@
+[package]
+name = "core-utils"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+core = { workspace = true }
+shared-lib = { workspace = true }  # Case 1: shared-lib as Normal dep

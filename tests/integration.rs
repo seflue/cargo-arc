@@ -13,7 +13,9 @@ fn test_multi_crate_fixture() {
         manifest_path: fixture_path,
         features: vec![],
         all_features: false,
+        no_default_features: false,
         cfg: vec![],
+        debug: false,
     };
 
     let result = run(args);
@@ -43,7 +45,9 @@ fn test_self_analysis() {
         manifest_path: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"),
         features: vec![],
         all_features: false,
+        no_default_features: false,
         cfg: vec![],
+        debug: false,
     };
 
     let result = run(args);
@@ -75,7 +79,9 @@ fn test_cfg_test_excluded_by_default() {
         manifest_path: fixture_path,
         features: vec![],
         all_features: false,
+        no_default_features: false,
         cfg: vec![], // No --cfg test flag
+        debug: false,
     };
 
     let result = run(args);
@@ -102,7 +108,9 @@ fn test_cfg_test_included_with_flag() {
         manifest_path: fixture_path,
         features: vec![],
         all_features: false,
+        no_default_features: false,
         cfg: vec!["test".to_string()], // --cfg test flag
+        debug: false,
     };
 
     let result = run(args);
