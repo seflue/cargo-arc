@@ -226,7 +226,7 @@ fn find_seed_crates(
 
             matches
         })
-        .map(|pkg| pkg.name.clone())
+        .map(|pkg| pkg.name.to_string())
         .collect();
 
     if debug {
@@ -403,7 +403,7 @@ pub fn analyze_workspace(
         .filter(|pkg| {
             let dominated_by_features = feature_config.features.is_empty();
             let dominated_by_all = feature_config.all_features;
-            let in_reachable = reachable.contains(&pkg.name);
+            let in_reachable = reachable.contains(pkg.name.as_str());
             let include = dominated_by_features || dominated_by_all || in_reachable;
 
             if feature_config.debug {
@@ -421,7 +421,7 @@ pub fn analyze_workspace(
                 .cloned()
                 .unwrap_or_default();
             CrateInfo {
-                name: pkg.name.clone(),
+                name: pkg.name.to_string(),
                 path: pkg.manifest_path.parent().unwrap().into(),
                 dependencies,
             }
@@ -466,7 +466,7 @@ pub fn analyze_modules(
     let db = host.raw_database();
 
     // Walk module tree starting from crate root
-    let root_module = krate.root_module();
+    let root_module = krate.root_module(db);
     let crate_name = &crate_info.name;
     // Use actual crate name (normalized) as root path for inter-crate dependency resolution
     let normalized_crate_name = normalize_crate_name(crate_name);
@@ -492,9 +492,9 @@ fn walk_module(
     crate_name: &str,
     workspace_crates: &HashSet<String>,
 ) -> ModuleInfo {
-    let name = if module.is_crate_root() {
+    let name = if module.is_crate_root(db) {
         module
-            .krate()
+            .krate(db)
             .display_name(db)
             .map(|n| n.to_string().replace('-', "_"))
             .unwrap_or_else(|| "crate".to_string())
@@ -505,8 +505,8 @@ fn walk_module(
             .unwrap_or_else(|| "<anonymous>".to_string())
     };
 
-    // Build full path: root is "crate", children are "crate::module_name"
-    let full_path = if module.is_crate_root() {
+    // Build full path: root is crate name, children are "crate_name::module_name"
+    let full_path = if module.is_crate_root(db) {
         parent_path.to_string()
     } else {
         format!("{}::{}", parent_path, name)
@@ -1521,17 +1521,17 @@ use crate::graph;
         let tree = analyze_modules(cargo_arc, &host, &vfs, &workspace_crates)
             .expect("should analyze modules");
 
-        // Root module full_path should be "crate"
-        assert_eq!(tree.root.full_path, "crate");
+        // Root module full_path should be the normalized crate name
+        assert_eq!(tree.root.full_path, "cargo_arc");
 
-        // Child modules should have full paths like "crate::analyze"
+        // Child modules should have full paths like "cargo_arc::analyze"
         let analyze_module = tree
             .root
             .children
             .iter()
             .find(|m| m.name == "analyze")
             .expect("should find analyze module");
-        assert_eq!(analyze_module.full_path, "crate::analyze");
+        assert_eq!(analyze_module.full_path, "cargo_arc::analyze");
     }
 
     #[test]
@@ -1548,7 +1548,7 @@ use crate::graph;
         let tree = analyze_modules(cargo_arc, &host, &vfs, &workspace_crates)
             .expect("should analyze modules");
 
-        // graph module depends on analyze (use crate::analyze::{...})
+        // graph module depends on model (use crate::model::{...})
         let graph_module = tree
             .root
             .children
@@ -1559,8 +1559,8 @@ use crate::graph;
             graph_module
                 .dependencies
                 .iter()
-                .any(|d| d.module_target() == "crate::analyze"),
-            "graph should depend on analyze, found: {:?}",
+                .any(|d| d.module_target() == "cargo_arc::model"),
+            "graph should depend on model, found: {:?}",
             graph_module.dependencies
         );
 
@@ -1575,7 +1575,7 @@ use crate::graph;
             cli_module
                 .dependencies
                 .iter()
-                .any(|d| d.module_target() == "crate::analyze"),
+                .any(|d| d.module_target() == "cargo_arc::analyze"),
             "cli should depend on analyze, found: {:?}",
             cli_module.dependencies
         );
@@ -1583,7 +1583,7 @@ use crate::graph;
             cli_module
                 .dependencies
                 .iter()
-                .any(|d| d.module_target() == "crate::graph"),
+                .any(|d| d.module_target() == "cargo_arc::graph"),
             "cli should depend on graph, found: {:?}",
             cli_module.dependencies
         );
@@ -1599,7 +1599,7 @@ use crate::graph;
             render_module
                 .dependencies
                 .iter()
-                .any(|d| d.module_target() == "crate::layout"),
+                .any(|d| d.module_target() == "cargo_arc::layout"),
             "render should depend on layout, found: {:?}",
             render_module.dependencies
         );
