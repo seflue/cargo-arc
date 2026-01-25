@@ -93,11 +93,7 @@ impl<'a> DepInfo<'a> {
 
         // Normalize for comparison: cargo metadata uses underscores (core_utils),
         // but Cargo.toml names may have hyphens (core-utils)
-        let normalized_name = name.replace('-', "_");
-        let scope = if workspace_members
-            .iter()
-            .any(|ws| ws.replace('-', "_") == normalized_name)
-        {
+        let scope = if is_workspace_member(name, workspace_members) {
             DepScope::Workspace
         } else {
             DepScope::External
@@ -448,6 +444,13 @@ fn normalize_crate_name(name: &str) -> String {
     name.replace('-', "_")
 }
 
+fn is_workspace_member<S: AsRef<str>>(name: &str, workspace_crates: &HashSet<S>) -> bool {
+    let normalized = normalize_crate_name(name);
+    workspace_crates
+        .iter()
+        .any(|ws| normalize_crate_name(ws.as_ref()) == normalized)
+}
+
 // ============================================================================
 // Module Hierarchy Analysis (via ra_ap_hir)
 // ============================================================================
@@ -612,10 +615,7 @@ fn process_use_statement(
     let first_segment = parts[0].trim();
 
     // Check if this is a workspace crate (normalize both sides for comparison)
-    let normalized_first = normalize_crate_name(first_segment);
-    let is_workspace_crate = workspace_crates
-        .iter()
-        .any(|ws_crate| normalize_crate_name(ws_crate) == normalized_first);
+    let is_workspace_crate = is_workspace_member(first_segment, workspace_crates);
 
     if is_workspace_crate && parts.len() >= 2 {
         let module = parts[1].trim_end_matches('{').trim_end_matches(';').trim();
@@ -747,10 +747,7 @@ fn parse_base_path(
     let parts: Vec<&str> = base_path.split("::").collect();
     if parts.len() >= 2 {
         let first_segment = parts[0].trim();
-        let normalized_first = normalize_crate_name(first_segment);
-        let is_workspace_crate = workspace_crates
-            .iter()
-            .any(|ws_crate| normalize_crate_name(ws_crate) == normalized_first);
+        let is_workspace_crate = is_workspace_member(first_segment, workspace_crates);
 
         if is_workspace_crate {
             return Some((first_segment.to_string(), parts[1].to_string()));
