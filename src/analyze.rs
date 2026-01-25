@@ -496,7 +496,7 @@ fn walk_module(
         module
             .krate(db)
             .display_name(db)
-            .map(|n| n.to_string().replace('-', "_"))
+            .map(|n| normalize_crate_name(n.as_str()))
             .unwrap_or_else(|| "crate".to_string())
     } else {
         module
