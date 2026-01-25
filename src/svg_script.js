@@ -357,7 +357,7 @@ if (typeof document !== 'undefined') {
     const shadow = arc.cloneNode(false);
     shadow.classList.add('shadow-path');
     shadow.removeAttribute('id');
-    shadow.setAttribute('stroke-width', '8');
+    shadow.style.strokeWidth = '8px';
     shadow.setAttribute('opacity', '0.4');
     shadow.style.strokeLinecap = 'round';
     const shadowLayer = document.getElementById('highlight-shadows');
@@ -379,6 +379,9 @@ if (typeof document !== 'undefined') {
   function applyEdgeHighlight(from, to) {
     const arcId = from + '-' + to;
     const arc = getVisibleArc(arcId);
+
+    // Skip if arc is hidden (collapsed or filtered out)
+    if (arc?.style.display === 'none' || arc?.classList.contains('hidden-by-filter')) return;
 
     // Create shadow path for glow effect
     createShadowPath(arc);
@@ -444,8 +447,16 @@ if (typeof document !== 'undefined') {
     // Regular arcs via hitareas
     document.querySelectorAll('.arc-hitarea[data-from="' + nodeId + '"], .arc-hitarea[data-to="' + nodeId + '"]')
       .forEach(hitarea => {
+        // Skip hitareas filtered out by user (e.g., CrateDeps checkbox)
+        // Note: We check visibleArc for display:none (collapsed), not hitarea
+        if (hitarea.classList.contains('hidden-by-filter')) return;
+
         const arcId = hitarea.dataset.arcId;
         const visibleArc = getVisibleArc(arcId);
+
+        // Skip if arc is hidden (endpoints are collapsed)
+        if (visibleArc?.style.display === 'none') return;
+
         const from = hitarea.dataset.from;
         const to = hitarea.dataset.to;
         const outgoing = isOutgoing(from, to);
@@ -669,6 +680,7 @@ if (typeof document !== 'undefined') {
 
     // Re-apply pinned highlight after edges were recreated
     if (pinnedHighlight) {
+      clearHighlights();  // Remove stale shadow paths from deleted virtual arcs
       if (pinnedHighlight.type === 'node') {
         applyNodeHighlight(pinnedHighlight.id);
       } else if (pinnedHighlight.type === 'edge') {
@@ -724,6 +736,11 @@ if (typeof document !== 'undefined') {
       // Check if nodes are hidden (have .collapsed class)
       const fromHidden = fromNode && fromNode.classList.contains('collapsed');
       const toHidden = toNode && toNode.classList.contains('collapsed');
+
+      // DEBUG: Log arc visibility decisions
+      if (window.DEBUG_ARCS) {
+        console.log(`Arc ${arcId}: from=${fromId}(${fromHidden ? 'hidden' : 'visible'}), to=${toId}(${toHidden ? 'hidden' : 'visible'})`);
+      }
 
       if (fromHidden || toHidden) {
         // Hide original hitarea, visible edge, and arrows
@@ -966,8 +983,30 @@ if (typeof document !== 'undefined') {
     dimNonHighlighted();
   }
 
+  // Check if nodeId is an ancestor of targetId
+  function isAncestorOf(nodeId, targetId) {
+    let checkId = targetId;
+    while (true) {
+      const checkNode = document.getElementById('node-' + checkId);
+      const parentId = checkNode?.dataset.parent;
+      if (!parentId) return false;
+      if (parentId === nodeId) return true;
+      checkId = parentId;
+    }
+  }
+
   // Toggle collapse state
   function toggleCollapse(nodeId) {
+    // Clear highlight if the toggled node affects the pinned highlight
+    // (pinned node itself, its ancestor, or its descendant)
+    if (pinnedHighlight) {
+      const pinnedId = pinnedHighlight.id;
+      if (pinnedId === nodeId || isAncestorOf(nodeId, pinnedId) || isAncestorOf(pinnedId, nodeId)) {
+        pinnedHighlight = null;
+        clearHighlights();
+      }
+    }
+
     const collapsed = !collapseState.get(nodeId);
     collapseState.set(nodeId, collapsed);
 
