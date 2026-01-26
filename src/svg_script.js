@@ -1053,14 +1053,11 @@ if (typeof document !== 'undefined') {
 
   // Toggle collapse state
   function toggleCollapse(nodeId) {
-    // Clear highlight if the toggled node affects the pinned highlight
-    // (pinned node itself, its ancestor, or its descendant)
+    // Always clear selection on collapse/expand - shadows would need recalculation
+    // and the visual context changes significantly
     if (pinnedHighlight) {
-      const pinnedId = pinnedHighlight.id;
-      if (pinnedId === nodeId || isAncestorOf(nodeId, pinnedId) || isAncestorOf(pinnedId, nodeId)) {
-        pinnedHighlight = null;
-        clearHighlights();
-      }
+      pinnedHighlight = null;
+      clearHighlights();
     }
 
     const collapsed = !collapseState.get(nodeId);
