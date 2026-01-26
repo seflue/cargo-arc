@@ -313,6 +313,8 @@ fn render_styles() -> String {
     .dep-node { stroke: #40a02b !important; stroke-width: 2.5 !important; }
     .dependent-node { stroke: #8839ef !important; stroke-width: 2.5 !important; }
     .dimmed { opacity: 0.3; pointer-events: none; }
+    path.dimmed:not(.shadow-path) { stroke: #888 !important; }
+    polygon.dimmed { fill: #888 !important; }
     .crate, .module, .dep-arc, .cycle-arc { cursor: pointer; }
     /* Collapse functionality */
     .collapse-toggle { font-family: monospace; font-size: 14px; cursor: pointer; fill: #666; }
