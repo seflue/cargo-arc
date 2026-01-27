@@ -624,47 +624,34 @@ if (typeof document !== 'undefined') {
   }
 
   // === Collapse functionality ===
-  const collapseState = new Map(); // nodeId -> boolean (collapsed)
-  const originalPositions = new Map(); // nodeId -> {x, y}
+  // Build parentMap once at init (pure data structure for TreeLogic)
+  const parentMap = TreeLogic.buildParentMap(document);
+
+  // Initialize collapse state with CollapseState module
+  const collapseState = CollapseState.create();
 
   // Store original positions on load
   document.querySelectorAll('.crate, .module').forEach(node => {
     const id = node.id.replace('node-', '');
-    originalPositions.set(id, {
-      x: parseFloat(node.getAttribute('x')),
-      y: parseFloat(node.getAttribute('y'))
-    });
+    CollapseState.storePosition(
+      collapseState,
+      id,
+      parseFloat(node.getAttribute('x')),
+      parseFloat(node.getAttribute('y'))
+    );
   });
 
-  // Get all descendants recursively (transitive)
+  // Wrapper functions for TreeLogic (use parentMap from closure)
   function getDescendants(nodeId) {
-    const descendants = [];
-    document.querySelectorAll('[data-parent="' + nodeId + '"]').forEach(child => {
-      if (child.tagName === 'rect') {
-        const childId = child.id.replace('node-', '');
-        descendants.push(childId);
-        descendants.push(...getDescendants(childId));
-      }
-    });
-    return descendants;
+    return TreeLogic.getDescendants(nodeId, parentMap);
   }
 
-  // Find the nearest visible ancestor (node without .collapsed class)
   function getVisibleAncestor(nodeId) {
-    const node = document.getElementById('node-' + nodeId);
-    if (!node) return null;
-    // If this node is hidden, find its visible parent
-    if (node.classList.contains('collapsed')) {
-      const parentId = node.dataset.parent;
-      if (!parentId) return null;  // No visible ancestor
-      return getVisibleAncestor(parentId);
-    }
-    return nodeId;  // This node is visible
+    return TreeLogic.getVisibleAncestor(nodeId, collapseState.collapsed, parentMap);
   }
 
-  // Count all descendants
   function countDescendants(nodeId) {
-    return getDescendants(nodeId).length;
+    return TreeLogic.countDescendants(nodeId, parentMap);
   }
 
   // Update tree lines for a node at new Y position
@@ -700,7 +687,9 @@ if (typeof document !== 'undefined') {
       .sort((a, b) => {
         const aId = a.id.replace('node-', '');
         const bId = b.id.replace('node-', '');
-        return originalPositions.get(aId).y - originalPositions.get(bId).y;
+        const posA = CollapseState.getPosition(collapseState, aId);
+        const posB = CollapseState.getPosition(collapseState, bId);
+        return posA.y - posB.y;
       });
 
     items.forEach(node => {
@@ -1077,8 +1066,7 @@ if (typeof document !== 'undefined') {
       clearHighlights();
     }
 
-    const collapsed = !collapseState.get(nodeId);
-    collapseState.set(nodeId, collapsed);
+    const collapsed = CollapseState.toggle(collapseState, nodeId);
 
     const descendants = getDescendants(nodeId);
 
@@ -1100,7 +1088,7 @@ if (typeof document !== 'undefined') {
           const checkNode = document.getElementById('node-' + checkId);
           const parentId = checkNode?.dataset.parent;
           if (!parentId) break;
-          if (collapseState.get(parentId) && parentId !== nodeId) {
+          if (CollapseState.isCollapsed(collapseState, parentId) && parentId !== nodeId) {
             ancestorCollapsed = true;
             break;
           }
@@ -1146,13 +1134,13 @@ if (typeof document !== 'undefined') {
   // Toggle collapse/expand all parent nodes
   function toggleCollapseAll() {
     const allExpanded = [...document.querySelectorAll('[data-has-children="true"]')]
-      .every(node => !collapseState.get(node.id.replace('node-', '')));
+      .every(node => !CollapseState.isCollapsed(collapseState, node.id.replace('node-', '')));
 
     document.querySelectorAll('[data-has-children="true"]').forEach(node => {
       const nodeId = node.id.replace('node-', '');
       if (allExpanded) {
         // Collapse all
-        collapseState.set(nodeId, true);
+        CollapseState.setCollapsed(collapseState, nodeId, true);
         getDescendants(nodeId).forEach(descId => {
           const descNode = document.getElementById('node-' + descId);
           const label = descNode?.nextElementSibling;
@@ -1172,7 +1160,7 @@ if (typeof document !== 'undefined') {
         if (countLabel) countLabel.textContent = ' (+' + countDescendants(nodeId) + ')';
       } else {
         // Expand all
-        collapseState.set(nodeId, false);
+        CollapseState.setCollapsed(collapseState, nodeId, false);
         getDescendants(nodeId).forEach(descId => {
           const descNode = document.getElementById('node-' + descId);
           const label = descNode?.nextElementSibling;
