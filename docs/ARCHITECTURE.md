@@ -4,7 +4,14 @@
 
 ```
 src/
-├── analyze.rs   # Workspace & module extraction (cargo_metadata + ra_ap_hir)
+├── analyze/
+│   ├── mod.rs         # Coordination + public API
+│   ├── use_parser.rs  # Use statement extraction (syn)
+│   ├── hir.rs         # HIR module analysis (ra_ap_hir)
+│   ├── filtering.rs   # Dependency classification + filtering
+│   ├── syn_walker.rs  # Module discovery (syn + filesystem)
+│   ├── backend.rs     # Analysis backend abstraction
+│   └── workspace.rs   # Workspace analysis (cargo_metadata)
 ├── model.rs     # Shared data structures
 ├── graph.rs     # Dependency graph building (petgraph)
 ├── layout.rs    # Tree layout algorithm
