@@ -192,6 +192,21 @@ if (typeof document !== 'undefined') {
       const visibleArc = document.querySelector(`.dep-arc[data-arc-id="${arcId}"], .cycle-arc[data-arc-id="${arcId}"]`);
       if (visibleArc) visibleArc.style.strokeWidth = width + 'px';
       scaleArrow(arcId, width);
+
+      // Store original values for reset (fixes arrow-head growth bug)
+      const scale = ArrowLogic.scaleFromStrokeWidth(width);
+      const arrows = document.querySelectorAll(`[data-edge="${arcId}"]`);
+      arrows.forEach(arrow => {
+        const tip = ArrowLogic.parseTipFromPoints(arrow.getAttribute('points'));
+        if (tip) {
+          HighlightState.storeOriginal(highlightState, arcId, {
+            strokeWidth: width,
+            scale: scale,
+            tipX: tip.x,
+            tipY: tip.y
+          });
+        }
+      });
     });
   }
 
@@ -245,7 +260,8 @@ if (typeof document !== 'undefined') {
   }
 
   // === Highlight functionality ===
-  let pinnedHighlight = null; // {type: 'node'|'edge', id: string} or null
+  // Use HighlightState module for state management
+  const highlightState = HighlightState.create();
 
   function clearHighlights() {
     // Clear shadow paths
@@ -263,20 +279,38 @@ if (typeof document !== 'undefined') {
       moveToLayer(el, 'hitareas-layer');
     });
 
-    // Reset regular arcs and arrows to original size (based on arc weights)
+    // Reset regular arcs and arrows to original size (using stored values)
     document.querySelectorAll('.arc-hitarea:not(.virtual-hitarea)').forEach(hitarea => {
       const arcId = hitarea.dataset.arcId;
-      const locs = hitarea.dataset.sourceLocations;
-      const count = ArcLogic.countLocations(locs);
-      const strokeWidth = ArcLogic.calculateStrokeWidth(count);
-      // Reset arc stroke-width
-      const visibleArc = document.querySelector(`.dep-arc[data-arc-id="${arcId}"], .cycle-arc[data-arc-id="${arcId}"]`);
-      if (visibleArc) visibleArc.style.strokeWidth = strokeWidth + 'px';
-      // Reset arrow size
-      scaleArrow(arcId, strokeWidth);
+      const original = HighlightState.getOriginal(highlightState, arcId);
+
+      if (original) {
+        // Use stored original values (fixes arrow-head growth bug)
+        const visibleArc = document.querySelector(`.dep-arc[data-arc-id="${arcId}"], .cycle-arc[data-arc-id="${arcId}"]`);
+        if (visibleArc) visibleArc.style.strokeWidth = original.strokeWidth + 'px';
+        // Reset arrow using stored tip position and scale
+        const arrows = document.querySelectorAll(`[data-edge="${arcId}"]`);
+        arrows.forEach(arrow => {
+          arrow.setAttribute('points', ArrowLogic.getArrowPoints(
+            { x: original.tipX, y: original.tipY },
+            original.scale
+          ));
+        });
+      } else {
+        // Fallback: calculate from source locations (for arcs without stored values)
+        const locs = hitarea.dataset.sourceLocations;
+        const count = ArcLogic.countLocations(locs);
+        const strokeWidth = ArcLogic.calculateStrokeWidth(count);
+        const visibleArc = document.querySelector(`.dep-arc[data-arc-id="${arcId}"], .cycle-arc[data-arc-id="${arcId}"]`);
+        if (visibleArc) visibleArc.style.strokeWidth = strokeWidth + 'px';
+        scaleArrow(arcId, strokeWidth);
+      }
     });
 
     // Reset virtual arcs and arrows to original size (based on aggregated arc weights)
+    // Note: Virtual arcs don't use stored originals because they are destroyed and
+    // recreated on each recalculateVirtualEdges() call. Recalculating from
+    // sourceLocations is correct here - no accumulation bug possible.
     document.querySelectorAll('.virtual-hitarea').forEach(hitarea => {
       const arcId = hitarea.dataset.arcId;
       const locs = hitarea.dataset.sourceLocations;
@@ -560,31 +594,31 @@ if (typeof document !== 'undefined') {
 
   function highlightEdge(from, to, pin) {
     const edgeId = from + '-' + to;
-    // Toggle-check: if same edge is already pinned, deselect
-    if (pin && pinnedHighlight && pinnedHighlight.type === 'edge' && pinnedHighlight.id === edgeId) {
-      pinnedHighlight = null;
+    if (pin) {
+      // Toggle: if same edge is already pinned, deselect
+      const wasPinned = HighlightState.togglePinned(highlightState, 'edge', edgeId);
       clearHighlights();
-      return;
+      if (!wasPinned) return; // Was unpinned, done
+    } else {
+      clearHighlights();
     }
-    clearHighlights();
     applyEdgeHighlight(from, to);
-    if (pin) pinnedHighlight = {type: 'edge', id: edgeId};
   }
 
   function highlightNode(nodeId, pin) {
-    // Toggle-check: if same node is already pinned, deselect
-    if (pin && pinnedHighlight && pinnedHighlight.type === 'node' && pinnedHighlight.id === nodeId) {
-      pinnedHighlight = null;
+    if (pin) {
+      // Toggle: if same node is already pinned, deselect
+      const wasPinned = HighlightState.togglePinned(highlightState, 'node', nodeId);
       clearHighlights();
-      return;
+      if (!wasPinned) return; // Was unpinned, done
+    } else {
+      clearHighlights();
     }
-    clearHighlights();
     applyNodeHighlight(nodeId);
-    if (pin) pinnedHighlight = {type: 'node', id: nodeId};
   }
 
   function handleMouseEnter(type, id) {
-    if (pinnedHighlight) return; // Don't preview if something is pinned
+    if (HighlightState.getPinned(highlightState)) return; // Don't preview if something is pinned
     clearHighlights();
     if (type === 'node') applyNodeHighlight(id);
     else if (type === 'edge') {
@@ -594,7 +628,7 @@ if (typeof document !== 'undefined') {
   }
 
   function handleMouseLeave() {
-    if (pinnedHighlight) return; // Keep pinned highlight
+    if (HighlightState.getPinned(highlightState)) return; // Keep pinned highlight
     clearHighlights();
   }
 
@@ -698,12 +732,13 @@ if (typeof document !== 'undefined') {
     recalculateVirtualEdges();
 
     // Re-apply pinned highlight after edges were recreated
-    if (pinnedHighlight) {
+    const pinned = HighlightState.getPinned(highlightState);
+    if (pinned) {
       clearHighlights();  // Remove stale shadow paths from deleted virtual arcs
-      if (pinnedHighlight.type === 'node') {
-        applyNodeHighlight(pinnedHighlight.id);
-      } else if (pinnedHighlight.type === 'edge') {
-        const [from, to] = pinnedHighlight.id.split('-');
+      if (pinned.type === 'node') {
+        applyNodeHighlight(pinned.id);
+      } else if (pinned.type === 'edge') {
+        const [from, to] = pinned.id.split('-');
         applyEdgeHighlight(from, to);
       }
     }
@@ -953,10 +988,11 @@ if (typeof document !== 'undefined') {
       hitarea.addEventListener('mouseenter', () => handleMouseEnter('edge', arcId));
       hitarea.addEventListener('mousemove', (e) => {
         // When pinned, only show tooltip on highlighted arcs
-        if (pinnedHighlight) {
-          const isHighlighted = pinnedHighlight.type === 'edge'
-            ? pinnedHighlight.id === arcId
-            : (fromId === pinnedHighlight.id || toId === pinnedHighlight.id);
+        const pinned = HighlightState.getPinned(highlightState);
+        if (pinned) {
+          const isHighlighted = pinned.type === 'edge'
+            ? pinned.id === arcId
+            : (fromId === pinned.id || toId === pinned.id);
           if (!isHighlighted) {
             hideFloatingLabel();
             return;
@@ -982,14 +1018,10 @@ if (typeof document !== 'undefined') {
   // Highlight virtual (aggregated) edge
   function highlightVirtualEdge(fromId, toId, count) {
     const edgeId = fromId + '-' + toId;
-    // Toggle-check: if same edge is already pinned, deselect
-    if (pinnedHighlight && pinnedHighlight.type === 'edge' && pinnedHighlight.id === edgeId) {
-      pinnedHighlight = null;
-      clearHighlights();
-      return;
-    }
+    // Toggle: if same edge is already pinned, deselect
+    const wasPinned = HighlightState.togglePinned(highlightState, 'edge', edgeId);
     clearHighlights();
-    pinnedHighlight = {type: 'edge', id: edgeId};
+    if (!wasPinned) return; // Was unpinned, done
     // from-Node: dependent (purple border)
     document.getElementById('node-' + fromId)?.classList.add('dependent-node');
     // to-Node: dep (green border)
@@ -1041,8 +1073,8 @@ if (typeof document !== 'undefined') {
   function toggleCollapse(nodeId) {
     // Always clear selection on collapse/expand - shadows would need recalculation
     // and the visual context changes significantly
-    if (pinnedHighlight) {
-      pinnedHighlight = null;
+    if (HighlightState.getPinned(highlightState)) {
+      HighlightState.clearPinned(highlightState);
       clearHighlights();
     }
 
@@ -1278,11 +1310,12 @@ if (typeof document !== 'undefined') {
 
     hitarea.addEventListener('mousemove', (e) => {
       // When pinned, only show tooltip on highlighted arcs
-      if (pinnedHighlight) {
+      const pinned = HighlightState.getPinned(highlightState);
+      if (pinned) {
         const arcId = hitarea.dataset.arcId;
-        const isHighlighted = pinnedHighlight.type === 'edge'
-          ? pinnedHighlight.id === arcId
-          : (hitarea.dataset.from === pinnedHighlight.id || hitarea.dataset.to === pinnedHighlight.id);
+        const isHighlighted = pinned.type === 'edge'
+          ? pinned.id === arcId
+          : (hitarea.dataset.from === pinned.id || hitarea.dataset.to === pinned.id);
         if (!isHighlighted) {
           hideFloatingLabel();
           return;
@@ -1305,7 +1338,7 @@ if (typeof document !== 'undefined') {
   });
 
   document.querySelector('svg').addEventListener('click', () => {
-    pinnedHighlight = null;
+    HighlightState.clearPinned(highlightState);
     clearHighlights();
   });
 

@@ -421,6 +421,7 @@ fn render_script(config: &RenderConfig) -> String {
     // Module dependencies must be loaded before svg_script.js
     let arrow_logic = include_str!("arrow_logic.js");
     let tree_logic = include_str!("tree_logic.js");
+    let highlight_state = include_str!("highlight_state.js");
     let virtual_edge_logic = include_str!("virtual_edge_logic.js");
 
     let svg_script = include_str!("svg_script.js")
@@ -429,8 +430,8 @@ fn render_script(config: &RenderConfig) -> String {
         .replace("__TOOLBAR_HEIGHT__", &TOOLBAR_HEIGHT.to_string());
 
     format!(
-        "  <script><![CDATA[\n{}\n{}\n{}\n{}\n]]></script>\n",
-        arrow_logic, tree_logic, virtual_edge_logic, svg_script
+        "  <script><![CDATA[\n{}\n{}\n{}\n{}\n{}\n]]></script>\n",
+        arrow_logic, tree_logic, highlight_state, virtual_edge_logic, svg_script
     )
 }
 
@@ -1105,8 +1106,8 @@ mod tests {
         let ir = LayoutIR::new();
         let svg = render(&ir, &RenderConfig::default());
         assert!(
-            svg.contains("pinnedHighlight"),
-            "Script should contain pinnedHighlight state"
+            svg.contains("HighlightState.create()"),
+            "Script should use HighlightState module"
         );
         assert!(
             svg.contains("handleMouseEnter"),
@@ -1130,15 +1131,15 @@ mod tests {
     fn test_render_script_has_toggle_deselect() {
         let ir = LayoutIR::new();
         let svg = render(&ir, &RenderConfig::default());
-        // highlightNode toggle-check
+        // highlightNode uses HighlightState.togglePinned for toggle-deselect
         assert!(
-            svg.contains("pinnedHighlight.id === nodeId"),
-            "highlightNode should have toggle-check for same node"
+            svg.contains("HighlightState.togglePinned(highlightState, 'node', nodeId)"),
+            "highlightNode should use HighlightState.togglePinned"
         );
-        // highlightEdge toggle-check
+        // highlightEdge uses HighlightState.togglePinned for toggle-deselect
         assert!(
-            svg.contains("pinnedHighlight.id === edgeId"),
-            "highlightEdge should have toggle-check for same edge"
+            svg.contains("HighlightState.togglePinned(highlightState, 'edge', edgeId)"),
+            "highlightEdge should use HighlightState.togglePinned"
         );
     }
 
