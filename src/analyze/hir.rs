@@ -373,4 +373,152 @@ mod tests {
             _ => panic!("expected Selected"),
         }
     }
+
+    #[test]
+    #[ignore] // Smoke test - requires rust-analyzer (~30s)
+    fn test_analyze_modules_self() {
+        use super::super::workspace::analyze_workspace;
+
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let crates = analyze_workspace(&manifest, &FeatureConfig::default())
+            .expect("should analyze workspace");
+        let workspace_crates: std::collections::HashSet<String> =
+            crates.iter().map(|c| c.name.clone()).collect();
+        let cargo_arc = crates.iter().find(|c| c.name == "cargo-arc").unwrap();
+
+        let (host, vfs) = load_workspace_hir(&manifest, &FeatureConfig::default())
+            .expect("should load workspace");
+        let tree = analyze_modules(cargo_arc, &host, &vfs, &workspace_crates)
+            .expect("should analyze modules");
+
+        // cargo-arc root module should be named "cargo_arc"
+        assert_eq!(tree.root.name, "cargo_arc");
+
+        // cargo-arc has 4 modules: analyze, graph, layout, render
+        let child_names: Vec<_> = tree.root.children.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            child_names.contains(&"analyze"),
+            "should contain 'analyze' module, found: {:?}",
+            child_names
+        );
+        assert!(
+            child_names.contains(&"graph"),
+            "should contain 'graph' module, found: {:?}",
+            child_names
+        );
+        assert!(
+            child_names.contains(&"layout"),
+            "should contain 'layout' module, found: {:?}",
+            child_names
+        );
+        assert!(
+            child_names.contains(&"render"),
+            "should contain 'render' module, found: {:?}",
+            child_names
+        );
+    }
+
+    #[test]
+    #[ignore] // Smoke test - requires rust-analyzer (~30s)
+    fn test_module_full_path() {
+        use super::super::workspace::analyze_workspace;
+
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let crates = analyze_workspace(&manifest, &FeatureConfig::default())
+            .expect("should analyze workspace");
+        let workspace_crates: std::collections::HashSet<String> =
+            crates.iter().map(|c| c.name.clone()).collect();
+        let cargo_arc = crates.iter().find(|c| c.name == "cargo-arc").unwrap();
+
+        let (host, vfs) = load_workspace_hir(&manifest, &FeatureConfig::default())
+            .expect("should load workspace");
+        let tree = analyze_modules(cargo_arc, &host, &vfs, &workspace_crates)
+            .expect("should analyze modules");
+
+        // Root module full_path should be the normalized crate name
+        assert_eq!(tree.root.full_path, "cargo_arc");
+
+        // Child modules should have full paths like "cargo_arc::analyze"
+        let analyze_module = tree
+            .root
+            .children
+            .iter()
+            .find(|m| m.name == "analyze")
+            .expect("should find analyze module");
+        assert_eq!(analyze_module.full_path, "cargo_arc::analyze");
+    }
+
+    #[test]
+    #[ignore] // Smoke test - requires rust-analyzer (~30s)
+    fn test_module_dependencies() {
+        use super::super::workspace::analyze_workspace;
+
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let crates = analyze_workspace(&manifest, &FeatureConfig::default())
+            .expect("should analyze workspace");
+        let workspace_crates: std::collections::HashSet<String> =
+            crates.iter().map(|c| c.name.clone()).collect();
+        let cargo_arc = crates.iter().find(|c| c.name == "cargo-arc").unwrap();
+
+        let (host, vfs) = load_workspace_hir(&manifest, &FeatureConfig::default())
+            .expect("should load workspace");
+        let tree = analyze_modules(cargo_arc, &host, &vfs, &workspace_crates)
+            .expect("should analyze modules");
+
+        // graph module depends on model (use crate::model::{...})
+        let graph_module = tree
+            .root
+            .children
+            .iter()
+            .find(|m| m.name == "graph")
+            .expect("should find graph module");
+        assert!(
+            graph_module
+                .dependencies
+                .iter()
+                .any(|d| d.module_target() == "cargo_arc::model"),
+            "graph should depend on model, found: {:?}",
+            graph_module.dependencies
+        );
+
+        // cli module depends on analyze, graph, layout, render
+        let cli_module = tree
+            .root
+            .children
+            .iter()
+            .find(|m| m.name == "cli")
+            .expect("should find cli module");
+        assert!(
+            cli_module
+                .dependencies
+                .iter()
+                .any(|d| d.module_target() == "cargo_arc::analyze"),
+            "cli should depend on analyze, found: {:?}",
+            cli_module.dependencies
+        );
+        assert!(
+            cli_module
+                .dependencies
+                .iter()
+                .any(|d| d.module_target() == "cargo_arc::graph"),
+            "cli should depend on graph, found: {:?}",
+            cli_module.dependencies
+        );
+
+        // render module depends on layout
+        let render_module = tree
+            .root
+            .children
+            .iter()
+            .find(|m| m.name == "render")
+            .expect("should find render module");
+        assert!(
+            render_module
+                .dependencies
+                .iter()
+                .any(|d| d.module_target() == "cargo_arc::layout"),
+            "render should depend on layout, found: {:?}",
+            render_module.dependencies
+        );
+    }
 }

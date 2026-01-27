@@ -47,3 +47,83 @@ pub struct ModuleInfo {
 pub struct ModuleTree {
     pub root: ModuleInfo,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_dependency_ref_struct() {
+        let dep = DependencyRef {
+            target_crate: "my_crate".to_string(),
+            target_module: "graph".to_string(),
+            target_item: None,
+            source_file: PathBuf::from("src/cli.rs"),
+            line: 42,
+        };
+        assert_eq!(dep.target_crate, "my_crate");
+        assert_eq!(dep.target_module, "graph");
+        assert!(dep.target_item.is_none());
+        assert_eq!(dep.source_file, PathBuf::from("src/cli.rs"));
+        assert_eq!(dep.line, 42);
+    }
+
+    #[test]
+    fn test_dependency_ref_full_target() {
+        let dep = DependencyRef {
+            target_crate: "crate".to_string(),
+            target_module: "graph".to_string(),
+            target_item: Some("build".to_string()),
+            source_file: PathBuf::new(),
+            line: 1,
+        };
+        assert_eq!(dep.full_target(), "crate::graph::build");
+    }
+
+    #[test]
+    fn test_dependency_ref_module_target() {
+        let dep = DependencyRef {
+            target_crate: "crate".to_string(),
+            target_module: "graph".to_string(),
+            target_item: Some("build".to_string()),
+            source_file: PathBuf::new(),
+            line: 1,
+        };
+        assert_eq!(dep.module_target(), "crate::graph");
+    }
+
+    #[test]
+    fn test_dependency_ref_full_target_no_item() {
+        let dep = DependencyRef {
+            target_crate: "crate".to_string(),
+            target_module: "graph".to_string(),
+            target_item: None,
+            source_file: PathBuf::new(),
+            line: 1,
+        };
+        assert_eq!(dep.full_target(), "crate::graph");
+    }
+
+    #[test]
+    fn test_module_info_has_dependency_refs() {
+        let module = ModuleInfo {
+            name: "cli".to_string(),
+            full_path: "crate::cli".to_string(),
+            children: vec![],
+            dependencies: vec![DependencyRef {
+                target_crate: "crate".to_string(),
+                target_module: "graph".to_string(),
+                target_item: None,
+                source_file: PathBuf::from("src/cli.rs"),
+                line: 5,
+            }],
+        };
+        assert!(
+            module
+                .dependencies
+                .iter()
+                .any(|d| d.module_target() == "crate::graph")
+        );
+    }
+}
