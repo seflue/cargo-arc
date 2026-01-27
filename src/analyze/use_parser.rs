@@ -262,223 +262,215 @@ mod tests {
     use super::*;
     use std::path::Path;
 
-    // ========================================================================
-    // normalize_crate_name() tests
-    // ========================================================================
+    mod normalize_tests {
+        use super::*;
 
-    #[test]
-    fn test_normalize_crate_name() {
-        assert_eq!(normalize_crate_name("my-lib"), "my_lib");
-        assert_eq!(normalize_crate_name("already_valid"), "already_valid");
-        assert_eq!(normalize_crate_name("a-b-c"), "a_b_c");
+        #[test]
+        fn test_normalize_crate_name() {
+            assert_eq!(normalize_crate_name("my-lib"), "my_lib");
+            assert_eq!(normalize_crate_name("already_valid"), "already_valid");
+            assert_eq!(normalize_crate_name("a-b-c"), "a_b_c");
+        }
+
+        #[test]
+        fn test_process_use_statement_crate_local() {
+            let ws: HashSet<String> = HashSet::new();
+            let dep = process_use_statement(
+                "use crate::graph::build;",
+                1,
+                "my_crate",
+                &ws,
+                Path::new("src/cli.rs"),
+            );
+            let dep = dep.expect("should parse crate-local import");
+            assert_eq!(dep.target_crate, "my_crate");
+            assert_eq!(dep.target_module, "graph");
+            assert_eq!(dep.target_item, Some("build".to_string()));
+        }
+
+        #[test]
+        fn test_process_use_statement_crate_local_module_only() {
+            let ws: HashSet<String> = HashSet::new();
+            let dep = process_use_statement(
+                "use crate::graph;",
+                5,
+                "my_crate",
+                &ws,
+                Path::new("src/lib.rs"),
+            );
+            let dep = dep.expect("should parse crate-local module import");
+            assert_eq!(dep.target_crate, "my_crate");
+            assert_eq!(dep.target_module, "graph");
+            assert!(dep.target_item.is_none());
+            assert_eq!(dep.line, 5);
+        }
+
+        #[test]
+        fn test_process_use_statement_workspace_crate() {
+            let ws: HashSet<String> = HashSet::from(["other_crate".to_string()]);
+            let dep = process_use_statement(
+                "use other_crate::utils;",
+                1,
+                "my_crate",
+                &ws,
+                Path::new("src/lib.rs"),
+            );
+            let dep = dep.expect("should parse workspace crate import");
+            assert_eq!(dep.target_crate, "other_crate");
+            assert_eq!(dep.target_module, "utils");
+        }
+
+        #[test]
+        fn test_process_use_statement_workspace_crate_with_hyphen() {
+            let ws: HashSet<String> = HashSet::from(["my-lib".to_string()]);
+            let dep = process_use_statement(
+                "use my_lib::feature;",
+                1,
+                "app",
+                &ws,
+                Path::new("src/main.rs"),
+            );
+            let dep = dep.expect("should parse workspace crate with hyphen");
+            assert_eq!(dep.target_crate, "my_lib");
+            assert_eq!(dep.target_module, "feature");
+        }
+
+        #[test]
+        fn test_process_use_statement_relative_self_ignored() {
+            let ws: HashSet<String> = HashSet::new();
+            let dep = process_use_statement(
+                "use self::helper;",
+                1,
+                "my_crate",
+                &ws,
+                Path::new("src/lib.rs"),
+            );
+            assert!(dep.is_none(), "self:: imports should be ignored");
+        }
+
+        #[test]
+        fn test_process_use_statement_relative_super_ignored() {
+            let ws: HashSet<String> = HashSet::new();
+            let dep = process_use_statement(
+                "use super::parent;",
+                1,
+                "my_crate",
+                &ws,
+                Path::new("src/sub/mod.rs"),
+            );
+            assert!(dep.is_none(), "super:: imports should be ignored");
+        }
+
+        #[test]
+        fn test_process_use_statement_external_filtered() {
+            let ws: HashSet<String> = HashSet::from(["my_crate".to_string()]);
+            let dep = process_use_statement(
+                "use serde::Serialize;",
+                1,
+                "my_crate",
+                &ws,
+                Path::new("src/lib.rs"),
+            );
+            assert!(dep.is_none(), "external crate imports should be filtered");
+        }
+
+        #[test]
+        fn test_process_use_statement_std_filtered() {
+            let ws: HashSet<String> = HashSet::new();
+            let dep = process_use_statement(
+                "use std::collections::HashMap;",
+                1,
+                "my_crate",
+                &ws,
+                Path::new("src/lib.rs"),
+            );
+            assert!(dep.is_none(), "std imports should be filtered");
+        }
     }
 
-    // ========================================================================
-    // process_use_statement() tests
-    // ========================================================================
+    mod parsing_tests {
+        use super::*;
 
-    #[test]
-    fn test_process_use_statement_crate_local() {
-        let ws: HashSet<String> = HashSet::new();
-        let dep = process_use_statement(
-            "use crate::graph::build;",
-            1,
-            "my_crate",
-            &ws,
-            Path::new("src/cli.rs"),
-        );
-        let dep = dep.expect("should parse crate-local import");
-        // Crate-local imports use actual crate name for inter-crate module_map lookup
-        assert_eq!(dep.target_crate, "my_crate");
-        assert_eq!(dep.target_module, "graph");
-        assert_eq!(dep.target_item, Some("build".to_string()));
-    }
-
-    #[test]
-    fn test_process_use_statement_crate_local_module_only() {
-        let ws: HashSet<String> = HashSet::new();
-        let dep = process_use_statement(
-            "use crate::graph;",
-            5,
-            "my_crate",
-            &ws,
-            Path::new("src/lib.rs"),
-        );
-        let dep = dep.expect("should parse crate-local module import");
-        // Crate-local imports use actual crate name for inter-crate module_map lookup
-        assert_eq!(dep.target_crate, "my_crate");
-        assert_eq!(dep.target_module, "graph");
-        assert!(dep.target_item.is_none());
-        assert_eq!(dep.line, 5);
-    }
-
-    #[test]
-    fn test_process_use_statement_workspace_crate() {
-        let ws: HashSet<String> = HashSet::from(["other_crate".to_string()]);
-        let dep = process_use_statement(
-            "use other_crate::utils;",
-            1,
-            "my_crate",
-            &ws,
-            Path::new("src/lib.rs"),
-        );
-        let dep = dep.expect("should parse workspace crate import");
-        assert_eq!(dep.target_crate, "other_crate");
-        assert_eq!(dep.target_module, "utils");
-    }
-
-    #[test]
-    fn test_process_use_statement_workspace_crate_with_hyphen() {
-        // Crate name has hyphen in Cargo.toml but appears as underscore in use statement
-        let ws: HashSet<String> = HashSet::from(["my-lib".to_string()]);
-        let dep = process_use_statement(
-            "use my_lib::feature;",
-            1,
-            "app",
-            &ws,
-            Path::new("src/main.rs"),
-        );
-        let dep = dep.expect("should parse workspace crate with hyphen");
-        assert_eq!(dep.target_crate, "my_lib");
-        assert_eq!(dep.target_module, "feature");
-    }
-
-    #[test]
-    fn test_process_use_statement_relative_self_ignored() {
-        let ws: HashSet<String> = HashSet::new();
-        let dep = process_use_statement(
-            "use self::helper;",
-            1,
-            "my_crate",
-            &ws,
-            Path::new("src/lib.rs"),
-        );
-        assert!(dep.is_none(), "self:: imports should be ignored");
-    }
-
-    #[test]
-    fn test_process_use_statement_relative_super_ignored() {
-        let ws: HashSet<String> = HashSet::new();
-        let dep = process_use_statement(
-            "use super::parent;",
-            1,
-            "my_crate",
-            &ws,
-            Path::new("src/sub/mod.rs"),
-        );
-        assert!(dep.is_none(), "super:: imports should be ignored");
-    }
-
-    #[test]
-    fn test_process_use_statement_external_filtered() {
-        let ws: HashSet<String> = HashSet::from(["my_crate".to_string()]);
-        let dep = process_use_statement(
-            "use serde::Serialize;",
-            1,
-            "my_crate",
-            &ws,
-            Path::new("src/lib.rs"),
-        );
-        assert!(dep.is_none(), "external crate imports should be filtered");
-    }
-
-    #[test]
-    fn test_process_use_statement_std_filtered() {
-        let ws: HashSet<String> = HashSet::new();
-        let dep = process_use_statement(
-            "use std::collections::HashMap;",
-            1,
-            "my_crate",
-            &ws,
-            Path::new("src/lib.rs"),
-        );
-        assert!(dep.is_none(), "std imports should be filtered");
-    }
-
-    // ========================================================================
-    // parse_workspace_dependencies() tests
-    // ========================================================================
-
-    #[test]
-    fn test_parse_workspace_dependencies_mixed() {
-        let source = r#"
+        #[test]
+        fn test_parse_workspace_dependencies_mixed() {
+            let source = r#"
 use crate::graph;
 use other_crate::utils;
 use serde::Serialize;
 use std::collections::HashMap;
 "#;
-        let ws: HashSet<String> = HashSet::from(["my_crate".into(), "other_crate".into()]);
-        let deps = parse_workspace_dependencies(source, "my_crate", &ws, Path::new("src/lib.rs"));
+            let ws: HashSet<String> = HashSet::from(["my_crate".into(), "other_crate".into()]);
+            let deps =
+                parse_workspace_dependencies(source, "my_crate", &ws, Path::new("src/lib.rs"));
 
-        // Should have 2 deps: my_crate::graph and other_crate::utils
-        assert_eq!(deps.len(), 2, "found: {:?}", deps);
-        // Both crate-local and workspace crates use actual crate names
-        assert!(
-            deps.iter()
-                .any(|d| d.target_crate == "my_crate" && d.target_module == "graph")
-        );
-        assert!(
-            deps.iter()
-                .any(|d| d.target_crate == "other_crate" && d.target_module == "utils")
-        );
-    }
+            assert_eq!(deps.len(), 2, "found: {:?}", deps);
+            assert!(
+                deps.iter()
+                    .any(|d| d.target_crate == "my_crate" && d.target_module == "graph")
+            );
+            assert!(
+                deps.iter()
+                    .any(|d| d.target_crate == "other_crate" && d.target_module == "utils")
+            );
+        }
 
-    #[test]
-    fn test_parse_workspace_dependencies_dedup_by_full_target() {
-        let source = r#"
+        #[test]
+        fn test_parse_workspace_dependencies_dedup_by_full_target() {
+            let source = r#"
 use crate::graph::build;
 use crate::graph::Node;
 use crate::graph;
 "#;
-        let ws: HashSet<String> = HashSet::new();
-        let deps = parse_workspace_dependencies(source, "my_crate", &ws, Path::new("src/cli.rs"));
+            let ws: HashSet<String> = HashSet::new();
+            let deps =
+                parse_workspace_dependencies(source, "my_crate", &ws, Path::new("src/cli.rs"));
 
-        // Should keep distinct symbols (dedup by full_target, not module_target)
-        assert_eq!(deps.len(), 3, "should keep distinct symbols: {:?}", deps);
-        assert!(
-            deps.iter()
-                .any(|d| d.target_item == Some("build".to_string()))
-        );
-        assert!(
-            deps.iter()
-                .any(|d| d.target_item == Some("Node".to_string()))
-        );
-        assert!(deps.iter().any(|d| d.target_item.is_none()));
-    }
+            assert_eq!(deps.len(), 3, "should keep distinct symbols: {:?}", deps);
+            assert!(
+                deps.iter()
+                    .any(|d| d.target_item == Some("build".to_string()))
+            );
+            assert!(
+                deps.iter()
+                    .any(|d| d.target_item == Some("Node".to_string()))
+            );
+            assert!(deps.iter().any(|d| d.target_item.is_none()));
+        }
 
-    #[test]
-    fn test_process_use_multi_symbol() {
-        let ws: HashSet<String> = HashSet::new();
-        let deps = process_use_statement_multi(
-            "use crate::graph::{Node, Edge};",
-            1,
-            "my_crate",
-            &ws,
-            Path::new("src/cli.rs"),
-        );
-        assert_eq!(deps.len(), 2, "should return 2 deps: {:?}", deps);
-        assert!(
-            deps.iter()
-                .any(|d| d.target_item == Some("Node".to_string()))
-        );
-        assert!(
-            deps.iter()
-                .any(|d| d.target_item == Some("Edge".to_string()))
-        );
-    }
+        #[test]
+        fn test_process_use_multi_symbol() {
+            let ws: HashSet<String> = HashSet::new();
+            let deps = process_use_statement_multi(
+                "use crate::graph::{Node, Edge};",
+                1,
+                "my_crate",
+                &ws,
+                Path::new("src/cli.rs"),
+            );
+            assert_eq!(deps.len(), 2, "should return 2 deps: {:?}", deps);
+            assert!(
+                deps.iter()
+                    .any(|d| d.target_item == Some("Node".to_string()))
+            );
+            assert!(
+                deps.iter()
+                    .any(|d| d.target_item == Some("Edge".to_string()))
+            );
+        }
 
-    #[test]
-    fn test_process_use_glob() {
-        let ws: HashSet<String> = HashSet::new();
-        let deps = process_use_statement_multi(
-            "use crate::analyze::*;",
-            1,
-            "my_crate",
-            &ws,
-            Path::new("src/cli.rs"),
-        );
-        assert_eq!(deps.len(), 1, "glob should return 1 dep: {:?}", deps);
-        assert_eq!(deps[0].target_item, Some("*".to_string()));
-        assert_eq!(deps[0].target_module, "analyze");
+        #[test]
+        fn test_process_use_glob() {
+            let ws: HashSet<String> = HashSet::new();
+            let deps = process_use_statement_multi(
+                "use crate::analyze::*;",
+                1,
+                "my_crate",
+                &ws,
+                Path::new("src/cli.rs"),
+            );
+            assert_eq!(deps.len(), 1, "glob should return 1 dep: {:?}", deps);
+            assert_eq!(deps[0].target_item, Some("*".to_string()));
+            assert_eq!(deps[0].target_module, "analyze");
+        }
     }
 }

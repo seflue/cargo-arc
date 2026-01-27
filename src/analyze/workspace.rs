@@ -214,305 +214,282 @@ mod tests {
     use super::*;
     use std::path::Path;
 
-    /// Resolved dependency from cargo metadata's resolve section (test-only).
-    #[derive(Debug, Clone)]
-    struct ResolvedDependency {
-        name: String,
-        #[allow(dead_code)]
-        pkg_id: String,
-        dep_kinds: Vec<ResolvedDepKind>,
+    mod integration_tests {
+        use super::*;
+
+        /// Resolved dependency from cargo metadata's resolve section (test-only).
+        #[derive(Debug, Clone)]
+        struct ResolvedDependency {
+            name: String,
+            #[allow(dead_code)]
+            pkg_id: String,
+            dep_kinds: Vec<ResolvedDepKind>,
+        }
+
+        /// Dependency kind info from resolve section (test-only).
+        #[derive(Debug, Clone)]
+        struct ResolvedDepKind {
+            kind: Option<String>,
+            #[allow(dead_code)]
+            target: Option<String>,
+        }
+
+        #[test]
+        fn test_resolved_dependency_construction() {
+            let dep = ResolvedDependency {
+                name: "core".to_string(),
+                pkg_id: "core 0.1.0 (path+file:///workspace/core)".to_string(),
+                dep_kinds: vec![ResolvedDepKind {
+                    kind: None,
+                    target: None,
+                }],
+            };
+            assert_eq!(dep.name, "core");
+            assert_eq!(dep.dep_kinds.len(), 1);
+            assert!(dep.dep_kinds[0].kind.is_none());
+        }
+
+        #[test]
+        fn test_analyze_workspace_self() {
+            let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+            let crates =
+                analyze_workspace(&manifest, &FeatureConfig::default()).expect("should analyze");
+
+            assert!(!crates.is_empty());
+            let cargo_arc = crates.iter().find(|c| c.name == "cargo-arc");
+            assert!(cargo_arc.is_some(), "should find cargo-arc");
+        }
+
+        #[test]
+        fn test_crate_info_fields() {
+            let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+            let crates =
+                analyze_workspace(&manifest, &FeatureConfig::default()).expect("should analyze");
+
+            let cargo_arc = crates.iter().find(|c| c.name == "cargo-arc").unwrap();
+            assert!(cargo_arc.path.exists(), "path should exist");
+        }
     }
 
-    /// Dependency kind info from resolve section (test-only).
-    #[derive(Debug, Clone)]
-    struct ResolvedDepKind {
-        kind: Option<String>,
-        #[allow(dead_code)]
-        target: Option<String>,
-    }
+    mod feature_tests {
+        use super::*;
 
-    #[test]
-    fn test_resolved_dependency_construction() {
-        let dep = ResolvedDependency {
-            name: "core".to_string(),
-            pkg_id: "core 0.1.0 (path+file:///workspace/core)".to_string(),
-            dep_kinds: vec![ResolvedDepKind {
-                kind: None,
-                target: None,
-            }],
-        };
-        assert_eq!(dep.name, "core");
-        assert_eq!(dep.dep_kinds.len(), 1);
-        assert!(dep.dep_kinds[0].kind.is_none());
-    }
+        fn feature_test_manifest() -> std::path::PathBuf {
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/feature_test_workspace/Cargo.toml")
+        }
 
-    #[test]
-    fn test_analyze_workspace_self() {
-        // Test with cargo-arc itself as workspace
-        let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-        let crates =
-            analyze_workspace(&manifest, &FeatureConfig::default()).expect("should analyze");
+        #[test]
+        fn test_feature_filtering_shows_all_crates() {
+            let manifest = feature_test_manifest();
+            let crates =
+                analyze_workspace(&manifest, &FeatureConfig::default()).expect("should analyze");
 
-        // cargo-arc should find itself
-        assert!(!crates.is_empty());
-        let cargo_arc = crates.iter().find(|c| c.name == "cargo-arc");
-        assert!(cargo_arc.is_some(), "should find cargo-arc");
-    }
+            let names: Vec<&str> = crates.iter().map(|c| c.name.as_str()).collect();
+            assert!(names.contains(&"core"), "should have core");
+            assert!(names.contains(&"core-utils"), "should have core-utils");
+            assert!(names.contains(&"server-utils"), "should have server-utils");
+            assert!(names.contains(&"web-utils"), "should have web-utils");
+        }
 
-    #[test]
-    fn test_crate_info_fields() {
-        let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-        let crates =
-            analyze_workspace(&manifest, &FeatureConfig::default()).expect("should analyze");
+        #[test]
+        fn test_feature_filtering_core_utils_depends_on_core() {
+            let manifest = feature_test_manifest();
+            let crates =
+                analyze_workspace(&manifest, &FeatureConfig::default()).expect("should analyze");
 
-        let cargo_arc = crates.iter().find(|c| c.name == "cargo-arc").unwrap();
-        assert!(cargo_arc.path.exists(), "path should exist");
-        // dependencies is empty because cargo-arc has no workspace-internal deps
-        // (only external: clap, petgraph, etc.)
-    }
+            let core_utils = crates.iter().find(|c| c.name == "core-utils").unwrap();
+            assert!(
+                core_utils.dependencies.contains(&"core".to_string()),
+                "core-utils should depend on core, got: {:?}",
+                core_utils.dependencies
+            );
+        }
 
-    // ========================================================================
-    // Feature filtering tests (using feature_test_workspace fixture)
-    // ========================================================================
+        #[test]
+        fn test_feature_filtering_server_without_feature() {
+            let manifest = feature_test_manifest();
+            let crates =
+                analyze_workspace(&manifest, &FeatureConfig::default()).expect("should analyze");
 
-    fn feature_test_manifest() -> std::path::PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/feature_test_workspace/Cargo.toml")
-    }
+            let server_utils = crates.iter().find(|c| c.name == "server-utils").unwrap();
+            assert!(
+                !server_utils.dependencies.contains(&"core".to_string()),
+                "server-utils should NOT depend on core without feature, got: {:?}",
+                server_utils.dependencies
+            );
+        }
 
-    #[test]
-    fn test_feature_filtering_shows_all_crates() {
-        // Without any features, all crates should be present
-        let manifest = feature_test_manifest();
-        let crates =
-            analyze_workspace(&manifest, &FeatureConfig::default()).expect("should analyze");
+        #[test]
+        fn test_feature_filtering_server_with_feature() {
+            let manifest = feature_test_manifest();
+            let config = FeatureConfig {
+                features: vec!["server-utils/server".to_string()],
+                ..Default::default()
+            };
+            let crates = analyze_workspace(&manifest, &config).expect("should analyze");
 
-        let names: Vec<&str> = crates.iter().map(|c| c.name.as_str()).collect();
-        assert!(names.contains(&"core"), "should have core");
-        assert!(names.contains(&"core-utils"), "should have core-utils");
-        assert!(names.contains(&"server-utils"), "should have server-utils");
-        assert!(names.contains(&"web-utils"), "should have web-utils");
-    }
+            let server_utils = crates.iter().find(|c| c.name == "server-utils").unwrap();
+            assert!(
+                server_utils.dependencies.contains(&"core".to_string()),
+                "server-utils SHOULD depend on core with server feature, got: {:?}",
+                server_utils.dependencies
+            );
+        }
 
-    #[test]
-    fn test_feature_filtering_core_utils_depends_on_core() {
-        // core-utils always depends on core (not optional)
-        let manifest = feature_test_manifest();
-        let crates =
-            analyze_workspace(&manifest, &FeatureConfig::default()).expect("should analyze");
+        #[test]
+        fn test_feature_filtering_web_with_feature() {
+            let manifest = feature_test_manifest();
+            let config = FeatureConfig {
+                features: vec!["web-utils/web".to_string()],
+                ..Default::default()
+            };
+            let crates = analyze_workspace(&manifest, &config).expect("should analyze");
 
-        let core_utils = crates.iter().find(|c| c.name == "core-utils").unwrap();
-        assert!(
-            core_utils.dependencies.contains(&"core".to_string()),
-            "core-utils should depend on core, got: {:?}",
-            core_utils.dependencies
-        );
-    }
+            let web_utils = crates.iter().find(|c| c.name == "web-utils").unwrap();
+            assert!(
+                web_utils.dependencies.contains(&"core".to_string()),
+                "web-utils SHOULD depend on core with web feature, got: {:?}",
+                web_utils.dependencies
+            );
+        }
 
-    #[test]
-    fn test_feature_filtering_server_without_feature() {
-        // Without server feature, server-utils should NOT depend on core
-        let manifest = feature_test_manifest();
-        let crates =
-            analyze_workspace(&manifest, &FeatureConfig::default()).expect("should analyze");
+        #[test]
+        fn test_node_id_matching_substring_names() {
+            let manifest = feature_test_manifest();
+            let crates =
+                analyze_workspace(&manifest, &FeatureConfig::default()).expect("should analyze");
 
-        let server_utils = crates.iter().find(|c| c.name == "server-utils").unwrap();
-        assert!(
-            !server_utils.dependencies.contains(&"core".to_string()),
-            "server-utils should NOT depend on core without feature, got: {:?}",
-            server_utils.dependencies
-        );
-    }
+            let core = crates.iter().find(|c| c.name == "core").unwrap();
+            let core_utils = crates.iter().find(|c| c.name == "core-utils").unwrap();
 
-    #[test]
-    fn test_feature_filtering_server_with_feature() {
-        // With server feature, server-utils SHOULD depend on core
-        let manifest = feature_test_manifest();
-        let config = FeatureConfig {
-            features: vec!["server-utils/server".to_string()],
-            ..Default::default()
-        };
-        let crates = analyze_workspace(&manifest, &config).expect("should analyze");
+            assert!(
+                core.dependencies.is_empty(),
+                "core should have no deps, got: {:?}",
+                core.dependencies
+            );
 
-        let server_utils = crates.iter().find(|c| c.name == "server-utils").unwrap();
-        assert!(
-            server_utils.dependencies.contains(&"core".to_string()),
-            "server-utils SHOULD depend on core with server feature, got: {:?}",
-            server_utils.dependencies
-        );
-    }
+            assert!(
+                core_utils.dependencies.contains(&"core".to_string()),
+                "core-utils should depend on core, got: {:?}",
+                core_utils.dependencies
+            );
+            assert!(
+                core_utils.dependencies.contains(&"shared_lib".to_string()),
+                "core-utils should depend on shared-lib (normalized: shared_lib), got: {:?}",
+                core_utils.dependencies
+            );
+            assert_eq!(
+                core_utils.dependencies.len(),
+                2,
+                "core-utils should have exactly 2 deps"
+            );
+        }
 
-    #[test]
-    fn test_feature_filtering_web_with_feature() {
-        // With web feature, web-utils SHOULD depend on core
-        let manifest = feature_test_manifest();
-        let config = FeatureConfig {
-            features: vec!["web-utils/web".to_string()],
-            ..Default::default()
-        };
-        let crates = analyze_workspace(&manifest, &config).expect("should analyze");
+        #[test]
+        fn test_feature_filtering_web_only_filters_crates() {
+            let manifest = feature_test_manifest();
+            let config = FeatureConfig {
+                features: vec!["web".to_string()],
+                ..Default::default()
+            };
+            let crates = analyze_workspace(&manifest, &config).expect("should analyze");
 
-        let web_utils = crates.iter().find(|c| c.name == "web-utils").unwrap();
-        assert!(
-            web_utils.dependencies.contains(&"core".to_string()),
-            "web-utils SHOULD depend on core with web feature, got: {:?}",
-            web_utils.dependencies
-        );
-    }
+            let names: Vec<&str> = crates.iter().map(|c| c.name.as_str()).collect();
+            assert!(
+                names.contains(&"web-utils"),
+                "should have web-utils, got: {:?}",
+                names
+            );
+            assert!(
+                names.contains(&"core"),
+                "should have core (dependency), got: {:?}",
+                names
+            );
+            assert!(
+                names.contains(&"testlib"),
+                "should have testlib (normal dep of web-utils), got: {:?}",
+                names
+            );
+            assert!(
+                !names.contains(&"server-utils"),
+                "should NOT have server-utils, got: {:?}",
+                names
+            );
+            assert!(
+                !names.contains(&"core-utils"),
+                "should NOT have core-utils, got: {:?}",
+                names
+            );
+            assert_eq!(names.len(), 3, "expected 3 crates, got: {:?}", names);
+        }
 
-    #[test]
-    fn test_node_id_matching_substring_names() {
-        // Verify "core" and "core-utils" are correctly distinguished
-        // This tests the Node-ID edge case mentioned in the plan
-        let manifest = feature_test_manifest();
-        let crates =
-            analyze_workspace(&manifest, &FeatureConfig::default()).expect("should analyze");
+        #[test]
+        fn test_feature_filtering_server_only_filters_crates() {
+            let manifest = feature_test_manifest();
+            let config = FeatureConfig {
+                features: vec!["server".to_string()],
+                ..Default::default()
+            };
+            let crates = analyze_workspace(&manifest, &config).expect("should analyze");
 
-        let core = crates.iter().find(|c| c.name == "core").unwrap();
-        let core_utils = crates.iter().find(|c| c.name == "core-utils").unwrap();
+            let names: Vec<&str> = crates.iter().map(|c| c.name.as_str()).collect();
+            assert!(
+                names.contains(&"server-utils"),
+                "should have server-utils, got: {:?}",
+                names
+            );
+            assert!(
+                names.contains(&"core"),
+                "should have core (dependency), got: {:?}",
+                names
+            );
+            assert!(
+                !names.contains(&"web-utils"),
+                "should NOT have web-utils, got: {:?}",
+                names
+            );
+            assert!(
+                !names.contains(&"core-utils"),
+                "should NOT have core-utils, got: {:?}",
+                names
+            );
+            assert_eq!(names.len(), 2, "expected 2 crates, got: {:?}", names);
+        }
 
-        // core should have no workspace dependencies
-        assert!(
-            core.dependencies.is_empty(),
-            "core should have no deps, got: {:?}",
-            core.dependencies
-        );
+        #[test]
+        fn test_feature_filtering_unknown_feature_returns_error() {
+            let manifest = feature_test_manifest();
+            let config = FeatureConfig {
+                features: vec!["nonexistent".to_string()],
+                ..Default::default()
+            };
+            let result = analyze_workspace(&manifest, &config);
 
-        // core-utils should depend on core and shared-lib (both normal workspace deps)
-        assert!(
-            core_utils.dependencies.contains(&"core".to_string()),
-            "core-utils should depend on core, got: {:?}",
-            core_utils.dependencies
-        );
-        assert!(
-            core_utils.dependencies.contains(&"shared_lib".to_string()),
-            "core-utils should depend on shared-lib (normalized: shared_lib), got: {:?}",
-            core_utils.dependencies
-        );
-        assert_eq!(
-            core_utils.dependencies.len(),
-            2,
-            "core-utils should have exactly 2 deps"
-        );
-    }
+            assert!(
+                result.is_err(),
+                "unknown feature should cause cargo metadata to fail"
+            );
+        }
 
-    // ========================================================================
-    // Feature-based crate filtering tests (ACCEPTANCE CRITERIA)
-    // ========================================================================
+        #[test]
+        fn test_feature_filtering_all_features_shows_all() {
+            let manifest = feature_test_manifest();
+            let config = FeatureConfig {
+                all_features: true,
+                ..Default::default()
+            };
+            let crates = analyze_workspace(&manifest, &config).expect("should analyze");
 
-    #[test]
-    fn test_feature_filtering_web_only_filters_crates() {
-        // --features web: Only web-utils (defines "web") + its dependencies
-        // web-utils has: core (optional, activated by "web"), testlib (normal dep)
-        // Should NOT include: server-utils, core-utils, shared-lib, build-helper
-        let manifest = feature_test_manifest();
-        let config = FeatureConfig {
-            features: vec!["web".to_string()],
-            ..Default::default()
-        };
-        let crates = analyze_workspace(&manifest, &config).expect("should analyze");
-
-        let names: Vec<&str> = crates.iter().map(|c| c.name.as_str()).collect();
-        assert!(
-            names.contains(&"web-utils"),
-            "should have web-utils, got: {:?}",
-            names
-        );
-        assert!(
-            names.contains(&"core"),
-            "should have core (dependency), got: {:?}",
-            names
-        );
-        assert!(
-            names.contains(&"testlib"),
-            "should have testlib (normal dep of web-utils), got: {:?}",
-            names
-        );
-        assert!(
-            !names.contains(&"server-utils"),
-            "should NOT have server-utils, got: {:?}",
-            names
-        );
-        assert!(
-            !names.contains(&"core-utils"),
-            "should NOT have core-utils, got: {:?}",
-            names
-        );
-        assert_eq!(names.len(), 3, "expected 3 crates, got: {:?}", names);
-    }
-
-    #[test]
-    fn test_feature_filtering_server_only_filters_crates() {
-        // --features server: Only server-utils (defines "server") + core (dependency)
-        let manifest = feature_test_manifest();
-        let config = FeatureConfig {
-            features: vec!["server".to_string()],
-            ..Default::default()
-        };
-        let crates = analyze_workspace(&manifest, &config).expect("should analyze");
-
-        let names: Vec<&str> = crates.iter().map(|c| c.name.as_str()).collect();
-        assert!(
-            names.contains(&"server-utils"),
-            "should have server-utils, got: {:?}",
-            names
-        );
-        assert!(
-            names.contains(&"core"),
-            "should have core (dependency), got: {:?}",
-            names
-        );
-        assert!(
-            !names.contains(&"web-utils"),
-            "should NOT have web-utils, got: {:?}",
-            names
-        );
-        assert!(
-            !names.contains(&"core-utils"),
-            "should NOT have core-utils, got: {:?}",
-            names
-        );
-        assert_eq!(names.len(), 2, "expected 2 crates, got: {:?}", names);
-    }
-
-    // ========================================================================
-    // Edge case tests
-    // ========================================================================
-
-    #[test]
-    fn test_feature_filtering_unknown_feature_returns_error() {
-        // Unknown feature causes cargo metadata to fail (cargo validates features)
-        let manifest = feature_test_manifest();
-        let config = FeatureConfig {
-            features: vec!["nonexistent".to_string()],
-            ..Default::default()
-        };
-        let result = analyze_workspace(&manifest, &config);
-
-        assert!(
-            result.is_err(),
-            "unknown feature should cause cargo metadata to fail"
-        );
-    }
-
-    #[test]
-    fn test_feature_filtering_all_features_shows_all() {
-        // --all-features should show all workspace crates
-        let manifest = feature_test_manifest();
-        let config = FeatureConfig {
-            all_features: true,
-            ..Default::default()
-        };
-        let crates = analyze_workspace(&manifest, &config).expect("should analyze");
-
-        let names: Vec<&str> = crates.iter().map(|c| c.name.as_str()).collect();
-        assert!(names.contains(&"core"), "should have core");
-        assert!(names.contains(&"core-utils"), "should have core-utils");
-        assert!(names.contains(&"server-utils"), "should have server-utils");
-        assert!(names.contains(&"web-utils"), "should have web-utils");
-        assert!(names.contains(&"testlib"), "should have testlib");
-        assert!(names.contains(&"shared-lib"), "should have shared-lib");
-        assert!(names.contains(&"build-helper"), "should have build-helper");
-        assert_eq!(names.len(), 7, "expected all 7 crates, got: {:?}", names);
+            let names: Vec<&str> = crates.iter().map(|c| c.name.as_str()).collect();
+            assert!(names.contains(&"core"), "should have core");
+            assert!(names.contains(&"core-utils"), "should have core-utils");
+            assert!(names.contains(&"server-utils"), "should have server-utils");
+            assert!(names.contains(&"web-utils"), "should have web-utils");
+            assert!(names.contains(&"testlib"), "should have testlib");
+            assert!(names.contains(&"shared-lib"), "should have shared-lib");
+            assert!(names.contains(&"build-helper"), "should have build-helper");
+            assert_eq!(names.len(), 7, "expected all 7 crates, got: {:?}", names);
+        }
     }
 }
