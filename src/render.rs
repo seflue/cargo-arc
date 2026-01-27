@@ -420,6 +420,7 @@ fn render_toolbar(width: f32) -> String {
 fn render_script(config: &RenderConfig) -> String {
     // Module dependencies must be loaded before svg_script.js
     let tree_logic = include_str!("tree_logic.js");
+    let virtual_edge_logic = include_str!("virtual_edge_logic.js");
 
     let svg_script = include_str!("svg_script.js")
         .replace("__ROW_HEIGHT__", &config.row_height.to_string())
@@ -427,8 +428,8 @@ fn render_script(config: &RenderConfig) -> String {
         .replace("__TOOLBAR_HEIGHT__", &TOOLBAR_HEIGHT.to_string());
 
     format!(
-        "  <script><![CDATA[\n{}\n{}\n]]></script>\n",
-        tree_logic, svg_script
+        "  <script><![CDATA[\n{}\n{}\n{}\n]]></script>\n",
+        tree_logic, virtual_edge_logic, svg_script
     )
 }
 
@@ -1587,5 +1588,26 @@ mod tests {
             hitareas_content.contains("arc-hitarea"),
             "hitareas-layer should contain arc-hitarea"
         );
+    }
+
+    #[test]
+    fn test_all_js_modules_embedded() {
+        // Ensures all JS modules referenced in svg_script.js are embedded in render_script()
+        let config = RenderConfig::default();
+        let script = render_script(&config);
+
+        // Known external modules that svg_script.js depends on
+        let required_modules = ["VirtualEdgeLogic"];
+
+        for module in required_modules {
+            // Check module is defined (const X = { or X = {)
+            let definition_pattern = format!("{} = {{", module);
+            assert!(
+                script.contains(&definition_pattern),
+                "JS module '{}' is used but not embedded in render_script(). \
+                 Add include_str!() for the module file in render.rs.",
+                module
+            );
+        }
     }
 }

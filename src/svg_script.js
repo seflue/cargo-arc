@@ -753,12 +753,57 @@ if (typeof document !== 'undefined') {
     return ArcLogic.calculateArcPath(fromX, fromY, toX, toY, maxRight, ROW_HEIGHT);
   }
 
+  // Helper: Extract edge data from DOM hitareas to pure objects
+  function extractEdgeData(hitareas) {
+    const edges = [];
+    hitareas.forEach(hitarea => {
+      const fromId = hitarea.dataset.from;
+      const toId = hitarea.dataset.to;
+      const fromNode = document.getElementById('node-' + fromId);
+      const toNode = document.getElementById('node-' + toId);
+
+      // A node is hidden if its visible ancestor is NOT itself
+      // (i.e., an ancestor is collapsed, hiding this node)
+      const fromIsHidden = getVisibleAncestor(fromId) !== fromId;
+      const toIsHidden = getVisibleAncestor(toId) !== toId;
+
+      edges.push({
+        hitarea,
+        arcId: hitarea.dataset.arcId,
+        fromId,
+        toId,
+        fromNode,
+        toNode,
+        fromHidden: fromIsHidden,
+        toHidden: toIsHidden,
+        sourceLocations: hitarea.dataset.sourceLocations,
+        direction: hitarea.dataset.direction
+      });
+    });
+    return edges;
+  }
+
+  // Helper: Extract node positions from DOM to Map
+  function extractNodePositions(nodeIds) {
+    const positions = new Map();
+    for (const nodeId of nodeIds) {
+      const node = document.getElementById('node-' + nodeId);
+      if (node) {
+        positions.set(nodeId, {
+          x: parseFloat(node.getAttribute('x')),
+          y: parseFloat(node.getAttribute('y')),
+          width: parseFloat(node.getAttribute('width')),
+          height: parseFloat(node.getAttribute('height'))
+        });
+      }
+    }
+    return positions;
+  }
+
   // Recalculate and show virtual edges for collapsed nodes
   function recalculateVirtualEdges() {
-    // Remove existing virtual elements (hitareas, visible arcs, counts)
+    // === DOM Cleanup ===
     document.querySelectorAll('.virtual-arc, .virtual-hitarea, .virtual-arrow, .arc-count, .arc-count-group, .arc-count-bg').forEach(el => el.remove());
-
-    // FIRST: Reset ALL edges (hitareas + visible) and arrows to visible
     document.querySelectorAll('.arc-hitarea, .dep-arc, .cycle-arc').forEach(edge => {
       edge.style.display = '';
     });
@@ -766,73 +811,53 @@ if (typeof document !== 'undefined') {
       arrow.style.display = '';
     });
 
-    // Find all original hitareas and update paths / determine which need to be hidden
+    // === Extract edge data from DOM ===
     const hitareas = document.querySelectorAll('.arc-hitarea');
-    const virtualEdges = new Map(); // "visibleFrom-visibleTo" -> { count, hiddenEdgeData }
+    const edgeData = extractEdgeData(hitareas);
 
-    hitareas.forEach(hitarea => {
-      const arcId = hitarea.dataset.arcId;
-      const fromId = hitarea.dataset.from;
-      const toId = hitarea.dataset.to;
-      const fromNode = document.getElementById('node-' + fromId);
-      const toNode = document.getElementById('node-' + toId);
+    // === Process edges: hide original elements, update visible paths ===
+    edgeData.forEach(edge => {
+      const { hitarea, arcId, fromId, toId, fromNode, toNode, fromHidden, toHidden } = edge;
 
-      // Check if nodes are hidden (have .collapsed class)
-      const fromHidden = fromNode && fromNode.classList.contains('collapsed');
-      const toHidden = toNode && toNode.classList.contains('collapsed');
-
-      // DEBUG: Log arc visibility decisions
       if (window.DEBUG_ARCS) {
         console.log(`Arc ${arcId}: from=${fromId}(${fromHidden ? 'hidden' : 'visible'}), to=${toId}(${toHidden ? 'hidden' : 'visible'})`);
       }
 
       if (fromHidden || toHidden) {
-        // Hide original hitarea, visible edge, and arrows
+        // Hide original elements
         hitarea.style.display = 'none';
         const visibleArc = getVisibleArc(arcId);
         if (visibleArc) visibleArc.style.display = 'none';
         document.querySelectorAll('[data-edge="' + fromId + '-' + toId + '"]')
           .forEach(arr => arr.style.display = 'none');
-
-        // Calculate visible endpoints for virtual edge
-        const visibleFrom = fromHidden ? getVisibleAncestor(fromId) : fromId;
-        const visibleTo = toHidden ? getVisibleAncestor(toId) : toId;
-
-        if (visibleFrom && visibleTo && visibleFrom !== visibleTo) {
-          const key = visibleFrom + '-' + visibleTo;
-          const existing = virtualEdges.get(key) || { count: 0, hiddenEdgeData: [], directions: [] };
-          existing.count++;
-          // Collect source locations from hidden hitarea
-          const locs = hitarea.dataset.sourceLocations;
-          if (locs) existing.hiddenEdgeData.push(locs);
-          // Collect direction for aggregated arc color
-          const direction = hitarea.dataset.direction;
-          if (direction) existing.directions.push(direction);
-          virtualEdges.set(key, existing);
-        }
       } else if (fromNode && toNode) {
-        // Both endpoints visible - update arc paths to current node positions
+        // Update visible arc paths
         const arc = calculateArcPathFromNodes(fromNode, toNode, 3);
         hitarea.setAttribute('d', arc.path);
         const visibleArc = getVisibleArc(arcId);
         if (visibleArc) visibleArc.setAttribute('d', arc.path);
 
-        // Update arrow position with correct scale
         const strokeWidth = visibleArc ? parseFloat(visibleArc.style.strokeWidth) || 0.5 : 0.5;
         const scale = strokeWidth / 1.5;
-        const arrows = document.querySelectorAll('[data-edge="' + fromId + '-' + toId + '"]');
-        arrows.forEach(arrow => {
+        document.querySelectorAll('[data-edge="' + fromId + '-' + toId + '"]').forEach(arrow => {
           arrow.setAttribute('points', getArrowPoints(arc.toX, arc.toY, scale));
         });
       }
     });
 
-    // Create virtual edges using layer system
-    const baseArcsLayer = document.getElementById('base-arcs-layer');
-    const baseLabelsLayer = document.getElementById('base-labels-layer');
-    const hitareasLayer = document.getElementById('hitareas-layer');
+    // === Pure logic: aggregate hidden edges ===
+    const virtualEdges = VirtualEdgeLogic.aggregateHiddenEdges(edgeData, getVisibleAncestor);
 
-    // Find rightmost node edge (once, for all arcs)
+    // === Extract node positions for virtual edge endpoints ===
+    const nodeIds = new Set();
+    virtualEdges.forEach((_, key) => {
+      const [fromId, toId] = key.split('-');
+      nodeIds.add(fromId);
+      nodeIds.add(toId);
+    });
+    const nodePositions = extractNodePositions(nodeIds);
+
+    // === Find maxRight for arc positioning ===
     let maxRight = 0;
     document.querySelectorAll('.crate, .module').forEach(n => {
       if (!n.classList.contains('collapsed')) {
@@ -841,38 +866,20 @@ if (typeof document !== 'undefined') {
       }
     });
 
-    // Prepare arc data for all edges
-    const mergedEdges = new Map();
-    virtualEdges.forEach((data, key) => {
-      const [fromId, toId] = key.split('-');
-      const fromNode = document.getElementById('node-' + fromId);
-      const toNode = document.getElementById('node-' + toId);
+    // === Pure logic: prepare render data ===
+    const mergedEdges = VirtualEdgeLogic.prepareVirtualEdgeData(
+      virtualEdges, nodePositions, maxRight, ArcLogic, ROW_HEIGHT
+    );
 
-      if (fromNode && toNode) {
-        const fromX = parseFloat(fromNode.getAttribute('x')) + parseFloat(fromNode.getAttribute('width'));
-        const fromY = parseFloat(fromNode.getAttribute('y')) + parseFloat(fromNode.getAttribute('height')) / 2 + 3;
-        const toX = parseFloat(toNode.getAttribute('x')) + parseFloat(toNode.getAttribute('width'));
-        const toY = parseFloat(toNode.getAttribute('y')) + parseFloat(toNode.getAttribute('height')) / 2 - 3;
-
-        const arc = ArcLogic.calculateArcPath(fromX, fromY, toX, toY, maxRight, ROW_HEIGHT);
-        mergedEdges.set(key, { ...data, fromId, toId, arc });
-      }
-    });
+    // === DOM: Create virtual edge elements ===
+    const baseArcsLayer = document.getElementById('base-arcs-layer');
+    const baseLabelsLayer = document.getElementById('base-labels-layer');
+    const hitareasLayer = document.getElementById('hitareas-layer');
 
     // Pass 1: Arcs + Arrows (bottom layer)
     mergedEdges.forEach((data, key) => {
-      const { fromId, toId, arc, hiddenEdgeData, directions } = data;
+      const { fromId, toId, arc, strokeWidth, direction } = data;
       const arcId = fromId + '-' + toId;
-
-      // Calculate stroke width from aggregated locations
-      const totalLocations = hiddenEdgeData.reduce((sum, locs) =>
-        sum + ArcLogic.countLocations(locs), 0);
-      const strokeWidth = ArcLogic.calculateStrokeWidth(totalLocations);
-
-      // Determine direction: use unanimous direction, else 'downward' as fallback
-      const direction = (directions && directions.length > 0 && directions.every(d => d === directions[0]))
-        ? directions[0]
-        : 'downward';
 
       // Visible path (styled, no pointer events)
       const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
