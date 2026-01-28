@@ -1,10 +1,9 @@
 // highlight_logic.js - Pure calculation functions for highlight effects
 // No DOM dependencies
 
-// Import ArrowLogic for test environment
-let ArrowLogic;
-if (typeof require !== 'undefined') {
-  ArrowLogic = require('./arrow_logic.js').ArrowLogic;
+// In test environment (CommonJS), import ArrowLogic; in browser, it's already global
+if (typeof module !== 'undefined' && typeof ArrowLogic === 'undefined') {
+  var ArrowLogic = require('./arrow_logic.js').ArrowLogic;
 }
 
 const HighlightLogic = {
