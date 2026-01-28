@@ -1,6 +1,12 @@
 // highlight_logic.js - Pure calculation functions for highlight effects
 // No DOM dependencies
 
+// Import ArrowLogic for test environment
+let ArrowLogic;
+if (typeof require !== 'undefined') {
+  ArrowLogic = require('./arrow_logic.js').ArrowLogic;
+}
+
 const HighlightLogic = {
   // Constants
   HIGHLIGHT_SCALE: 1.3,
@@ -72,7 +78,7 @@ const HighlightLogic = {
    * @returns {number} - Arrow scale factor
    */
   calculateVirtualArrowScale(strokeWidth) {
-    return strokeWidth / 1.5;
+    return ArrowLogic.scaleFromStrokeWidth(strokeWidth);
   },
 
   /**

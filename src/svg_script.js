@@ -972,19 +972,18 @@ if (typeof document !== 'undefined') {
     // to-Node: dep (green border)
     DomAdapter.getNode(toId)?.classList.add('dep-node');
     // Virtual arc: marker class (keeps direction color), dynamic stroke-width
+    let highlightWidth = 0;
     DomAdapter.querySelectorAll(Selectors.virtualArc(fromId, toId))
       .forEach(el => {
-        highlightArcElement(el, edgeId, 'dep');
+        highlightWidth = highlightArcElement(el, edgeId, 'dep');
       });
     // Arrows: marker class (keeps direction color), scale to match arc
     DomAdapter.querySelectorAll('.virtual-arrow[data-vedge="' + edgeId + '"]')
       .forEach(el => {
         el.classList.add('highlighted-arrow');
-        const arc = DomAdapter.querySelector(Selectors.virtualArc(fromId, toId));
-        const arcWidth = parseFloat(arc?.style.strokeWidth) || 0.5;
         const tip = ArrowLogic.parseTipFromPoints(el.getAttribute('points'));
         if (tip) {
-          el.setAttribute('points', ArrowLogic.getArrowPoints(tip, HighlightLogic.calculateVirtualArrowScale(arcWidth)));
+          el.setAttribute('points', ArrowLogic.getArrowPoints(tip, HighlightLogic.calculateVirtualArrowScale(highlightWidth)));
         }
       });
     // Arc-count labels

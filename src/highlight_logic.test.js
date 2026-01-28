@@ -1,6 +1,7 @@
 // highlight_logic.test.js - Tests for pure highlight calculation functions
 const { expect, test, describe } = require('bun:test');
 const { HighlightLogic } = require('./highlight_logic.js');
+const { ArrowLogic } = require('./arrow_logic.js');
 
 describe('HighlightLogic', () => {
   describe('constants', () => {
