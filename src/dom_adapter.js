@@ -46,9 +46,17 @@ function createMockDomAdapter() {
     createSvgElement(tag) { track("createSvgElement", [tag]); return createFakeElement(tag); },
     // Convenience methods (use _Selectors)
     getNode(nodeId) { return this.getElementById(_Selectors.nodeId(nodeId)); },
-    getVisibleArc(arcId) { return this.querySelector(_Selectors.visibleArc(arcId)); },
+    getVisibleArc(arcId) {
+      const arc = this.querySelector(_Selectors.visibleArc(arcId));
+      if (!arc || arc.style.display === 'none') return null;
+      return arc;
+    },
     getHitarea(arcId) { return this.querySelector(_Selectors.hitarea(arcId)); },
     getArrows(arcId) { return this.querySelectorAll(_Selectors.arrows(arcId)); },
+    getVisibleArrows(arcId) {
+      const arrows = this.querySelectorAll(_Selectors.arrows(arcId));
+      return Array.from(arrows).filter(arr => arr.style.display !== 'none');
+    },
     getVirtualArrows(arcId) { return this.querySelectorAll(_Selectors.virtualArrows(arcId)); },
     getConnectedHitareas(nodeId) { return this.querySelectorAll(_Selectors.connectedHitareas(nodeId)); },
     getLabelGroup(arcId) { return this.querySelector(_Selectors.labelGroup(arcId)); },
@@ -67,9 +75,20 @@ const DomAdapter = {
   createSvgElement(tag) { return document.createElementNS(SVG_NS, tag); },
   // Convenience methods (use _Selectors)
   getNode(nodeId) { return this.getElementById(_Selectors.nodeId(nodeId)); },
-  getVisibleArc(arcId) { return this.querySelector(_Selectors.visibleArc(arcId)); },
+  getVisibleArc(arcId) {
+    const arc = this.querySelector(_Selectors.visibleArc(arcId));
+    // Return null if arc doesn't exist or is hidden
+    if (!arc || arc.style.display === 'none') return null;
+    return arc;
+  },
   getHitarea(arcId) { return this.querySelector(_Selectors.hitarea(arcId)); },
+  // Raw access - returns ALL arrows (including hidden ones, for show/hide operations)
   getArrows(arcId) { return this.querySelectorAll(_Selectors.arrows(arcId)); },
+  // Filtered access - returns only VISIBLE arrows (for highlight/scale operations)
+  getVisibleArrows(arcId) {
+    const arrows = this.querySelectorAll(_Selectors.arrows(arcId));
+    return Array.from(arrows).filter(arr => arr.style.display !== 'none');
+  },
   getVirtualArrows(arcId) { return this.querySelectorAll(_Selectors.virtualArrows(arcId)); },
   getConnectedHitareas(nodeId) { return this.querySelectorAll(_Selectors.connectedHitareas(nodeId)); },
   getLabelGroup(arcId) { return this.querySelector(_Selectors.labelGroup(arcId)); },

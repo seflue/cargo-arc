@@ -173,7 +173,7 @@ if (typeof document !== 'undefined') {
    */
   function scaleArrow(edgeId, strokeWidth) {
     const scale = ArrowLogic.scaleFromStrokeWidth(strokeWidth);
-    DomAdapter.getArrows(edgeId).forEach(arrow => {
+    DomAdapter.getVisibleArrows(edgeId).forEach(arrow => {
       const points = arrow.getAttribute('points');
       const tip = ArrowLogic.parseTipFromPoints(points);
       if (tip) {
@@ -193,8 +193,9 @@ if (typeof document !== 'undefined') {
       scaleArrow(arcId, width);
 
       // Store original values for reset (fixes arrow-head growth bug)
+      // Only store for visible arrows - hidden arrows have stale positions
       const scale = ArrowLogic.scaleFromStrokeWidth(width);
-      DomAdapter.getArrows(arcId).forEach(arrow => {
+      DomAdapter.getVisibleArrows(arcId).forEach(arrow => {
         const tip = ArrowLogic.parseTipFromPoints(arrow.getAttribute('points'));
         if (tip) {
           HighlightState.storeOriginal(highlightState, arcId, {
@@ -285,12 +286,15 @@ if (typeof document !== 'undefined') {
         // Use stored original values (fixes arrow-head growth bug)
         const visibleArc = DomAdapter.getVisibleArc(arcId);
         if (visibleArc) visibleArc.style.strokeWidth = original.strokeWidth + 'px';
-        // Reset arrow using stored tip position and scale
-        DomAdapter.getArrows(arcId).forEach(arrow => {
-          arrow.setAttribute('points', ArrowLogic.getArrowPoints(
-            { x: original.tipX, y: original.tipY },
-            original.scale
-          ));
+        // Reset arrow scale (NOT position - position is layout state, not highlight state)
+        DomAdapter.getVisibleArrows(arcId).forEach(arrow => {
+          const currentTip = ArrowLogic.parseTipFromPoints(arrow.getAttribute('points'));
+          if (currentTip) {
+            arrow.setAttribute('points', ArrowLogic.getArrowPoints(
+              currentTip,  // Keep CURRENT position
+              original.scale  // Restore ORIGINAL scale
+            ));
+          }
         });
       } else {
         // Fallback: calculate from source locations (for arcs without stored values)
@@ -411,7 +415,7 @@ if (typeof document !== 'undefined') {
       scaleArrow(arcId, highlightWidth);
 
       // Regular arrows
-      DomAdapter.getArrows(arcId)
+      DomAdapter.getVisibleArrows(arcId)
         .forEach(el => el.classList.add('highlighted-arrow'));
     }
 
@@ -438,8 +442,8 @@ if (typeof document !== 'undefined') {
     LayerManager.moveToHighlightLayer(arc, DomAdapter);
     LayerManager.moveToHighlightLayer(DomAdapter.querySelector(`.virtual-arc[data-arc-id="${arcId}"]`), DomAdapter);
     LayerManager.moveToHighlightLayer(DomAdapter.getLabelGroup(arcId), DomAdapter);
-    // Arrows
-    DomAdapter.getArrows(arcId).forEach(el => LayerManager.moveToHighlightLayer(el, DomAdapter));
+    // Arrows (only visible ones)
+    DomAdapter.getVisibleArrows(arcId).forEach(el => LayerManager.moveToHighlightLayer(el, DomAdapter));
     DomAdapter.getVirtualArrows(arcId).forEach(el => LayerManager.moveToHighlightLayer(el, DomAdapter));
 
     // Move hitarea to highlight layer (higher z-order) so it receives events over dimmed hitareas
@@ -477,7 +481,10 @@ if (typeof document !== 'undefined') {
         const to = hitarea.dataset.to;
         const relationType = HighlightLogic.determineRelationType(from, to, nodeId);
 
-        const highlightWidth = visibleArc ? highlightArcElement(visibleArc, arcId, relationType) : 0;
+        // Only proceed if arc exists and is visible (getVisibleArc returns null for hidden arcs)
+        if (!visibleArc) return;
+
+        const highlightWidth = highlightArcElement(visibleArc, arcId, relationType);
         if (highlightWidth > 0) scaleArrow(from + '-' + to, highlightWidth);
 
         // Connected nodes (border only)
@@ -485,13 +492,13 @@ if (typeof document !== 'undefined') {
         DomAdapter.getNode(otherNodeId)?.classList.add(relationType === 'dep' ? 'dep-node' : 'dependent-node');
 
         // Arrows: marker class (keeps direction color)
-        DomAdapter.getArrows(from + '-' + to)
+        DomAdapter.getVisibleArrows(from + '-' + to)
           .forEach(arr => arr.classList.add('highlighted-arrow'));
 
         // Move to highlight layers
         LayerManager.moveToHighlightLayer(visibleArc, DomAdapter);
         LayerManager.moveToHighlightLayer(DomAdapter.getLabelGroup(arcId), DomAdapter);
-        DomAdapter.getArrows(arcId).forEach(el => LayerManager.moveToHighlightLayer(el, DomAdapter));
+        DomAdapter.getVisibleArrows(arcId).forEach(el => LayerManager.moveToHighlightLayer(el, DomAdapter));
       });
 
     // Virtual arcs
@@ -676,6 +683,30 @@ if (typeof document !== 'undefined') {
 
     recalculateVirtualEdges();
 
+    // Update stored arrow positions after relayout (fixes stale positions after collapse/expand)
+    // Must FORCE update, not use storeOriginal() which skips if values already exist
+    document.querySelectorAll('.arc-hitarea:not(.virtual-hitarea)').forEach(hitarea => {
+      const arcId = hitarea.dataset.arcId;
+      const arcEl = document.querySelector(Selectors.visibleArc(arcId)); // raw query, includes hidden arcs
+      if (arcEl) {
+        const strokeWidth = parseFloat(arcEl.style.strokeWidth) || 0.5;
+        const scale = ArrowLogic.scaleFromStrokeWidth(strokeWidth);
+        // Get ALL arrows (even hidden ones) because they have updated positions from recalculateVirtualEdges
+        DomAdapter.getArrows(arcId).forEach(arrow => {
+          const tip = ArrowLogic.parseTipFromPoints(arrow.getAttribute('points'));
+          if (tip) {
+            // Force update - directly set instead of storeOriginal which skips if exists
+            highlightState.originalValues.set(arcId, {
+              strokeWidth,
+              scale,
+              tipX: tip.x,
+              tipY: tip.y
+            });
+          }
+        });
+      }
+    });
+
     // Re-apply pinned highlight after edges were recreated
     const pinned = HighlightState.getPinned(highlightState);
     if (pinned) {
@@ -794,6 +825,7 @@ if (typeof document !== 'undefined') {
 
         const strokeWidth = visibleArc ? parseFloat(visibleArc.style.strokeWidth) || 0.5 : 0.5;
         const scale = strokeWidth / 1.5;
+        // Update ALL arrow positions (even hidden ones) so they have correct position when shown
         DomAdapter.getArrows(fromId + '-' + toId).forEach(arrow => {
           arrow.setAttribute('points', ArrowLogic.getArrowPoints({ x: arc.toX, y: arc.toY }, scale));
         });
@@ -1069,14 +1101,38 @@ if (typeof document !== 'undefined') {
       toggleIcon.textContent = collapsed ? '+' : '−';
     }
 
-    // Update child count label
+    // Update child count label and adjust node width
     const countLabel = document.getElementById('count-' + nodeId);
     if (countLabel) {
-      if (collapsed) {
-        const count = countDescendants(nodeId);
-        countLabel.textContent = ' (+' + count + ')';
-      } else {
-        countLabel.textContent = '';
+      const nodeRect = DomAdapter.getNode(nodeId);
+      if (nodeRect) {
+        // Store original width on first collapse
+        if (!nodeRect.hasAttribute('data-original-width')) {
+          nodeRect.setAttribute('data-original-width', nodeRect.getAttribute('width'));
+        }
+
+        if (collapsed) {
+          const count = countDescendants(nodeId);
+          countLabel.textContent = ' (+' + count + ')';
+
+          // Expand width if needed to fit count text
+          const labelText = countLabel.parentElement;
+          if (labelText) {
+            const textBBox = labelText.getBBox();
+            const padding = 20;
+            const neededWidth = textBBox.width + padding;
+            const originalWidth = parseFloat(nodeRect.getAttribute('data-original-width'));
+            // Use max of original width and needed width
+            nodeRect.setAttribute('width', Math.max(originalWidth, neededWidth));
+          }
+        } else {
+          countLabel.textContent = '';
+          // Restore original width
+          const originalWidth = nodeRect.getAttribute('data-original-width');
+          if (originalWidth) {
+            nodeRect.setAttribute('width', originalWidth);
+          }
+        }
       }
     }
 
@@ -1107,9 +1163,25 @@ if (typeof document !== 'undefined') {
         // Update toggle icon
         const toggleIcon = document.querySelector('.collapse-toggle[data-target="' + nodeId + '"]');
         if (toggleIcon) toggleIcon.textContent = '+';
-        // Update child count
+        // Update child count and adjust node width
         const countLabel = document.getElementById('count-' + nodeId);
-        if (countLabel) countLabel.textContent = ' (+' + countDescendants(nodeId) + ')';
+        if (countLabel) {
+          const nodeRect = DomAdapter.getNode(nodeId);
+          if (nodeRect) {
+            if (!nodeRect.hasAttribute('data-original-width')) {
+              nodeRect.setAttribute('data-original-width', nodeRect.getAttribute('width'));
+            }
+            countLabel.textContent = ' (+' + countDescendants(nodeId) + ')';
+            const labelText = countLabel.parentElement;
+            if (labelText) {
+              const textBBox = labelText.getBBox();
+              const padding = 20;
+              const neededWidth = textBBox.width + padding;
+              const originalWidth = parseFloat(nodeRect.getAttribute('data-original-width'));
+              nodeRect.setAttribute('width', Math.max(originalWidth, neededWidth));
+            }
+          }
+        }
       } else {
         // Expand all
         CollapseState.setCollapsed(collapseState, nodeId, false);
@@ -1127,9 +1199,18 @@ if (typeof document !== 'undefined') {
         // Update toggle icon
         const toggleIcon = document.querySelector('.collapse-toggle[data-target="' + nodeId + '"]');
         if (toggleIcon) toggleIcon.textContent = '−';
-        // Clear child count
+        // Clear child count and restore original width
         const countLabel = document.getElementById('count-' + nodeId);
-        if (countLabel) countLabel.textContent = '';
+        if (countLabel) {
+          countLabel.textContent = '';
+          const nodeRect = DomAdapter.getNode(nodeId);
+          if (nodeRect) {
+            const originalWidth = nodeRect.getAttribute('data-original-width');
+            if (originalWidth) {
+              nodeRect.setAttribute('width', originalWidth);
+            }
+          }
+        }
       }
     });
 
