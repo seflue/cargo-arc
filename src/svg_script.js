@@ -358,6 +358,29 @@ if (typeof document !== 'undefined') {
     if (shadowLayer) shadowLayer.appendChild(shadow);
   }
 
+  /**
+   * Highlight a single arc element with correct sequencing.
+   * CRITICAL: Reads width BEFORE adding CSS class to prevent shadow growth bug.
+   * @param {Element} arc - Arc DOM element
+   * @param {string} arcId - Arc identifier (from-to)
+   * @param {string} relationType - 'dep' (outgoing) or 'reverse' (incoming)
+   * @returns {number} highlightWidth - For arrow scaling
+   */
+  function highlightArcElement(arc, arcId, relationType) {
+    // 1. Read ORIGINAL width BEFORE any DOM changes
+    const arcWidth = parseFloat(arc.style.strokeWidth) || 0.5;
+    const highlightWidth = HighlightLogic.calculateHighlightWidth(arcWidth);
+
+    // 2. Apply highlighting
+    arc.classList.add('highlighted-arc');
+    arc.style.strokeWidth = highlightWidth + 'px';
+
+    // 3. Create shadow using ORIGINAL width
+    createShadowPath(arc, relationType, arcId, arcWidth);
+
+    return highlightWidth;
+  }
+
   // Dim all non-highlighted elements (except toolbar and hitareas)
   function dimNonHighlighted() {
     DomAdapter.querySelectorAll(
@@ -384,15 +407,7 @@ if (typeof document !== 'undefined') {
     // Regular arc highlighting (skip if collapsed)
     const isCollapsed = arc?.style.display === 'none';
     if (!isCollapsed && arc) {
-      // Read ORIGINAL width BEFORE adding CSS class (prevents CSS-induced changes)
-      const arcWidth = parseFloat(arc.style.strokeWidth) || 0.5;
-      const highlightWidth = HighlightLogic.calculateHighlightWidth(arcWidth);
-
-      arc.classList.add('highlighted-arc');
-      arc.style.strokeWidth = highlightWidth + 'px';
-
-      // Create shadow using ORIGINAL width (before highlighting)
-      createShadowPath(arc, 'dep', arcId, arcWidth);
+      const highlightWidth = highlightArcElement(arc, arcId, 'dep');
       scaleArrow(arcId, highlightWidth);
 
       // Regular arrows
@@ -403,15 +418,7 @@ if (typeof document !== 'undefined') {
     // Virtual arcs (exist when regular arc is collapsed)
     DomAdapter.querySelectorAll(Selectors.virtualArc(from, to))
       .forEach(el => {
-        // Read ORIGINAL width BEFORE adding CSS class (prevents CSS-induced changes)
-        const vWidth = parseFloat(el.style.strokeWidth) || 0.5;
-        const vHighlightWidth = HighlightLogic.calculateHighlightWidth(vWidth);
-
-        el.classList.add('highlighted-arc');
-        el.style.strokeWidth = vHighlightWidth + 'px';
-
-        // Create shadow using ORIGINAL width (before highlighting)
-        createShadowPath(el, 'dep', arcId, vWidth);
+        const vHighlightWidth = highlightArcElement(el, arcId, 'dep');
 
         // Scale virtual arrows (use virtual arc width, not regular arc width)
         DomAdapter.querySelectorAll(`.virtual-arrow[data-vedge="${arcId}"]`).forEach(arrow => {
@@ -470,17 +477,8 @@ if (typeof document !== 'undefined') {
         const to = hitarea.dataset.to;
         const relationType = HighlightLogic.determineRelationType(from, to, nodeId);
 
-        // Read ORIGINAL width BEFORE adding CSS class (prevents CSS-induced changes)
-        const arcWidth = parseFloat(visibleArc?.style.strokeWidth) || 0.5;
-        const highlightWidth = HighlightLogic.calculateHighlightWidth(arcWidth);
-
-        // Arc: marker class only (keeps direction color), dynamic stroke-width
-        visibleArc?.classList.add('highlighted-arc');
-        if (visibleArc) visibleArc.style.strokeWidth = highlightWidth + 'px';
-
-        // Create shadow using ORIGINAL width (before highlighting)
-        createShadowPath(visibleArc, relationType, arcId, arcWidth);
-        scaleArrow(from + '-' + to, highlightWidth);
+        const highlightWidth = visibleArc ? highlightArcElement(visibleArc, arcId, relationType) : 0;
+        if (highlightWidth > 0) scaleArrow(from + '-' + to, highlightWidth);
 
         // Connected nodes (border only)
         const otherNodeId = relationType === 'dep' ? to : from;
@@ -504,16 +502,7 @@ if (typeof document !== 'undefined') {
         const arcId = from + '-' + to;
         const relationType = HighlightLogic.determineRelationType(from, to, nodeId);
 
-        // Read ORIGINAL width BEFORE adding CSS class (prevents CSS-induced changes)
-        const arcWidth = parseFloat(arc.style.strokeWidth) || 0.5;
-        const highlightWidth = HighlightLogic.calculateHighlightWidth(arcWidth);
-
-        // Arc: marker class only (keeps direction color), dynamic stroke-width
-        arc.classList.add('highlighted-arc');
-        arc.style.strokeWidth = highlightWidth + 'px';
-
-        // Create shadow using ORIGINAL width (before highlighting)
-        createShadowPath(arc, relationType, arcId, arcWidth);
+        const highlightWidth = highlightArcElement(arc, arcId, relationType);
 
         // Scale virtual arrows
         DomAdapter.querySelectorAll(`.virtual-arrow[data-vedge="${arcId}"]`).forEach(arrow => {
@@ -985,15 +974,7 @@ if (typeof document !== 'undefined') {
     // Virtual arc: marker class (keeps direction color), dynamic stroke-width
     DomAdapter.querySelectorAll(Selectors.virtualArc(fromId, toId))
       .forEach(el => {
-        // Read ORIGINAL width BEFORE adding CSS class (prevents CSS-induced changes)
-        const arcWidth = parseFloat(el.style.strokeWidth) || 0.5;
-        const highlightWidth = HighlightLogic.calculateHighlightWidth(arcWidth);
-
-        el.classList.add('highlighted-arc');
-        el.style.strokeWidth = highlightWidth + 'px';
-
-        // Create shadow using ORIGINAL width (before highlighting)
-        createShadowPath(el, 'dep', edgeId, arcWidth);
+        highlightArcElement(el, edgeId, 'dep');
       });
     // Arrows: marker class (keeps direction color), scale to match arc
     DomAdapter.querySelectorAll('.virtual-arrow[data-vedge="' + edgeId + '"]')
