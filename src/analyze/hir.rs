@@ -19,7 +19,7 @@ use ra_ap_ide as ide;
 use ra_ap_load_cargo as load_cargo;
 use ra_ap_paths as paths;
 use ra_ap_project_model as project_model;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// Creates a CargoConfig with feature and cfg overrides.
@@ -109,7 +109,7 @@ pub fn load_workspace_hir(
 }
 
 /// Finds a specific crate in an already-loaded workspace by matching its path.
-pub(super) fn find_crate_in_workspace(
+pub(crate) fn find_crate_in_workspace(
     crate_info: &CrateInfo,
     host: &ide::AnalysisHost,
     vfs: &ra_ap_vfs::Vfs,
@@ -137,6 +137,72 @@ pub(super) fn find_crate_in_workspace(
         ))
 }
 
+/// Resolves a module's display name and full path.
+/// Root modules use the crate's display name; child modules use their declared name.
+fn resolve_module_name_and_path(
+    module: hir::Module,
+    db: &ide::RootDatabase,
+    parent_path: &str,
+) -> (String, String) {
+    let name = if module.is_crate_root(db) {
+        module
+            .krate(db)
+            .display_name(db)
+            .map(|n| normalize_crate_name(n.as_str()))
+            .unwrap_or_else(|| "crate".to_string())
+    } else {
+        module
+            .name(db)
+            .map(|n| n.as_str().to_string())
+            .unwrap_or_else(|| "<anonymous>".to_string())
+    };
+
+    let full_path = if module.is_crate_root(db) {
+        parent_path.to_string()
+    } else {
+        format!("{}::{}", parent_path, name)
+    };
+
+    (name, full_path)
+}
+
+/// Collects all module paths from hir::Module tree (lightweight, no dependency analysis).
+/// Returns relative paths without crate prefix, e.g. {"analyze", "analyze::use_parser"}.
+pub(crate) fn collect_hir_module_paths(
+    module: hir::Module,
+    db: &ide::RootDatabase,
+    parent_path: &str,
+    crate_name: &str,
+) -> HashSet<String> {
+    let mut result = HashSet::new();
+    collect_module_paths_recursive(module, db, parent_path, crate_name, &mut result);
+    result
+}
+
+fn collect_module_paths_recursive(
+    module: hir::Module,
+    db: &ide::RootDatabase,
+    parent_path: &str,
+    crate_name: &str,
+    result: &mut HashSet<String>,
+) {
+    let (_name, full_path) = resolve_module_name_and_path(module, db, parent_path);
+
+    // Add relative path (without crate prefix) for non-root modules
+    if !module.is_crate_root(db) {
+        let prefix = format!("{}::", crate_name);
+        if let Some(relative) = full_path.strip_prefix(&prefix) {
+            result.insert(relative.to_string());
+        }
+    }
+
+    for decl in module.declarations(db) {
+        if let hir::ModuleDef::Module(child_module) = decl {
+            collect_module_paths_recursive(child_module, db, &full_path, crate_name, result);
+        }
+    }
+}
+
 /// Analyzes the module hierarchy of a crate using rust-analyzer's HIR.
 /// The `host` and `vfs` should be obtained from `load_workspace_hir()`.
 /// `workspace_crates` should contain all workspace crate names for inter-crate dependency detection.
@@ -145,6 +211,7 @@ pub fn analyze_modules(
     host: &ide::AnalysisHost,
     vfs: &ra_ap_vfs::Vfs,
     workspace_crates: &HashSet<String>,
+    all_module_paths: &HashMap<String, HashSet<String>>,
 ) -> Result<ModuleTree> {
     // Find crate in already-loaded workspace
     let krate = find_crate_in_workspace(crate_info, host, vfs)?;
@@ -163,11 +230,13 @@ pub fn analyze_modules(
         &crate_info.path,
         crate_name,
         workspace_crates,
+        all_module_paths,
     );
 
     Ok(ModuleTree { root })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn walk_module(
     module: hir::Module,
     db: &ide::RootDatabase,
@@ -176,30 +245,20 @@ fn walk_module(
     crate_root: &Path,
     crate_name: &str,
     workspace_crates: &HashSet<String>,
+    all_module_paths: &HashMap<String, HashSet<String>>,
 ) -> ModuleInfo {
-    let name = if module.is_crate_root(db) {
-        module
-            .krate(db)
-            .display_name(db)
-            .map(|n| normalize_crate_name(n.as_str()))
-            .unwrap_or_else(|| "crate".to_string())
-    } else {
-        module
-            .name(db)
-            .map(|n| n.as_str().to_string())
-            .unwrap_or_else(|| "<anonymous>".to_string())
-    };
-
-    // Build full path: root is crate name, children are "crate_name::module_name"
-    let full_path = if module.is_crate_root(db) {
-        parent_path.to_string()
-    } else {
-        format!("{}::{}", parent_path, name)
-    };
+    let (name, full_path) = resolve_module_name_and_path(module, db, parent_path);
 
     // Extract module dependencies from imports/uses in this module's scope
-    let dependencies =
-        extract_module_dependencies(module, db, vfs, crate_root, crate_name, workspace_crates);
+    let dependencies = extract_module_dependencies(
+        module,
+        db,
+        vfs,
+        crate_root,
+        crate_name,
+        workspace_crates,
+        all_module_paths,
+    );
 
     let children: Vec<ModuleInfo> = module
         .declarations(db)
@@ -214,6 +273,7 @@ fn walk_module(
                     crate_root,
                     crate_name,
                     workspace_crates,
+                    all_module_paths,
                 ))
             } else {
                 None
@@ -237,6 +297,7 @@ fn extract_module_dependencies(
     crate_root: &Path,
     crate_name: &str,
     workspace_crates: &HashSet<String>,
+    all_module_paths: &HashMap<String, HashSet<String>>,
 ) -> Vec<DependencyRef> {
     // Get the source file for this module
     let source = module.definition_source(db);
@@ -263,7 +324,13 @@ fn extract_module_dependencies(
     };
 
     // Use the new workspace-aware parsing function
-    parse_workspace_dependencies(&source_text, crate_name, workspace_crates, &source_file)
+    parse_workspace_dependencies(
+        &source_text,
+        crate_name,
+        workspace_crates,
+        &source_file,
+        all_module_paths,
+    )
 }
 
 #[cfg(test)]
@@ -381,6 +448,45 @@ mod tests {
 
         #[test]
         #[ignore] // Smoke test - requires rust-analyzer (~30s)
+        fn test_collect_hir_module_paths() {
+            let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+            let crates = analyze_workspace(&manifest, &FeatureConfig::default())
+                .expect("should analyze workspace");
+            let cargo_arc = crates.iter().find(|c| c.name == "cargo-arc").unwrap();
+
+            let (host, vfs) = load_workspace_hir(&manifest, &FeatureConfig::default())
+                .expect("should load workspace");
+            let krate = find_crate_in_workspace(cargo_arc, &host, &vfs).expect("should find crate");
+            let db = host.raw_database();
+            let crate_name = normalize_crate_name(&cargo_arc.name);
+            let paths =
+                collect_hir_module_paths(krate.root_module(db), db, &crate_name, &crate_name);
+
+            assert!(
+                paths.contains("analyze"),
+                "should contain 'analyze', found: {:?}",
+                paths
+            );
+            assert!(
+                paths.contains("analyze::hir"),
+                "should contain 'analyze::hir', found: {:?}",
+                paths
+            );
+            assert!(
+                paths.contains("analyze::use_parser"),
+                "should contain 'analyze::use_parser', found: {:?}",
+                paths
+            );
+            // Must NOT contain crate prefix
+            assert!(
+                !paths.iter().any(|p| p.starts_with("cargo_arc::")),
+                "paths should be relative (no crate prefix), found: {:?}",
+                paths
+            );
+        }
+
+        #[test]
+        #[ignore] // Smoke test - requires rust-analyzer (~30s)
         fn test_analyze_modules_self() {
             let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
             let crates = analyze_workspace(&manifest, &FeatureConfig::default())
@@ -391,7 +497,7 @@ mod tests {
 
             let (host, vfs) = load_workspace_hir(&manifest, &FeatureConfig::default())
                 .expect("should load workspace");
-            let tree = analyze_modules(cargo_arc, &host, &vfs, &workspace_crates)
+            let tree = analyze_modules(cargo_arc, &host, &vfs, &workspace_crates, &HashMap::new())
                 .expect("should analyze modules");
 
             assert_eq!(tree.root.name, "cargo_arc");
@@ -431,7 +537,7 @@ mod tests {
 
             let (host, vfs) = load_workspace_hir(&manifest, &FeatureConfig::default())
                 .expect("should load workspace");
-            let tree = analyze_modules(cargo_arc, &host, &vfs, &workspace_crates)
+            let tree = analyze_modules(cargo_arc, &host, &vfs, &workspace_crates, &HashMap::new())
                 .expect("should analyze modules");
 
             assert_eq!(tree.root.full_path, "cargo_arc");
@@ -457,7 +563,7 @@ mod tests {
 
             let (host, vfs) = load_workspace_hir(&manifest, &FeatureConfig::default())
                 .expect("should load workspace");
-            let tree = analyze_modules(cargo_arc, &host, &vfs, &workspace_crates)
+            let tree = analyze_modules(cargo_arc, &host, &vfs, &workspace_crates, &HashMap::new())
                 .expect("should analyze modules");
 
             let graph_module = tree

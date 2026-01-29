@@ -5,11 +5,14 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 
-use crate::analyze::{FeatureConfig, analyze_modules, analyze_workspace, load_workspace_hir};
+use crate::analyze::{
+    FeatureConfig, analyze_modules, analyze_workspace, collect_hir_module_paths,
+    find_crate_in_workspace, load_workspace_hir, normalize_crate_name,
+};
 use crate::graph::build_graph;
 use crate::layout::{build_layout, detect_cycles, topo_sort};
 use crate::render::{RenderConfig, render};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Cargo subcommand wrapper for `cargo arc`
 #[derive(Parser)]
@@ -81,10 +84,22 @@ pub fn run(args: Args) -> Result<()> {
     // 4. Load rust-analyzer ONCE for the entire workspace
     let (host, vfs) = load_workspace_hir(&args.manifest_path, &feature_config)?;
 
-    // 5. Analyze modules for each crate (reusing loaded workspace)
+    // 5a. Collect module paths from ALL crates (lightweight hir walk)
+    let db = host.raw_database();
+    let all_module_paths: HashMap<String, HashSet<String>> = crates
+        .iter()
+        .filter_map(|c| {
+            let krate = find_crate_in_workspace(c, &host, &vfs).ok()?;
+            let name = normalize_crate_name(&c.name);
+            let paths = collect_hir_module_paths(krate.root_module(db), db, &name, &name);
+            Some((name, paths))
+        })
+        .collect();
+
+    // 5b. Analyze modules for each crate (reusing loaded workspace)
     let modules: Vec<_> = crates
         .iter()
-        .filter_map(|c| analyze_modules(c, &host, &vfs, &workspace_crates).ok())
+        .filter_map(|c| analyze_modules(c, &host, &vfs, &workspace_crates, &all_module_paths).ok())
         .collect();
 
     // 6. Build dependency graph
