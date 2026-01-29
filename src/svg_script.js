@@ -41,21 +41,21 @@ if (typeof document !== 'undefined') {
 
   function showFloatingLabel(text, x, y) {
     hideFloatingLabel();
-    const svg = document.querySelector('svg');
-    floatingLabel = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    const svg = DomAdapter.getSvgRoot();
+    floatingLabel = DomAdapter.createSvgElement('g');
     floatingLabel.setAttribute('class', 'floating-label');
 
     const padding = 6;
     const lineHeight = 14;
     const lines = text.split('|');
 
-    const textEl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    const textEl = DomAdapter.createSvgElement('text');
     textEl.setAttribute('x', x + padding);
     textEl.setAttribute('y', y + lineHeight);
 
     // Create tspan for each line
     lines.forEach((line, i) => {
-      const tspan = document.createElementNS('http://www.w3.org/2000/svg', 'tspan');
+      const tspan = DomAdapter.createSvgElement('tspan');
       tspan.setAttribute('x', x + padding);
       tspan.setAttribute('dy', i === 0 ? 0 : lineHeight);
       tspan.textContent = line;
@@ -67,7 +67,7 @@ if (typeof document !== 'undefined') {
     const labelWidth = textWidth + padding * 2;
     const labelHeight = lines.length * lineHeight + padding;
 
-    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    const rect = DomAdapter.createSvgElement('rect');
     rect.setAttribute('x', x);
     rect.setAttribute('y', y);
     rect.setAttribute('width', labelWidth);
@@ -440,7 +440,7 @@ if (typeof document !== 'undefined') {
   // Update tree lines for a node at new Y position
   function updateTreeLines(nodeId, newY, nodeHeight) {
     // Update lines where this node is the child
-    document.querySelectorAll('line[data-child="' + nodeId + '"]').forEach(line => {
+    DomAdapter.getTreeLines(nodeId, 'child').forEach(line => {
       const midY = newY + nodeHeight / 2;
       if (line.getAttribute('x1') === line.getAttribute('x2')) {
         // Vertical line - update y2
@@ -453,7 +453,7 @@ if (typeof document !== 'undefined') {
     });
 
     // Update lines where this node is the parent (vertical line y1)
-    document.querySelectorAll('line[data-parent="' + nodeId + '"]').forEach(line => {
+    DomAdapter.getTreeLines(nodeId, 'parent').forEach(line => {
       if (line.getAttribute('x1') === line.getAttribute('x2')) {
         // Vertical line - update y1 (parent bottom)
         line.setAttribute('y1', newY + nodeHeight);
@@ -492,7 +492,7 @@ if (typeof document !== 'undefined') {
       }
 
       // Update toggle icon position (if exists)
-      const toggle = document.querySelector('.collapse-toggle[data-target="' + nodeId + '"]');
+      const toggle = DomAdapter.getCollapseToggle(nodeId);
       if (toggle) {
         toggle.setAttribute('y', currentY + height / 2 + 4);
       }
@@ -562,11 +562,11 @@ if (typeof document !== 'undefined') {
 
   // Remove virtual elements and reset original edge display
   function cleanupVirtualElements() {
-    document.querySelectorAll('.virtual-arc, .virtual-hitarea, .virtual-arrow, .arc-count, .arc-count-group, .arc-count-bg').forEach(el => el.remove());
-    document.querySelectorAll('.arc-hitarea, .dep-arc, .cycle-arc').forEach(edge => {
+    DomAdapter.querySelectorAll(Selectors.allVirtualElements()).forEach(el => el.remove());
+    DomAdapter.querySelectorAll(Selectors.allBaseEdges()).forEach(edge => {
       edge.style.display = '';
     });
-    document.querySelectorAll('.dep-arrow, .cycle-arrow').forEach(arrow => {
+    DomAdapter.querySelectorAll(Selectors.allBaseArrows()).forEach(arrow => {
       arrow.style.display = '';
     });
   }
@@ -618,7 +618,7 @@ if (typeof document !== 'undefined') {
     );
     const maxRight = DerivedState.computeMaxRight(currentPositions);
 
-    const hitareas = document.querySelectorAll('.arc-hitarea');
+    const hitareas = DomAdapter.getAllHitareas();
     const edgeData = extractEdgeData(hitareas, visibleNodes);
 
     updateOriginalEdges(edgeData, currentPositions, maxRight);
@@ -629,9 +629,9 @@ if (typeof document !== 'undefined') {
     );
 
     const layers = {
-      baseArcs: document.getElementById('base-arcs-layer'),
-      baseLabels: document.getElementById('base-labels-layer'),
-      hitareas: document.getElementById('hitareas-layer')
+      baseArcs: DomAdapter.getElementById(LayerManager.LAYERS.BASE_ARCS),
+      baseLabels: DomAdapter.getElementById(LayerManager.LAYERS.BASE_LABELS),
+      hitareas: DomAdapter.getElementById(LayerManager.LAYERS.HITAREAS)
     };
     renderVirtualElements(mergedEdges, layers);
   }
@@ -644,7 +644,7 @@ if (typeof document !== 'undefined') {
       const arcId = fromId + '-' + toId;
 
       // Visible path (styled, no pointer events)
-      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      const path = DomAdapter.createSvgElement('path');
       path.setAttribute('class', `virtual-arc ${direction}`);
       path.setAttribute('d', arc.path);
       path.setAttribute('data-arc-id', arcId);
@@ -655,7 +655,7 @@ if (typeof document !== 'undefined') {
 
       // Arrow (scaled to match stroke width)
       const scale = strokeWidth / 1.5;
-      const arrow = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+      const arrow = DomAdapter.createSvgElement('polygon');
       arrow.setAttribute('class', `virtual-arrow ${direction}`);
       arrow.setAttribute('data-vedge', arcId);
       arrow.setAttribute('data-from', fromId);
@@ -673,7 +673,7 @@ if (typeof document !== 'undefined') {
       const { fromId, toId, arc, count } = data;
 
       if (count > 1) {
-        const labelGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        const labelGroup = DomAdapter.createSvgElement('g');
         labelGroup.setAttribute('class', 'arc-count-group');
         labelGroup.setAttribute('data-vedge', fromId + '-' + toId);
         labelGroup.setAttribute('data-from', fromId);
@@ -685,7 +685,7 @@ if (typeof document !== 'undefined') {
         // Background rect (2-3px padding)
         const padding = 2;
         const textWidth = text.length * 6; // ~6px per char at 10px font
-        const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        const bg = DomAdapter.createSvgElement('rect');
         bg.setAttribute('class', 'arc-count-bg');
         bg.setAttribute('x', x - textWidth / 2 - padding);
         bg.setAttribute('y', y - 8 - padding);
@@ -694,7 +694,7 @@ if (typeof document !== 'undefined') {
         bg.setAttribute('rx', '2');
 
         // Text label
-        const countLabel = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        const countLabel = DomAdapter.createSvgElement('text');
         countLabel.setAttribute('class', 'arc-count');
         countLabel.setAttribute('data-vedge', fromId + '-' + toId);
         countLabel.setAttribute('x', x);
@@ -720,7 +720,7 @@ if (typeof document !== 'undefined') {
       const { fromId, toId, arc, hiddenEdgeData, count } = data;
       const arcId = fromId + '-' + toId;
 
-      const hitarea = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      const hitarea = DomAdapter.createSvgElement('path');
       hitarea.setAttribute('class', 'virtual-hitarea arc-hitarea');
       hitarea.setAttribute('d', arc.path);
       hitarea.setAttribute('data-arc-id', arcId);
@@ -748,7 +748,7 @@ if (typeof document !== 'undefined') {
         }
         const locs = hitarea.dataset.sourceLocations;
         if (locs) {
-          const svg = document.querySelector('svg');
+          const svg = DomAdapter.getSvgRoot();
           const rect = svg.getBoundingClientRect();
           const viewBox = svg.viewBox.baseVal;
           const svgPt = ArcLogic.getSvgCoords(e.clientX, e.clientY, rect, viewBox);
@@ -817,7 +817,7 @@ if (typeof document !== 'undefined') {
   function updateDescendantVisibility(descId, collapsed) {
     const node = DomAdapter.getNode(descId);
     const label = node?.nextElementSibling;
-    const toggle = document.querySelector('.collapse-toggle[data-target="' + descId + '"]');
+    const toggle = DomAdapter.getCollapseToggle(descId);
     if (collapsed) {
       node?.classList.add('collapsed');
       label?.classList.add('collapsed');
@@ -827,7 +827,7 @@ if (typeof document !== 'undefined') {
       label?.classList.remove('collapsed');
       toggle?.classList.remove('collapsed');
     }
-    document.querySelectorAll('line[data-child="' + descId + '"]').forEach(line => {
+    DomAdapter.getTreeLines(descId, 'child').forEach(line => {
       if (collapsed) {
         line.classList.add('collapsed');
       } else if (!node?.classList.contains('collapsed')) {
@@ -850,11 +850,11 @@ if (typeof document !== 'undefined') {
   }
 
   function updateParentNodeUI(nodeId, collapsed) {
-    const toggleIcon = document.querySelector('.collapse-toggle[data-target="' + nodeId + '"]');
+    const toggleIcon = DomAdapter.getCollapseToggle(nodeId);
     if (toggleIcon) {
       toggleIcon.textContent = collapsed ? '+' : '−';
     }
-    const countLabel = document.getElementById('count-' + nodeId);
+    const countLabel = DomAdapter.getCountLabel(nodeId);
     if (!countLabel) return;
     const nodeRect = DomAdapter.getNode(nodeId);
     if (!nodeRect) return;
@@ -918,7 +918,7 @@ if (typeof document !== 'undefined') {
       updateParentNodeUI(nodeId, collapsed);
     });
 
-    const label = document.getElementById('collapse-toggle-label');
+    const label = DomAdapter.getElementById('collapse-toggle-label');
     if (label) label.textContent = collapsed ? 'Expand All' : 'Collapse All';
 
     relayout();
@@ -926,12 +926,12 @@ if (typeof document !== 'undefined') {
 
   // Toggle visibility of crate-to-crate dependency arcs
   function toggleCrateDepVisibility() {
-    const checkbox = document.querySelector('#crate-dep-checkbox');
+    const checkbox = DomAdapter.querySelector('#crate-dep-checkbox');
     if (!checkbox) return;
 
     const isChecked = checkbox.classList.toggle('checked');
 
-    document.querySelectorAll('.crate-dep-arc').forEach(arc => {
+    DomAdapter.querySelectorAll('.crate-dep-arc').forEach(arc => {
       if (isChecked) {
         arc.classList.remove('hidden-by-filter');
       } else {
@@ -940,9 +940,9 @@ if (typeof document !== 'undefined') {
     });
 
     // Also hide/show associated hitareas and arrows
-    document.querySelectorAll('.arc-hitarea').forEach(hitarea => {
+    DomAdapter.querySelectorAll('.arc-hitarea').forEach(hitarea => {
       const arcId = hitarea.dataset.arcId;
-      const visibleArc = document.querySelector(`.crate-dep-arc[data-arc-id="${arcId}"]`);
+      const visibleArc = DomAdapter.querySelector(`.crate-dep-arc[data-arc-id="${arcId}"]`);
       if (visibleArc) {
         if (isChecked) {
           hitarea.classList.remove('hidden-by-filter');
@@ -963,8 +963,8 @@ if (typeof document !== 'undefined') {
 
   // Update toolbar position to stay at top when scrolling
   function updateToolbarPosition() {
-    const toolbar = document.querySelector('.view-options');
-    const svg = document.querySelector('svg');
+    const toolbar = DomAdapter.querySelector('.view-options');
+    const svg = DomAdapter.getSvgRoot();
     if (!toolbar || !svg) return;
 
     const rect = svg.getBoundingClientRect();
@@ -998,7 +998,7 @@ if (typeof document !== 'undefined') {
     }
   });
 
-  document.querySelectorAll('.collapse-toggle').forEach(toggle => {
+  DomAdapter.querySelectorAll('.collapse-toggle').forEach(toggle => {
     toggle.addEventListener('click', e => {
       e.stopPropagation();
       toggleCollapse(toggle.dataset.target);
@@ -1007,24 +1007,24 @@ if (typeof document !== 'undefined') {
   });
 
   // Toolbar button event handlers
-  document.querySelector('#collapse-toggle-btn')?.addEventListener('click', e => {
+  DomAdapter.querySelector('#collapse-toggle-btn')?.addEventListener('click', e => {
     e.stopPropagation();
     toggleCollapseAll();
     updateToolbarPosition();
   });
-  document.querySelector('#collapse-toggle-label')?.addEventListener('click', e => {
+  DomAdapter.querySelector('#collapse-toggle-label')?.addEventListener('click', e => {
     e.stopPropagation();
     toggleCollapseAll();
     updateToolbarPosition();
   });
 
-  document.querySelector('#crate-dep-checkbox')?.addEventListener('click', e => {
+  DomAdapter.querySelector('#crate-dep-checkbox')?.addEventListener('click', e => {
     e.stopPropagation();
     toggleCrateDepVisibility();
   });
 
   // Event handlers on hit-area paths (invisible, 12px wide) — regular arcs only
-  document.querySelectorAll('.arc-hitarea:not(.virtual-hitarea)').forEach(hitarea => {
+  DomAdapter.querySelectorAll('.arc-hitarea:not(.virtual-hitarea)').forEach(hitarea => {
     const edgeId = hitarea.dataset.from + '-' + hitarea.dataset.to;
 
     hitarea.addEventListener('click', e => {
@@ -1050,7 +1050,7 @@ if (typeof document !== 'undefined') {
       // Use StaticData for regular arc tooltips (no DOM read)
       const locs = StaticData.getFormattedUsages(arcId);
       if (locs) {
-        const svg = document.querySelector('svg');
+        const svg = DomAdapter.getSvgRoot();
         const rect = svg.getBoundingClientRect();
         const viewBox = svg.viewBox.baseVal;
         const svgPt = ArcLogic.getSvgCoords(e.clientX, e.clientY, rect, viewBox);
@@ -1064,7 +1064,7 @@ if (typeof document !== 'undefined') {
     });
   });
 
-  document.querySelector('svg').addEventListener('click', () => {
+  DomAdapter.getSvgRoot().addEventListener('click', () => {
     AppState.clearPinned(appState);
     clearHighlights();
   });

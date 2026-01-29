@@ -122,4 +122,52 @@ describe("Convenience methods", () => {
     mock._registerSelector(Selectors.labelGroup("arc-1"), group);
     expect(mock.getLabelGroup("arc-1")).toBe(group);
   });
+
+  test("getCollapseToggle uses Selectors.collapseToggle", () => {
+    const mock = createMockDomAdapter();
+    const el = createFakeElement("text");
+    mock._registerSelector(Selectors.collapseToggle("myNode"), el);
+    expect(mock.getCollapseToggle("myNode")).toBe(el);
+    expect(mock._getCalls("querySelector")).toContainEqual([Selectors.collapseToggle("myNode")]);
+  });
+
+  test("getCountLabel uses Selectors.countId", () => {
+    const mock = createMockDomAdapter();
+    const el = createFakeElement("tspan");
+    mock._registerElement(Selectors.countId("node1"), el);
+    expect(mock.getCountLabel("node1")).toBe(el);
+    expect(mock._getCalls("getElementById")).toContainEqual([Selectors.countId("node1")]);
+  });
+
+  test("getTreeLines with role=child uses Selectors.treeLineChild", () => {
+    const mock = createMockDomAdapter();
+    const lines = [createFakeElement("line"), createFakeElement("line")];
+    mock._registerSelector(Selectors.treeLineChild("c1"), lines);
+    expect(mock.getTreeLines("c1", "child")).toEqual(lines);
+    expect(mock._getCalls("querySelectorAll")).toContainEqual([Selectors.treeLineChild("c1")]);
+  });
+
+  test("getTreeLines with role=parent uses Selectors.treeLineParent", () => {
+    const mock = createMockDomAdapter();
+    const lines = [createFakeElement("line")];
+    mock._registerSelector(Selectors.treeLineParent("p1"), lines);
+    expect(mock.getTreeLines("p1", "parent")).toEqual(lines);
+    expect(mock._getCalls("querySelectorAll")).toContainEqual([Selectors.treeLineParent("p1")]);
+  });
+
+  test("getSvgRoot uses querySelector('svg')", () => {
+    const mock = createMockDomAdapter();
+    const svg = createFakeElement("svg");
+    mock._registerSelector("svg", svg);
+    expect(mock.getSvgRoot()).toBe(svg);
+    expect(mock._getCalls("querySelector")).toContainEqual(["svg"]);
+  });
+
+  test("getAllHitareas uses Selectors.allHitareas", () => {
+    const mock = createMockDomAdapter();
+    const hitareas = [createFakeElement("path"), createFakeElement("path")];
+    mock._registerSelector(Selectors.allHitareas(), hitareas);
+    expect(mock.getAllHitareas()).toEqual(hitareas);
+    expect(mock._getCalls("querySelectorAll")).toContainEqual([Selectors.allHitareas()]);
+  });
 });

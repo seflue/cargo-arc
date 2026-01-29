@@ -57,6 +57,14 @@ function createMockDomAdapter() {
     getVirtualArrows(arcId) { return this.querySelectorAll(Selectors.virtualArrows(arcId)); },
     getConnectedHitareas(nodeId) { return this.querySelectorAll(Selectors.connectedHitareas(nodeId)); },
     getLabelGroup(arcId) { return this.querySelector(Selectors.labelGroup(arcId)); },
+    getCollapseToggle(nodeId) { return this.querySelector(Selectors.collapseToggle(nodeId)); },
+    getCountLabel(nodeId) { return this.getElementById(Selectors.countId(nodeId)); },
+    getTreeLines(nodeId, role) {
+      const sel = role === 'child' ? Selectors.treeLineChild(nodeId) : Selectors.treeLineParent(nodeId);
+      return this.querySelectorAll(sel);
+    },
+    getSvgRoot() { return this.querySelector('svg'); },
+    getAllHitareas() { return this.querySelectorAll(Selectors.allHitareas()); },
     _getCalls(method) { return calls.get(method) ?? []; },
     _registerElement(id, el) { elements.set(id, el); },
     _registerSelector(sel, result) { selectorResults.set(sel, result); },
@@ -89,6 +97,14 @@ const DomAdapter = {
   getVirtualArrows(arcId) { return this.querySelectorAll(Selectors.virtualArrows(arcId)); },
   getConnectedHitareas(nodeId) { return this.querySelectorAll(Selectors.connectedHitareas(nodeId)); },
   getLabelGroup(arcId) { return this.querySelector(Selectors.labelGroup(arcId)); },
+  getCollapseToggle(nodeId) { return this.querySelector(Selectors.collapseToggle(nodeId)); },
+  getCountLabel(nodeId) { return this.getElementById(Selectors.countId(nodeId)); },
+  getTreeLines(nodeId, role) {
+    const sel = role === 'child' ? Selectors.treeLineChild(nodeId) : Selectors.treeLineParent(nodeId);
+    return this.querySelectorAll(sel);
+  },
+  getSvgRoot() { return this.querySelector('svg'); },
+  getAllHitareas() { return this.querySelectorAll(Selectors.allHitareas()); },
 };
 
 // Export for Browser

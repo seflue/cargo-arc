@@ -53,6 +53,48 @@ describe("Selectors", () => {
     });
   });
 
+  describe("Identity Selectors", () => {
+    test("collapseToggle selects by data-target", () => {
+      expect(Selectors.collapseToggle("myNode")).toBe(
+        '.collapse-toggle[data-target="myNode"]'
+      );
+    });
+
+    test("treeLineChild selects lines by data-child", () => {
+      expect(Selectors.treeLineChild("child1")).toBe(
+        'line[data-child="child1"]'
+      );
+    });
+
+    test("treeLineParent selects lines by data-parent", () => {
+      expect(Selectors.treeLineParent("parent1")).toBe(
+        'line[data-parent="parent1"]'
+      );
+    });
+  });
+
+  describe("Category Selectors", () => {
+    test("allHitareas returns .arc-hitarea", () => {
+      expect(Selectors.allHitareas()).toBe(".arc-hitarea");
+    });
+
+    test("allVirtualElements returns all virtual element classes", () => {
+      expect(Selectors.allVirtualElements()).toBe(
+        ".virtual-arc, .virtual-hitarea, .virtual-arrow, .arc-count, .arc-count-group, .arc-count-bg"
+      );
+    });
+
+    test("allBaseEdges returns hitarea, dep-arc, cycle-arc", () => {
+      expect(Selectors.allBaseEdges()).toBe(
+        ".arc-hitarea, .dep-arc, .cycle-arc"
+      );
+    });
+
+    test("allBaseArrows returns dep-arrow, cycle-arrow", () => {
+      expect(Selectors.allBaseArrows()).toBe(".dep-arrow, .cycle-arrow");
+    });
+  });
+
   describe("Layer Selectors", () => {
     test("highlightedArcs returns selector for highlight-arcs-layer children", () => {
       expect(Selectors.highlightedArcs()).toBe("#highlight-arcs-layer > *");
