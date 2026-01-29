@@ -560,9 +560,8 @@ if (typeof document !== 'undefined') {
     return edges;
   }
 
-  // Recalculate and show virtual edges for collapsed nodes
-  function recalculateVirtualEdges() {
-    // === DOM Cleanup ===
+  // Remove virtual elements and reset original edge display
+  function cleanupVirtualElements() {
     document.querySelectorAll('.virtual-arc, .virtual-hitarea, .virtual-arrow, .arc-count, .arc-count-group, .arc-count-bg').forEach(el => el.remove());
     document.querySelectorAll('.arc-hitarea, .dep-arc, .cycle-arc').forEach(edge => {
       edge.style.display = '';
@@ -570,19 +569,10 @@ if (typeof document !== 'undefined') {
     document.querySelectorAll('.dep-arrow, .cycle-arrow').forEach(arrow => {
       arrow.style.display = '';
     });
+  }
 
-    // === Derive visibility and positions from state (no DOM read for positions) ===
-    const visibleNodes = DerivedState.deriveNodeVisibility(appState.collapsed, StaticData);
-    const currentPositions = DerivedState.computeCurrentPositions(
-      appState.collapsed, StaticData, MARGIN, TOOLBAR_HEIGHT, ROW_HEIGHT
-    );
-    const maxRight = DerivedState.computeMaxRight(currentPositions);
-
-    // === Extract edge data from DOM ===
-    const hitareas = document.querySelectorAll('.arc-hitarea');
-    const edgeData = extractEdgeData(hitareas, visibleNodes);
-
-    // === Process edges: hide original elements, update visible paths ===
+  // Hide original elements when from/to hidden, update visible arc paths
+  function updateOriginalEdges(edgeData, currentPositions, maxRight) {
     edgeData.forEach(edge => {
       const { hitarea, arcId, fromId, toId, fromHidden, toHidden } = edge;
 
@@ -616,23 +606,38 @@ if (typeof document !== 'undefined') {
         }
       }
     });
+  }
 
-    // === Pure logic: aggregate hidden edges ===
+  // Recalculate and show virtual edges for collapsed nodes
+  function recalculateVirtualEdges() {
+    cleanupVirtualElements();
+
+    const visibleNodes = DerivedState.deriveNodeVisibility(appState.collapsed, StaticData);
+    const currentPositions = DerivedState.computeCurrentPositions(
+      appState.collapsed, StaticData, MARGIN, TOOLBAR_HEIGHT, ROW_HEIGHT
+    );
+    const maxRight = DerivedState.computeMaxRight(currentPositions);
+
+    const hitareas = document.querySelectorAll('.arc-hitarea');
+    const edgeData = extractEdgeData(hitareas, visibleNodes);
+
+    updateOriginalEdges(edgeData, currentPositions, maxRight);
+
     const virtualEdges = VirtualEdgeLogic.aggregateHiddenEdges(edgeData, getVisibleAncestor);
-
-    // === Use computed positions for virtual edge endpoints (no DOM read) ===
-    const nodePositions = currentPositions;
-
-    // === Pure logic: prepare render data ===
     const mergedEdges = VirtualEdgeLogic.prepareVirtualEdgeData(
-      virtualEdges, nodePositions, maxRight, ArcLogic, ROW_HEIGHT
+      virtualEdges, currentPositions, maxRight, ArcLogic, ROW_HEIGHT
     );
 
-    // === DOM: Create virtual edge elements ===
-    const baseArcsLayer = document.getElementById('base-arcs-layer');
-    const baseLabelsLayer = document.getElementById('base-labels-layer');
-    const hitareasLayer = document.getElementById('hitareas-layer');
+    const layers = {
+      baseArcs: document.getElementById('base-arcs-layer'),
+      baseLabels: document.getElementById('base-labels-layer'),
+      hitareas: document.getElementById('hitareas-layer')
+    };
+    renderVirtualElements(mergedEdges, layers);
+  }
 
+  // Create virtual arc elements (arcs, arrows, labels, hitareas)
+  function renderVirtualElements(mergedEdges, layers) {
     // Pass 1: Arcs + Arrows (bottom layer)
     mergedEdges.forEach((data, key) => {
       const { fromId, toId, arc, strokeWidth, direction } = data;
@@ -646,7 +651,7 @@ if (typeof document !== 'undefined') {
       path.setAttribute('data-from', fromId);
       path.setAttribute('data-to', toId);
       path.style.strokeWidth = strokeWidth + 'px';
-      baseArcsLayer.appendChild(path);
+      layers.baseArcs.appendChild(path);
 
       // Arrow (scaled to match stroke width)
       const scale = strokeWidth / 1.5;
@@ -660,7 +665,7 @@ if (typeof document !== 'undefined') {
         e.stopPropagation();
         highlightVirtualEdge(fromId, toId, data.count);
       });
-      baseArcsLayer.appendChild(arrow);
+      layers.baseArcs.appendChild(arrow);
     });
 
     // Pass 2: Labels (middle layer, above arcs)
@@ -707,7 +712,7 @@ if (typeof document !== 'undefined') {
         labelGroup.addEventListener('mouseenter', () => handleMouseEnter('edge', fromId + '-' + toId));
         labelGroup.addEventListener('mouseleave', handleMouseLeave);
 
-        baseLabelsLayer.appendChild(labelGroup);
+        layers.baseLabels.appendChild(labelGroup);
       }
     });
 
@@ -758,7 +763,7 @@ if (typeof document !== 'undefined') {
         handleMouseLeave();
         hideFloatingLabel();
       });
-      hitareasLayer.appendChild(hitarea);
+      layers.hitareas.appendChild(hitarea);
     });
   }
 
