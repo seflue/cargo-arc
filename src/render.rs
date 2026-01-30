@@ -6,16 +6,90 @@ use std::collections::HashSet;
 
 include!(concat!(env!("OUT_DIR"), "/js_modules.rs"));
 
-/// Character width for monospace 12px font
-const CHAR_WIDTH: f32 = 7.2;
+/// All layout constants consolidated in one place.
+/// Use `static` (not `const`) so references like `let tb = &LAYOUT.toolbar` work.
+pub(crate) struct LayoutConstants {
+    pub char_width: f32,
+    pub box_padding: f32,
+    pub arc_base: f32,
+    pub arc_scale: f32,
+    pub arrow_length: f32,
+    pub tooltip_padding: f32,
+    pub tooltip_offset: f32,
+    pub tooltip_line_height: f32,
+    pub crate_height: f32,
+    pub module_height: f32,
+    pub tree_line_x_offset: f32,
+    pub crate_border_radius: f32,
+    pub module_border_radius: f32,
+    pub text_padding_x: f32,
+    pub text_y_offset: f32,
+    pub toggle_offset: f32,
+    pub toggle_y_offset: f32,
+    pub arc_y_offset: f32,
+    pub arc_min_space: f32,
+    pub toolbar: ToolbarLayout,
+}
+
+pub(crate) struct ToolbarLayout {
+    pub height: f32,
+    pub btn_x: f32,
+    pub btn_y: f32,
+    pub btn_width: f32,
+    pub btn_height: f32,
+    pub separator_spacing: f32,
+    pub separator_y1: f32,
+    pub separator_y2: f32,
+    pub cb_spacing: f32,
+    pub cb_y: f32,
+    pub cb_size: f32,
+    pub label_x_offset: f32,
+    pub label_y_offset: f32,
+    pub cb2_x_offset: f32,
+}
+
+static LAYOUT: LayoutConstants = LayoutConstants {
+    char_width: 7.2,
+    box_padding: 20.0,
+    arc_base: 20.0,
+    arc_scale: 15.0,
+    arrow_length: 8.0,
+    tooltip_padding: 6.0,
+    tooltip_offset: 10.0,
+    tooltip_line_height: 14.0,
+    crate_height: 24.0,
+    module_height: 20.0,
+    tree_line_x_offset: 10.0,
+    crate_border_radius: 3.0,
+    module_border_radius: 2.0,
+    text_padding_x: 10.0,
+    text_y_offset: 4.0,
+    toggle_offset: 14.0,
+    toggle_y_offset: 4.0,
+    arc_y_offset: 3.0,
+    arc_min_space: 50.0,
+    toolbar: ToolbarLayout {
+        height: 40.0,
+        btn_x: 10.0,
+        btn_y: 8.0,
+        btn_width: 80.0,
+        btn_height: 24.0,
+        separator_spacing: 15.0,
+        separator_y1: 8.0,
+        separator_y2: 32.0,
+        cb_spacing: 15.0,
+        cb_y: 12.0,
+        cb_size: 16.0,
+        label_x_offset: 6.0,
+        label_y_offset: 4.0,
+        cb2_x_offset: 190.0,
+    },
+};
 
 /// Calculate text width based on character count
 fn calculate_text_width(text: &str) -> f32 {
-    text.len() as f32 * CHAR_WIDTH
+    text.len() as f32 * LAYOUT.char_width
 }
-
-/// Padding for boxes (10px left + 10px right)
-const BOX_PADDING: f32 = 20.0;
 
 /// Calculate uniform box width from longest label in LayoutIR
 fn calculate_box_width(ir: &LayoutIR) -> f32 {
@@ -23,25 +97,11 @@ fn calculate_box_width(ir: &LayoutIR) -> f32 {
         .iter()
         .map(|item| calculate_text_width(&item.label))
         .fold(0.0_f32, |a, b| a.max(b))
-        + BOX_PADDING
+        + LAYOUT.box_padding
 }
-
-/// Arc base offset and scale per hop
-const ARC_BASE: f32 = 20.0;
-const ARC_SCALE: f32 = 15.0;
-const ARROW_SIZE: f32 = 8.0;
-
-/// Padding inside tooltip (matches JavaScript)
-const TOOLTIP_PADDING: f32 = 6.0;
-
-/// Offset from cursor to tooltip (matches JavaScript: x + 10)
-const TOOLTIP_OFFSET: f32 = 10.0;
 
 /// Separator for tooltip lines (newlines get normalized in XML attributes)
 const TOOLTIP_LINE_SEP: &str = "|";
-
-/// Height reserved for the toolbar at the top of the SVG
-const TOOLBAR_HEIGHT: f32 = 40.0;
 
 /// Calculate maximum arc width from edges
 fn calculate_max_arc_width(positioned: &[PositionedItem], ir: &LayoutIR, row_height: f32) -> f32 {
@@ -51,7 +111,7 @@ fn calculate_max_arc_width(positioned: &[PositionedItem], ir: &LayoutIR, row_hei
             let from = positioned.iter().find(|p| p.id == edge.from)?;
             let to = positioned.iter().find(|p| p.id == edge.to)?;
             let hops = ((to.y - from.y).abs() / row_height).round().max(1.0);
-            Some(ARC_BASE + hops * ARC_SCALE + ARROW_SIZE)
+            Some(LAYOUT.arc_base + hops * LAYOUT.arc_scale + LAYOUT.arrow_length)
         })
         .fold(0.0_f32, |a, b| a.max(b))
 }
@@ -183,7 +243,7 @@ pub fn render(ir: &LayoutIR, config: &RenderConfig) -> String {
     svg.push_str(&render_styles());
     svg.push_str(&render_tree_lines(&positioned, ir));
     svg.push_str(&render_nodes(&positioned, &parents));
-    svg.push_str(&render_edges(&positioned, ir));
+    svg.push_str(&render_edges(&positioned, ir, config.row_height));
     svg.push_str(&render_toolbar(width));
     svg.push_str(&render_script(config, ir, &positioned, &parents));
     svg.push_str("</svg>\n");
@@ -204,13 +264,13 @@ fn calculate_positions(
                 ItemKind::Module { nesting, .. } => *nesting,
             };
             let height = match &item.kind {
-                ItemKind::Crate => 24.0,
-                ItemKind::Module { .. } => 20.0,
+                ItemKind::Crate => LAYOUT.crate_height,
+                ItemKind::Module { .. } => LAYOUT.module_height,
             };
             PositionedItem {
                 id: item.id,
                 x: config.margin + (nesting as f32 * config.indent_size),
-                y: config.margin + TOOLBAR_HEIGHT + (index as f32 * config.row_height),
+                y: config.margin + LAYOUT.toolbar.height + (index as f32 * config.row_height),
                 width: box_width,
                 height,
                 label: item.label.clone(),
@@ -219,9 +279,6 @@ fn calculate_positions(
         })
         .collect()
 }
-
-/// Line height in tooltip (matches JavaScript)
-const TOOLTIP_LINE_HEIGHT: f32 = 14.0;
 
 /// Calculate tooltip dimensions for the tallest/widest tooltip
 fn calculate_max_tooltip_size(ir: &LayoutIR) -> (f32, f32) {
@@ -238,7 +295,7 @@ fn calculate_max_tooltip_size(ir: &LayoutIR) -> (f32, f32) {
                 .max()
                 .unwrap_or(0);
             let width = calculate_text_width(&"x".repeat(max_line_len));
-            let height = line_count as f32 * TOOLTIP_LINE_HEIGHT;
+            let height = line_count as f32 * LAYOUT.tooltip_line_height;
             (width, height)
         })
         .fold((0.0_f32, 0.0_f32), |(aw, ah), (w, h)| {
@@ -246,8 +303,8 @@ fn calculate_max_tooltip_size(ir: &LayoutIR) -> (f32, f32) {
         });
 
     (
-        max_width + TOOLTIP_PADDING * 2.0 + TOOLTIP_OFFSET,
-        max_height + TOOLTIP_PADDING,
+        max_width + LAYOUT.tooltip_padding * 2.0 + LAYOUT.tooltip_offset,
+        max_height + LAYOUT.tooltip_padding,
     )
 }
 
@@ -264,7 +321,7 @@ fn calculate_canvas_size(
         config.margin * 2.0 + positioned.len() as f32 * config.row_height
     };
     // Add toolbar height and tooltip height for bottom overflow
-    let height = base_height + TOOLBAR_HEIGHT + max_tooltip_height;
+    let height = base_height + LAYOUT.toolbar.height + max_tooltip_height;
 
     // Width: max(box_right_edge) + arc_space + tooltip_width + margin
     let max_x = positioned
@@ -272,7 +329,7 @@ fn calculate_canvas_size(
         .map(|p| p.x + p.width)
         .fold(0.0_f32, |a, b| a.max(b));
     // Use calculated max_arc_width, with a minimum buffer for short/no edges
-    let arc_space = max_arc_width.max(50.0);
+    let arc_space = max_arc_width.max(LAYOUT.arc_min_space);
     let width = max_x + arc_space + max_tooltip_width + config.margin;
     (width, height)
 }
@@ -361,17 +418,18 @@ fn render_toolbar(width: f32) -> String {
     let mut toolbar = String::new();
     toolbar.push_str("  <g class=\"view-options\">\n");
 
-    // Background rect (full width, 40px height)
+    // Background rect (full width, toolbar height)
     toolbar.push_str(&format!(
         "    <rect x=\"0\" y=\"0\" width=\"{}\" height=\"{}\" fill=\"#fafafa\" stroke=\"#e0e0e0\"/>\n",
-        width, TOOLBAR_HEIGHT
+        width, LAYOUT.toolbar.height
     ));
 
-    // Collapse/Expand All button (x=10, centered vertically)
-    let btn_x = 10.0;
-    let btn_y = 8.0;
-    let btn_width = 80.0;
-    let btn_height = 24.0;
+    // Collapse/Expand All button
+    let tb = &LAYOUT.toolbar;
+    let btn_x = tb.btn_x;
+    let btn_y = tb.btn_y;
+    let btn_width = tb.btn_width;
+    let btn_height = tb.btn_height;
     toolbar.push_str(&format!(
         "    <rect id=\"collapse-toggle-btn\" class=\"toolbar-btn\" x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"/>\n",
         btn_x, btn_y, btn_width, btn_height
@@ -383,36 +441,36 @@ fn render_toolbar(width: f32) -> String {
     ));
 
     // Separator
-    let sep_x = btn_x + btn_width + 15.0;
+    let sep_x = btn_x + btn_width + tb.separator_spacing;
     toolbar.push_str(&format!(
-        "    <line class=\"toolbar-separator\" x1=\"{}\" y1=\"8\" x2=\"{}\" y2=\"32\"/>\n",
-        sep_x, sep_x
+        "    <line class=\"toolbar-separator\" x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\"/>\n",
+        sep_x, tb.separator_y1, sep_x, tb.separator_y2
     ));
 
     // CrateDep checkbox (checked by default)
-    let cb1_x = sep_x + 15.0;
-    let cb_y = 12.0;
-    let cb_size = 16.0;
+    let cb1_x = sep_x + tb.cb_spacing;
+    let cb_y = tb.cb_y;
+    let cb_size = tb.cb_size;
     toolbar.push_str(&format!(
         "    <rect id=\"crate-dep-checkbox\" class=\"toolbar-checkbox checked\" x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"/>\n",
         cb1_x, cb_y, cb_size, cb_size
     ));
     toolbar.push_str(&format!(
         "    <text class=\"toolbar-label\" x=\"{}\" y=\"{}\">Show Crate Dependencies</text>\n",
-        cb1_x + cb_size + 6.0,
-        cb_y + cb_size / 2.0 + 4.0
+        cb1_x + cb_size + tb.label_x_offset,
+        cb_y + cb_size / 2.0 + tb.label_y_offset
     ));
 
     // Tests checkbox (disabled)
-    let cb2_x = cb1_x + 190.0;
+    let cb2_x = cb1_x + tb.cb2_x_offset;
     toolbar.push_str(&format!(
         "    <rect class=\"toolbar-checkbox toolbar-disabled\" x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"/>\n",
         cb2_x, cb_y, cb_size, cb_size
     ));
     toolbar.push_str(&format!(
         "    <text class=\"toolbar-label toolbar-disabled\" x=\"{}\" y=\"{}\">Tests</text>\n",
-        cb2_x + cb_size + 6.0,
-        cb_y + cb_size / 2.0 + 4.0
+        cb2_x + cb_size + tb.label_x_offset,
+        cb_y + cb_size / 2.0 + tb.label_y_offset
     ));
 
     toolbar.push_str("  </g>\n");
@@ -508,7 +566,7 @@ fn render_script(
             let value = match *key {
                 "ROW_HEIGHT" => config.row_height.to_string(),
                 "MARGIN" => config.margin.to_string(),
-                "TOOLBAR_HEIGHT" => TOOLBAR_HEIGHT.to_string(),
+                "TOOLBAR_HEIGHT" => LAYOUT.toolbar.height.to_string(),
                 other => panic!("Unknown config key: {}", other),
             };
             source = source.replace(&placeholder, &value);
@@ -535,7 +593,7 @@ fn render_tree_lines(
             let child_pos = positioned.iter().find(|p| p.id == item.id);
 
             if let (Some(parent_pos), Some(child_pos)) = (parent_pos, child_pos) {
-                let line_x = parent_pos.x + 10.0;
+                let line_x = parent_pos.x + LAYOUT.tree_line_x_offset;
                 let parent_bottom = parent_pos.y + parent_pos.height;
                 let child_mid_y = child_pos.y + child_pos.height / 2.0;
 
@@ -567,8 +625,8 @@ fn render_nodes(positioned: &[PositionedItem], parents: &HashSet<NodeId>) -> Str
             ItemKind::Module { .. } => "module",
         };
         let rx = match &item.kind {
-            ItemKind::Crate => 3.0,
-            ItemKind::Module { .. } => 2.0,
+            ItemKind::Crate => LAYOUT.crate_border_radius,
+            ItemKind::Module { .. } => LAYOUT.module_border_radius,
         };
 
         // data-parent attribute for modules
@@ -585,8 +643,8 @@ fn render_nodes(positioned: &[PositionedItem], parents: &HashSet<NodeId>) -> Str
         };
 
         let label = escape_xml(&item.label);
-        let text_x = item.x + 10.0;
-        let text_y = item.y + item.height / 2.0 + 4.0;
+        let text_x = item.x + LAYOUT.text_padding_x;
+        let text_y = item.y + item.height / 2.0 + LAYOUT.text_y_offset;
 
         nodes.push_str(&format!(
             "    <rect class=\"{class}\" id=\"node-{}\" x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" rx=\"{rx}\"{parent_attr}{has_children_attr}/>\n",
@@ -607,8 +665,8 @@ fn render_nodes(positioned: &[PositionedItem], parents: &HashSet<NodeId>) -> Str
 
         // Toggle icon (+/-) for parents
         if parents.contains(&item.id) {
-            let toggle_x = item.x + item.width - 14.0;
-            let toggle_y = item.y + item.height / 2.0 + 4.0;
+            let toggle_x = item.x + item.width - LAYOUT.toggle_offset;
+            let toggle_y = item.y + item.height / 2.0 + LAYOUT.toggle_y_offset;
             nodes.push_str(&format!(
                 "    <text class=\"collapse-toggle\" data-target=\"{}\" x=\"{}\" y=\"{}\">−</text>\n",
                 item.id, toggle_x, toggle_y
@@ -620,7 +678,11 @@ fn render_nodes(positioned: &[PositionedItem], parents: &HashSet<NodeId>) -> Str
     nodes
 }
 
-fn render_edges(positioned: &[PositionedItem], ir: &LayoutIR) -> String {
+fn render_edges(
+    positioned: &[PositionedItem],
+    ir: &LayoutIR,
+    row_height: f32,
+) -> String {
     let mut base_arcs = String::new();
     let mut hitareas = String::new();
 
@@ -640,17 +702,16 @@ fn render_edges(positioned: &[PositionedItem], ir: &LayoutIR) -> String {
 
             // Offset arc endpoints: outgoing slightly below center, incoming slightly above
             // This prevents arcs from overlapping at nodes with both incoming and outgoing connections
-            let y_offset = 3.0;
+            let y_offset = LAYOUT.arc_y_offset;
             let from_y = from.y + from.height / 2.0 + y_offset; // outgoing: below center
             let to_y = to.y + to.height / 2.0 - y_offset; // incoming: above center
 
             // Calculate "hops" - how many rows the arc spans
-            let row_height = 30.0; // Same as RenderConfig default
             let hops = ((to_y - from_y).abs() / row_height).round().max(1.0);
 
             // Control point X scales with number of hops
             // Base offset + additional offset per hop
-            let arc_offset = 20.0 + (hops * 15.0);
+            let arc_offset = LAYOUT.arc_base + (hops * LAYOUT.arc_scale);
             let ctrl_x = base_x + arc_offset;
             let mid_y = (from_y + to_y) / 2.0;
 
@@ -729,9 +790,17 @@ fn render_edges(positioned: &[PositionedItem], ir: &LayoutIR) -> String {
 fn render_arrow(x: f32, y: f32, class: &str, edge_id: &str) -> String {
     // Arrow pointing left (toward the node at x)
     // Tip at x, base at x+8
-    let p1 = format!("{},{}", x + 8.0, y - 4.0); // top-right
+    let p1 = format!(
+        "{},{}",
+        x + LAYOUT.arrow_length,
+        y - LAYOUT.arrow_length / 2.0
+    ); // top-right
     let p2 = format!("{},{}", x, y); // tip (left, pointing at node)
-    let p3 = format!("{},{}", x + 8.0, y + 4.0); // bottom-right
+    let p3 = format!(
+        "{},{}",
+        x + LAYOUT.arrow_length,
+        y + LAYOUT.arrow_length / 2.0
+    ); // bottom-right
     format!("    <polygon class=\"{class}\" data-edge=\"{edge_id}\" points=\"{p1} {p2} {p3}\"/>\n")
 }
 
@@ -1548,13 +1617,13 @@ mod tests {
             })
             .unwrap();
 
-        // Height should include TOOLBAR_HEIGHT (40) + margin (20*2) + 1 row (30) + tooltip space
+        // Height should include LAYOUT.toolbar.height (40) + margin (20*2) + 1 row (30) + tooltip space
         // Base: margin*2 + rows*row_height + toolbar + tooltip
         assert!(
-            viewbox_height >= TOOLBAR_HEIGHT + config.margin * 2.0 + config.row_height,
+            viewbox_height >= LAYOUT.toolbar.height + config.margin * 2.0 + config.row_height,
             "Canvas height {} should include toolbar height {}",
             viewbox_height,
-            TOOLBAR_HEIGHT
+            LAYOUT.toolbar.height
         );
     }
 
