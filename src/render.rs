@@ -86,6 +86,125 @@ static LAYOUT: LayoutConstants = LayoutConstants {
     },
 };
 
+// --- Color Palette (Catppuccin Latte + Tailwind + Neutrals) ---
+
+const GREEN: &str = "#40a02b";
+const YELLOW: &str = "#df8e1d";
+const RED: &str = "#d20f39";
+const PURPLE: &str = "#8839ef";
+const BLUE: &str = "#1e66f5";
+const ORANGE: &str = "#fe640b";
+
+const BLUE_100: &str = "#dbeafe";
+const BLUE_300: &str = "#93c5fd";
+const ORANGE_100: &str = "#ffedd5";
+const ORANGE_300: &str = "#fdba74";
+
+const GRAY_600: &str = "#666";
+const GRAY_400: &str = "#888";
+const GRAY_300: &str = "#ccc";
+const GRAY_200: &str = "#e0e0e0";
+const GRAY_100: &str = "#f5f5f5";
+const GRAY_50: &str = "#fafafa";
+const WHITE: &str = "#ffffff";
+const DARK_BG: &str = "#1a1a2e";
+
+pub(crate) struct NodeColors {
+    pub crate_fill: &'static str,
+    pub crate_stroke: &'static str,
+    pub module_fill: &'static str,
+    pub module_stroke: &'static str,
+    pub tree_line: &'static str,
+    pub child_count: &'static str,
+    pub collapse_toggle: &'static str,
+    pub collapse_hover: &'static str,
+}
+
+pub(crate) struct ArcColors {
+    pub downward: &'static str,
+    pub upward: &'static str,
+    pub cycle: &'static str,
+    pub count_bg: &'static str,
+}
+
+pub(crate) struct SelectionColors {
+    pub crate_fill: &'static str,
+    pub module_fill: &'static str,
+}
+
+pub(crate) struct HighlightColors {
+    pub dependency: &'static str,
+    pub dependent: &'static str,
+    pub dimmed: &'static str,
+}
+
+pub(crate) struct ToolbarColors {
+    pub bg: &'static str,
+    pub border: &'static str,
+    pub btn_fill: &'static str,
+    pub btn_hover: &'static str,
+    pub btn_stroke: &'static str,
+    pub checkbox: &'static str,
+    pub checkbox_checked: &'static str,
+    pub separator: &'static str,
+}
+
+pub(crate) struct LabelColors {
+    pub bg: &'static str,
+    pub text: &'static str,
+}
+
+pub(crate) struct ColorPalette {
+    pub nodes: NodeColors,
+    pub arcs: ArcColors,
+    pub selection: SelectionColors,
+    pub highlight: HighlightColors,
+    pub toolbar: ToolbarColors,
+    pub label: LabelColors,
+}
+
+static COLORS: ColorPalette = ColorPalette {
+    nodes: NodeColors {
+        crate_fill: BLUE_100,
+        crate_stroke: BLUE,
+        module_fill: ORANGE_100,
+        module_stroke: ORANGE,
+        tree_line: GRAY_600,
+        child_count: GRAY_400,
+        collapse_toggle: GRAY_600,
+        collapse_hover: BLUE,
+    },
+    arcs: ArcColors {
+        downward: GREEN,
+        upward: YELLOW,
+        cycle: RED,
+        count_bg: WHITE,
+    },
+    selection: SelectionColors {
+        crate_fill: BLUE_300,
+        module_fill: ORANGE_300,
+    },
+    highlight: HighlightColors {
+        dependency: GREEN,
+        dependent: PURPLE,
+        dimmed: GRAY_400,
+    },
+    toolbar: ToolbarColors {
+        bg: GRAY_50,
+        border: GRAY_200,
+        btn_fill: GRAY_100,
+        btn_hover: GRAY_200,
+        btn_stroke: GRAY_600,
+        checkbox: WHITE,
+        checkbox_checked: BLUE,
+        separator: GRAY_300,
+    },
+    label: LabelColors {
+        bg: DARK_BG,
+        text: GRAY_200,
+    },
+};
+
 /// Calculate text width based on character count
 fn calculate_text_width(text: &str) -> f32 {
     text.len() as f32 * LAYOUT.char_width
@@ -343,75 +462,107 @@ fn render_header(width: f32, height: f32) -> String {
 }
 
 fn render_styles() -> String {
-    r#"  <style>
+    let n = &COLORS.nodes;
+    let a = &COLORS.arcs;
+    let s = &COLORS.selection;
+    let h = &COLORS.highlight;
+    let t = &COLORS.toolbar;
+    let l = &COLORS.label;
+    format!(
+        r#"  <style>
     /* Node base styles - Tailwind fills, Catppuccin strokes */
-    .crate { fill: #dbeafe; stroke: #1e66f5; stroke-width: 1.5; }
-    .module { fill: #ffedd5; stroke: #fe640b; stroke-width: 1.5; }
-    .label { font-family: monospace; font-size: 12px; }
-    .tree-line { stroke: #666; stroke-width: 1; }
+    .crate {{ fill: {crate_fill}; stroke: {crate_stroke}; stroke-width: 1.5; }}
+    .module {{ fill: {module_fill}; stroke: {module_stroke}; stroke-width: 1.5; }}
+    .label {{ font-family: monospace; font-size: 12px; }}
+    .tree-line {{ stroke: {tree_line}; stroke-width: 1; }}
     /* Arc base styles - Catppuccin Latte colors */
-    .dep-arc, .cycle-arc { pointer-events: none; }
-    .dep-arc { fill: none; stroke-width: 0.5; }
-    .dep-arc.downward { stroke: #40a02b; }  /* Green - normal flow */
-    .dep-arc.upward { stroke: #df8e1d; }    /* Yellow - child→parent */
-    .dep-arrow { fill: #40a02b; }
-    .upward-arrow { fill: #df8e1d; }
-    .cycle-arc { fill: none; stroke: #d20f39; stroke-width: 0.5; }  /* Red - cycles */
-    .cycle-arrow { fill: #d20f39; }
+    .dep-arc, .cycle-arc {{ pointer-events: none; }}
+    .dep-arc {{ fill: none; stroke-width: 0.5; }}
+    .dep-arc.downward {{ stroke: {arc_down}; }}  /* Green - normal flow */
+    .dep-arc.upward {{ stroke: {arc_up}; }}    /* Yellow - child→parent */
+    .dep-arrow {{ fill: {arc_down}; }}
+    .upward-arrow {{ fill: {arc_up}; }}
+    .cycle-arc {{ fill: none; stroke: {arc_cycle}; stroke-width: 0.5; }}  /* Red - cycles */
+    .cycle-arrow {{ fill: {arc_cycle}; }}
     /* Hit-area for arc interactions */
-    .arc-hitarea { fill: none; stroke: transparent; stroke-width: 12; pointer-events: stroke; cursor: pointer; }
+    .arc-hitarea {{ fill: none; stroke: transparent; stroke-width: 12; pointer-events: stroke; cursor: pointer; }}
     /* Interactive highlighting - Selected (saturated fills, thicker border) */
-    .selected-crate { fill: #93c5fd !important; stroke-width: 3 !important; }
-    .selected-module { fill: #fdba74 !important; stroke-width: 3 !important; }
+    .selected-crate {{ fill: {sel_crate} !important; stroke-width: 3 !important; }}
+    .selected-module {{ fill: {sel_module} !important; stroke-width: 3 !important; }}
     /* Arc highlighting: marker class only (no color/width override - arc keeps direction color) */
-    .highlighted-arc { /* marker class for highlight state */ }
+    .highlighted-arc {{ /* marker class for highlight state */ }}
     /* Glow classes for shadow paths (relation color) */
-    .glow-incoming { stroke: #40a02b !important; }
-    .glow-outgoing { stroke: #8839ef !important; }
+    .glow-incoming {{ stroke: {hl_dep} !important; }}
+    .glow-outgoing {{ stroke: {hl_dependent} !important; }}
     /* Node borders: relation color (green=dep, purple=dependent) */
-    .dep-node { stroke: #40a02b !important; stroke-width: 2.5 !important; }
-    .dependent-node { stroke: #8839ef !important; stroke-width: 2.5 !important; }
-    .dimmed { opacity: 0.3; pointer-events: none; }
-    path.dimmed:not(.shadow-path) { stroke: #888 !important; }
-    polygon.dimmed { fill: #888 !important; }
-    .crate, .module, .dep-arc, .cycle-arc { cursor: pointer; }
+    .dep-node {{ stroke: {hl_dep} !important; stroke-width: 2.5 !important; }}
+    .dependent-node {{ stroke: {hl_dependent} !important; stroke-width: 2.5 !important; }}
+    .dimmed {{ opacity: 0.3; pointer-events: none; }}
+    path.dimmed:not(.shadow-path) {{ stroke: {hl_dimmed} !important; }}
+    polygon.dimmed {{ fill: {hl_dimmed} !important; }}
+    .crate, .module, .dep-arc, .cycle-arc {{ cursor: pointer; }}
     /* Collapse functionality */
-    .collapse-toggle { font-family: monospace; font-size: 14px; cursor: pointer; fill: #666; }
-    .collapse-toggle:hover { fill: #1e66f5; }
-    .collapsed { display: none; }
-    .virtual-arc { fill: none; stroke-width: 0.5; stroke-dasharray: 4,2; }
-    .virtual-arc.downward { stroke: #40a02b; }
-    .virtual-arc.upward { stroke: #df8e1d; }
-    .virtual-arrow { cursor: pointer; }
-    .virtual-arrow.downward { fill: #40a02b; }
-    .virtual-arrow.upward { fill: #df8e1d; }
-    .arc-count { font-family: monospace; font-size: 10px; fill: #40a02b; text-anchor: middle; }
-    .arc-count-bg { fill: #ffffff; rx: 2; }
-    .arc-count.dep-edge { fill: #40a02b !important; font-size: 12px; font-weight: bold; stroke: none !important; }
-    .arc-count.dependent-edge { fill: #8839ef !important; font-size: 12px; font-weight: bold; stroke: none !important; }
-    .arc-count.dimmed { opacity: 0.3; }
-    .child-count { font-size: 10px; fill: #888; }
+    .collapse-toggle {{ font-family: monospace; font-size: 14px; cursor: pointer; fill: {collapse_toggle}; }}
+    .collapse-toggle:hover {{ fill: {collapse_hover}; }}
+    .collapsed {{ display: none; }}
+    .virtual-arc {{ fill: none; stroke-width: 0.5; stroke-dasharray: 4,2; }}
+    .virtual-arc.downward {{ stroke: {arc_down}; }}
+    .virtual-arc.upward {{ stroke: {arc_up}; }}
+    .virtual-arrow {{ cursor: pointer; }}
+    .virtual-arrow.downward {{ fill: {arc_down}; }}
+    .virtual-arrow.upward {{ fill: {arc_up}; }}
+    .arc-count {{ font-family: monospace; font-size: 10px; fill: {arc_down}; text-anchor: middle; }}
+    .arc-count-bg {{ fill: {count_bg}; rx: 2; }}
+    .arc-count.dep-edge {{ fill: {hl_dep} !important; font-size: 12px; font-weight: bold; stroke: none !important; }}
+    .arc-count.dependent-edge {{ fill: {hl_dependent} !important; font-size: 12px; font-weight: bold; stroke: none !important; }}
+    .arc-count.dimmed {{ opacity: 0.3; }}
+    .child-count {{ font-size: 10px; fill: {child_count}; }}
     /* Shadow path for glow effect */
-    .shadow-path { pointer-events: none; stroke-linecap: round; }
+    .shadow-path {{ pointer-events: none; stroke-linecap: round; }}
     /* Floating label for source locations */
-    .floating-label { pointer-events: none; }
-    .floating-label rect { fill: #1a1a2e; fill-opacity: 0.95; rx: 4; }
-    .floating-label text { fill: #e0e0e0; font-family: monospace; font-size: 11px; }
+    .floating-label {{ pointer-events: none; }}
+    .floating-label rect {{ fill: {label_bg}; fill-opacity: 0.95; rx: 4; }}
+    .floating-label text {{ fill: {label_text}; font-family: monospace; font-size: 11px; }}
     /* Toolbar */
-    .view-options { cursor: default; }
-    .toolbar-btn { fill: #f5f5f5; stroke: #666; rx: 3; cursor: pointer; }
-    .toolbar-btn:hover { fill: #e0e0e0; }
-    .toolbar-btn-text { font-family: sans-serif; font-size: 11px; text-anchor: middle; }
-    .toolbar-checkbox { fill: #fff; stroke: #666; rx: 2; cursor: pointer; }
-    .toolbar-checkbox.checked { fill: #1e66f5; }
-    .toolbar-label { font-family: sans-serif; font-size: 11px; cursor: pointer; }
-    .toolbar-separator { stroke: #ccc; }
-    .toolbar-disabled { opacity: 0.4; pointer-events: none; }
+    .view-options {{ cursor: default; }}
+    .toolbar-btn {{ fill: {tb_btn_fill}; stroke: {tb_btn_stroke}; rx: 3; cursor: pointer; }}
+    .toolbar-btn:hover {{ fill: {tb_btn_hover}; }}
+    .toolbar-btn-text {{ font-family: sans-serif; font-size: 11px; text-anchor: middle; }}
+    .toolbar-checkbox {{ fill: {tb_checkbox}; stroke: {tb_btn_stroke}; rx: 2; cursor: pointer; }}
+    .toolbar-checkbox.checked {{ fill: {tb_checkbox_checked}; }}
+    .toolbar-label {{ font-family: sans-serif; font-size: 11px; cursor: pointer; }}
+    .toolbar-separator {{ stroke: {tb_separator}; }}
+    .toolbar-disabled {{ opacity: 0.4; pointer-events: none; }}
     /* Filter visibility */
-    .hidden-by-filter { display: none; }
+    .hidden-by-filter {{ display: none; }}
   </style>
-"#
-    .to_string()
+"#,
+        crate_fill = n.crate_fill,
+        crate_stroke = n.crate_stroke,
+        module_fill = n.module_fill,
+        module_stroke = n.module_stroke,
+        tree_line = n.tree_line,
+        arc_down = a.downward,
+        arc_up = a.upward,
+        arc_cycle = a.cycle,
+        sel_crate = s.crate_fill,
+        sel_module = s.module_fill,
+        hl_dep = h.dependency,
+        hl_dependent = h.dependent,
+        hl_dimmed = h.dimmed,
+        collapse_toggle = n.collapse_toggle,
+        collapse_hover = n.collapse_hover,
+        count_bg = a.count_bg,
+        child_count = n.child_count,
+        label_bg = l.bg,
+        label_text = l.text,
+        tb_btn_fill = t.btn_fill,
+        tb_btn_stroke = t.btn_stroke,
+        tb_btn_hover = t.btn_hover,
+        tb_checkbox = t.checkbox,
+        tb_checkbox_checked = t.checkbox_checked,
+        tb_separator = t.separator,
+    )
 }
 
 fn render_toolbar(width: f32) -> String {
@@ -420,8 +571,8 @@ fn render_toolbar(width: f32) -> String {
 
     // Background rect (full width, toolbar height)
     toolbar.push_str(&format!(
-        "    <rect x=\"0\" y=\"0\" width=\"{}\" height=\"{}\" fill=\"#fafafa\" stroke=\"#e0e0e0\"/>\n",
-        width, LAYOUT.toolbar.height
+        "    <rect x=\"0\" y=\"0\" width=\"{}\" height=\"{}\" fill=\"{}\" stroke=\"{}\"/>\n",
+        width, LAYOUT.toolbar.height, COLORS.toolbar.bg, COLORS.toolbar.border
     ));
 
     // Collapse/Expand All button
@@ -815,6 +966,16 @@ fn escape_xml(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_color_palette_has_expected_values() {
+        assert_eq!(COLORS.nodes.crate_fill, "#dbeafe");
+        assert_eq!(COLORS.arcs.downward, "#40a02b");
+        assert_eq!(COLORS.toolbar.bg, "#fafafa");
+        assert_eq!(COLORS.label.bg, "#1a1a2e");
+        assert_eq!(COLORS.selection.crate_fill, "#93c5fd");
+        assert_eq!(COLORS.highlight.dependent, "#8839ef");
+    }
 
     #[test]
     fn test_render_empty() {
