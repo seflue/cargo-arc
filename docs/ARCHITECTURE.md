@@ -15,8 +15,9 @@ src/
 ├── model.rs     # Shared data structures
 ├── graph.rs     # Dependency graph building (petgraph)
 ├── layout.rs    # Tree layout algorithm
-├── render.rs    # SVG generation
-├── cli.rs       # CLI interface (clap)
+├── render.rs     # SVG generation
+├── volatility.rs # Git history volatility analysis
+├── cli.rs        # CLI interface (clap)
 ├── lib.rs       # Public API exports
 └── main.rs      # Entry point
 ```

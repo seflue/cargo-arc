@@ -12,7 +12,9 @@ use crate::analyze::{
 use crate::graph::build_graph;
 use crate::layout::{build_layout, detect_cycles, topo_sort};
 use crate::render::{RenderConfig, render};
+use crate::volatility::{VolatilityAnalyzer, VolatilityConfig};
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 /// Cargo subcommand wrapper for `cargo arc`
 #[derive(Parser)]
@@ -52,6 +54,10 @@ pub struct Args {
     /// Enable debug output to stderr (shows filtering decisions)
     #[arg(long)]
     pub debug: bool,
+
+    /// Print volatility report (text) instead of dependency SVG
+    #[arg(long)]
+    pub volatility: bool,
 }
 
 pub fn run(args: Args) -> Result<()> {
@@ -64,6 +70,23 @@ pub fn run(args: Args) -> Result<()> {
             .with_target(false)
             .with_writer(std::io::stderr)
             .init();
+    }
+
+    // Volatility-only mode: skip the full pipeline, just run git analysis
+    if args.volatility {
+        let repo_path = args
+            .manifest_path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let mut analyzer = VolatilityAnalyzer::new(VolatilityConfig::default());
+        analyzer.analyze(repo_path)?;
+        let report = analyzer.format_report();
+        match args.output {
+            Some(path) => fs::write(&path, &report)?,
+            None => io::stdout().write_all(report.as_bytes())?,
+        }
+        return Ok(());
     }
 
     // 1. Build feature config from CLI args (needed for both analyze_workspace and load_workspace_hir)
@@ -168,6 +191,12 @@ mod tests {
     }
 
     #[test]
+    fn test_cli_volatility_flag() {
+        let args = parse_args(&["cargo", "arc", "--volatility"]);
+        assert!(args.volatility);
+    }
+
+    #[test]
     #[ignore] // Smoke test - requires rust-analyzer (~30s)
     fn test_run_with_output_file() {
         let temp = tempfile::NamedTempFile::new().unwrap();
@@ -179,6 +208,7 @@ mod tests {
             no_default_features: false,
             cfg: vec![],
             debug: false,
+            volatility: false,
         };
         let result = run(args);
         assert!(result.is_ok());

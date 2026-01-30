@@ -16,6 +16,7 @@ fn test_multi_crate_fixture() {
         no_default_features: false,
         cfg: vec![],
         debug: false,
+        volatility: false,
     };
 
     let result = run(args);
@@ -48,6 +49,7 @@ fn test_self_analysis() {
         no_default_features: false,
         cfg: vec![],
         debug: false,
+        volatility: false,
     };
 
     let result = run(args);
@@ -82,6 +84,7 @@ fn test_cfg_test_excluded_by_default() {
         no_default_features: false,
         cfg: vec![], // No --cfg test flag
         debug: false,
+        volatility: false,
     };
 
     let result = run(args);
@@ -111,6 +114,7 @@ fn test_cfg_test_included_with_flag() {
         no_default_features: false,
         cfg: vec!["test".to_string()], // --cfg test flag
         debug: false,
+        volatility: false,
     };
 
     let result = run(args);

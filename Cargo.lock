@@ -154,6 +154,7 @@ dependencies = [
  "ra_ap_project_model",
  "ra_ap_vfs",
  "tempfile",
+ "thiserror",
  "tracing",
  "tracing-subscriber",
 ]
