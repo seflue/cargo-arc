@@ -193,7 +193,7 @@ fn generate_modules_rs(modules: &[JsModuleInfo], sorted_indices: &[usize]) -> St
         out.push_str("    JsModule {\n");
         out.push_str(&format!("        name: \"{}\",\n", m.name));
         out.push_str(&format!(
-            "        source: include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/src/{}\")),\n",
+            "        source: include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/js/{}\")),\n",
             m.file_name
         ));
         if m.config_keys.is_empty() {
@@ -745,18 +745,18 @@ mod tests {
             },
         ];
         let sources: Vec<&str> = vec![
-            include_str!("arc_logic.js"),
-            include_str!("tree_logic.js"),
-            include_str!("app_state.js"),
-            include_str!("selectors.js"),
-            include_str!("text_metrics.js"),
-            include_str!("layer_manager.js"),
-            include_str!("static_data.js"),
-            include_str!("dom_adapter.js"),
-            include_str!("derived_state.js"),
-            include_str!("highlight_logic.js"),
-            include_str!("virtual_edge_logic.js"),
-            include_str!("svg_script.js"),
+            include_str!("../js/arc_logic.js"),
+            include_str!("../js/tree_logic.js"),
+            include_str!("../js/app_state.js"),
+            include_str!("../js/selectors.js"),
+            include_str!("../js/text_metrics.js"),
+            include_str!("../js/layer_manager.js"),
+            include_str!("../js/static_data.js"),
+            include_str!("../js/dom_adapter.js"),
+            include_str!("../js/derived_state.js"),
+            include_str!("../js/highlight_logic.js"),
+            include_str!("../js/virtual_edge_logic.js"),
+            include_str!("../js/svg_script.js"),
         ];
         validate_source_deps(&modules, &sources); // no panic — all deps correctly declared
     }

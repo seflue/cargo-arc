@@ -1,7 +1,7 @@
 include!("src/js_registry.rs");
 
 fn main() {
-    let src_dir = std::path::Path::new("src");
+    let src_dir = std::path::Path::new("js");
 
     // 1. Discover: src/*.js (not *.test.js)
     let mut modules = Vec::new();
@@ -39,7 +39,7 @@ fn main() {
         let entry = entry.expect("entry");
         let name = entry.file_name().to_string_lossy().to_string();
         if is_module_file(&name) {
-            println!("cargo:rerun-if-changed=src/{}", name);
+            println!("cargo:rerun-if-changed=js/{}", name);
         }
     }
 }
