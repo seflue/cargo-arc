@@ -1,12 +1,8 @@
 //! HIR-based module analysis using rust-analyzer.
 //!
-//! All HIR functions below `FeatureConfig` are dead code without `feature = "hir"`.
-//! Phase 5 (ca-0116) will gate them behind `#[cfg(feature = "hir")]` properly.
-#![allow(dead_code)]
+//! Only `FeatureConfig` is always available. All HIR functions require `feature = "hir"`.
 
-use super::use_parser::{normalize_crate_name, parse_workspace_dependencies};
-use crate::model::{CrateInfo, DependencyRef, ModuleInfo, ModuleTree};
-
+// FeatureConfig is always available (no ra_ap_* dependency)
 #[derive(Debug, Clone, Default)]
 pub struct FeatureConfig {
     pub features: Vec<String>,
@@ -16,18 +12,21 @@ pub struct FeatureConfig {
     pub debug: bool,
 }
 
-use anyhow::{Context, Result};
-use ra_ap_cfg::{CfgAtom, CfgDiff};
-use ra_ap_hir as hir;
-use ra_ap_ide as ide;
-use ra_ap_load_cargo as load_cargo;
-use ra_ap_paths as paths;
-use ra_ap_project_model as project_model;
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+#[cfg(feature = "hir")]
+use {
+    super::use_parser::{normalize_crate_name, parse_workspace_dependencies},
+    crate::model::{CrateInfo, DependencyRef, ModuleInfo, ModuleTree},
+    anyhow::{Context, Result},
+    ra_ap_cfg::{CfgAtom, CfgDiff},
+    ra_ap_hir as hir, ra_ap_ide as ide, ra_ap_load_cargo as load_cargo, ra_ap_paths as paths,
+    ra_ap_project_model as project_model,
+    std::collections::{HashMap, HashSet},
+    std::path::{Path, PathBuf},
+};
 
 /// Creates a CargoConfig with feature and cfg overrides.
 /// By default, cfg(test) is disabled.
+#[cfg(feature = "hir")]
 pub fn cargo_config_with_features(config: &FeatureConfig) -> project_model::CargoConfig {
     let features = if config.all_features {
         project_model::CargoFeatures::All
@@ -77,6 +76,7 @@ pub fn cargo_config_with_features(config: &FeatureConfig) -> project_model::Carg
 
 /// Loads the entire workspace into rust-analyzer once.
 /// Returns the AnalysisHost and VFS for reuse across multiple crate analyses.
+#[cfg(feature = "hir")]
 pub fn load_workspace_hir(
     manifest_path: &Path,
     feature_config: &FeatureConfig,
@@ -113,6 +113,7 @@ pub fn load_workspace_hir(
 }
 
 /// Finds a specific crate in an already-loaded workspace by matching its path.
+#[cfg(feature = "hir")]
 pub(crate) fn find_crate_in_workspace(
     crate_info: &CrateInfo,
     host: &ide::AnalysisHost,
@@ -143,6 +144,7 @@ pub(crate) fn find_crate_in_workspace(
 
 /// Resolves a module's display name and full path.
 /// Root modules use the crate's display name; child modules use their declared name.
+#[cfg(feature = "hir")]
 fn resolve_module_name_and_path(
     module: hir::Module,
     db: &ide::RootDatabase,
@@ -172,6 +174,7 @@ fn resolve_module_name_and_path(
 
 /// Collects all module paths from hir::Module tree (lightweight, no dependency analysis).
 /// Returns relative paths without crate prefix, e.g. {"analyze", "analyze::use_parser"}.
+#[cfg(feature = "hir")]
 pub(crate) fn collect_hir_module_paths(
     module: hir::Module,
     db: &ide::RootDatabase,
@@ -183,6 +186,7 @@ pub(crate) fn collect_hir_module_paths(
     result
 }
 
+#[cfg(feature = "hir")]
 fn collect_module_paths_recursive(
     module: hir::Module,
     db: &ide::RootDatabase,
@@ -210,6 +214,7 @@ fn collect_module_paths_recursive(
 /// Analyzes the module hierarchy of a crate using rust-analyzer's HIR.
 /// The `host` and `vfs` should be obtained from `load_workspace_hir()`.
 /// `workspace_crates` should contain all workspace crate names for inter-crate dependency detection.
+#[cfg(feature = "hir")]
 pub fn analyze_modules(
     crate_info: &CrateInfo,
     host: &ide::AnalysisHost,
@@ -240,6 +245,7 @@ pub fn analyze_modules(
     Ok(ModuleTree { root })
 }
 
+#[cfg(feature = "hir")]
 #[allow(clippy::too_many_arguments)]
 fn walk_module(
     module: hir::Module,
@@ -294,6 +300,7 @@ fn walk_module(
 }
 
 /// Extract module-level dependencies by parsing use statements from source
+#[cfg(feature = "hir")]
 fn extract_module_dependencies(
     module: hir::Module,
     db: &ide::RootDatabase,
@@ -340,109 +347,110 @@ fn extract_module_dependencies(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_feature_config_default() {
+        let config = FeatureConfig::default();
+        assert!(config.features.is_empty());
+        assert!(!config.all_features);
+        assert!(config.cfg_flags.is_empty());
+        assert!(!config.no_default_features);
+    }
+
+    #[test]
+    fn test_feature_config_no_default_features() {
+        let config = FeatureConfig {
+            no_default_features: true,
+            ..Default::default()
+        };
+        assert!(config.no_default_features);
+    }
+}
+
+#[cfg(all(test, feature = "hir"))]
+mod hir_tests {
+    use super::*;
     use ra_ap_project_model as project_model;
 
-    mod unit_tests {
-        use super::*;
+    #[test]
+    fn test_cfg_overrides_include_features() {
+        let config = FeatureConfig {
+            features: vec!["server".to_string()],
+            ..Default::default()
+        };
+        let cargo_config = cargo_config_with_features(&config);
 
-        #[test]
-        fn test_feature_config_default() {
-            let config = FeatureConfig::default();
-            assert!(config.features.is_empty());
-            assert!(!config.all_features);
-            assert!(config.cfg_flags.is_empty());
-            assert!(!config.no_default_features);
-        }
+        let diff_str = format!("{}", cargo_config.cfg_overrides.global);
+        assert!(
+            diff_str.contains("feature") && diff_str.contains("server"),
+            "Expected feature = \"server\" in cfg_overrides, got: {}",
+            diff_str
+        );
+    }
 
-        #[test]
-        fn test_feature_config_no_default_features() {
-            let config = FeatureConfig {
-                no_default_features: true,
-                ..Default::default()
-            };
-            assert!(config.no_default_features);
-        }
+    #[test]
+    fn test_cargo_config_default_excludes_test() {
+        let config = FeatureConfig::default();
+        let cargo_config = cargo_config_with_features(&config);
 
-        #[test]
-        fn test_cfg_overrides_include_features() {
-            let config = FeatureConfig {
-                features: vec!["server".to_string()],
-                ..Default::default()
-            };
-            let cargo_config = cargo_config_with_features(&config);
+        let diff_str = format!("{}", cargo_config.cfg_overrides.global);
+        assert!(
+            diff_str.contains("disable") && diff_str.contains("test"),
+            "Expected cfg(test) to be disabled, got: {}",
+            diff_str
+        );
+    }
 
-            let diff_str = format!("{}", cargo_config.cfg_overrides.global);
-            assert!(
-                diff_str.contains("feature") && diff_str.contains("server"),
-                "Expected feature = \"server\" in cfg_overrides, got: {}",
-                diff_str
-            );
-        }
+    #[test]
+    fn test_cargo_config_includes_test_when_flag_set() {
+        let config = FeatureConfig {
+            cfg_flags: vec!["test".to_string()],
+            ..Default::default()
+        };
+        let cargo_config = cargo_config_with_features(&config);
 
-        #[test]
-        fn test_cargo_config_default_excludes_test() {
-            let config = FeatureConfig::default();
-            let cargo_config = cargo_config_with_features(&config);
+        let diff_str = format!("{}", cargo_config.cfg_overrides.global);
+        assert!(
+            diff_str.contains("enable") && diff_str.contains("test"),
+            "Expected cfg(test) to be enabled, got: {}",
+            diff_str
+        );
+    }
 
-            let diff_str = format!("{}", cargo_config.cfg_overrides.global);
-            assert!(
-                diff_str.contains("disable") && diff_str.contains("test"),
-                "Expected cfg(test) to be disabled, got: {}",
-                diff_str
-            );
-        }
+    #[test]
+    fn test_cargo_config_selected_features() {
+        let config = FeatureConfig {
+            features: vec!["web".to_string()],
+            ..Default::default()
+        };
+        let cargo_config = cargo_config_with_features(&config);
 
-        #[test]
-        fn test_cargo_config_includes_test_when_flag_set() {
-            let config = FeatureConfig {
-                cfg_flags: vec!["test".to_string()],
-                ..Default::default()
-            };
-            let cargo_config = cargo_config_with_features(&config);
-
-            let diff_str = format!("{}", cargo_config.cfg_overrides.global);
-            assert!(
-                diff_str.contains("enable") && diff_str.contains("test"),
-                "Expected cfg(test) to be enabled, got: {}",
-                diff_str
-            );
-        }
-
-        #[test]
-        fn test_cargo_config_selected_features() {
-            let config = FeatureConfig {
-                features: vec!["web".to_string()],
-                ..Default::default()
-            };
-            let cargo_config = cargo_config_with_features(&config);
-
-            match cargo_config.features {
-                project_model::CargoFeatures::Selected { features, .. } => {
-                    assert_eq!(features, vec!["web"]);
-                }
-                _ => panic!("expected Selected"),
+        match cargo_config.features {
+            project_model::CargoFeatures::Selected { features, .. } => {
+                assert_eq!(features, vec!["web"]);
             }
+            _ => panic!("expected Selected"),
         }
+    }
 
-        #[test]
-        fn test_cargo_features_no_default() {
-            let config = FeatureConfig {
-                features: vec!["x".to_string()],
-                no_default_features: true,
-                ..Default::default()
-            };
-            let cargo_config = cargo_config_with_features(&config);
+    #[test]
+    fn test_cargo_features_no_default() {
+        let config = FeatureConfig {
+            features: vec!["x".to_string()],
+            no_default_features: true,
+            ..Default::default()
+        };
+        let cargo_config = cargo_config_with_features(&config);
 
-            match cargo_config.features {
-                project_model::CargoFeatures::Selected {
-                    features,
-                    no_default_features,
-                } => {
-                    assert_eq!(features, vec!["x"]);
-                    assert!(no_default_features, "no_default_features should be true");
-                }
-                _ => panic!("expected Selected"),
+        match cargo_config.features {
+            project_model::CargoFeatures::Selected {
+                features,
+                no_default_features,
+            } => {
+                assert_eq!(features, vec!["x"]);
+                assert!(no_default_features, "no_default_features should be true");
             }
+            _ => panic!("expected Selected"),
         }
     }
 

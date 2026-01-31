@@ -11,7 +11,5 @@ pub use backend::AnalysisBackend;
 pub use hir::FeatureConfig;
 #[cfg(feature = "hir")]
 pub use hir::{analyze_modules, cargo_config_with_features, load_workspace_hir};
-#[cfg(feature = "hir")]
-pub(crate) use hir::{collect_hir_module_paths, find_crate_in_workspace};
 pub(crate) use use_parser::normalize_crate_name;
 pub use workspace::analyze_workspace;

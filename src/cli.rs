@@ -302,6 +302,8 @@ mod tests {
             volatility_months: 6,
             volatility_low: 2,
             volatility_high: 10,
+            #[cfg(feature = "hir")]
+            hir: false,
         };
         let result = run(args);
         assert!(result.is_ok());

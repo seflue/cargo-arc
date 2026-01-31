@@ -16,6 +16,7 @@ use {
 };
 
 /// Backend for module analysis: lightweight syn-based or full HIR-based.
+#[allow(clippy::large_enum_variant)]
 pub enum AnalysisBackend {
     /// Fast filesystem + syn parsing (default).
     Syn { include_cfg_test: bool },

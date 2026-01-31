@@ -2,7 +2,6 @@ use cargo_arc::{Args, run};
 use std::path::PathBuf;
 
 #[test]
-#[ignore] // Smoke test - requires rust-analyzer (~30s)
 fn test_multi_crate_fixture() {
     let fixture_path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multi_crate/Cargo.toml");
@@ -21,6 +20,8 @@ fn test_multi_crate_fixture() {
         volatility_months: 6,
         volatility_low: 2,
         volatility_high: 10,
+        #[cfg(feature = "hir")]
+        hir: false,
     };
 
     let result = run(args);
@@ -42,7 +43,6 @@ fn test_multi_crate_fixture() {
 }
 
 #[test]
-#[ignore] // Smoke test - requires rust-analyzer (~30s)
 fn test_self_analysis() {
     let temp = tempfile::NamedTempFile::new().unwrap();
     let args = Args {
@@ -58,6 +58,8 @@ fn test_self_analysis() {
         volatility_months: 6,
         volatility_low: 2,
         volatility_high: 10,
+        #[cfg(feature = "hir")]
+        hir: false,
     };
 
     let result = run(args);
@@ -78,7 +80,6 @@ fn test_self_analysis() {
 }
 
 #[test]
-#[ignore] // Smoke test - requires rust-analyzer (~30s)
 fn test_cfg_test_excluded_by_default() {
     let fixture_path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multi_crate/Cargo.toml");
@@ -97,6 +98,8 @@ fn test_cfg_test_excluded_by_default() {
         volatility_months: 6,
         volatility_low: 2,
         volatility_high: 10,
+        #[cfg(feature = "hir")]
+        hir: false,
     };
 
     let result = run(args);
@@ -112,7 +115,6 @@ fn test_cfg_test_excluded_by_default() {
 }
 
 #[test]
-#[ignore] // Smoke test - requires rust-analyzer (~30s)
 fn test_cfg_test_included_with_flag() {
     let fixture_path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multi_crate/Cargo.toml");
@@ -131,6 +133,8 @@ fn test_cfg_test_included_with_flag() {
         volatility_months: 6,
         volatility_low: 2,
         volatility_high: 10,
+        #[cfg(feature = "hir")]
+        hir: false,
     };
 
     let result = run(args);

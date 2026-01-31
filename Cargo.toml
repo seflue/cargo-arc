@@ -12,34 +12,29 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# ra_ap_* for module hierarchy extraction (pinned to exact versions like cargo-modules)
-ra_ap_hir = "=0.0.316"
-ra_ap_ide = "=0.0.316"
-ra_ap_ide_db = "=0.0.316"
-ra_ap_load-cargo = "=0.0.316"
-ra_ap_paths = "=0.0.316"
-ra_ap_project_model = "=0.0.316"
-ra_ap_vfs = "=0.0.316"
-ra_ap_cfg = "=0.0.316"
+# ra_ap_* for HIR-based module analysis (optional, behind "hir" feature)
+ra_ap_hir = { version = "=0.0.316", optional = true }
+ra_ap_ide = { version = "=0.0.316", optional = true }
+ra_ap_ide_db = { version = "=0.0.316", optional = true }
+ra_ap_load-cargo = { version = "=0.0.316", optional = true }
+ra_ap_paths = { version = "=0.0.316", optional = true }
+ra_ap_project_model = { version = "=0.0.316", optional = true }
+ra_ap_vfs = { version = "=0.0.316", optional = true }
+ra_ap_cfg = { version = "=0.0.316", optional = true }
 dunce = "1.0.4"
 syn = { version = "2", features = ["full"] }
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("hir"))'] }
+[features]
+hir = [
+  "dep:ra_ap_hir",
+  "dep:ra_ap_ide",
+  "dep:ra_ap_ide_db",
+  "dep:ra_ap_load-cargo",
+  "dep:ra_ap_paths",
+  "dep:ra_ap_project_model",
+  "dep:ra_ap_vfs",
+  "dep:ra_ap_cfg",
+]
 
 [dev-dependencies]
 tempfile = "3"
-
-# Profile for faster ra_ap_* builds (mirroring cargo-modules approach)
-[profile.dev.package."ra_ap_hir"]
-opt-level = 2
-[profile.dev.package."ra_ap_ide"]
-opt-level = 2
-[profile.dev.package."ra_ap_ide_db"]
-opt-level = 2
-[profile.dev.package."ra_ap_load-cargo"]
-opt-level = 2
-[profile.dev.package."ra_ap_project_model"]
-opt-level = 2
-[profile.dev.package."ra_ap_vfs"]
-opt-level = 2
