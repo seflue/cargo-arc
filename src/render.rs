@@ -275,6 +275,18 @@ pub(crate) struct LabelClasses {
 }
 
 #[allow(dead_code)]
+pub(crate) struct SidebarClasses {
+    pub root: &'static str,
+    pub header: &'static str,
+    pub title: &'static str,
+    pub close: &'static str,
+    pub content: &'static str,
+    pub usage_group: &'static str,
+    pub symbol: &'static str,
+    pub location: &'static str,
+}
+
+#[allow(dead_code)]
 pub(crate) struct CssClassNames {
     pub nodes: NodeClasses,
     pub direction: DirectionClasses,
@@ -282,6 +294,7 @@ pub(crate) struct CssClassNames {
     pub relation: RelationClasses,
     pub toolbar: ToolbarClasses,
     pub labels: LabelClasses,
+    pub sidebar: SidebarClasses,
 }
 
 static CSS: CssClassNames = CssClassNames {
@@ -339,6 +352,16 @@ static CSS: CssClassNames = CssClassNames {
         arc_count_bg: "arc-count-bg",
         arc_count_group: "arc-count-group",
         hidden_by_filter: "hidden-by-filter",
+    },
+    sidebar: SidebarClasses {
+        root: "sidebar-root",
+        header: "sidebar-header",
+        title: "sidebar-title",
+        close: "sidebar-close",
+        content: "sidebar-content",
+        usage_group: "sidebar-usage-group",
+        symbol: "sidebar-symbol",
+        location: "sidebar-location",
     },
 };
 
@@ -501,6 +524,7 @@ pub fn render(ir: &LayoutIR, config: &RenderConfig) -> String {
     svg.push_str(&render_nodes(&positioned, &parents));
     svg.push_str(&render_edges(&positioned, ir, config.row_height));
     svg.push_str(&render_toolbar(width));
+    svg.push_str(&render_sidebar(width));
     svg.push_str(&render_script(config, ir, &positioned, &parents));
     svg.push_str("</svg>\n");
     svg
@@ -911,6 +935,75 @@ fn build_css_rules() -> Vec<CssRule> {
             &format!(".{}", c.labels.hidden_by_filter),
             &[("display", "none")],
         ),
+        // Sidebar
+        CssRule::new(
+            &format!(".{}", c.sidebar.root),
+            &[
+                ("background", GRAY_50),
+                ("border-left", &format!("1px solid {}", GRAY_200)),
+                ("font-family", "monospace"),
+                ("font-size", "12px"),
+                ("color", GRAY_600),
+                ("display", "flex"),
+                ("flex-direction", "column"),
+                ("height", "100%"),
+                ("overflow", "hidden"),
+                ("user-select", "text"),
+            ],
+        ),
+        CssRule::new(
+            &format!(".{}", c.sidebar.header),
+            &[
+                ("display", "flex"),
+                ("justify-content", "space-between"),
+                ("align-items", "center"),
+                ("padding", "8px 10px"),
+                ("border-bottom", &format!("1px solid {}", GRAY_200)),
+            ],
+        ),
+        CssRule::new(
+            &format!(".{}", c.sidebar.title),
+            &[("font-weight", "bold"), ("font-size", "13px")],
+        ),
+        CssRule::new(
+            &format!(".{}", c.sidebar.close),
+            &[
+                ("cursor", "pointer"),
+                ("font-size", "16px"),
+                ("color", GRAY_400),
+                ("border", "none"),
+                ("background", "none"),
+                ("padding", "2px 6px"),
+            ],
+        ),
+        CssRule::new(
+            &format!(".{}:hover", c.sidebar.close),
+            &[("color", GRAY_600)],
+        ),
+        CssRule::new(
+            &format!(".{}", c.sidebar.content),
+            &[
+                ("overflow-y", "auto"),
+                ("padding", "8px 10px"),
+                ("flex", "1"),
+            ],
+        ),
+        CssRule::new(
+            &format!(".{}", c.sidebar.usage_group),
+            &[("margin-bottom", "10px")],
+        ),
+        CssRule::new(
+            &format!(".{}", c.sidebar.symbol),
+            &[("font-weight", "bold"), ("margin-bottom", "2px")],
+        ),
+        CssRule::new(
+            &format!(".{}", c.sidebar.location),
+            &[
+                ("color", GRAY_400),
+                ("padding-left", "12px"),
+                ("font-size", "11px"),
+            ],
+        ),
     ]
 }
 
@@ -941,6 +1034,24 @@ fn render_styles() -> String {
     }
     css.push_str("  </style>\n");
     css
+}
+
+fn render_sidebar(width: f32) -> String {
+    let x = if width > 280.0 {
+        (width - 280.0) as i32
+    } else {
+        0
+    };
+    let cs = &CSS.sidebar;
+    // Initial height 500 — JS updatePosition() caps dynamically via SIDEBAR_MAX_HEIGHT
+    format!(
+        concat!(
+            "<foreignObject id=\"relation-sidebar\" x=\"{}\" y=\"0\" width=\"280\" height=\"500\" style=\"display:none\">\n",
+            "  <div class=\"{}\" xmlns=\"http://www.w3.org/1999/xhtml\"></div>\n",
+            "</foreignObject>\n",
+        ),
+        x, cs.root,
+    )
 }
 
 fn render_toolbar(width: f32) -> String {
@@ -2863,6 +2974,66 @@ mod tests {
         assert!(css.contains(COLORS.relation.dependency));
         assert!(css.contains(COLORS.toolbar.btn_fill));
         assert!(css.contains(COLORS.labels.bg));
+    }
+
+    #[test]
+    fn test_css_contains_sidebar_rules() {
+        let css = render_styles();
+
+        // Sidebar container
+        assert!(
+            css.contains(&format!(".{}", CSS.sidebar.root)),
+            "CSS should contain .sidebar-root"
+        );
+        assert!(
+            css.contains(&format!(".{}", CSS.sidebar.header)),
+            "CSS should contain .sidebar-header"
+        );
+        assert!(
+            css.contains(&format!(".{}", CSS.sidebar.title)),
+            "CSS should contain .sidebar-title"
+        );
+        assert!(
+            css.contains(&format!(".{}", CSS.sidebar.close)),
+            "CSS should contain .sidebar-close"
+        );
+        assert!(
+            css.contains(&format!(".{}", CSS.sidebar.content)),
+            "CSS should contain .sidebar-content"
+        );
+        assert!(
+            css.contains(&format!(".{}", CSS.sidebar.usage_group)),
+            "CSS should contain .sidebar-usage-group"
+        );
+        assert!(
+            css.contains(&format!(".{}", CSS.sidebar.symbol)),
+            "CSS should contain .sidebar-symbol"
+        );
+        assert!(
+            css.contains(&format!(".{}", CSS.sidebar.location)),
+            "CSS should contain .sidebar-location"
+        );
+    }
+
+    #[test]
+    fn test_render_sidebar_basic_structure() {
+        let sidebar = render_sidebar(800.0);
+        assert!(sidebar.contains("id=\"relation-sidebar\""));
+        assert!(sidebar.contains("display:none"));
+        assert!(sidebar.contains("width=\"280\""));
+        assert!(sidebar.contains(&format!("class=\"{}\"", CSS.sidebar.root)));
+        assert!(sidebar.contains("xmlns=\"http://www.w3.org/1999/xhtml\""));
+    }
+
+    #[test]
+    fn test_render_sidebar_position() {
+        let sidebar = render_sidebar(800.0);
+        // x should be canvas_width - 280 = 520
+        assert!(sidebar.contains("x=\"520\""));
+
+        // Narrow canvas: x should be 0
+        let narrow = render_sidebar(200.0);
+        assert!(narrow.contains("x=\"0\""));
     }
 
     #[test]

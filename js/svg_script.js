@@ -1,5 +1,5 @@
 // @module SvgScript
-// @deps ArcLogic, StaticData, AppState, Selectors, DomAdapter, LayerManager, TreeLogic, DerivedState, HighlightLogic, VirtualEdgeLogic, TextMetrics
+// @deps ArcLogic, StaticData, AppState, Selectors, DomAdapter, LayerManager, TreeLogic, DerivedState, HighlightLogic, VirtualEdgeLogic, TextMetrics, SidebarLogic
 // @config ROW_HEIGHT, MARGIN, TOOLBAR_HEIGHT
 // svg_script.js - DOM code for interactive SVG
 // ArcLogic is loaded from arc_logic.js before this file
@@ -161,6 +161,9 @@ if (typeof document !== 'undefined') {
     // Remove CSS classes
     DomAdapter.querySelectorAll(`.${C.selectedCrate}, .${C.selectedModule}, .${C.depNode}, .${C.dependentNode}, .${C.highlightedArc}, .${C.highlightedArrow}, .${C.highlightedLabel}, .${C.dimmed}`)
       .forEach(el => el.classList.remove(C.selectedCrate, C.selectedModule, C.depNode, C.dependentNode, C.highlightedArc, C.highlightedArrow, C.highlightedLabel, C.dimmed));
+
+    // Hide sidebar unless a pin is still active
+    if (!AppState.hasPinnedSelection(appState)) SidebarLogic.hide();
   }
 
   // Create shadow path for glow effect
@@ -499,21 +502,22 @@ if (typeof document !== 'undefined') {
     const edgeId = from + '-' + to;
     if (pin) {
       // Toggle: if same edge is already pinned, deselect
-      const wasPinned = AppState.togglePinned(appState, 'edge', edgeId);
+      const isPinned = AppState.togglePinned(appState, 'edge', edgeId);
       clearHighlights();
-      if (!wasPinned) return; // Was unpinned, done
+      if (!isPinned) return; // Was not pinned (toggled off), done
     } else {
       clearHighlights();
     }
     applyEdgeHighlight(from, to);
+    if (pin) SidebarLogic.show(edgeId);
   }
 
   function highlightNode(nodeId, pin) {
     if (pin) {
       // Toggle: if same node is already pinned, deselect
-      const wasPinned = AppState.togglePinned(appState, 'node', nodeId);
+      const isPinned = AppState.togglePinned(appState, 'node', nodeId);
       clearHighlights();
-      if (!wasPinned) return; // Was unpinned, done
+      if (!isPinned) return; // Was not pinned (toggled off), done
     } else {
       clearHighlights();
     }
@@ -894,9 +898,14 @@ if (typeof document !== 'undefined') {
   function highlightVirtualEdge(fromId, toId, count) {
     const edgeId = fromId + '-' + toId;
     // Toggle: if same edge is already pinned, deselect
-    const wasPinned = AppState.togglePinned(appState, 'edge', edgeId);
+    const isPinned = AppState.togglePinned(appState, 'edge', edgeId);
     clearHighlights();
-    if (!wasPinned) return; // Was unpinned, done
+    if (!isPinned) return; // Was not pinned (toggled off), done
+    // Build sidebar data from hitarea's sourceLocations (virtual arcs aren't in STATIC_DATA)
+    const hitarea = DomAdapter.querySelector(`.${C.virtualHitarea}[data-arc-id="${edgeId}"]`);
+    const locStr = hitarea?.dataset?.sourceLocations || "";
+    const usages = locStr ? locStr.split("|") : [];
+    SidebarLogic.show(edgeId, { from: fromId, to: toId, usages });
     // from-Node: dependent (purple border)
     DomAdapter.getNode(fromId)?.classList.add(C.dependentNode);
     // to-Node: dep (green border)
@@ -1093,9 +1102,11 @@ if (typeof document !== 'undefined') {
     const rect = svg.getBoundingClientRect();
     const scrollTop = Math.max(0, -rect.top);
     toolbar.setAttribute('transform', `translate(0, ${scrollTop})`);
+    if (SidebarLogic.isVisible()) SidebarLogic.updatePosition();
   }
 
   window.addEventListener('scroll', updateToolbarPosition);
+  window.addEventListener('resize', updateToolbarPosition);
 
   // === Event handlers ===
   // Iterate via StaticData instead of DOM query
@@ -1191,6 +1202,18 @@ if (typeof document !== 'undefined') {
     AppState.clearPinned(appState);
     clearHighlights();
   });
+
+  // Close-button and click isolation for sidebar foreignObject
+  const sidebarEl = DomAdapter.getElementById('relation-sidebar');
+  if (sidebarEl) {
+    sidebarEl.addEventListener('click', (e) => {
+      e.stopPropagation(); // Prevent SVG background click
+      if (e.target.classList.contains('sidebar-close')) {
+        AppState.clearPinned(appState);
+        clearHighlights();
+      }
+    });
+  }
 
   // Apply initial arc weights based on source location counts
   applyInitialArcWeights();
