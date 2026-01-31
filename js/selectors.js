@@ -11,24 +11,24 @@ const Selectors = {
   countId: (id) => `count-${id}`,
 
   // CSS Selectors
-  visibleArc: (arcId) => `.dep-arc[data-arc-id="${arcId}"], .cycle-arc[data-arc-id="${arcId}"]`,
-  hitarea: (arcId) => `.arc-hitarea[data-arc-id="${arcId}"]`,
+  visibleArc: (arcId) => { const c = STATIC_DATA.classes; return `.${c.depArc}[data-arc-id="${arcId}"], .${c.cycleArc}[data-arc-id="${arcId}"]`; },
+  hitarea: (arcId) => `.${STATIC_DATA.classes.arcHitarea}[data-arc-id="${arcId}"]`,
   arrows: (arcId) => `[data-edge="${arcId}"]`,
-  virtualArrows: (arcId) => `[data-vedge="${arcId}"]:not(.arc-count)`,
-  virtualArc: (from, to) => `.virtual-arc[data-from="${from}"][data-to="${to}"]`,
-  connectedHitareas: (nodeId) => `.arc-hitarea[data-from="${nodeId}"], .arc-hitarea[data-to="${nodeId}"]`,
-  labelGroup: (arcId) => `.arc-count-group[data-vedge="${arcId}"]`,
+  virtualArrows: (arcId) => `[data-vedge="${arcId}"]:not(.${STATIC_DATA.classes.arcCount})`,
+  virtualArc: (from, to) => `.${STATIC_DATA.classes.virtualArc}[data-from="${from}"][data-to="${to}"]`,
+  connectedHitareas: (nodeId) => { const c = STATIC_DATA.classes; return `.${c.arcHitarea}[data-from="${nodeId}"], .${c.arcHitarea}[data-to="${nodeId}"]`; },
+  labelGroup: (arcId) => `.${STATIC_DATA.classes.arcCountGroup}[data-vedge="${arcId}"]`,
 
   // Identity selectors (parametrized)
-  collapseToggle: (nodeId) => `.collapse-toggle[data-target="${nodeId}"]`,
+  collapseToggle: (nodeId) => `.${STATIC_DATA.classes.collapseToggle}[data-target="${nodeId}"]`,
   treeLineChild: (nodeId) => `line[data-child="${nodeId}"]`,
   treeLineParent: (nodeId) => `line[data-parent="${nodeId}"]`,
 
   // Category selectors (batch operations)
-  allHitareas: () => '.arc-hitarea',
-  allVirtualElements: () => '.virtual-arc, .virtual-hitarea, .virtual-arrow, .arc-count, .arc-count-group, .arc-count-bg',
-  allBaseEdges: () => '.arc-hitarea, .dep-arc, .cycle-arc',
-  allBaseArrows: () => '.dep-arrow, .cycle-arrow',
+  allHitareas: () => `.${STATIC_DATA.classes.arcHitarea}`,
+  allVirtualElements: () => { const c = STATIC_DATA.classes; return `.${c.virtualArc}, .${c.virtualHitarea}, .${c.virtualArrow}, .${c.arcCount}, .${c.arcCountGroup}, .${c.arcCountBg}`; },
+  allBaseEdges: () => { const c = STATIC_DATA.classes; return `.${c.arcHitarea}, .${c.depArc}, .${c.cycleArc}`; },
+  allBaseArrows: () => { const c = STATIC_DATA.classes; return `.${c.depArrow}, .${c.cycleArrow}`; },
 
   // Layer selectors (for clearHighlights)
   highlightedArcs: () => '#highlight-arcs-layer > *',

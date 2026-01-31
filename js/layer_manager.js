@@ -25,12 +25,13 @@ const LayerManager = {
   getLayerForElement(element, highlighted) {
     if (!element) return null;
 
-    const isArc = element.classList?.contains('dep-arc') ||
-                  element.classList?.contains('cycle-arc') ||
-                  element.classList?.contains('virtual-arc') ||
+    const cls = STATIC_DATA.classes;
+    const isArc = element.classList?.contains(cls.depArc) ||
+                  element.classList?.contains(cls.cycleArc) ||
+                  element.classList?.contains(cls.virtualArc) ||
                   element.tagName === 'polygon';
-    const isLabel = element.classList?.contains('arc-count-group');
-    const isHitarea = element.classList?.contains('arc-hitarea');
+    const isLabel = element.classList?.contains(cls.arcCountGroup);
+    const isHitarea = element.classList?.contains(cls.arcHitarea);
 
     if (isArc) return highlighted ? this.LAYERS.HIGHLIGHT_ARCS : this.LAYERS.BASE_ARCS;
     if (isLabel) return highlighted ? this.LAYERS.HIGHLIGHT_LABELS : this.LAYERS.BASE_LABELS;

@@ -11,6 +11,7 @@ if (typeof document !== 'undefined') {
   const ROW_HEIGHT = __ROW_HEIGHT__;
   const MARGIN = __MARGIN__;
   const TOOLBAR_HEIGHT = __TOOLBAR_HEIGHT__;
+  const C = STATIC_DATA.classes;
 
   // === Arc weight scaling ===
 
@@ -46,7 +47,7 @@ if (typeof document !== 'undefined') {
     hideFloatingLabel();
     const svg = DomAdapter.getSvgRoot();
     floatingLabel = DomAdapter.createSvgElement('g');
-    floatingLabel.setAttribute('class', 'floating-label');
+    floatingLabel.setAttribute('class', C.floatingLabel);
 
     const padding = 6;
     const lineHeight = 14;
@@ -110,7 +111,7 @@ if (typeof document !== 'undefined') {
     }
 
     // Reset arc stroke-width
-    const arcSelector = isVirtual ? `.virtual-arc[data-arc-id="${arcId}"]` : null;
+    const arcSelector = isVirtual ? `.${C.virtualArc}[data-arc-id="${arcId}"]` : null;
     if (isVirtual) {
       DomAdapter.querySelectorAll(arcSelector).forEach(arc => {
         arc.style.strokeWidth = strokeWidth + 'px';
@@ -122,7 +123,7 @@ if (typeof document !== 'undefined') {
 
     // Reset arrow scale (keep current position)
     const arrows = isVirtual
-      ? DomAdapter.querySelectorAll(`.virtual-arrow[data-vedge="${arcId}"]`)
+      ? DomAdapter.querySelectorAll(`.${C.virtualArrow}[data-vedge="${arcId}"]`)
       : DomAdapter.getVisibleArrows(arcId);
     arrows.forEach(arrow => {
       const tip = ArcLogic.parseTipFromPoints(arrow.getAttribute('points'));
@@ -148,18 +149,18 @@ if (typeof document !== 'undefined') {
     });
 
     // Reset regular arcs to original size
-    DomAdapter.querySelectorAll('.arc-hitarea:not(.virtual-hitarea)').forEach(hitarea => {
+    DomAdapter.querySelectorAll(`.${C.arcHitarea}:not(.${C.virtualHitarea})`).forEach(hitarea => {
       resetArcToOriginal(hitarea.dataset.arcId, false);
     });
 
     // Reset virtual arcs to original size (recalculated from aggregated locations)
-    DomAdapter.querySelectorAll('.virtual-hitarea').forEach(hitarea => {
+    DomAdapter.querySelectorAll(`.${C.virtualHitarea}`).forEach(hitarea => {
       resetArcToOriginal(hitarea.dataset.arcId, true, hitarea.dataset.sourceLocations);
     });
 
     // Remove CSS classes
-    DomAdapter.querySelectorAll('.selected-crate, .selected-module, .dep-node, .dependent-node, .highlighted-arc, .highlighted-arrow, .highlighted-label, .dimmed')
-      .forEach(el => el.classList.remove('selected-crate', 'selected-module', 'dep-node', 'dependent-node', 'highlighted-arc', 'highlighted-arrow', 'highlighted-label', 'dimmed'));
+    DomAdapter.querySelectorAll(`.${C.selectedCrate}, .${C.selectedModule}, .${C.depNode}, .${C.dependentNode}, .${C.highlightedArc}, .${C.highlightedArrow}, .${C.highlightedLabel}, .${C.dimmed}`)
+      .forEach(el => el.classList.remove(C.selectedCrate, C.selectedModule, C.depNode, C.dependentNode, C.highlightedArc, C.highlightedArrow, C.highlightedLabel, C.dimmed));
   }
 
   // Create shadow path for glow effect
@@ -169,8 +170,8 @@ if (typeof document !== 'undefined') {
   function createShadowPath(arc, relationType, arcId, originalArcWidth) {
     if (!arc) return;
     const shadow = arc.cloneNode(false);
-    shadow.classList.add('shadow-path');
-    shadow.classList.add(relationType === 'dep' ? 'glow-incoming' : 'glow-outgoing');
+    shadow.classList.add(C.shadowPath);
+    shadow.classList.add(relationType === 'dep' ? C.glowIncoming : C.glowOutgoing);
     shadow.removeAttribute('id');
 
     // Use provided original width (prevents shadow growth on repeated hover)
@@ -199,9 +200,9 @@ if (typeof document !== 'undefined') {
   function highlightArcElement(arc, arcId, relationType) {
     // 1. Calculate ORIGINAL width from source data (not from DOM to prevent growth bug)
     let arcWidth;
-    if (arc.classList.contains('virtual-arc')) {
+    if (arc.classList.contains(C.virtualArc)) {
       // Virtual arc: find hitarea and calculate from sourceLocations
-      const hitarea = DomAdapter.querySelector(`.virtual-hitarea[data-arc-id="${arcId}"]`);
+      const hitarea = DomAdapter.querySelector(`.${C.virtualHitarea}[data-arc-id="${arcId}"]`);
       const sourceLocations = hitarea?.dataset.sourceLocations;
       const count = ArcLogic.countLocations(sourceLocations);
       arcWidth = ArcLogic.calculateStrokeWidth(count);
@@ -213,7 +214,7 @@ if (typeof document !== 'undefined') {
     const highlightWidth = HighlightLogic.calculateHighlightWidth(arcWidth);
 
     // 2. Apply highlighting
-    arc.classList.add('highlighted-arc');
+    arc.classList.add(C.highlightedArc);
     arc.style.strokeWidth = highlightWidth + 'px';
 
     // 3. Create shadow using ORIGINAL width
@@ -225,12 +226,12 @@ if (typeof document !== 'undefined') {
   // Dim all non-highlighted elements (except toolbar and hitareas)
   function dimNonHighlighted() {
     DomAdapter.querySelectorAll(
-      'rect:not(.selected-crate):not(.selected-module):not(.dep-node):not(.dependent-node):not(.toolbar-btn):not(.toolbar-checkbox):not(.arc-count-bg), ' +
-      'path:not(.highlighted-arc):not(.arc-hitarea):not(.virtual-hitarea), ' +
-      'polygon:not(.highlighted-arrow), ' +
-      'text.arc-count:not(.highlighted-label)'
+      `rect:not(.${C.selectedCrate}):not(.${C.selectedModule}):not(.${C.depNode}):not(.${C.dependentNode}):not(.${C.toolbarBtn}):not(.${C.toolbarCheckbox}):not(.${C.arcCountBg}), ` +
+      `path:not(.${C.highlightedArc}):not(.${C.arcHitarea}):not(.${C.virtualHitarea}), ` +
+      `polygon:not(.${C.highlightedArrow}), ` +
+      `text.${C.arcCount}:not(.${C.highlightedLabel})`
     ).forEach(el => {
-      if (!el.closest('.view-options')) el.classList.add('dimmed');
+      if (!el.closest(`.${C.viewOptions}`)) el.classList.add(C.dimmed);
     });
   }
 
@@ -239,11 +240,11 @@ if (typeof document !== 'undefined') {
     const arc = DomAdapter.getVisibleArc(arcId);
 
     // Check if arc is filtered out (user checkbox) - skip completely
-    if (arc?.classList.contains('hidden-by-filter')) return;
+    if (arc?.classList.contains(C.hiddenByFilter)) return;
 
     // Node borders (always apply)
-    DomAdapter.getNode(from)?.classList.add('dependent-node');
-    DomAdapter.getNode(to)?.classList.add('dep-node');
+    DomAdapter.getNode(from)?.classList.add(C.dependentNode);
+    DomAdapter.getNode(to)?.classList.add(C.depNode);
 
     // Regular arc highlighting (skip if collapsed)
     const isCollapsed = arc?.style.display === 'none';
@@ -253,7 +254,7 @@ if (typeof document !== 'undefined') {
 
       // Regular arrows
       DomAdapter.getVisibleArrows(arcId)
-        .forEach(el => el.classList.add('highlighted-arrow'));
+        .forEach(el => el.classList.add(C.highlightedArrow));
     }
 
     // Virtual arcs (exist when regular arc is collapsed)
@@ -262,8 +263,8 @@ if (typeof document !== 'undefined') {
         const vHighlightWidth = highlightArcElement(el, arcId, 'dep');
 
         // Scale virtual arrows (use virtual arc width, not regular arc width)
-        DomAdapter.querySelectorAll(`.virtual-arrow[data-vedge="${arcId}"]`).forEach(arrow => {
-          arrow.classList.add('highlighted-arrow');
+        DomAdapter.querySelectorAll(`.${C.virtualArrow}[data-vedge="${arcId}"]`).forEach(arrow => {
+          arrow.classList.add(C.highlightedArrow);
           const tip = ArcLogic.parseTipFromPoints(arrow.getAttribute('points'));
           if (tip) {
             arrow.setAttribute('points', ArcLogic.getArrowPoints(tip, HighlightLogic.calculateVirtualArrowScale(vHighlightWidth)));
@@ -272,12 +273,12 @@ if (typeof document !== 'undefined') {
       });
 
     // Arc-count labels
-    DomAdapter.querySelectorAll('.arc-count[data-vedge="' + arcId + '"]')
-      .forEach(el => el.classList.add('highlighted-label'));
+    DomAdapter.querySelectorAll(`.${C.arcCount}[data-vedge="` + arcId + `"]`)
+      .forEach(el => el.classList.add(C.highlightedLabel));
 
     // Move highlighted elements to highlight layers
     LayerManager.moveToHighlightLayer(arc, DomAdapter);
-    LayerManager.moveToHighlightLayer(DomAdapter.querySelector(`.virtual-arc[data-arc-id="${arcId}"]`), DomAdapter);
+    LayerManager.moveToHighlightLayer(DomAdapter.querySelector(`.${C.virtualArc}[data-arc-id="${arcId}"]`), DomAdapter);
     LayerManager.moveToHighlightLayer(DomAdapter.getLabelGroup(arcId), DomAdapter);
     // Arrows (only visible ones)
     DomAdapter.getVisibleArrows(arcId).forEach(el => LayerManager.moveToHighlightLayer(el, DomAdapter));
@@ -294,10 +295,10 @@ if (typeof document !== 'undefined') {
     // Selected node: saturated original color
     const selectedNode = DomAdapter.getNode(nodeId);
     if (selectedNode) {
-      if (selectedNode.classList.contains('crate')) {
-        selectedNode.classList.add('selected-crate');
-      } else if (selectedNode.classList.contains('module')) {
-        selectedNode.classList.add('selected-module');
+      if (selectedNode.classList.contains(C.crateNode)) {
+        selectedNode.classList.add(C.selectedCrate);
+      } else if (selectedNode.classList.contains(C.module)) {
+        selectedNode.classList.add(C.selectedModule);
       }
     }
 
@@ -306,7 +307,7 @@ if (typeof document !== 'undefined') {
       .forEach(hitarea => {
         // Skip hitareas filtered out by user (e.g., CrateDeps checkbox)
         // Note: We check visibleArc for display:none (collapsed), not hitarea
-        if (hitarea.classList.contains('hidden-by-filter')) return;
+        if (hitarea.classList.contains(C.hiddenByFilter)) return;
 
         const arcId = hitarea.dataset.arcId;
         const visibleArc = DomAdapter.getVisibleArc(arcId);
@@ -326,11 +327,11 @@ if (typeof document !== 'undefined') {
 
         // Connected nodes (border only)
         const otherNodeId = relationType === 'dep' ? to : from;
-        DomAdapter.getNode(otherNodeId)?.classList.add(relationType === 'dep' ? 'dep-node' : 'dependent-node');
+        DomAdapter.getNode(otherNodeId)?.classList.add(relationType === 'dep' ? C.depNode : C.dependentNode);
 
         // Arrows: marker class (keeps direction color)
         DomAdapter.getVisibleArrows(from + '-' + to)
-          .forEach(arr => arr.classList.add('highlighted-arrow'));
+          .forEach(arr => arr.classList.add(C.highlightedArrow));
 
         // Move to highlight layers
         LayerManager.moveToHighlightLayer(visibleArc, DomAdapter);
@@ -339,7 +340,7 @@ if (typeof document !== 'undefined') {
       });
 
     // Virtual arcs
-    DomAdapter.querySelectorAll('.virtual-arc[data-from="' + nodeId + '"], .virtual-arc[data-to="' + nodeId + '"]')
+    DomAdapter.querySelectorAll(`.${C.virtualArc}[data-from="` + nodeId + `"], .${C.virtualArc}[data-to="` + nodeId + `"]`)
       .forEach(arc => {
         const from = arc.dataset.from;
         const to = arc.dataset.to;
@@ -349,7 +350,7 @@ if (typeof document !== 'undefined') {
         const highlightWidth = highlightArcElement(arc, arcId, relationType);
 
         // Scale virtual arrows
-        DomAdapter.querySelectorAll(`.virtual-arrow[data-vedge="${arcId}"]`).forEach(arrow => {
+        DomAdapter.querySelectorAll(`.${C.virtualArrow}[data-vedge="${arcId}"]`).forEach(arrow => {
           const tip = ArcLogic.parseTipFromPoints(arrow.getAttribute('points'));
           if (tip) {
             arrow.setAttribute('points', ArcLogic.getArrowPoints(tip, HighlightLogic.calculateVirtualArrowScale(highlightWidth)));
@@ -358,15 +359,15 @@ if (typeof document !== 'undefined') {
 
         // Connected nodes (border only)
         const otherNodeId = relationType === 'dep' ? to : from;
-        DomAdapter.getNode(otherNodeId)?.classList.add(relationType === 'dep' ? 'dep-node' : 'dependent-node');
+        DomAdapter.getNode(otherNodeId)?.classList.add(relationType === 'dep' ? C.depNode : C.dependentNode);
 
         // Arrows: marker class (keeps direction color)
         DomAdapter.getVirtualArrows(arcId)
-          .forEach(arr => arr.classList.add('highlighted-arrow'));
+          .forEach(arr => arr.classList.add(C.highlightedArrow));
 
         // Arc-count labels
-        DomAdapter.querySelectorAll('.arc-count[data-vedge="' + arcId + '"]')
-          .forEach(el => el.classList.add('highlighted-label'));
+        DomAdapter.querySelectorAll(`.${C.arcCount}[data-vedge="` + arcId + `"]`)
+          .forEach(el => el.classList.add(C.highlightedLabel));
 
         // Move to highlight layers
         LayerManager.moveToHighlightLayer(arc, DomAdapter);
@@ -391,10 +392,10 @@ if (typeof document !== 'undefined') {
     // Primary node: saturated original color
     const selectedNode = DomAdapter.getNode(primaryNodeId);
     if (selectedNode) {
-      if (selectedNode.classList.contains('crate')) {
-        selectedNode.classList.add('selected-crate');
-      } else if (selectedNode.classList.contains('module')) {
-        selectedNode.classList.add('selected-module');
+      if (selectedNode.classList.contains(C.crateNode)) {
+        selectedNode.classList.add(C.selectedCrate);
+      } else if (selectedNode.classList.contains(C.module)) {
+        selectedNode.classList.add(C.selectedModule);
       }
     }
 
@@ -405,7 +406,7 @@ if (typeof document !== 'undefined') {
       // Regular arcs via hitareas
       DomAdapter.getConnectedHitareas(nodeId)
         .forEach(hitarea => {
-          if (hitarea.classList.contains('hidden-by-filter')) return;
+          if (hitarea.classList.contains(C.hiddenByFilter)) return;
 
           const arcId = hitarea.dataset.arcId;
           if (processedArcs.has(arcId)) return;
@@ -430,14 +431,14 @@ if (typeof document !== 'undefined') {
 
           // External nodes (not in set) get border
           if (!fromInSet) {
-            DomAdapter.getNode(from)?.classList.add('dependent-node');
+            DomAdapter.getNode(from)?.classList.add(C.dependentNode);
           }
           if (!toInSet) {
-            DomAdapter.getNode(to)?.classList.add('dep-node');
+            DomAdapter.getNode(to)?.classList.add(C.depNode);
           }
 
           DomAdapter.getVisibleArrows(from + '-' + to)
-            .forEach(arr => arr.classList.add('highlighted-arrow'));
+            .forEach(arr => arr.classList.add(C.highlightedArrow));
 
           LayerManager.moveToHighlightLayer(visibleArc, DomAdapter);
           LayerManager.moveToHighlightLayer(DomAdapter.getLabelGroup(arcId), DomAdapter);
@@ -445,7 +446,7 @@ if (typeof document !== 'undefined') {
         });
 
       // Virtual arcs
-      DomAdapter.querySelectorAll('.virtual-arc[data-from="' + nodeId + '"], .virtual-arc[data-to="' + nodeId + '"]')
+      DomAdapter.querySelectorAll(`.${C.virtualArc}[data-from="` + nodeId + `"], .${C.virtualArc}[data-to="` + nodeId + `"]`)
         .forEach(arc => {
           const from = arc.dataset.from;
           const to = arc.dataset.to;
@@ -461,25 +462,25 @@ if (typeof document !== 'undefined') {
 
           const highlightWidth = highlightArcElement(arc, arcId, relationType);
 
-          DomAdapter.querySelectorAll(`.virtual-arrow[data-vedge="${arcId}"]`).forEach(arrow => {
-            const tip = ArrowLogic.parseTipFromPoints(arrow.getAttribute('points'));
+          DomAdapter.querySelectorAll(`.${C.virtualArrow}[data-vedge="${arcId}"]`).forEach(arrow => {
+            const tip = ArcLogic.parseTipFromPoints(arrow.getAttribute('points'));
             if (tip) {
-              arrow.setAttribute('points', ArrowLogic.getArrowPoints(tip, HighlightLogic.calculateVirtualArrowScale(highlightWidth)));
+              arrow.setAttribute('points', ArcLogic.getArrowPoints(tip, HighlightLogic.calculateVirtualArrowScale(highlightWidth)));
             }
           });
 
           if (!fromInSet) {
-            DomAdapter.getNode(from)?.classList.add('dependent-node');
+            DomAdapter.getNode(from)?.classList.add(C.dependentNode);
           }
           if (!toInSet) {
-            DomAdapter.getNode(to)?.classList.add('dep-node');
+            DomAdapter.getNode(to)?.classList.add(C.depNode);
           }
 
           DomAdapter.getVirtualArrows(arcId)
-            .forEach(arr => arr.classList.add('highlighted-arrow'));
+            .forEach(arr => arr.classList.add(C.highlightedArrow));
 
-          DomAdapter.querySelectorAll('.arc-count[data-vedge="' + arcId + '"]')
-            .forEach(el => el.classList.add('highlighted-label'));
+          DomAdapter.querySelectorAll(`.${C.arcCount}[data-vedge="` + arcId + `"]`)
+            .forEach(el => el.classList.add(C.highlightedLabel));
 
           LayerManager.moveToHighlightLayer(arc, DomAdapter);
           LayerManager.moveToHighlightLayer(DomAdapter.getLabelGroup(arcId), DomAdapter);
@@ -597,8 +598,8 @@ if (typeof document !== 'undefined') {
     sortedIds.forEach(nodeId => {
       const node = DomAdapter.getNode(nodeId);
       if (!node) return;
-      if (node.classList.contains('collapsed')) return;
-      if (node.classList.contains('hidden-by-filter')) return;
+      if (node.classList.contains(C.collapsed)) return;
+      if (node.classList.contains(C.hiddenByFilter)) return;
 
       // Get height from StaticData (no DOM read)
       const height = StaticData.getOriginalPosition(nodeId).height;
@@ -608,7 +609,7 @@ if (typeof document !== 'undefined') {
 
       // Update label position (next text sibling)
       const label = node.nextElementSibling;
-      if (label && label.tagName === 'text' && label.classList.contains('label')) {
+      if (label && label.tagName === 'text' && label.classList.contains(C.label)) {
         label.setAttribute('y', currentY + height / 2 + 4);
       }
 
@@ -771,7 +772,7 @@ if (typeof document !== 'undefined') {
 
       // Visible path (styled, no pointer events)
       const path = DomAdapter.createSvgElement('path');
-      path.setAttribute('class', `virtual-arc ${direction}`);
+      path.setAttribute('class', `${C.virtualArc} ${direction}`);
       path.setAttribute('d', arc.path);
       path.setAttribute('data-arc-id', arcId);
       path.setAttribute('data-from', fromId);
@@ -782,7 +783,7 @@ if (typeof document !== 'undefined') {
       // Arrow (scaled to match stroke width)
       const scale = strokeWidth / 1.5;
       const arrow = DomAdapter.createSvgElement('polygon');
-      arrow.setAttribute('class', `virtual-arrow ${direction}`);
+      arrow.setAttribute('class', `${C.virtualArrow} ${direction}`);
       arrow.setAttribute('data-vedge', arcId);
       arrow.setAttribute('data-from', fromId);
       arrow.setAttribute('data-to', toId);
@@ -800,7 +801,7 @@ if (typeof document !== 'undefined') {
 
       if (count > 1) {
         const labelGroup = DomAdapter.createSvgElement('g');
-        labelGroup.setAttribute('class', 'arc-count-group');
+        labelGroup.setAttribute('class', C.arcCountGroup);
         labelGroup.setAttribute('data-vedge', fromId + '-' + toId);
         labelGroup.setAttribute('data-from', fromId);
         labelGroup.setAttribute('data-to', toId);
@@ -812,7 +813,7 @@ if (typeof document !== 'undefined') {
         const padding = 2;
         const textWidth = text.length * 6; // ~6px per char at 10px font
         const bg = DomAdapter.createSvgElement('rect');
-        bg.setAttribute('class', 'arc-count-bg');
+        bg.setAttribute('class', C.arcCountBg);
         bg.setAttribute('x', x - textWidth / 2 - padding);
         bg.setAttribute('y', y - 8 - padding);
         bg.setAttribute('width', textWidth + padding * 2);
@@ -821,7 +822,7 @@ if (typeof document !== 'undefined') {
 
         // Text label
         const countLabel = DomAdapter.createSvgElement('text');
-        countLabel.setAttribute('class', 'arc-count');
+        countLabel.setAttribute('class', C.arcCount);
         countLabel.setAttribute('data-vedge', fromId + '-' + toId);
         countLabel.setAttribute('x', x);
         countLabel.setAttribute('y', y);
@@ -847,7 +848,7 @@ if (typeof document !== 'undefined') {
       const arcId = fromId + '-' + toId;
 
       const hitarea = DomAdapter.createSvgElement('path');
-      hitarea.setAttribute('class', 'virtual-hitarea arc-hitarea');
+      hitarea.setAttribute('class', `${C.virtualHitarea} ${C.arcHitarea}`);
       hitarea.setAttribute('d', arc.path);
       hitarea.setAttribute('data-arc-id', arcId);
       hitarea.setAttribute('data-from', fromId);
@@ -897,9 +898,9 @@ if (typeof document !== 'undefined') {
     clearHighlights();
     if (!wasPinned) return; // Was unpinned, done
     // from-Node: dependent (purple border)
-    DomAdapter.getNode(fromId)?.classList.add('dependent-node');
+    DomAdapter.getNode(fromId)?.classList.add(C.dependentNode);
     // to-Node: dep (green border)
-    DomAdapter.getNode(toId)?.classList.add('dep-node');
+    DomAdapter.getNode(toId)?.classList.add(C.depNode);
     // Virtual arc: marker class (keeps direction color), dynamic stroke-width
     let highlightWidth = 0;
     DomAdapter.querySelectorAll(Selectors.virtualArc(fromId, toId))
@@ -907,21 +908,21 @@ if (typeof document !== 'undefined') {
         highlightWidth = highlightArcElement(el, edgeId, 'dep');
       });
     // Arrows: marker class (keeps direction color), scale to match arc
-    DomAdapter.querySelectorAll('.virtual-arrow[data-vedge="' + edgeId + '"]')
+    DomAdapter.querySelectorAll(`.${C.virtualArrow}[data-vedge="` + edgeId + `"]`)
       .forEach(el => {
-        el.classList.add('highlighted-arrow');
+        el.classList.add(C.highlightedArrow);
         const tip = ArcLogic.parseTipFromPoints(el.getAttribute('points'));
         if (tip) {
           el.setAttribute('points', ArcLogic.getArrowPoints(tip, HighlightLogic.calculateVirtualArrowScale(highlightWidth)));
         }
       });
     // Arc-count labels
-    DomAdapter.querySelectorAll('.arc-count[data-vedge="' + edgeId + '"]')
-      .forEach(el => el.classList.add('highlighted-label'));
+    DomAdapter.querySelectorAll(`.${C.arcCount}[data-vedge="` + edgeId + `"]`)
+      .forEach(el => el.classList.add(C.highlightedLabel));
     // Move virtual arc and label group to highlight layers
-    LayerManager.moveToHighlightLayer(DomAdapter.querySelector('.virtual-arc[data-arc-id="' + edgeId + '"]'), DomAdapter);
+    LayerManager.moveToHighlightLayer(DomAdapter.querySelector(`.${C.virtualArc}[data-arc-id="` + edgeId + `"]`), DomAdapter);
     LayerManager.moveToHighlightLayer(DomAdapter.getLabelGroup(edgeId), DomAdapter);
-    DomAdapter.querySelectorAll('.virtual-arrow[data-vedge="' + edgeId + '"]').forEach(el => LayerManager.moveToHighlightLayer(el, DomAdapter));
+    DomAdapter.querySelectorAll(`.${C.virtualArrow}[data-vedge="` + edgeId + `"]`).forEach(el => LayerManager.moveToHighlightLayer(el, DomAdapter));
     // Dim everything else
     dimNonHighlighted();
   }
@@ -945,19 +946,19 @@ if (typeof document !== 'undefined') {
     const label = node?.nextElementSibling;
     const toggle = DomAdapter.getCollapseToggle(descId);
     if (collapsed) {
-      node?.classList.add('collapsed');
-      label?.classList.add('collapsed');
-      toggle?.classList.add('collapsed');
+      node?.classList.add(C.collapsed);
+      label?.classList.add(C.collapsed);
+      toggle?.classList.add(C.collapsed);
     } else {
-      node?.classList.remove('collapsed');
-      label?.classList.remove('collapsed');
-      toggle?.classList.remove('collapsed');
+      node?.classList.remove(C.collapsed);
+      label?.classList.remove(C.collapsed);
+      toggle?.classList.remove(C.collapsed);
     }
     DomAdapter.getTreeLines(descId, 'child').forEach(line => {
       if (collapsed) {
-        line.classList.add('collapsed');
-      } else if (!node?.classList.contains('collapsed')) {
-        line.classList.remove('collapsed');
+        line.classList.add(C.collapsed);
+      } else if (!node?.classList.contains(C.collapsed)) {
+        line.classList.remove(C.collapsed);
       }
     });
   }
@@ -1051,32 +1052,32 @@ if (typeof document !== 'undefined') {
     const checkbox = DomAdapter.querySelector('#crate-dep-checkbox');
     if (!checkbox) return;
 
-    const isChecked = checkbox.classList.toggle('checked');
+    const isChecked = checkbox.classList.toggle(C.checked);
 
-    DomAdapter.querySelectorAll('.crate-dep-arc').forEach(arc => {
+    DomAdapter.querySelectorAll(`.${C.crateDepArc}`).forEach(arc => {
       if (isChecked) {
-        arc.classList.remove('hidden-by-filter');
+        arc.classList.remove(C.hiddenByFilter);
       } else {
-        arc.classList.add('hidden-by-filter');
+        arc.classList.add(C.hiddenByFilter);
       }
     });
 
     // Also hide/show associated hitareas and arrows
-    DomAdapter.querySelectorAll('.arc-hitarea').forEach(hitarea => {
+    DomAdapter.querySelectorAll(`.${C.arcHitarea}`).forEach(hitarea => {
       const arcId = hitarea.dataset.arcId;
-      const visibleArc = DomAdapter.querySelector(`.crate-dep-arc[data-arc-id="${arcId}"]`);
+      const visibleArc = DomAdapter.querySelector(`.${C.crateDepArc}[data-arc-id="${arcId}"]`);
       if (visibleArc) {
         if (isChecked) {
-          hitarea.classList.remove('hidden-by-filter');
+          hitarea.classList.remove(C.hiddenByFilter);
         } else {
-          hitarea.classList.add('hidden-by-filter');
+          hitarea.classList.add(C.hiddenByFilter);
         }
         // Also handle arrows
         DomAdapter.getArrows(arcId).forEach(arrow => {
           if (isChecked) {
-            arrow.classList.remove('hidden-by-filter');
+            arrow.classList.remove(C.hiddenByFilter);
           } else {
-            arrow.classList.add('hidden-by-filter');
+            arrow.classList.add(C.hiddenByFilter);
           }
         });
       }
@@ -1085,7 +1086,7 @@ if (typeof document !== 'undefined') {
 
   // Update toolbar position to stay at top when scrolling
   function updateToolbarPosition() {
-    const toolbar = DomAdapter.querySelector('.view-options');
+    const toolbar = DomAdapter.querySelector(`.${C.viewOptions}`);
     const svg = DomAdapter.getSvgRoot();
     if (!toolbar || !svg) return;
 
@@ -1120,7 +1121,7 @@ if (typeof document !== 'undefined') {
     }
   });
 
-  DomAdapter.querySelectorAll('.collapse-toggle').forEach(toggle => {
+  DomAdapter.querySelectorAll(`.${C.collapseToggle}`).forEach(toggle => {
     toggle.addEventListener('click', e => {
       e.stopPropagation();
       toggleCollapse(toggle.dataset.target);
@@ -1146,7 +1147,7 @@ if (typeof document !== 'undefined') {
   });
 
   // Event handlers on hit-area paths (invisible, 12px wide) — regular arcs only
-  DomAdapter.querySelectorAll('.arc-hitarea:not(.virtual-hitarea)').forEach(hitarea => {
+  DomAdapter.querySelectorAll(`.${C.arcHitarea}:not(.${C.virtualHitarea})`).forEach(hitarea => {
     const edgeId = hitarea.dataset.from + '-' + hitarea.dataset.to;
 
     hitarea.addEventListener('click', e => {

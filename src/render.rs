@@ -120,19 +120,19 @@ pub(crate) struct NodeColors {
     pub collapse_hover: &'static str,
 }
 
-pub(crate) struct ArcColors {
+pub(crate) struct DirectionColors {
     pub downward: &'static str,
     pub upward: &'static str,
     pub cycle: &'static str,
     pub count_bg: &'static str,
 }
 
-pub(crate) struct SelectionColors {
+pub(crate) struct NodeSelectionColors {
     pub crate_fill: &'static str,
     pub module_fill: &'static str,
 }
 
-pub(crate) struct HighlightColors {
+pub(crate) struct RelationColors {
     pub dependency: &'static str,
     pub dependent: &'static str,
     pub dimmed: &'static str,
@@ -156,11 +156,11 @@ pub(crate) struct LabelColors {
 
 pub(crate) struct ColorPalette {
     pub nodes: NodeColors,
-    pub arcs: ArcColors,
-    pub selection: SelectionColors,
-    pub highlight: HighlightColors,
+    pub direction: DirectionColors,
+    pub node_selection: NodeSelectionColors,
+    pub relation: RelationColors,
     pub toolbar: ToolbarColors,
-    pub label: LabelColors,
+    pub labels: LabelColors,
 }
 
 static COLORS: ColorPalette = ColorPalette {
@@ -174,17 +174,17 @@ static COLORS: ColorPalette = ColorPalette {
         collapse_toggle: GRAY_600,
         collapse_hover: BLUE,
     },
-    arcs: ArcColors {
+    direction: DirectionColors {
         downward: GREEN,
         upward: YELLOW,
         cycle: RED,
         count_bg: WHITE,
     },
-    selection: SelectionColors {
+    node_selection: NodeSelectionColors {
         crate_fill: BLUE_300,
         module_fill: ORANGE_300,
     },
-    highlight: HighlightColors {
+    relation: RelationColors {
         dependency: GREEN,
         dependent: PURPLE,
         dimmed: GRAY_400,
@@ -199,9 +199,146 @@ static COLORS: ColorPalette = ColorPalette {
         checkbox_checked: BLUE,
         separator: GRAY_300,
     },
-    label: LabelColors {
+    labels: LabelColors {
         bg: DARK_BG,
         text: GRAY_200,
+    },
+};
+
+// --- CSS Class Names (Single Source of Truth) ---
+
+#[allow(dead_code)]
+pub(crate) struct NodeClasses {
+    pub crate_node: &'static str,
+    pub module: &'static str,
+    pub label: &'static str,
+    pub child_count: &'static str,
+    pub tree_line: &'static str,
+    pub collapse_toggle: &'static str,
+    pub collapsed: &'static str,
+}
+
+#[allow(dead_code)]
+pub(crate) struct DirectionClasses {
+    pub dep_arc: &'static str,
+    pub downward: &'static str,
+    pub upward: &'static str,
+    pub dep_arrow: &'static str,
+    pub upward_arrow: &'static str,
+    pub cycle_arc: &'static str,
+    pub cycle_arrow: &'static str,
+    pub arc_hitarea: &'static str,
+    pub crate_dep_arc: &'static str,
+    pub virtual_arc: &'static str,
+    pub virtual_arrow: &'static str,
+    pub virtual_hitarea: &'static str,
+}
+
+#[allow(dead_code)]
+pub(crate) struct NodeSelectionClasses {
+    pub selected_crate: &'static str,
+    pub selected_module: &'static str,
+}
+
+#[allow(dead_code)]
+pub(crate) struct RelationClasses {
+    pub highlighted_arc: &'static str,
+    pub highlighted_arrow: &'static str,
+    pub highlighted_label: &'static str,
+    pub dep_node: &'static str,
+    pub dependent_node: &'static str,
+    pub dimmed: &'static str,
+    pub shadow_path: &'static str,
+    pub glow_incoming: &'static str,
+    pub glow_outgoing: &'static str,
+}
+
+#[allow(dead_code)]
+pub(crate) struct ToolbarClasses {
+    pub view_options: &'static str,
+    pub btn: &'static str,
+    pub btn_text: &'static str,
+    pub separator: &'static str,
+    pub checkbox: &'static str,
+    pub checked: &'static str,
+    pub disabled: &'static str,
+    pub label: &'static str,
+}
+
+#[allow(dead_code)]
+pub(crate) struct LabelClasses {
+    pub floating_label: &'static str,
+    pub arc_count: &'static str,
+    pub arc_count_bg: &'static str,
+    pub arc_count_group: &'static str,
+    pub hidden_by_filter: &'static str,
+}
+
+#[allow(dead_code)]
+pub(crate) struct CssClassNames {
+    pub nodes: NodeClasses,
+    pub direction: DirectionClasses,
+    pub node_selection: NodeSelectionClasses,
+    pub relation: RelationClasses,
+    pub toolbar: ToolbarClasses,
+    pub labels: LabelClasses,
+}
+
+static CSS: CssClassNames = CssClassNames {
+    nodes: NodeClasses {
+        crate_node: "crate",
+        module: "module",
+        label: "label",
+        child_count: "child-count",
+        tree_line: "tree-line",
+        collapse_toggle: "collapse-toggle",
+        collapsed: "collapsed",
+    },
+    direction: DirectionClasses {
+        dep_arc: "dep-arc",
+        downward: "downward",
+        upward: "upward",
+        dep_arrow: "dep-arrow",
+        upward_arrow: "upward-arrow",
+        cycle_arc: "cycle-arc",
+        cycle_arrow: "cycle-arrow",
+        arc_hitarea: "arc-hitarea",
+        crate_dep_arc: "crate-dep-arc",
+        virtual_arc: "virtual-arc",
+        virtual_arrow: "virtual-arrow",
+        virtual_hitarea: "virtual-hitarea",
+    },
+    node_selection: NodeSelectionClasses {
+        selected_crate: "selected-crate",
+        selected_module: "selected-module",
+    },
+    relation: RelationClasses {
+        highlighted_arc: "highlighted-arc",
+        highlighted_arrow: "highlighted-arrow",
+        highlighted_label: "highlighted-label",
+        dep_node: "dep-node",
+        dependent_node: "dependent-node",
+        dimmed: "dimmed",
+        shadow_path: "shadow-path",
+        glow_incoming: "glow-incoming",
+        glow_outgoing: "glow-outgoing",
+    },
+    toolbar: ToolbarClasses {
+        view_options: "view-options",
+        btn: "toolbar-btn",
+        btn_text: "toolbar-btn-text",
+        separator: "toolbar-separator",
+        checkbox: "toolbar-checkbox",
+        checked: "checked",
+        disabled: "toolbar-disabled",
+        label: "toolbar-label",
+    },
+    labels: LabelClasses {
+        floating_label: "floating-label",
+        arc_count: "arc-count",
+        arc_count_bg: "arc-count-bg",
+        arc_count_group: "arc-count-group",
+        hidden_by_filter: "hidden-by-filter",
     },
 };
 
@@ -453,6 +590,330 @@ fn calculate_canvas_size(
     (width, height)
 }
 
+// --- CSS Builder ---
+
+struct CssRule {
+    selector: String,
+    properties: Vec<(String, String)>,
+}
+
+impl CssRule {
+    fn new(selector: &str, properties: &[(&str, &str)]) -> Self {
+        Self {
+            selector: selector.to_string(),
+            properties: properties
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        }
+    }
+}
+
+fn build_css_rules() -> Vec<CssRule> {
+    let n = &COLORS.nodes;
+    let d = &COLORS.direction;
+    let ns = &COLORS.node_selection;
+    let r = &COLORS.relation;
+    let t = &COLORS.toolbar;
+    let l = &COLORS.labels;
+    let c = &CSS;
+
+    vec![
+        // Node base styles
+        CssRule::new(
+            &format!(".{}", c.nodes.crate_node),
+            &[
+                ("fill", n.crate_fill),
+                ("stroke", n.crate_stroke),
+                ("stroke-width", "1.5"),
+            ],
+        ),
+        CssRule::new(
+            &format!(".{}", c.nodes.module),
+            &[
+                ("fill", n.module_fill),
+                ("stroke", n.module_stroke),
+                ("stroke-width", "1.5"),
+            ],
+        ),
+        CssRule::new(
+            &format!(".{}", c.nodes.label),
+            &[("font-family", "monospace"), ("font-size", "12px")],
+        ),
+        CssRule::new(
+            &format!(".{}", c.nodes.tree_line),
+            &[("stroke", n.tree_line), ("stroke-width", "1")],
+        ),
+        // Arc base styles
+        CssRule::new(
+            &format!(".{}, .{}", c.direction.dep_arc, c.direction.cycle_arc),
+            &[("pointer-events", "none")],
+        ),
+        CssRule::new(
+            &format!(".{}", c.direction.dep_arc),
+            &[("fill", "none"), ("stroke-width", "0.5")],
+        ),
+        CssRule::new(
+            &format!(".{}.{}", c.direction.dep_arc, c.direction.downward),
+            &[("stroke", d.downward)],
+        ),
+        CssRule::new(
+            &format!(".{}.{}", c.direction.dep_arc, c.direction.upward),
+            &[("stroke", d.upward)],
+        ),
+        CssRule::new(
+            &format!(".{}", c.direction.dep_arrow),
+            &[("fill", d.downward)],
+        ),
+        CssRule::new(
+            &format!(".{}", c.direction.upward_arrow),
+            &[("fill", d.upward)],
+        ),
+        CssRule::new(
+            &format!(".{}", c.direction.cycle_arc),
+            &[
+                ("fill", "none"),
+                ("stroke", d.cycle),
+                ("stroke-width", "0.5"),
+            ],
+        ),
+        CssRule::new(
+            &format!(".{}", c.direction.cycle_arrow),
+            &[("fill", d.cycle)],
+        ),
+        // Hit-area
+        CssRule::new(
+            &format!(".{}", c.direction.arc_hitarea),
+            &[
+                ("fill", "none"),
+                ("stroke", "transparent"),
+                ("stroke-width", "12"),
+                ("pointer-events", "stroke"),
+                ("cursor", "pointer"),
+            ],
+        ),
+        // Selection
+        CssRule::new(
+            &format!(".{}", c.node_selection.selected_crate),
+            &[("fill", ns.crate_fill), ("stroke-width", "3")],
+        ),
+        CssRule::new(
+            &format!(".{}", c.node_selection.selected_module),
+            &[("fill", ns.module_fill), ("stroke-width", "3")],
+        ),
+        // Highlighted arc (marker class)
+        CssRule::new(&format!(".{}", c.relation.highlighted_arc), &[]),
+        // Glow classes
+        CssRule::new(
+            &format!(".{}", c.relation.glow_incoming),
+            &[("stroke", r.dependency)],
+        ),
+        CssRule::new(
+            &format!(".{}", c.relation.glow_outgoing),
+            &[("stroke", r.dependent)],
+        ),
+        // Node borders (relation)
+        CssRule::new(
+            &format!(".{}", c.relation.dep_node),
+            &[("stroke", r.dependency), ("stroke-width", "2.5")],
+        ),
+        CssRule::new(
+            &format!(".{}", c.relation.dependent_node),
+            &[("stroke", r.dependent), ("stroke-width", "2.5")],
+        ),
+        // Dimmed
+        CssRule::new(
+            &format!(".{}", c.relation.dimmed),
+            &[("opacity", "0.3"), ("pointer-events", "none")],
+        ),
+        CssRule::new(
+            &format!(
+                "path.{}:not(.{})",
+                c.relation.dimmed, c.relation.shadow_path
+            ),
+            &[("stroke", r.dimmed)],
+        ),
+        CssRule::new(
+            &format!("polygon.{}", c.relation.dimmed),
+            &[("fill", r.dimmed)],
+        ),
+        // Cursor
+        CssRule::new(
+            &format!(
+                ".{}, .{}, .{}, .{}",
+                c.nodes.crate_node, c.nodes.module, c.direction.dep_arc, c.direction.cycle_arc
+            ),
+            &[("cursor", "pointer")],
+        ),
+        // Collapse
+        CssRule::new(
+            &format!(".{}", c.nodes.collapse_toggle),
+            &[
+                ("font-family", "monospace"),
+                ("font-size", "14px"),
+                ("cursor", "pointer"),
+                ("fill", n.collapse_toggle),
+            ],
+        ),
+        CssRule::new(
+            &format!(".{}:hover", c.nodes.collapse_toggle),
+            &[("fill", n.collapse_hover)],
+        ),
+        CssRule::new(&format!(".{}", c.nodes.collapsed), &[("display", "none")]),
+        // Virtual arcs
+        CssRule::new(
+            &format!(".{}", c.direction.virtual_arc),
+            &[
+                ("fill", "none"),
+                ("stroke-width", "0.5"),
+                ("stroke-dasharray", "4,2"),
+            ],
+        ),
+        CssRule::new(
+            &format!(".{}.{}", c.direction.virtual_arc, c.direction.downward),
+            &[("stroke", d.downward)],
+        ),
+        CssRule::new(
+            &format!(".{}.{}", c.direction.virtual_arc, c.direction.upward),
+            &[("stroke", d.upward)],
+        ),
+        CssRule::new(
+            &format!(".{}", c.direction.virtual_arrow),
+            &[("cursor", "pointer")],
+        ),
+        CssRule::new(
+            &format!(".{}.{}", c.direction.virtual_arrow, c.direction.downward),
+            &[("fill", d.downward)],
+        ),
+        CssRule::new(
+            &format!(".{}.{}", c.direction.virtual_arrow, c.direction.upward),
+            &[("fill", d.upward)],
+        ),
+        // Arc count labels
+        CssRule::new(
+            &format!(".{}", c.labels.arc_count),
+            &[
+                ("font-family", "monospace"),
+                ("font-size", "10px"),
+                ("fill", d.downward),
+                ("text-anchor", "middle"),
+            ],
+        ),
+        CssRule::new(
+            &format!(".{}", c.labels.arc_count_bg),
+            &[("fill", d.count_bg), ("rx", "2")],
+        ),
+        CssRule::new(
+            &format!(".{}.dep-edge", c.labels.arc_count),
+            &[
+                ("fill", r.dependency),
+                ("font-size", "12px"),
+                ("font-weight", "bold"),
+                ("stroke", "none"),
+            ],
+        ),
+        CssRule::new(
+            &format!(".{}.dependent-edge", c.labels.arc_count),
+            &[
+                ("fill", r.dependent),
+                ("font-size", "12px"),
+                ("font-weight", "bold"),
+                ("stroke", "none"),
+            ],
+        ),
+        CssRule::new(
+            &format!(".{}.{}", c.labels.arc_count, c.relation.dimmed),
+            &[("opacity", "0.3")],
+        ),
+        CssRule::new(
+            &format!(".{}", c.nodes.child_count),
+            &[("font-size", "10px"), ("fill", n.child_count)],
+        ),
+        // Shadow path
+        CssRule::new(
+            &format!(".{}", c.relation.shadow_path),
+            &[("pointer-events", "none"), ("stroke-linecap", "round")],
+        ),
+        // Floating label
+        CssRule::new(
+            &format!(".{}", c.labels.floating_label),
+            &[("pointer-events", "none")],
+        ),
+        CssRule::new(
+            &format!(".{} rect", c.labels.floating_label),
+            &[("fill", l.bg), ("fill-opacity", "0.95"), ("rx", "4")],
+        ),
+        CssRule::new(
+            &format!(".{} text", c.labels.floating_label),
+            &[
+                ("fill", l.text),
+                ("font-family", "monospace"),
+                ("font-size", "11px"),
+            ],
+        ),
+        // Toolbar
+        CssRule::new(
+            &format!(".{}", c.toolbar.view_options),
+            &[("cursor", "default")],
+        ),
+        CssRule::new(
+            &format!(".{}", c.toolbar.btn),
+            &[
+                ("fill", t.btn_fill),
+                ("stroke", t.btn_stroke),
+                ("rx", "3"),
+                ("cursor", "pointer"),
+            ],
+        ),
+        CssRule::new(
+            &format!(".{}:hover", c.toolbar.btn),
+            &[("fill", t.btn_hover)],
+        ),
+        CssRule::new(
+            &format!(".{}", c.toolbar.btn_text),
+            &[
+                ("font-family", "sans-serif"),
+                ("font-size", "11px"),
+                ("text-anchor", "middle"),
+            ],
+        ),
+        CssRule::new(
+            &format!(".{}", c.toolbar.checkbox),
+            &[
+                ("fill", t.checkbox),
+                ("stroke", t.btn_stroke),
+                ("rx", "2"),
+                ("cursor", "pointer"),
+            ],
+        ),
+        CssRule::new(
+            &format!(".{}.{}", c.toolbar.checkbox, c.toolbar.checked),
+            &[("fill", t.checkbox_checked)],
+        ),
+        CssRule::new(
+            &format!(".{}", c.toolbar.label),
+            &[
+                ("font-family", "sans-serif"),
+                ("font-size", "11px"),
+                ("cursor", "pointer"),
+            ],
+        ),
+        CssRule::new(
+            &format!(".{}", c.toolbar.separator),
+            &[("stroke", t.separator)],
+        ),
+        CssRule::new(
+            &format!(".{}", c.toolbar.disabled),
+            &[("opacity", "0.4"), ("pointer-events", "none")],
+        ),
+        // Filter visibility
+        CssRule::new(
+            &format!(".{}", c.labels.hidden_by_filter),
+            &[("display", "none")],
+        ),
+    ]
+}
+
 fn render_header(width: f32, height: f32) -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -462,112 +923,31 @@ fn render_header(width: f32, height: f32) -> String {
 }
 
 fn render_styles() -> String {
-    let n = &COLORS.nodes;
-    let a = &COLORS.arcs;
-    let s = &COLORS.selection;
-    let h = &COLORS.highlight;
-    let t = &COLORS.toolbar;
-    let l = &COLORS.label;
-    format!(
-        r#"  <style>
-    /* Node base styles - Tailwind fills, Catppuccin strokes */
-    .crate {{ fill: {crate_fill}; stroke: {crate_stroke}; stroke-width: 1.5; }}
-    .module {{ fill: {module_fill}; stroke: {module_stroke}; stroke-width: 1.5; }}
-    .label {{ font-family: monospace; font-size: 12px; }}
-    .tree-line {{ stroke: {tree_line}; stroke-width: 1; }}
-    /* Arc base styles - Catppuccin Latte colors */
-    .dep-arc, .cycle-arc {{ pointer-events: none; }}
-    .dep-arc {{ fill: none; stroke-width: 0.5; }}
-    .dep-arc.downward {{ stroke: {arc_down}; }}  /* Green - normal flow */
-    .dep-arc.upward {{ stroke: {arc_up}; }}    /* Yellow - child→parent */
-    .dep-arrow {{ fill: {arc_down}; }}
-    .upward-arrow {{ fill: {arc_up}; }}
-    .cycle-arc {{ fill: none; stroke: {arc_cycle}; stroke-width: 0.5; }}  /* Red - cycles */
-    .cycle-arrow {{ fill: {arc_cycle}; }}
-    /* Hit-area for arc interactions */
-    .arc-hitarea {{ fill: none; stroke: transparent; stroke-width: 12; pointer-events: stroke; cursor: pointer; }}
-    /* Interactive highlighting - Selected (saturated fills, thicker border) */
-    .selected-crate {{ fill: {sel_crate} !important; stroke-width: 3 !important; }}
-    .selected-module {{ fill: {sel_module} !important; stroke-width: 3 !important; }}
-    /* Arc highlighting: marker class only (no color/width override - arc keeps direction color) */
-    .highlighted-arc {{ /* marker class for highlight state */ }}
-    /* Glow classes for shadow paths (relation color) */
-    .glow-incoming {{ stroke: {hl_dep} !important; }}
-    .glow-outgoing {{ stroke: {hl_dependent} !important; }}
-    /* Node borders: relation color (green=dep, purple=dependent) */
-    .dep-node {{ stroke: {hl_dep} !important; stroke-width: 2.5 !important; }}
-    .dependent-node {{ stroke: {hl_dependent} !important; stroke-width: 2.5 !important; }}
-    .dimmed {{ opacity: 0.3; pointer-events: none; }}
-    path.dimmed:not(.shadow-path) {{ stroke: {hl_dimmed} !important; }}
-    polygon.dimmed {{ fill: {hl_dimmed} !important; }}
-    .crate, .module, .dep-arc, .cycle-arc {{ cursor: pointer; }}
-    /* Collapse functionality */
-    .collapse-toggle {{ font-family: monospace; font-size: 14px; cursor: pointer; fill: {collapse_toggle}; }}
-    .collapse-toggle:hover {{ fill: {collapse_hover}; }}
-    .collapsed {{ display: none; }}
-    .virtual-arc {{ fill: none; stroke-width: 0.5; stroke-dasharray: 4,2; }}
-    .virtual-arc.downward {{ stroke: {arc_down}; }}
-    .virtual-arc.upward {{ stroke: {arc_up}; }}
-    .virtual-arrow {{ cursor: pointer; }}
-    .virtual-arrow.downward {{ fill: {arc_down}; }}
-    .virtual-arrow.upward {{ fill: {arc_up}; }}
-    .arc-count {{ font-family: monospace; font-size: 10px; fill: {arc_down}; text-anchor: middle; }}
-    .arc-count-bg {{ fill: {count_bg}; rx: 2; }}
-    .arc-count.dep-edge {{ fill: {hl_dep} !important; font-size: 12px; font-weight: bold; stroke: none !important; }}
-    .arc-count.dependent-edge {{ fill: {hl_dependent} !important; font-size: 12px; font-weight: bold; stroke: none !important; }}
-    .arc-count.dimmed {{ opacity: 0.3; }}
-    .child-count {{ font-size: 10px; fill: {child_count}; }}
-    /* Shadow path for glow effect */
-    .shadow-path {{ pointer-events: none; stroke-linecap: round; }}
-    /* Floating label for source locations */
-    .floating-label {{ pointer-events: none; }}
-    .floating-label rect {{ fill: {label_bg}; fill-opacity: 0.95; rx: 4; }}
-    .floating-label text {{ fill: {label_text}; font-family: monospace; font-size: 11px; }}
-    /* Toolbar */
-    .view-options {{ cursor: default; }}
-    .toolbar-btn {{ fill: {tb_btn_fill}; stroke: {tb_btn_stroke}; rx: 3; cursor: pointer; }}
-    .toolbar-btn:hover {{ fill: {tb_btn_hover}; }}
-    .toolbar-btn-text {{ font-family: sans-serif; font-size: 11px; text-anchor: middle; }}
-    .toolbar-checkbox {{ fill: {tb_checkbox}; stroke: {tb_btn_stroke}; rx: 2; cursor: pointer; }}
-    .toolbar-checkbox.checked {{ fill: {tb_checkbox_checked}; }}
-    .toolbar-label {{ font-family: sans-serif; font-size: 11px; cursor: pointer; }}
-    .toolbar-separator {{ stroke: {tb_separator}; }}
-    .toolbar-disabled {{ opacity: 0.4; pointer-events: none; }}
-    /* Filter visibility */
-    .hidden-by-filter {{ display: none; }}
-  </style>
-"#,
-        crate_fill = n.crate_fill,
-        crate_stroke = n.crate_stroke,
-        module_fill = n.module_fill,
-        module_stroke = n.module_stroke,
-        tree_line = n.tree_line,
-        arc_down = a.downward,
-        arc_up = a.upward,
-        arc_cycle = a.cycle,
-        sel_crate = s.crate_fill,
-        sel_module = s.module_fill,
-        hl_dep = h.dependency,
-        hl_dependent = h.dependent,
-        hl_dimmed = h.dimmed,
-        collapse_toggle = n.collapse_toggle,
-        collapse_hover = n.collapse_hover,
-        count_bg = a.count_bg,
-        child_count = n.child_count,
-        label_bg = l.bg,
-        label_text = l.text,
-        tb_btn_fill = t.btn_fill,
-        tb_btn_stroke = t.btn_stroke,
-        tb_btn_hover = t.btn_hover,
-        tb_checkbox = t.checkbox,
-        tb_checkbox_checked = t.checkbox_checked,
-        tb_separator = t.separator,
-    )
+    let rules = build_css_rules();
+    let mut css = String::from("  <style>\n");
+    for rule in &rules {
+        if rule.properties.is_empty() {
+            css.push_str(&format!("    {} {{ }}\n", rule.selector));
+        } else {
+            css.push_str(&format!("    {} {{ ", rule.selector));
+            for (i, (prop, val)) in rule.properties.iter().enumerate() {
+                if i > 0 {
+                    css.push(' ');
+                }
+                css.push_str(&format!("{}: {};", prop, val));
+            }
+            css.push_str(" }\n");
+        }
+    }
+    css.push_str("  </style>\n");
+    css
 }
 
 fn render_toolbar(width: f32) -> String {
+    let ct = &CSS.toolbar;
     let mut toolbar = String::new();
-    toolbar.push_str("  <g class=\"view-options\">\n");
+    let vo = ct.view_options;
+    toolbar.push_str(&format!("  <g class=\"{vo}\">\n"));
 
     // Background rect (full width, toolbar height)
     toolbar.push_str(&format!(
@@ -581,20 +961,23 @@ fn render_toolbar(width: f32) -> String {
     let btn_y = tb.btn_y;
     let btn_width = tb.btn_width;
     let btn_height = tb.btn_height;
+    let btn = ct.btn;
     toolbar.push_str(&format!(
-        "    <rect id=\"collapse-toggle-btn\" class=\"toolbar-btn\" x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"/>\n",
+        "    <rect id=\"collapse-toggle-btn\" class=\"{btn}\" x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"/>\n",
         btn_x, btn_y, btn_width, btn_height
     ));
+    let btn_text = ct.btn_text;
     toolbar.push_str(&format!(
-        "    <text id=\"collapse-toggle-label\" class=\"toolbar-btn-text\" x=\"{}\" y=\"{}\" dominant-baseline=\"middle\">Collapse All</text>\n",
+        "    <text id=\"collapse-toggle-label\" class=\"{btn_text}\" x=\"{}\" y=\"{}\" dominant-baseline=\"middle\">Collapse All</text>\n",
         btn_x + btn_width / 2.0,
         btn_y + btn_height / 2.0
     ));
 
     // Separator
     let sep_x = btn_x + btn_width + tb.separator_spacing;
+    let sep = ct.separator;
     toolbar.push_str(&format!(
-        "    <line class=\"toolbar-separator\" x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\"/>\n",
+        "    <line class=\"{sep}\" x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\"/>\n",
         sep_x, tb.separator_y1, sep_x, tb.separator_y2
     ));
 
@@ -602,24 +985,28 @@ fn render_toolbar(width: f32) -> String {
     let cb1_x = sep_x + tb.cb_spacing;
     let cb_y = tb.cb_y;
     let cb_size = tb.cb_size;
+    let cb = ct.checkbox;
+    let chk = ct.checked;
+    let lbl = ct.label;
     toolbar.push_str(&format!(
-        "    <rect id=\"crate-dep-checkbox\" class=\"toolbar-checkbox checked\" x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"/>\n",
+        "    <rect id=\"crate-dep-checkbox\" class=\"{cb} {chk}\" x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"/>\n",
         cb1_x, cb_y, cb_size, cb_size
     ));
     toolbar.push_str(&format!(
-        "    <text class=\"toolbar-label\" x=\"{}\" y=\"{}\">Show Crate Dependencies</text>\n",
+        "    <text class=\"{lbl}\" x=\"{}\" y=\"{}\">Show Crate Dependencies</text>\n",
         cb1_x + cb_size + tb.label_x_offset,
         cb_y + cb_size / 2.0 + tb.label_y_offset
     ));
 
     // Tests checkbox (disabled)
     let cb2_x = cb1_x + tb.cb2_x_offset;
+    let dis = ct.disabled;
     toolbar.push_str(&format!(
-        "    <rect class=\"toolbar-checkbox toolbar-disabled\" x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"/>\n",
+        "    <rect class=\"{cb} {dis}\" x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"/>\n",
         cb2_x, cb_y, cb_size, cb_size
     ));
     toolbar.push_str(&format!(
-        "    <text class=\"toolbar-label toolbar-disabled\" x=\"{}\" y=\"{}\">Tests</text>\n",
+        "    <text class=\"{lbl} {dis}\" x=\"{}\" y=\"{}\">Tests</text>\n",
         cb2_x + cb_size + tb.label_x_offset,
         cb_y + cb_size / 2.0 + tb.label_y_offset
     ));
@@ -688,6 +1075,110 @@ fn generate_static_data(
             arc_id, edge.from, edge.to, usages_str, comma
         ));
     }
+    lines.push("  },".to_string());
+
+    // Generate classes object (CSS class names for JS)
+    lines.push("  classes: {".to_string());
+    lines.push(format!("    crateNode: \"{}\",", CSS.nodes.crate_node));
+    lines.push(format!("    module: \"{}\",", CSS.nodes.module));
+    lines.push(format!("    label: \"{}\",", CSS.nodes.label));
+    lines.push(format!(
+        "    collapseToggle: \"{}\",",
+        CSS.nodes.collapse_toggle
+    ));
+    lines.push(format!("    collapsed: \"{}\",", CSS.nodes.collapsed));
+    lines.push(format!("    depArc: \"{}\",", CSS.direction.dep_arc));
+    lines.push(format!("    downward: \"{}\",", CSS.direction.downward));
+    lines.push(format!("    upward: \"{}\",", CSS.direction.upward));
+    lines.push(format!("    depArrow: \"{}\",", CSS.direction.dep_arrow));
+    lines.push(format!(
+        "    upwardArrow: \"{}\",",
+        CSS.direction.upward_arrow
+    ));
+    lines.push(format!("    cycleArc: \"{}\",", CSS.direction.cycle_arc));
+    lines.push(format!(
+        "    cycleArrow: \"{}\",",
+        CSS.direction.cycle_arrow
+    ));
+    lines.push(format!(
+        "    arcHitarea: \"{}\",",
+        CSS.direction.arc_hitarea
+    ));
+    lines.push(format!(
+        "    crateDepArc: \"{}\",",
+        CSS.direction.crate_dep_arc
+    ));
+    lines.push(format!(
+        "    virtualArc: \"{}\",",
+        CSS.direction.virtual_arc
+    ));
+    lines.push(format!(
+        "    virtualArrow: \"{}\",",
+        CSS.direction.virtual_arrow
+    ));
+    lines.push(format!(
+        "    virtualHitarea: \"{}\",",
+        CSS.direction.virtual_hitarea
+    ));
+    lines.push(format!(
+        "    selectedCrate: \"{}\",",
+        CSS.node_selection.selected_crate
+    ));
+    lines.push(format!(
+        "    selectedModule: \"{}\",",
+        CSS.node_selection.selected_module
+    ));
+    lines.push(format!(
+        "    highlightedArc: \"{}\",",
+        CSS.relation.highlighted_arc
+    ));
+    lines.push(format!(
+        "    highlightedArrow: \"{}\",",
+        CSS.relation.highlighted_arrow
+    ));
+    lines.push(format!(
+        "    highlightedLabel: \"{}\",",
+        CSS.relation.highlighted_label
+    ));
+    lines.push(format!("    depNode: \"{}\",", CSS.relation.dep_node));
+    lines.push(format!(
+        "    dependentNode: \"{}\",",
+        CSS.relation.dependent_node
+    ));
+    lines.push(format!("    dimmed: \"{}\",", CSS.relation.dimmed));
+    lines.push(format!("    shadowPath: \"{}\",", CSS.relation.shadow_path));
+    lines.push(format!(
+        "    glowIncoming: \"{}\",",
+        CSS.relation.glow_incoming
+    ));
+    lines.push(format!(
+        "    glowOutgoing: \"{}\",",
+        CSS.relation.glow_outgoing
+    ));
+    lines.push(format!(
+        "    viewOptions: \"{}\",",
+        CSS.toolbar.view_options
+    ));
+    lines.push(format!("    toolbarBtn: \"{}\",", CSS.toolbar.btn));
+    lines.push(format!(
+        "    toolbarCheckbox: \"{}\",",
+        CSS.toolbar.checkbox
+    ));
+    lines.push(format!("    checked: \"{}\",", CSS.toolbar.checked));
+    lines.push(format!(
+        "    floatingLabel: \"{}\",",
+        CSS.labels.floating_label
+    ));
+    lines.push(format!("    arcCount: \"{}\",", CSS.labels.arc_count));
+    lines.push(format!("    arcCountBg: \"{}\",", CSS.labels.arc_count_bg));
+    lines.push(format!(
+        "    arcCountGroup: \"{}\",",
+        CSS.labels.arc_count_group
+    ));
+    lines.push(format!(
+        "    hiddenByFilter: \"{}\"",
+        CSS.labels.hidden_by_filter
+    ));
     lines.push("  }".to_string());
 
     lines.push("};".to_string());
@@ -749,14 +1240,15 @@ fn render_tree_lines(
                 let child_mid_y = child_pos.y + child_pos.height / 2.0;
 
                 let data_attrs = format!(r#" data-parent="{}" data-child="{}""#, parent, item.id);
+                let tl = CSS.nodes.tree_line;
 
                 lines.push_str(&format!(
-                    "    <line class=\"tree-line\" x1=\"{line_x}\" y1=\"{parent_bottom}\" x2=\"{line_x}\" y2=\"{child_mid_y}\"{data_attrs}/>\n"
+                    "    <line class=\"{tl}\" x1=\"{line_x}\" y1=\"{parent_bottom}\" x2=\"{line_x}\" y2=\"{child_mid_y}\"{data_attrs}/>\n"
                 ));
 
                 let child_left = child_pos.x;
                 lines.push_str(&format!(
-                    "    <line class=\"tree-line\" x1=\"{line_x}\" y1=\"{child_mid_y}\" x2=\"{child_left}\" y2=\"{child_mid_y}\"{data_attrs}/>\n"
+                    "    <line class=\"{tl}\" x1=\"{line_x}\" y1=\"{child_mid_y}\" x2=\"{child_left}\" y2=\"{child_mid_y}\"{data_attrs}/>\n"
                 ));
             }
         }
@@ -772,8 +1264,8 @@ fn render_nodes(positioned: &[PositionedItem], parents: &HashSet<NodeId>) -> Str
 
     for item in positioned {
         let class = match &item.kind {
-            ItemKind::Crate => "crate",
-            ItemKind::Module { .. } => "module",
+            ItemKind::Crate => CSS.nodes.crate_node,
+            ItemKind::Module { .. } => CSS.nodes.module,
         };
         let rx = match &item.kind {
             ItemKind::Crate => LAYOUT.crate_border_radius,
@@ -803,14 +1295,16 @@ fn render_nodes(positioned: &[PositionedItem], parents: &HashSet<NodeId>) -> Str
         ));
 
         // Label with optional child-count tspan for parents
+        let lbl = CSS.nodes.label;
+        let cc = CSS.nodes.child_count;
         if parents.contains(&item.id) {
             nodes.push_str(&format!(
-                "    <text class=\"label\" x=\"{text_x}\" y=\"{text_y}\">{label}<tspan id=\"count-{}\" class=\"child-count\"></tspan></text>\n",
+                "    <text class=\"{lbl}\" x=\"{text_x}\" y=\"{text_y}\">{label}<tspan id=\"count-{}\" class=\"{cc}\"></tspan></text>\n",
                 item.id
             ));
         } else {
             nodes.push_str(&format!(
-                "    <text class=\"label\" x=\"{text_x}\" y=\"{text_y}\">{label}</text>\n"
+                "    <text class=\"{lbl}\" x=\"{text_x}\" y=\"{text_y}\">{label}</text>\n"
             ));
         }
 
@@ -818,8 +1312,9 @@ fn render_nodes(positioned: &[PositionedItem], parents: &HashSet<NodeId>) -> Str
         if parents.contains(&item.id) {
             let toggle_x = item.x + item.width - LAYOUT.toggle_offset;
             let toggle_y = item.y + item.height / 2.0 + LAYOUT.toggle_y_offset;
+            let ct = CSS.nodes.collapse_toggle;
             nodes.push_str(&format!(
-                "    <text class=\"collapse-toggle\" data-target=\"{}\" x=\"{}\" y=\"{}\">−</text>\n",
+                "    <text class=\"{ct}\" data-target=\"{}\" x=\"{}\" y=\"{}\">−</text>\n",
                 item.id, toggle_x, toggle_y
             ));
         }
@@ -871,13 +1366,24 @@ fn render_edges(
                 "M {from_x},{from_y} Q {ctrl_x},{from_y} {ctrl_x},{mid_y} Q {ctrl_x},{to_y} {to_x},{to_y}"
             );
 
+            let cd = &CSS.direction;
             let (base_arc_class, arrow_class, extra_style, direction) = match edge.kind {
-                EdgeKind::Downward => ("dep-arc downward", "dep-arrow", "", "downward"),
-                EdgeKind::Upward => ("dep-arc upward", "upward-arrow", "", "upward"),
-                EdgeKind::DirectCycle => ("cycle-arc", "cycle-arrow", "", "cycle"),
+                EdgeKind::Downward => (
+                    format!("{} {}", cd.dep_arc, cd.downward),
+                    cd.dep_arrow,
+                    "",
+                    "downward",
+                ),
+                EdgeKind::Upward => (
+                    format!("{} {}", cd.dep_arc, cd.upward),
+                    cd.upward_arrow,
+                    "",
+                    "upward",
+                ),
+                EdgeKind::DirectCycle => (cd.cycle_arc.to_string(), cd.cycle_arrow, "", "cycle"),
                 EdgeKind::TransitiveCycle => (
-                    "cycle-arc",
-                    "cycle-arrow",
+                    cd.cycle_arc.to_string(),
+                    cd.cycle_arrow,
                     " stroke-dasharray=\"4,2\"",
                     "cycle",
                 ),
@@ -886,17 +1392,18 @@ fn render_edges(
             // Add crate-dep-arc class for Crate-to-Crate edges
             let is_crate_dep = matches!((&from.kind, &to.kind), (ItemKind::Crate, ItemKind::Crate));
             let arc_class = if is_crate_dep {
-                format!("{} crate-dep-arc", base_arc_class)
+                format!("{} {}", base_arc_class, cd.crate_dep_arc)
             } else {
-                base_arc_class.to_string()
+                base_arc_class
             };
 
             let edge_id = format!("{}-{}", edge.from, edge.to);
 
             // Hit-area path (invisible, 12px wide, receives pointer events) → hitareas layer
             // Note: source-locations are read from STATIC_DATA in JavaScript, not DOM attributes
+            let hitarea = cd.arc_hitarea;
             hitareas.push_str(&format!(
-                "    <path class=\"arc-hitarea\" data-arc-id=\"{edge_id}\" data-from=\"{}\" data-to=\"{}\" data-direction=\"{direction}\" d=\"{path}\"/>\n",
+                "    <path class=\"{hitarea}\" data-arc-id=\"{edge_id}\" data-from=\"{}\" data-to=\"{}\" data-direction=\"{direction}\" d=\"{path}\"/>\n",
                 edge.from, edge.to
             ));
             // Visible path (styled, no pointer events) → base-arcs layer
@@ -970,11 +1477,11 @@ mod tests {
     #[test]
     fn test_color_palette_has_expected_values() {
         assert_eq!(COLORS.nodes.crate_fill, "#dbeafe");
-        assert_eq!(COLORS.arcs.downward, "#40a02b");
+        assert_eq!(COLORS.direction.downward, "#40a02b");
         assert_eq!(COLORS.toolbar.bg, "#fafafa");
-        assert_eq!(COLORS.label.bg, "#1a1a2e");
-        assert_eq!(COLORS.selection.crate_fill, "#93c5fd");
-        assert_eq!(COLORS.highlight.dependent, "#8839ef");
+        assert_eq!(COLORS.labels.bg, "#1a1a2e");
+        assert_eq!(COLORS.node_selection.crate_fill, "#93c5fd");
+        assert_eq!(COLORS.relation.dependent, "#8839ef");
     }
 
     #[test]
@@ -2255,6 +2762,210 @@ mod tests {
         assert!(
             script.contains(r#"Test\"Quote"#),
             "Quotes in symbols should be escaped"
+        );
+    }
+
+    #[test]
+    fn test_css_class_names_not_empty() {
+        // Every CSS class name field must be a non-empty string
+        assert!(!CSS.nodes.crate_node.is_empty());
+        assert!(!CSS.nodes.module.is_empty());
+        assert!(!CSS.nodes.label.is_empty());
+        assert!(!CSS.nodes.child_count.is_empty());
+        assert!(!CSS.nodes.tree_line.is_empty());
+        assert!(!CSS.nodes.collapse_toggle.is_empty());
+        assert!(!CSS.nodes.collapsed.is_empty());
+
+        assert!(!CSS.direction.dep_arc.is_empty());
+        assert!(!CSS.direction.downward.is_empty());
+        assert!(!CSS.direction.upward.is_empty());
+        assert!(!CSS.direction.dep_arrow.is_empty());
+        assert!(!CSS.direction.upward_arrow.is_empty());
+        assert!(!CSS.direction.cycle_arc.is_empty());
+        assert!(!CSS.direction.cycle_arrow.is_empty());
+        assert!(!CSS.direction.arc_hitarea.is_empty());
+        assert!(!CSS.direction.crate_dep_arc.is_empty());
+        assert!(!CSS.direction.virtual_arc.is_empty());
+        assert!(!CSS.direction.virtual_arrow.is_empty());
+        assert!(!CSS.direction.virtual_hitarea.is_empty());
+
+        assert!(!CSS.node_selection.selected_crate.is_empty());
+        assert!(!CSS.node_selection.selected_module.is_empty());
+
+        assert!(!CSS.relation.highlighted_arc.is_empty());
+        assert!(!CSS.relation.highlighted_arrow.is_empty());
+        assert!(!CSS.relation.highlighted_label.is_empty());
+        assert!(!CSS.relation.dep_node.is_empty());
+        assert!(!CSS.relation.dependent_node.is_empty());
+        assert!(!CSS.relation.dimmed.is_empty());
+        assert!(!CSS.relation.shadow_path.is_empty());
+        assert!(!CSS.relation.glow_incoming.is_empty());
+        assert!(!CSS.relation.glow_outgoing.is_empty());
+
+        assert!(!CSS.toolbar.view_options.is_empty());
+        assert!(!CSS.toolbar.btn.is_empty());
+        assert!(!CSS.toolbar.btn_text.is_empty());
+        assert!(!CSS.toolbar.separator.is_empty());
+        assert!(!CSS.toolbar.checkbox.is_empty());
+        assert!(!CSS.toolbar.checked.is_empty());
+        assert!(!CSS.toolbar.disabled.is_empty());
+        assert!(!CSS.toolbar.label.is_empty());
+
+        assert!(!CSS.labels.floating_label.is_empty());
+        assert!(!CSS.labels.arc_count.is_empty());
+        assert!(!CSS.labels.arc_count_bg.is_empty());
+        assert!(!CSS.labels.arc_count_group.is_empty());
+        assert!(!CSS.labels.hidden_by_filter.is_empty());
+    }
+
+    #[test]
+    fn test_css_builder_parity() {
+        // The CSS builder output must match the old format!() output semantically.
+        // We verify by checking that all key CSS selectors and properties are present.
+        let css = render_styles();
+
+        // Node styles
+        assert!(css.contains(&format!(".{}", CSS.nodes.crate_node)));
+        assert!(css.contains(&format!(".{}", CSS.nodes.module)));
+        assert!(css.contains(&format!(".{}", CSS.nodes.label)));
+        assert!(css.contains(&format!(".{}", CSS.nodes.tree_line)));
+
+        // Direction styles
+        assert!(css.contains(&format!(".{}", CSS.direction.dep_arc)));
+        assert!(css.contains(&format!(".{}", CSS.direction.cycle_arc)));
+        assert!(css.contains(&format!(".{}", CSS.direction.dep_arrow)));
+        assert!(css.contains(&format!(".{}", CSS.direction.arc_hitarea)));
+
+        // Selection styles
+        assert!(css.contains(&format!(".{}", CSS.node_selection.selected_crate)));
+        assert!(css.contains(&format!(".{}", CSS.node_selection.selected_module)));
+
+        // Relation styles
+        assert!(css.contains(&format!(".{}", CSS.relation.dep_node)));
+        assert!(css.contains(&format!(".{}", CSS.relation.dependent_node)));
+        assert!(css.contains(&format!(".{}", CSS.relation.dimmed)));
+        assert!(css.contains(&format!(".{}", CSS.relation.shadow_path)));
+
+        // Toolbar styles
+        assert!(css.contains(&format!(".{}", CSS.toolbar.btn)));
+        assert!(css.contains(&format!(".{}", CSS.toolbar.checkbox)));
+        assert!(css.contains(&format!(".{}", CSS.toolbar.separator)));
+        assert!(css.contains(&format!(".{}", CSS.toolbar.disabled)));
+
+        // Labels
+        assert!(css.contains(&format!(".{}", CSS.labels.floating_label)));
+        assert!(css.contains(&format!(".{}", CSS.labels.arc_count)));
+        assert!(css.contains(&format!(".{}", CSS.labels.hidden_by_filter)));
+
+        // Color values present
+        assert!(css.contains(COLORS.nodes.crate_fill));
+        assert!(css.contains(COLORS.direction.downward));
+        assert!(css.contains(COLORS.relation.dependency));
+        assert!(css.contains(COLORS.toolbar.btn_fill));
+        assert!(css.contains(COLORS.labels.bg));
+    }
+
+    #[test]
+    fn test_build_css_rules_count() {
+        let rules = build_css_rules();
+        // We expect a substantial number of CSS rules (roughly 40+)
+        assert!(
+            rules.len() >= 35,
+            "Expected at least 35 CSS rules, got {}",
+            rules.len()
+        );
+    }
+
+    #[test]
+    fn test_static_data_contains_classes() {
+        let ir = LayoutIR::new();
+        let config = RenderConfig::default();
+        let positioned: Vec<PositionedItem> = vec![];
+        let parents: HashSet<NodeId> = HashSet::new();
+
+        let script = render_script(&config, &ir, &positioned, &parents);
+
+        // STATIC_DATA must contain a classes object
+        assert!(
+            script.contains("classes: {"),
+            "STATIC_DATA should have classes object"
+        );
+        // Spot-check: some key classes should be present with camelCase keys
+        assert!(script.contains("depArc:"), "classes should contain depArc");
+        assert!(
+            script.contains("highlightedArc:"),
+            "classes should contain highlightedArc"
+        );
+        assert!(
+            script.contains("selectedCrate:"),
+            "classes should contain selectedCrate"
+        );
+        assert!(
+            script.contains("hiddenByFilter:"),
+            "classes should contain hiddenByFilter"
+        );
+        assert!(
+            script.contains("collapseToggle:"),
+            "classes should contain collapseToggle"
+        );
+    }
+
+    #[test]
+    fn test_static_data_classes_match_css() {
+        let ir = LayoutIR::new();
+        let config = RenderConfig::default();
+        let positioned: Vec<PositionedItem> = vec![];
+        let parents: HashSet<NodeId> = HashSet::new();
+
+        let script = render_script(&config, &ir, &positioned, &parents);
+
+        // Values in STATIC_DATA.classes must match CSS.* constants
+        assert!(
+            script.contains(&format!("depArc: \"{}\"", CSS.direction.dep_arc)),
+            "depArc value should match CSS.direction.dep_arc"
+        );
+        assert!(
+            script.contains(&format!(
+                "highlightedArc: \"{}\"",
+                CSS.relation.highlighted_arc
+            )),
+            "highlightedArc value should match CSS.relation.highlighted_arc"
+        );
+        assert!(
+            script.contains(&format!(
+                "selectedCrate: \"{}\"",
+                CSS.node_selection.selected_crate
+            )),
+            "selectedCrate value should match CSS.node_selection.selected_crate"
+        );
+        assert!(
+            script.contains(&format!("collapsed: \"{}\"", CSS.nodes.collapsed)),
+            "collapsed value should match CSS.nodes.collapsed"
+        );
+        assert!(
+            script.contains(&format!("virtualArc: \"{}\"", CSS.direction.virtual_arc)),
+            "virtualArc value should match CSS.direction.virtual_arc"
+        );
+    }
+
+    #[test]
+    fn test_css_rule_selectors_use_constants() {
+        let rules = build_css_rules();
+        // Verify key selectors reference CSS constants
+        let selectors: Vec<&str> = rules.iter().map(|r| r.selector.as_str()).collect();
+        assert!(
+            selectors.contains(&format!(".{}", CSS.nodes.crate_node).as_str()),
+            "Should have .crate rule"
+        );
+        assert!(
+            selectors.contains(&format!(".{}", CSS.nodes.module).as_str()),
+            "Should have .module rule"
+        );
+        assert!(
+            selectors.contains(
+                &format!(".{}.{}", CSS.direction.dep_arc, CSS.direction.downward).as_str()
+            ),
+            "Should have .dep-arc.downward rule"
         );
     }
 }

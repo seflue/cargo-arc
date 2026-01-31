@@ -1,4 +1,15 @@
 import { test, expect, describe } from "bun:test";
+
+// Provide STATIC_DATA.classes for selectors (normally injected by render.rs)
+globalThis.STATIC_DATA = globalThis.STATIC_DATA || { classes: {} };
+Object.assign(globalThis.STATIC_DATA.classes, {
+  depArc: "dep-arc", cycleArc: "cycle-arc", virtualArc: "virtual-arc",
+  arcHitarea: "arc-hitarea", arcCount: "arc-count", arcCountGroup: "arc-count-group",
+  arcCountBg: "arc-count-bg", collapseToggle: "collapse-toggle",
+  virtualHitarea: "virtual-hitarea", virtualArrow: "virtual-arrow",
+  depArrow: "dep-arrow", cycleArrow: "cycle-arrow",
+});
+
 import { Selectors } from "./selectors.js";
 
 // Set Selectors globally (simulating browser environment where it's loaded before dom_adapter.js)

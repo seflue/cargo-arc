@@ -1,6 +1,14 @@
 import { test, expect, describe } from "bun:test";
-import { LayerManager } from "./layer_manager.js";
 import { createFakeElement, createMockDomAdapter } from "./dom_adapter.js";
+
+// Provide STATIC_DATA.classes for layer_manager (normally injected by render.rs)
+globalThis.STATIC_DATA = globalThis.STATIC_DATA || { classes: {} };
+globalThis.STATIC_DATA.classes = {
+  depArc: "dep-arc", cycleArc: "cycle-arc", virtualArc: "virtual-arc",
+  arcCountGroup: "arc-count-group", arcHitarea: "arc-hitarea",
+};
+
+import { LayerManager } from "./layer_manager.js";
 
 describe("LayerManager", () => {
   describe("LAYERS constants", () => {
