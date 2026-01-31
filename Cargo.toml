@@ -22,6 +22,7 @@ ra_ap_project_model = "=0.0.316"
 ra_ap_vfs = "=0.0.316"
 ra_ap_cfg = "=0.0.316"
 dunce = "1.0.4"
+syn = { version = "2", features = ["full"] }
 
 [dev-dependencies]
 tempfile = "3"

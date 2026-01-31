@@ -2,6 +2,7 @@
 
 mod filtering;
 mod hir;
+mod syn_walker;
 mod use_parser;
 mod workspace;
 
