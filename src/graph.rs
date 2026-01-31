@@ -85,7 +85,10 @@ pub fn build_graph(crates: &[CrateInfo], modules: &[ModuleTree]) -> ArcGraph {
                 grouped.entry(dep.module_target()).or_default().push(dep);
             }
 
-            for (target, target_deps) in grouped {
+            let mut sorted_targets: Vec<_> = grouped.into_iter().collect();
+            sorted_targets.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+            for (target, target_deps) in sorted_targets {
                 if let Some(&to_idx) = module_map.get(&target) {
                     // Collect all symbols from deps at the same location, or create one SourceLocation per line
                     let mut locations_by_line: HashMap<(PathBuf, usize), Vec<String>> =
@@ -99,7 +102,10 @@ pub fn build_graph(crates: &[CrateInfo], modules: &[ModuleTree]) -> ArcGraph {
                         }
                     }
 
-                    let locations: Vec<SourceLocation> = locations_by_line
+                    let mut sorted_locations: Vec<_> = locations_by_line.into_iter().collect();
+                    sorted_locations.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+                    let locations: Vec<SourceLocation> = sorted_locations
                         .into_iter()
                         .map(|((file, line), symbols)| SourceLocation {
                             file,
