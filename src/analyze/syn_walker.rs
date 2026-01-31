@@ -1,9 +1,11 @@
 //! Module discovery via syn + filesystem walk.
 
-#![allow(dead_code, unused_imports)] // Phase 1: internal functions, pub API comes in Phase 2
-
 use anyhow::{Context, Result, bail};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+
+use super::use_parser::{normalize_crate_name, parse_workspace_dependencies};
+use crate::model::{CrateInfo, ModuleInfo, ModuleTree};
 
 /// Find the root source file (lib.rs or main.rs) for a crate.
 /// Prefers lib.rs over main.rs when both exist.
@@ -101,6 +103,177 @@ fn resolve_mod_path(parent_dir: &Path, mod_name: &str) -> Option<PathBuf> {
         return Some(dir_path);
     }
     None
+}
+
+/// Determine the directory where child modules are resolved.
+/// dir-style files (lib.rs, main.rs, mod.rs): same directory.
+/// file-style files (foo.rs): subdirectory foo/.
+fn child_resolve_dir(file_path: &Path) -> PathBuf {
+    let dir = file_path.parent().unwrap_or(Path::new("."));
+    let file_name = file_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if file_name == "mod.rs" || file_name == "lib.rs" || file_name == "main.rs" {
+        dir.to_path_buf()
+    } else {
+        let stem = file_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        dir.join(stem)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Public API: collect_syn_module_paths
+// ---------------------------------------------------------------------------
+
+/// Recursively walk `mod` declarations starting from `file_path`,
+/// collecting relative module paths (e.g. `"foo"`, `"foo::bar"`).
+fn walk_modules_for_paths(file_path: &Path, parent_path: &str, paths: &mut HashSet<String>) {
+    let decls = match parse_mod_declarations(file_path) {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!("skipping {}: {e:#}", file_path.display());
+            return;
+        }
+    };
+
+    let resolve_dir = child_resolve_dir(file_path);
+
+    for decl in decls {
+        let child_path = if let Some(ref explicit) = decl.explicit_path {
+            let p = resolve_dir.join(explicit);
+            if p.exists() { Some(p) } else { None }
+        } else {
+            resolve_mod_path(&resolve_dir, &decl.name)
+        };
+
+        let child_full = if parent_path.is_empty() {
+            decl.name.clone()
+        } else {
+            format!("{parent_path}::{}", decl.name)
+        };
+        paths.insert(child_full.clone());
+
+        if let Some(resolved) = child_path {
+            walk_modules_for_paths(&resolved, &child_full, paths);
+        }
+    }
+}
+
+/// Collect all module paths reachable from `crate_root` via filesystem walk.
+/// Returns relative paths without crate prefix, e.g. `{"analyze", "analyze::hir"}`.
+pub(crate) fn collect_syn_module_paths(crate_root: &Path, crate_name: &str) -> HashSet<String> {
+    let _ = crate_name; // unused; kept for API parity with collect_hir_module_paths
+    let root_file = match find_crate_root_file(crate_root) {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!("collect_syn_module_paths: {e:#}");
+            return HashSet::new();
+        }
+    };
+    let mut paths = HashSet::new();
+    walk_modules_for_paths(&root_file, "", &mut paths);
+    paths
+}
+
+// ---------------------------------------------------------------------------
+// Public API: analyze_modules_syn
+// ---------------------------------------------------------------------------
+
+/// Recursively walk a module, building `ModuleInfo` with dependency extraction.
+#[allow(clippy::too_many_arguments)]
+fn walk_module_syn(
+    file_path: &Path,
+    module_name: &str,
+    parent_path: &str,
+    crate_name: &str,
+    crate_root: &Path,
+    workspace_crates: &HashSet<String>,
+    all_module_paths: &HashMap<String, HashSet<String>>,
+) -> ModuleInfo {
+    let full_path = if parent_path == module_name {
+        // root module: full_path == crate name
+        module_name.to_string()
+    } else {
+        format!("{parent_path}::{module_name}")
+    };
+
+    // Read source for dependency extraction
+    let source_text = match std::fs::read_to_string(file_path) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("reading {}: {e:#}", file_path.display());
+            String::new()
+        }
+    };
+    let source_file = file_path
+        .strip_prefix(crate_root)
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|_| file_path.to_path_buf());
+
+    let dependencies = parse_workspace_dependencies(
+        &source_text,
+        crate_name,
+        workspace_crates,
+        &source_file,
+        all_module_paths,
+    );
+
+    // Discover children
+    let decls = parse_mod_declarations(file_path).unwrap_or_default();
+
+    let resolve_dir = child_resolve_dir(file_path);
+
+    let children: Vec<ModuleInfo> = decls
+        .into_iter()
+        .filter_map(|decl| {
+            let child_file = if let Some(ref explicit) = decl.explicit_path {
+                let p = resolve_dir.join(explicit);
+                if p.exists() { Some(p) } else { None }
+            } else {
+                resolve_mod_path(&resolve_dir, &decl.name)
+            };
+
+            child_file.map(|cf| {
+                walk_module_syn(
+                    &cf,
+                    &decl.name,
+                    &full_path,
+                    crate_name,
+                    crate_root,
+                    workspace_crates,
+                    all_module_paths,
+                )
+            })
+        })
+        .collect();
+
+    ModuleInfo {
+        name: module_name.to_string(),
+        full_path,
+        children,
+        dependencies,
+    }
+}
+
+/// Analyze module hierarchy via syn + filesystem walk (no rust-analyzer needed).
+/// Drop-in replacement for `hir::analyze_modules()`.
+pub(crate) fn analyze_modules_syn(
+    crate_info: &CrateInfo,
+    workspace_crates: &HashSet<String>,
+    all_module_paths: &HashMap<String, HashSet<String>>,
+) -> Result<ModuleTree> {
+    let root_file = find_crate_root_file(&crate_info.path)?;
+    let normalized = normalize_crate_name(&crate_info.name);
+
+    let root = walk_module_syn(
+        &root_file,
+        &normalized,
+        &normalized, // parent_path == name for root → triggers identity check
+        &normalized,
+        &crate_info.path,
+        workspace_crates,
+        all_module_paths,
+    );
+
+    Ok(ModuleTree { root })
 }
 
 #[cfg(test)]
@@ -287,6 +460,159 @@ mod tests {
 
             let result = resolve_mod_path(tmp.path(), "foo");
             assert_eq!(result, Some(tmp.path().join("foo.rs")));
+        }
+    }
+
+    mod collect_paths {
+        use super::*;
+
+        #[test]
+        fn test_collect_paths_synthetic() {
+            // lib.rs → mod foo; → foo.rs → mod bar; → foo/bar.rs
+            let tmp = TempDir::new().unwrap();
+            let src = tmp.path().join("src");
+            std::fs::create_dir_all(&src).unwrap();
+            std::fs::write(src.join("lib.rs"), "mod foo;").unwrap();
+            std::fs::write(src.join("foo.rs"), "mod bar;").unwrap();
+            let foo_dir = src.join("foo");
+            std::fs::create_dir_all(&foo_dir).unwrap();
+            std::fs::write(foo_dir.join("bar.rs"), "").unwrap();
+
+            let paths = collect_syn_module_paths(tmp.path(), "synth");
+            assert!(
+                paths.contains("foo"),
+                "should contain 'foo', found: {paths:?}"
+            );
+            assert!(
+                paths.contains("foo::bar"),
+                "should contain 'foo::bar', found: {paths:?}"
+            );
+            assert_eq!(paths.len(), 2);
+        }
+
+        #[test]
+        fn test_collect_paths_own_crate() {
+            let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+            let paths = collect_syn_module_paths(crate_root, "cargo_arc");
+
+            for expected in [
+                "analyze",
+                "cli",
+                "model",
+                "graph",
+                "analyze::hir",
+                "analyze::use_parser",
+            ] {
+                assert!(
+                    paths.contains(expected),
+                    "should contain '{expected}', found: {paths:?}"
+                );
+            }
+            // Must NOT contain crate prefix
+            assert!(
+                !paths.iter().any(|p| p.starts_with("cargo_arc::")),
+                "paths should be relative, found: {paths:?}"
+            );
+        }
+
+        #[test]
+        fn test_collect_paths_empty_crate() {
+            let tmp = TempDir::new().unwrap();
+            let src = tmp.path().join("src");
+            std::fs::create_dir_all(&src).unwrap();
+            std::fs::write(src.join("lib.rs"), "// empty crate").unwrap();
+
+            let paths = collect_syn_module_paths(tmp.path(), "empty");
+            assert!(paths.is_empty(), "expected empty set, found: {paths:?}");
+        }
+    }
+
+    mod analyze_syn {
+        use super::*;
+
+        #[test]
+        fn test_analyze_modules_syn_structure() {
+            let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+            let crate_info = CrateInfo {
+                name: "cargo-arc".to_string(),
+                path: crate_root.to_path_buf(),
+                dependencies: vec![],
+            };
+            let workspace_crates: HashSet<String> =
+                ["cargo-arc"].iter().map(|s| s.to_string()).collect();
+
+            let tree = analyze_modules_syn(&crate_info, &workspace_crates, &HashMap::new())
+                .expect("should analyze");
+
+            assert_eq!(tree.root.name, "cargo_arc");
+            assert_eq!(tree.root.full_path, "cargo_arc");
+
+            let child_names: Vec<&str> =
+                tree.root.children.iter().map(|m| m.name.as_str()).collect();
+            assert!(
+                child_names.contains(&"analyze"),
+                "should contain 'analyze', found: {child_names:?}"
+            );
+            assert!(
+                child_names.contains(&"graph"),
+                "should contain 'graph', found: {child_names:?}"
+            );
+
+            // Check submodule hierarchy
+            let analyze_mod = tree
+                .root
+                .children
+                .iter()
+                .find(|m| m.name == "analyze")
+                .unwrap();
+            let sub_names: Vec<&str> = analyze_mod
+                .children
+                .iter()
+                .map(|m| m.name.as_str())
+                .collect();
+            assert!(
+                sub_names.contains(&"hir"),
+                "analyze should contain 'hir', found: {sub_names:?}"
+            );
+            assert!(
+                sub_names.contains(&"use_parser"),
+                "analyze should contain 'use_parser', found: {sub_names:?}"
+            );
+        }
+
+        #[test]
+        fn test_analyze_modules_syn_dependencies() {
+            let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+            let crate_info = CrateInfo {
+                name: "cargo-arc".to_string(),
+                path: crate_root.to_path_buf(),
+                dependencies: vec![],
+            };
+            let workspace_crates: HashSet<String> =
+                ["cargo-arc"].iter().map(|s| s.to_string()).collect();
+
+            // Collect module paths for accurate dependency resolution
+            let mut all_module_paths = HashMap::new();
+            let paths = collect_syn_module_paths(crate_root, "cargo_arc");
+            all_module_paths.insert("cargo_arc".to_string(), paths);
+
+            let tree = analyze_modules_syn(&crate_info, &workspace_crates, &all_module_paths)
+                .expect("should analyze");
+
+            let graph_mod = tree
+                .root
+                .children
+                .iter()
+                .find(|m| m.name == "graph")
+                .unwrap();
+            assert!(
+                graph_mod
+                    .dependencies
+                    .iter()
+                    .any(|d| d.module_target() == "cargo_arc::model"),
+                "graph should depend on model, found: {:?}",
+                graph_mod.dependencies
+            );
         }
     }
 }
