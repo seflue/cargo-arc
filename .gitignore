@@ -1,4 +1,5 @@
 /target
 /tests/**/target/*
 .worktrees/
+*.svg
 
