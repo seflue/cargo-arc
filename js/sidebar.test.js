@@ -27,6 +27,66 @@ globalThis.STATIC_DATA = {
 };
 
 describe("SidebarLogic", () => {
+  describe("mergeSymbolGroups", () => {
+    test("merges groups with same symbol and combines locations", () => {
+      const groups = [
+        { symbol: "Foo", modulePath: null, locations: [{ file: "a.rs", line: 1 }, { file: "b.rs", line: 2 }] },
+        { symbol: "Foo", modulePath: null, locations: [{ file: "c.rs", line: 3 }] }
+      ];
+      const result = SidebarLogic.mergeSymbolGroups(groups);
+
+      expect(result.length).toBe(1);
+      expect(result[0].symbol).toBe("Foo");
+      expect(result[0].locations.length).toBe(3);
+      expect(result[0].locations).toContainEqual({ file: "a.rs", line: 1 });
+      expect(result[0].locations).toContainEqual({ file: "b.rs", line: 2 });
+      expect(result[0].locations).toContainEqual({ file: "c.rs", line: 3 });
+    });
+
+    test("deduplicates locations with same file+line", () => {
+      const groups = [
+        { symbol: "Bar", modulePath: null, locations: [{ file: "x.rs", line: 10 }] },
+        { symbol: "Bar", modulePath: null, locations: [{ file: "x.rs", line: 10 }, { file: "y.rs", line: 20 }] }
+      ];
+      const result = SidebarLogic.mergeSymbolGroups(groups);
+
+      expect(result.length).toBe(1);
+      expect(result[0].locations.length).toBe(2);
+      expect(result[0].locations).toContainEqual({ file: "x.rs", line: 10 });
+      expect(result[0].locations).toContainEqual({ file: "y.rs", line: 20 });
+    });
+
+    test("keeps groups with different symbols separate", () => {
+      const groups = [
+        { symbol: "Alpha", modulePath: null, locations: [{ file: "a.rs", line: 1 }] },
+        { symbol: "Beta", modulePath: null, locations: [{ file: "b.rs", line: 2 }] }
+      ];
+      const result = SidebarLogic.mergeSymbolGroups(groups);
+
+      expect(result.length).toBe(2);
+      const symbols = result.map(g => g.symbol);
+      expect(symbols).toContain("Alpha");
+      expect(symbols).toContain("Beta");
+    });
+
+    test("handles empty symbol strings as single group", () => {
+      const groups = [
+        { symbol: "", modulePath: null, locations: [{ file: "a.rs", line: 1 }] },
+        { symbol: "", modulePath: null, locations: [{ file: "b.rs", line: 2 }] }
+      ];
+      const result = SidebarLogic.mergeSymbolGroups(groups);
+
+      expect(result.length).toBe(1);
+      expect(result[0].symbol).toBe("");
+      expect(result[0].locations.length).toBe(2);
+    });
+
+    test("returns empty array for empty input", () => {
+      const result = SidebarLogic.mergeSymbolGroups([]);
+      expect(result).toEqual([]);
+    });
+  });
+
   describe("buildContent", () => {
     test("header shows from → to from STATIC_DATA", () => {
       const html = SidebarLogic.buildContent("crate_a-crate_b");

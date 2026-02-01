@@ -43,6 +43,10 @@ if (typeof document !== 'undefined') {
   // === Floating label for source locations ===
   let floatingLabel = null;
 
+  // Runtime map for virtual arc usages (structured objects, no DOM serialization)
+  const virtualArcUsages = new Map();
+  const virtualArcOriginals = new Map();
+
   function showFloatingLabel(text, x, y) {
     hideFloatingLabel();
     const svg = DomAdapter.getSvgRoot();
@@ -94,14 +98,14 @@ if (typeof document !== 'undefined') {
    * Reset arc and arrows to original styling.
    * @param {string} arcId - Arc identifier
    * @param {boolean} isVirtual - True for virtual arcs (aggregated), false for regular
-   * @param {string|undefined} aggregatedLocs - Pipe-separated locations for virtual arcs
    */
-  function resetArcToOriginal(arcId, isVirtual, aggregatedLocs) {
+  function resetArcToOriginal(arcId, isVirtual) {
     // Determine strokeWidth and scale from StaticData (no stored state needed)
     let strokeWidth, scale;
     if (isVirtual) {
-      // Virtual arcs: calculate from aggregated locations
-      const count = ArcLogic.countLocations(aggregatedLocs);
+      // Virtual arcs: calculate from runtime Map
+      const usages = virtualArcUsages.get(arcId) || [];
+      const count = usages.reduce((sum, g) => sum + g.locations.length, 0);
       strokeWidth = ArcLogic.calculateStrokeWidth(count);
       scale = strokeWidth / 1.5;
     } else {
@@ -153,9 +157,9 @@ if (typeof document !== 'undefined') {
       resetArcToOriginal(hitarea.dataset.arcId, false);
     });
 
-    // Reset virtual arcs to original size (recalculated from aggregated locations)
+    // Reset virtual arcs to original size (recalculated from runtime Map)
     DomAdapter.querySelectorAll(`.${C.virtualHitarea}`).forEach(hitarea => {
-      resetArcToOriginal(hitarea.dataset.arcId, true, hitarea.dataset.sourceLocations);
+      resetArcToOriginal(hitarea.dataset.arcId, true);
     });
 
     // Remove CSS classes
@@ -204,10 +208,9 @@ if (typeof document !== 'undefined') {
     // 1. Calculate ORIGINAL width from source data (not from DOM to prevent growth bug)
     let arcWidth;
     if (arc.classList.contains(C.virtualArc)) {
-      // Virtual arc: find hitarea and calculate from sourceLocations
-      const hitarea = DomAdapter.querySelector(`.${C.virtualHitarea}[data-arc-id="${arcId}"]`);
-      const sourceLocations = hitarea?.dataset.sourceLocations;
-      const count = ArcLogic.countLocations(sourceLocations);
+      // Virtual arc: calculate from runtime Map
+      const usages = virtualArcUsages.get(arcId) || [];
+      const count = usages.reduce((sum, g) => sum + g.locations.length, 0);
       arcWidth = ArcLogic.calculateStrokeWidth(count);
     } else {
       // Regular arc: use StaticData
@@ -686,7 +689,7 @@ if (typeof document !== 'undefined') {
         toNode,
         fromHidden: fromIsHidden,
         toHidden: toIsHidden,
-        sourceLocations: StaticData.getFormattedUsages(arcId),
+        sourceLocations: StaticData.getArcUsages(arcId),
         // Compute direction from hierarchy (no DOM read)
         direction: DerivedState._determineDirection(fromId, toId, parentMap)
       });
@@ -703,6 +706,8 @@ if (typeof document !== 'undefined') {
     DomAdapter.querySelectorAll(Selectors.allBaseArrows()).forEach(arrow => {
       arrow.style.display = '';
     });
+    virtualArcUsages.clear();
+    virtualArcOriginals.clear();
   }
 
   // Hide original elements when from/to hidden, update visible arc paths
@@ -851,7 +856,7 @@ if (typeof document !== 'undefined') {
 
     // Pass 3: Hitareas (hitareas layer, always on top)
     mergedEdges.forEach((data, key) => {
-      const { fromId, toId, arc, hiddenEdgeData, count } = data;
+      const { fromId, toId, arc, hiddenEdgeData, count, originalArcs } = data;
       const arcId = fromId + '-' + toId;
 
       const hitarea = DomAdapter.createSvgElement('path');
@@ -860,9 +865,13 @@ if (typeof document !== 'undefined') {
       hitarea.setAttribute('data-arc-id', arcId);
       hitarea.setAttribute('data-from', fromId);
       hitarea.setAttribute('data-to', toId);
-      // Set aggregated source locations from hidden edges
+      // Store structured usages and originalArcs in runtime Map (not DOM attribute)
       if (hiddenEdgeData.length > 0) {
-        hitarea.dataset.sourceLocations = ArcLogic.sortAndGroupLocations(hiddenEdgeData);
+        const allUsages = hiddenEdgeData.flat();
+        virtualArcUsages.set(arcId, allUsages);
+      }
+      if (originalArcs && originalArcs.length > 0) {
+        virtualArcOriginals.set(arcId, originalArcs);
       }
       hitarea.addEventListener('click', e => {
         e.stopPropagation();
@@ -880,8 +889,16 @@ if (typeof document !== 'undefined') {
             return;
           }
         }
-        const locs = hitarea.dataset.sourceLocations;
-        if (locs) {
+        const usages = virtualArcUsages.get(arcId);
+        if (usages && usages.length > 0) {
+          const lines = [];
+          for (const g of usages) {
+            for (const loc of g.locations) {
+              const prefix = g.symbol ? `${g.symbol}  ← ` : '';
+              lines.push(`${prefix}${loc.file}:${loc.line}`);
+            }
+          }
+          const locs = lines.join('|');
           const svg = DomAdapter.getSvgRoot();
           const rect = svg.getBoundingClientRect();
           const viewBox = svg.viewBox.baseVal;
@@ -904,11 +921,11 @@ if (typeof document !== 'undefined') {
     const isPinned = AppState.togglePinned(appState, 'edge', edgeId);
     clearHighlights();
     if (!isPinned) return; // Was not pinned (toggled off), done
-    // Build sidebar data from hitarea's sourceLocations (virtual arcs aren't in STATIC_DATA)
-    const hitarea = DomAdapter.querySelector(`.${C.virtualHitarea}[data-arc-id="${edgeId}"]`);
-    const locStr = hitarea?.dataset?.sourceLocations || "";
-    const usages = locStr ? locStr.split("|") : [];
-    SidebarLogic.show(edgeId, { from: fromId, to: toId, usages });
+    // Build sidebar data from runtime Maps
+    const usages = virtualArcUsages.get(edgeId) || [];
+    const originalArcs = virtualArcOriginals.get(edgeId) || [];
+    const mergedUsages = SidebarLogic.mergeSymbolGroups(usages);
+    SidebarLogic.show(edgeId, { from: fromId, to: toId, usages: mergedUsages, originalArcs });
     // from-Node: dependent (purple border)
     DomAdapter.getNode(fromId)?.classList.add(C.dependentNode);
     // to-Node: dep (green border)

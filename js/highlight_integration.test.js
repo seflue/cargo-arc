@@ -196,8 +196,11 @@ describe('Virtual Arc Hover Bug Regression Tests', () => {
     const arc = createFakeElement('path');
     arc.classList.add('virtual-arc');
 
-    // Initial strokeWidth calculated from 3 usages
-    const usages = "file1:10|file2:20|file3:30";
+    // Initial strokeWidth calculated from 3 usages (structured object format)
+    const usages = [
+      { symbol: "foo", modulePath: null, locations: [{ file: "file1.rs", line: 10 }] },
+      { symbol: "bar", modulePath: null, locations: [{ file: "file2.rs", line: 20 }, { file: "file3.rs", line: 30 }] }
+    ];
     const usageCount = ArcLogic.countLocations(usages);
     expect(usageCount).toBe(3);
 

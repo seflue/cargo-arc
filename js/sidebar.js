@@ -17,6 +17,28 @@ const SIDEBAR_SHADOW_PAD = typeof __SIDEBAR_SHADOW_PAD__ !== 'undefined' ? __SID
 
 const SidebarLogic = {
   /**
+   * Merge symbol groups: combine groups with same symbol, deduplicate locations by file+line.
+   * @param {Array<{symbol: string, modulePath: string|null, locations: Array<{file: string, line: number}>}>} groups
+   * @returns {Array<{symbol: string, modulePath: string|null, locations: Array<{file: string, line: number}>}>}
+   */
+  mergeSymbolGroups(groups) {
+    const bySymbol = new Map();
+    for (const g of groups) {
+      const key = g.symbol || '';
+      const existing = bySymbol.get(key);
+      if (existing) {
+        for (const loc of g.locations) {
+          const isDup = existing.locations.some(e => e.file === loc.file && e.line === loc.line);
+          if (!isDup) existing.locations.push(loc);
+        }
+      } else {
+        bySymbol.set(key, { symbol: g.symbol, modulePath: g.modulePath, locations: [...g.locations] });
+      }
+    }
+    return [...bySymbol.values()];
+  },
+
+  /**
    * Build HTML content string for the sidebar.
    * Uses overrideData if provided, otherwise STATIC_DATA.arcs[arcId].
    * Expects structured usages: [{ symbol, modulePath, locations: [{ file, line }] }]

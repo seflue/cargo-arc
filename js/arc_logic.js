@@ -111,15 +111,13 @@ const ArcLogic = {
   },
 
   /**
-   * Count the number of source locations in a pipe-separated string.
-   * Format: "Symbol  <- file:line|     <- file:line|Symbol2  <- file:line"
-   * Each pipe-separated segment represents one location.
-   * @param {string} locationsString - Pipe-separated location string
-   * @returns {number} - Number of locations
+   * Count total source locations from structured usage groups.
+   * @param {Array<{symbol: string, locations: Array<{file: string, line: number}>}>} usageGroups
+   * @returns {number}
    */
-  countLocations(locationsString) {
-    if (!locationsString) return 0;
-    return locationsString.split('|').length;
+  countLocations(usageGroups) {
+    if (!usageGroups || !Array.isArray(usageGroups)) return 0;
+    return usageGroups.reduce((sum, g) => sum + g.locations.length, 0);
   },
 
   /**
@@ -175,76 +173,6 @@ const ArcLogic = {
     return len1 + len2;
   },
 
-  /**
-   * Sort and group tooltip location strings by symbol name.
-   * Re-sorts aggregated tooltip data for virtual arcs to ensure consistent display.
-   *
-   * Input format: Array of pipe-separated location strings, each containing
-   * entries like "Symbol  <- file:line" or bare "file:line"
-   *
-   * @param {string[]} locStrings - Array of tooltip location strings
-   * @returns {string} - Sorted and grouped locations joined by '|'
-   */
-  sortAndGroupLocations(locStrings) {
-    const symbolRegex = /^(\S+)\s+←\s+(.+)$/;
-    const bySymbol = {};  // symbol -> [locations]
-    const bareLocations = [];
-
-    // Parse all location entries
-    for (const str of locStrings) {
-      for (const entry of str.split('|')) {
-        const trimmed = entry.trim();
-        if (!trimmed) continue;
-
-        const match = trimmed.match(symbolRegex);
-        if (match) {
-          const symbol = match[1];
-          const location = match[2];
-          if (!bySymbol[symbol]) bySymbol[symbol] = [];
-          bySymbol[symbol].push(location);
-        } else {
-          // Bare location (no symbol prefix)
-          bareLocations.push(trimmed);
-        }
-      }
-    }
-
-    // Sort symbols alphabetically
-    const sortedSymbols = Object.keys(bySymbol).sort();
-
-    // Sort locations within each symbol
-    for (const symbol of sortedSymbols) {
-      bySymbol[symbol].sort();
-    }
-    bareLocations.sort();
-
-    // Find max symbol length for column alignment
-    const maxLen = sortedSymbols.reduce((max, s) => Math.max(max, s.length), 0);
-
-    // Build output
-    const lines = [];
-
-    // Bare locations first
-    for (const loc of bareLocations) {
-      lines.push(loc);
-    }
-
-    // Symbol-grouped locations with alignment
-    for (const symbol of sortedSymbols) {
-      const locs = bySymbol[symbol];
-      for (let i = 0; i < locs.length; i++) {
-        if (i === 0) {
-          const padding = ' '.repeat(maxLen - symbol.length + 2);
-          lines.push(`${symbol}${padding}← ${locs[i]}`);
-        } else {
-          const spaces = ' '.repeat(maxLen + 2);
-          lines.push(`${spaces}← ${locs[i]}`);
-        }
-      }
-    }
-
-    return lines.join('|');
-  }
 };
 
 // CommonJS export for tests (Node/Bun)

@@ -20,13 +20,13 @@ const VirtualEdgeLogic = {
    * Aggregate hidden edges by their visible endpoints.
    * @param {Array<{arcId: string, fromId: string, toId: string, fromHidden: boolean, toHidden: boolean, sourceLocations?: string, direction?: string}>} edges
    * @param {function(string): string} getVisibleAncestorFn - Function to get visible ancestor for a node
-   * @returns {Map<string, {count: number, hiddenEdgeData: string[], directions: string[]}>}
+   * @returns {Map<string, {count: number, hiddenEdgeData: string[], directions: string[], originalArcs: string[]}>}
    */
   aggregateHiddenEdges(edges, getVisibleAncestorFn) {
     const virtualEdges = new Map();
 
     for (const edge of edges) {
-      const { fromId, toId, fromHidden, toHidden, sourceLocations, direction } = edge;
+      const { arcId, fromId, toId, fromHidden, toHidden, sourceLocations, direction } = edge;
 
       // Skip if both endpoints are visible
       if (!fromHidden && !toHidden) continue;
@@ -39,11 +39,12 @@ const VirtualEdgeLogic = {
       if (!visibleFrom || !visibleTo || visibleFrom === visibleTo) continue;
 
       const key = visibleFrom + '-' + visibleTo;
-      const existing = virtualEdges.get(key) || { count: 0, hiddenEdgeData: [], directions: [] };
+      const existing = virtualEdges.get(key) || { count: 0, hiddenEdgeData: [], directions: [], originalArcs: [] };
 
       existing.count++;
       if (sourceLocations) existing.hiddenEdgeData.push(sourceLocations);
       if (direction) existing.directions.push(direction);
+      existing.originalArcs.push(arcId);
 
       virtualEdges.set(key, existing);
     }
@@ -53,12 +54,12 @@ const VirtualEdgeLogic = {
 
   /**
    * Prepare virtual edge data for rendering.
-   * @param {Map<string, {count: number, hiddenEdgeData: string[], directions: string[]}>} virtualEdges
+   * @param {Map<string, {count: number, hiddenEdgeData: string[], directions: string[], originalArcs: string[]}>} virtualEdges
    * @param {Map<string, {x: number, y: number, width: number, height: number}>} nodePositions
    * @param {number} maxRight - Rightmost X coordinate
    * @param {Object} arcLogic - ArcLogic module with calculateArcPath, countLocations, calculateStrokeWidth
    * @param {number} rowHeight - Row height for arc calculation
-   * @returns {Map<string, {fromId: string, toId: string, count: number, hiddenEdgeData: string[], arc: Object, strokeWidth: number, direction: string}>}
+   * @returns {Map<string, {fromId: string, toId: string, count: number, hiddenEdgeData: string[], arc: Object, strokeWidth: number, direction: string, originalArcs: string[]}>}
    */
   prepareVirtualEdgeData(virtualEdges, nodePositions, maxRight, arcLogic, rowHeight) {
     const mergedEdges = new Map();
@@ -96,7 +97,8 @@ const VirtualEdgeLogic = {
         hiddenEdgeData: data.hiddenEdgeData,
         arc,
         strokeWidth,
-        direction
+        direction,
+        originalArcs: data.originalArcs
       });
     });
 
