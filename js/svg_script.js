@@ -41,55 +41,9 @@ if (typeof document !== 'undefined') {
     }
   }
 
-  // === Floating label for source locations ===
-  let floatingLabel = null;
-
   // Runtime map for virtual arc usages (structured objects, no DOM serialization)
   const virtualArcUsages = new Map();
   const virtualArcOriginals = new Map();
-
-  function showFloatingLabel(text, x, y) {
-    hideFloatingLabel();
-    const svg = DomAdapter.getSvgRoot();
-    floatingLabel = DomAdapter.createSvgElement('g');
-    floatingLabel.setAttribute('class', C.floatingLabel);
-
-    const padding = 6;
-    const lineHeight = 14;
-    const lines = text.split('|');
-
-    const textEl = DomAdapter.createSvgElement('text');
-    textEl.setAttribute('x', x + padding);
-    textEl.setAttribute('y', y + lineHeight);
-
-    // Create tspan for each line
-    lines.forEach((line, i) => {
-      const tspan = DomAdapter.createSvgElement('tspan');
-      tspan.setAttribute('x', x + padding);
-      tspan.setAttribute('dy', i === 0 ? 0 : lineHeight);
-      tspan.textContent = line;
-      textEl.appendChild(tspan);
-    });
-
-    // Estimate width using TextMetrics (no DOM read needed)
-    const textWidth = TextMetrics.estimateMultilineWidth(text, 11);
-    const labelWidth = textWidth + padding * 2;
-    const labelHeight = lines.length * lineHeight + padding;
-
-    const rect = DomAdapter.createSvgElement('rect');
-    rect.setAttribute('x', x);
-    rect.setAttribute('y', y);
-    rect.setAttribute('width', labelWidth);
-    rect.setAttribute('height', labelHeight);
-
-    floatingLabel.appendChild(rect);
-    floatingLabel.appendChild(textEl);
-    svg.appendChild(floatingLabel);
-  }
-
-  function hideFloatingLabel() {
-    if (floatingLabel) { floatingLabel.remove(); floatingLabel = null; }
-  }
 
   // === Highlight functionality ===
   // Use AppState module for unified state management
@@ -540,12 +494,25 @@ if (typeof document !== 'undefined') {
     else if (type === 'edge') {
       const [from, to] = id.split('-');
       applyEdgeHighlight(from, to);
+      SidebarLogic.showTransient(id);
     }
   }
 
   function handleMouseLeave() {
     if (AppState.getPinned(appState)) return; // Keep pinned highlight
     clearHighlights();
+    SidebarLogic.hideTransient();
+  }
+
+  function handleVirtualMouseEnter(arcId, fromId, toId) {
+    if (AppState.getPinned(appState)) return;
+    clearHighlights();
+    const [from, to] = arcId.split('-');
+    applyEdgeHighlight(from, to);
+    const usages = virtualArcUsages.get(arcId) || [];
+    const originalArcs = virtualArcOriginals.get(arcId) || [];
+    const mergedUsages = SidebarLogic.mergeSymbolGroups(usages);
+    SidebarLogic.showTransient(arcId, { from: fromId, to: toId, usages: mergedUsages, originalArcs });
   }
 
   // === Collapse functionality ===
@@ -889,38 +856,9 @@ if (typeof document !== 'undefined') {
         e.stopPropagation();
         highlightVirtualEdge(fromId, toId, count);
       });
-      hitarea.addEventListener('mouseenter', () => handleMouseEnter('edge', arcId));
-      hitarea.addEventListener('mousemove', (e) => {
-        const pinned = AppState.getPinned(appState);
-        if (pinned) {
-          const isHighlighted = pinned.type === 'edge'
-            ? pinned.id === arcId
-            : (fromId === pinned.id || toId === pinned.id);
-          if (!isHighlighted) {
-            hideFloatingLabel();
-            return;
-          }
-        }
-        const usages = virtualArcUsages.get(arcId);
-        if (usages && usages.length > 0) {
-          const lines = [];
-          for (const g of usages) {
-            for (const loc of g.locations) {
-              const prefix = g.symbol ? `${g.symbol}  ← ` : '';
-              lines.push(`${prefix}${loc.file}:${loc.line}`);
-            }
-          }
-          const locs = lines.join('|');
-          const svg = DomAdapter.getSvgRoot();
-          const rect = svg.getBoundingClientRect();
-          const viewBox = svg.viewBox.baseVal;
-          const svgPt = ArcLogic.getSvgCoords(e.clientX, e.clientY, rect, viewBox);
-          showFloatingLabel(locs, svgPt.x + 10, svgPt.y - 20);
-        }
-      });
+      hitarea.addEventListener('mouseenter', () => handleVirtualMouseEnter(arcId, fromId, toId));
       hitarea.addEventListener('mouseleave', () => {
         handleMouseLeave();
-        hideFloatingLabel();
       });
       layers.hitareas.appendChild(hitarea);
     });
@@ -1211,33 +1149,8 @@ if (typeof document !== 'undefined') {
 
     hitarea.addEventListener('mouseenter', () => handleMouseEnter('edge', edgeId));
 
-    hitarea.addEventListener('mousemove', (e) => {
-      // When pinned, only show tooltip on highlighted arcs
-      const pinned = AppState.getPinned(appState);
-      const arcId = hitarea.dataset.arcId;
-      if (pinned) {
-        const isHighlighted = pinned.type === 'edge'
-          ? pinned.id === arcId
-          : (hitarea.dataset.from === pinned.id || hitarea.dataset.to === pinned.id);
-        if (!isHighlighted) {
-          hideFloatingLabel();
-          return;
-        }
-      }
-      // Use StaticData for regular arc tooltips (no DOM read)
-      const locs = StaticData.getFormattedUsages(arcId);
-      if (locs) {
-        const svg = DomAdapter.getSvgRoot();
-        const rect = svg.getBoundingClientRect();
-        const viewBox = svg.viewBox.baseVal;
-        const svgPt = ArcLogic.getSvgCoords(e.clientX, e.clientY, rect, viewBox);
-        showFloatingLabel(locs, svgPt.x + 10, svgPt.y - 20);
-      }
-    });
-
     hitarea.addEventListener('mouseleave', () => {
       handleMouseLeave();
-      hideFloatingLabel();
     });
   });
 

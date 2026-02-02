@@ -64,24 +64,6 @@ const StaticData = {
   },
 
   /**
-   * Get formatted usages as pipe-separated string (for tooltips).
-   * Flattens structured groups into "symbol ← file:line" lines.
-   * @param {string} arcId
-   * @returns {string}
-   */
-  getFormattedUsages(arcId) {
-    const groups = this.getArcUsages(arcId);
-    const lines = [];
-    for (const g of groups) {
-      for (const loc of g.locations) {
-        const prefix = g.symbol ? `${g.symbol}  \u2190 ` : '';
-        lines.push(`${prefix}${loc.file}:${loc.line}`);
-      }
-    }
-    return lines.join('|');
-  },
-
-  /**
    * Get calculated stroke width for an arc based on usage count.
    * Uses ArcLogic.calculateStrokeWidth for consistent scaling.
    * @param {string} arcId

@@ -14,9 +14,6 @@ pub(crate) struct LayoutConstants {
     pub arc_base: f32,
     pub arc_scale: f32,
     pub arrow_length: f32,
-    pub tooltip_padding: f32,
-    pub tooltip_offset: f32,
-    pub tooltip_line_height: f32,
     pub crate_height: f32,
     pub module_height: f32,
     pub tree_line_x_offset: f32,
@@ -85,9 +82,6 @@ static LAYOUT: LayoutConstants = LayoutConstants {
     arc_base: 20.0,
     arc_scale: 15.0,
     arrow_length: 8.0,
-    tooltip_padding: 6.0,
-    tooltip_offset: 10.0,
-    tooltip_line_height: 14.0,
     crate_height: 24.0,
     module_height: 20.0,
     tree_line_x_offset: 10.0,
@@ -143,7 +137,6 @@ const GRAY_200: &str = "#e0e0e0";
 const GRAY_100: &str = "#f5f5f5";
 const GRAY_50: &str = "#fafafa";
 const WHITE: &str = "#ffffff";
-const DARK_BG: &str = "#1a1a2e";
 
 pub(crate) struct NodeColors {
     pub crate_fill: &'static str,
@@ -185,18 +178,12 @@ pub(crate) struct ToolbarColors {
     pub separator: &'static str,
 }
 
-pub(crate) struct LabelColors {
-    pub bg: &'static str,
-    pub text: &'static str,
-}
-
 pub(crate) struct ColorPalette {
     pub nodes: NodeColors,
     pub direction: DirectionColors,
     pub node_selection: NodeSelectionColors,
     pub relation: RelationColors,
     pub toolbar: ToolbarColors,
-    pub labels: LabelColors,
 }
 
 static COLORS: ColorPalette = ColorPalette {
@@ -234,10 +221,6 @@ static COLORS: ColorPalette = ColorPalette {
         checkbox: WHITE,
         checkbox_checked: BLUE,
         separator: GRAY_300,
-    },
-    labels: LabelColors {
-        bg: DARK_BG,
-        text: GRAY_200,
     },
 };
 
@@ -303,7 +286,6 @@ pub(crate) struct ToolbarClasses {
 
 #[allow(dead_code)]
 pub(crate) struct LabelClasses {
-    pub floating_label: &'static str,
     pub arc_count: &'static str,
     pub arc_count_bg: &'static str,
     pub arc_count_group: &'static str,
@@ -392,7 +374,6 @@ static CSS: CssClassNames = CssClassNames {
         label: "toolbar-label",
     },
     labels: LabelClasses {
-        floating_label: "floating-label",
         arc_count: "arc-count",
         arc_count_bg: "arc-count-bg",
         arc_count_group: "arc-count-group",
@@ -566,14 +547,7 @@ pub fn render(ir: &LayoutIR, config: &RenderConfig) -> String {
     let box_width = calculate_box_width(ir);
     let positioned = calculate_positions(ir, config, box_width);
     let max_arc_width = calculate_max_arc_width(&positioned, ir, config.row_height);
-    let (max_tooltip_width, max_tooltip_height) = calculate_max_tooltip_size(ir);
-    let (width, height) = calculate_canvas_size(
-        &positioned,
-        config,
-        max_arc_width,
-        max_tooltip_width,
-        max_tooltip_height,
-    );
+    let (width, height) = calculate_canvas_size(&positioned, config, max_arc_width);
 
     // Collect all node IDs that are parents (have children)
     let parents: HashSet<NodeId> = ir
@@ -628,43 +602,10 @@ fn calculate_positions(
         .collect()
 }
 
-/// Calculate tooltip dimensions for the tallest/widest tooltip
-fn calculate_max_tooltip_size(ir: &LayoutIR) -> (f32, f32) {
-    let (max_width, max_height) = ir
-        .edges
-        .iter()
-        .filter(|e| !e.source_locations.is_empty())
-        .map(|edge| {
-            let groups = format_source_locations_by_symbol(&edge.source_locations);
-            // Count total lines: each group contributes its locations
-            let line_count: usize = groups.iter().map(|g| g.locations.len()).sum();
-            // Find longest line (file path with line number)
-            let max_line_len = groups
-                .iter()
-                .flat_map(|g| &g.locations)
-                .map(|loc| format!("{}:{}", loc.file, loc.line).len())
-                .max()
-                .unwrap_or(0);
-            let width = calculate_text_width(&"x".repeat(max_line_len));
-            let height = line_count as f32 * LAYOUT.tooltip_line_height;
-            (width, height)
-        })
-        .fold((0.0_f32, 0.0_f32), |(aw, ah), (w, h)| {
-            (aw.max(w), ah.max(h))
-        });
-
-    (
-        max_width + LAYOUT.tooltip_padding * 2.0 + LAYOUT.tooltip_offset,
-        max_height + LAYOUT.tooltip_padding,
-    )
-}
-
 fn calculate_canvas_size(
     positioned: &[PositionedItem],
     config: &RenderConfig,
     max_arc_width: f32,
-    max_tooltip_width: f32,
-    max_tooltip_height: f32,
 ) -> (f32, f32) {
     let base_height = if positioned.is_empty() {
         config.margin * 2.0
@@ -674,10 +615,9 @@ fn calculate_canvas_size(
     // Sidebar box-shadow extends below the SVG canvas edge when the panel sits
     // near the bottom. The SVG element itself clips anything beyond its viewBox,
     // so we add padding to ensure the shadow renders fully.
-    let height =
-        base_height + LAYOUT.toolbar.height + max_tooltip_height + LAYOUT.sidebar.shadow_padding();
+    let height = base_height + LAYOUT.toolbar.height + LAYOUT.sidebar.shadow_padding();
 
-    // Width: max(box_right_edge) + arc_space + tooltip_width + sidebar_width + margin
+    // Width: max(box_right_edge) + arc_space + sidebar_width + margin
     let max_x = positioned
         .iter()
         .map(|p| p.x + p.width)
@@ -687,7 +627,7 @@ fn calculate_canvas_size(
     // Reserve space for the sidebar (280px min-width + shadow padding) so it
     // doesn't get clipped when the rightmost arc is selected.
     let sidebar_space = 280.0 + LAYOUT.sidebar.shadow_padding();
-    let width = max_x + arc_space + max_tooltip_width + sidebar_space + config.margin;
+    let width = max_x + arc_space + sidebar_space + config.margin;
     (width, height)
 }
 
@@ -716,7 +656,6 @@ fn build_css_rules() -> Vec<CssRule> {
     let ns = &COLORS.node_selection;
     let r = &COLORS.relation;
     let t = &COLORS.toolbar;
-    let l = &COLORS.labels;
     let c = &CSS;
 
     vec![
@@ -934,23 +873,6 @@ fn build_css_rules() -> Vec<CssRule> {
         CssRule::new(
             &format!(".{}", c.relation.shadow_path),
             &[("pointer-events", "none"), ("stroke-linecap", "round")],
-        ),
-        // Floating label
-        CssRule::new(
-            &format!(".{}", c.labels.floating_label),
-            &[("pointer-events", "none")],
-        ),
-        CssRule::new(
-            &format!(".{} rect", c.labels.floating_label),
-            &[("fill", l.bg), ("fill-opacity", "0.95"), ("rx", "4")],
-        ),
-        CssRule::new(
-            &format!(".{} text", c.labels.floating_label),
-            &[
-                ("fill", l.text),
-                ("font-family", "monospace"),
-                ("font-size", "11px"),
-            ],
         ),
         // Toolbar
         CssRule::new(
@@ -1191,6 +1113,23 @@ fn build_css_rules() -> Vec<CssRule> {
         CssRule::new(
             ".sidebar-node-to",
             &[("border", &format!("2px solid {}", GREEN))],
+        ),
+        // Transient sidebar mode (hover preview): hide close button and collapse toggles
+        CssRule::new(
+            &format!(".{}.sidebar-transient .{}", c.sidebar.root, c.sidebar.close),
+            &[("display", "none")],
+        ),
+        CssRule::new(
+            &format!(
+                ".{}.sidebar-transient .{}",
+                c.sidebar.root, c.sidebar.toggle
+            ),
+            &[
+                ("visibility", "hidden"),
+                ("width", "0"),
+                ("margin", "0"),
+                ("padding", "0"),
+            ],
         ),
     ]
 }
@@ -1482,10 +1421,6 @@ fn generate_static_data(
         CSS.toolbar.checkbox
     ));
     lines.push(format!("    checked: \"{}\",", CSS.toolbar.checked));
-    lines.push(format!(
-        "    floatingLabel: \"{}\",",
-        CSS.labels.floating_label
-    ));
     lines.push(format!("    arcCount: \"{}\",", CSS.labels.arc_count));
     lines.push(format!("    arcCountBg: \"{}\",", CSS.labels.arc_count_bg));
     lines.push(format!(
@@ -1797,7 +1732,6 @@ mod tests {
         assert_eq!(COLORS.nodes.crate_fill, "#dbeafe");
         assert_eq!(COLORS.direction.downward, "#40a02b");
         assert_eq!(COLORS.toolbar.bg, "#fafafa");
-        assert_eq!(COLORS.labels.bg, "#1a1a2e");
         assert_eq!(COLORS.node_selection.crate_fill, "#93c5fd");
         assert_eq!(COLORS.relation.dependent, "#8839ef");
     }
@@ -2329,27 +2263,10 @@ mod tests {
     }
 
     #[test]
-    fn test_render_has_floating_label_css() {
+    fn test_render_script_arc_hover_shows_sidebar() {
         let ir = LayoutIR::new();
         let svg = render(&ir, &RenderConfig::default());
-        assert!(svg.contains(".floating-label"));
-    }
-
-    #[test]
-    fn test_render_script_has_floating_label_functions() {
-        let ir = LayoutIR::new();
-        let svg = render(&ir, &RenderConfig::default());
-        assert!(svg.contains("showFloatingLabel"));
-        assert!(svg.contains("hideFloatingLabel"));
-        assert!(svg.contains("floatingLabel"));
-    }
-
-    #[test]
-    fn test_render_script_arc_hover_shows_locations() {
-        let ir = LayoutIR::new();
-        let svg = render(&ir, &RenderConfig::default());
-        assert!(svg.contains("getFormattedUsages"));
-        assert!(svg.contains("showFloatingLabel"));
+        assert!(svg.contains("showTransient"));
     }
 
     #[test]
@@ -2638,8 +2555,8 @@ mod tests {
             })
             .unwrap();
 
-        // Height should include LAYOUT.toolbar.height (40) + margin (20*2) + 1 row (30) + tooltip space
-        // Base: margin*2 + rows*row_height + toolbar + tooltip
+        // Height should include LAYOUT.toolbar.height (40) + margin (20*2) + 1 row (30) + shadow padding
+        // Base: margin*2 + rows*row_height + toolbar + shadow_padding
         assert!(
             viewbox_height >= LAYOUT.toolbar.height + config.margin * 2.0 + config.row_height,
             "Canvas height {} should include toolbar height {}",
@@ -3243,7 +3160,6 @@ mod tests {
         assert!(!CSS.toolbar.disabled.is_empty());
         assert!(!CSS.toolbar.label.is_empty());
 
-        assert!(!CSS.labels.floating_label.is_empty());
         assert!(!CSS.labels.arc_count.is_empty());
         assert!(!CSS.labels.arc_count_bg.is_empty());
         assert!(!CSS.labels.arc_count_group.is_empty());
@@ -3285,7 +3201,6 @@ mod tests {
         assert!(css.contains(&format!(".{}", CSS.toolbar.disabled)));
 
         // Labels
-        assert!(css.contains(&format!(".{}", CSS.labels.floating_label)));
         assert!(css.contains(&format!(".{}", CSS.labels.arc_count)));
         assert!(css.contains(&format!(".{}", CSS.labels.hidden_by_filter)));
 
@@ -3294,7 +3209,6 @@ mod tests {
         assert!(css.contains(COLORS.direction.downward));
         assert!(css.contains(COLORS.relation.dependency));
         assert!(css.contains(COLORS.toolbar.btn_fill));
-        assert!(css.contains(COLORS.labels.bg));
     }
 
     #[test]
@@ -3371,6 +3285,23 @@ mod tests {
         assert!(
             css.contains(&format!(".{}", CSS.sidebar.badge_relations)),
             "CSS should contain .sidebar-badge-relations"
+        );
+    }
+
+    #[test]
+    fn test_render_has_transient_sidebar_css() {
+        let css = render_styles();
+        assert!(
+            css.contains(".sidebar-root.sidebar-transient .sidebar-close"),
+            "CSS should contain transient sidebar close rule"
+        );
+        assert!(
+            css.contains("display: none"),
+            "Transient sidebar should hide close button"
+        );
+        assert!(
+            css.contains(".sidebar-root.sidebar-transient .sidebar-toggle"),
+            "CSS should contain transient sidebar toggle rule"
         );
     }
 

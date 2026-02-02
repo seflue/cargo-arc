@@ -17,6 +17,8 @@ const SIDEBAR_SHADOW_PAD = typeof __SIDEBAR_SHADOW_PAD__ !== 'undefined' ? __SID
 const SIDEBAR_MIN_WIDTH = 280;
 
 const SidebarLogic = {
+  _isTransient: false,
+  _debounceTimer: null,
   /**
    * Merge symbol groups: combine groups with same symbol, deduplicate locations by file+line.
    * @param {Array<{symbol: string, modulePath: string|null, locations: Array<{file: string, line: number}>}>} groups
@@ -176,6 +178,39 @@ const SidebarLogic = {
   },
 
   /**
+   * Show sidebar transiently (hover preview). Debounced to prevent flicker.
+   * No collapse handlers, adds sidebar-transient CSS class.
+   * @param {string} arcId
+   * @param {{ from: string, to: string, usages: Array, originalArcs?: string[] }} [overrideData]
+   */
+  showTransient(arcId, overrideData) {
+    clearTimeout(this._debounceTimer);
+    this._debounceTimer = setTimeout(() => {
+      const el = this._getElement();
+      if (!el) return;
+      const innerDiv = el.querySelector(".sidebar-root");
+      if (innerDiv) {
+        innerDiv.innerHTML = this.buildContent(arcId, overrideData);
+        innerDiv.classList.add("sidebar-transient");
+      }
+      el.style.display = "block";
+      this._isTransient = true;
+      this._cachedX = this._calcX();
+      this.updatePosition();
+    }, 30);
+  },
+
+  /**
+   * Hide a transient sidebar. Does nothing if sidebar is pinned.
+   */
+  hideTransient() {
+    clearTimeout(this._debounceTimer);
+    if (!this._isTransient) return;
+    this.hide();
+    this._isTransient = false;
+  },
+
+  /**
    * Show sidebar with content for given arc.
    * @param {string} arcId
    * @param {{ from: string, to: string, usages: string[] }} [overrideData]
@@ -186,9 +221,12 @@ const SidebarLogic = {
     const innerDiv = el.querySelector(".sidebar-root");
     if (innerDiv) {
       innerDiv.innerHTML = this.buildContent(arcId, overrideData);
+      innerDiv.classList.remove("sidebar-transient");
       this._setupCollapseHandlers(innerDiv);
     }
     el.style.display = "block";
+    this._isTransient = false;
+    clearTimeout(this._debounceTimer);
     this._cachedX = this._calcX();
     this.updatePosition();
   },
@@ -225,6 +263,8 @@ const SidebarLogic = {
     if (!el) return;
     el.style.display = "none";
     this._cachedX = null;
+    this._isTransient = false;
+    clearTimeout(this._debounceTimer);
   },
 
   /**

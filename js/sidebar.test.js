@@ -333,6 +333,113 @@ describe("SidebarLogic", () => {
       SidebarLogic.hide();
       expect(SidebarLogic.isVisible()).toBe(false);
     });
+
+    test("show() removes sidebar-transient class", () => {
+      // First make it transient
+      fakeEl._innerDiv.classList.add("sidebar-transient");
+      SidebarLogic.show("crate_a-crate_b");
+      expect(fakeEl._innerDiv.classList.contains("sidebar-transient")).toBe(false);
+      expect(SidebarLogic._isTransient).toBe(false);
+    });
+
+    test("show() clears debounce timer", () => {
+      SidebarLogic._debounceTimer = setTimeout(() => {}, 10000);
+      SidebarLogic.show("crate_a-crate_b");
+      expect(SidebarLogic._isTransient).toBe(false);
+    });
+
+    test("hide() clears transient state", () => {
+      SidebarLogic._isTransient = true;
+      SidebarLogic._debounceTimer = setTimeout(() => {}, 10000);
+      SidebarLogic.show("crate_a-crate_b");
+      SidebarLogic.hide();
+      expect(SidebarLogic._isTransient).toBe(false);
+    });
+  });
+
+  describe("showTransient/hideTransient", () => {
+    let fakeEl;
+
+    function makeSvgMock(rectTop) {
+      return {
+        getBoundingClientRect() {
+          return { left: 0, top: rectTop ?? 0, width: 1000, height: 800 };
+        },
+        viewBox: { baseVal: { width: 2000, height: 1600 } },
+      };
+    }
+
+    beforeEach(() => {
+      fakeEl = createFakeElement("foreignObject");
+      fakeEl.innerHTML = "";
+      const innerDiv = createFakeElement("div");
+      innerDiv._innerHTML = "";
+      Object.defineProperty(innerDiv, "innerHTML", {
+        get() { return this._innerHTML; },
+        set(v) { this._innerHTML = v; },
+      });
+      innerDiv.scrollWidth = 0;
+      fakeEl._innerDiv = innerDiv;
+      fakeEl.querySelector = () => fakeEl._innerDiv;
+      const svgMock = makeSvgMock(0);
+      globalThis.DomAdapter = {
+        getElementById(id) {
+          if (id === "relation-sidebar") return fakeEl;
+          return null;
+        },
+        getSvgRoot() { return svgMock; },
+        querySelector(sel) { if (sel === "svg") return svgMock; return null; },
+        querySelectorAll() { return []; },
+      };
+      globalThis.window = globalThis.window || {};
+      globalThis.window.innerWidth = 1000;
+      globalThis.window.innerHeight = 800;
+      SidebarLogic._isTransient = false;
+      SidebarLogic._debounceTimer = null;
+    });
+
+    test("showTransient() shows sidebar after debounce", async () => {
+      SidebarLogic.showTransient("crate_a-crate_b");
+      // Before timer fires, sidebar should not be visible yet
+      expect(fakeEl.style.display).not.toBe("block");
+      // Wait for debounce (30ms + buffer)
+      await new Promise(r => setTimeout(r, 50));
+      expect(fakeEl.style.display).toBe("block");
+      expect(SidebarLogic._isTransient).toBe(true);
+    });
+
+    test("showTransient() sets sidebar-transient class", async () => {
+      SidebarLogic.showTransient("crate_a-crate_b");
+      await new Promise(r => setTimeout(r, 50));
+      expect(fakeEl._innerDiv.classList.contains("sidebar-transient")).toBe(true);
+    });
+
+    test("hideTransient() hides only transient sidebar", () => {
+      // Pin sidebar via show() (not transient)
+      SidebarLogic.show("crate_a-crate_b");
+      expect(fakeEl.style.display).toBe("block");
+      // hideTransient should NOT hide a pinned sidebar
+      SidebarLogic.hideTransient();
+      expect(fakeEl.style.display).toBe("block");
+    });
+
+    test("hideTransient() cancels pending debounce", async () => {
+      SidebarLogic.showTransient("crate_a-crate_b");
+      // Immediately cancel
+      SidebarLogic.hideTransient();
+      await new Promise(r => setTimeout(r, 50));
+      // Sidebar should remain hidden
+      expect(fakeEl.style.display).not.toBe("block");
+    });
+
+    test("hideTransient() hides transient sidebar", async () => {
+      SidebarLogic.showTransient("crate_a-crate_b");
+      await new Promise(r => setTimeout(r, 50));
+      expect(fakeEl.style.display).toBe("block");
+      SidebarLogic.hideTransient();
+      expect(fakeEl.style.display).toBe("none");
+      expect(SidebarLogic._isTransient).toBe(false);
+    });
   });
 
   describe("updatePosition", () => {
