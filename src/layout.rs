@@ -623,6 +623,7 @@ mod tests {
                 file: PathBuf::from("src/cli.rs"),
                 line: 42,
                 symbols: vec![],
+                module_path: String::new(),
             }],
         };
         assert_eq!(edge.source_locations.len(), 1);

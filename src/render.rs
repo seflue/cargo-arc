@@ -460,6 +460,11 @@ fn format_source_locations_by_symbol(locs: &[SourceLocation]) -> Vec<SymbolUsage
         return Vec::new();
     }
 
+    let module_path = locs
+        .first()
+        .map(|l| l.module_path.clone())
+        .unwrap_or_default();
+
     // Invert: Symbol → Vec<(file, line)>
     let mut by_symbol: BTreeMap<String, Vec<(String, usize)>> = BTreeMap::new();
     let mut bare_locations: Vec<(String, usize)> = Vec::new();
@@ -491,6 +496,7 @@ fn format_source_locations_by_symbol(locs: &[SourceLocation]) -> Vec<SymbolUsage
         bare_locations.sort();
         groups.push(SymbolUsageGroup {
             symbol: String::new(),
+            module_path: module_path.clone(),
             locations: bare_locations
                 .into_iter()
                 .map(|(file, line)| UsageLocation { file, line })
@@ -502,6 +508,7 @@ fn format_source_locations_by_symbol(locs: &[SourceLocation]) -> Vec<SymbolUsage
     for (symbol, locations) in by_symbol {
         groups.push(SymbolUsageGroup {
             symbol,
+            module_path: module_path.clone(),
             locations: locations
                 .into_iter()
                 .map(|(file, line)| UsageLocation { file, line })
@@ -515,6 +522,7 @@ fn format_source_locations_by_symbol(locs: &[SourceLocation]) -> Vec<SymbolUsage
 /// A group of usage locations for a single symbol
 struct SymbolUsageGroup {
     symbol: String,
+    module_path: String,
     locations: Vec<UsageLocation>,
 }
 
@@ -1361,9 +1369,16 @@ fn generate_static_data(
                         file_escaped, loc.line
                     ));
                 }
+                let mp = escape_js_string(&group.module_path);
+                let module_path_js = if mp.is_empty() {
+                    "null".to_string()
+                } else {
+                    format!("\"{}\"", mp)
+                };
                 group_strs.push(format!(
-                    "{{ symbol: \"{}\", modulePath: null, locations: [{}] }}",
+                    "{{ symbol: \"{}\", modulePath: {}, locations: [{}] }}",
                     symbol_escaped,
+                    module_path_js,
                     loc_strs.join(", ")
                 ));
             }
@@ -2298,6 +2313,7 @@ mod tests {
                 file: PathBuf::from("src/a.rs"),
                 line: 5,
                 symbols: vec![],
+                module_path: String::new(),
             }],
         );
         let svg = render(&ir, &RenderConfig::default());
@@ -2363,6 +2379,7 @@ mod tests {
             file: PathBuf::from("src/cli.rs"),
             line: 7,
             symbols: vec![],
+            module_path: String::new(),
         }];
         let groups = format_source_locations_by_symbol(&locs);
         assert_eq!(groups.len(), 1);
@@ -2381,6 +2398,7 @@ mod tests {
             file: PathBuf::from("src/cli.rs"),
             line: 7,
             symbols: vec!["ModuleInfo".to_string()],
+            module_path: String::new(),
         }];
         let groups = format_source_locations_by_symbol(&locs);
         assert_eq!(groups.len(), 1);
@@ -2401,11 +2419,13 @@ mod tests {
                 file: PathBuf::from("src/cli.rs"),
                 line: 7,
                 symbols: vec!["ModuleInfo".to_string()],
+                module_path: String::new(),
             },
             SourceLocation {
                 file: PathBuf::from("src/render.rs"),
                 line: 12,
                 symbols: vec!["ModuleInfo".to_string()],
+                module_path: String::new(),
             },
         ];
         let groups = format_source_locations_by_symbol(&locs);
@@ -2429,6 +2449,7 @@ mod tests {
             file: PathBuf::from("src/cli.rs"),
             line: 7,
             symbols: vec!["ModuleInfo".to_string(), "analyze_module".to_string()],
+            module_path: String::new(),
         }];
         let groups = format_source_locations_by_symbol(&locs);
         assert_eq!(groups.len(), 2);
@@ -2450,11 +2471,13 @@ mod tests {
                 file: PathBuf::from("src/cli.rs"),
                 line: 7,
                 symbols: vec!["ModuleInfo".to_string(), "analyze_module".to_string()],
+                module_path: String::new(),
             },
             SourceLocation {
                 file: PathBuf::from("src/render.rs"),
                 line: 12,
                 symbols: vec!["ModuleInfo".to_string()],
+                module_path: String::new(),
             },
         ];
         let groups = format_source_locations_by_symbol(&locs);
@@ -2942,6 +2965,7 @@ mod tests {
                 file: PathBuf::from("src/a.rs"),
                 line: 5,
                 symbols: vec!["MyStruct".to_string()],
+                module_path: String::new(),
             }],
         );
 
@@ -3030,11 +3054,13 @@ mod tests {
                     file: PathBuf::from("src/a.rs"),
                     line: 5,
                     symbols: vec!["Symbol1".to_string()],
+                    module_path: String::new(),
                 },
                 SourceLocation {
                     file: PathBuf::from("src/b.rs"),
                     line: 10,
                     symbols: vec!["Symbol1".to_string()],
+                    module_path: String::new(),
                 },
             ],
         );
@@ -3154,6 +3180,7 @@ mod tests {
                 file: PathBuf::from("src/a.rs"),
                 line: 5,
                 symbols: vec!["Test\"Quote".to_string()],
+                module_path: String::new(),
             }],
         );
 
@@ -3504,6 +3531,7 @@ mod tests {
         // Test struct creation with empty locations
         let group = SymbolUsageGroup {
             symbol: "TestSymbol".to_string(),
+            module_path: String::new(),
             locations: vec![],
         };
         assert_eq!(group.symbol, "TestSymbol");
@@ -3512,6 +3540,7 @@ mod tests {
         // Test with populated locations
         let group_with_locs = SymbolUsageGroup {
             symbol: "AnotherSymbol".to_string(),
+            module_path: String::new(),
             locations: vec![
                 UsageLocation {
                     file: "src/main.rs".to_string(),
@@ -3538,21 +3567,25 @@ mod tests {
                 file: PathBuf::from("src/main.rs"),
                 line: 10,
                 symbols: vec!["Symbol1".to_string()],
+                module_path: String::new(),
             },
             SourceLocation {
                 file: PathBuf::from("src/lib.rs"),
                 line: 20,
                 symbols: vec!["Symbol1".to_string()],
+                module_path: String::new(),
             },
             SourceLocation {
                 file: PathBuf::from("src/util.rs"),
                 line: 30,
                 symbols: vec!["Symbol2".to_string()],
+                module_path: String::new(),
             },
             SourceLocation {
                 file: PathBuf::from("src/bare.rs"),
                 line: 40,
                 symbols: vec![], // Bare location
+                module_path: String::new(),
             },
         ];
 

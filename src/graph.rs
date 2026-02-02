@@ -16,6 +16,7 @@ pub struct SourceLocation {
     pub file: PathBuf,
     pub line: usize,
     pub symbols: Vec<String>,
+    pub module_path: String,
 }
 
 pub enum Edge {
@@ -90,6 +91,7 @@ pub fn build_graph(crates: &[CrateInfo], modules: &[ModuleTree]) -> ArcGraph {
 
             for (target, target_deps) in sorted_targets {
                 if let Some(&to_idx) = module_map.get(&target) {
+                    let module_path = target_deps[0].target_module.clone();
                     // Collect all symbols from deps at the same location, or create one SourceLocation per line
                     let mut locations_by_line: HashMap<(PathBuf, usize), Vec<String>> =
                         HashMap::new();
@@ -111,6 +113,7 @@ pub fn build_graph(crates: &[CrateInfo], modules: &[ModuleTree]) -> ArcGraph {
                             file,
                             line,
                             symbols,
+                            module_path: module_path.clone(),
                         })
                         .collect();
 
@@ -165,6 +168,7 @@ mod tests {
             file: PathBuf::from("src/cli.rs"),
             line: 42,
             symbols: vec![],
+            module_path: String::new(),
         };
         assert_eq!(loc.file, PathBuf::from("src/cli.rs"));
         assert_eq!(loc.line, 42);
@@ -176,6 +180,7 @@ mod tests {
             file: PathBuf::from("src/cli.rs"),
             line: 42,
             symbols: vec!["ModuleInfo".to_string()],
+            module_path: String::new(),
         };
         assert_eq!(loc.symbols.len(), 1);
         assert_eq!(loc.symbols[0], "ModuleInfo");
@@ -188,11 +193,13 @@ mod tests {
                 file: PathBuf::from("src/cli.rs"),
                 line: 5,
                 symbols: vec![],
+                module_path: String::new(),
             },
             SourceLocation {
                 file: PathBuf::from("src/cli.rs"),
                 line: 12,
                 symbols: vec![],
+                module_path: String::new(),
             },
         ]);
         if let Edge::ModuleDep(locs) = edge {

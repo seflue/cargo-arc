@@ -78,7 +78,10 @@ const SidebarLogic = {
         if (group.symbol) {
           html += `<div class="sidebar-symbol"${collapsed ? ' data-collapsed="true"' : ''}>`;
           html += `<span class="sidebar-toggle">${collapsed ? '&#x25B8;' : '&#x25BE;'}</span>`;
-          html += `${group.symbol}`;
+          if (group.modulePath) {
+            html += `<span class="sidebar-ns">${group.modulePath}::</span>`;
+          }
+          html += `<span class="sidebar-symbol-name">${group.symbol}</span>`;
           html += `<span class="sidebar-ref-count">${group.locations.length}</span>`;
           html += `</div>`;
         }

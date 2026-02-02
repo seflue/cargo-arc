@@ -20,8 +20,8 @@ globalThis.STATIC_DATA = {
       from: "crate_a",
       to: "crate_b",
       usages: [
-        { symbol: "ModuleInfo", modulePath: null, locations: [{ file: "src/cli.rs", line: 7 }, { file: "src/render.rs", line: 12 }] },
-        { symbol: "analyze", modulePath: null, locations: [{ file: "src/cli.rs", line: 7 }] },
+        { symbol: "ModuleInfo", modulePath: "graph", locations: [{ file: "src/cli.rs", line: 7 }, { file: "src/render.rs", line: 12 }] },
+        { symbol: "analyze", modulePath: "graph", locations: [{ file: "src/cli.rs", line: 7 }] },
       ],
     },
     "empty_arc": {
@@ -193,6 +193,36 @@ describe("SidebarLogic", () => {
       expect(html).toContain(":1");
       expect(html).toContain("sidebar-usage-group");
     });
+
+    test("renders namespace prefix when modulePath is set", () => {
+      const override = {
+        from: "a", to: "b",
+        usages: [
+          { symbol: "ModuleInfo", modulePath: "render::sidebar", locations: [{ file: "src/cli.rs", line: 7 }] },
+        ],
+      };
+      const html = SidebarLogic.buildContent("ns-id", override);
+      expect(html).toContain('<span class="sidebar-ns">render::sidebar::</span>');
+      expect(html).toContain('<span class="sidebar-symbol-name">ModuleInfo</span>');
+    });
+
+    test("omits namespace prefix when modulePath is null", () => {
+      const override = {
+        from: "a", to: "b",
+        usages: [
+          { symbol: "SomeType", modulePath: null, locations: [{ file: "src/lib.rs", line: 10 }] },
+        ],
+      };
+      const html = SidebarLogic.buildContent("no-ns-id", override);
+      expect(html).not.toContain("sidebar-ns");
+      expect(html).toContain('<span class="sidebar-symbol-name">SomeType</span>');
+    });
+
+    test("symbol name is wrapped in sidebar-symbol-name span", () => {
+      const html = SidebarLogic.buildContent("crate_a-crate_b");
+      expect(html).toContain('<span class="sidebar-symbol-name">ModuleInfo</span>');
+      expect(html).toContain('<span class="sidebar-symbol-name">analyze</span>');
+    });
   });
 
   describe("collapse defaults in buildContent", () => {
@@ -235,7 +265,7 @@ describe("SidebarLogic", () => {
         ],
       };
       const html = SidebarLogic.buildContent("test-id", override);
-      const symbolOrder = [...html.matchAll(/>([^<]+)<span class="sidebar-ref-count">/g)]
+      const symbolOrder = [...html.matchAll(/<span class="sidebar-symbol-name">([^<]+)<\/span><span class="sidebar-ref-count">/g)]
         .map(m => m[1]);
       expect(symbolOrder).toEqual(["Many", "Mid", "Few"]);
     });
