@@ -60,7 +60,7 @@ const SidebarLogic = {
     const toClass = (toNode ? `sidebar-node-${toNode.type} ` : '') + 'sidebar-node-to';
 
     let html = `<div class="sidebar-header">`;
-    html += `<span class="sidebar-title"><span class="${fromClass}">${fromName}</span> &#x2192; <span class="${toClass}">${toName}</span></span>`;
+    html += `<span class="sidebar-title"><span class="${fromClass}">${fromName}</span><span class="sidebar-arrow">&#x2192;</span><span class="${toClass}">${toName}</span></span>`;
     if (overrideData && overrideData.originalArcs) {
       html += `<span class="sidebar-badge-relations">${overrideData.originalArcs.length} relations</span>`;
     }
@@ -71,8 +71,9 @@ const SidebarLogic = {
     if (groups.length === 0) {
       html += `<div class="sidebar-usage-group">Cargo.toml dependency</div>`;
     } else {
-      for (const group of groups) {
-        const collapsed = group.locations.length >= 5;
+      const sorted = [...groups].sort((a, b) => b.locations.length - a.locations.length);
+      for (const group of sorted) {
+        const collapsed = false;
         html += `<div class="sidebar-usage-group">`;
         if (group.symbol) {
           html += `<div class="sidebar-symbol"${collapsed ? ' data-collapsed="true"' : ''}>`;

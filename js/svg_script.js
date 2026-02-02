@@ -11,6 +11,7 @@ if (typeof document !== 'undefined') {
   const ROW_HEIGHT = __ROW_HEIGHT__;
   const MARGIN = __MARGIN__;
   const TOOLBAR_HEIGHT = __TOOLBAR_HEIGHT__;
+  const TOGGLE_OFFSET = 14;
   const C = STATIC_DATA.classes;
 
   // === Arc weight scaling ===
@@ -624,6 +625,9 @@ if (typeof document !== 'undefined') {
       const toggle = DomAdapter.getCollapseToggle(nodeId);
       if (toggle) {
         toggle.setAttribute('y', currentY + height / 2 + 4);
+        const nodeX = parseFloat(node.getAttribute('x'));
+        const nodeW = parseFloat(node.getAttribute('width'));
+        toggle.setAttribute('x', nodeX + nodeW - TOGGLE_OFFSET);
       }
 
       // Update tree lines
@@ -752,8 +756,16 @@ if (typeof document !== 'undefined') {
     cleanupVirtualElements();
 
     const visibleNodes = DerivedState.deriveNodeVisibility(appState.collapsed, StaticData);
+    // Read current DOM widths for collapsed nodes whose boxes were expanded
+    const widthOverrides = new Map();
+    for (const nodeId of appState.collapsed) {
+      const rect = DomAdapter.getNode(nodeId);
+      if (rect) {
+        widthOverrides.set(nodeId, parseFloat(rect.getAttribute('width')));
+      }
+    }
     const currentPositions = DerivedState.computeCurrentPositions(
-      appState.collapsed, StaticData, MARGIN, TOOLBAR_HEIGHT, ROW_HEIGHT
+      appState.collapsed, StaticData, MARGIN, TOOLBAR_HEIGHT, ROW_HEIGHT, widthOverrides
     );
     const maxRight = DerivedState.computeMaxRight(currentPositions);
 
@@ -1025,13 +1037,24 @@ if (typeof document !== 'undefined') {
         const padding = 20;
         const neededWidth = textWidth + padding;
         const originalWidth = parseFloat(nodeRect.getAttribute('data-original-width'));
-        nodeRect.setAttribute('width', Math.max(originalWidth, neededWidth));
+        const newWidth = Math.max(originalWidth, neededWidth);
+        nodeRect.setAttribute('width', newWidth);
+        // Reposition toggle icon to right edge of expanded box
+        if (toggleIcon) {
+          const nodeX = parseFloat(nodeRect.getAttribute('x'));
+          toggleIcon.setAttribute('x', nodeX + newWidth - TOGGLE_OFFSET);
+        }
       }
     } else {
       countLabel.textContent = '';
       const originalWidth = nodeRect.getAttribute('data-original-width');
       if (originalWidth) {
         nodeRect.setAttribute('width', originalWidth);
+        // Restore toggle icon to original position
+        if (toggleIcon) {
+          const nodeX = parseFloat(nodeRect.getAttribute('x'));
+          toggleIcon.setAttribute('x', nodeX + parseFloat(originalWidth) - TOGGLE_OFFSET);
+        }
       }
     }
   }

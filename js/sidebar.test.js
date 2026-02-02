@@ -196,10 +196,15 @@ describe("SidebarLogic", () => {
   });
 
   describe("collapse defaults in buildContent", () => {
-    test("groups with >=5 locations start collapsed", () => {
+    test("all groups start expanded", () => {
       const override = {
         from: "a", to: "b",
         usages: [{
+          symbol: "SmallSymbol", modulePath: null,
+          locations: [
+            { file: "a.rs", line: 1 }, { file: "b.rs", line: 2 },
+          ],
+        }, {
           symbol: "BigSymbol", modulePath: null,
           locations: [
             { file: "a.rs", line: 1 }, { file: "b.rs", line: 2 },
@@ -209,27 +214,30 @@ describe("SidebarLogic", () => {
         }],
       };
       const html = SidebarLogic.buildContent("test-id", override);
-      expect(html).toContain('data-collapsed="true"');
-      expect(html).toContain('display:none');
-      // Toggle icon should be ▸ (collapsed)
-      expect(html).toContain("&#x25B8;");
-    });
-
-    test("groups with <5 locations start expanded", () => {
-      const override = {
-        from: "a", to: "b",
-        usages: [{
-          symbol: "SmallSymbol", modulePath: null,
-          locations: [
-            { file: "a.rs", line: 1 }, { file: "b.rs", line: 2 },
-          ],
-        }],
-      };
-      const html = SidebarLogic.buildContent("test-id", override);
       expect(html).not.toContain('data-collapsed="true"');
       expect(html).not.toContain('display:none');
-      // Toggle icon should be ▾ (expanded)
-      expect(html).toContain("&#x25BE;");
+      // Toggle icons should be ▾ (expanded)
+      const toggleMatches = html.match(/&#x25BE;/g);
+      expect(toggleMatches).toHaveLength(2);
+    });
+
+    test("groups sorted by location count descending", () => {
+      const override = {
+        from: "a", to: "b",
+        usages: [
+          { symbol: "Few", modulePath: null, locations: [{ file: "a.rs", line: 1 }] },
+          { symbol: "Many", modulePath: null, locations: [
+            { file: "a.rs", line: 1 }, { file: "b.rs", line: 2 }, { file: "c.rs", line: 3 },
+          ]},
+          { symbol: "Mid", modulePath: null, locations: [
+            { file: "a.rs", line: 1 }, { file: "b.rs", line: 2 },
+          ]},
+        ],
+      };
+      const html = SidebarLogic.buildContent("test-id", override);
+      const symbolOrder = [...html.matchAll(/>([^<]+)<span class="sidebar-ref-count">/g)]
+        .map(m => m[1]);
+      expect(symbolOrder).toEqual(["Many", "Mid", "Few"]);
     });
 
     test("toggle icon present on symbol headers", () => {

@@ -157,7 +157,7 @@ const DerivedState = {
    * @param {number} rowHeight - Height per row
    * @returns {Map<string, {x: number, y: number, width: number, height: number}>}
    */
-  computeCurrentPositions(collapsed, staticData, margin, toolbarHeight, rowHeight) {
+  computeCurrentPositions(collapsed, staticData, margin, toolbarHeight, rowHeight, widthOverrides) {
     const visibleNodes = this.deriveNodeVisibility(collapsed, staticData);
     const positions = new Map();
 
@@ -172,10 +172,12 @@ const DerivedState = {
     let currentY = margin + toolbarHeight;
     for (const nodeId of sortedIds) {
       const orig = staticData.getOriginalPosition(nodeId);
+      const width = (widthOverrides && widthOverrides.has(nodeId))
+        ? widthOverrides.get(nodeId) : orig.width;
       positions.set(nodeId, {
         x: orig.x,
         y: currentY,
-        width: orig.width,
+        width,
         height: orig.height
       });
       currentY += rowHeight;

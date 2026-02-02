@@ -669,14 +669,17 @@ fn calculate_canvas_size(
     let height =
         base_height + LAYOUT.toolbar.height + max_tooltip_height + LAYOUT.sidebar.shadow_padding();
 
-    // Width: max(box_right_edge) + arc_space + tooltip_width + margin
+    // Width: max(box_right_edge) + arc_space + tooltip_width + sidebar_width + margin
     let max_x = positioned
         .iter()
         .map(|p| p.x + p.width)
         .fold(0.0_f32, |a, b| a.max(b));
     // Use calculated max_arc_width, with a minimum buffer for short/no edges
     let arc_space = max_arc_width.max(LAYOUT.arc_min_space);
-    let width = max_x + arc_space + max_tooltip_width + config.margin;
+    // Reserve space for the sidebar (280px min-width + shadow padding) so it
+    // doesn't get clipped when the rightmost arc is selected.
+    let sidebar_space = 280.0 + LAYOUT.sidebar.shadow_padding();
+    let width = max_x + arc_space + max_tooltip_width + sidebar_space + config.margin;
     (width, height)
 }
 
@@ -1030,7 +1033,22 @@ fn build_css_rules() -> Vec<CssRule> {
         ),
         CssRule::new(
             &format!(".{}", c.sidebar.title),
-            &[("font-weight", "bold"), ("font-size", "13px")],
+            &[
+                ("font-weight", "bold"),
+                ("font-size", "13px"),
+                ("display", "flex"),
+                ("align-items", "center"),
+                ("gap", "6px"),
+            ],
+        ),
+        CssRule::new(
+            ".sidebar-arrow",
+            &[
+                ("color", GRAY_400),
+                ("font-family", "sans-serif"),
+                ("font-size", "16px"),
+                ("font-weight", "normal"),
+            ],
         ),
         CssRule::new(
             &format!(".{}", c.sidebar.close),
