@@ -267,6 +267,8 @@ const SidebarLogic = {
 
   /** Cached X position — set once in show(), reused by updatePosition(). */
   _cachedX: null,
+  /** Original SVG viewBox height — stored to restore after sidebar close. */
+  _originalViewBoxHeight: null,
 
   /**
    * Calculate sidebar x in SVG coordinates (right of widest visible arc).
@@ -391,6 +393,7 @@ const SidebarLogic = {
           .every(s => s.getAttribute("data-collapsed") === "true");
         allBtn.innerHTML = allCollapsed ? "+" : "\u2212";
       }
+      SidebarLogic.updatePosition();
     });
     const collapseAllBtn = root.querySelector(".sidebar-collapse-all");
     if (!collapseAllBtn) return;
@@ -415,6 +418,7 @@ const SidebarLogic = {
         }
       }
       collapseAllBtn.innerHTML = anyExpanded ? "+" : "\u2212";
+      SidebarLogic.updatePosition();
     });
   },
 
@@ -471,6 +475,16 @@ const SidebarLogic = {
     this._cachedX = null;
     this._isTransient = false;
     clearTimeout(this._debounceTimer);
+
+    // Restore original SVG canvas height
+    if (this._originalViewBoxHeight !== null) {
+      const svg = DomAdapter.getSvgRoot();
+      if (svg) {
+        svg.viewBox.baseVal.height = this._originalViewBoxHeight;
+        svg.setAttribute("height", String(this._originalViewBoxHeight));
+      }
+      this._originalViewBoxHeight = null;
+    }
   },
 
   /**
@@ -510,6 +524,21 @@ const SidebarLogic = {
     el.setAttribute("y", String(pos.y));
     el.setAttribute("height", String(pos.height + SIDEBAR_SHADOW_PAD));
     if (innerDiv) innerDiv.style.height = pos.height + 'px';
+
+    // Expand SVG canvas if sidebar extends beyond viewBox
+    const svg = DomAdapter.getSvgRoot();
+    if (svg) {
+      const vb = svg.viewBox.baseVal;
+      if (this._originalViewBoxHeight === null) {
+        this._originalViewBoxHeight = vb.height;
+      }
+      const sidebarBottom = pos.y + pos.height + SIDEBAR_SHADOW_PAD;
+      const needed = Math.max(this._originalViewBoxHeight, sidebarBottom);
+      if (vb.height !== needed) {
+        vb.height = needed;
+        svg.setAttribute("height", String(needed));
+      }
+    }
   },
 };
 

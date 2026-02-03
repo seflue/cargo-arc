@@ -305,6 +305,7 @@ describe("SidebarLogic", () => {
           return { left: 0, top: rectTop ?? 0, width: 1000, height: 800 };
         },
         viewBox: { baseVal: { width: 2000, height: 1600 } },
+        setAttribute() {},
       };
     }
 
@@ -386,6 +387,7 @@ describe("SidebarLogic", () => {
           return { left: 0, top: rectTop ?? 0, width: 1000, height: 800 };
         },
         viewBox: { baseVal: { width: 2000, height: 1600 } },
+        setAttribute() {},
       };
     }
 
@@ -476,6 +478,7 @@ describe("SidebarLogic", () => {
           return { left: 0, top: -300, width: 1000, height: 800 };
         },
         viewBox: { baseVal: { width: 2000, height: 1600 } },
+        setAttribute() {},
       };
       globalThis.DomAdapter = {
         getElementById(id) {
@@ -510,6 +513,7 @@ describe("SidebarLogic", () => {
           return { left: 0, top: 0, width: 1000, height: 800 };
         },
         viewBox: { baseVal: { width: 2000, height: 1600 } },
+        setAttribute() {},
       };
       // Mock an arc at x=1800, width=100 → right edge at 1900
       const fakeArc = { style: { display: '' }, getBBox() { return { x: 1800, width: 100 }; } };
@@ -545,6 +549,7 @@ describe("SidebarLogic", () => {
           return { left: 0, top: 0, width: 1000, height: 800 };
         },
         viewBox: { baseVal: { width: 2000, height: 1600 } },
+        setAttribute() {},
       };
       globalThis.DomAdapter = {
         getElementById(id) {
@@ -577,6 +582,7 @@ describe("SidebarLogic", () => {
           return { left: 0, top: 0, width: 1000, height: 800 };
         },
         viewBox: { baseVal: { width: 2000, height: 1600 } },
+        setAttribute() {},
       };
       globalThis.DomAdapter = {
         getElementById(id) {
@@ -608,6 +614,7 @@ describe("SidebarLogic", () => {
           return { left: 0, top: 0, width: 1000, height: 800 };
         },
         viewBox: { baseVal: { width: 2000, height: 1600 } },
+        setAttribute() {},
       };
       globalThis.DomAdapter = {
         getElementById(id) {
@@ -639,6 +646,7 @@ describe("SidebarLogic", () => {
           return { left: 0, top: 0, width: 1000, height: 800 };
         },
         viewBox: { baseVal: { width: 2000, height: 1600 } },
+        setAttribute() {},
       };
       globalThis.DomAdapter = {
         getElementById(id) {
@@ -786,6 +794,7 @@ describe("SidebarLogic", () => {
           return { left: 0, top: rectTop ?? 0, width: 1000, height: 800 };
         },
         viewBox: { baseVal: { width: 2000, height: 1600 } },
+        setAttribute() {},
       };
     }
 
