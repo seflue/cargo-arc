@@ -20,6 +20,17 @@ const TEST_STATIC_DATA = {
       { symbol: "use_crate", modulePath: null, locations: [
         { file: "lib.rs", line: 5 }, { file: "lib.rs", line: 10 }, { file: "lib.rs", line: 15 }
       ] }
+    ] },
+    "fn_1-crate": { from: "fn_1", to: "crate", usages: [
+      { symbol: "use_root", modulePath: null, locations: [
+        { file: "mod_a.rs", line: 20 }, { file: "mod_a.rs", line: 25 }
+      ] }
+    ] },
+    "crate-fn_1": { from: "crate", to: "fn_1", usages: [
+      { symbol: "call_fn1", modulePath: null, locations: [
+        { file: "lib.rs", line: 30 }, { file: "lib.rs", line: 35 }, { file: "lib.rs", line: 40 },
+        { file: "lib.rs", line: 45 }, { file: "lib.rs", line: 50 }
+      ] }
     ] }
   }
 };
@@ -116,6 +127,46 @@ describe("StaticData", () => {
 
     test("returns empty array for non-existent arc", () => {
       expect(StaticData.getArcUsages("nonexistent")).toEqual([]);
+    });
+  });
+
+  describe("getNodeRelations", () => {
+    test("groups arcs by direction with correct fields", () => {
+      // fn_1 has: outgoing fn_1-fn_2 (weight 1), fn_1-crate (weight 2)
+      //           incoming crate-fn_1 (weight 5)
+      const result = StaticData.getNodeRelations("fn_1");
+
+      expect(result.outgoing).toHaveLength(2);
+      expect(result.incoming).toHaveLength(1);
+
+      // Check incoming entry
+      expect(result.incoming[0].targetId).toBe("crate");
+      expect(result.incoming[0].weight).toBe(5);
+      expect(result.incoming[0].arcId).toBe("crate-fn_1");
+      expect(result.incoming[0].usages).toHaveLength(1);
+      expect(result.incoming[0].usages[0].symbol).toBe("call_fn1");
+    });
+
+    test("returns empty arrays for node without arcs", () => {
+      const result = StaticData.getNodeRelations("fn_2");
+      // fn_2 only has incoming fn_1-fn_2
+      expect(result.outgoing).toEqual([]);
+      expect(result.incoming).toHaveLength(1);
+
+      // A node with no arcs at all
+      const result2 = StaticData.getNodeRelations("nonexistent");
+      expect(result2.outgoing).toEqual([]);
+      expect(result2.incoming).toEqual([]);
+    });
+
+    test("sorts each direction by weight descending", () => {
+      // fn_1 outgoing: fn_1-crate (weight 2), fn_1-fn_2 (weight 1)
+      const result = StaticData.getNodeRelations("fn_1");
+
+      expect(result.outgoing[0].weight).toBe(2);
+      expect(result.outgoing[0].arcId).toBe("fn_1-crate");
+      expect(result.outgoing[1].weight).toBe(1);
+      expect(result.outgoing[1].arcId).toBe("fn_1-fn_2");
     });
   });
 });

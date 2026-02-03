@@ -115,6 +115,134 @@ const SidebarLogic = {
   },
 
   /**
+   * Build HTML content string for node-mode sidebar.
+   * Shows all incoming (dependents) and outgoing (dependencies) relations.
+   * @param {string} nodeId - The selected node ID
+   * @param {{ incoming: Array, outgoing: Array }} relations - From StaticData.getNodeRelations()
+   * @returns {string}
+   */
+  buildNodeContent(nodeId, relations) {
+    const node = StaticData.getNode(nodeId);
+    const nodeName = node ? node.name : nodeId;
+    const nodeType = node ? node.type : '';
+    const hasRelations = relations.incoming.length > 0 || relations.outgoing.length > 0;
+
+    // Header: Node name + Collapse-All ("+", since all L1 start collapsed) + Close
+    let html = `<div class="sidebar-header">`;
+    html += `<span class="sidebar-title"><span class="sidebar-node-${nodeType}">${nodeName}</span></span>`;
+    if (hasRelations) {
+      html += `<div class="sidebar-header-actions">`;
+      html += `<button class="sidebar-collapse-all">+</button>`;
+      html += `<button class="sidebar-close">&#x2715;</button>`;
+      html += `</div>`;
+    } else {
+      html += `<button class="sidebar-close">&#x2715;</button>`;
+    }
+    html += `</div>`;
+
+    html += `<div class="sidebar-content">`;
+
+    if (!hasRelations) {
+      html += `<div class="sidebar-usage-group">No relations</div>`;
+    } else {
+      // Incoming (Dependents) first — selected node on the right
+      for (const rel of relations.incoming) {
+        html += this._buildRelationSection(rel, nodeId, nodeName, nodeType, 'incoming');
+      }
+
+      // Divider only if both directions non-empty
+      if (relations.incoming.length > 0 && relations.outgoing.length > 0) {
+        html += `<hr class="sidebar-divider"/>`;
+      }
+
+      // Outgoing (Dependencies) — selected node on the left
+      for (const rel of relations.outgoing) {
+        html += this._buildRelationSection(rel, nodeId, nodeName, nodeType, 'outgoing');
+      }
+    }
+
+    html += `</div>`;
+
+    // Footer
+    const total = relations.incoming.length + relations.outgoing.length;
+    html += `<div class="sidebar-footer">${total} Relations \u00b7 ${relations.incoming.length} Dependents \u00b7 ${relations.outgoing.length} Dependencies</div>`;
+
+    return html;
+  },
+
+  /**
+   * Build a single Level-1 relation section (collapsed) with nested Level-2 usages.
+   * @param {Object} rel - Relation entry {targetId, weight, usages, arcId}
+   * @param {string} nodeId - Selected node ID
+   * @param {string} nodeName - Selected node display name
+   * @param {string} nodeType - Selected node type (crate/module)
+   * @param {'incoming'|'outgoing'} direction
+   * @returns {string}
+   */
+  _buildRelationSection(rel, nodeId, nodeName, nodeType, direction) {
+    const target = StaticData.getNode(rel.targetId);
+    const targetName = target ? target.name : rel.targetId;
+    const targetType = target ? target.type : '';
+
+    // Build From→To pair: direction determines which side the selected node is on
+    let fromName, fromType, fromSelected, toName, toType, toSelected;
+    if (direction === 'incoming') {
+      // source → [selected]: selected is on the right
+      fromName = targetName; fromType = targetType; fromSelected = false;
+      toName = nodeName; toType = nodeType; toSelected = true;
+    } else {
+      // [selected] → target: selected is on the left
+      fromName = nodeName; fromType = nodeType; fromSelected = true;
+      toName = targetName; toType = targetType; toSelected = false;
+    }
+
+    const fromClass = `sidebar-node-${fromType}${fromSelected ? ' sidebar-node-selected' : ''}`;
+    const toClass = `sidebar-node-${toType}${toSelected ? ' sidebar-node-selected' : ''}`;
+
+    let html = `<div class="sidebar-usage-group">`;
+    // Level 1 header (collapsed)
+    html += `<div class="sidebar-symbol" data-collapsed="true">`;
+    html += `<span class="sidebar-toggle">&#x25B8;</span>`;
+    html += `<span class="${fromClass} sidebar-symbol-name">${fromName}</span>`;
+    html += `<span class="sidebar-arrow">&#x2192;</span>`;
+    html += `<span class="${toClass} sidebar-symbol-name">${toName}</span>`;
+    html += `<span class="sidebar-ref-count">${rel.weight}</span>`;
+    html += `</div>`;
+
+    // Level 2 content (hidden because L1 is collapsed)
+    html += `<div class="sidebar-locations" style="display:none">`;
+    const groups = rel.usages || [];
+    if (groups.length === 0) {
+      html += `<div class="sidebar-usage-group">Cargo.toml dependency</div>`;
+    } else {
+      const sorted = [...groups].sort((a, b) => b.locations.length - a.locations.length);
+      for (const group of sorted) {
+        html += `<div class="sidebar-usage-group">`;
+        if (group.symbol) {
+          html += `<div class="sidebar-symbol">`;
+          html += `<span class="sidebar-toggle">&#x25BE;</span>`;
+          if (group.modulePath) {
+            html += `<span class="sidebar-ns">${group.modulePath}::</span>`;
+          }
+          html += `<span class="sidebar-symbol-name">${group.symbol}</span>`;
+          html += `<span class="sidebar-ref-count">${group.locations.length}</span>`;
+          html += `</div>`;
+        }
+        html += `<div class="sidebar-locations">`;
+        for (const loc of group.locations) {
+          html += `<div class="sidebar-location">${loc.file}<span class="sidebar-line-badge">:${loc.line}</span></div>`;
+        }
+        html += `</div>`;
+        html += `</div>`;
+      }
+    }
+    html += `</div>`;
+
+    html += `</div>`;
+    return html;
+  },
+
+  /**
    * Get the foreignObject element for the sidebar.
    * @returns {Element|null}
    */

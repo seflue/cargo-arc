@@ -9,7 +9,7 @@ const StaticData = {
   /**
    * Get node data by ID
    * @param {string} id - Node ID
-   * @returns {{ type: string, parent: string|null, x: number, y: number, hasChildren: boolean }|undefined}
+   * @returns {{ type: string, name: string, parent: string|null, x: number, y: number, width: number, height: number, hasChildren: boolean }|undefined}
    */
   getNode(id) {
     return STATIC_DATA.nodes[id];
@@ -110,6 +110,28 @@ const StaticData = {
       }
     }
     return parentMap;
+  },
+
+  /**
+   * Get all relations (incoming + outgoing arcs) for a node.
+   * @param {string} nodeId
+   * @returns {{ outgoing: Array<{targetId: string, weight: number, usages: Array, arcId: string}>, incoming: Array<{targetId: string, weight: number, usages: Array, arcId: string}> }}
+   */
+  getNodeRelations(nodeId) {
+    const outgoing = [];
+    const incoming = [];
+    for (const [arcId, arc] of Object.entries(STATIC_DATA.arcs)) {
+      if (arc.from === nodeId) {
+        const weight = (arc.usages || []).reduce((s, g) => s + g.locations.length, 0);
+        outgoing.push({ targetId: arc.to, weight, usages: arc.usages || [], arcId });
+      } else if (arc.to === nodeId) {
+        const weight = (arc.usages || []).reduce((s, g) => s + g.locations.length, 0);
+        incoming.push({ targetId: arc.from, weight, usages: arc.usages || [], arcId });
+      }
+    }
+    outgoing.sort((a, b) => b.weight - a.weight);
+    incoming.sort((a, b) => b.weight - a.weight);
+    return { outgoing, incoming };
   }
 };
 

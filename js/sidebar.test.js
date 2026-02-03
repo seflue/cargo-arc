@@ -14,6 +14,8 @@ globalThis.STATIC_DATA = {
     "crate_b": { type: "crate", name: "crate_b", parent: null, x: 0, y: 0, width: 100, height: 30, hasChildren: false },
     "x": { type: "module", name: "x", parent: "crate_a", x: 0, y: 0, width: 100, height: 30, hasChildren: false },
     "y": { type: "module", name: "y", parent: "crate_b", x: 0, y: 0, width: 100, height: 30, hasChildren: false },
+    "mod_render": { type: "module", name: "render", parent: "crate_a", x: 0, y: 0, width: 100, height: 30, hasChildren: false },
+    "mod_cli": { type: "module", name: "cli", parent: "crate_a", x: 0, y: 0, width: 100, height: 30, hasChildren: false },
   },
   arcs: {
     "crate_a-crate_b": {
@@ -772,6 +774,134 @@ describe("SidebarLogic", () => {
       };
       // Should not throw
       expect(() => SidebarLogic._setupCollapseHandlers(root)).not.toThrow();
+    });
+  });
+
+  describe("buildNodeContent", () => {
+    // Helper: relations with 2 incoming + 1 outgoing for crate_a
+    function makeRelations() {
+      return {
+        incoming: [
+          {
+            targetId: "mod_render", weight: 5, arcId: "mod_render-crate_a",
+            usages: [
+              { symbol: "Config", modulePath: "config", locations: [{ file: "src/render.rs", line: 10 }, { file: "src/render.rs", line: 20 }, { file: "src/render.rs", line: 30 }] },
+              { symbol: "parse", modulePath: null, locations: [{ file: "src/render.rs", line: 40 }, { file: "src/render.rs", line: 50 }] },
+            ],
+          },
+          {
+            targetId: "mod_cli", weight: 3, arcId: "mod_cli-crate_a",
+            usages: [
+              { symbol: "run", modulePath: "cli", locations: [{ file: "src/cli.rs", line: 5 }, { file: "src/cli.rs", line: 15 }, { file: "src/cli.rs", line: 25 }] },
+            ],
+          },
+        ],
+        outgoing: [
+          {
+            targetId: "crate_b", weight: 2, arcId: "crate_a-crate_b",
+            usages: [
+              { symbol: "ModuleInfo", modulePath: "graph", locations: [{ file: "src/lib.rs", line: 7 }, { file: "src/lib.rs", line: 12 }] },
+            ],
+          },
+        ],
+      };
+    }
+
+    test("2 incoming + 1 outgoing renders correct HTML structure", () => {
+      const html = SidebarLogic.buildNodeContent("crate_a", makeRelations());
+      expect(html).toContain("sidebar-header");
+      expect(html).toContain("sidebar-content");
+      expect(html).toContain("sidebar-footer");
+      // 3 usage-group Level-1 sections (2 incoming + 1 outgoing)
+      const level1Matches = html.match(/data-collapsed="true"/g);
+      expect(level1Matches).toHaveLength(3);
+    });
+
+    test("incoming: selected node is on the right in From→To pair", () => {
+      const html = SidebarLogic.buildNodeContent("crate_a", makeRelations());
+      // For incoming: [source] → [selected]
+      // render → crate_a (incoming from mod_render)
+      const renderPairMatch = html.match(/render[\s\S]*?sidebar-arrow[\s\S]*?crate_a/);
+      expect(renderPairMatch).not.toBeNull();
+    });
+
+    test("outgoing: selected node is on the left in From→To pair", () => {
+      const html = SidebarLogic.buildNodeContent("crate_a", makeRelations());
+      // For outgoing: [selected] → [target]
+      // crate_a → crate_b
+      const outPairMatch = html.match(/sidebar-node-selected[\s\S]*?sidebar-arrow[\s\S]*?crate_b/);
+      expect(outPairMatch).not.toBeNull();
+    });
+
+    test("selected node has sidebar-node-selected class", () => {
+      const html = SidebarLogic.buildNodeContent("crate_a", makeRelations());
+      expect(html).toContain("sidebar-node-selected");
+      // Should appear on the selected node badge (crate_a is type crate)
+      expect(html).toContain("sidebar-node-crate sidebar-node-selected");
+    });
+
+    test("incoming sections appear before outgoing", () => {
+      const html = SidebarLogic.buildNodeContent("crate_a", makeRelations());
+      const renderIdx = html.indexOf("render");
+      const crate_bIdx = html.indexOf("crate_b");
+      expect(renderIdx).toBeLessThan(crate_bIdx);
+    });
+
+    test("only incoming: no outgoing block, no divider", () => {
+      const relations = { incoming: makeRelations().incoming, outgoing: [] };
+      const html = SidebarLogic.buildNodeContent("crate_a", relations);
+      expect(html).not.toContain("sidebar-divider");
+      // Should not contain any outgoing target
+      expect(html).not.toContain("crate_b");
+    });
+
+    test("only outgoing: no incoming block", () => {
+      const relations = { incoming: [], outgoing: makeRelations().outgoing };
+      const html = SidebarLogic.buildNodeContent("crate_a", relations);
+      expect(html).not.toContain("sidebar-divider");
+      expect(html).not.toContain("render");
+      expect(html).toContain("crate_b");
+    });
+
+    test("no relations: shows placeholder", () => {
+      const html = SidebarLogic.buildNodeContent("crate_a", { incoming: [], outgoing: [] });
+      expect(html).toContain("No relations");
+    });
+
+    test("Level 1 collapsed, Level 2 expanded", () => {
+      const html = SidebarLogic.buildNodeContent("crate_a", makeRelations());
+      // Level 1: all data-collapsed="true"
+      const collapsedMatches = html.match(/data-collapsed="true"/g);
+      expect(collapsedMatches).toHaveLength(3);
+      // Level 2 symbols should NOT have data-collapsed
+      // Level 2 toggle icons should be ▾ (expanded)
+      expect(html).toContain("&#x25BE;");
+    });
+
+    test("footer shows correct counts", () => {
+      const html = SidebarLogic.buildNodeContent("crate_a", makeRelations());
+      // 3 total relations (2 incoming + 1 outgoing)
+      // 2 Dependents (incoming), 1 Dependencies (outgoing)
+      expect(html).toContain("3 Relations");
+      expect(html).toContain("2 Dependents");
+      expect(html).toContain("1 Dependencies");
+    });
+
+    test("empty usages shows Cargo.toml dependency", () => {
+      const relations = {
+        incoming: [{ targetId: "mod_render", weight: 0, arcId: "mod_render-crate_a", usages: [] }],
+        outgoing: [],
+      };
+      const html = SidebarLogic.buildNodeContent("crate_a", relations);
+      expect(html).toContain("Cargo.toml dependency");
+    });
+
+    test("Level 2 sorted by location count descending", () => {
+      const html = SidebarLogic.buildNodeContent("crate_a", makeRelations());
+      // First incoming relation (mod_render, weight 5): Config (3 locs) before parse (2 locs)
+      const configIdx = html.indexOf("Config");
+      const parseIdx = html.indexOf("parse");
+      expect(configIdx).toBeLessThan(parseIdx);
     });
   });
 });

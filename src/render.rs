@@ -1131,6 +1131,20 @@ fn build_css_rules() -> Vec<CssRule> {
             ".sidebar-node-to",
             &[("border", &format!("2px solid {}", GREEN))],
         ),
+        CssRule::new(
+            ".sidebar-node-crate.sidebar-node-selected",
+            &[
+                ("background", BLUE_300),
+                ("border", &format!("2px solid {}", BLUE)),
+            ],
+        ),
+        CssRule::new(
+            ".sidebar-node-module.sidebar-node-selected",
+            &[
+                ("background", ORANGE_300),
+                ("border", &format!("2px solid {}", ORANGE)),
+            ],
+        ),
         // Transient sidebar mode (hover preview): hide close button and collapse toggles
         CssRule::new(
             &format!(".{}.sidebar-transient .{}", c.sidebar.root, c.sidebar.close),
@@ -3355,6 +3369,45 @@ mod tests {
         assert!(
             css.contains(".sidebar-footer"),
             "CSS should contain .sidebar-footer selector"
+        );
+    }
+
+    #[test]
+    fn test_css_contains_sidebar_node_selected() {
+        let css = render_styles();
+        assert!(
+            css.contains(".sidebar-node-crate.sidebar-node-selected"),
+            "CSS should contain .sidebar-node-crate.sidebar-node-selected"
+        );
+        assert!(
+            css.contains(".sidebar-node-module.sidebar-node-selected"),
+            "CSS should contain .sidebar-node-module.sidebar-node-selected"
+        );
+        // Crate selected: BLUE_300 background + BLUE border
+        let crate_rule_idx = css
+            .find(".sidebar-node-crate.sidebar-node-selected")
+            .unwrap();
+        let crate_section = &css[crate_rule_idx..crate_rule_idx + 200];
+        assert!(
+            crate_section.contains(BLUE_300),
+            "Crate selected should use BLUE_300 background"
+        );
+        assert!(
+            crate_section.contains(BLUE),
+            "Crate selected should use BLUE border"
+        );
+        // Module selected: ORANGE_300 background + ORANGE border
+        let module_rule_idx = css
+            .find(".sidebar-node-module.sidebar-node-selected")
+            .unwrap();
+        let module_section = &css[module_rule_idx..module_rule_idx + 200];
+        assert!(
+            module_section.contains(ORANGE_300),
+            "Module selected should use ORANGE_300 background"
+        );
+        assert!(
+            module_section.contains(ORANGE),
+            "Module selected should use ORANGE border"
         );
     }
 

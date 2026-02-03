@@ -461,6 +461,12 @@ mod tests {
                 config_keys: vec![],
             },
             JsModuleInfo {
+                name: "SidebarLogic".into(),
+                file_name: "sidebar.js".into(),
+                deps: vec!["StaticData".into(), "DomAdapter".into(), "Selectors".into()],
+                config_keys: vec![],
+            },
+            JsModuleInfo {
                 name: "SvgScript".into(),
                 file_name: "svg_script.js".into(),
                 deps: vec![
@@ -475,6 +481,7 @@ mod tests {
                     "HighlightLogic".into(),
                     "VirtualEdgeLogic".into(),
                     "TextMetrics".into(),
+                    "SidebarLogic".into(),
                 ],
                 config_keys: vec![
                     "ROW_HEIGHT".into(),
@@ -722,6 +729,12 @@ mod tests {
                 config_keys: vec![],
             },
             JsModuleInfo {
+                name: "SidebarLogic".into(),
+                file_name: "sidebar.js".into(),
+                deps: vec!["StaticData".into(), "DomAdapter".into(), "Selectors".into()],
+                config_keys: vec![],
+            },
+            JsModuleInfo {
                 name: "SvgScript".into(),
                 file_name: "svg_script.js".into(),
                 deps: vec![
@@ -736,6 +749,7 @@ mod tests {
                     "HighlightLogic".into(),
                     "VirtualEdgeLogic".into(),
                     "TextMetrics".into(),
+                    "SidebarLogic".into(),
                 ],
                 config_keys: vec![
                     "ROW_HEIGHT".into(),
@@ -756,6 +770,7 @@ mod tests {
             include_str!("../js/derived_state.js"),
             include_str!("../js/highlight_logic.js"),
             include_str!("../js/virtual_edge_logic.js"),
+            include_str!("../js/sidebar.js"),
             include_str!("../js/svg_script.js"),
         ];
         validate_source_deps(&modules, &sources); // no panic — all deps correctly declared
