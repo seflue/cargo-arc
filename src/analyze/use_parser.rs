@@ -96,6 +96,7 @@ fn parse_workspace_import(
     source_file: &Path,
     line_num: usize,
     all_module_paths: &HashMap<String, HashSet<String>>,
+    crate_exports: &HashMap<String, HashSet<String>>,
 ) -> Option<DependencyRef> {
     let parts: Vec<&str> = path.split("::").collect();
     let crate_name = parts.first()?.trim();
@@ -115,6 +116,23 @@ fn parse_workspace_import(
         .get(&target_crate_name)
         .unwrap_or(&empty_set);
     let (target_module, prefix_len) = find_longest_module_prefix(&parts[1..], module_paths);
+
+    // Entry-point detection: if the resolved target_module is not a known module
+    // and the first segment after the crate name is a known export, treat it as
+    // an entry-point dependency (target_module = "").
+    if !module_paths.contains(&target_module)
+        && crate_exports
+            .get(&target_crate_name)
+            .is_some_and(|e| e.contains(module_segment))
+    {
+        return Some(DependencyRef {
+            target_crate: crate_name.to_string(),
+            target_module: String::new(),
+            target_item: Some(module_segment.to_string()),
+            source_file: source_file.to_path_buf(),
+            line: line_num,
+        });
+    }
 
     Some(DependencyRef {
         target_crate: crate_name.to_string(),
@@ -142,6 +160,7 @@ fn process_use_statement(
     workspace_crates: &HashSet<String>,
     source_file: &Path,
     all_module_paths: &HashMap<String, HashSet<String>>,
+    crate_exports: &HashMap<String, HashSet<String>>,
 ) -> Option<DependencyRef> {
     let path = extract_use_path(line)?;
 
@@ -153,6 +172,7 @@ fn process_use_statement(
                 source_file,
                 line_num,
                 all_module_paths,
+                crate_exports,
             )
         },
     )
@@ -172,6 +192,7 @@ fn process_use_statement_multi(
     workspace_crates: &HashSet<String>,
     source_file: &Path,
     all_module_paths: &HashMap<String, HashSet<String>>,
+    crate_exports: &HashMap<String, HashSet<String>>,
 ) -> Vec<DependencyRef> {
     let path = match extract_use_path(line) {
         Some(p) => p,
@@ -191,9 +212,13 @@ fn process_use_statement_multi(
             .collect();
 
         // Parse base path to get crate and module
-        if let Some((target_crate, target_module)) =
-            parse_base_path(base_path, current_crate, workspace_crates, all_module_paths)
-        {
+        if let Some((target_crate, target_module)) = parse_base_path(
+            base_path,
+            current_crate,
+            workspace_crates,
+            all_module_paths,
+            crate_exports,
+        ) {
             return symbols
                 .into_iter()
                 .map(|sym| DependencyRef {
@@ -211,9 +236,13 @@ fn process_use_statement_multi(
     // Check for glob import: `use path::*`
     if path.ends_with("::*") {
         let base_path = path.trim_end_matches("::*");
-        if let Some((target_crate, target_module)) =
-            parse_base_path(base_path, current_crate, workspace_crates, all_module_paths)
-        {
+        if let Some((target_crate, target_module)) = parse_base_path(
+            base_path,
+            current_crate,
+            workspace_crates,
+            all_module_paths,
+            crate_exports,
+        ) {
             return vec![DependencyRef {
                 target_crate,
                 target_module,
@@ -233,6 +262,7 @@ fn process_use_statement_multi(
         workspace_crates,
         source_file,
         all_module_paths,
+        crate_exports,
     ) {
         return vec![dep];
     }
@@ -246,6 +276,7 @@ fn parse_base_path(
     current_crate: &str,
     workspace_crates: &HashSet<String>,
     all_module_paths: &HashMap<String, HashSet<String>>,
+    crate_exports: &HashMap<String, HashSet<String>>,
 ) -> Option<(String, String)> {
     let empty_set = HashSet::new();
 
@@ -262,8 +293,18 @@ fn parse_base_path(
         return Some((normalize_crate_name(current_crate), module));
     }
 
-    // Handle workspace crate: `other_crate::module`
+    // Handle workspace crate imports
     let parts: Vec<&str> = base_path.split("::").collect();
+
+    // Crate-root imports: `use other_crate::{Foo, Bar}` or `use other_crate::*`
+    // base_path is just "other_crate" (no :: after crate name)
+    if parts.len() == 1 {
+        let segment = parts[0].trim();
+        if is_workspace_member(segment, workspace_crates) {
+            return Some((segment.to_string(), String::new()));
+        }
+    }
+
     if parts.len() >= 2 {
         let first_segment = parts[0].trim();
         let is_workspace_crate = is_workspace_member(first_segment, workspace_crates);
@@ -272,6 +313,19 @@ fn parse_base_path(
             let target_crate = normalize_crate_name(first_segment);
             let module_paths = all_module_paths.get(&target_crate).unwrap_or(&empty_set);
             let (module, _prefix_len) = find_longest_module_prefix(&parts[1..], module_paths);
+
+            // Entry-point detection: if resolved module is not a known module
+            // and the segment is a known export, return entry-point (empty module)
+            if !module_paths.contains(&module) {
+                let segment = parts[1].trim();
+                if crate_exports
+                    .get(&target_crate)
+                    .is_some_and(|e| e.contains(segment))
+                {
+                    return Some((first_segment.to_string(), String::new()));
+                }
+            }
+
             return Some((first_segment.to_string(), module));
         }
     }
@@ -292,6 +346,7 @@ pub(crate) fn parse_workspace_dependencies(
     workspace_crates: &HashSet<String>,
     source_file: &Path,
     all_module_paths: &HashMap<String, HashSet<String>>,
+    crate_exports: &HashMap<String, HashSet<String>>,
 ) -> Vec<DependencyRef> {
     let mut deps: Vec<DependencyRef> = Vec::new();
     let mut seen_targets: HashSet<String> = HashSet::new();
@@ -305,6 +360,7 @@ pub(crate) fn parse_workspace_dependencies(
             workspace_crates,
             source_file,
             all_module_paths,
+            crate_exports,
         ) {
             let target_key = dep.full_target();
             if !seen_targets.contains(&target_key) {
@@ -343,6 +399,7 @@ mod tests {
                 &ws,
                 Path::new("src/cli.rs"),
                 &mp,
+                &HashMap::new(),
             );
             let dep = dep.expect("should parse crate-local import");
             assert_eq!(dep.target_crate, "my_crate");
@@ -361,6 +418,7 @@ mod tests {
                 &ws,
                 Path::new("src/lib.rs"),
                 &mp,
+                &HashMap::new(),
             );
             let dep = dep.expect("should parse crate-local module import");
             assert_eq!(dep.target_crate, "my_crate");
@@ -380,6 +438,7 @@ mod tests {
                 &ws,
                 Path::new("src/lib.rs"),
                 &mp,
+                &HashMap::new(),
             );
             let dep = dep.expect("should parse workspace crate import");
             assert_eq!(dep.target_crate, "other_crate");
@@ -397,6 +456,7 @@ mod tests {
                 &ws,
                 Path::new("src/main.rs"),
                 &mp,
+                &HashMap::new(),
             );
             let dep = dep.expect("should parse workspace crate with hyphen");
             assert_eq!(dep.target_crate, "my_lib");
@@ -414,6 +474,7 @@ mod tests {
                 &ws,
                 Path::new("src/lib.rs"),
                 &mp,
+                &HashMap::new(),
             );
             assert!(dep.is_none(), "self:: imports should be ignored");
         }
@@ -429,6 +490,7 @@ mod tests {
                 &ws,
                 Path::new("src/sub/mod.rs"),
                 &mp,
+                &HashMap::new(),
             );
             assert!(dep.is_none(), "super:: imports should be ignored");
         }
@@ -444,6 +506,7 @@ mod tests {
                 &ws,
                 Path::new("src/lib.rs"),
                 &mp,
+                &HashMap::new(),
             );
             assert!(dep.is_none(), "external crate imports should be filtered");
         }
@@ -459,6 +522,7 @@ mod tests {
                 &ws,
                 Path::new("src/lib.rs"),
                 &mp,
+                &HashMap::new(),
             );
             assert!(dep.is_none(), "std imports should be filtered");
         }
@@ -527,6 +591,7 @@ mod tests {
                 &ws,
                 Path::new("src/cli.rs"),
                 &mp,
+                &HashMap::new(),
             );
             let dep = dep.expect("should parse crate-local submodule import");
             assert_eq!(dep.target_module, "analyze::use_parser");
@@ -547,6 +612,7 @@ mod tests {
                 &ws,
                 Path::new("src/lib.rs"),
                 &mp,
+                &HashMap::new(),
             );
             let dep = dep.expect("should parse workspace submodule import");
             assert_eq!(dep.target_module, "foo::bar");
@@ -567,6 +633,7 @@ mod tests {
                 &ws,
                 Path::new("src/lib.rs"),
                 &mp,
+                &HashMap::new(),
             );
             let dep = dep.expect("should parse deep cross-crate import");
             assert_eq!(dep.target_module, "sub::deep");
@@ -584,6 +651,7 @@ mod tests {
                 &ws,
                 Path::new("src/lib.rs"),
                 &mp,
+                &HashMap::new(),
             );
             let dep = dep.expect("should parse with fallback");
             assert_eq!(dep.target_module, "foo");
@@ -597,7 +665,13 @@ mod tests {
                 HashSet::from(["analyze::use_parser".into()]),
             )]);
             let ws: HashSet<String> = HashSet::new();
-            let result = parse_base_path("crate::analyze::use_parser", "my_crate", &ws, &mp);
+            let result = parse_base_path(
+                "crate::analyze::use_parser",
+                "my_crate",
+                &ws,
+                &mp,
+                &HashMap::new(),
+            );
             assert_eq!(
                 result,
                 Some(("my_crate".to_string(), "analyze::use_parser".to_string()))
@@ -611,7 +685,13 @@ mod tests {
                 "other_crate".to_string(),
                 HashSet::from(["foo::bar".into()]),
             )]);
-            let result = parse_base_path("other_crate::foo::bar", "my_crate", &ws, &mp);
+            let result = parse_base_path(
+                "other_crate::foo::bar",
+                "my_crate",
+                &ws,
+                &mp,
+                &HashMap::new(),
+            );
             assert_eq!(
                 result,
                 Some(("other_crate".to_string(), "foo::bar".to_string()))
@@ -622,7 +702,13 @@ mod tests {
         fn test_parse_base_path_cross_crate_no_paths() {
             let ws: HashSet<String> = HashSet::from(["other_crate".to_string()]);
             let mp: HashMap<String, HashSet<String>> = HashMap::new();
-            let result = parse_base_path("other_crate::foo::bar", "my_crate", &ws, &mp);
+            let result = parse_base_path(
+                "other_crate::foo::bar",
+                "my_crate",
+                &ws,
+                &mp,
+                &HashMap::new(),
+            );
             assert_eq!(result, Some(("other_crate".to_string(), "foo".to_string())));
         }
 
@@ -630,7 +716,7 @@ mod tests {
         fn test_parse_base_path_glob_stays_parent() {
             let mp: HashMap<String, HashSet<String>> = HashMap::new();
             let ws: HashSet<String> = HashSet::new();
-            let result = parse_base_path("crate::analyze", "my_crate", &ws, &mp);
+            let result = parse_base_path("crate::analyze", "my_crate", &ws, &mp, &HashMap::new());
             assert_eq!(
                 result,
                 Some(("my_crate".to_string(), "analyze".to_string()))
@@ -651,6 +737,7 @@ mod tests {
                 &ws,
                 Path::new("src/cli.rs"),
                 &mp,
+                &HashMap::new(),
             );
             assert_eq!(deps.len(), 2, "should return 2 deps: {:?}", deps);
             assert_eq!(deps[0].target_module, "analyze::use_parser");
@@ -678,8 +765,14 @@ use std::collections::HashMap;
 "#;
             let ws: HashSet<String> = HashSet::from(["my_crate".into(), "other_crate".into()]);
             let mp: HashMap<String, HashSet<String>> = HashMap::new();
-            let deps =
-                parse_workspace_dependencies(source, "my_crate", &ws, Path::new("src/lib.rs"), &mp);
+            let deps = parse_workspace_dependencies(
+                source,
+                "my_crate",
+                &ws,
+                Path::new("src/lib.rs"),
+                &mp,
+                &HashMap::new(),
+            );
 
             assert_eq!(deps.len(), 2, "found: {:?}", deps);
             assert!(
@@ -701,8 +794,14 @@ use crate::graph;
 "#;
             let ws: HashSet<String> = HashSet::new();
             let mp: HashMap<String, HashSet<String>> = HashMap::new();
-            let deps =
-                parse_workspace_dependencies(source, "my_crate", &ws, Path::new("src/cli.rs"), &mp);
+            let deps = parse_workspace_dependencies(
+                source,
+                "my_crate",
+                &ws,
+                Path::new("src/cli.rs"),
+                &mp,
+                &HashMap::new(),
+            );
 
             assert_eq!(deps.len(), 3, "should keep distinct symbols: {:?}", deps);
             assert!(
@@ -727,6 +826,7 @@ use crate::graph;
                 &ws,
                 Path::new("src/cli.rs"),
                 &mp,
+                &HashMap::new(),
             );
             assert_eq!(deps.len(), 2, "should return 2 deps: {:?}", deps);
             assert!(
@@ -750,10 +850,124 @@ use crate::graph;
                 &ws,
                 Path::new("src/cli.rs"),
                 &mp,
+                &HashMap::new(),
             );
             assert_eq!(deps.len(), 1, "glob should return 1 dep: {:?}", deps);
             assert_eq!(deps[0].target_item, Some("*".to_string()));
             assert_eq!(deps[0].target_module, "analyze");
+        }
+    }
+
+    mod entry_point_tests {
+        use super::*;
+
+        #[test]
+        fn test_entry_point_export_detected() {
+            let ws: HashSet<String> = HashSet::from(["other_crate".to_string()]);
+            let mp: HashMap<String, HashSet<String>> =
+                HashMap::from([("other_crate".to_string(), HashSet::from(["sub_mod".into()]))]);
+            let exports: HashMap<String, HashSet<String>> = HashMap::from([(
+                "other_crate".to_string(),
+                HashSet::from(["MyStruct".into()]),
+            )]);
+            let dep = process_use_statement(
+                "use other_crate::MyStruct;",
+                1,
+                "my_crate",
+                &ws,
+                Path::new("src/lib.rs"),
+                &mp,
+                &exports,
+            );
+            let dep = dep.expect("should detect entry-point export");
+            assert_eq!(dep.target_crate, "other_crate");
+            assert_eq!(dep.target_module, "");
+            assert_eq!(dep.target_item, Some("MyStruct".to_string()));
+        }
+
+        #[test]
+        fn test_non_export_stays_fallback() {
+            let ws: HashSet<String> = HashSet::from(["other_crate".to_string()]);
+            let mp: HashMap<String, HashSet<String>> =
+                HashMap::from([("other_crate".to_string(), HashSet::from(["sub_mod".into()]))]);
+            let exports: HashMap<String, HashSet<String>> =
+                HashMap::from([("other_crate".to_string(), HashSet::new())]);
+            let dep = process_use_statement(
+                "use other_crate::Unknown;",
+                1,
+                "my_crate",
+                &ws,
+                Path::new("src/lib.rs"),
+                &mp,
+                &exports,
+            );
+            let dep = dep.expect("should fall back to module interpretation");
+            assert_eq!(dep.target_module, "Unknown");
+            assert!(dep.target_item.is_none());
+        }
+
+        #[test]
+        fn test_real_module_not_affected() {
+            let ws: HashSet<String> = HashSet::from(["other_crate".to_string()]);
+            let mp: HashMap<String, HashSet<String>> =
+                HashMap::from([("other_crate".to_string(), HashSet::from(["sub_mod".into()]))]);
+            let exports: HashMap<String, HashSet<String>> =
+                HashMap::from([("other_crate".to_string(), HashSet::from(["sub_mod".into()]))]);
+            let dep = process_use_statement(
+                "use other_crate::sub_mod::Foo;",
+                1,
+                "my_crate",
+                &ws,
+                Path::new("src/lib.rs"),
+                &mp,
+                &exports,
+            );
+            let dep = dep.expect("real module should take priority");
+            assert_eq!(dep.target_module, "sub_mod");
+            assert_eq!(dep.target_item, Some("Foo".to_string()));
+        }
+
+        #[test]
+        fn test_entry_point_multi_import() {
+            let ws: HashSet<String> = HashSet::from(["other_crate".to_string()]);
+            let mp: HashMap<String, HashSet<String>> = HashMap::new();
+            let deps = process_use_statement_multi(
+                "use other_crate::{Foo, Bar};",
+                1,
+                "my_crate",
+                &ws,
+                Path::new("src/lib.rs"),
+                &mp,
+                &HashMap::new(),
+            );
+            assert_eq!(deps.len(), 2, "should return 2 deps: {:?}", deps);
+            assert!(deps.iter().all(|d| d.target_module.is_empty()));
+            assert!(
+                deps.iter()
+                    .any(|d| d.target_item == Some("Foo".to_string()))
+            );
+            assert!(
+                deps.iter()
+                    .any(|d| d.target_item == Some("Bar".to_string()))
+            );
+        }
+
+        #[test]
+        fn test_entry_point_glob_import() {
+            let ws: HashSet<String> = HashSet::from(["other_crate".to_string()]);
+            let mp: HashMap<String, HashSet<String>> = HashMap::new();
+            let deps = process_use_statement_multi(
+                "use other_crate::*;",
+                1,
+                "my_crate",
+                &ws,
+                Path::new("src/lib.rs"),
+                &mp,
+                &HashMap::new(),
+            );
+            assert_eq!(deps.len(), 1, "glob should return 1 dep: {:?}", deps);
+            assert_eq!(deps[0].target_module, "");
+            assert_eq!(deps[0].target_item, Some("*".to_string()));
         }
     }
 }

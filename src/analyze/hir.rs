@@ -341,6 +341,7 @@ fn extract_module_dependencies(
         workspace_crates,
         &source_file,
         all_module_paths,
+        &HashMap::new(),
     )
 }
 

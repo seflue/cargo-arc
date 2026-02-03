@@ -188,6 +188,7 @@ pub(crate) fn collect_syn_module_paths(
 
 /// Extract the leaf name(s) from a `UseTree`.
 /// Handles simple paths, aliases, and groups — but NOT globs.
+#[allow(dead_code)] // Used in Phase 3 when crate_exports is wired through
 fn collect_use_tree_names(tree: &syn::UseTree, names: &mut HashSet<String>) {
     match tree {
         syn::UseTree::Path(p) => collect_use_tree_names(&p.tree, names),
@@ -207,6 +208,7 @@ fn collect_use_tree_names(tree: &syn::UseTree, names: &mut HashSet<String>) {
 }
 
 /// Returns whether a `syn::Visibility` is `pub` (not `pub(crate)`, `pub(super)`, etc.).
+#[allow(dead_code)] // Used in Phase 3 when crate_exports is wired through
 fn is_pub(vis: &syn::Visibility) -> bool {
     matches!(vis, syn::Visibility::Public(_))
 }
@@ -219,6 +221,7 @@ fn is_pub(vis: &syn::Visibility) -> bool {
 ///
 /// Ignores `pub mod` declarations (module structure, not exports).
 /// Returns an empty set on any error (no entry file, parse failure).
+#[allow(dead_code)] // Used in Phase 3 when crate_exports is wired through
 pub(crate) fn collect_crate_exports(crate_root: &Path) -> HashSet<String> {
     let root_file = match find_crate_root_file(crate_root) {
         Ok(f) => f,
@@ -312,6 +315,7 @@ fn walk_module_syn(
         workspace_crates,
         &source_file,
         all_module_paths,
+        &HashMap::new(),
     );
 
     // Discover children
