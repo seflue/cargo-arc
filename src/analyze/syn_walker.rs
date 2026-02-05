@@ -7,19 +7,23 @@ use std::path::{Path, PathBuf};
 use super::use_parser::{normalize_crate_name, parse_workspace_dependencies};
 use crate::model::{CrateInfo, ModuleInfo, ModuleTree};
 
-/// Find the root source file (lib.rs or main.rs) for a crate.
-/// Prefers lib.rs over main.rs when both exist.
-fn find_crate_root_file(crate_path: &Path) -> Result<PathBuf> {
+/// Find root source files (lib.rs and/or main.rs) for a crate.
+/// Returns all existing root files, lib.rs first.
+fn find_crate_root_files(crate_path: &Path) -> Result<Vec<PathBuf>> {
     let src = crate_path.join("src");
+    let mut roots = Vec::new();
     let lib_rs = src.join("lib.rs");
     if lib_rs.exists() {
-        return Ok(lib_rs);
+        roots.push(lib_rs);
     }
     let main_rs = src.join("main.rs");
     if main_rs.exists() {
-        return Ok(main_rs);
+        roots.push(main_rs);
     }
-    bail!("no lib.rs or main.rs found in {}", src.display())
+    if roots.is_empty() {
+        bail!("no lib.rs or main.rs found in {}", src.display());
+    }
+    Ok(roots)
 }
 
 /// A declared `mod` item (external, not inline).
@@ -174,7 +178,7 @@ pub(crate) fn collect_syn_module_paths(
     include_cfg_test: bool,
 ) -> HashSet<String> {
     let _ = crate_name; // unused; kept for API parity with collect_hir_module_paths
-    let root_file = match find_crate_root_file(crate_root) {
+    let root_files = match find_crate_root_files(crate_root) {
         Ok(f) => f,
         Err(e) => {
             tracing::warn!("collect_syn_module_paths: {e:#}");
@@ -182,7 +186,9 @@ pub(crate) fn collect_syn_module_paths(
         }
     };
     let mut paths = HashSet::new();
-    walk_modules_for_paths(&root_file, "", &mut paths, include_cfg_test);
+    for root_file in root_files {
+        walk_modules_for_paths(&root_file, "", &mut paths, include_cfg_test);
+    }
     paths
 }
 
@@ -224,12 +230,20 @@ fn is_pub(vis: &syn::Visibility) -> bool {
 /// Ignores `pub mod` declarations (module structure, not exports).
 /// Returns an empty set on any error (no entry file, parse failure).
 pub(crate) fn collect_crate_exports(crate_root: &Path) -> HashSet<String> {
-    let root_file = match find_crate_root_file(crate_root) {
+    let root_files = match find_crate_root_files(crate_root) {
         Ok(f) => f,
         Err(_) => return HashSet::new(),
     };
+    // Only lib.rs exports — binary targets export nothing
+    let root_file = match root_files
+        .iter()
+        .find(|p| p.file_name().is_some_and(|n| n == "lib.rs"))
+    {
+        Some(f) => f,
+        None => return HashSet::new(),
+    };
 
-    let source = match std::fs::read_to_string(&root_file) {
+    let source = match std::fs::read_to_string(root_file) {
         Ok(s) => s,
         Err(_) => return HashSet::new(),
     };
@@ -395,20 +409,39 @@ pub(crate) fn analyze_modules_syn(
     crate_exports: &HashMap<String, HashSet<String>>,
     include_cfg_test: bool,
 ) -> Result<ModuleTree> {
-    let root_file = find_crate_root_file(&crate_info.path)?;
+    let root_files = find_crate_root_files(&crate_info.path)?;
     let normalized = normalize_crate_name(&crate_info.name);
 
-    let root = walk_module_syn(
-        &root_file,
-        &normalized,
-        &normalized, // parent_path == name for root → triggers identity check
-        &normalized,
-        &crate_info.path,
-        workspace_crates,
-        all_module_paths,
-        crate_exports,
-        include_cfg_test,
-    );
+    let mut root: Option<ModuleInfo> = None;
+    for root_file in &root_files {
+        let tree = walk_module_syn(
+            root_file,
+            &normalized,
+            &normalized, // parent_path == name for root → triggers identity check
+            &normalized,
+            &crate_info.path,
+            workspace_crates,
+            all_module_paths,
+            crate_exports,
+            include_cfg_test,
+        );
+        match &mut root {
+            None => root = Some(tree),
+            Some(existing) => {
+                for child in tree.children {
+                    if !existing.children.iter().any(|c| c.name == child.name) {
+                        existing.children.push(child);
+                    }
+                }
+                for dep in tree.dependencies {
+                    if !existing.dependencies.contains(&dep) {
+                        existing.dependencies.push(dep);
+                    }
+                }
+            }
+        }
+    }
+    let root = root.expect("find_crate_root_files guarantees at least one file");
 
     Ok(ModuleTree { root })
 }
@@ -428,8 +461,8 @@ mod tests {
             std::fs::create_dir_all(&src).unwrap();
             std::fs::write(src.join("lib.rs"), "").unwrap();
 
-            let result = find_crate_root_file(tmp.path()).unwrap();
-            assert_eq!(result, src.join("lib.rs"));
+            let result = find_crate_root_files(tmp.path()).unwrap();
+            assert_eq!(result, vec![src.join("lib.rs")]);
         }
 
         #[test]
@@ -439,20 +472,20 @@ mod tests {
             std::fs::create_dir_all(&src).unwrap();
             std::fs::write(src.join("main.rs"), "").unwrap();
 
-            let result = find_crate_root_file(tmp.path()).unwrap();
-            assert_eq!(result, src.join("main.rs"));
+            let result = find_crate_root_files(tmp.path()).unwrap();
+            assert_eq!(result, vec![src.join("main.rs")]);
         }
 
         #[test]
-        fn test_find_crate_root_prefers_lib() {
+        fn test_find_crate_root_both_returns_vec() {
             let tmp = TempDir::new().unwrap();
             let src = tmp.path().join("src");
             std::fs::create_dir_all(&src).unwrap();
             std::fs::write(src.join("lib.rs"), "").unwrap();
             std::fs::write(src.join("main.rs"), "").unwrap();
 
-            let result = find_crate_root_file(tmp.path()).unwrap();
-            assert_eq!(result, src.join("lib.rs"));
+            let result = find_crate_root_files(tmp.path()).unwrap();
+            assert_eq!(result, vec![src.join("lib.rs"), src.join("main.rs")]);
         }
 
         #[test]
@@ -461,7 +494,7 @@ mod tests {
             let src = tmp.path().join("src");
             std::fs::create_dir_all(&src).unwrap();
 
-            let result = find_crate_root_file(tmp.path());
+            let result = find_crate_root_files(tmp.path());
             assert!(result.is_err());
         }
     }
@@ -662,6 +695,22 @@ mod tests {
             let paths = collect_syn_module_paths(tmp.path(), "empty", false);
             assert!(paths.is_empty(), "expected empty set, found: {paths:?}");
         }
+
+        #[test]
+        fn test_mixed_crate_module_paths() {
+            let tmp = TempDir::new().unwrap();
+            let src = tmp.path().join("src");
+            std::fs::create_dir_all(&src).unwrap();
+            std::fs::write(src.join("lib.rs"), "mod a;").unwrap();
+            std::fs::write(src.join("main.rs"), "mod b;").unwrap();
+            std::fs::write(src.join("a.rs"), "").unwrap();
+            std::fs::write(src.join("b.rs"), "").unwrap();
+
+            let paths = collect_syn_module_paths(tmp.path(), "mixed", false);
+            assert!(paths.contains("a"), "should contain 'a', found: {paths:?}");
+            assert!(paths.contains("b"), "should contain 'b', found: {paths:?}");
+            assert_eq!(paths.len(), 2);
+        }
     }
 
     mod collect_exports {
@@ -791,6 +840,26 @@ mod tests {
             let exports = collect_crate_exports(tmp.path());
             assert!(exports.is_empty(), "found: {exports:?}");
         }
+
+        #[test]
+        fn test_mixed_crate_exports_only_lib() {
+            let tmp = TempDir::new().unwrap();
+            let src = tmp.path().join("src");
+            std::fs::create_dir_all(&src).unwrap();
+            std::fs::write(src.join("lib.rs"), "pub fn from_lib() {}").unwrap();
+            std::fs::write(src.join("main.rs"), "pub fn from_main() {}").unwrap();
+
+            let exports = collect_crate_exports(tmp.path());
+            assert!(
+                exports.contains("from_lib"),
+                "should contain 'from_lib', found: {exports:?}"
+            );
+            assert!(
+                !exports.contains("from_main"),
+                "should NOT contain 'from_main', found: {exports:?}"
+            );
+            assert_eq!(exports.len(), 1);
+        }
     }
 
     mod analyze_syn {
@@ -890,6 +959,87 @@ mod tests {
                     .any(|d| d.module_target() == "cargo_arc::model"),
                 "graph should depend on model, found: {:?}",
                 graph_mod.dependencies
+            );
+        }
+
+        #[test]
+        fn test_binary_only_crate() {
+            let tmp = TempDir::new().unwrap();
+            let src = tmp.path().join("src");
+            std::fs::create_dir_all(&src).unwrap();
+            std::fs::write(src.join("main.rs"), "mod cli;").unwrap();
+            std::fs::write(src.join("cli.rs"), "").unwrap();
+
+            // collect_syn_module_paths finds "cli"
+            let paths = collect_syn_module_paths(tmp.path(), "binonly", false);
+            assert!(
+                paths.contains("cli"),
+                "should contain 'cli', found: {paths:?}"
+            );
+
+            // collect_crate_exports returns empty (no lib.rs)
+            let exports = collect_crate_exports(tmp.path());
+            assert!(
+                exports.is_empty(),
+                "binary-only should have no exports, found: {exports:?}"
+            );
+
+            // analyze_modules_syn builds tree with "cli" child
+            let crate_info = CrateInfo {
+                name: "binonly".to_string(),
+                path: tmp.path().to_path_buf(),
+                dependencies: vec![],
+            };
+            let tree = analyze_modules_syn(
+                &crate_info,
+                &HashSet::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                false,
+            )
+            .expect("should analyze binary-only crate");
+
+            let child_names: Vec<&str> =
+                tree.root.children.iter().map(|m| m.name.as_str()).collect();
+            assert!(
+                child_names.contains(&"cli"),
+                "should contain 'cli', found: {child_names:?}"
+            );
+        }
+
+        #[test]
+        fn test_mixed_crate_module_tree() {
+            let tmp = TempDir::new().unwrap();
+            let src = tmp.path().join("src");
+            std::fs::create_dir_all(&src).unwrap();
+            std::fs::write(src.join("lib.rs"), "mod a;").unwrap();
+            std::fs::write(src.join("main.rs"), "mod b;").unwrap();
+            std::fs::write(src.join("a.rs"), "").unwrap();
+            std::fs::write(src.join("b.rs"), "").unwrap();
+
+            let crate_info = CrateInfo {
+                name: "mixed".to_string(),
+                path: tmp.path().to_path_buf(),
+                dependencies: vec![],
+            };
+            let tree = analyze_modules_syn(
+                &crate_info,
+                &HashSet::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                false,
+            )
+            .expect("should analyze mixed crate");
+
+            let child_names: Vec<&str> =
+                tree.root.children.iter().map(|m| m.name.as_str()).collect();
+            assert!(
+                child_names.contains(&"a"),
+                "should contain 'a' from lib.rs, found: {child_names:?}"
+            );
+            assert!(
+                child_names.contains(&"b"),
+                "should contain 'b' from main.rs, found: {child_names:?}"
             );
         }
     }
