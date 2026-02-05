@@ -196,8 +196,8 @@ const SidebarLogic = {
       toName = targetName; toType = targetType; toSelected = false;
     }
 
-    const fromClass = `sidebar-node-${fromType}${fromSelected ? ' sidebar-node-selected' : ''}`;
-    const toClass = `sidebar-node-${toType}${toSelected ? ' sidebar-node-selected' : ''}`;
+    const fromClass = `sidebar-node-${fromType}${fromSelected ? ' sidebar-node-selected' : ' sidebar-node-from'}`;
+    const toClass = `sidebar-node-${toType}${toSelected ? ' sidebar-node-selected' : ' sidebar-node-to'}`;
 
     let html = `<div class="sidebar-usage-group">`;
     // Level 1 header (collapsed)
