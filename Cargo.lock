@@ -145,6 +145,7 @@ dependencies = [
  "clap",
  "dunce",
  "petgraph",
+ "proc-macro2",
  "ra_ap_cfg",
  "ra_ap_hir",
  "ra_ap_ide",

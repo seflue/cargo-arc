@@ -14,7 +14,7 @@ pub struct FeatureConfig {
 
 #[cfg(feature = "hir")]
 use {
-    super::use_parser::{normalize_crate_name, parse_workspace_dependencies},
+    super::use_parser::{normalize_crate_name, parse_workspace_dependencies_from_source},
     crate::model::{CrateInfo, DependencyRef, ModuleInfo, ModuleTree},
     anyhow::{Context, Result},
     ra_ap_cfg::{CfgAtom, CfgDiff},
@@ -340,8 +340,7 @@ fn extract_module_dependencies(
         Err(_) => return Vec::new(),
     };
 
-    // Use the new workspace-aware parsing function
-    parse_workspace_dependencies(
+    parse_workspace_dependencies_from_source(
         &source_text,
         crate_name,
         workspace_crates,

@@ -23,6 +23,7 @@ ra_ap_vfs = { version = "=0.0.316", optional = true }
 ra_ap_cfg = { version = "=0.0.316", optional = true }
 dunce = "1.0.4"
 syn = { version = "2", features = ["full"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
 
 [features]
 hir = [

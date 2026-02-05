@@ -63,18 +63,12 @@ fn extract_path_attribute(attrs: &[syn::Attribute]) -> Option<String> {
     })
 }
 
-/// Parse a Rust source file and return all external `mod` declarations,
+/// Extract external `mod` declarations from a parsed syntax tree,
 /// filtering out `#[cfg(test)]` modules (unless included) and inline modules.
-fn parse_mod_declarations(file_path: &Path, include_cfg_test: bool) -> Result<Vec<ModDecl>> {
-    let source = std::fs::read_to_string(file_path)
-        .with_context(|| format!("reading {}", file_path.display()))?;
-    let syntax =
-        syn::parse_file(&source).with_context(|| format!("parsing {}", file_path.display()))?;
-
+fn extract_mod_declarations(syntax: &syn::File, include_cfg_test: bool) -> Vec<ModDecl> {
     let mut decls = Vec::new();
     for item in &syntax.items {
         if let syn::Item::Mod(item_mod) = item {
-            // Skip inline modules (have a body)
             if item_mod.content.is_some() {
                 continue;
             }
@@ -88,7 +82,17 @@ fn parse_mod_declarations(file_path: &Path, include_cfg_test: bool) -> Result<Ve
             });
         }
     }
-    Ok(decls)
+    decls
+}
+
+/// Parse a Rust source file and return all external `mod` declarations.
+/// Convenience wrapper around `extract_mod_declarations` for callers with a file path.
+fn parse_mod_declarations(file_path: &Path, include_cfg_test: bool) -> Result<Vec<ModDecl>> {
+    let source = std::fs::read_to_string(file_path)
+        .with_context(|| format!("reading {}", file_path.display()))?;
+    let syntax =
+        syn::parse_file(&source).with_context(|| format!("parsing {}", file_path.display()))?;
+    Ok(extract_mod_declarations(&syntax, include_cfg_test))
 }
 
 /// Resolve a module name to its file path.
@@ -294,21 +298,48 @@ fn walk_module_syn(
         format!("{parent_path}::{module_name}")
     };
 
-    // Read source for dependency extraction
+    // Single read + single parse for both dependency extraction and mod discovery
     let source_text = match std::fs::read_to_string(file_path) {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!("reading {}: {e:#}", file_path.display());
-            String::new()
+            return ModuleInfo {
+                name: module_name.to_string(),
+                full_path,
+                children: Vec::new(),
+                dependencies: Vec::new(),
+            };
         }
     };
+    let syntax = match syn::parse_file(&source_text) {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!("parsing {}: {e:#}", file_path.display());
+            return ModuleInfo {
+                name: module_name.to_string(),
+                full_path,
+                children: Vec::new(),
+                dependencies: Vec::new(),
+            };
+        }
+    };
+
     let source_file = file_path
         .strip_prefix(crate_root)
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|_| file_path.to_path_buf());
 
+    // Extract use items and resolve dependencies (syn-based)
+    let use_items: Vec<syn::ItemUse> = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Use(u) => Some(u.clone()),
+            _ => None,
+        })
+        .collect();
     let dependencies = parse_workspace_dependencies(
-        &source_text,
+        &use_items,
         crate_name,
         workspace_crates,
         &source_file,
@@ -316,8 +347,8 @@ fn walk_module_syn(
         crate_exports,
     );
 
-    // Discover children
-    let decls = parse_mod_declarations(file_path, include_cfg_test).unwrap_or_default();
+    // Extract mod declarations from the same AST (no second file read)
+    let decls = extract_mod_declarations(&syntax, include_cfg_test);
 
     let resolve_dir = child_resolve_dir(file_path);
 
