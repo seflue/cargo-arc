@@ -4,6 +4,24 @@ use crate::model::DependencyRef;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use syn::UseTree;
+use syn::visit::Visit;
+
+/// Collect all `use` items from a parsed file, including those nested inside
+/// function bodies, blocks, and other scopes. Uses `syn::visit::Visit` to
+/// traverse the full AST regardless of nesting depth.
+pub(crate) fn collect_all_use_items(syntax: &syn::File) -> Vec<syn::ItemUse> {
+    struct UseCollector {
+        uses: Vec<syn::ItemUse>,
+    }
+    impl<'ast> Visit<'ast> for UseCollector {
+        fn visit_item_use(&mut self, node: &'ast syn::ItemUse) {
+            self.uses.push(node.clone());
+        }
+    }
+    let mut collector = UseCollector { uses: Vec::new() };
+    collector.visit_file(syntax);
+    collector.uses
+}
 
 /// Recursively resolve a `syn::UseTree` into fully-qualified path strings.
 ///
@@ -332,14 +350,7 @@ pub(crate) fn parse_workspace_dependencies_from_source(
         Ok(f) => f,
         Err(_) => return Vec::new(),
     };
-    let uses: Vec<syn::ItemUse> = syntax
-        .items
-        .into_iter()
-        .filter_map(|item| match item {
-            syn::Item::Use(u) => Some(u),
-            _ => None,
-        })
-        .collect();
+    let uses = collect_all_use_items(&syntax);
     parse_workspace_dependencies(
         &uses,
         current_crate,
@@ -356,15 +367,7 @@ mod tests {
     use std::path::Path;
 
     fn parse_test_uses(source: &str) -> Vec<syn::ItemUse> {
-        syn::parse_file(source)
-            .unwrap()
-            .items
-            .into_iter()
-            .filter_map(|item| match item {
-                syn::Item::Use(u) => Some(u),
-                _ => None,
-            })
-            .collect()
+        collect_all_use_items(&syn::parse_file(source).unwrap())
     }
 
     mod normalize_tests {
@@ -1075,6 +1078,81 @@ use serde::Serialize;
             assert_eq!(deps.len(), 1, "glob should return 1 dep: {:?}", deps);
             assert_eq!(deps[0].target_module, "");
             assert_eq!(deps[0].target_item, Some("*".to_string()));
+        }
+    }
+
+    mod collect_use_items_tests {
+        use super::*;
+
+        #[test]
+        fn top_level_use_found() {
+            let syntax = syn::parse_file("use foo::Bar;").unwrap();
+            let uses = collect_all_use_items(&syntax);
+            assert_eq!(uses.len(), 1);
+        }
+
+        #[test]
+        fn use_in_fn_body_found() {
+            let source = r#"
+fn main() {
+    use foo::Bar;
+}
+"#;
+            let syntax = syn::parse_file(source).unwrap();
+            let uses = collect_all_use_items(&syntax);
+            assert_eq!(uses.len(), 1, "use inside fn body must be found");
+        }
+
+        #[test]
+        fn use_in_nested_block_found() {
+            let source = r#"
+fn main() {
+    {
+        use foo::Bar;
+    }
+}
+"#;
+            let syntax = syn::parse_file(source).unwrap();
+            let uses = collect_all_use_items(&syntax);
+            assert_eq!(uses.len(), 1, "use in nested block must be found");
+        }
+
+        #[test]
+        fn mixed_top_level_and_fn_body() {
+            let source = r#"
+use crate::config;
+
+fn main() {
+    use other_crate::utils;
+}
+"#;
+            let syntax = syn::parse_file(source).unwrap();
+            let uses = collect_all_use_items(&syntax);
+            assert_eq!(
+                uses.len(),
+                2,
+                "both top-level and fn-body uses must be found"
+            );
+        }
+
+        #[test]
+        fn use_in_cfg_block_inside_fn() {
+            let source = r#"
+fn main() {
+    #[cfg(feature = "a")]
+    {
+        use my_lib::config::Config;
+        use my_lib::engine::Engine;
+    }
+}
+"#;
+            let syntax = syn::parse_file(source).unwrap();
+            let uses = collect_all_use_items(&syntax);
+            assert_eq!(
+                uses.len(),
+                2,
+                "uses in cfg-gated block inside fn must be found"
+            );
         }
     }
 }

@@ -343,15 +343,8 @@ fn walk_module_syn(
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|_| file_path.to_path_buf());
 
-    // Extract use items and resolve dependencies (syn-based)
-    let use_items: Vec<syn::ItemUse> = syntax
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            syn::Item::Use(u) => Some(u.clone()),
-            _ => None,
-        })
-        .collect();
+    // Extract use items from all scopes (top-level + fn bodies + nested blocks)
+    let use_items = super::use_parser::collect_all_use_items(&syntax);
     let dependencies = parse_workspace_dependencies(
         &use_items,
         crate_name,
