@@ -4,7 +4,10 @@ use anyhow::{Context, Result, bail};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use super::use_parser::{normalize_crate_name, parse_workspace_dependencies};
+use super::use_parser::{
+    collect_all_path_refs, normalize_crate_name, parse_path_ref_dependencies,
+    parse_workspace_dependencies,
+};
 use crate::model::{CrateInfo, ModuleInfo, ModuleTree};
 
 /// Find root source files (lib.rs and/or main.rs) for a crate.
@@ -345,7 +348,7 @@ fn walk_module_syn(
 
     // Extract use items from all scopes (top-level + fn bodies + nested blocks)
     let use_items = super::use_parser::collect_all_use_items(&syntax);
-    let dependencies = parse_workspace_dependencies(
+    let use_deps = parse_workspace_dependencies(
         &use_items,
         crate_name,
         workspace_crates,
@@ -353,6 +356,26 @@ fn walk_module_syn(
         all_module_paths,
         crate_exports,
     );
+
+    // Extract qualified path references (e.g. my_lib::run(), let x: my_lib::Config)
+    let path_refs = collect_all_path_refs(&syntax);
+    let path_deps = parse_path_ref_dependencies(
+        &path_refs,
+        crate_name,
+        workspace_crates,
+        &source_file,
+        all_module_paths,
+        crate_exports,
+    );
+
+    // Merge: use-dependencies first (have priority), then path-dependencies (dedup by full_target)
+    let mut seen: HashSet<String> = use_deps.iter().map(|d| d.full_target()).collect();
+    let mut dependencies = use_deps;
+    for dep in path_deps {
+        if seen.insert(dep.full_target()) {
+            dependencies.push(dep);
+        }
+    }
 
     // Extract mod declarations from the same AST (no second file read)
     let decls = extract_mod_declarations(&syntax, include_cfg_test);
@@ -997,6 +1020,92 @@ mod tests {
             assert!(
                 child_names.contains(&"cli"),
                 "should contain 'cli', found: {child_names:?}"
+            );
+        }
+
+        #[test]
+        fn test_path_ref_dependencies_collected() {
+            let tmp = TempDir::new().unwrap();
+            let src = tmp.path().join("src");
+            std::fs::create_dir_all(&src).unwrap();
+            // main.rs uses qualified path expressions (no use-imports)
+            std::fs::write(
+                src.join("main.rs"),
+                r#"
+fn main() {
+    other_crate::module::run();
+    let _x: other_crate::module::Config = todo!();
+}
+"#,
+            )
+            .unwrap();
+
+            let ws: HashSet<String> = HashSet::from(["other_crate".to_string()]);
+            let mp: HashMap<String, HashSet<String>> =
+                HashMap::from([("other_crate".to_string(), HashSet::from(["module".into()]))]);
+            let crate_info = CrateInfo {
+                name: "app".to_string(),
+                path: tmp.path().to_path_buf(),
+                dependencies: vec![],
+            };
+            let tree = analyze_modules_syn(&crate_info, &ws, &mp, &HashMap::new())
+                .expect("should analyze");
+
+            // Path expressions should be detected as dependencies
+            assert!(
+                tree.root
+                    .dependencies
+                    .iter()
+                    .any(|d| d.target_crate == "other_crate" && d.target_module == "module"),
+                "should detect path-ref dependency on other_crate::module, found: {:?}",
+                tree.root.dependencies
+            );
+        }
+
+        #[test]
+        fn test_path_ref_dedup_with_use() {
+            let tmp = TempDir::new().unwrap();
+            let src = tmp.path().join("src");
+            std::fs::create_dir_all(&src).unwrap();
+            // main.rs has both a use-import and a qualified path for the same target
+            std::fs::write(
+                src.join("main.rs"),
+                r#"
+use other_crate::module::Item;
+fn main() {
+    other_crate::module::Item::new();
+}
+"#,
+            )
+            .unwrap();
+
+            let ws: HashSet<String> = HashSet::from(["other_crate".to_string()]);
+            let mp: HashMap<String, HashSet<String>> =
+                HashMap::from([("other_crate".to_string(), HashSet::from(["module".into()]))]);
+            let crate_info = CrateInfo {
+                name: "app".to_string(),
+                path: tmp.path().to_path_buf(),
+                dependencies: vec![],
+            };
+            let tree = analyze_modules_syn(&crate_info, &ws, &mp, &HashMap::new())
+                .expect("should analyze");
+
+            // Should have exactly 1 dep for other_crate::module::Item (deduped)
+            let item_deps: Vec<_> = tree
+                .root
+                .dependencies
+                .iter()
+                .filter(|d| {
+                    d.target_crate == "other_crate"
+                        && d.target_module == "module"
+                        && d.target_item == Some("Item".to_string())
+                })
+                .collect();
+            assert_eq!(
+                item_deps.len(),
+                1,
+                "same target should be deduped, found: {:?}",
+                tree.root.dependencies
             );
         }
 

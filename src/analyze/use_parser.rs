@@ -23,6 +23,38 @@ pub(crate) fn collect_all_use_items(syntax: &syn::File) -> Vec<syn::ItemUse> {
     collector.uses
 }
 
+/// Collect all qualified path references (2+ segments) from a parsed file.
+/// Uses `syn::visit::Visit` to traverse expressions, types, patterns, and trait bounds.
+/// Returns `(path_string, line_number)` tuples.
+pub(crate) fn collect_all_path_refs(syntax: &syn::File) -> Vec<(String, usize)> {
+    struct PathRefCollector {
+        paths: Vec<(String, usize)>,
+    }
+    impl<'ast> Visit<'ast> for PathRefCollector {
+        fn visit_path(&mut self, node: &'ast syn::Path) {
+            if node.segments.len() >= 2 {
+                let path_str: String = node
+                    .segments
+                    .iter()
+                    .map(|s| s.ident.to_string())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                let line = node
+                    .segments
+                    .first()
+                    .map(|s| s.ident.span().start().line)
+                    .unwrap_or(0);
+                self.paths.push((path_str, line));
+            }
+            // Continue visiting nested paths (e.g. in generics)
+            syn::visit::visit_path(self, node);
+        }
+    }
+    let mut collector = PathRefCollector { paths: Vec::new() };
+    collector.visit_file(syntax);
+    collector.paths
+}
+
 /// Recursively resolve a `syn::UseTree` into fully-qualified path strings.
 ///
 /// Example: `use cli::{Args, Cargo, run}` → `["cli::Args", "cli::Cargo", "cli::run"]`
@@ -328,6 +360,42 @@ pub(crate) fn parse_workspace_dependencies(
                     seen_targets.insert(target_key);
                     deps.push(dep);
                 }
+            }
+        }
+    }
+
+    deps
+}
+
+/// Parse path references into workspace-relevant dependencies.
+///
+/// Takes pre-collected path refs from `collect_all_path_refs()` and resolves
+/// each through the existing resolution chain (`resolve_single_path()`).
+/// Deduplicates by `full_target()` — same strategy as `parse_workspace_dependencies()`.
+pub(crate) fn parse_path_ref_dependencies(
+    paths: &[(String, usize)],
+    current_crate: &str,
+    workspace_crates: &HashSet<String>,
+    source_file: &Path,
+    all_module_paths: &HashMap<String, HashSet<String>>,
+    crate_exports: &HashMap<String, HashSet<String>>,
+) -> Vec<DependencyRef> {
+    let mut deps: Vec<DependencyRef> = Vec::new();
+    let mut seen_targets: HashSet<String> = HashSet::new();
+
+    for (path, line_num) in paths {
+        if let Some(dep) = resolve_single_path(
+            path,
+            *line_num,
+            current_crate,
+            workspace_crates,
+            source_file,
+            all_module_paths,
+            crate_exports,
+        ) {
+            let target_key = dep.full_target();
+            if seen_targets.insert(target_key) {
+                deps.push(dep);
             }
         }
     }
@@ -1153,6 +1221,271 @@ fn main() {
                 2,
                 "uses in cfg-gated block inside fn must be found"
             );
+        }
+    }
+
+    mod path_ref_tests {
+        use super::*;
+
+        #[test]
+        fn test_collect_path_refs_expression() {
+            let source = r#"
+fn main() {
+    my_server::run();
+}
+"#;
+            let syntax = syn::parse_file(source).unwrap();
+            let refs = collect_all_path_refs(&syntax);
+            assert!(
+                refs.iter().any(|(p, _)| p == "my_server::run"),
+                "should collect my_server::run, found: {refs:?}"
+            );
+        }
+
+        #[test]
+        fn test_collect_path_refs_type_annotation() {
+            let source = r#"
+fn main() {
+    let _x: my_lib::Config = todo!();
+}
+"#;
+            let syntax = syn::parse_file(source).unwrap();
+            let refs = collect_all_path_refs(&syntax);
+            assert!(
+                refs.iter().any(|(p, _)| p == "my_lib::Config"),
+                "should collect my_lib::Config, found: {refs:?}"
+            );
+        }
+
+        #[test]
+        fn test_collect_path_refs_pattern() {
+            let source = r#"
+fn main() {
+    let x = 1;
+    match x {
+        _ if my_lib::check() => {}
+        _ => {}
+    }
+}
+"#;
+            let syntax = syn::parse_file(source).unwrap();
+            let refs = collect_all_path_refs(&syntax);
+            assert!(
+                refs.iter().any(|(p, _)| p == "my_lib::check"),
+                "should collect my_lib::check, found: {refs:?}"
+            );
+        }
+
+        #[test]
+        fn test_collect_path_refs_trait_bound() {
+            let source = r#"
+fn process<T: my_lib::Trait>(_t: T) {}
+"#;
+            let syntax = syn::parse_file(source).unwrap();
+            let refs = collect_all_path_refs(&syntax);
+            assert!(
+                refs.iter().any(|(p, _)| p == "my_lib::Trait"),
+                "should collect my_lib::Trait, found: {refs:?}"
+            );
+        }
+
+        #[test]
+        fn test_collect_path_refs_struct_literal() {
+            let source = r#"
+fn main() {
+    let _x = my_lib::Config { verbose: true };
+}
+"#;
+            let syntax = syn::parse_file(source).unwrap();
+            let refs = collect_all_path_refs(&syntax);
+            assert!(
+                refs.iter().any(|(p, _)| p == "my_lib::Config"),
+                "should collect my_lib::Config from struct literal, found: {refs:?}"
+            );
+        }
+
+        #[test]
+        fn test_collect_path_refs_ignores_single_segment() {
+            let source = r#"
+fn main() {
+    println!("hello");
+    let x = String::new();
+}
+"#;
+            let syntax = syn::parse_file(source).unwrap();
+            let refs = collect_all_path_refs(&syntax);
+            // "println" is a single segment → not collected
+            assert!(
+                !refs.iter().any(|(p, _)| p == "println"),
+                "single-segment paths should not be collected, found: {refs:?}"
+            );
+        }
+
+        #[test]
+        fn test_collect_path_refs_method_chain() {
+            let source = r#"
+fn main() {
+    my_lib::Config::default();
+}
+"#;
+            let syntax = syn::parse_file(source).unwrap();
+            let refs = collect_all_path_refs(&syntax);
+            assert!(
+                refs.iter().any(|(p, _)| p == "my_lib::Config::default"),
+                "should collect full path my_lib::Config::default, found: {refs:?}"
+            );
+        }
+
+        #[test]
+        fn test_collect_path_refs_multiple_in_file() {
+            let source = r#"
+fn main() {
+    my_server::run();
+    let _cfg: my_lib::Config = todo!();
+}
+"#;
+            let syntax = syn::parse_file(source).unwrap();
+            let refs = collect_all_path_refs(&syntax);
+            assert!(
+                refs.iter().any(|(p, _)| p == "my_server::run"),
+                "should collect my_server::run, found: {refs:?}"
+            );
+            assert!(
+                refs.iter().any(|(p, _)| p == "my_lib::Config"),
+                "should collect my_lib::Config, found: {refs:?}"
+            );
+        }
+    }
+
+    mod path_ref_resolution_tests {
+        use super::*;
+
+        #[test]
+        fn test_parse_path_refs_workspace_crate() {
+            let ws: HashSet<String> = HashSet::from(["other_crate".to_string()]);
+            let mp: HashMap<String, HashSet<String>> =
+                HashMap::from([("other_crate".to_string(), HashSet::from(["module".into()]))]);
+            let paths = vec![("other_crate::module::item".to_string(), 5)];
+            let deps = parse_path_ref_dependencies(
+                &paths,
+                "my_crate",
+                &ws,
+                Path::new("src/main.rs"),
+                &mp,
+                &HashMap::new(),
+            );
+            assert_eq!(
+                deps.len(),
+                1,
+                "should resolve workspace crate path: {deps:?}"
+            );
+            assert_eq!(deps[0].target_crate, "other_crate");
+            assert_eq!(deps[0].target_module, "module");
+            assert_eq!(deps[0].target_item, Some("item".to_string()));
+            assert_eq!(deps[0].line, 5);
+        }
+
+        #[test]
+        fn test_parse_path_refs_crate_local() {
+            let ws: HashSet<String> = HashSet::new();
+            let mp: HashMap<String, HashSet<String>> =
+                HashMap::from([("my_crate".to_string(), HashSet::from(["module".into()]))]);
+            let paths = vec![("crate::module::item".to_string(), 3)];
+            let deps = parse_path_ref_dependencies(
+                &paths,
+                "my_crate",
+                &ws,
+                Path::new("src/main.rs"),
+                &mp,
+                &HashMap::new(),
+            );
+            assert_eq!(deps.len(), 1, "should resolve crate-local path: {deps:?}");
+            assert_eq!(deps[0].target_crate, "my_crate");
+            assert_eq!(deps[0].target_module, "module");
+            assert_eq!(deps[0].target_item, Some("item".to_string()));
+        }
+
+        #[test]
+        fn test_parse_path_refs_bare_module() {
+            let ws: HashSet<String> = HashSet::new();
+            let mp: HashMap<String, HashSet<String>> =
+                HashMap::from([("my_crate".to_string(), HashSet::from(["cli".into()]))]);
+            let paths = vec![("cli::Args".to_string(), 1)];
+            let deps = parse_path_ref_dependencies(
+                &paths,
+                "my_crate",
+                &ws,
+                Path::new("src/lib.rs"),
+                &mp,
+                &HashMap::new(),
+            );
+            assert_eq!(deps.len(), 1, "should resolve bare module path: {deps:?}");
+            assert_eq!(deps[0].target_crate, "my_crate");
+            assert_eq!(deps[0].target_module, "cli");
+            assert_eq!(deps[0].target_item, Some("Args".to_string()));
+        }
+
+        #[test]
+        fn test_parse_path_refs_unknown_skipped() {
+            let ws: HashSet<String> = HashSet::new();
+            let mp: HashMap<String, HashSet<String>> = HashMap::new();
+            let paths = vec![
+                ("std::io::Read".to_string(), 1),
+                ("anyhow::Result".to_string(), 2),
+                ("serde::Serialize".to_string(), 3),
+            ];
+            let deps = parse_path_ref_dependencies(
+                &paths,
+                "my_crate",
+                &ws,
+                Path::new("src/lib.rs"),
+                &mp,
+                &HashMap::new(),
+            );
+            assert!(deps.is_empty(), "unknown paths should be skipped: {deps:?}");
+        }
+
+        #[test]
+        fn test_parse_path_refs_entry_point() {
+            let ws: HashSet<String> = HashSet::from(["other_crate".to_string()]);
+            let mp: HashMap<String, HashSet<String>> = HashMap::new();
+            let exports: HashMap<String, HashSet<String>> = HashMap::from([(
+                "other_crate".to_string(),
+                HashSet::from(["MyStruct".into()]),
+            )]);
+            let paths = vec![("other_crate::MyStruct".to_string(), 7)];
+            let deps = parse_path_ref_dependencies(
+                &paths,
+                "my_crate",
+                &ws,
+                Path::new("src/main.rs"),
+                &mp,
+                &exports,
+            );
+            assert_eq!(deps.len(), 1, "should resolve entry-point path: {deps:?}");
+            assert_eq!(deps[0].target_crate, "other_crate");
+            assert_eq!(deps[0].target_module, "");
+            assert_eq!(deps[0].target_item, Some("MyStruct".to_string()));
+        }
+
+        #[test]
+        fn test_parse_path_refs_dedup() {
+            let ws: HashSet<String> = HashSet::from(["other_crate".to_string()]);
+            let mp: HashMap<String, HashSet<String>> =
+                HashMap::from([("other_crate".to_string(), HashSet::from(["module".into()]))]);
+            let paths = vec![
+                ("other_crate::module::item".to_string(), 5),
+                ("other_crate::module::item".to_string(), 10),
+            ];
+            let deps = parse_path_ref_dependencies(
+                &paths,
+                "my_crate",
+                &ws,
+                Path::new("src/main.rs"),
+                &mp,
+                &HashMap::new(),
+            );
+            assert_eq!(deps.len(), 1, "duplicate paths should be deduped: {deps:?}");
         }
     }
 }
