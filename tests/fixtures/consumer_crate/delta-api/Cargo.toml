@@ -1,0 +1,8 @@
+[package]
+name = "delta-api"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+alpha-core = { path = "../alpha-core" }
+gamma-util = { path = "../gamma-util" }

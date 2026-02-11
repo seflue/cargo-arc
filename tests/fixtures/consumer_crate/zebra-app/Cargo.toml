@@ -1,0 +1,10 @@
+[package]
+name = "zebra-app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+alpha-core = { path = "../alpha-core" }
+beta-service = { path = "../beta-service" }
+gamma-util = { path = "../gamma-util" }
+delta-api = { path = "../delta-api" }

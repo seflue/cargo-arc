@@ -52,8 +52,15 @@ pub fn topo_sort(graph: &ArcGraph, cycles: &[Cycle]) -> Vec<NodeIndex> {
     let mut condensed: DiGraph<NodeIndex, ()> = DiGraph::new();
     let mut rep_to_condensed: HashMap<NodeIndex, petgraph::graph::NodeIndex> = HashMap::new();
 
-    // Add nodes (one per representative)
-    for &rep in node_to_rep.values().collect::<HashSet<_>>() {
+    // Add nodes (one per representative, sorted by index for deterministic ordering)
+    let mut unique_reps: Vec<NodeIndex> = node_to_rep
+        .values()
+        .copied()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    unique_reps.sort_by_key(|n| n.index());
+    for rep in unique_reps {
         let cond_idx = condensed.add_node(rep);
         rep_to_condensed.insert(rep, cond_idx);
     }
@@ -361,6 +368,61 @@ pub fn build_layout(graph: &ArcGraph, order: &[NodeIndex], cycles: &[Cycle]) -> 
     let (crate_indices, module_indices): (Vec<NodeIndex>, Vec<NodeIndex>) = order
         .iter()
         .partition(|&idx| matches!(graph[*idx], Node::Crate { .. }));
+
+    // Re-sort crates by aggregated inter-crate dependencies (CrateDep + ModuleDep).
+    // topo_sort only constrains module ordering; crate nodes may float freely.
+    let crate_indices = {
+        let crate_of = |idx: NodeIndex| -> NodeIndex {
+            match &graph[idx] {
+                Node::Module { crate_idx, .. } => *crate_idx,
+                Node::Crate { .. } => idx,
+            }
+        };
+
+        // Build crate-level dependency graph
+        let mut crate_graph: DiGraph<NodeIndex, ()> = DiGraph::new();
+        let mut crate_to_node: HashMap<NodeIndex, petgraph::graph::NodeIndex> = HashMap::new();
+        // Add crate nodes in deterministic order (by graph index)
+        let mut sorted_crates = crate_indices.clone();
+        sorted_crates.sort_by_key(|n| n.index());
+        for &ci in &sorted_crates {
+            crate_to_node.insert(ci, crate_graph.add_node(ci));
+        }
+
+        // Add edges from both CrateDep and ModuleDep (aggregated to crate level)
+        for edge_idx in graph.edge_indices() {
+            match &graph[edge_idx] {
+                Edge::CrateDep | Edge::ModuleDep(_) => {
+                    let (src, dst) = graph.edge_endpoints(edge_idx).unwrap();
+                    let src_crate = crate_of(src);
+                    let dst_crate = crate_of(dst);
+                    if src_crate != dst_crate {
+                        if let (Some(&sc), Some(&dc)) =
+                            (crate_to_node.get(&src_crate), crate_to_node.get(&dst_crate))
+                        {
+                            if !crate_graph.contains_edge(sc, dc) {
+                                crate_graph.add_edge(sc, dc, ());
+                            }
+                        }
+                    }
+                }
+                Edge::Contains => {}
+            }
+        }
+
+        // Stable toposort with alphabetical tie-breaking
+        stable_toposort(&crate_graph, &sorted_crates, graph)
+    };
+    let crate_indices = if crate_indices.is_empty() {
+        // Cycle detected — fall back to topo_sort order
+        order
+            .iter()
+            .filter(|idx| matches!(graph[**idx], Node::Crate { .. }))
+            .copied()
+            .collect()
+    } else {
+        crate_indices
+    };
 
     // Group modules by their parent crate for proper visual grouping
     // Each crate is followed by its modules before the next crate
@@ -1504,6 +1566,75 @@ mod tests {
             pos_parent_a < pos_parent_b,
             "parent_a should come before parent_b (subtree dependency). Labels: {:?}",
             labels
+        );
+    }
+
+    #[test]
+    fn test_crate_order_respects_inter_crate_module_deps() {
+        use std::path::PathBuf;
+
+        // When modules in crate_a depend on modules in crate_b
+        // but there is NO CrateDep edge, the crate ordering should still
+        // place crate_a before crate_b (dependent crate first).
+        let mut graph = ArcGraph::new();
+
+        // crate_b alphabetically before crate_a — exposes the bug
+        let crate_b = graph.add_node(Node::Crate {
+            name: "crate_b".to_string(),
+            path: PathBuf::from("/b"),
+        });
+        let crate_a = graph.add_node(Node::Crate {
+            name: "crate_a".to_string(),
+            path: PathBuf::from("/a"),
+        });
+
+        let mod_a = graph.add_node(Node::Module {
+            name: "mod_a".to_string(),
+            crate_idx: crate_a,
+        });
+        let mod_b = graph.add_node(Node::Module {
+            name: "mod_b".to_string(),
+            crate_idx: crate_b,
+        });
+
+        // Hierarchy
+        graph.add_edge(crate_a, mod_a, Edge::Contains);
+        graph.add_edge(crate_b, mod_b, Edge::Contains);
+
+        // Module dependency: mod_a -> mod_b (crate_a depends on crate_b)
+        // but NO CrateDep edge!
+        graph.add_edge(mod_a, mod_b, Edge::ModuleDep(vec![]));
+
+        let cycles: Vec<Cycle> = vec![];
+        let order = topo_sort(&graph, &cycles);
+        let ir = build_layout(&graph, &order, &cycles);
+
+        let labels: Vec<&str> = ir.items.iter().map(|i| i.label.as_str()).collect();
+
+        let pos_crate_a = labels.iter().position(|&l| l == "crate_a").unwrap();
+        let pos_crate_b = labels.iter().position(|&l| l == "crate_b").unwrap();
+
+        // crate_a depends on crate_b (via module dep) → crate_a should come first
+        assert!(
+            pos_crate_a < pos_crate_b,
+            "crate_a should come before crate_b (inter-crate module dep). Labels: {:?}",
+            labels
+        );
+
+        // The ModuleDep edge should be Downward (not Upward)
+        let mod_a_to_mod_b = ir.edges.iter().find(|e| {
+            let from_label = &ir.items[e.from].label;
+            let to_label = &ir.items[e.to].label;
+            from_label == "mod_a" && to_label == "mod_b"
+        });
+        assert!(
+            mod_a_to_mod_b.is_some(),
+            "Should have edge from mod_a to mod_b"
+        );
+        assert_eq!(
+            mod_a_to_mod_b.unwrap().kind,
+            EdgeKind::Downward,
+            "Inter-crate module dep should be Downward, not Upward"
         );
     }
 }

@@ -1,0 +1,3 @@
+[workspace]
+members = ["alpha-core", "beta-service", "gamma-util", "delta-api", "zebra-app"]
+resolver = "2"
