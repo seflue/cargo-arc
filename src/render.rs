@@ -1,7 +1,7 @@
 //! SVG Generation
 
-use crate::graph::SourceLocation;
 use crate::layout::{EdgeKind, ItemKind, LayoutIR, NodeId};
+use crate::model::SourceLocation;
 use std::collections::HashSet;
 
 include!(concat!(env!("OUT_DIR"), "/js_modules.rs"));
@@ -2339,7 +2339,7 @@ mod tests {
 
     #[test]
     fn test_render_edge_source_locations_in_static_data() {
-        use crate::graph::SourceLocation;
+        use crate::model::SourceLocation;
         use std::path::PathBuf;
 
         let mut ir = LayoutIR::new();
@@ -2408,7 +2408,7 @@ mod tests {
 
     #[test]
     fn test_format_source_locations_by_symbol_no_symbols() {
-        use crate::graph::SourceLocation;
+        use crate::model::SourceLocation;
         use std::path::PathBuf;
 
         let locs = vec![SourceLocation {
@@ -2427,7 +2427,7 @@ mod tests {
 
     #[test]
     fn test_format_source_locations_by_symbol_single() {
-        use crate::graph::SourceLocation;
+        use crate::model::SourceLocation;
         use std::path::PathBuf;
 
         let locs = vec![SourceLocation {
@@ -2446,7 +2446,7 @@ mod tests {
 
     #[test]
     fn test_format_source_locations_by_symbol_grouped() {
-        use crate::graph::SourceLocation;
+        use crate::model::SourceLocation;
         use std::path::PathBuf;
 
         // Same symbol from multiple locations
@@ -2477,7 +2477,7 @@ mod tests {
 
     #[test]
     fn test_format_source_locations_by_symbol_multiple_symbols() {
-        use crate::graph::SourceLocation;
+        use crate::model::SourceLocation;
         use std::path::PathBuf;
 
         // Multiple symbols from same location (multi-import)
@@ -2498,7 +2498,7 @@ mod tests {
 
     #[test]
     fn test_format_source_locations_by_symbol_complex() {
-        use crate::graph::SourceLocation;
+        use crate::model::SourceLocation;
         use std::path::PathBuf;
 
         // Complex case: multiple symbols, multiple locations
@@ -2974,7 +2974,7 @@ mod tests {
 
     #[test]
     fn test_static_data_arc_properties() {
-        use crate::graph::SourceLocation;
+        use crate::model::SourceLocation;
         use std::path::PathBuf;
 
         let mut ir = LayoutIR::new();
@@ -3062,7 +3062,7 @@ mod tests {
 
     #[test]
     fn test_static_data_usages_structured() {
-        use crate::graph::SourceLocation;
+        use crate::model::SourceLocation;
         use std::path::PathBuf;
 
         let mut ir = LayoutIR::new();
@@ -3189,7 +3189,7 @@ mod tests {
 
     #[test]
     fn test_static_data_escapes_quotes() {
-        use crate::graph::SourceLocation;
+        use crate::model::SourceLocation;
         use std::path::PathBuf;
 
         let mut ir = LayoutIR::new();

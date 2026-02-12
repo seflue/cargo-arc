@@ -6,6 +6,14 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::path::PathBuf;
 
+#[derive(Debug, Clone)]
+pub struct SourceLocation {
+    pub file: PathBuf,
+    pub line: usize,
+    pub symbols: Vec<String>,
+    pub module_path: String,
+}
+
 /// Workspace crate names, stored in normalized form (hyphens → underscores).
 ///
 /// All insertion paths normalize names, and `contains()` normalizes its input,

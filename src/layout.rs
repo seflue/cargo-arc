@@ -791,7 +791,7 @@ pub enum EdgeKind {
     TransitiveCycle, // Part of larger cycle
 }
 
-use crate::graph::SourceLocation;
+use crate::model::SourceLocation;
 
 #[derive(Debug, Clone)]
 pub struct LayoutEdge {
@@ -843,7 +843,8 @@ impl LayoutIR {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::{ArcGraph, Edge, Node, SourceLocation};
+    use crate::graph::{ArcGraph, Edge, Node};
+    use crate::model::SourceLocation;
     use petgraph::graph::NodeIndex;
     use std::path::PathBuf;
 

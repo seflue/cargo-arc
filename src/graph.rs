@@ -1,6 +1,8 @@
 //! Graph Types & Builder
 
-use crate::model::{CrateInfo, DependencyRef, EdgeContext, ModuleInfo, ModuleTree, TestKind};
+use crate::model::{
+    CrateInfo, DependencyRef, EdgeContext, ModuleInfo, ModuleTree, SourceLocation, TestKind,
+};
 use petgraph::graph::{DiGraph, NodeIndex};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -9,14 +11,6 @@ use std::path::PathBuf;
 pub enum Node {
     Crate { name: String, path: PathBuf },
     Module { name: String, crate_idx: NodeIndex },
-}
-
-#[derive(Debug, Clone)]
-pub struct SourceLocation {
-    pub file: PathBuf,
-    pub line: usize,
-    pub symbols: Vec<String>,
-    pub module_path: String,
 }
 
 pub enum Edge {
