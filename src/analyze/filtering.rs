@@ -97,6 +97,26 @@ pub(super) fn parse_feature(feature: &str) -> (Option<&str>, &str) {
     }
 }
 
+fn package_matches_features(
+    pkg: &cargo_metadata::Package,
+    parsed_features: &[(Option<&str>, &str)],
+) -> bool {
+    let pkg_name = pkg.name.as_str();
+    debug!(pkg = pkg_name, features = ?pkg.features.keys(), "checking");
+
+    let matches = parsed_features.iter().any(|(crate_filter, feature_name)| {
+        let crate_matches = crate_filter.map(|c| c == pkg_name).unwrap_or(true);
+        let feature_exists = pkg.features.contains_key(*feature_name);
+
+        debug!(?crate_filter, feature_name, crate_matches, feature_exists,);
+
+        crate_matches && feature_exists
+    });
+
+    debug!(pkg = pkg_name, matches);
+    matches
+}
+
 /// Finds seed crates that define the requested features.
 /// Returns all workspace members if no features specified or all_features is set.
 #[instrument(skip_all, fields(features = ?feature_config.features, all_features = feature_config.all_features))]
@@ -112,37 +132,18 @@ pub(super) fn find_seed_crates(
         return workspace_members.iter().map(|s| s.to_string()).collect();
     }
 
+    let parsed_features: Vec<_> = feature_config
+        .features
+        .iter()
+        .map(String::as_str)
+        .map(parse_feature)
+        .collect();
+
     let seeds: HashSet<String> = metadata
         .packages
         .iter()
-        .filter(|pkg| {
-            let pkg_name = pkg.name.as_str();
-            let is_workspace = workspace_members.contains(pkg_name);
-            if !is_workspace {
-                return false;
-            }
-
-            let pkg_features: Vec<&str> = pkg.features.keys().map(|s| s.as_str()).collect();
-            debug!(pkg = pkg_name, features = ?pkg_features, "checking");
-
-            let matches = feature_config.features.iter().any(|f| {
-                let (crate_filter, feature_name) = parse_feature(f);
-                let crate_matches = crate_filter.map(|c| c == pkg_name).unwrap_or(true);
-                let feature_exists = pkg.features.contains_key(feature_name);
-
-                debug!(
-                    feature = f,
-                    crate_filter = ?crate_filter,
-                    crate_matches,
-                    feature_exists,
-                );
-
-                crate_matches && feature_exists
-            });
-
-            debug!(pkg = pkg_name, matches);
-            matches
-        })
+        .filter(|pkg| workspace_members.contains(pkg.name.as_str()))
+        .filter(|pkg| package_matches_features(pkg, &parsed_features))
         .map(|pkg| pkg.name.to_string())
         .collect();
 
