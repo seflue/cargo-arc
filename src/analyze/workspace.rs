@@ -2,7 +2,7 @@
 
 use super::filtering::{DepInfo, collect_reachable_crates, find_seed_crates};
 use super::hir::FeatureConfig;
-use crate::model::{CrateInfo, WorkspaceCrates};
+use crate::model::{CrateInfo, WorkspaceCrates, normalize_crate_name};
 use anyhow::{Context, Result};
 use cargo_metadata::MetadataCommand;
 use std::collections::HashSet;
@@ -69,14 +69,14 @@ fn build_workspace_context(metadata: &cargo_metadata::Metadata) -> WorkspaceCont
     }
 }
 
-type DepsMap<'a> = std::collections::HashMap<&'a str, Vec<String>>;
+type DepsMap = std::collections::HashMap<String, Vec<String>>;
 
 /// Builds resolved dependencies maps from cargo metadata resolve section.
 /// Returns (production deps, dev deps) as separate maps.
-fn build_resolved_deps<'a>(
-    resolve: &'a cargo_metadata::Resolve,
-    ctx: &WorkspaceContext<'a>,
-) -> (DepsMap<'a>, DepsMap<'a>) {
+fn build_resolved_deps(
+    resolve: &cargo_metadata::Resolve,
+    ctx: &WorkspaceContext<'_>,
+) -> (DepsMap, DepsMap) {
     let mut prod_deps = std::collections::HashMap::new();
     let mut dev_deps = std::collections::HashMap::new();
 
@@ -105,8 +105,9 @@ fn build_resolved_deps<'a>(
         }
 
         if let Some(pkg_name) = ctx.pkg_id_to_name.get(node_id) {
-            prod_deps.insert(*pkg_name, prod);
-            dev_deps.insert(*pkg_name, dev);
+            let normalized_name = normalize_crate_name(pkg_name);
+            prod_deps.insert(normalized_name.clone(), prod);
+            dev_deps.insert(normalized_name, dev);
         }
     }
 
@@ -121,7 +122,7 @@ fn should_include_crate(
 ) -> bool {
     let features_empty = feature_config.features.is_empty();
     let all_features = feature_config.all_features;
-    let in_reachable = reachable.contains(pkg.name.as_str());
+    let in_reachable = reachable.contains(&normalize_crate_name(&pkg.name));
     let include = features_empty || all_features || in_reachable;
 
     debug!(
@@ -138,14 +139,12 @@ fn should_include_crate(
 /// Builds a CrateInfo from a package and its resolved dependencies.
 fn build_crate_info(
     pkg: &cargo_metadata::Package,
-    prod_deps: &std::collections::HashMap<&str, Vec<String>>,
-    dev_deps: &std::collections::HashMap<&str, Vec<String>>,
+    prod_deps: &DepsMap,
+    dev_deps: &DepsMap,
 ) -> CrateInfo {
-    let dependencies = prod_deps
-        .get(pkg.name.as_str())
-        .cloned()
-        .unwrap_or_default();
-    let dev_dependencies = dev_deps.get(pkg.name.as_str()).cloned().unwrap_or_default();
+    let normalized_name = normalize_crate_name(&pkg.name);
+    let dependencies = prod_deps.get(&normalized_name).cloned().unwrap_or_default();
+    let dev_dependencies = dev_deps.get(&normalized_name).cloned().unwrap_or_default();
 
     CrateInfo {
         name: pkg.name.to_string(),
@@ -158,8 +157,8 @@ fn build_crate_info(
 /// Filters and builds CrateInfo list from workspace packages.
 fn build_filtered_crates(
     metadata: &cargo_metadata::Metadata,
-    prod_deps: &std::collections::HashMap<&str, Vec<String>>,
-    dev_deps: &std::collections::HashMap<&str, Vec<String>>,
+    prod_deps: &DepsMap,
+    dev_deps: &DepsMap,
     feature_config: &FeatureConfig,
     workspace_member_names: &WorkspaceCrates,
 ) -> Vec<CrateInfo> {

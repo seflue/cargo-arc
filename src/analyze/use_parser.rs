@@ -270,7 +270,7 @@ fn parse_workspace_import(
     let parts: Vec<&str> = path.split("::").collect();
     let crate_name = parts.first()?.trim();
 
-    if !workspace_crates.contains_normalized(crate_name) || parts.len() < 2 {
+    if !workspace_crates.contains(crate_name) || parts.len() < 2 {
         return None;
     }
 
@@ -375,7 +375,7 @@ fn resolve_single_path(
     })
     .or_else(|| {
         // Bare workspace crate name (e.g. from `use other_crate::{Foo}` → path = "other_crate")
-        if !path.contains("::") && workspace_crates.contains_normalized(path) {
+        if !path.contains("::") && workspace_crates.contains(path) {
             Some(DependencyRef {
                 target_crate: path.to_string(),
                 target_module: String::new(),

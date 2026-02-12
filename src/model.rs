@@ -6,39 +6,45 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::path::PathBuf;
 
-/// Workspace crate names (e.g. `{"cargo-arc", "my_lib"}`).
+/// Workspace crate names, stored in normalized form (hyphens → underscores).
+///
+/// All insertion paths normalize names, and `contains()` normalizes its input,
+/// so lookups are O(1) and callers never need to think about normalization.
 #[derive(Debug, Default, Clone)]
 pub struct WorkspaceCrates(HashSet<String>);
 
-impl Deref for WorkspaceCrates {
-    type Target = HashSet<String>;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
 impl FromIterator<String> for WorkspaceCrates {
     fn from_iter<I: IntoIterator<Item = String>>(iter: I) -> Self {
-        Self(iter.into_iter().collect())
+        Self(iter.into_iter().map(|s| normalize_crate_name(&s)).collect())
     }
 }
 
 impl<'a> FromIterator<&'a str> for WorkspaceCrates {
     fn from_iter<I: IntoIterator<Item = &'a str>>(iter: I) -> Self {
-        Self(iter.into_iter().map(|s| s.to_string()).collect())
+        Self(iter.into_iter().map(normalize_crate_name).collect())
     }
 }
 
 impl WorkspaceCrates {
     pub fn insert(&mut self, name: String) -> bool {
-        self.0.insert(name)
+        self.0.insert(normalize_crate_name(&name))
     }
 
-    pub(crate) fn contains_normalized(&self, name: &str) -> bool {
-        let normalized = normalize_crate_name(name);
-        self.0
-            .iter()
-            .any(|ws| normalize_crate_name(ws) == normalized)
+    /// Check membership, normalizing the input name.
+    pub fn contains(&self, name: &str) -> bool {
+        self.0.contains(&normalize_crate_name(name))
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &String> {
+        self.0.iter()
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 }
 
@@ -272,6 +278,44 @@ mod tests {
             context: EdgeContext::Production,
         };
         assert_eq!(dep.full_target(), "crate_b");
+    }
+
+    #[test]
+    fn test_workspace_crates_normalizes_on_insert() {
+        let mut ws = WorkspaceCrates::default();
+        ws.insert("my-lib".to_string());
+        assert!(ws.contains("my_lib"), "should find normalized name");
+        assert!(
+            ws.contains("my-lib"),
+            "should find hyphenated name via normalization"
+        );
+    }
+
+    #[test]
+    fn test_workspace_crates_from_iter_normalizes() {
+        let ws: WorkspaceCrates = ["core-utils", "my-lib"].into_iter().collect();
+        assert!(ws.contains("core_utils"));
+        assert!(ws.contains("core-utils"));
+        assert!(ws.contains("my_lib"));
+        assert!(ws.contains("my-lib"));
+    }
+
+    #[test]
+    fn test_workspace_crates_iter_returns_normalized() {
+        let ws: WorkspaceCrates = ["core-utils"].into_iter().collect();
+        let names: Vec<&str> = ws.iter().map(|s| s.as_str()).collect();
+        assert_eq!(names, vec!["core_utils"]);
+    }
+
+    #[test]
+    fn test_workspace_crates_len_and_is_empty() {
+        let empty = WorkspaceCrates::default();
+        assert!(empty.is_empty());
+        assert_eq!(empty.len(), 0);
+
+        let ws: WorkspaceCrates = ["a", "b"].into_iter().collect();
+        assert!(!ws.is_empty());
+        assert_eq!(ws.len(), 2);
     }
 
     #[test]

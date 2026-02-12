@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use tracing::{debug, instrument};
 
 use super::FeatureConfig;
-use crate::model::WorkspaceCrates;
+use crate::model::{WorkspaceCrates, normalize_crate_name};
 
 // --- Dependency filtering types ---
 
@@ -66,9 +66,7 @@ impl<'a> DepInfo<'a> {
             DepKind::Unknown
         };
 
-        // Normalize for comparison: cargo metadata uses underscores (core_utils),
-        // but Cargo.toml names may have hyphens (core-utils)
-        let scope = if workspace_members.contains_normalized(name) {
+        let scope = if workspace_members.contains(name) {
             DepScope::Workspace
         } else {
             DepScope::External
@@ -144,7 +142,7 @@ pub(super) fn find_seed_crates(
         .iter()
         .filter(|pkg| workspace_members.contains(pkg.name.as_str()))
         .filter(|pkg| package_matches_features(pkg, &parsed_features))
-        .map(|pkg| pkg.name.to_string())
+        .map(|pkg| normalize_crate_name(&pkg.name))
         .collect();
 
     debug!(seeds = ?seeds, "found");
@@ -156,7 +154,7 @@ pub(super) fn find_seed_crates(
 #[instrument(skip_all, fields(seed_count = seeds.len()))]
 pub(super) fn collect_reachable_crates(
     seeds: HashSet<String>,
-    resolved_deps: &HashMap<&str, Vec<String>>,
+    resolved_deps: &HashMap<String, Vec<String>>,
     workspace_members: &WorkspaceCrates,
 ) -> HashSet<String> {
     debug!(seeds = ?seeds);
@@ -213,9 +211,9 @@ mod tests {
     fn test_collect_reachable_crates_bfs() {
         // A -> B -> C should traverse all three
         let seeds: HashSet<String> = ["A".to_string()].into_iter().collect();
-        let mut resolved_deps: HashMap<&str, Vec<String>> = HashMap::new();
-        resolved_deps.insert("A", vec!["B".to_string()]);
-        resolved_deps.insert("B", vec!["C".to_string()]);
+        let mut resolved_deps: HashMap<String, Vec<String>> = HashMap::new();
+        resolved_deps.insert("A".to_string(), vec!["B".to_string()]);
+        resolved_deps.insert("B".to_string(), vec!["C".to_string()]);
         let workspace: WorkspaceCrates = ["A", "B", "C"].into_iter().collect();
 
         let reachable = collect_reachable_crates(seeds, &resolved_deps, &workspace);
@@ -230,9 +228,9 @@ mod tests {
     fn test_collect_reachable_stops_at_non_workspace() {
         // A -> B -> external (not in workspace) should stop at B
         let seeds: HashSet<String> = ["A".to_string()].into_iter().collect();
-        let mut resolved_deps: HashMap<&str, Vec<String>> = HashMap::new();
-        resolved_deps.insert("A", vec!["B".to_string()]);
-        resolved_deps.insert("B", vec!["external".to_string()]);
+        let mut resolved_deps: HashMap<String, Vec<String>> = HashMap::new();
+        resolved_deps.insert("A".to_string(), vec!["B".to_string()]);
+        resolved_deps.insert("B".to_string(), vec!["external".to_string()]);
         let workspace: WorkspaceCrates = ["A", "B"].into_iter().collect();
 
         let reachable = collect_reachable_crates(seeds, &resolved_deps, &workspace);
@@ -247,9 +245,9 @@ mod tests {
     fn test_collect_reachable_handles_cycles() {
         // A -> B -> A (cycle) should terminate
         let seeds: HashSet<String> = ["A".to_string()].into_iter().collect();
-        let mut resolved_deps: HashMap<&str, Vec<String>> = HashMap::new();
-        resolved_deps.insert("A", vec!["B".to_string()]);
-        resolved_deps.insert("B", vec!["A".to_string()]);
+        let mut resolved_deps: HashMap<String, Vec<String>> = HashMap::new();
+        resolved_deps.insert("A".to_string(), vec!["B".to_string()]);
+        resolved_deps.insert("B".to_string(), vec!["A".to_string()]);
         let workspace: WorkspaceCrates = ["A", "B"].into_iter().collect();
 
         let reachable = collect_reachable_crates(seeds, &resolved_deps, &workspace);
