@@ -10,9 +10,9 @@ use crate::analyze::{
 };
 use crate::graph::build_graph;
 use crate::layout::{build_layout, detect_cycles, topo_sort};
+use crate::model::{CrateExportMap, ModulePathMap, WorkspaceCrates};
 use crate::render::{RenderConfig, render};
 use crate::volatility::{VolatilityAnalyzer, VolatilityConfig};
-use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 /// Cargo subcommand wrapper for `cargo arc`
@@ -128,7 +128,7 @@ pub fn run(args: Args) -> Result<()> {
     let crates = analyze_workspace(&args.manifest_path, &feature_config)?;
 
     // 3. Build workspace crate names set for inter-crate dependency detection
-    let workspace_crates: HashSet<String> = crates.iter().map(|c| c.name.clone()).collect();
+    let workspace_crates: WorkspaceCrates = crates.iter().map(|c| c.name.clone()).collect();
 
     // 4. Create analysis backend (syn default, hir only with --hir flag)
     #[cfg(feature = "hir")]
@@ -138,7 +138,7 @@ pub fn run(args: Args) -> Result<()> {
     let backend = AnalysisBackend::new(&args.manifest_path, &feature_config, use_hir)?;
 
     // 5a. Collect module paths from ALL crates
-    let all_module_paths: HashMap<String, HashSet<String>> = crates
+    let all_module_paths: ModulePathMap = crates
         .iter()
         .map(|c| {
             let name = normalize_crate_name(&c.name);
@@ -148,7 +148,7 @@ pub fn run(args: Args) -> Result<()> {
         .collect();
 
     // 5a2. Collect crate exports for entry-point detection
-    let crate_exports: HashMap<String, HashSet<String>> = crates
+    let crate_exports: CrateExportMap = crates
         .iter()
         .map(|c| {
             let name = normalize_crate_name(&c.name);

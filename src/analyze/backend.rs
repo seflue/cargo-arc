@@ -1,12 +1,12 @@
 //! Analysis backend abstraction (syn vs HIR).
 
 use anyhow::Result;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::Path;
 
 use super::hir::FeatureConfig;
 use super::syn_walker::{analyze_modules_syn, collect_syn_module_paths};
-use crate::model::{CrateInfo, ModuleTree};
+use crate::model::{CrateExportMap, CrateInfo, ModulePathMap, ModuleTree, WorkspaceCrates};
 
 #[cfg(feature = "hir")]
 use {
@@ -69,9 +69,9 @@ impl AnalysisBackend {
     pub fn analyze_modules(
         &self,
         crate_info: &CrateInfo,
-        workspace_crates: &HashSet<String>,
-        all_module_paths: &HashMap<String, HashSet<String>>,
-        crate_exports: &HashMap<String, HashSet<String>>,
+        workspace_crates: &WorkspaceCrates,
+        all_module_paths: &ModulePathMap,
+        crate_exports: &CrateExportMap,
     ) -> Result<ModuleTree> {
         match self {
             Self::Syn { include_tests } => analyze_modules_syn(

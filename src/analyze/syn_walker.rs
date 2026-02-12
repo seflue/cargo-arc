@@ -1,14 +1,17 @@
 //! Module discovery via syn + filesystem walk.
 
 use anyhow::{Context, Result, bail};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use super::use_parser::{
     collect_all_path_refs, normalize_crate_name, parse_path_ref_dependencies,
     parse_workspace_dependencies,
 };
-use crate::model::{CrateInfo, EdgeContext, ModuleInfo, ModuleTree, TestKind};
+use crate::model::{
+    CrateExportMap, CrateInfo, EdgeContext, ModuleInfo, ModulePathMap, ModuleTree, TestKind,
+    WorkspaceCrates,
+};
 
 /// Find root source files (lib.rs and/or main.rs) for a crate.
 /// Returns all existing root files, lib.rs first.
@@ -324,19 +327,24 @@ pub(crate) fn collect_crate_exports(crate_root: &Path) -> HashSet<String> {
 // Public API: analyze_modules_syn
 // ---------------------------------------------------------------------------
 
+/// Invariant parameters shared across the recursive module walk.
+#[derive(Clone, Copy)]
+struct WalkContext<'a> {
+    crate_name: &'a str,
+    crate_root: &'a Path,
+    workspace_crates: &'a WorkspaceCrates,
+    all_module_paths: &'a ModulePathMap,
+    crate_exports: &'a CrateExportMap,
+    include_tests: bool,
+    base_context: EdgeContext,
+}
+
 /// Recursively walk a module, building `ModuleInfo` with dependency extraction.
-#[allow(clippy::too_many_arguments)]
 fn walk_module_syn(
+    ctx: &WalkContext,
     file_path: &Path,
     module_name: &str,
     parent_path: &str,
-    crate_name: &str,
-    crate_root: &Path,
-    workspace_crates: &HashSet<String>,
-    all_module_paths: &HashMap<String, HashSet<String>>,
-    crate_exports: &HashMap<String, HashSet<String>>,
-    include_tests: bool,
-    base_context: EdgeContext,
     is_crate_root: bool,
 ) -> ModuleInfo {
     let full_path = if parent_path == module_name {
@@ -373,30 +381,30 @@ fn walk_module_syn(
     };
 
     let source_file = file_path
-        .strip_prefix(crate_root)
+        .strip_prefix(ctx.crate_root)
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|_| file_path.to_path_buf());
 
     // Extract use items from all scopes (top-level + fn bodies + nested blocks)
-    let use_items = super::use_parser::collect_all_use_items(&syntax, base_context);
+    let use_items = super::use_parser::collect_all_use_items(&syntax, ctx.base_context);
     let use_deps = parse_workspace_dependencies(
         &use_items,
-        crate_name,
-        workspace_crates,
+        ctx.crate_name,
+        ctx.workspace_crates,
         &source_file,
-        all_module_paths,
-        crate_exports,
+        ctx.all_module_paths,
+        ctx.crate_exports,
     );
 
     // Extract qualified path references (e.g. my_lib::run(), let x: my_lib::Config)
-    let path_refs = collect_all_path_refs(&syntax, base_context);
+    let path_refs = collect_all_path_refs(&syntax, ctx.base_context);
     let path_deps = parse_path_ref_dependencies(
         &path_refs,
-        crate_name,
-        workspace_crates,
+        ctx.crate_name,
+        ctx.workspace_crates,
         &source_file,
-        all_module_paths,
-        crate_exports,
+        ctx.all_module_paths,
+        ctx.crate_exports,
     );
 
     // Merge: use-dependencies first (have priority), then path-dependencies (dedup by (full_target, context))
@@ -412,7 +420,7 @@ fn walk_module_syn(
     }
 
     // Extract mod declarations from the same AST (no second file read)
-    let decls = extract_mod_declarations(&syntax, include_tests);
+    let decls = extract_mod_declarations(&syntax, ctx.include_tests);
 
     // Integration test files (tests/smoke.rs) are crate roots: resolve modules
     // from their parent directory (tests/), not from a stem-based subdirectory.
@@ -432,21 +440,7 @@ fn walk_module_syn(
                 resolve_mod_path(&resolve_dir, &decl.name)
             };
 
-            child_file.map(|cf| {
-                walk_module_syn(
-                    &cf,
-                    &decl.name,
-                    &full_path,
-                    crate_name,
-                    crate_root,
-                    workspace_crates,
-                    all_module_paths,
-                    crate_exports,
-                    include_tests,
-                    base_context,
-                    false,
-                )
-            })
+            child_file.map(|cf| walk_module_syn(ctx, &cf, &decl.name, &full_path, false))
         })
         .collect();
 
@@ -462,27 +456,31 @@ fn walk_module_syn(
 /// Drop-in replacement for `hir::analyze_modules()`.
 pub(crate) fn analyze_modules_syn(
     crate_info: &CrateInfo,
-    workspace_crates: &HashSet<String>,
-    all_module_paths: &HashMap<String, HashSet<String>>,
-    crate_exports: &HashMap<String, HashSet<String>>,
+    workspace_crates: &WorkspaceCrates,
+    all_module_paths: &ModulePathMap,
+    crate_exports: &CrateExportMap,
     include_tests: bool,
 ) -> Result<ModuleTree> {
     let root_files = find_crate_root_files(&crate_info.path)?;
     let normalized = normalize_crate_name(&crate_info.name);
 
+    let ctx = WalkContext {
+        crate_name: &normalized,
+        crate_root: &crate_info.path,
+        workspace_crates,
+        all_module_paths,
+        crate_exports,
+        include_tests,
+        base_context: EdgeContext::Production,
+    };
+
     let mut root: Option<ModuleInfo> = None;
     for root_file in &root_files {
         let tree = walk_module_syn(
+            &ctx,
             root_file,
             &normalized,
             &normalized, // parent_path == name for root → triggers identity check
-            &normalized,
-            &crate_info.path,
-            workspace_crates,
-            all_module_paths,
-            crate_exports,
-            include_tests,
-            EdgeContext::Production,
             false,
         );
         match &mut root {
@@ -514,6 +512,10 @@ pub(crate) fn analyze_modules_syn(
 
     // Walk integration test files (tests/*.rs) when --include-tests is active
     if include_tests {
+        let test_ctx = WalkContext {
+            base_context: EdgeContext::Test(TestKind::Integration),
+            ..ctx
+        };
         let test_files = find_integration_test_files(&crate_info.path);
         let root = root.as_mut().unwrap();
         for test_file in test_files {
@@ -522,16 +524,10 @@ pub(crate) fn analyze_modules_syn(
                 .and_then(|s| s.to_str())
                 .unwrap_or("unknown");
             let tree = walk_module_syn(
+                &test_ctx,
                 &test_file,
                 test_name,
                 &format!("{normalized}::tests"),
-                &normalized,
-                &crate_info.path,
-                workspace_crates,
-                all_module_paths,
-                crate_exports,
-                include_tests,
-                EdgeContext::Test(TestKind::Integration),
                 true,
             );
             root.children.push(tree);
@@ -970,14 +966,14 @@ mod tests {
                 dependencies: vec![],
                 dev_dependencies: vec![],
             };
-            let workspace_crates: HashSet<String> =
+            let workspace_crates: WorkspaceCrates =
                 ["cargo-arc"].iter().map(|s| s.to_string()).collect();
 
             let tree = analyze_modules_syn(
                 &crate_info,
                 &workspace_crates,
-                &HashMap::new(),
-                &HashMap::new(),
+                &ModulePathMap::default(),
+                &CrateExportMap::default(),
                 false,
             )
             .expect("should analyze");
@@ -1027,19 +1023,19 @@ mod tests {
                 dependencies: vec![],
                 dev_dependencies: vec![],
             };
-            let workspace_crates: HashSet<String> =
+            let workspace_crates: WorkspaceCrates =
                 ["cargo-arc"].iter().map(|s| s.to_string()).collect();
 
             // Collect module paths for accurate dependency resolution
-            let mut all_module_paths = HashMap::new();
             let paths = collect_syn_module_paths(crate_root, "cargo_arc", false);
-            all_module_paths.insert("cargo_arc".to_string(), paths);
+            let all_module_paths: ModulePathMap =
+                [("cargo_arc".to_string(), paths)].into_iter().collect();
 
             let tree = analyze_modules_syn(
                 &crate_info,
                 &workspace_crates,
                 &all_module_paths,
-                &HashMap::new(),
+                &CrateExportMap::default(),
                 false,
             )
             .expect("should analyze");
@@ -1091,9 +1087,9 @@ mod tests {
             };
             let tree = analyze_modules_syn(
                 &crate_info,
-                &HashSet::new(),
-                &HashMap::new(),
-                &HashMap::new(),
+                &WorkspaceCrates::default(),
+                &ModulePathMap::default(),
+                &CrateExportMap::default(),
                 false,
             )
             .expect("should analyze binary-only crate");
@@ -1123,17 +1119,19 @@ fn main() {
             )
             .unwrap();
 
-            let ws: HashSet<String> = HashSet::from(["other_crate".to_string()]);
-            let mp: HashMap<String, HashSet<String>> =
-                HashMap::from([("other_crate".to_string(), HashSet::from(["module".into()]))]);
+            let ws: WorkspaceCrates = ["other_crate".to_string()].into_iter().collect();
+            let mp: ModulePathMap = [("other_crate".to_string(), HashSet::from(["module".into()]))]
+                .into_iter()
+                .collect();
             let crate_info = CrateInfo {
                 name: "app".to_string(),
                 path: tmp.path().to_path_buf(),
                 dependencies: vec![],
                 dev_dependencies: vec![],
             };
-            let tree = analyze_modules_syn(&crate_info, &ws, &mp, &HashMap::new(), false)
-                .expect("should analyze");
+            let tree =
+                analyze_modules_syn(&crate_info, &ws, &mp, &CrateExportMap::default(), false)
+                    .expect("should analyze");
 
             // Path expressions should be detected as dependencies
             assert!(
@@ -1163,17 +1161,19 @@ fn main() {
             )
             .unwrap();
 
-            let ws: HashSet<String> = HashSet::from(["other_crate".to_string()]);
-            let mp: HashMap<String, HashSet<String>> =
-                HashMap::from([("other_crate".to_string(), HashSet::from(["module".into()]))]);
+            let ws: WorkspaceCrates = ["other_crate".to_string()].into_iter().collect();
+            let mp: ModulePathMap = [("other_crate".to_string(), HashSet::from(["module".into()]))]
+                .into_iter()
+                .collect();
             let crate_info = CrateInfo {
                 name: "app".to_string(),
                 path: tmp.path().to_path_buf(),
                 dependencies: vec![],
                 dev_dependencies: vec![],
             };
-            let tree = analyze_modules_syn(&crate_info, &ws, &mp, &HashMap::new(), false)
-                .expect("should analyze");
+            let tree =
+                analyze_modules_syn(&crate_info, &ws, &mp, &CrateExportMap::default(), false)
+                    .expect("should analyze");
 
             // Should have exactly 1 dep for other_crate::module::Item (deduped)
             let item_deps: Vec<_> = tree
@@ -1212,9 +1212,9 @@ fn main() {
             };
             let tree = analyze_modules_syn(
                 &crate_info,
-                &HashSet::new(),
-                &HashMap::new(),
-                &HashMap::new(),
+                &WorkspaceCrates::default(),
+                &ModulePathMap::default(),
+                &CrateExportMap::default(),
                 false,
             )
             .expect("should analyze mixed crate");
@@ -1303,14 +1303,19 @@ fn main() {
                 dependencies: vec!["crate_lib".to_string()],
                 dev_dependencies: vec![],
             };
-            let ws: HashSet<String> = ["crate_with_tests", "crate_lib"]
+            let ws: WorkspaceCrates = ["crate_with_tests", "crate_lib"]
                 .iter()
                 .map(|s| s.to_string())
                 .collect();
 
-            let tree =
-                analyze_modules_syn(&crate_info, &ws, &HashMap::new(), &HashMap::new(), true)
-                    .expect("should analyze");
+            let tree = analyze_modules_syn(
+                &crate_info,
+                &ws,
+                &ModulePathMap::default(),
+                &CrateExportMap::default(),
+                true,
+            )
+            .expect("should analyze");
 
             let child_names: Vec<&str> =
                 tree.root.children.iter().map(|m| m.name.as_str()).collect();
@@ -1347,9 +1352,9 @@ fn main() {
 
             let tree = analyze_modules_syn(
                 &crate_info,
-                &HashSet::new(),
-                &HashMap::new(),
-                &HashMap::new(),
+                &WorkspaceCrates::default(),
+                &ModulePathMap::default(),
+                &CrateExportMap::default(),
                 false,
             )
             .expect("should analyze");
@@ -1372,14 +1377,19 @@ fn main() {
                 dependencies: vec!["crate_lib".to_string()],
                 dev_dependencies: vec![],
             };
-            let ws: HashSet<String> = ["test_only_crate", "crate_lib"]
+            let ws: WorkspaceCrates = ["test_only_crate", "crate_lib"]
                 .iter()
                 .map(|s| s.to_string())
                 .collect();
 
-            let tree =
-                analyze_modules_syn(&crate_info, &ws, &HashMap::new(), &HashMap::new(), true)
-                    .expect("should analyze test-only crate");
+            let tree = analyze_modules_syn(
+                &crate_info,
+                &ws,
+                &ModulePathMap::default(),
+                &CrateExportMap::default(),
+                true,
+            )
+            .expect("should analyze test-only crate");
 
             assert_eq!(tree.root.name, "test_only_crate");
             let child_names: Vec<&str> =
@@ -1403,9 +1413,9 @@ fn main() {
 
             let tree = analyze_modules_syn(
                 &crate_info,
-                &HashSet::new(),
-                &HashMap::new(),
-                &HashMap::new(),
+                &WorkspaceCrates::default(),
+                &ModulePathMap::default(),
+                &CrateExportMap::default(),
                 false,
             )
             .expect("should not error for test-only crate");

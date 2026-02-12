@@ -2,7 +2,66 @@
 //!
 //! Types used across analyze and graph modules, extracted to break circular dependencies.
 
+use std::collections::{HashMap, HashSet};
+use std::ops::Deref;
 use std::path::PathBuf;
+
+/// Workspace crate names (e.g. `{"cargo-arc", "my_lib"}`).
+#[derive(Debug, Default, Clone)]
+pub struct WorkspaceCrates(HashSet<String>);
+
+impl Deref for WorkspaceCrates {
+    type Target = HashSet<String>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl FromIterator<String> for WorkspaceCrates {
+    fn from_iter<I: IntoIterator<Item = String>>(iter: I) -> Self {
+        Self(iter.into_iter().collect())
+    }
+}
+
+impl WorkspaceCrates {
+    pub fn insert(&mut self, name: String) -> bool {
+        self.0.insert(name)
+    }
+}
+
+/// Crate name → set of module paths (e.g. `{"analyze", "analyze::hir"}`).
+#[derive(Debug, Default, Clone)]
+pub struct ModulePathMap(HashMap<String, HashSet<String>>);
+
+impl Deref for ModulePathMap {
+    type Target = HashMap<String, HashSet<String>>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl FromIterator<(String, HashSet<String>)> for ModulePathMap {
+    fn from_iter<I: IntoIterator<Item = (String, HashSet<String>)>>(iter: I) -> Self {
+        Self(iter.into_iter().collect())
+    }
+}
+
+/// Crate name → set of exported symbol names.
+#[derive(Debug, Default, Clone)]
+pub struct CrateExportMap(HashMap<String, HashSet<String>>);
+
+impl Deref for CrateExportMap {
+    type Target = HashMap<String, HashSet<String>>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl FromIterator<(String, HashSet<String>)> for CrateExportMap {
+    fn from_iter<I: IntoIterator<Item = (String, HashSet<String>)>>(iter: I) -> Self {
+        Self(iter.into_iter().collect())
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EdgeContext {

@@ -15,12 +15,15 @@ pub struct FeatureConfig {
 #[cfg(feature = "hir")]
 use {
     super::use_parser::{normalize_crate_name, parse_workspace_dependencies_from_source},
-    crate::model::{CrateInfo, DependencyRef, ModuleInfo, ModuleTree},
+    crate::model::{
+        CrateExportMap, CrateInfo, DependencyRef, ModuleInfo, ModulePathMap, ModuleTree,
+        WorkspaceCrates,
+    },
     anyhow::{Context, Result},
     ra_ap_cfg::{CfgAtom, CfgDiff},
     ra_ap_hir as hir, ra_ap_ide as ide, ra_ap_load_cargo as load_cargo, ra_ap_paths as paths,
     ra_ap_project_model as project_model,
-    std::collections::{HashMap, HashSet},
+    std::collections::HashSet,
     std::path::{Path, PathBuf},
 };
 
@@ -219,9 +222,9 @@ pub fn analyze_modules(
     crate_info: &CrateInfo,
     host: &ide::AnalysisHost,
     vfs: &ra_ap_vfs::Vfs,
-    workspace_crates: &HashSet<String>,
-    all_module_paths: &HashMap<String, HashSet<String>>,
-    crate_exports: &HashMap<String, HashSet<String>>,
+    workspace_crates: &WorkspaceCrates,
+    all_module_paths: &ModulePathMap,
+    crate_exports: &CrateExportMap,
 ) -> Result<ModuleTree> {
     // Find crate in already-loaded workspace
     let krate = find_crate_in_workspace(crate_info, host, vfs)?;
@@ -256,9 +259,9 @@ fn walk_module(
     parent_path: &str,
     crate_root: &Path,
     crate_name: &str,
-    workspace_crates: &HashSet<String>,
-    all_module_paths: &HashMap<String, HashSet<String>>,
-    crate_exports: &HashMap<String, HashSet<String>>,
+    workspace_crates: &WorkspaceCrates,
+    all_module_paths: &ModulePathMap,
+    crate_exports: &CrateExportMap,
 ) -> ModuleInfo {
     let (name, full_path) = resolve_module_name_and_path(module, db, parent_path);
 
@@ -312,9 +315,9 @@ fn extract_module_dependencies(
     vfs: &ra_ap_vfs::Vfs,
     crate_root: &Path,
     crate_name: &str,
-    workspace_crates: &HashSet<String>,
-    all_module_paths: &HashMap<String, HashSet<String>>,
-    crate_exports: &HashMap<String, HashSet<String>>,
+    workspace_crates: &WorkspaceCrates,
+    all_module_paths: &ModulePathMap,
+    crate_exports: &CrateExportMap,
 ) -> Vec<DependencyRef> {
     // Get the source file for this module
     let source = module.definition_source(db);
@@ -509,8 +512,7 @@ mod hir_tests {
             let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
             let crates = analyze_workspace(&manifest, &FeatureConfig::default())
                 .expect("should analyze workspace");
-            let workspace_crates: std::collections::HashSet<String> =
-                crates.iter().map(|c| c.name.clone()).collect();
+            let workspace_crates: WorkspaceCrates = crates.iter().map(|c| c.name.clone()).collect();
             let cargo_arc = crates.iter().find(|c| c.name == "cargo-arc").unwrap();
 
             let (host, vfs) = load_workspace_hir(&manifest, &FeatureConfig::default())
@@ -520,8 +522,8 @@ mod hir_tests {
                 &host,
                 &vfs,
                 &workspace_crates,
-                &HashMap::new(),
-                &HashMap::new(),
+                &ModulePathMap::default(),
+                &CrateExportMap::default(),
             )
             .expect("should analyze modules");
 
@@ -556,8 +558,7 @@ mod hir_tests {
             let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
             let crates = analyze_workspace(&manifest, &FeatureConfig::default())
                 .expect("should analyze workspace");
-            let workspace_crates: std::collections::HashSet<String> =
-                crates.iter().map(|c| c.name.clone()).collect();
+            let workspace_crates: WorkspaceCrates = crates.iter().map(|c| c.name.clone()).collect();
             let cargo_arc = crates.iter().find(|c| c.name == "cargo-arc").unwrap();
 
             let (host, vfs) = load_workspace_hir(&manifest, &FeatureConfig::default())
@@ -567,8 +568,8 @@ mod hir_tests {
                 &host,
                 &vfs,
                 &workspace_crates,
-                &HashMap::new(),
-                &HashMap::new(),
+                &ModulePathMap::default(),
+                &CrateExportMap::default(),
             )
             .expect("should analyze modules");
 
@@ -589,8 +590,7 @@ mod hir_tests {
             let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
             let crates = analyze_workspace(&manifest, &FeatureConfig::default())
                 .expect("should analyze workspace");
-            let workspace_crates: std::collections::HashSet<String> =
-                crates.iter().map(|c| c.name.clone()).collect();
+            let workspace_crates: WorkspaceCrates = crates.iter().map(|c| c.name.clone()).collect();
             let cargo_arc = crates.iter().find(|c| c.name == "cargo-arc").unwrap();
 
             let (host, vfs) = load_workspace_hir(&manifest, &FeatureConfig::default())
@@ -600,8 +600,8 @@ mod hir_tests {
                 &host,
                 &vfs,
                 &workspace_crates,
-                &HashMap::new(),
-                &HashMap::new(),
+                &ModulePathMap::default(),
+                &CrateExportMap::default(),
             )
             .expect("should analyze modules");
 
