@@ -9,7 +9,7 @@ use crate::analyze::{
     AnalysisBackend, FeatureConfig, analyze_workspace, collect_crate_exports, normalize_crate_name,
 };
 use crate::graph::build_graph;
-use crate::layout::{build_layout, detect_cycles, topo_sort};
+use crate::layout::{build_layout, detect_cycles};
 use crate::model::{CrateExportMap, ModulePathMap, WorkspaceCrates};
 use crate::render::{RenderConfig, render};
 use crate::volatility::{VolatilityAnalyzer, VolatilityConfig};
@@ -173,11 +173,8 @@ pub fn run(args: Args) -> Result<()> {
     // 7. Detect cycles
     let cycles = detect_cycles(&graph);
 
-    // 8. Topological sort
-    let order = topo_sort(&graph, &cycles);
-
-    // 9. Build layout (CrateDep edges skipped when ModuleDeps exist between crates)
-    let mut layout = build_layout(&graph, &order, &cycles);
+    // 8. Build layout (CrateDep edges skipped when ModuleDeps exist between crates)
+    let mut layout = build_layout(&graph, &cycles);
 
     // 9b. Populate volatility data (graceful degradation on failure)
     if !args.no_volatility {

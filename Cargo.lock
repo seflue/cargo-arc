@@ -144,6 +144,7 @@ dependencies = [
  "cargo_metadata",
  "clap",
  "dunce",
+ "itertools",
  "petgraph",
  "proc-macro2",
  "ra_ap_cfg",

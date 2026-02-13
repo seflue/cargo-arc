@@ -17,252 +17,184 @@ pub struct Cycle {
     pub nodes: Vec<NodeIndex>,
 }
 
-/// Log debug info about cycles found in the condensed graph (SCCs with >1 node).
-fn log_condensed_cycles(
-    sccs: &[Vec<petgraph::graph::NodeIndex>],
-    condensed: &DiGraph<NodeIndex, ()>,
-    node_to_rep: &HashMap<NodeIndex, NodeIndex>,
-    rep_to_condensed: &HashMap<NodeIndex, petgraph::graph::NodeIndex>,
-    graph: &ArcGraph,
-) {
-    let node_label = |idx: NodeIndex| -> String {
-        match &graph[idx] {
-            crate::graph::Node::Crate { name, .. } => format!("Crate({name})"),
-            crate::graph::Node::Module { name, crate_idx } => {
-                let crate_name = match &graph[*crate_idx] {
-                    crate::graph::Node::Crate { name, .. } => name.as_str(),
-                    _ => "?",
-                };
-                format!("Module({crate_name}::{name})")
-            }
-        }
-    };
+/// SCC condensation fallback for stable_toposort when cycles exist.
+/// Applies ADR-018 pattern: condense → toposort → expand alphabetically.
+fn scc_fallback_sort(
+    graph: &DiGraph<NodeIndex, usize>,
+    node_to_orig: &HashMap<petgraph::graph::NodeIndex, NodeIndex>,
+    get_name: &dyn Fn(NodeIndex) -> String,
+) -> Vec<NodeIndex> {
+    use std::collections::BinaryHeap;
 
-    for scc in sccs {
-        if scc.len() <= 1 {
-            continue;
-        }
-        let scc_set: HashSet<_> = scc.iter().copied().collect();
-        let scc_names: Vec<_> = scc.iter().map(|&ci| node_label(condensed[ci])).collect();
-        tracing::warn!(
-            "Cycle in condensed graph ({} nodes): {}",
-            scc.len(),
-            scc_names.join(", ")
-        );
+    let sccs = tarjan_scc(graph);
 
-        for edge_idx in graph.edge_indices() {
-            let (src, dst) = graph.edge_endpoints(edge_idx).unwrap();
-            let src_rep = node_to_rep[&src];
-            let dst_rep = node_to_rep[&dst];
-            if src_rep == dst_rep {
-                continue;
-            }
-            let src_cond = rep_to_condensed[&src_rep];
-            let dst_cond = rep_to_condensed[&dst_rep];
-            if !scc_set.contains(&src_cond) || !scc_set.contains(&dst_cond) {
-                continue;
-            }
-            match &graph[edge_idx] {
-                Edge::CrateDep { .. } => {
-                    tracing::warn!("  CrateDep: {} -> {}", node_label(src), node_label(dst));
-                }
-                Edge::ModuleDep {
-                    locations: locs, ..
-                } => {
-                    let loc_strs: Vec<_> = locs
-                        .iter()
-                        .map(|l| {
-                            format!(
-                                "{}:{} use {} ({})",
-                                l.file.display(),
-                                l.line,
-                                l.symbols.join(", "),
-                                l.module_path
-                            )
-                        })
-                        .collect();
-                    tracing::warn!(
-                        "  ModuleDep: {} -> {} [{}]",
-                        node_label(src),
-                        node_label(dst),
-                        loc_strs.join("; ")
-                    );
-                }
-                Edge::Contains => {}
-            }
-        }
-    }
-}
-
-/// Break cycles in the condensed graph via SCC condensation and alphabetical expansion.
-///
-/// Builds a meta-condensed-graph (each SCC = one node), topologically sorts it
-/// (guaranteed DAG after SCC condensation), then expands SCC members alphabetically.
-fn sort_with_cycle_breaking(
-    condensed: &DiGraph<NodeIndex, ()>,
-    sccs: Vec<Vec<petgraph::graph::NodeIndex>>,
-    node_name: &dyn Fn(NodeIndex) -> String,
-) -> Vec<petgraph::graph::NodeIndex> {
-    use petgraph::algo::toposort;
-
-    // Meta-condensed-graph: each SCC becomes one node
-    let mut meta_graph: DiGraph<Vec<petgraph::graph::NodeIndex>, ()> = DiGraph::new();
-    let mut cond_to_meta: HashMap<petgraph::graph::NodeIndex, petgraph::graph::NodeIndex> =
+    // Build condensed DAG: each SCC becomes one node
+    let mut condensed: DiGraph<Vec<petgraph::graph::NodeIndex>, ()> = DiGraph::new();
+    let mut node_to_scc: HashMap<petgraph::graph::NodeIndex, petgraph::graph::NodeIndex> =
         HashMap::new();
 
-    for scc in sccs {
-        let meta_idx = meta_graph.add_node(scc.clone());
-        for &cond_idx in &scc {
-            cond_to_meta.insert(cond_idx, meta_idx);
+    for scc in &sccs {
+        let scc_idx = condensed.add_node(scc.clone());
+        for &node in scc {
+            node_to_scc.insert(node, scc_idx);
         }
     }
 
-    // Transfer edges between meta-nodes (skip intra-SCC edges)
-    for edge in condensed.edge_references() {
-        let src_meta = cond_to_meta[&edge.source()];
-        let dst_meta = cond_to_meta[&edge.target()];
-        if src_meta != dst_meta && !meta_graph.contains_edge(src_meta, dst_meta) {
-            meta_graph.add_edge(src_meta, dst_meta, ());
+    // Transfer edges between SCCs (skip intra-SCC)
+    for edge in graph.edge_references() {
+        let src_scc = node_to_scc[&edge.source()];
+        let dst_scc = node_to_scc[&edge.target()];
+        if src_scc != dst_scc && !condensed.contains_edge(src_scc, dst_scc) {
+            condensed.add_edge(src_scc, dst_scc, ());
         }
     }
 
-    // Toposort on meta-graph (SCC condensation guarantees DAG)
-    let meta_order = toposort(&meta_graph, None).expect("SCC condensation guarantees DAG");
+    // Stable Kahn's toposort on condensed DAG with alphabetical tiebreaker
+    let scc_order = {
+        let mut in_deg: HashMap<petgraph::graph::NodeIndex, usize> = HashMap::new();
+        for n in condensed.node_indices() {
+            in_deg.insert(n, 0);
+        }
+        for e in condensed.edge_references() {
+            *in_deg.get_mut(&e.target()).unwrap() += 1;
+        }
 
-    // Expand: SCC members sorted alphabetically by node_name
-    meta_order
+        // Sort name = alphabetically first member
+        let scc_sort_name = |scc_idx: petgraph::graph::NodeIndex| -> String {
+            condensed[scc_idx]
+                .iter()
+                .map(|&n| get_name(node_to_orig[&n]))
+                .min()
+                .unwrap_or_default()
+        };
+
+        // Min-heap by name
+        let mut heap: BinaryHeap<std::cmp::Reverse<(String, petgraph::graph::NodeIndex)>> =
+            BinaryHeap::new();
+        for (&n, &deg) in &in_deg {
+            if deg == 0 {
+                heap.push(std::cmp::Reverse((scc_sort_name(n), n)));
+            }
+        }
+
+        let mut order = Vec::new();
+        while let Some(std::cmp::Reverse((_, n))) = heap.pop() {
+            order.push(n);
+            for neighbor in condensed.neighbors(n) {
+                let deg = in_deg.get_mut(&neighbor).unwrap();
+                *deg -= 1;
+                if *deg == 0 {
+                    heap.push(std::cmp::Reverse((scc_sort_name(neighbor), neighbor)));
+                }
+            }
+        }
+        order
+    };
+
+    // Log cycles (SCCs with >1 member)
+    for &scc_idx in &scc_order {
+        let members = &condensed[scc_idx];
+        if members.len() > 1 {
+            let names: Vec<String> = members
+                .iter()
+                .map(|&n| get_name(node_to_orig[&n]))
+                .collect();
+            tracing::debug!("SCC cycle ({} nodes): {}", members.len(), names.join(", "));
+        }
+    }
+
+    // Expand: multi-member SCCs via optimal_scc_order, singletons directly
+    scc_order
         .into_iter()
-        .flat_map(|meta_idx| {
-            let mut members = meta_graph[meta_idx].clone();
-            members.sort_by_key(|&idx| node_name(condensed[idx]));
-            members
+        .flat_map(|scc_idx| {
+            let members = &condensed[scc_idx];
+            if members.len() > 1 {
+                optimal_scc_order(members, graph, node_to_orig, get_name)
+            } else {
+                vec![node_to_orig[&members[0]]]
+            }
         })
         .collect()
 }
 
-/// Topologically sort graph nodes, treating cycle members as a unit.
-/// Only considers CrateDep and ModuleDep edges (ignores Contains edges).
-/// Cycle nodes are sorted alphabetically within their group.
-pub fn topo_sort(graph: &ArcGraph, cycles: &[Cycle]) -> Vec<NodeIndex> {
-    use petgraph::algo::toposort;
-    use petgraph::graph::DiGraph;
-    use std::collections::{HashMap, HashSet};
+/// Brute-force minimum-upward-permutation for SCC members.
+/// Enumerates all permutations and picks the one with the lowest sum of
+/// "upward" edge weights (edges from later → earlier in the permutation).
+/// Falls back to alphabetical for n > 8 (40320 permutations limit).
+fn optimal_scc_order(
+    members: &[petgraph::graph::NodeIndex],
+    graph: &DiGraph<NodeIndex, usize>,
+    node_to_orig: &HashMap<petgraph::graph::NodeIndex, NodeIndex>,
+    get_name: &dyn Fn(NodeIndex) -> String,
+) -> Vec<NodeIndex> {
+    use itertools::Itertools;
 
-    // Build set of all cycle members for quick lookup
-    let cycle_members: HashSet<NodeIndex> = cycles
+    let n = members.len();
+
+    // Guard: too many permutations → fallback alphabetical
+    if n > 8 {
+        let mut result: Vec<NodeIndex> = members.iter().map(|&m| node_to_orig[&m]).collect();
+        result.sort_by_key(|&idx| get_name(idx));
+        return result;
+    }
+
+    // Extract pairwise weights: weights[i][j] = edge weight from members[i] to members[j]
+    let mut weights = vec![vec![0usize; n]; n];
+    for i in 0..n {
+        for j in 0..n {
+            if i != j
+                && let Some(edge_idx) = graph.find_edge(members[i], members[j])
+            {
+                weights[i][j] = graph[edge_idx];
+            }
+        }
+    }
+
+    // Enumerate all permutations, score by upward weight sum
+    let mut best_perm: Vec<usize> = (0..n).collect();
+    let mut best_score = usize::MAX;
+    let mut best_names: Vec<String> = Vec::new();
+
+    for perm in (0..n).permutations(n) {
+        // Score: sum of weights[perm[later]][perm[earlier]] for all later > earlier
+        let mut score = 0usize;
+        for later in 0..n {
+            for earlier in 0..later {
+                score += weights[perm[later]][perm[earlier]];
+            }
+        }
+
+        if score < best_score
+            || (score == best_score && {
+                let names: Vec<String> = perm
+                    .iter()
+                    .map(|&i| get_name(node_to_orig[&members[i]]))
+                    .collect();
+                names < best_names
+            })
+        {
+            best_score = score;
+            best_names = perm
+                .iter()
+                .map(|&i| get_name(node_to_orig[&members[i]]))
+                .collect();
+            best_perm = perm;
+        }
+    }
+
+    best_perm
         .iter()
-        .flat_map(|c| c.nodes.iter().copied())
-        .collect();
-
-    // Map each node to its "representative" (itself, or first cycle member)
-    let mut node_to_rep: HashMap<NodeIndex, NodeIndex> = HashMap::new();
-    for idx in graph.node_indices() {
-        if cycle_members.contains(&idx) {
-            // Find which cycle this node belongs to
-            for cycle in cycles {
-                if cycle.nodes.contains(&idx) {
-                    // Use first node in cycle as representative
-                    node_to_rep.insert(idx, cycle.nodes[0]);
-                    break;
-                }
-            }
-        } else {
-            node_to_rep.insert(idx, idx);
-        }
-    }
-
-    // Build condensed graph with only dependency edges
-    let mut condensed: DiGraph<NodeIndex, ()> = DiGraph::new();
-    let mut rep_to_condensed: HashMap<NodeIndex, petgraph::graph::NodeIndex> = HashMap::new();
-
-    // Add nodes (one per representative, sorted by index for deterministic ordering)
-    let mut unique_reps: Vec<NodeIndex> = node_to_rep
-        .values()
-        .copied()
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect();
-    unique_reps.sort_by_key(|n| n.index());
-    for rep in unique_reps {
-        let cond_idx = condensed.add_node(rep);
-        rep_to_condensed.insert(rep, cond_idx);
-    }
-
-    // Add edges (only Production CrateDep and ModuleDep, mapped to representatives)
-    for edge_idx in graph.edge_indices() {
-        match &graph[edge_idx] {
-            Edge::CrateDep {
-                context: crate::model::EdgeContext::Production,
-            }
-            | Edge::ModuleDep {
-                context: crate::model::EdgeContext::Production,
-                ..
-            } => {
-                let (src, dst) = graph.edge_endpoints(edge_idx).unwrap();
-                let src_rep = node_to_rep[&src];
-                let dst_rep = node_to_rep[&dst];
-                // Skip self-loops (edges within same cycle)
-                if src_rep != dst_rep {
-                    let src_cond = rep_to_condensed[&src_rep];
-                    let dst_cond = rep_to_condensed[&dst_rep];
-                    // Avoid duplicate edges
-                    if !condensed.contains_edge(src_cond, dst_cond) {
-                        condensed.add_edge(src_cond, dst_cond, ());
-                    }
-                }
-            }
-            _ => {} // Ignore Contains and Test edges
-        }
-    }
-
-    // Helper to get node name for sorting
-    let node_name = |idx: NodeIndex| -> String {
-        match &graph[idx] {
-            crate::graph::Node::Crate { name, .. } => name.clone(),
-            crate::graph::Node::Module { name, .. } => name.clone(),
-        }
-    };
-
-    // Topological sort on condensed graph (dependents first: modules that depend on others come first)
-    let sorted_reps: Vec<_> = match toposort(&condensed, None) {
-        Ok(order) => order, // No .rev() - dependents appear before their dependencies
-        Err(_) => {
-            let sccs = tarjan_scc(&condensed);
-            log_condensed_cycles(&sccs, &condensed, &node_to_rep, &rep_to_condensed, graph);
-            sort_with_cycle_breaking(&condensed, sccs, &node_name)
-        }
-    };
-
-    // Expand representatives back to original nodes
-    let mut result = Vec::new();
-    for cond_idx in sorted_reps {
-        let rep = condensed[cond_idx];
-        if cycle_members.contains(&rep) {
-            // Find the cycle and add all members sorted alphabetically
-            for cycle in cycles {
-                if cycle.nodes.contains(&rep) {
-                    let mut members = cycle.nodes.clone();
-                    members.sort_by_key(|a| node_name(*a));
-                    result.extend(members);
-                    break;
-                }
-            }
-        } else {
-            result.push(rep);
-        }
-    }
-
-    result
+        .map(|&i| node_to_orig[&members[i]])
+        .collect()
 }
 
 /// Stable topological sort using Kahn's algorithm.
 /// Preserves alphabetical order for nodes without dependency relationships.
 fn stable_toposort(
-    sibling_deps: &DiGraph<NodeIndex, ()>,
+    sibling_deps: &DiGraph<NodeIndex, usize>,
     children: &[NodeIndex],
-    graph: &ArcGraph,
+    get_name: impl Fn(NodeIndex) -> String,
 ) -> Vec<NodeIndex> {
-    use crate::graph::Node;
     use std::collections::BinaryHeap;
 
     if children.is_empty() {
@@ -283,15 +215,6 @@ fn stable_toposort(
     for edge in sibling_deps.edge_references() {
         *in_degree.get_mut(&edge.target()).unwrap() += 1;
     }
-
-    // Helper to get name for sorting (reversed for max-heap to act as min-heap)
-    let get_name = |idx: NodeIndex| -> String {
-        if let Node::Module { name, .. } = &graph[idx] {
-            name.clone()
-        } else {
-            String::new()
-        }
-    };
 
     // Barycenter score: average position of already-placed dependents.
     // Nodes closer to their dependents get lower scores → fewer arc crossings.
@@ -362,9 +285,9 @@ fn stable_toposort(
         }
     }
 
-    // If not all nodes processed, there's a cycle - return empty
+    // If not all nodes processed, there's a cycle — use SCC fallback
     if result.len() != children.len() {
-        return vec![];
+        return scc_fallback_sort(sibling_deps, &node_to_orig, &get_name);
     }
 
     result
@@ -428,7 +351,7 @@ fn collect_children_recursive(
     }
 
     // Build mini dependency graph for siblings using subtree-aggregated dependencies
-    let mut sibling_deps: DiGraph<NodeIndex, ()> = DiGraph::new();
+    let mut sibling_deps: DiGraph<NodeIndex, usize> = DiGraph::new();
     let mut idx_to_node: HashMap<NodeIndex, petgraph::graph::NodeIndex> = HashMap::new();
 
     for &child in &children {
@@ -455,8 +378,10 @@ fn collect_children_recursive(
                             // child's subtree depends on sibling's subtree
                             let src = idx_to_node[&child];
                             let dst = idx_to_node[&sibling];
-                            if !sibling_deps.contains_edge(src, dst) {
-                                sibling_deps.add_edge(src, dst, ());
+                            if let Some(edge_idx) = sibling_deps.find_edge(src, dst) {
+                                sibling_deps[edge_idx] += 1;
+                            } else {
+                                sibling_deps.add_edge(src, dst, 1);
                             }
                             break;
                         }
@@ -468,7 +393,10 @@ fn collect_children_recursive(
 
     // THEN: Stable topological sort using Kahn's algorithm
     // This preserves alphabetical order for independent nodes (tie-breaker)
-    let sorted = stable_toposort(&sibling_deps, &children, graph);
+    let sorted = stable_toposort(&sibling_deps, &children, |idx| match &graph[idx] {
+        Node::Module { name, .. } => name.clone(),
+        _ => String::new(),
+    });
     if !sorted.is_empty() {
         children = sorted;
     }
@@ -489,10 +417,10 @@ fn collect_children_recursive(
     result
 }
 
-/// Build LayoutIR from graph, sorted order, and cycle information.
+/// Build LayoutIR from graph and cycle information.
 /// Converts graph nodes to LayoutItems with proper nesting and edges with cycle markers.
 /// CrateDep edges are skipped when ModuleDep edges exist between the same crates.
-pub fn build_layout(graph: &ArcGraph, order: &[NodeIndex], cycles: &[Cycle]) -> LayoutIR {
+pub fn build_layout(graph: &ArcGraph, cycles: &[Cycle]) -> LayoutIR {
     use crate::graph::Node;
     use std::collections::{HashMap, HashSet};
 
@@ -532,9 +460,9 @@ pub fn build_layout(graph: &ArcGraph, order: &[NodeIndex], cycles: &[Cycle]) -> 
     };
 
     // Separate crates from modules
-    let (crate_indices, module_indices): (Vec<NodeIndex>, Vec<NodeIndex>) = order
-        .iter()
-        .partition(|&idx| matches!(graph[*idx], Node::Crate { .. }));
+    let (crate_indices, module_indices): (Vec<NodeIndex>, Vec<NodeIndex>) = graph
+        .node_indices()
+        .partition(|&idx| matches!(graph[idx], Node::Crate { .. }));
 
     // Re-sort crates by aggregated inter-crate dependencies (CrateDep + ModuleDep).
     // topo_sort only constrains module ordering; crate nodes may float freely.
@@ -547,7 +475,7 @@ pub fn build_layout(graph: &ArcGraph, order: &[NodeIndex], cycles: &[Cycle]) -> 
         };
 
         // Build crate-level dependency graph
-        let mut crate_graph: DiGraph<NodeIndex, ()> = DiGraph::new();
+        let mut crate_graph: DiGraph<NodeIndex, usize> = DiGraph::new();
         let mut crate_to_node: HashMap<NodeIndex, petgraph::graph::NodeIndex> = HashMap::new();
         // Add crate nodes in deterministic order (by graph index)
         let mut sorted_crates = crate_indices.clone();
@@ -572,9 +500,12 @@ pub fn build_layout(graph: &ArcGraph, order: &[NodeIndex], cycles: &[Cycle]) -> 
                     if src_crate != dst_crate
                         && let (Some(&sc), Some(&dc)) =
                             (crate_to_node.get(&src_crate), crate_to_node.get(&dst_crate))
-                        && !crate_graph.contains_edge(sc, dc)
                     {
-                        crate_graph.add_edge(sc, dc, ());
+                        if let Some(edge_idx) = crate_graph.find_edge(sc, dc) {
+                            crate_graph[edge_idx] += 1;
+                        } else {
+                            crate_graph.add_edge(sc, dc, 1);
+                        }
                     }
                 }
                 _ => {}
@@ -582,17 +513,9 @@ pub fn build_layout(graph: &ArcGraph, order: &[NodeIndex], cycles: &[Cycle]) -> 
         }
 
         // Stable toposort with alphabetical tie-breaking
-        stable_toposort(&crate_graph, &sorted_crates, graph)
-    };
-    let crate_indices = if crate_indices.is_empty() {
-        // Cycle detected — fall back to topo_sort order
-        order
-            .iter()
-            .filter(|idx| matches!(graph[**idx], Node::Crate { .. }))
-            .copied()
-            .collect()
-    } else {
-        crate_indices
+        stable_toposort(&crate_graph, &sorted_crates, |idx| match &graph[idx] {
+            Node::Crate { name, .. } | Node::Module { name, .. } => name.clone(),
+        })
     };
 
     // Group modules by their parent crate for proper visual grouping
@@ -1078,135 +1001,6 @@ mod tests {
         assert!(all_nodes.contains(&&d), "Cycle 2 should contain D");
     }
 
-    // === Topological Sort Tests ===
-
-    #[test]
-    fn test_topo_sort_simple() {
-        // A -> B -> C (A depends on B, B depends on C)
-        let mut graph = ArcGraph::new();
-        let a = graph.add_node(Node::Module {
-            name: "a".to_string(),
-            crate_idx: NodeIndex::new(0),
-        });
-        let b = graph.add_node(Node::Module {
-            name: "b".to_string(),
-            crate_idx: NodeIndex::new(0),
-        });
-        let c = graph.add_node(Node::Module {
-            name: "c".to_string(),
-            crate_idx: NodeIndex::new(0),
-        });
-        graph.add_edge(
-            a,
-            b,
-            Edge::ModuleDep {
-                locations: vec![],
-                context: crate::model::EdgeContext::Production,
-            },
-        );
-        graph.add_edge(
-            b,
-            c,
-            Edge::ModuleDep {
-                locations: vec![],
-                context: crate::model::EdgeContext::Production,
-            },
-        );
-
-        let cycles: Vec<Cycle> = vec![];
-        let sorted = topo_sort(&graph, &cycles);
-
-        // All nodes should be in result
-        assert_eq!(sorted.len(), 3);
-
-        // A should come before B, B before C (dependents first, dependencies below)
-        let pos_a = sorted.iter().position(|&n| n == a).unwrap();
-        let pos_b = sorted.iter().position(|&n| n == b).unwrap();
-        let pos_c = sorted.iter().position(|&n| n == c).unwrap();
-        assert!(pos_a < pos_b, "A should come before B (A depends on B)");
-        assert!(pos_b < pos_c, "B should come before C (B depends on C)");
-    }
-
-    #[test]
-    fn test_topo_sort_with_cycles() {
-        // D -> A <-> B -> C
-        // D depends on cycle {A,B}, B depends on C
-        let mut graph = ArcGraph::new();
-        let a = graph.add_node(Node::Module {
-            name: "a".to_string(),
-            crate_idx: NodeIndex::new(0),
-        });
-        let b = graph.add_node(Node::Module {
-            name: "b".to_string(),
-            crate_idx: NodeIndex::new(0),
-        });
-        let c = graph.add_node(Node::Module {
-            name: "c".to_string(),
-            crate_idx: NodeIndex::new(0),
-        });
-        let d = graph.add_node(Node::Module {
-            name: "d".to_string(),
-            crate_idx: NodeIndex::new(0),
-        });
-        graph.add_edge(
-            d,
-            a,
-            Edge::ModuleDep {
-                locations: vec![],
-                context: crate::model::EdgeContext::Production,
-            },
-        );
-        graph.add_edge(
-            a,
-            b,
-            Edge::ModuleDep {
-                locations: vec![],
-                context: crate::model::EdgeContext::Production,
-            },
-        );
-        graph.add_edge(
-            b,
-            a,
-            Edge::ModuleDep {
-                locations: vec![],
-                context: crate::model::EdgeContext::Production,
-            },
-        ); // cycle
-        graph.add_edge(
-            b,
-            c,
-            Edge::ModuleDep {
-                locations: vec![],
-                context: crate::model::EdgeContext::Production,
-            },
-        );
-
-        let cycles = vec![Cycle { nodes: vec![a, b] }];
-        let sorted = topo_sort(&graph, &cycles);
-
-        // All 4 nodes should be present
-        assert_eq!(sorted.len(), 4);
-
-        // D depends on cycle, so D comes first (dependents before dependencies)
-        // Cycle members (A, B) depend on C, so cycle comes before C
-        let pos_a = sorted.iter().position(|&n| n == a).unwrap();
-        let pos_b = sorted.iter().position(|&n| n == b).unwrap();
-        let pos_c = sorted.iter().position(|&n| n == c).unwrap();
-        let pos_d = sorted.iter().position(|&n| n == d).unwrap();
-
-        assert!(
-            pos_d < pos_a && pos_d < pos_b,
-            "D should come before cycle (D depends on cycle)"
-        );
-        assert!(
-            pos_a < pos_c && pos_b < pos_c,
-            "Cycle should come before C (cycle depends on C)"
-        );
-
-        // Within cycle, alphabetical order: A before B
-        assert!(pos_a < pos_b, "Within cycle: A before B (alphabetical)");
-    }
-
     // === Build Layout Tests ===
 
     #[test]
@@ -1238,8 +1032,7 @@ mod tests {
         );
 
         let cycles: Vec<Cycle> = vec![];
-        let order = topo_sort(&graph, &cycles);
-        let ir = build_layout(&graph, &order, &cycles);
+        let ir = build_layout(&graph, &cycles);
 
         // Should have 3 items (1 crate + 2 modules)
         assert_eq!(ir.items.len(), 3);
@@ -1278,8 +1071,7 @@ mod tests {
         ); // cycle
 
         let cycles = detect_cycles(&graph);
-        let order = topo_sort(&graph, &cycles);
-        let ir = build_layout(&graph, &order, &cycles);
+        let ir = build_layout(&graph, &cycles);
 
         // Should have 2 items
         assert_eq!(ir.items.len(), 2);
@@ -1328,8 +1120,7 @@ mod tests {
         );
 
         let cycles: Vec<Cycle> = vec![];
-        let order = topo_sort(&graph, &cycles);
-        let ir = build_layout(&graph, &order, &cycles);
+        let ir = build_layout(&graph, &cycles);
 
         // There should be exactly one edge
         assert_eq!(ir.edges.len(), 1);
@@ -1394,8 +1185,7 @@ mod tests {
         );
 
         let cycles: Vec<Cycle> = vec![];
-        let order = topo_sort(&graph, &cycles);
-        let ir = build_layout(&graph, &order, &cycles);
+        let ir = build_layout(&graph, &cycles);
 
         // Should have 6 items (2 crates + 4 modules)
         assert_eq!(ir.items.len(), 6);
@@ -1570,8 +1360,7 @@ mod tests {
         graph.add_edge(parent, zebra, Edge::Contains);
 
         let cycles: Vec<Cycle> = vec![];
-        let order = topo_sort(&graph, &cycles);
-        let ir = build_layout(&graph, &order, &cycles);
+        let ir = build_layout(&graph, &cycles);
 
         // Erwartete Reihenfolge:
         // 1. test_crate
@@ -1666,8 +1455,7 @@ mod tests {
         );
 
         let cycles: Vec<Cycle> = vec![];
-        let order = topo_sort(&graph, &cycles);
-        let ir = build_layout(&graph, &order, &cycles);
+        let ir = build_layout(&graph, &cycles);
 
         let labels: Vec<&str> = ir.items.iter().map(|i| i.label.as_str()).collect();
 
@@ -1731,8 +1519,7 @@ mod tests {
         );
 
         let cycles: Vec<Cycle> = vec![];
-        let order = topo_sort(&graph, &cycles);
-        let ir = build_layout(&graph, &order, &cycles);
+        let ir = build_layout(&graph, &cycles);
 
         let labels: Vec<&str> = ir.items.iter().map(|i| i.label.as_str()).collect();
         let pos_alpha = labels.iter().position(|&l| l == "alpha").unwrap();
@@ -1779,8 +1566,7 @@ mod tests {
         );
 
         let cycles: Vec<Cycle> = vec![];
-        let order = topo_sort(&graph, &cycles);
-        let ir = build_layout(&graph, &order, &cycles);
+        let ir = build_layout(&graph, &cycles);
 
         let labels: Vec<&str> = ir.items.iter().map(|i| i.label.as_str()).collect();
         let pos_a = labels.iter().position(|&l| l == "aaa").unwrap();
@@ -1844,8 +1630,7 @@ mod tests {
         );
 
         let cycles: Vec<Cycle> = vec![];
-        let order = topo_sort(&graph, &cycles);
-        let ir = build_layout(&graph, &order, &cycles);
+        let ir = build_layout(&graph, &cycles);
 
         // Should have 3 items (2 crates + 1 module)
         assert_eq!(ir.items.len(), 3);
@@ -1916,8 +1701,7 @@ mod tests {
         );
 
         let cycles: Vec<Cycle> = vec![];
-        let order = topo_sort(&graph, &cycles);
-        let ir = build_layout(&graph, &order, &cycles);
+        let ir = build_layout(&graph, &cycles);
 
         // CrateDep should be suppressed
         assert_eq!(
@@ -1981,8 +1765,7 @@ mod tests {
         );
 
         let cycles: Vec<Cycle> = vec![];
-        let order = topo_sort(&graph, &cycles);
-        let ir = build_layout(&graph, &order, &cycles);
+        let ir = build_layout(&graph, &cycles);
 
         // CrateDep should be suppressed
         assert_eq!(
@@ -2055,8 +1838,7 @@ mod tests {
         );
 
         let cycles: Vec<Cycle> = vec![];
-        let order = topo_sort(&graph, &cycles);
-        let ir = build_layout(&graph, &order, &cycles);
+        let ir = build_layout(&graph, &cycles);
 
         let labels: Vec<&str> = ir.items.iter().map(|i| i.label.as_str()).collect();
 
@@ -2116,8 +1898,7 @@ mod tests {
         );
 
         let cycles: Vec<Cycle> = vec![];
-        let order = topo_sort(&graph, &cycles);
-        let ir = build_layout(&graph, &order, &cycles);
+        let ir = build_layout(&graph, &cycles);
 
         let labels: Vec<&str> = ir.items.iter().map(|i| i.label.as_str()).collect();
 
@@ -2148,6 +1929,315 @@ mod tests {
         );
     }
 
+    // === stable_toposort Cycle Tests ===
+
+    #[test]
+    fn test_stable_toposort_with_cycle_returns_sorted() {
+        use std::path::PathBuf;
+
+        // Build a graph with a cycle (A⇄B) — stable_toposort should return
+        // non-empty result via SCC fallback instead of vec![]
+        let mut graph = ArcGraph::new();
+        let crate_idx = graph.add_node(Node::Crate {
+            name: "test".to_string(),
+            path: PathBuf::from("/test"),
+        });
+        let a = graph.add_node(Node::Module {
+            name: "a".to_string(),
+            crate_idx,
+        });
+        let b = graph.add_node(Node::Module {
+            name: "b".to_string(),
+            crate_idx,
+        });
+
+        // Build sibling_deps DiGraph with cycle
+        let mut sibling_deps: DiGraph<NodeIndex, usize> = DiGraph::new();
+        let sa = sibling_deps.add_node(a);
+        let sb = sibling_deps.add_node(b);
+        sibling_deps.add_edge(sa, sb, 1);
+        sibling_deps.add_edge(sb, sa, 1); // cycle
+
+        let children = vec![a, b];
+        let result = stable_toposort(&sibling_deps, &children, |idx| match &graph[idx] {
+            Node::Module { name, .. } => name.clone(),
+            Node::Crate { name, .. } => name.clone(),
+        });
+
+        assert_eq!(result.len(), 2, "Should return all nodes, not empty vec");
+        // Both nodes present
+        assert!(result.contains(&a), "Should contain a");
+        assert!(result.contains(&b), "Should contain b");
+        // Alphabetical within SCC
+        let pos_a = result.iter().position(|&n| n == a).unwrap();
+        let pos_b = result.iter().position(|&n| n == b).unwrap();
+        assert!(pos_a < pos_b, "a before b (alphabetical in SCC)");
+    }
+
+    // === SCC Fallback Tests ===
+
+    #[test]
+    fn test_scc_fallback_three_node_cycle() {
+        // Pure cycle: A→B→C→A — all nodes in one SCC
+        // Expected: alphabetical order [A, B, C]
+        let mut graph: DiGraph<NodeIndex, usize> = DiGraph::new();
+        let a_orig = NodeIndex::new(10);
+        let b_orig = NodeIndex::new(11);
+        let c_orig = NodeIndex::new(12);
+        let a = graph.add_node(a_orig);
+        let b = graph.add_node(b_orig);
+        let c = graph.add_node(c_orig);
+        graph.add_edge(a, b, 1);
+        graph.add_edge(b, c, 1);
+        graph.add_edge(c, a, 1);
+
+        let node_to_orig: HashMap<petgraph::graph::NodeIndex, NodeIndex> =
+            graph.node_indices().map(|n| (n, graph[n])).collect();
+
+        let get_name = |idx: NodeIndex| -> String {
+            match idx.index() {
+                10 => "a".to_string(),
+                11 => "b".to_string(),
+                12 => "c".to_string(),
+                _ => panic!("unexpected index"),
+            }
+        };
+
+        let result = scc_fallback_sort(&graph, &node_to_orig, &get_name);
+        let names: Vec<String> = result.iter().map(|&idx| get_name(idx)).collect();
+        assert_eq!(
+            names,
+            vec!["a", "b", "c"],
+            "SCC members sorted alphabetically"
+        );
+    }
+
+    #[test]
+    fn test_scc_fallback_with_external_node() {
+        // SCC {A,B} (A⇄B) + standalone C, C→A edge
+        // Condensed: SCC{A,B} → C (C depends on SCC)
+        // Expected: [A, B, C] — SCC first (expanded alphabetically), C after
+        let mut graph: DiGraph<NodeIndex, usize> = DiGraph::new();
+        let a_orig = NodeIndex::new(10);
+        let b_orig = NodeIndex::new(11);
+        let c_orig = NodeIndex::new(12);
+        let a = graph.add_node(a_orig);
+        let b = graph.add_node(b_orig);
+        let c = graph.add_node(c_orig);
+        graph.add_edge(a, b, 1);
+        graph.add_edge(b, a, 1); // cycle A⇄B
+        graph.add_edge(c, a, 1); // C depends on A
+
+        let node_to_orig: HashMap<petgraph::graph::NodeIndex, NodeIndex> =
+            graph.node_indices().map(|n| (n, graph[n])).collect();
+
+        let get_name = |idx: NodeIndex| -> String {
+            match idx.index() {
+                10 => "a".to_string(),
+                11 => "b".to_string(),
+                12 => "c".to_string(),
+                _ => panic!("unexpected index"),
+            }
+        };
+
+        let result = scc_fallback_sort(&graph, &node_to_orig, &get_name);
+        let names: Vec<String> = result.iter().map(|&idx| get_name(idx)).collect();
+        // C depends on SCC{A,B}, so C comes first (dependent before dependency)
+        // Wait — in our convention: edge C→A means C depends on A.
+        // toposort: dependents come before dependencies → C first, then SCC{A,B}
+        assert_eq!(
+            names,
+            vec!["c", "a", "b"],
+            "Dependent C first, then SCC{{A,B}} alphabetically"
+        );
+    }
+
+    // === Cross-Subtree Cycle Tests (ca-0211) ===
+
+    #[test]
+    fn test_cross_subtree_cycles_weighted_asymmetric() {
+        use std::path::PathBuf;
+
+        // Topology: 4 module groups under one crate
+        //   A (A1, A2, A3)  — no cycle involvement
+        //   B (B1, B2)      — B1 in both cycles
+        //   C               — standalone, cycle with B1
+        //   D (D1, D2, D3)  — D2 in cycle with B1
+        //
+        // Cycles: B1<->C, B1<->D2
+        //
+        // Additional asymmetric edges (non-cycle):
+        //   D1 → B2   (D depends on B — extra weight D→B direction)
+        //   D3 → C    (D depends on C — extra weight D→C direction)
+        //
+        // Weighted virtual edges at group level:
+        //   w(D→B) = 2 (D2→B1 + D1→B2),  w(B→D) = 1 (B1→D2)
+        //   w(D→C) = 1 (D3→C),            w(C→D) = 0
+        //   w(B→C) = 1 (B1→C),            w(C→B) = 1 (C→B1)
+        //
+        // Upward edge counts per permutation:
+        //   D,B,C → 2 upward (optimal)
+        //   D,C,B → 2 upward (optimal, but lexicographically D,B,C wins)
+        //   B,D,C → 3 upward
+        //   C,D,B → 3 upward
+        //   B,C,D → 4 upward (worst — current alphabetical behavior)
+        //   C,B,D → 4 upward (worst)
+        //
+        // Expected SCC order: D, B, C (minimum upward, lexicographic tiebreak)
+
+        let mut graph = ArcGraph::new();
+
+        let crate_idx = graph.add_node(Node::Crate {
+            name: "test_crate".to_string(),
+            path: PathBuf::from("/test"),
+        });
+
+        // Top-level modules (groups)
+        let mod_a = graph.add_node(Node::Module {
+            name: "a".to_string(),
+            crate_idx,
+        });
+        let mod_b = graph.add_node(Node::Module {
+            name: "b".to_string(),
+            crate_idx,
+        });
+        let mod_c = graph.add_node(Node::Module {
+            name: "c".to_string(),
+            crate_idx,
+        });
+        let mod_d = graph.add_node(Node::Module {
+            name: "d".to_string(),
+            crate_idx,
+        });
+
+        // Sub-modules
+        let _a1 = graph.add_node(Node::Module {
+            name: "a1".to_string(),
+            crate_idx,
+        });
+        let _a2 = graph.add_node(Node::Module {
+            name: "a2".to_string(),
+            crate_idx,
+        });
+        let _a3 = graph.add_node(Node::Module {
+            name: "a3".to_string(),
+            crate_idx,
+        });
+        let b1 = graph.add_node(Node::Module {
+            name: "b1".to_string(),
+            crate_idx,
+        });
+        let b2 = graph.add_node(Node::Module {
+            name: "b2".to_string(),
+            crate_idx,
+        });
+        let d1 = graph.add_node(Node::Module {
+            name: "d1".to_string(),
+            crate_idx,
+        });
+        let d2 = graph.add_node(Node::Module {
+            name: "d2".to_string(),
+            crate_idx,
+        });
+        let d3 = graph.add_node(Node::Module {
+            name: "d3".to_string(),
+            crate_idx,
+        });
+
+        // Hierarchy: crate -> groups -> sub-modules
+        graph.add_edge(crate_idx, mod_a, Edge::Contains);
+        graph.add_edge(crate_idx, mod_b, Edge::Contains);
+        graph.add_edge(crate_idx, mod_c, Edge::Contains);
+        graph.add_edge(crate_idx, mod_d, Edge::Contains);
+
+        graph.add_edge(mod_a, _a1, Edge::Contains);
+        graph.add_edge(mod_a, _a2, Edge::Contains);
+        graph.add_edge(mod_a, _a3, Edge::Contains);
+        graph.add_edge(mod_b, b1, Edge::Contains);
+        graph.add_edge(mod_b, b2, Edge::Contains);
+        graph.add_edge(mod_d, d1, Edge::Contains);
+        graph.add_edge(mod_d, d2, Edge::Contains);
+        graph.add_edge(mod_d, d3, Edge::Contains);
+
+        // Cycle 1: B1 <-> C
+        graph.add_edge(
+            b1,
+            mod_c,
+            Edge::ModuleDep {
+                locations: vec![],
+                context: crate::model::EdgeContext::Production,
+            },
+        );
+        graph.add_edge(
+            mod_c,
+            b1,
+            Edge::ModuleDep {
+                locations: vec![],
+                context: crate::model::EdgeContext::Production,
+            },
+        );
+
+        // Cycle 2: B1 <-> D2
+        graph.add_edge(
+            b1,
+            d2,
+            Edge::ModuleDep {
+                locations: vec![],
+                context: crate::model::EdgeContext::Production,
+            },
+        );
+        graph.add_edge(
+            d2,
+            b1,
+            Edge::ModuleDep {
+                locations: vec![],
+                context: crate::model::EdgeContext::Production,
+            },
+        );
+
+        // Asymmetric non-cycle edges: D's subtree uses B and C
+        graph.add_edge(
+            d1,
+            b2,
+            Edge::ModuleDep {
+                locations: vec![],
+                context: crate::model::EdgeContext::Production,
+            },
+        );
+        graph.add_edge(
+            d3,
+            mod_c,
+            Edge::ModuleDep {
+                locations: vec![],
+                context: crate::model::EdgeContext::Production,
+            },
+        );
+
+        let cycles = vec![];
+        let ir = build_layout(&graph, &cycles);
+
+        let labels: Vec<&str> = ir.items.iter().map(|i| i.label.as_str()).collect();
+        let top_level: Vec<&str> = labels
+            .iter()
+            .filter(|&&l| matches!(l, "a" | "b" | "c" | "d"))
+            .copied()
+            .collect();
+
+        // With weighted virtual edges, D→B has weight 2 vs B→D weight 1,
+        // and D→C has weight 1 vs C→D weight 0.
+        // Optimal ordering within SCC: D, B, C (2 upward edges)
+        // Alphabetical B, C, D would give 4 upward edges (worst case).
+        assert_eq!(
+            top_level,
+            vec!["a", "d", "b", "c"],
+            "Expected: A first (independent, Kahn's), then SCC ordered D,B,C \
+             (minimum upward edges with weighted virtual edges). \
+             w(D→B)=2 > w(B→D)=1 → D before B. \
+             w(D→C)=1 > w(C→D)=0 → D before C. \
+             w(B→C)=1 = w(C→B)=1 → alphabetical tiebreak B before C."
+        );
+    }
+
     // === Cycle-Breaking Tests (ca-0170) ===
 
     // === Barycenter Heuristic Tests (ca-0159) ===
@@ -2156,12 +2246,12 @@ mod tests {
     fn test_barycenter_incoming_gives_dependents() {
         // Verify edge direction: A→B means "A depends on B"
         // neighbors_directed(B, Incoming) should return A (the dependent)
-        let mut g: DiGraph<NodeIndex, ()> = DiGraph::new();
+        let mut g: DiGraph<NodeIndex, usize> = DiGraph::new();
         let a_orig = NodeIndex::new(0);
         let b_orig = NodeIndex::new(1);
         let a = g.add_node(a_orig);
         let b = g.add_node(b_orig);
-        g.add_edge(a, b, ()); // A depends on B
+        g.add_edge(a, b, 1); // A depends on B
 
         let incoming: Vec<_> = g
             .neighbors_directed(b, petgraph::Direction::Incoming)
@@ -2238,8 +2328,7 @@ mod tests {
         );
 
         let cycles: Vec<Cycle> = vec![];
-        let order = topo_sort(&graph, &cycles);
-        let ir = build_layout(&graph, &order, &cycles);
+        let ir = build_layout(&graph, &cycles);
 
         let labels: Vec<&str> = ir.items.iter().map(|i| i.label.as_str()).collect();
         let pos_a = labels.iter().position(|&l| l == "a").unwrap();
@@ -2310,8 +2399,7 @@ mod tests {
         );
 
         let cycles: Vec<Cycle> = vec![];
-        let order = topo_sort(&graph, &cycles);
-        let ir = build_layout(&graph, &order, &cycles);
+        let ir = build_layout(&graph, &cycles);
 
         let labels: Vec<&str> = ir.items.iter().map(|i| i.label.as_str()).collect();
         let pos_c = labels.iter().position(|&l| l == "c").unwrap();
@@ -2369,8 +2457,7 @@ mod tests {
         );
 
         let cycles: Vec<Cycle> = vec![];
-        let order = topo_sort(&graph, &cycles);
-        let ir = build_layout(&graph, &order, &cycles);
+        let ir = build_layout(&graph, &cycles);
 
         let labels: Vec<&str> = ir.items.iter().map(|i| i.label.as_str()).collect();
         let pos_a = labels.iter().position(|&l| l == "a").unwrap();
@@ -2379,237 +2466,5 @@ mod tests {
 
         assert!(pos_a < pos_b, "A before B. Labels: {labels:?}");
         assert!(pos_b < pos_c, "B before C. Labels: {labels:?}");
-    }
-
-    #[test]
-    fn test_sort_with_cycle_breaking_two_node_cycle() {
-        use std::path::PathBuf;
-
-        // 2 Crates with mixed-edge cycle:
-        //   CrateDep: alpha → beta
-        //   ModuleDep: beta → alpha (simulates cfg(test) root-level use)
-        // detect_cycles finds nothing (no pure ModuleDep cycle).
-        // topo_sort Err-Branch triggers → should resolve alphabetically.
-        //
-        // NOTE: beta added BEFORE alpha so node_indices() would return
-        // [beta, alpha] — proving cycle-breaking sorts, not just preserves insertion order.
-        let mut graph = ArcGraph::new();
-        let beta = graph.add_node(Node::Crate {
-            name: "beta".into(),
-            path: PathBuf::new(),
-        });
-        let alpha = graph.add_node(Node::Crate {
-            name: "alpha".into(),
-            path: PathBuf::new(),
-        });
-        graph.add_edge(
-            alpha,
-            beta,
-            Edge::CrateDep {
-                context: crate::model::EdgeContext::Production,
-            },
-        );
-        graph.add_edge(
-            beta,
-            alpha,
-            Edge::ModuleDep {
-                locations: vec![],
-                context: crate::model::EdgeContext::Production,
-            },
-        );
-
-        let cycles = detect_cycles(&graph);
-        assert!(cycles.is_empty(), "No pure ModuleDep cycle expected");
-
-        let sorted = topo_sort(&graph, &cycles);
-        let names: Vec<&str> = sorted
-            .iter()
-            .map(|&idx| match &graph[idx] {
-                Node::Crate { name, .. } => name.as_str(),
-                Node::Module { name, .. } => name.as_str(),
-            })
-            .collect();
-        assert_eq!(
-            names,
-            vec!["alpha", "beta"],
-            "SCC should be sorted alphabetically"
-        );
-    }
-
-    #[test]
-    fn test_sort_with_cycle_breaking_three_node_partial() {
-        use std::path::PathBuf;
-
-        // 3 Crates: alpha ↔ beta (mixed cycle), gamma depends on alpha.
-        //   CrateDep: alpha → beta, alpha → gamma
-        //   ModuleDep: beta → alpha (cfg(test) cycle)
-        // SCC: {alpha, beta}, gamma is standalone.
-        // Expected: alpha, beta (SCC alphabetical) before gamma (depends on alpha).
-        //
-        // NOTE: gamma added first so node_indices() order would be [gamma, beta, alpha].
-        let mut graph = ArcGraph::new();
-        let gamma = graph.add_node(Node::Crate {
-            name: "gamma".into(),
-            path: PathBuf::new(),
-        });
-        let beta = graph.add_node(Node::Crate {
-            name: "beta".into(),
-            path: PathBuf::new(),
-        });
-        let alpha = graph.add_node(Node::Crate {
-            name: "alpha".into(),
-            path: PathBuf::new(),
-        });
-        graph.add_edge(
-            alpha,
-            beta,
-            Edge::CrateDep {
-                context: crate::model::EdgeContext::Production,
-            },
-        );
-        graph.add_edge(
-            alpha,
-            gamma,
-            Edge::CrateDep {
-                context: crate::model::EdgeContext::Production,
-            },
-        );
-        graph.add_edge(
-            beta,
-            alpha,
-            Edge::ModuleDep {
-                locations: vec![],
-                context: crate::model::EdgeContext::Production,
-            },
-        );
-
-        let cycles = detect_cycles(&graph);
-        assert!(cycles.is_empty(), "No pure ModuleDep cycle expected");
-
-        let sorted = topo_sort(&graph, &cycles);
-        let names: Vec<&str> = sorted
-            .iter()
-            .map(|&idx| match &graph[idx] {
-                Node::Crate { name, .. } => name.as_str(),
-                Node::Module { name, .. } => name.as_str(),
-            })
-            .collect();
-        assert_eq!(
-            names,
-            vec!["alpha", "beta", "gamma"],
-            "SCC [alpha,beta] alphabetical, then gamma (dependent)"
-        );
-    }
-
-    #[test]
-    fn test_sort_with_cycle_breaking_combined_levels() {
-        use std::path::PathBuf;
-
-        // Combined Ebene-1 (ModuleDep cycle) + Ebene-2 (mixed cycle):
-        //   Crate("alpha") contains mod_a, mod_b
-        //   ModuleDep: mod_a ↔ mod_b (Ebene-1 cycle, detected by detect_cycles)
-        //   CrateDep: alpha → beta
-        //   ModuleDep: beta → alpha (Ebene-2 cycle, NOT detected by detect_cycles)
-        //
-        // detect_cycles → [{mod_a, mod_b}]
-        // Condensed graph: alpha, Rep(mod_a,mod_b), beta — cycle alpha ↔ beta
-        // sort_with_cycle_breaking resolves Ebene-2, expansion resolves Ebene-1
-        // Expected: [alpha, mod_a, mod_b, beta]
-        //
-        // NOTE: beta added first so arbitrary order would differ.
-        let mut graph = ArcGraph::new();
-        let beta = graph.add_node(Node::Crate {
-            name: "beta".into(),
-            path: PathBuf::new(),
-        });
-        let alpha = graph.add_node(Node::Crate {
-            name: "alpha".into(),
-            path: PathBuf::new(),
-        });
-        let mod_b = graph.add_node(Node::Module {
-            name: "mod_b".into(),
-            crate_idx: alpha,
-        });
-        let mod_a = graph.add_node(Node::Module {
-            name: "mod_a".into(),
-            crate_idx: alpha,
-        });
-
-        // Hierarchy
-        graph.add_edge(alpha, mod_a, Edge::Contains);
-        graph.add_edge(alpha, mod_b, Edge::Contains);
-
-        // Ebene-1 cycle: mod_a ↔ mod_b (pure ModuleDep)
-        graph.add_edge(
-            mod_a,
-            mod_b,
-            Edge::ModuleDep {
-                locations: vec![],
-                context: crate::model::EdgeContext::Production,
-            },
-        );
-        graph.add_edge(
-            mod_b,
-            mod_a,
-            Edge::ModuleDep {
-                locations: vec![],
-                context: crate::model::EdgeContext::Production,
-            },
-        );
-
-        // Ebene-2 mixed cycle: alpha → beta (CrateDep), beta → alpha (ModuleDep)
-        graph.add_edge(
-            alpha,
-            beta,
-            Edge::CrateDep {
-                context: crate::model::EdgeContext::Production,
-            },
-        );
-        graph.add_edge(
-            beta,
-            alpha,
-            Edge::ModuleDep {
-                locations: vec![],
-                context: crate::model::EdgeContext::Production,
-            },
-        );
-
-        let cycles = detect_cycles(&graph);
-        assert_eq!(
-            cycles.len(),
-            1,
-            "Should detect Ebene-1 cycle (mod_a ↔ mod_b)"
-        );
-
-        let sorted = topo_sort(&graph, &cycles);
-        let names: Vec<&str> = sorted
-            .iter()
-            .map(|&idx| match &graph[idx] {
-                Node::Crate { name, .. } => name.as_str(),
-                Node::Module { name, .. } => name.as_str(),
-            })
-            .collect();
-
-        // Invariants:
-        // 1. alpha before beta (Ebene-2 SCC resolved alphabetically)
-        let pos_alpha = names.iter().position(|&n| n == "alpha").unwrap();
-        let pos_beta = names.iter().position(|&n| n == "beta").unwrap();
-        assert!(
-            pos_alpha < pos_beta,
-            "alpha before beta (Ebene-2 SCC alphabetical). Got: {:?}",
-            names
-        );
-
-        // 2. mod_a before mod_b (Ebene-1 cycle resolved alphabetically)
-        let pos_mod_a = names.iter().position(|&n| n == "mod_a").unwrap();
-        let pos_mod_b = names.iter().position(|&n| n == "mod_b").unwrap();
-        assert!(
-            pos_mod_a < pos_mod_b,
-            "mod_a before mod_b (Ebene-1 cycle alphabetical). Got: {:?}",
-            names
-        );
-
-        // 3. All 4 nodes present
-        assert_eq!(names.len(), 4, "All nodes present. Got: {:?}", names);
     }
 }
