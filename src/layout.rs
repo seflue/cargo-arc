@@ -441,7 +441,13 @@ fn collect_children_recursive(
         let child_subtree = &subtrees[&child];
         for &node in child_subtree {
             for edge in graph.edges(node) {
-                if matches!(edge.weight(), Edge::ModuleDep { .. }) {
+                if matches!(
+                    edge.weight(),
+                    Edge::ModuleDep {
+                        context: crate::model::EdgeContext::Production,
+                        ..
+                    }
+                ) {
                     let target = edge.target();
                     // Find which sibling's subtree contains the target
                     for (&sibling, sibling_subtree) in &subtrees {
@@ -553,7 +559,13 @@ pub fn build_layout(graph: &ArcGraph, order: &[NodeIndex], cycles: &[Cycle]) -> 
         // Add edges from both CrateDep and ModuleDep (aggregated to crate level)
         for edge_idx in graph.edge_indices() {
             match &graph[edge_idx] {
-                Edge::CrateDep { .. } | Edge::ModuleDep { .. } => {
+                Edge::CrateDep {
+                    context: crate::model::EdgeContext::Production,
+                }
+                | Edge::ModuleDep {
+                    context: crate::model::EdgeContext::Production,
+                    ..
+                } => {
                     let (src, dst) = graph.edge_endpoints(edge_idx).unwrap();
                     let src_crate = crate_of(src);
                     let dst_crate = crate_of(dst);
@@ -1663,6 +1675,112 @@ mod tests {
         assert!(
             pos_beta < pos_alpha,
             "beta should come before alpha (beta depends on alpha). Labels: {:?}",
+            labels
+        );
+    }
+
+    #[test]
+    fn test_test_edges_do_not_affect_sibling_sort_order() {
+        use std::path::PathBuf;
+
+        let mut graph = ArcGraph::new();
+
+        let crate_idx = graph.add_node(Node::Crate {
+            name: "my_crate".to_string(),
+            path: PathBuf::from("/test"),
+        });
+
+        let alpha = graph.add_node(Node::Module {
+            name: "alpha".to_string(),
+            crate_idx,
+        });
+        let beta = graph.add_node(Node::Module {
+            name: "beta".to_string(),
+            crate_idx,
+        });
+
+        graph.add_edge(crate_idx, alpha, Edge::Contains);
+        graph.add_edge(crate_idx, beta, Edge::Contains);
+
+        // Production: alpha depends on beta → alpha should come first
+        graph.add_edge(
+            alpha,
+            beta,
+            Edge::ModuleDep {
+                locations: vec![],
+                context: crate::model::EdgeContext::Production,
+            },
+        );
+        // Test: beta depends on alpha (reverse direction) → must NOT affect order
+        graph.add_edge(
+            beta,
+            alpha,
+            Edge::ModuleDep {
+                locations: vec![],
+                context: crate::model::EdgeContext::Test(crate::model::TestKind::Unit),
+            },
+        );
+
+        let cycles: Vec<Cycle> = vec![];
+        let order = topo_sort(&graph, &cycles);
+        let ir = build_layout(&graph, &order, &cycles);
+
+        let labels: Vec<&str> = ir.items.iter().map(|i| i.label.as_str()).collect();
+        let pos_alpha = labels.iter().position(|&l| l == "alpha").unwrap();
+        let pos_beta = labels.iter().position(|&l| l == "beta").unwrap();
+
+        assert!(
+            pos_alpha < pos_beta,
+            "alpha should come before beta (production dep alpha→beta). \
+             Test edge beta→alpha must not reverse this. Labels: {:?}",
+            labels
+        );
+    }
+
+    #[test]
+    fn test_test_edges_do_not_affect_crate_sort_order() {
+        use std::path::PathBuf;
+
+        let mut graph = ArcGraph::new();
+
+        let crate_a = graph.add_node(Node::Crate {
+            name: "aaa".to_string(),
+            path: PathBuf::from("/aaa"),
+        });
+        let crate_b = graph.add_node(Node::Crate {
+            name: "bbb".to_string(),
+            path: PathBuf::from("/bbb"),
+        });
+
+        // Production: crate_a depends on crate_b → crate_a first
+        graph.add_edge(
+            crate_a,
+            crate_b,
+            Edge::CrateDep {
+                context: crate::model::EdgeContext::Production,
+            },
+        );
+        // Test: crate_b depends on crate_a (reverse) → must NOT affect order
+        graph.add_edge(
+            crate_b,
+            crate_a,
+            Edge::CrateDep {
+                context: crate::model::EdgeContext::Test(crate::model::TestKind::Unit),
+            },
+        );
+
+        let cycles: Vec<Cycle> = vec![];
+        let order = topo_sort(&graph, &cycles);
+        let ir = build_layout(&graph, &order, &cycles);
+
+        let labels: Vec<&str> = ir.items.iter().map(|i| i.label.as_str()).collect();
+        let pos_a = labels.iter().position(|&l| l == "aaa").unwrap();
+        let pos_b = labels.iter().position(|&l| l == "bbb").unwrap();
+
+        assert!(
+            pos_a < pos_b,
+            "aaa should come before bbb (production dep aaa→bbb). \
+             Test edge bbb→aaa must not reverse this. Labels: {:?}",
             labels
         );
     }
