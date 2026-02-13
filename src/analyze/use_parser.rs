@@ -9,20 +9,34 @@ use std::path::Path;
 use syn::UseTree;
 use syn::visit::Visit;
 
-/// Check whether attributes contain `#[cfg(test)]`.
+/// Check whether attributes contain `#[cfg(test)]`, including compound
+/// expressions like `#[cfg(all(test, feature = "..."))]`.
 pub(crate) fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
+    fn meta_contains_test(meta: &syn::Meta) -> bool {
+        use syn::parse::Parser;
+        match meta {
+            syn::Meta::Path(path) => path.is_ident("test"),
+            syn::Meta::List(list) if list.path.is_ident("all") || list.path.is_ident("any") => {
+                let parser =
+                    syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated;
+                if let Ok(nested) = parser.parse2(list.tokens.clone()) {
+                    nested.iter().any(meta_contains_test)
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
+    }
+
     attrs.iter().any(|attr| {
         if !attr.path().is_ident("cfg") {
             return false;
         }
-        let mut found = false;
-        let _ = attr.parse_nested_meta(|meta| {
-            if meta.path.is_ident("test") {
-                found = true;
-            }
-            Ok(())
-        });
-        found
+        match attr.parse_args::<syn::Meta>() {
+            Ok(meta) => meta_contains_test(&meta),
+            Err(_) => false,
+        }
     })
 }
 
@@ -1798,6 +1812,34 @@ mod tests {
     mod inner {
         use other_crate::deep_helper;
     }
+}
+"#;
+            let syntax = syn::parse_file(source).unwrap();
+            let uses = collect_all_use_items(&syntax, EdgeContext::Production);
+            assert_eq!(uses.len(), 1);
+            assert_eq!(uses[0].1, EdgeContext::Test(crate::model::TestKind::Unit));
+        }
+
+        #[test]
+        fn test_cfg_all_test_feature_marked() {
+            let source = r#"
+#[cfg(all(test, feature = "hir"))]
+mod hir_tests {
+    use other_crate::helper;
+}
+"#;
+            let syntax = syn::parse_file(source).unwrap();
+            let uses = collect_all_use_items(&syntax, EdgeContext::Production);
+            assert_eq!(uses.len(), 1);
+            assert_eq!(uses[0].1, EdgeContext::Test(crate::model::TestKind::Unit));
+        }
+
+        #[test]
+        fn test_cfg_all_feature_then_test_marked() {
+            let source = r#"
+#[cfg(all(feature = "hir", test))]
+mod hir_tests {
+    use other_crate::helper;
 }
 "#;
             let syntax = syn::parse_file(source).unwrap();
