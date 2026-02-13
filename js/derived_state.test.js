@@ -568,5 +568,84 @@ describe("DerivedState", () => {
       expect(result.promotedHitareas.has("fn_1-fn_3")).toBe(true);  // regular
       expect(result.promotedHitareas.has("v:fn_1-fn_3")).toBe(false); // virtual not promoted
     });
+
+    test("test arc does not override node roles from production arc", () => {
+      // Scenario: Production A→B, Test B→A
+      // When B is selected, A should be "dependency" (from production A→B),
+      // NOT "dependent" (from test B→A processed first).
+      const testData = {
+        nodes: {
+          A: { type: "module", parent: null, x: 20, y: 60, width: 100, height: 20, hasChildren: false },
+          B: { type: "module", parent: null, x: 20, y: 90, width: 100, height: 20, hasChildren: false },
+        },
+        arcs: {
+          "A-B": { from: "A", to: "B", isTest: false, usages: [
+            { symbol: "prod_fn", modulePath: null, locations: [{ file: "a.rs", line: 1 }] }
+          ]},
+          "B-A": { from: "B", to: "A", isTest: true, usages: [
+            { symbol: "test_fn", modulePath: null, locations: [{ file: "b.rs", line: 1 }] }
+          ]}
+        }
+      };
+      const sd = createMockStaticData(testData);
+      const testPositions = new Map([
+        ["A", { x: 20, y: 60, width: 100, height: 20 }],
+        ["B", { x: 20, y: 90, width: 100, height: 20 }],
+      ]);
+
+      const state = AppState.create();
+      AppState.setSelection(state, 'node', 'B');
+
+      const result = DerivedState.deriveHighlightState(
+        state, sd, new Map(), new Set(), testPositions, ROW_HEIGHT
+      );
+
+      expect(result).not.toBeNull();
+      // B is selected
+      expect(result.nodeHighlights.get("B").role).toBe("current");
+      // Both arcs should be highlighted (test arc still gets visual highlight)
+      expect(result.arcHighlights.has("A-B")).toBe(true);
+      expect(result.arcHighlights.has("B-A")).toBe(true);
+      // A should be "dependent" (from production A→B: A depends on B),
+      // NOT "dependency" (test B→A must not override with wrong role)
+      expect(result.nodeHighlights.get("A").role).toBe("dependent");
+      expect(result.nodeHighlights.get("A").cssClass).toBe("dependentNode");
+    });
+
+    test("test arc gets visual highlight but no node role assignment", () => {
+      // A single test arc: when highlighted, it should appear in arcHighlights
+      // but must NOT mark endpoint nodes
+      const testData = {
+        nodes: {
+          X: { type: "module", parent: null, x: 20, y: 60, width: 100, height: 20, hasChildren: false },
+          Y: { type: "module", parent: null, x: 20, y: 90, width: 100, height: 20, hasChildren: false },
+        },
+        arcs: {
+          "X-Y": { from: "X", to: "Y", isTest: true, usages: [
+            { symbol: "test_only", modulePath: null, locations: [{ file: "x.rs", line: 1 }] }
+          ]}
+        }
+      };
+      const sd = createMockStaticData(testData);
+      const testPositions = new Map([
+        ["X", { x: 20, y: 60, width: 100, height: 20 }],
+        ["Y", { x: 20, y: 90, width: 100, height: 20 }],
+      ]);
+
+      const state = AppState.create();
+      AppState.setSelection(state, 'node', 'X');
+
+      const result = DerivedState.deriveHighlightState(
+        state, sd, new Map(), new Set(), testPositions, ROW_HEIGHT
+      );
+
+      expect(result).not.toBeNull();
+      // X is selected
+      expect(result.nodeHighlights.get("X").role).toBe("current");
+      // Test arc is visually highlighted
+      expect(result.arcHighlights.has("X-Y")).toBe(true);
+      // Y should NOT get a node role from the test arc
+      expect(result.nodeHighlights.has("Y")).toBe(false);
+    });
   });
 });

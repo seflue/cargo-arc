@@ -88,7 +88,7 @@ mod tests {
             },
             "b".into(),
         );
-        ir.add_edge(a, b, EdgeKind::Downward, vec![]);
+        ir.add_edge(a, b, EdgeKind::Downward, vec![], false);
         let svg = render(&ir, &RenderConfig::default());
         assert!(svg.contains(" Q ")); // Bezier
         assert!(svg.contains("<polygon")); // Arrow
@@ -114,7 +114,7 @@ mod tests {
         );
 
         // Test DirectCycle
-        ir.add_edge(a, b, EdgeKind::DirectCycle, vec![]);
+        ir.add_edge(a, b, EdgeKind::DirectCycle, vec![], false);
         let svg = render(&ir, &RenderConfig::default());
         assert!(svg.contains("cycle-arc"));
         // DirectCycle should have two arrows (bidirectional)
@@ -138,7 +138,7 @@ mod tests {
             },
             "b".into(),
         );
-        ir2.add_edge(a2, b2, EdgeKind::TransitiveCycle, vec![]);
+        ir2.add_edge(a2, b2, EdgeKind::TransitiveCycle, vec![], false);
         let svg2 = render(&ir2, &RenderConfig::default());
         assert!(svg2.contains("cycle-arc"));
         assert!(svg2.contains("stroke-dasharray"));
@@ -177,7 +177,7 @@ mod tests {
             },
             "b".into(),
         );
-        ir.add_edge(a, b, EdgeKind::Downward, vec![]);
+        ir.add_edge(a, b, EdgeKind::Downward, vec![], false);
         let svg = render(&ir, &RenderConfig::default());
 
         // Verify all 6 layers exist
@@ -225,7 +225,7 @@ mod tests {
             },
             "b".into(),
         );
-        ir.add_edge(a, b, EdgeKind::Downward, vec![]);
+        ir.add_edge(a, b, EdgeKind::Downward, vec![], false);
         let svg = render(&ir, &RenderConfig::default());
 
         // Find base-arcs-layer content
@@ -263,7 +263,7 @@ mod tests {
             },
             "b".into(),
         );
-        ir.add_edge(a, b, EdgeKind::Downward, vec![]);
+        ir.add_edge(a, b, EdgeKind::Downward, vec![], false);
         let svg = render(&ir, &RenderConfig::default());
 
         // Find hitareas-layer content

@@ -594,7 +594,7 @@ mod tests {
             },
             "b".into(),
         );
-        ir.add_edge(a, b, EdgeKind::Downward, vec![]);
+        ir.add_edge(a, b, EdgeKind::Downward, vec![], false);
         let config = RenderConfig::default();
         let box_width = calculate_box_width(&ir);
         let positioned = calculate_positions(&ir, &config, box_width);
@@ -634,7 +634,7 @@ mod tests {
             },
             "b".into(),
         );
-        ir.add_edge(a, b, EdgeKind::Downward, vec![]);
+        ir.add_edge(a, b, EdgeKind::Downward, vec![], false);
         let config = RenderConfig::default();
         let box_width = calculate_box_width(&ir);
         let positioned = calculate_positions(&ir, &config, box_width);
@@ -674,7 +674,7 @@ mod tests {
         let mut ir = LayoutIR::new();
         let c1 = ir.add_item(ItemKind::Crate, "crate_a".into());
         let c2 = ir.add_item(ItemKind::Crate, "crate_b".into());
-        ir.add_edge(c1, c2, EdgeKind::Downward, vec![]);
+        ir.add_edge(c1, c2, EdgeKind::Downward, vec![], false);
         let config = RenderConfig::default();
         let box_width = calculate_box_width(&ir);
         let positioned = calculate_positions(&ir, &config, box_width);

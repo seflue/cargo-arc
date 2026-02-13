@@ -130,6 +130,26 @@ describe("StaticData", () => {
     });
   });
 
+  describe("isTest field", () => {
+    test("arc isTest field is accessible via getArc", () => {
+      // Add a test arc to STATIC_DATA
+      TEST_STATIC_DATA.arcs["test-arc"] = {
+        from: "fn_1", to: "fn_2", isTest: true,
+        usages: [{ symbol: "test_fn", modulePath: null, locations: [{ file: "test.rs", line: 1 }] }]
+      };
+
+      const arc = StaticData.getArc("test-arc");
+      expect(arc.isTest).toBe(true);
+
+      // Production arc should have isTest undefined or false
+      const prodArc = StaticData.getArc("fn_1-fn_2");
+      expect(prodArc.isTest).toBeFalsy();
+
+      // Cleanup
+      delete TEST_STATIC_DATA.arcs["test-arc"];
+    });
+  });
+
   describe("getNodeRelations", () => {
     test("groups arcs by direction with correct fields", () => {
       // fn_1 has: outgoing fn_1-fn_2 (weight 1), fn_1-crate (weight 2)

@@ -678,7 +678,7 @@ pub fn build_layout(graph: &ArcGraph, order: &[NodeIndex], cycles: &[Cycle]) -> 
     // Add dependency edges (CrateDep and ModuleDep only)
     for edge_idx in graph.edge_indices() {
         match &graph[edge_idx] {
-            Edge::CrateDep { .. } => {
+            Edge::CrateDep { context } => {
                 let (src, dst) = graph.edge_endpoints(edge_idx).unwrap();
                 // Skip CrateDep if ModuleDeps already show this relationship
                 if crates_with_module_deps.contains(&(src, dst)) {
@@ -694,10 +694,11 @@ pub fn build_layout(graph: &ArcGraph, order: &[NodeIndex], cycles: &[Cycle]) -> 
                         // from appears after to → upward reference (child→parent)
                         EdgeKind::Upward
                     };
-                    ir.add_edge(from, to, kind, vec![]);
+                    let is_test = !matches!(context, crate::model::EdgeContext::Production);
+                    ir.add_edge(from, to, kind, vec![], is_test);
                 }
             }
-            Edge::ModuleDep { locations, .. } => {
+            Edge::ModuleDep { locations, context } => {
                 let (src, dst) = graph.edge_endpoints(edge_idx).unwrap();
                 if let (Some(&from), Some(&to)) = (node_map.get(&src), node_map.get(&dst)) {
                     let kind = if cycle_pairs.contains(&(src, dst)) {
@@ -720,7 +721,8 @@ pub fn build_layout(graph: &ArcGraph, order: &[NodeIndex], cycles: &[Cycle]) -> 
                         // from appears after to → upward reference (child→parent)
                         EdgeKind::Upward
                     };
-                    ir.add_edge(from, to, kind, locations.clone());
+                    let is_test = !matches!(context, crate::model::EdgeContext::Production);
+                    ir.add_edge(from, to, kind, locations.clone(), is_test);
                 }
             }
             Edge::Contains => {} // Skip hierarchy edges
@@ -811,6 +813,7 @@ pub struct LayoutEdge {
     pub to: NodeId,
     pub kind: EdgeKind,
     pub source_locations: Vec<SourceLocation>,
+    pub is_test: bool,
 }
 
 #[derive(Debug, Default)]
@@ -842,12 +845,14 @@ impl LayoutIR {
         to: NodeId,
         kind: EdgeKind,
         source_locations: Vec<SourceLocation>,
+        is_test: bool,
     ) {
         self.edges.push(LayoutEdge {
             from,
             to,
             kind,
             source_locations,
+            is_test,
         });
     }
 }
@@ -872,6 +877,7 @@ mod tests {
                 symbols: vec![],
                 module_path: String::new(),
             }],
+            is_test: false,
         };
         assert_eq!(edge.source_locations.len(), 1);
         assert_eq!(edge.source_locations[0].line, 42);
@@ -1466,18 +1472,21 @@ mod tests {
             to: 1,
             kind: EdgeKind::Downward,
             source_locations: vec![],
+            is_test: false,
         };
         let direct = LayoutEdge {
             from: 1,
             to: 0,
             kind: EdgeKind::DirectCycle,
             source_locations: vec![],
+            is_test: false,
         };
         let trans = LayoutEdge {
             from: 2,
             to: 3,
             kind: EdgeKind::TransitiveCycle,
             source_locations: vec![],
+            is_test: false,
         };
 
         assert_eq!(normal.from, 0);
@@ -1497,7 +1506,7 @@ mod tests {
             },
             "my_module".to_string(),
         );
-        ir.add_edge(crate_id, mod_id, EdgeKind::Downward, vec![]);
+        ir.add_edge(crate_id, mod_id, EdgeKind::Downward, vec![], false);
 
         assert_eq!(ir.items.len(), 2);
         assert_eq!(ir.edges.len(), 1);

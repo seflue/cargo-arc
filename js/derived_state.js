@@ -244,9 +244,10 @@ const DerivedState = {
       const toInSet = highlightSet.has(arc.to);
       if (!fromInSet && !toInSet) continue;
       if (groupMode && (!fromInSet || !toInSet)) continue;
+      const isTest = arc.isTest || false;
       descs.push({
         key: arcId, fromId: arc.from, toId: arc.to, fromInSet, toInSet,
-        originalWidth: staticData.getArcStrokeWidth(arcId), isVirtual: false
+        originalWidth: staticData.getArcStrokeWidth(arcId), isVirtual: false, isTest
       });
     }
     return descs;
@@ -292,7 +293,9 @@ const DerivedState = {
       result.arcHighlights.set(desc.key, arcHighlight);
       if (shadow) result.shadowData.set(desc.key, shadow);
       if (!desc.isVirtual) result.promotedHitareas.add(desc.key);
-      this._markEndpointNodes(desc.fromId, desc.toId, desc.fromInSet, desc.toInSet, result.nodeHighlights);
+      if (!desc.isTest) {
+        this._markEndpointNodes(desc.fromId, desc.toId, desc.fromInSet, desc.toInSet, result.nodeHighlights);
+      }
     }
   },
 

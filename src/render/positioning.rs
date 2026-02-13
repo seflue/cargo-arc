@@ -147,7 +147,7 @@ mod tests {
             );
         }
         // Edge von erstem zu letztem Modul (9 Hops)
-        ir.add_edge(1, 10, EdgeKind::Downward, vec![]);
+        ir.add_edge(1, 10, EdgeKind::Downward, vec![], false);
 
         let config = RenderConfig::default();
         let box_width = calculate_box_width(&ir);

@@ -164,8 +164,8 @@ fn generate_static_data(
         let comma = if i < ir.edges.len() - 1 { "," } else { "" };
 
         lines.push(format!(
-            "    \"{}\": {{ from: \"{}\", to: \"{}\", usages: {} }}{}",
-            arc_id, edge.from, edge.to, usages_str, comma
+            "    \"{}\": {{ from: \"{}\", to: \"{}\", isTest: {}, usages: {} }}{}",
+            arc_id, edge.from, edge.to, edge.is_test, usages_str, comma
         ));
     }
     lines.push("  },".to_string());
@@ -653,6 +653,7 @@ mod tests {
                 symbols: vec!["MyStruct".to_string()],
                 module_path: String::new(),
             }],
+            false,
         );
 
         let config = RenderConfig::default();
@@ -661,10 +662,14 @@ mod tests {
 
         let script = render_script(&config, &ir, &positioned, &parents);
 
-        // Arc should have from, to, usages
+        // Arc should have from, to, isTest, usages
         assert!(script.contains(r#""1-2": {"#), "Should have arc 1-2");
         assert!(script.contains(r#"from: "1""#), "Arc should have from");
         assert!(script.contains(r#"to: "2""#), "Arc should have to");
+        assert!(
+            script.contains("isTest: false"),
+            "Arc should have isTest: false"
+        );
         assert!(script.contains("usages: ["), "Arc should have usages array");
         assert!(
             script.contains(r#"symbol: "MyStruct""#),
@@ -675,6 +680,38 @@ mod tests {
             "Usages should contain file"
         );
         assert!(script.contains("line: 5"), "Usages should contain line");
+    }
+
+    #[test]
+    fn test_static_data_arc_is_test_flag() {
+        let mut ir = LayoutIR::new();
+        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let a = ir.add_item(
+            ItemKind::Module {
+                nesting: 1,
+                parent: c,
+            },
+            "a".into(),
+        );
+        let b = ir.add_item(
+            ItemKind::Module {
+                nesting: 1,
+                parent: c,
+            },
+            "b".into(),
+        );
+        ir.add_edge(a, b, EdgeKind::Downward, vec![], true);
+
+        let config = RenderConfig::default();
+        let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
+        let parents: HashSet<NodeId> = HashSet::from([0]);
+
+        let script = render_script(&config, &ir, &positioned, &parents);
+
+        assert!(
+            script.contains("isTest: true"),
+            "Test arc should have isTest: true"
+        );
     }
 
     #[test]
@@ -695,7 +732,7 @@ mod tests {
             },
             "b".into(),
         );
-        ir.add_edge(a, b, EdgeKind::Downward, vec![]);
+        ir.add_edge(a, b, EdgeKind::Downward, vec![], false);
 
         let config = RenderConfig::default();
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
@@ -748,6 +785,7 @@ mod tests {
                     module_path: String::new(),
                 },
             ],
+            false,
         );
 
         let config = RenderConfig::default();
@@ -866,6 +904,7 @@ mod tests {
                 symbols: vec!["Test\"Quote".to_string()],
                 module_path: String::new(),
             }],
+            false,
         );
 
         let config = RenderConfig::default();
@@ -1157,6 +1196,7 @@ mod tests {
                 symbols: vec![],
                 module_path: String::new(),
             }],
+            false,
         );
         let config = RenderConfig::default();
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
