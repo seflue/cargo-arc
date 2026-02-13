@@ -10,7 +10,7 @@ use cargo_metadata::{DependencyKind, Metadata, NodeDep};
 use std::collections::{HashMap, HashSet, VecDeque};
 use tracing::{debug, instrument};
 
-use super::FeatureConfig;
+use super::hir::FeatureConfig;
 use crate::model::{WorkspaceCrates, normalize_crate_name};
 
 // --- Dependency filtering types ---

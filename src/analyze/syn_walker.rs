@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use super::use_parser::{
-    collect_all_path_refs, parse_path_ref_dependencies, parse_workspace_dependencies,
+    collect_all_path_refs, is_cfg_test, parse_path_ref_dependencies, parse_workspace_dependencies,
 };
 use crate::model::normalize_crate_name;
 use crate::model::{
@@ -65,23 +65,6 @@ fn find_integration_test_files(crate_path: &Path) -> Vec<PathBuf> {
 struct ModDecl {
     name: String,
     explicit_path: Option<String>,
-}
-
-/// Check whether attributes contain `#[cfg(test)]`.
-pub(crate) fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
-    attrs.iter().any(|attr| {
-        if !attr.path().is_ident("cfg") {
-            return false;
-        }
-        let mut found = false;
-        let _ = attr.parse_nested_meta(|meta| {
-            if meta.path.is_ident("test") {
-                found = true;
-            }
-            Ok(())
-        });
-        found
-    })
 }
 
 /// Extract the value of a `#[path = "..."]` attribute, if present.

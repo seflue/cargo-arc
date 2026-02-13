@@ -9,6 +9,23 @@ use std::path::Path;
 use syn::UseTree;
 use syn::visit::Visit;
 
+/// Check whether attributes contain `#[cfg(test)]`.
+pub(crate) fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        if !attr.path().is_ident("cfg") {
+            return false;
+        }
+        let mut found = false;
+        let _ = attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("test") {
+                found = true;
+            }
+            Ok(())
+        });
+        found
+    })
+}
+
 /// Promote any context to a test context. Production becomes Unit test;
 /// already-test contexts are preserved (idempotent for test contexts).
 fn promote_to_test(base: EdgeContext) -> EdgeContext {
@@ -24,11 +41,17 @@ macro_rules! impl_cfg_test_visit_item_mod {
     () => {
         fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
             let prev_context = self.context;
-            if super::syn_walker::is_cfg_test(&node.attrs) {
+            let prev_depth = self.inline_depth;
+            if is_cfg_test(&node.attrs) {
                 self.context = promote_to_test(self.context);
+            }
+            // Inline modules (with body) add nesting depth; `mod foo;` (external) does not
+            if node.content.is_some() {
+                self.inline_depth += 1;
             }
             syn::visit::visit_item_mod(self, node);
             self.context = prev_context;
+            self.inline_depth = prev_depth;
         }
     };
 }
@@ -43,19 +66,20 @@ macro_rules! impl_cfg_test_visit_item_mod {
 pub(crate) fn collect_all_use_items(
     syntax: &syn::File,
     base_context: EdgeContext,
-) -> Vec<(syn::ItemUse, EdgeContext)> {
+) -> Vec<(syn::ItemUse, EdgeContext, usize)> {
     struct UseCollector {
-        uses: Vec<(syn::ItemUse, EdgeContext)>,
+        uses: Vec<(syn::ItemUse, EdgeContext, usize)>,
         context: EdgeContext,
+        inline_depth: usize,
     }
     impl<'ast> Visit<'ast> for UseCollector {
         fn visit_item_use(&mut self, node: &'ast syn::ItemUse) {
-            let ctx = if super::syn_walker::is_cfg_test(&node.attrs) {
+            let ctx = if is_cfg_test(&node.attrs) {
                 promote_to_test(self.context)
             } else {
                 self.context
             };
-            self.uses.push((node.clone(), ctx));
+            self.uses.push((node.clone(), ctx, self.inline_depth));
         }
 
         impl_cfg_test_visit_item_mod!();
@@ -63,6 +87,7 @@ pub(crate) fn collect_all_use_items(
     let mut collector = UseCollector {
         uses: Vec::new(),
         context: base_context,
+        inline_depth: 0,
     };
     collector.visit_file(syntax);
     collector.uses
@@ -75,10 +100,11 @@ pub(crate) fn collect_all_use_items(
 pub(crate) fn collect_all_path_refs(
     syntax: &syn::File,
     base_context: EdgeContext,
-) -> Vec<(String, usize, EdgeContext)> {
+) -> Vec<(String, usize, EdgeContext, usize)> {
     struct PathRefCollector {
-        paths: Vec<(String, usize, EdgeContext)>,
+        paths: Vec<(String, usize, EdgeContext, usize)>,
         context: EdgeContext,
+        inline_depth: usize,
     }
     impl<'ast> Visit<'ast> for PathRefCollector {
         fn visit_path(&mut self, node: &'ast syn::Path) {
@@ -94,7 +120,8 @@ pub(crate) fn collect_all_path_refs(
                     .first()
                     .map(|s| s.ident.span().start().line)
                     .unwrap_or(0);
-                self.paths.push((path_str, line, self.context));
+                self.paths
+                    .push((path_str, line, self.context, self.inline_depth));
             }
             // Continue visiting nested paths (e.g. in generics)
             syn::visit::visit_path(self, node);
@@ -105,6 +132,7 @@ pub(crate) fn collect_all_path_refs(
     let mut collector = PathRefCollector {
         paths: Vec::new(),
         context: base_context,
+        inline_depth: 0,
     };
     collector.visit_file(syntax);
     collector.paths
@@ -337,6 +365,63 @@ fn parse_workspace_import(
     })
 }
 
+/// Resolve `super::` and `self::` relative paths to absolute crate-local paths.
+///
+/// - `super::` → strip one segment from `current_module_path`, append remainder
+/// - Multiple `super::` → strip one segment per `super`
+/// - `self::` → prepend `current_module_path`
+/// - Anything else → `None`
+fn resolve_relative_path(
+    path: &str,
+    current_module_path: &str,
+    inline_depth: usize,
+) -> Option<String> {
+    if path.starts_with("super::") {
+        let mut rest = path;
+        let mut super_count = 0;
+        while let Some(after) = rest.strip_prefix("super::") {
+            super_count += 1;
+            rest = after;
+        }
+        // First `inline_depth` supers navigate back through inline modules
+        // (e.g. `mod tests { use super::* }` → back to file module, not parent).
+        // Only supers beyond inline_depth strip from current_module_path.
+        if super_count <= inline_depth {
+            // Stays within or at the file module level — self-reference, not inter-module
+            return None;
+        }
+        let effective_supers = super_count - inline_depth;
+        let mut segments: Vec<&str> = if current_module_path.is_empty() {
+            Vec::new()
+        } else {
+            current_module_path.split("::").collect()
+        };
+        for _ in 0..effective_supers {
+            if segments.is_empty() {
+                return None;
+            }
+            segments.pop();
+        }
+        if segments.is_empty() {
+            Some(rest.to_string())
+        } else {
+            Some(format!("{}::{rest}", segments.join("::")))
+        }
+    } else if let Some(after) = path.strip_prefix("self::") {
+        if inline_depth > 0 {
+            // `self::` inside inline module refers to inline scope, not file module
+            return None;
+        }
+        if current_module_path.is_empty() {
+            Some(after.to_string())
+        } else {
+            Some(format!("{current_module_path}::{after}"))
+        }
+    } else {
+        None
+    }
+}
+
 /// Resolve a single use path through the resolution chain: crate-local → bare module → workspace.
 /// Handles glob paths (`crate::module::*`) by stripping the glob and setting target_item = "*".
 #[allow(clippy::too_many_arguments)]
@@ -350,7 +435,21 @@ fn resolve_single_path(
     crate_exports: &CrateExportMap,
     context: EdgeContext,
     current_module_path: &str,
+    inline_depth: usize,
 ) -> Option<DependencyRef> {
+    // Resolve super::/self:: to absolute crate-local path, then route to crate:: handler
+    if let Some(resolved) = resolve_relative_path(path, current_module_path, inline_depth) {
+        let as_crate_path = format!("crate::{resolved}");
+        return parse_crate_local_import(
+            &as_crate_path,
+            current_crate,
+            source_file,
+            line_num,
+            all_module_paths,
+            context,
+        );
+    }
+
     // Handle glob: `crate::module::*` → resolve base, set target_item = "*"
     if let Some(base) = path.strip_suffix("::*") {
         let mut dep = resolve_single_path(
@@ -363,6 +462,7 @@ fn resolve_single_path(
             crate_exports,
             context,
             current_module_path,
+            inline_depth,
         )?;
         // The base resolved as a module — push "*" as the item
         dep.target_item = Some("*".to_string());
@@ -424,7 +524,7 @@ fn resolve_single_path(
 ///
 /// Deduplicates by full_target() to keep distinct symbols but avoid duplicates.
 pub(crate) fn parse_workspace_dependencies(
-    use_items: &[(syn::ItemUse, EdgeContext)],
+    use_items: &[(syn::ItemUse, EdgeContext, usize)],
     current_crate: &str,
     workspace_crates: &WorkspaceCrates,
     source_file: &Path,
@@ -435,7 +535,7 @@ pub(crate) fn parse_workspace_dependencies(
     let mut deps: Vec<DependencyRef> = Vec::new();
     let mut seen_targets: HashSet<(String, EdgeContext)> = HashSet::new();
 
-    for (item, context) in use_items {
+    for (item, context, inline_depth) in use_items {
         let line_num = item.use_token.span.start().line;
         let paths = resolve_use_tree(&item.tree, "");
 
@@ -450,6 +550,7 @@ pub(crate) fn parse_workspace_dependencies(
                 crate_exports,
                 *context,
                 current_module_path,
+                *inline_depth,
             ) {
                 let dedup_key = (dep.full_target(), dep.context);
                 if seen_targets.insert(dedup_key) {
@@ -468,7 +569,7 @@ pub(crate) fn parse_workspace_dependencies(
 /// each through the existing resolution chain (`resolve_single_path()`).
 /// Deduplicates by `full_target()` — same strategy as `parse_workspace_dependencies()`.
 pub(crate) fn parse_path_ref_dependencies(
-    paths: &[(String, usize, EdgeContext)],
+    paths: &[(String, usize, EdgeContext, usize)],
     current_crate: &str,
     workspace_crates: &WorkspaceCrates,
     source_file: &Path,
@@ -479,7 +580,7 @@ pub(crate) fn parse_path_ref_dependencies(
     let mut deps: Vec<DependencyRef> = Vec::new();
     let mut seen_targets: HashSet<(String, EdgeContext)> = HashSet::new();
 
-    for (path, line_num, context) in paths {
+    for (path, line_num, context, inline_depth) in paths {
         if let Some(dep) = resolve_single_path(
             path,
             *line_num,
@@ -490,6 +591,7 @@ pub(crate) fn parse_path_ref_dependencies(
             crate_exports,
             *context,
             current_module_path,
+            *inline_depth,
         ) {
             let dedup_key = (dep.full_target(), dep.context);
             if seen_targets.insert(dedup_key) {
@@ -534,7 +636,7 @@ mod tests {
     use super::*;
     use std::path::Path;
 
-    fn parse_test_uses(source: &str) -> Vec<(syn::ItemUse, EdgeContext)> {
+    fn parse_test_uses(source: &str) -> Vec<(syn::ItemUse, EdgeContext, usize)> {
         collect_all_use_items(&syn::parse_file(source).unwrap(), EdgeContext::Production)
     }
 
@@ -636,10 +738,15 @@ mod tests {
         }
 
         #[test]
-        fn test_process_use_statement_relative_self_ignored() {
+        fn test_process_use_statement_relative_self_resolved() {
             let ws = WorkspaceCrates::default();
-            let mp = ModulePathMap::default();
-            let path = Path::new("src/lib.rs");
+            let mp: ModulePathMap = [(
+                "my_crate".to_string(),
+                HashSet::from(["render".into(), "render::helper".into()]),
+            )]
+            .into_iter()
+            .collect();
+            let path = Path::new("src/render/mod.rs");
             let uses = parse_test_uses("use self::helper;");
             let deps = parse_workspace_dependencies(
                 &uses,
@@ -648,15 +755,22 @@ mod tests {
                 path,
                 &mp,
                 &CrateExportMap::default(),
-                "",
+                "render",
             );
-            assert!(deps.is_empty(), "self:: imports should be ignored");
+            assert_eq!(deps.len(), 1, "self:: should resolve: {deps:?}");
+            assert_eq!(deps[0].target_crate, "my_crate");
+            assert_eq!(deps[0].target_module, "render::helper");
         }
 
         #[test]
-        fn test_process_use_statement_relative_super_ignored() {
+        fn test_process_use_statement_relative_super_resolved() {
             let ws = WorkspaceCrates::default();
-            let mp = ModulePathMap::default();
+            let mp: ModulePathMap = [(
+                "my_crate".to_string(),
+                HashSet::from(["parent".into(), "sub".into()]),
+            )]
+            .into_iter()
+            .collect();
             let path = Path::new("src/sub/mod.rs");
             let uses = parse_test_uses("use super::parent;");
             let deps = parse_workspace_dependencies(
@@ -666,9 +780,11 @@ mod tests {
                 path,
                 &mp,
                 &CrateExportMap::default(),
-                "",
+                "sub",
             );
-            assert!(deps.is_empty(), "super:: imports should be ignored");
+            assert_eq!(deps.len(), 1, "super:: should resolve: {deps:?}");
+            assert_eq!(deps[0].target_crate, "my_crate");
+            assert_eq!(deps[0].target_module, "parent");
         }
 
         #[test]
@@ -1722,7 +1838,7 @@ fn main() {
             let syntax = syn::parse_file(source).unwrap();
             let refs = collect_all_path_refs(&syntax, EdgeContext::Production);
             assert!(
-                refs.iter().any(|(p, _, _)| p == "my_server::run"),
+                refs.iter().any(|(p, _, _, _)| p == "my_server::run"),
                 "should collect my_server::run, found: {refs:?}"
             );
         }
@@ -1737,7 +1853,7 @@ fn main() {
             let syntax = syn::parse_file(source).unwrap();
             let refs = collect_all_path_refs(&syntax, EdgeContext::Production);
             assert!(
-                refs.iter().any(|(p, _, _)| p == "my_lib::Config"),
+                refs.iter().any(|(p, _, _, _)| p == "my_lib::Config"),
                 "should collect my_lib::Config, found: {refs:?}"
             );
         }
@@ -1756,7 +1872,7 @@ fn main() {
             let syntax = syn::parse_file(source).unwrap();
             let refs = collect_all_path_refs(&syntax, EdgeContext::Production);
             assert!(
-                refs.iter().any(|(p, _, _)| p == "my_lib::check"),
+                refs.iter().any(|(p, _, _, _)| p == "my_lib::check"),
                 "should collect my_lib::check, found: {refs:?}"
             );
         }
@@ -1769,7 +1885,7 @@ fn process<T: my_lib::Trait>(_t: T) {}
             let syntax = syn::parse_file(source).unwrap();
             let refs = collect_all_path_refs(&syntax, EdgeContext::Production);
             assert!(
-                refs.iter().any(|(p, _, _)| p == "my_lib::Trait"),
+                refs.iter().any(|(p, _, _, _)| p == "my_lib::Trait"),
                 "should collect my_lib::Trait, found: {refs:?}"
             );
         }
@@ -1784,7 +1900,7 @@ fn main() {
             let syntax = syn::parse_file(source).unwrap();
             let refs = collect_all_path_refs(&syntax, EdgeContext::Production);
             assert!(
-                refs.iter().any(|(p, _, _)| p == "my_lib::Config"),
+                refs.iter().any(|(p, _, _, _)| p == "my_lib::Config"),
                 "should collect my_lib::Config from struct literal, found: {refs:?}"
             );
         }
@@ -1801,7 +1917,7 @@ fn main() {
             let refs = collect_all_path_refs(&syntax, EdgeContext::Production);
             // "println" is a single segment → not collected
             assert!(
-                !refs.iter().any(|(p, _, _)| p == "println"),
+                !refs.iter().any(|(p, _, _, _)| p == "println"),
                 "single-segment paths should not be collected, found: {refs:?}"
             );
         }
@@ -1816,7 +1932,8 @@ fn main() {
             let syntax = syn::parse_file(source).unwrap();
             let refs = collect_all_path_refs(&syntax, EdgeContext::Production);
             assert!(
-                refs.iter().any(|(p, _, _)| p == "my_lib::Config::default"),
+                refs.iter()
+                    .any(|(p, _, _, _)| p == "my_lib::Config::default"),
                 "should collect full path my_lib::Config::default, found: {refs:?}"
             );
         }
@@ -1832,11 +1949,11 @@ fn main() {
             let syntax = syn::parse_file(source).unwrap();
             let refs = collect_all_path_refs(&syntax, EdgeContext::Production);
             assert!(
-                refs.iter().any(|(p, _, _)| p == "my_server::run"),
+                refs.iter().any(|(p, _, _, _)| p == "my_server::run"),
                 "should collect my_server::run, found: {refs:?}"
             );
             assert!(
-                refs.iter().any(|(p, _, _)| p == "my_lib::Config"),
+                refs.iter().any(|(p, _, _, _)| p == "my_lib::Config"),
                 "should collect my_lib::Config, found: {refs:?}"
             );
         }
@@ -1860,7 +1977,7 @@ mod tests {
             let refs = collect_all_path_refs(&syntax, EdgeContext::Production);
             let matching: Vec<_> = refs
                 .iter()
-                .filter(|(p, _, _)| p == "other_crate::module::helper")
+                .filter(|(p, _, _, _)| p == "other_crate::module::helper")
                 .collect();
             assert_eq!(matching.len(), 1);
             assert_eq!(
@@ -1880,7 +1997,7 @@ fn main() {
             let refs = collect_all_path_refs(&syntax, EdgeContext::Production);
             let matching: Vec<_> = refs
                 .iter()
-                .filter(|(p, _, _)| p == "other_crate::module::run")
+                .filter(|(p, _, _, _)| p == "other_crate::module::run")
                 .collect();
             assert_eq!(matching.len(), 1);
             assert_eq!(matching[0].2, EdgeContext::Production);
@@ -1901,6 +2018,7 @@ fn main() {
                 "other_crate::module::item".to_string(),
                 5,
                 EdgeContext::Production,
+                0,
             )];
             let deps = parse_path_ref_dependencies(
                 &paths,
@@ -1932,6 +2050,7 @@ fn main() {
                 "crate::module::item".to_string(),
                 3,
                 EdgeContext::Production,
+                0,
             )];
             let deps = parse_path_ref_dependencies(
                 &paths,
@@ -1954,7 +2073,7 @@ fn main() {
             let mp: ModulePathMap = [("my_crate".to_string(), HashSet::from(["cli".into()]))]
                 .into_iter()
                 .collect();
-            let paths = vec![("cli::Args".to_string(), 1, EdgeContext::Production)];
+            let paths = vec![("cli::Args".to_string(), 1, EdgeContext::Production, 0)];
             let deps = parse_path_ref_dependencies(
                 &paths,
                 "my_crate",
@@ -1975,9 +2094,14 @@ fn main() {
             let ws = WorkspaceCrates::default();
             let mp = ModulePathMap::default();
             let paths = vec![
-                ("std::io::Read".to_string(), 1, EdgeContext::Production),
-                ("anyhow::Result".to_string(), 2, EdgeContext::Production),
-                ("serde::Serialize".to_string(), 3, EdgeContext::Production),
+                ("std::io::Read".to_string(), 1, EdgeContext::Production, 0),
+                ("anyhow::Result".to_string(), 2, EdgeContext::Production, 0),
+                (
+                    "serde::Serialize".to_string(),
+                    3,
+                    EdgeContext::Production,
+                    0,
+                ),
             ];
             let deps = parse_path_ref_dependencies(
                 &paths,
@@ -2005,6 +2129,7 @@ fn main() {
                 "other_crate::MyStruct".to_string(),
                 7,
                 EdgeContext::Production,
+                0,
             )];
             let deps = parse_path_ref_dependencies(
                 &paths,
@@ -2032,11 +2157,13 @@ fn main() {
                     "other_crate::module::item".to_string(),
                     5,
                     EdgeContext::Production,
+                    0,
                 ),
                 (
                     "other_crate::module::item".to_string(),
                     10,
                     EdgeContext::Production,
+                    0,
                 ),
             ];
             let deps = parse_path_ref_dependencies(
@@ -2049,6 +2176,312 @@ fn main() {
                 "",
             );
             assert_eq!(deps.len(), 1, "duplicate paths should be deduped: {deps:?}");
+        }
+    }
+
+    mod relative_path_tests {
+        use super::*;
+
+        #[test]
+        fn test_super_basic() {
+            // super::foo from module "a::b", depth 0 → "a::foo"
+            let result = resolve_relative_path("super::foo", "a::b", 0);
+            assert_eq!(result, Some("a::foo".to_string()));
+        }
+
+        #[test]
+        fn test_super_from_root() {
+            // super::foo from crate root (empty path) → None (no parent)
+            let result = resolve_relative_path("super::foo", "", 0);
+            assert_eq!(result, None);
+        }
+
+        #[test]
+        fn test_super_super() {
+            // super::super::foo from "a::b::c" → "a::foo"
+            let result = resolve_relative_path("super::super::foo", "a::b::c", 0);
+            assert_eq!(result, Some("a::foo".to_string()));
+        }
+
+        #[test]
+        fn test_super_too_many() {
+            // super::super::foo from "a" → None (can't go above root)
+            let result = resolve_relative_path("super::super::foo", "a", 0);
+            assert_eq!(result, None);
+        }
+
+        #[test]
+        fn test_self_basic() {
+            // self::child from "render", depth 0 → "render::child"
+            let result = resolve_relative_path("self::child", "render", 0);
+            assert_eq!(result, Some("render::child".to_string()));
+        }
+
+        #[test]
+        fn test_self_from_root() {
+            // self::foo from crate root → "foo"
+            let result = resolve_relative_path("self::foo", "", 0);
+            assert_eq!(result, Some("foo".to_string()));
+        }
+
+        #[test]
+        fn test_super_inside_inline_mod_ignored() {
+            // `use super::*` inside mod tests {} (depth=1) → None (self-reference)
+            let result = resolve_relative_path("super::*", "analyze::filtering", 1);
+            assert_eq!(result, None);
+        }
+
+        #[test]
+        fn test_super_super_from_inline_mod() {
+            // `use super::super::sibling` inside mod tests {} (depth=1)
+            // first super exits inline mod, second strips from current_module_path
+            let result = resolve_relative_path("super::super::sibling", "analyze::filtering", 1);
+            assert_eq!(result, Some("analyze::sibling".to_string()));
+        }
+
+        #[test]
+        fn test_self_inside_inline_mod_ignored() {
+            // `use self::helper` inside mod tests {} (depth=1) → None (inline scope)
+            let result = resolve_relative_path("self::helper", "analyze::filtering", 1);
+            assert_eq!(result, None);
+        }
+    }
+
+    mod relative_import_e2e_tests {
+        use super::*;
+
+        #[test]
+        fn test_super_filtering_from_workspace() {
+            // Realistic: `use super::filtering::DepInfo` from analyze::workspace
+            let ws = WorkspaceCrates::default();
+            let mp: ModulePathMap = [(
+                "my_crate".to_string(),
+                HashSet::from([
+                    "analyze".into(),
+                    "analyze::filtering".into(),
+                    "analyze::workspace".into(),
+                    "analyze::use_parser".into(),
+                ]),
+            )]
+            .into_iter()
+            .collect();
+            let path = Path::new("src/analyze/workspace.rs");
+            let uses = parse_test_uses("use super::filtering::DepInfo;");
+            let deps = parse_workspace_dependencies(
+                &uses,
+                "my_crate",
+                &ws,
+                path,
+                &mp,
+                &CrateExportMap::default(),
+                "analyze::workspace",
+            );
+            assert_eq!(deps.len(), 1, "super::filtering should resolve: {deps:?}");
+            let dep = &deps[0];
+            assert_eq!(dep.target_crate, "my_crate");
+            assert_eq!(dep.target_module, "analyze::filtering");
+            assert_eq!(dep.target_item, Some("DepInfo".to_string()));
+        }
+
+        #[test]
+        fn test_super_use_parser_from_syn_walker() {
+            // `use super::use_parser::{A, B}` from analyze::syn_walker
+            let ws = WorkspaceCrates::default();
+            let mp: ModulePathMap = [(
+                "my_crate".to_string(),
+                HashSet::from([
+                    "analyze".into(),
+                    "analyze::syn_walker".into(),
+                    "analyze::use_parser".into(),
+                ]),
+            )]
+            .into_iter()
+            .collect();
+            let path = Path::new("src/analyze/syn_walker.rs");
+            let uses = parse_test_uses(
+                "use super::use_parser::{parse_workspace_dependencies, collect_all_use_items};",
+            );
+            let deps = parse_workspace_dependencies(
+                &uses,
+                "my_crate",
+                &ws,
+                path,
+                &mp,
+                &CrateExportMap::default(),
+                "analyze::syn_walker",
+            );
+            assert_eq!(
+                deps.len(),
+                2,
+                "super::use_parser multi-import should resolve: {deps:?}"
+            );
+            assert!(deps.iter().all(|d| d.target_crate == "my_crate"));
+            assert!(
+                deps.iter()
+                    .all(|d| d.target_module == "analyze::use_parser")
+            );
+            assert!(
+                deps.iter()
+                    .any(|d| d.target_item == Some("parse_workspace_dependencies".to_string()))
+            );
+            assert!(
+                deps.iter()
+                    .any(|d| d.target_item == Some("collect_all_use_items".to_string()))
+            );
+        }
+
+        #[test]
+        fn test_super_from_crate_root_ignored() {
+            // super:: from crate root should produce no deps
+            let ws = WorkspaceCrates::default();
+            let mp: ModulePathMap = [("my_crate".to_string(), HashSet::from(["some_mod".into()]))]
+                .into_iter()
+                .collect();
+            let path = Path::new("src/lib.rs");
+            let uses = parse_test_uses("use super::some_mod;");
+            let deps = parse_workspace_dependencies(
+                &uses,
+                "my_crate",
+                &ws,
+                path,
+                &mp,
+                &CrateExportMap::default(),
+                "",
+            );
+            assert!(
+                deps.is_empty(),
+                "super:: from root should produce no deps: {deps:?}"
+            );
+        }
+
+        #[test]
+        fn test_self_child_module() {
+            // `use self::child::Item` from render
+            let ws = WorkspaceCrates::default();
+            let mp: ModulePathMap = [(
+                "my_crate".to_string(),
+                HashSet::from(["render".into(), "render::child".into()]),
+            )]
+            .into_iter()
+            .collect();
+            let path = Path::new("src/render/mod.rs");
+            let uses = parse_test_uses("use self::child::Item;");
+            let deps = parse_workspace_dependencies(
+                &uses,
+                "my_crate",
+                &ws,
+                path,
+                &mp,
+                &CrateExportMap::default(),
+                "render",
+            );
+            assert_eq!(deps.len(), 1, "self::child should resolve: {deps:?}");
+            assert_eq!(deps[0].target_crate, "my_crate");
+            assert_eq!(deps[0].target_module, "render::child");
+            assert_eq!(deps[0].target_item, Some("Item".to_string()));
+        }
+    }
+
+    mod inline_module_depth_tests {
+        use super::*;
+
+        #[test]
+        fn test_super_star_in_cfg_test_mod_no_upward_edge() {
+            // `#[cfg(test)] mod tests { use super::*; }` in filtering.rs
+            // must NOT create an edge to the parent module
+            let source = r#"
+fn some_fn() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+}
+"#;
+            let ws = WorkspaceCrates::default();
+            let mp: ModulePathMap = [(
+                "my_crate".to_string(),
+                HashSet::from(["analyze".into(), "analyze::filtering".into()]),
+            )]
+            .into_iter()
+            .collect();
+            let path = Path::new("src/analyze/filtering.rs");
+            let uses = parse_test_uses(source);
+            let deps = parse_workspace_dependencies(
+                &uses,
+                "my_crate",
+                &ws,
+                path,
+                &mp,
+                &CrateExportMap::default(),
+                "analyze::filtering",
+            );
+            assert!(
+                deps.is_empty(),
+                "super::* in mod tests should not create upward edge: {deps:?}"
+            );
+        }
+
+        #[test]
+        fn test_super_super_from_inline_mod_creates_real_edge() {
+            // `mod tests { use super::super::sibling::Item; }` should create
+            // a real edge because it goes above current_module_path
+            let source = r#"
+#[cfg(test)]
+mod tests {
+    use super::super::sibling::Item;
+}
+"#;
+            let ws = WorkspaceCrates::default();
+            let mp: ModulePathMap = [(
+                "my_crate".to_string(),
+                HashSet::from([
+                    "analyze".into(),
+                    "analyze::filtering".into(),
+                    "analyze::sibling".into(),
+                ]),
+            )]
+            .into_iter()
+            .collect();
+            let path = Path::new("src/analyze/filtering.rs");
+            let uses = parse_test_uses(source);
+            let deps = parse_workspace_dependencies(
+                &uses,
+                "my_crate",
+                &ws,
+                path,
+                &mp,
+                &CrateExportMap::default(),
+                "analyze::filtering",
+            );
+            assert_eq!(
+                deps.len(),
+                1,
+                "super::super from inline mod should create real edge: {deps:?}"
+            );
+            assert_eq!(deps[0].target_module, "analyze::sibling");
+            assert_eq!(deps[0].target_item, Some("Item".to_string()));
+        }
+
+        #[test]
+        fn test_collect_use_items_tracks_inline_depth() {
+            let source = r#"
+use crate::top;
+mod inner {
+    use crate::nested;
+    mod deep {
+        use crate::very_deep;
+    }
+}
+"#;
+            let syntax = syn::parse_file(source).unwrap();
+            let uses = collect_all_use_items(&syntax, EdgeContext::Production);
+            assert_eq!(uses.len(), 3);
+            // top-level use: depth 0
+            assert_eq!(uses[0].2, 0, "top-level use should have depth 0");
+            // use inside mod inner: depth 1
+            assert_eq!(uses[1].2, 1, "use in mod inner should have depth 1");
+            // use inside mod inner::deep: depth 2
+            assert_eq!(uses[2].2, 2, "use in mod deep should have depth 2");
         }
     }
 
@@ -2072,8 +2505,8 @@ fn main() {
                 })
                 .unwrap();
             let uses = vec![
-                (item.clone(), EdgeContext::Production),
-                (item, EdgeContext::Test(TestKind::Unit)),
+                (item.clone(), EdgeContext::Production, 0),
+                (item, EdgeContext::Test(TestKind::Unit), 0),
             ];
             let deps = parse_workspace_dependencies(
                 &uses,
@@ -2108,11 +2541,13 @@ fn main() {
                     "other_crate::module::item".to_string(),
                     5,
                     EdgeContext::Production,
+                    0,
                 ),
                 (
                     "other_crate::module::item".to_string(),
                     10,
                     EdgeContext::Test(TestKind::Unit),
+                    0,
                 ),
             ];
             let deps = parse_path_ref_dependencies(
@@ -2148,11 +2583,13 @@ fn main() {
                     "other_crate::module::item".to_string(),
                     5,
                     EdgeContext::Production,
+                    0,
                 ),
                 (
                     "other_crate::module::item".to_string(),
                     10,
                     EdgeContext::Production,
+                    0,
                 ),
             ];
             let deps = parse_path_ref_dependencies(
