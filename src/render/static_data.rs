@@ -323,7 +323,7 @@ pub(super) fn render_script(
 mod tests {
     use super::super::positioning::{calculate_box_width, calculate_positions};
     use super::*;
-    use crate::layout::EdgeKind;
+    use crate::layout::EdgeDirection;
 
     // === format_source_locations_by_symbol Tests ===
 
@@ -646,7 +646,8 @@ mod tests {
         ir.add_edge(
             a,
             b,
-            EdgeKind::Downward,
+            EdgeDirection::Downward,
+            None,
             vec![SourceLocation {
                 file: PathBuf::from("src/a.rs"),
                 line: 5,
@@ -700,7 +701,7 @@ mod tests {
             },
             "b".into(),
         );
-        ir.add_edge(a, b, EdgeKind::Downward, vec![], true);
+        ir.add_edge(a, b, EdgeDirection::Downward, None, vec![], true);
 
         let config = RenderConfig::default();
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
@@ -732,7 +733,7 @@ mod tests {
             },
             "b".into(),
         );
-        ir.add_edge(a, b, EdgeKind::Downward, vec![], false);
+        ir.add_edge(a, b, EdgeDirection::Downward, None, vec![], false);
 
         let config = RenderConfig::default();
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
@@ -770,7 +771,8 @@ mod tests {
         ir.add_edge(
             a,
             b,
-            EdgeKind::Downward,
+            EdgeDirection::Downward,
+            None,
             vec![
                 SourceLocation {
                     file: PathBuf::from("src/a.rs"),
@@ -897,7 +899,8 @@ mod tests {
         ir.add_edge(
             a,
             b,
-            EdgeKind::Downward,
+            EdgeDirection::Downward,
+            None,
             vec![SourceLocation {
                 file: PathBuf::from("src/a.rs"),
                 line: 5,
@@ -1189,7 +1192,8 @@ mod tests {
         ir.add_edge(
             a,
             b,
-            EdgeKind::Downward,
+            EdgeDirection::Downward,
+            None,
             vec![SourceLocation {
                 file: PathBuf::from("src/a.rs"),
                 line: 5,

@@ -682,24 +682,29 @@ pub fn build_layout(graph: &ArcGraph, cycles: &[Cycle]) -> LayoutIR {
                     continue;
                 }
                 if let (Some(&from), Some(&to)) = (node_map.get(&src), node_map.get(&dst)) {
-                    let kind = if cycle_pairs.contains(&(src, dst)) {
-                        EdgeKind::TransitiveCycle
-                    } else if from < to {
-                        // from appears before to in topo order → normal downward flow
-                        EdgeKind::Downward
+                    let direction = if from < to {
+                        EdgeDirection::Downward
                     } else {
-                        // from appears after to → upward reference (child→parent)
-                        EdgeKind::Upward
+                        EdgeDirection::Upward
+                    };
+                    let cycle = if cycle_pairs.contains(&(src, dst)) {
+                        Some(CycleKind::Transitive)
+                    } else {
+                        None
                     };
                     let is_test = !matches!(context, crate::model::EdgeContext::Production);
-                    ir.add_edge(from, to, kind, vec![], is_test);
+                    ir.add_edge(from, to, direction, cycle, vec![], is_test);
                 }
             }
             Edge::ModuleDep { locations, context } => {
                 let (src, dst) = graph.edge_endpoints(edge_idx).unwrap();
                 if let (Some(&from), Some(&to)) = (node_map.get(&src), node_map.get(&dst)) {
-                    let kind = if cycle_pairs.contains(&(src, dst)) {
-                        // Check if it's a direct cycle (A->B and B->A both exist)
+                    let direction = if from < to {
+                        EdgeDirection::Downward
+                    } else {
+                        EdgeDirection::Upward
+                    };
+                    let cycle = if cycle_pairs.contains(&(src, dst)) {
                         if cycle_pairs.contains(&(dst, src))
                             && graph.contains_edge(dst, src)
                             && matches!(
@@ -707,19 +712,15 @@ pub fn build_layout(graph: &ArcGraph, cycles: &[Cycle]) -> LayoutIR {
                                 Edge::ModuleDep { .. }
                             )
                         {
-                            EdgeKind::DirectCycle
+                            Some(CycleKind::Direct)
                         } else {
-                            EdgeKind::TransitiveCycle
+                            Some(CycleKind::Transitive)
                         }
-                    } else if from < to {
-                        // from appears before to in topo order → normal downward flow
-                        EdgeKind::Downward
                     } else {
-                        // from appears after to → upward reference (child→parent)
-                        EdgeKind::Upward
+                        None
                     };
                     let is_test = !matches!(context, crate::model::EdgeContext::Production);
-                    ir.add_edge(from, to, kind, locations.clone(), is_test);
+                    ir.add_edge(from, to, direction, cycle, locations.clone(), is_test);
                 }
             }
             Edge::Contains => {} // Skip hierarchy edges
@@ -795,11 +796,15 @@ pub struct LayoutItem {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum EdgeKind {
-    Downward,        // Normal flow: Parent→Child (from_idx < to_idx in topo order)
-    Upward,          // Tighter coupling: Child→Parent (from_idx > to_idx in topo order)
-    DirectCycle,     // A⇄B bidirectional
-    TransitiveCycle, // Part of larger cycle
+pub enum EdgeDirection {
+    Downward,
+    Upward,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CycleKind {
+    Direct,
+    Transitive,
 }
 
 use crate::model::SourceLocation;
@@ -808,7 +813,8 @@ use crate::model::SourceLocation;
 pub struct LayoutEdge {
     pub from: NodeId,
     pub to: NodeId,
-    pub kind: EdgeKind,
+    pub direction: EdgeDirection,
+    pub cycle: Option<CycleKind>,
     pub source_locations: Vec<SourceLocation>,
     pub is_test: bool,
 }
@@ -840,14 +846,16 @@ impl LayoutIR {
         &mut self,
         from: NodeId,
         to: NodeId,
-        kind: EdgeKind,
+        direction: EdgeDirection,
+        cycle: Option<CycleKind>,
         source_locations: Vec<SourceLocation>,
         is_test: bool,
     ) {
         self.edges.push(LayoutEdge {
             from,
             to,
-            kind,
+            direction,
+            cycle,
             source_locations,
             is_test,
         });
@@ -867,7 +875,8 @@ mod tests {
         let edge = LayoutEdge {
             from: 0,
             to: 1,
-            kind: EdgeKind::Downward,
+            direction: EdgeDirection::Downward,
+            cycle: None,
             source_locations: vec![SourceLocation {
                 file: PathBuf::from("src/cli.rs"),
                 line: 42,
@@ -1113,7 +1122,8 @@ mod tests {
 
         // Should have 1 dependency edge (mod_a -> mod_b)
         assert_eq!(ir.edges.len(), 1);
-        assert!(matches!(ir.edges[0].kind, EdgeKind::Downward));
+        assert_eq!(ir.edges[0].direction, EdgeDirection::Downward);
+        assert!(ir.edges[0].cycle.is_none());
     }
 
     #[test]
@@ -1153,10 +1163,7 @@ mod tests {
         // Should have 2 edges, both marked as cycle edges
         assert_eq!(ir.edges.len(), 2);
         for edge in &ir.edges {
-            assert!(
-                matches!(edge.kind, EdgeKind::DirectCycle | EdgeKind::TransitiveCycle),
-                "Cycle edges should be marked"
-            );
+            assert!(edge.cycle.is_some(), "Cycle edges should be marked");
         }
     }
 
@@ -1204,9 +1211,9 @@ mod tests {
         // If from < to in layout order -> Downward
         // If from > to in layout order -> Upward
         assert!(
-            matches!(edge.kind, EdgeKind::Downward | EdgeKind::Upward),
-            "Edge should have direction: {:?}",
-            edge.kind
+            edge.cycle.is_none(),
+            "Edge should not be a cycle: {:?}",
+            edge.cycle
         );
     }
 
@@ -1334,28 +1341,31 @@ mod tests {
         let normal = LayoutEdge {
             from: 0,
             to: 1,
-            kind: EdgeKind::Downward,
+            direction: EdgeDirection::Downward,
+            cycle: None,
             source_locations: vec![],
             is_test: false,
         };
         let direct = LayoutEdge {
             from: 1,
             to: 0,
-            kind: EdgeKind::DirectCycle,
+            direction: EdgeDirection::Downward,
+            cycle: Some(CycleKind::Direct),
             source_locations: vec![],
             is_test: false,
         };
         let trans = LayoutEdge {
             from: 2,
             to: 3,
-            kind: EdgeKind::TransitiveCycle,
+            direction: EdgeDirection::Downward,
+            cycle: Some(CycleKind::Transitive),
             source_locations: vec![],
             is_test: false,
         };
 
         assert_eq!(normal.from, 0);
-        assert!(matches!(direct.kind, EdgeKind::DirectCycle));
-        assert!(matches!(trans.kind, EdgeKind::TransitiveCycle));
+        assert_eq!(direct.cycle, Some(CycleKind::Direct));
+        assert_eq!(trans.cycle, Some(CycleKind::Transitive));
     }
 
     #[test]
@@ -1370,7 +1380,14 @@ mod tests {
             },
             "my_module".to_string(),
         );
-        ir.add_edge(crate_id, mod_id, EdgeKind::Downward, vec![], false);
+        ir.add_edge(
+            crate_id,
+            mod_id,
+            EdgeDirection::Downward,
+            None,
+            vec![],
+            false,
+        );
 
         assert_eq!(ir.items.len(), 2);
         assert_eq!(ir.edges.len(), 1);
@@ -2027,11 +2044,13 @@ mod tests {
             mod_a_to_mod_b.is_some(),
             "Should have edge from mod_a to mod_b"
         );
+        let edge = mod_a_to_mod_b.unwrap();
         assert_eq!(
-            mod_a_to_mod_b.unwrap().kind,
-            EdgeKind::Downward,
+            edge.direction,
+            EdgeDirection::Downward,
             "Inter-crate module dep should be Downward, not Upward"
         );
+        assert!(edge.cycle.is_none());
     }
 
     // === stable_toposort Cycle Tests ===

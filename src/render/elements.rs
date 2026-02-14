@@ -1,6 +1,6 @@
 use super::constants::{COLORS, CSS, LAYOUT, RenderConfig};
 use super::positioning::PositionedItem;
-use crate::layout::{EdgeKind, ItemKind, LayoutIR, NodeId};
+use crate::layout::{CycleKind, EdgeDirection, ItemKind, LayoutIR, NodeId};
 use std::collections::HashSet;
 
 pub(super) fn render_header(width: f32, height: f32) -> String {
@@ -246,27 +246,30 @@ pub(super) fn render_edges(
             );
 
             let cd = &CSS.direction;
-            let (base_arc_class, arrow_class, extra_style, direction) = match edge.kind {
-                EdgeKind::Downward => (
-                    format!("{} {}", cd.dep_arc, cd.downward),
-                    cd.dep_arrow,
-                    "",
-                    "downward",
-                ),
-                EdgeKind::Upward => (
-                    format!("{} {}", cd.dep_arc, cd.upward),
-                    cd.upward_arrow,
-                    "",
-                    "upward",
-                ),
-                EdgeKind::DirectCycle => (cd.cycle_arc.to_string(), cd.cycle_arrow, "", "cycle"),
-                EdgeKind::TransitiveCycle => (
-                    cd.cycle_arc.to_string(),
-                    cd.cycle_arrow,
-                    " stroke-dasharray=\"4,2\"",
-                    "cycle",
-                ),
-            };
+            let (base_arc_class, arrow_class, extra_style, direction) =
+                match (edge.cycle, edge.direction) {
+                    (Some(CycleKind::Direct), _) => {
+                        (cd.cycle_arc.to_string(), cd.cycle_arrow, "", "cycle")
+                    }
+                    (Some(CycleKind::Transitive), _) => (
+                        cd.cycle_arc.to_string(),
+                        cd.cycle_arrow,
+                        " stroke-dasharray=\"4,2\"",
+                        "cycle",
+                    ),
+                    (None, EdgeDirection::Downward) => (
+                        format!("{} {}", cd.dep_arc, cd.downward),
+                        cd.dep_arrow,
+                        "",
+                        "downward",
+                    ),
+                    (None, EdgeDirection::Upward) => (
+                        format!("{} {}", cd.dep_arc, cd.upward),
+                        cd.upward_arrow,
+                        "",
+                        "upward",
+                    ),
+                };
 
             // Add crate-dep-arc class for Crate-to-Crate edges
             let is_crate_dep = matches!((&from.kind, &to.kind), (ItemKind::Crate, ItemKind::Crate));
@@ -295,7 +298,7 @@ pub(super) fn render_edges(
             base_arcs.push_str(&arrow);
 
             // For DirectCycle, add reverse arrow
-            if edge.kind == EdgeKind::DirectCycle {
+            if edge.cycle == Some(CycleKind::Direct) {
                 let reverse_arrow = render_arrow(from_x, from_y, arrow_class, &edge_id);
                 base_arcs.push_str(&reverse_arrow);
             }
@@ -594,7 +597,7 @@ mod tests {
             },
             "b".into(),
         );
-        ir.add_edge(a, b, EdgeKind::Downward, vec![], false);
+        ir.add_edge(a, b, EdgeDirection::Downward, None, vec![], false);
         let config = RenderConfig::default();
         let box_width = calculate_box_width(&ir);
         let positioned = calculate_positions(&ir, &config, box_width);
@@ -634,7 +637,7 @@ mod tests {
             },
             "b".into(),
         );
-        ir.add_edge(a, b, EdgeKind::Downward, vec![], false);
+        ir.add_edge(a, b, EdgeDirection::Downward, None, vec![], false);
         let config = RenderConfig::default();
         let box_width = calculate_box_width(&ir);
         let positioned = calculate_positions(&ir, &config, box_width);
@@ -674,7 +677,7 @@ mod tests {
         let mut ir = LayoutIR::new();
         let c1 = ir.add_item(ItemKind::Crate, "crate_a".into());
         let c2 = ir.add_item(ItemKind::Crate, "crate_b".into());
-        ir.add_edge(c1, c2, EdgeKind::Downward, vec![], false);
+        ir.add_edge(c1, c2, EdgeDirection::Downward, None, vec![], false);
         let config = RenderConfig::default();
         let box_width = calculate_box_width(&ir);
         let positioned = calculate_positions(&ir, &config, box_width);

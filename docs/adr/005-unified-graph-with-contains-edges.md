@@ -26,3 +26,4 @@ We model both in a unified petgraph graph with a typed Node enum (`Crate|Module`
 ### Negative
 - Contains edges are not real dependencies and must be filtered during analyses
 - Extended by ADR-018 (EdgeContext for production and test context)
+- Edge semantics split into orthogonal `EdgeDirection` and `CycleKind`, replacing the earlier mixed `EdgeKind`

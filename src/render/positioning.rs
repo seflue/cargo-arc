@@ -105,7 +105,7 @@ pub(super) fn calculate_canvas_size(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::{EdgeKind, ItemKind, LayoutIR};
+    use crate::layout::{EdgeDirection, ItemKind, LayoutIR};
 
     #[test]
     fn test_calculate_text_width() {
@@ -147,7 +147,7 @@ mod tests {
             );
         }
         // Edge von erstem zu letztem Modul (9 Hops)
-        ir.add_edge(1, 10, EdgeKind::Downward, vec![], false);
+        ir.add_edge(1, 10, EdgeDirection::Downward, None, vec![], false);
 
         let config = RenderConfig::default();
         let box_width = calculate_box_width(&ir);
