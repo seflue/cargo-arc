@@ -169,7 +169,10 @@ pub fn build_graph(crates: &[CrateInfo], modules: &[ModuleTree]) -> ArcGraph {
                         })
                         .collect();
 
-                    graph.add_edge(from_idx, to_idx, Edge::ModuleDep { locations, context });
+                    // Skip self-loops (e.g. main.rs importing from own crate's re-exports)
+                    if from_idx != to_idx {
+                        graph.add_edge(from_idx, to_idx, Edge::ModuleDep { locations, context });
+                    }
                 }
             }
         }
