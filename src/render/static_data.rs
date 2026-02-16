@@ -161,9 +161,11 @@ fn generate_static_data(
             format!("[{}]", group_strs.join(", "))
         };
 
-        let cycle_id_str = match edge.cycle_id {
-            Some(id) => format!(", cycleId: {}", id),
-            None => String::new(),
+        let cycle_ids_str = if edge.cycle_ids.is_empty() {
+            String::new()
+        } else {
+            let ids: Vec<String> = edge.cycle_ids.iter().map(|id| id.to_string()).collect();
+            format!(", cycleIds: [{}]", ids.join(", "))
         };
 
         let comma = if i < ir.edges.len() - 1 { "," } else { "" };
@@ -175,18 +177,18 @@ fn generate_static_data(
             edge.to,
             edge.context.format_js(),
             usages_str,
-            cycle_id_str,
+            cycle_ids_str,
             comma
         ));
     }
     lines.push("  },".to_string());
 
-    // Generate cycles array from edges with cycle_id
+    // Generate cycles array from edges with cycle_ids
     {
         use std::collections::BTreeMap;
         let mut cycle_map: BTreeMap<usize, (Vec<NodeId>, Vec<String>)> = BTreeMap::new();
         for edge in &ir.edges {
-            if let Some(cid) = edge.cycle_id {
+            for &cid in &edge.cycle_ids {
                 let entry = cycle_map
                     .entry(cid)
                     .or_insert_with(|| (Vec::new(), Vec::new()));
@@ -199,7 +201,9 @@ fn generate_static_data(
                 }
                 // Collect arc IDs
                 let arc_id = format!("{}-{}", edge.from, edge.to);
-                entry.1.push(arc_id);
+                if !entry.1.contains(&arc_id) {
+                    entry.1.push(arc_id);
+                }
             }
         }
         lines.push("  cycles: [".to_string());
@@ -701,7 +705,7 @@ mod tests {
             b,
             EdgeDirection::Downward,
             None,
-            None,
+            vec![],
             vec![SourceLocation {
                 file: PathBuf::from("src/a.rs"),
                 line: 5,
@@ -760,7 +764,7 @@ mod tests {
             b,
             EdgeDirection::Downward,
             None,
-            None,
+            vec![],
             vec![],
             EdgeContext::test(crate::model::TestKind::Unit),
         );
@@ -800,7 +804,7 @@ mod tests {
             b,
             EdgeDirection::Downward,
             None,
-            None,
+            vec![],
             vec![],
             EdgeContext::production(),
         );
@@ -843,7 +847,7 @@ mod tests {
             b,
             EdgeDirection::Downward,
             None,
-            None,
+            vec![],
             vec![
                 SourceLocation {
                     file: PathBuf::from("src/a.rs"),
@@ -972,7 +976,7 @@ mod tests {
             b,
             EdgeDirection::Downward,
             None,
-            None,
+            vec![],
             vec![SourceLocation {
                 file: PathBuf::from("src/a.rs"),
                 line: 5,
@@ -1266,7 +1270,7 @@ mod tests {
             b,
             EdgeDirection::Downward,
             None,
-            None,
+            vec![],
             vec![SourceLocation {
                 file: PathBuf::from("src/a.rs"),
                 line: 5,
@@ -1306,7 +1310,7 @@ mod tests {
 
     #[test]
     fn test_static_data_cycle_info() {
-        // Graph with a cycle: A → B → C → A (cycle_id=0)
+        // Graph with a cycle: A → B → C → A (cycle_ids=[0])
         let mut ir = LayoutIR::new();
         let c = ir.add_item(ItemKind::Crate, "c".into());
         let a = ir.add_item(
@@ -1330,13 +1334,13 @@ mod tests {
             },
             "m_c".into(),
         );
-        // Cycle edges with cycle_id=0
+        // Cycle edges with cycle_ids=[0]
         ir.add_edge(
             a,
             b,
             EdgeDirection::Downward,
             Some(crate::layout::CycleKind::Transitive),
-            Some(0),
+            vec![0],
             vec![],
             EdgeContext::production(),
         );
@@ -1345,7 +1349,7 @@ mod tests {
             m_c,
             EdgeDirection::Downward,
             Some(crate::layout::CycleKind::Transitive),
-            Some(0),
+            vec![0],
             vec![],
             EdgeContext::production(),
         );
@@ -1354,17 +1358,17 @@ mod tests {
             a,
             EdgeDirection::Upward,
             Some(crate::layout::CycleKind::Transitive),
-            Some(0),
+            vec![0],
             vec![],
             EdgeContext::production(),
         );
-        // Non-cycle edge (no cycle_id)
+        // Non-cycle edge (no cycle_ids)
         ir.add_edge(
             a,
             m_c,
             EdgeDirection::Downward,
             None,
-            None,
+            vec![],
             vec![],
             EdgeContext::production(),
         );
@@ -1395,26 +1399,188 @@ mod tests {
             "Cycle should reference arc IDs"
         );
 
-        // Cycle arcs should have cycleId field in their arc entry
-        // Find the arc entry for "1-2" and check it has cycleId: 0
+        // Cycle arcs should have cycleIds field in their arc entry
+        // Find the arc entry for "1-2" and check it has cycleIds: [0]
         let arc_section_start = script.find("arcs: {").expect("should have arcs section");
         let arc_section = &script[arc_section_start..];
         let arc_1_2_pos = arc_section.find(r#""1-2""#).expect("should have arc 1-2");
         let arc_1_2_region = &arc_section[arc_1_2_pos..arc_1_2_pos + 200];
         assert!(
-            arc_1_2_region.contains("cycleId: 0"),
-            "Cycle arc 1-2 should have cycleId: 0, got: {}",
+            arc_1_2_region.contains("cycleIds: [0]"),
+            "Cycle arc 1-2 should have cycleIds: [0], got: {}",
             arc_1_2_region
         );
 
-        // Non-cycle arc should NOT have cycleId
+        // Non-cycle arc should NOT have cycleIds
         let arc_1_3_pos = arc_section.find(r#""1-3""#).expect("should have arc 1-3");
         let arc_1_3_region =
             &arc_section[arc_1_3_pos..arc_1_3_pos + 200.min(arc_section.len() - arc_1_3_pos)];
         assert!(
-            !arc_1_3_region.contains("cycleId:"),
-            "Non-cycle arc 1-3 should NOT have cycleId, got: {}",
+            !arc_1_3_region.contains("cycleIds:"),
+            "Non-cycle arc 1-3 should NOT have cycleIds, got: {}",
             arc_1_3_region
+        );
+    }
+
+    #[test]
+    fn test_static_data_multi_cycle_ids() {
+        // Graph with overlapping cycles: B↔C (cycle 0) + B↔D (cycle 1)
+        // Edge B→C belongs to cycle 0, edge B→D belongs to cycle 1,
+        // and a shared edge could belong to both.
+        let mut ir = LayoutIR::new();
+        let crt = ir.add_item(ItemKind::Crate, "c".into());
+        let b = ir.add_item(
+            ItemKind::Module {
+                nesting: 1,
+                parent: crt,
+            },
+            "b".into(),
+        );
+        let c = ir.add_item(
+            ItemKind::Module {
+                nesting: 1,
+                parent: crt,
+            },
+            "c".into(),
+        );
+        let d = ir.add_item(
+            ItemKind::Module {
+                nesting: 1,
+                parent: crt,
+            },
+            "d".into(),
+        );
+        // B→C in cycle 0 only
+        ir.add_edge(
+            b,
+            c,
+            EdgeDirection::Downward,
+            Some(crate::layout::CycleKind::Direct),
+            vec![0],
+            vec![],
+            EdgeContext::production(),
+        );
+        // C→B in cycle 0 only
+        ir.add_edge(
+            c,
+            b,
+            EdgeDirection::Upward,
+            Some(crate::layout::CycleKind::Direct),
+            vec![0],
+            vec![],
+            EdgeContext::production(),
+        );
+        // B→D in cycle 1 only
+        ir.add_edge(
+            b,
+            d,
+            EdgeDirection::Downward,
+            Some(crate::layout::CycleKind::Direct),
+            vec![1],
+            vec![],
+            EdgeContext::production(),
+        );
+        // D→B in cycle 1 only
+        ir.add_edge(
+            d,
+            b,
+            EdgeDirection::Upward,
+            Some(crate::layout::CycleKind::Direct),
+            vec![1],
+            vec![],
+            EdgeContext::production(),
+        );
+
+        let config = RenderConfig::default();
+        let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
+        let parents: HashSet<NodeId> = HashSet::from([0]);
+
+        let script = render_script(&config, &ir, &positioned, &parents);
+
+        // Arc B→C should have cycleIds: [0]
+        let arc_section_start = script.find("arcs: {").expect("should have arcs section");
+        let arc_section = &script[arc_section_start..];
+        let arc_bc_pos = arc_section
+            .find(r#""1-2""#)
+            .expect("should have arc 1-2 (B→C)");
+        let arc_bc_region = &arc_section[arc_bc_pos..arc_bc_pos + 200];
+        assert!(
+            arc_bc_region.contains("cycleIds: [0]"),
+            "Arc B→C should have cycleIds: [0], got: {}",
+            arc_bc_region
+        );
+
+        // Arc B→D should have cycleIds: [1]
+        let arc_bd_pos = arc_section
+            .find(r#""1-3""#)
+            .expect("should have arc 1-3 (B→D)");
+        let arc_bd_region = &arc_section[arc_bd_pos..arc_bd_pos + 200];
+        assert!(
+            arc_bd_region.contains("cycleIds: [1]"),
+            "Arc B→D should have cycleIds: [1], got: {}",
+            arc_bd_region
+        );
+
+        // Cycles array should have 2 entries (cycle 0 and cycle 1)
+        let cycles_start = script.find("cycles: [").expect("should have cycles array");
+        let cycles_section = &script[cycles_start..];
+        let cycle_entries: Vec<&str> = cycles_section
+            .match_indices("nodes: [")
+            .map(|(i, _)| &cycles_section[i..])
+            .collect();
+        assert_eq!(
+            cycle_entries.len(),
+            2,
+            "Should have exactly 2 cycle entries, got: {}",
+            cycle_entries.len()
+        );
+    }
+
+    #[test]
+    fn test_static_data_edge_in_two_cycles() {
+        // Edge that belongs to two cycles simultaneously
+        let mut ir = LayoutIR::new();
+        let crt = ir.add_item(ItemKind::Crate, "c".into());
+        let a = ir.add_item(
+            ItemKind::Module {
+                nesting: 1,
+                parent: crt,
+            },
+            "a".into(),
+        );
+        let b = ir.add_item(
+            ItemKind::Module {
+                nesting: 1,
+                parent: crt,
+            },
+            "b".into(),
+        );
+        // Edge A→B belongs to both cycle 0 and cycle 2
+        ir.add_edge(
+            a,
+            b,
+            EdgeDirection::Downward,
+            Some(crate::layout::CycleKind::Direct),
+            vec![0, 2],
+            vec![],
+            EdgeContext::production(),
+        );
+
+        let config = RenderConfig::default();
+        let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
+        let parents: HashSet<NodeId> = HashSet::from([0]);
+
+        let script = render_script(&config, &ir, &positioned, &parents);
+
+        // Arc should have cycleIds: [0, 2] (JS array with both IDs)
+        let arc_section_start = script.find("arcs: {").expect("should have arcs section");
+        let arc_section = &script[arc_section_start..];
+        let arc_pos = arc_section.find(r#""1-2""#).expect("should have arc 1-2");
+        let arc_region = &arc_section[arc_pos..arc_pos + 200];
+        assert!(
+            arc_region.contains("cycleIds: [0, 2]"),
+            "Arc in two cycles should have cycleIds: [0, 2], got: {}",
+            arc_region
         );
     }
 }

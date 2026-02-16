@@ -94,7 +94,7 @@ mod tests {
             b,
             EdgeDirection::Downward,
             None,
-            None,
+            vec![],
             vec![],
             EdgeContext::production(),
         );
@@ -128,7 +128,7 @@ mod tests {
             b,
             EdgeDirection::Downward,
             Some(CycleKind::Direct),
-            Some(0),
+            vec![0],
             vec![],
             EdgeContext::production(),
         );
@@ -160,7 +160,7 @@ mod tests {
             b2,
             EdgeDirection::Downward,
             Some(CycleKind::Transitive),
-            Some(0),
+            vec![0],
             vec![],
             EdgeContext::production(),
         );
@@ -211,7 +211,7 @@ mod tests {
             b,
             EdgeDirection::Downward,
             None,
-            None,
+            vec![],
             vec![],
             EdgeContext::production(),
         );
@@ -267,7 +267,7 @@ mod tests {
             b,
             EdgeDirection::Downward,
             None,
-            None,
+            vec![],
             vec![],
             EdgeContext::production(),
         );
@@ -331,7 +331,7 @@ mod tests {
             b,
             EdgeDirection::Downward,
             Some(CycleKind::Direct),
-            Some(0),
+            vec![0],
             vec![],
             EdgeContext::production(),
         );
@@ -340,7 +340,7 @@ mod tests {
             d,
             EdgeDirection::Downward,
             None,
-            None,
+            vec![],
             vec![],
             EdgeContext::production(),
         );
@@ -349,7 +349,7 @@ mod tests {
             e,
             EdgeDirection::Downward,
             None,
-            None,
+            vec![],
             vec![],
             EdgeContext::test(TestKind::Unit),
         );
@@ -403,7 +403,7 @@ mod tests {
             b,
             EdgeDirection::Downward,
             None,
-            None,
+            vec![],
             vec![],
             EdgeContext::production(),
         );

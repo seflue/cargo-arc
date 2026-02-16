@@ -227,10 +227,10 @@ const DerivedState = {
     // Direct-cycle detection: mark bidirectional cycle partners with cycle-member
     for (const arcId of staticData.getAllArcIds()) {
       const arc = staticData.getArc(arcId);
-      if (!arc || arc.cycleId === undefined || arc.from !== selection.id) continue;
+      if (!arc || !arc.cycleIds || arc.cycleIds.length === 0 || arc.from !== selection.id) continue;
       const partner = arc.to;
       const reverseArc = staticData.getArc(`${partner}-${selection.id}`);
-      if (reverseArc && reverseArc.cycleId !== undefined) {
+      if (reverseArc && reverseArc.cycleIds && reverseArc.cycleIds.length > 0) {
         const existing = result.nodeHighlights.get(partner);
         if (!existing || existing.role !== 'current') {
           result.nodeHighlights.set(partner, { role: 'cycle-member', cssClass: 'cycleMember' });
@@ -264,10 +264,11 @@ const DerivedState = {
       });
     }
 
-    // Cycle expansion: highlight all arcs and nodes in the same cycle
-    if (arc && arc.cycleId !== undefined && typeof STATIC_DATA !== 'undefined' && STATIC_DATA.cycles) {
-      const cycle = STATIC_DATA.cycles[arc.cycleId];
-      if (cycle) {
+    // Cycle expansion: highlight all arcs and nodes in all associated cycles
+    if (arc && arc.cycleIds && arc.cycleIds.length > 0 && typeof STATIC_DATA !== 'undefined' && STATIC_DATA.cycles) {
+      for (const cid of arc.cycleIds) {
+        const cycle = STATIC_DATA.cycles[cid];
+        if (!cycle) continue;
         for (const nodeId of cycle.nodes) {
           if (!result.nodeHighlights.has(nodeId)) {
             result.nodeHighlights.set(nodeId, { role: 'cycle-member', cssClass: 'cycleMember' });
@@ -275,6 +276,7 @@ const DerivedState = {
         }
         for (const cycleArcId of cycle.arcs) {
           if (cycleArcId === arcId) continue;
+          if (result.arcHighlights.has(cycleArcId)) continue;
           const cycleArc = staticData.getArc(cycleArcId);
           if (cycleArc && !hiddenByFilter.has(cycleArcId)) {
             descs.push({

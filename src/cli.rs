@@ -8,8 +8,8 @@ use tracing_subscriber::EnvFilter;
 use crate::analyze::{
     AnalysisBackend, FeatureConfig, analyze_workspace, collect_crate_exports, normalize_crate_name,
 };
-use crate::graph::build_graph;
-use crate::layout::{build_layout, detect_cycles};
+use crate::graph::{ArcGraphExt, build_graph};
+use crate::layout::{ElementaryCycles, build_layout};
 use crate::model::{CrateExportMap, ModulePathMap, WorkspaceCrates};
 use crate::render::{RenderConfig, render};
 use crate::volatility::{VolatilityAnalyzer, VolatilityConfig};
@@ -170,8 +170,8 @@ pub fn run(args: Args) -> Result<()> {
     // 6. Build dependency graph
     let graph = build_graph(&crates, &modules);
 
-    // 7. Detect cycles
-    let cycles = detect_cycles(&graph);
+    // 7. Detect cycles (only production ModuleDep edges participate)
+    let cycles = graph.production_subgraph().elementary_cycles();
 
     // 8. Build layout (CrateDep edges skipped when ModuleDeps exist between crates)
     let mut layout = build_layout(&graph, &cycles);

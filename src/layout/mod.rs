@@ -7,4 +7,4 @@ mod toposort;
 pub use build::{
     CycleKind, EdgeDirection, ItemKind, LayoutEdge, LayoutIR, LayoutItem, NodeId, build_layout,
 };
-pub use cycles::{Cycle, detect_cycles};
+pub use cycles::{Cycle, ElementaryCycles, JohnsonCycles};

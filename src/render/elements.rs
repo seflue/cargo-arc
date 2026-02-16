@@ -284,21 +284,23 @@ pub(super) fn render_edges(
             };
 
             let edge_id = format!("{}-{}", edge.from, edge.to);
-            let cycle_id_attr = match edge.cycle_id {
-                Some(id) => format!(r#" data-cycle-id="{}""#, id),
-                None => String::new(),
+            let cycle_ids_attr = if edge.cycle_ids.is_empty() {
+                String::new()
+            } else {
+                let ids: Vec<String> = edge.cycle_ids.iter().map(|id| id.to_string()).collect();
+                format!(r#" data-cycle-ids="{}""#, ids.join(","))
             };
 
             // Hit-area path (invisible, 12px wide, receives pointer events) → hitareas layer
             // Note: source-locations are read from STATIC_DATA in JavaScript, not DOM attributes
             let hitarea = cd.arc_hitarea;
             hitareas.push_str(&format!(
-                "    <path class=\"{hitarea}\" data-arc-id=\"{edge_id}\" data-from=\"{}\" data-to=\"{}\" data-direction=\"{direction}\"{cycle_id_attr} d=\"{path}\"/>\n",
+                "    <path class=\"{hitarea}\" data-arc-id=\"{edge_id}\" data-from=\"{}\" data-to=\"{}\" data-direction=\"{direction}\"{cycle_ids_attr} d=\"{path}\"/>\n",
                 edge.from, edge.to
             ));
             // Visible path (styled, no pointer events) → base-arcs layer
             base_arcs.push_str(&format!(
-                "    <path class=\"{arc_class}\" id=\"edge-{edge_id}\" data-arc-id=\"{edge_id}\" data-direction=\"{direction}\"{cycle_id_attr} d=\"{path}\"/>\n"
+                "    <path class=\"{arc_class}\" id=\"edge-{edge_id}\" data-arc-id=\"{edge_id}\" data-direction=\"{direction}\"{cycle_ids_attr} d=\"{path}\"/>\n"
             ));
 
             // Arrow head pointing to target → base-arcs layer
@@ -610,7 +612,7 @@ mod tests {
             b,
             EdgeDirection::Downward,
             None,
-            None,
+            vec![],
             vec![],
             EdgeContext::production(),
         );
@@ -657,7 +659,7 @@ mod tests {
             b,
             EdgeDirection::Downward,
             None,
-            None,
+            vec![],
             vec![],
             EdgeContext::production(),
         );
@@ -704,7 +706,7 @@ mod tests {
             c2,
             EdgeDirection::Downward,
             None,
-            None,
+            vec![],
             vec![],
             EdgeContext::production(),
         );
@@ -720,7 +722,7 @@ mod tests {
     }
 
     #[test]
-    fn test_data_cycle_id_attribute() {
+    fn test_data_cycle_ids_attribute() {
         let mut ir = LayoutIR::new();
         let c = ir.add_item(ItemKind::Crate, "c".into());
         let a = ir.add_item(
@@ -744,13 +746,13 @@ mod tests {
             },
             "m".into(),
         );
-        // Cycle edge with cycle_id=0
+        // Cycle edge with cycle_ids=[0]
         ir.add_edge(
             a,
             b,
             EdgeDirection::Downward,
             Some(CycleKind::Direct),
-            Some(0),
+            vec![0],
             vec![],
             EdgeContext::production(),
         );
@@ -760,7 +762,7 @@ mod tests {
             m,
             EdgeDirection::Downward,
             None,
-            None,
+            vec![],
             vec![],
             EdgeContext::production(),
         );
@@ -771,48 +773,105 @@ mod tests {
 
         let output = render_edges(&positioned, &ir, config.row_height);
 
-        // Cycle arc path should have data-cycle-id="0"
+        // Cycle arc path should have data-cycle-ids="0"
         let cycle_path = output
             .lines()
             .find(|l| l.contains("cycle-arc") && l.contains("id=\"edge-1-2\""))
             .expect("Should find cycle-arc path for edge 1-2");
         assert!(
-            cycle_path.contains(r#"data-cycle-id="0""#),
-            "Cycle arc path should have data-cycle-id attribute, got: {}",
+            cycle_path.contains(r#"data-cycle-ids="0""#),
+            "Cycle arc path should have data-cycle-ids attribute, got: {}",
             cycle_path
         );
 
-        // Hitarea for cycle arc should also have data-cycle-id
+        // Hitarea for cycle arc should also have data-cycle-ids
         let cycle_hitarea = output
             .lines()
             .find(|l| l.contains("arc-hitarea") && l.contains(r#"data-arc-id="1-2""#))
             .expect("Should find hitarea for edge 1-2");
         assert!(
-            cycle_hitarea.contains(r#"data-cycle-id="0""#),
-            "Cycle arc hitarea should have data-cycle-id attribute, got: {}",
+            cycle_hitarea.contains(r#"data-cycle-ids="0""#),
+            "Cycle arc hitarea should have data-cycle-ids attribute, got: {}",
             cycle_hitarea
         );
 
-        // Non-cycle arc should NOT have data-cycle-id
+        // Non-cycle arc should NOT have data-cycle-ids
         let normal_path = output
             .lines()
             .find(|l| l.contains("id=\"edge-1-3\""))
             .expect("Should find normal arc path for edge 1-3");
         assert!(
-            !normal_path.contains("data-cycle-id"),
-            "Non-cycle arc should NOT have data-cycle-id, got: {}",
+            !normal_path.contains("data-cycle-ids"),
+            "Non-cycle arc should NOT have data-cycle-ids, got: {}",
             normal_path
         );
 
-        // Non-cycle hitarea should NOT have data-cycle-id
+        // Non-cycle hitarea should NOT have data-cycle-ids
         let normal_hitarea = output
             .lines()
             .find(|l| l.contains("arc-hitarea") && l.contains(r#"data-arc-id="1-3""#))
             .expect("Should find hitarea for edge 1-3");
         assert!(
-            !normal_hitarea.contains("data-cycle-id"),
-            "Non-cycle hitarea should NOT have data-cycle-id, got: {}",
+            !normal_hitarea.contains("data-cycle-ids"),
+            "Non-cycle hitarea should NOT have data-cycle-ids, got: {}",
             normal_hitarea
+        );
+    }
+
+    #[test]
+    fn test_multi_cycle_ids_attribute() {
+        let mut ir = LayoutIR::new();
+        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let a = ir.add_item(
+            ItemKind::Module {
+                nesting: 1,
+                parent: c,
+            },
+            "a".into(),
+        );
+        let b = ir.add_item(
+            ItemKind::Module {
+                nesting: 1,
+                parent: c,
+            },
+            "b".into(),
+        );
+        // Edge belonging to two cycles
+        ir.add_edge(
+            a,
+            b,
+            EdgeDirection::Downward,
+            Some(CycleKind::Direct),
+            vec![0, 2],
+            vec![],
+            EdgeContext::production(),
+        );
+
+        let config = RenderConfig::default();
+        let box_width = calculate_box_width(&ir);
+        let positioned = calculate_positions(&ir, &config, box_width);
+        let output = render_edges(&positioned, &ir, config.row_height);
+
+        // Visible path should have comma-separated cycle IDs
+        let cycle_path = output
+            .lines()
+            .find(|l| l.contains("cycle-arc") && l.contains("id=\"edge-1-2\""))
+            .expect("Should find cycle-arc path for edge 1-2");
+        assert!(
+            cycle_path.contains(r#"data-cycle-ids="0,2""#),
+            "Multi-cycle arc should have comma-separated data-cycle-ids, got: {}",
+            cycle_path
+        );
+
+        // Hitarea should also have comma-separated cycle IDs
+        let hitarea = output
+            .lines()
+            .find(|l| l.contains("arc-hitarea") && l.contains(r#"data-arc-id="1-2""#))
+            .expect("Should find hitarea for edge 1-2");
+        assert!(
+            hitarea.contains(r#"data-cycle-ids="0,2""#),
+            "Multi-cycle hitarea should have comma-separated data-cycle-ids, got: {}",
+            hitarea
         );
     }
 }

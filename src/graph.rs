@@ -27,6 +27,21 @@ pub enum Edge {
 
 pub type ArcGraph = DiGraph<Node, Edge>;
 
+pub trait ArcGraphExt {
+    /// Subgraph containing only Production ModuleDep edges, with node weights
+    /// mapping back to original `NodeIndex` values.
+    fn production_subgraph(&self) -> DiGraph<NodeIndex, ()>;
+}
+
+impl ArcGraphExt for ArcGraph {
+    fn production_subgraph(&self) -> DiGraph<NodeIndex, ()> {
+        self.filter_map(
+            |idx, _| Some(idx),
+            |_, edge| matches!(edge, Edge::ModuleDep { context, .. } if context.kind == DependencyKind::Production).then_some(()),
+        )
+    }
+}
+
 /// Build a unified graph from crate and module analysis data.
 pub fn build_graph(crates: &[CrateInfo], modules: &[ModuleTree]) -> ArcGraph {
     let mut graph = DiGraph::new();

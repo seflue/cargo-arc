@@ -196,12 +196,27 @@ pub fn build_layout(graph: &ArcGraph, cycles: &[Cycle]) -> LayoutIR {
 
     let mut ir = LayoutIR::new();
 
-    // Map each node to its cycle index for cycle_id propagation
-    let node_to_cycle: HashMap<NodeIndex, usize> = cycles
-        .iter()
-        .enumerate()
-        .flat_map(|(i, c)| c.nodes.iter().map(move |&n| (n, i)))
-        .collect();
+    // Build edge-to-cycles mapping: for each directed edge (src, dst) in any cycle,
+    // record which cycle indices it belongs to. More precise than node-based mapping
+    // because overlapping cycles share nodes but have distinct edge sets.
+    let mut edge_to_cycles: HashMap<(NodeIndex, NodeIndex), Vec<usize>> = HashMap::new();
+    let mut node_to_cycles: HashMap<NodeIndex, Vec<usize>> = HashMap::new();
+    for (cycle_idx, cycle) in cycles.iter().enumerate() {
+        for i in 0..cycle.path.len() {
+            let src = cycle.path[i];
+            let dst = cycle.path[(i + 1) % cycle.path.len()];
+            edge_to_cycles
+                .entry((src, dst))
+                .or_default()
+                .push(cycle_idx);
+            node_to_cycles.entry(src).or_default().push(cycle_idx);
+        }
+    }
+    // Deduplicate node_to_cycles
+    for ids in node_to_cycles.values_mut() {
+        ids.sort_unstable();
+        ids.dedup();
+    }
 
     // Map graph NodeIndex to LayoutIR NodeId
     let mut node_map: HashMap<NodeIndex, NodeId> = HashMap::new();
@@ -383,11 +398,8 @@ pub fn build_layout(graph: &ArcGraph, cycles: &[Cycle]) -> LayoutIR {
                     } else {
                         EdgeDirection::Upward
                     };
-                    let shared_cycle = match (node_to_cycle.get(&src), node_to_cycle.get(&dst)) {
-                        (Some(a), Some(b)) if a == b => Some(*a),
-                        _ => None,
-                    };
-                    let cycle = if shared_cycle.is_some() {
+                    let cycle_ids = edge_to_cycles.get(&(src, dst)).cloned().unwrap_or_default();
+                    let cycle = if !cycle_ids.is_empty() {
                         Some(CycleKind::Transitive)
                     } else {
                         None
@@ -397,7 +409,7 @@ pub fn build_layout(graph: &ArcGraph, cycles: &[Cycle]) -> LayoutIR {
                         to,
                         direction,
                         cycle,
-                        shared_cycle,
+                        cycle_ids,
                         vec![],
                         context.clone(),
                     );
@@ -411,11 +423,8 @@ pub fn build_layout(graph: &ArcGraph, cycles: &[Cycle]) -> LayoutIR {
                     } else {
                         EdgeDirection::Upward
                     };
-                    let shared_cycle = match (node_to_cycle.get(&src), node_to_cycle.get(&dst)) {
-                        (Some(a), Some(b)) if a == b => Some(*a),
-                        _ => None,
-                    };
-                    let cycle = if shared_cycle.is_some() {
+                    let cycle_ids = edge_to_cycles.get(&(src, dst)).cloned().unwrap_or_default();
+                    let cycle = if !cycle_ids.is_empty() {
                         if graph.contains_edge(dst, src)
                             && matches!(
                                 graph[graph.find_edge(dst, src).unwrap()],
@@ -434,7 +443,7 @@ pub fn build_layout(graph: &ArcGraph, cycles: &[Cycle]) -> LayoutIR {
                         to,
                         direction,
                         cycle,
-                        shared_cycle,
+                        cycle_ids,
                         locations.clone(),
                         context.clone(),
                     );
@@ -480,7 +489,7 @@ pub struct LayoutEdge {
     pub to: NodeId,
     pub direction: EdgeDirection,
     pub cycle: Option<CycleKind>,
-    pub cycle_id: Option<usize>,
+    pub cycle_ids: Vec<usize>,
     pub source_locations: Vec<SourceLocation>,
     pub context: EdgeContext,
 }
@@ -515,7 +524,7 @@ impl LayoutIR {
         to: NodeId,
         direction: EdgeDirection,
         cycle: Option<CycleKind>,
-        cycle_id: Option<usize>,
+        cycle_ids: Vec<usize>,
         source_locations: Vec<SourceLocation>,
         context: EdgeContext,
     ) {
@@ -524,7 +533,7 @@ impl LayoutIR {
             to,
             direction,
             cycle,
-            cycle_id,
+            cycle_ids,
             source_locations,
             context,
         });
@@ -534,8 +543,8 @@ impl LayoutIR {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::{ArcGraph, Edge, Node};
-    use crate::layout::{Cycle, detect_cycles};
+    use crate::graph::{ArcGraph, ArcGraphExt, Edge, Node};
+    use crate::layout::{Cycle, ElementaryCycles};
     use crate::model::{DependencyKind, EdgeContext, SourceLocation, TestKind};
     use petgraph::graph::NodeIndex;
     use std::collections::HashSet;
@@ -548,7 +557,7 @@ mod tests {
             to: 1,
             direction: EdgeDirection::Downward,
             cycle: None,
-            cycle_id: None,
+            cycle_ids: vec![],
             source_locations: vec![],
             context: EdgeContext::production(),
         };
@@ -559,7 +568,7 @@ mod tests {
             to: 1,
             direction: EdgeDirection::Downward,
             cycle: None,
-            cycle_id: None,
+            cycle_ids: vec![],
             source_locations: vec![],
             context: EdgeContext::test(TestKind::Unit),
         };
@@ -573,7 +582,7 @@ mod tests {
             to: 1,
             direction: EdgeDirection::Downward,
             cycle: None,
-            cycle_id: None,
+            cycle_ids: vec![],
             source_locations: vec![SourceLocation {
                 file: PathBuf::from("src/cli.rs"),
                 line: 42,
@@ -654,7 +663,7 @@ mod tests {
             },
         ); // cycle
 
-        let cycles = detect_cycles(&graph);
+        let cycles = graph.production_subgraph().elementary_cycles();
         let ir = build_layout(&graph, &cycles);
 
         // Should have 2 items
@@ -668,7 +677,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cycle_id_propagation() {
+    fn test_cycle_ids_propagation() {
         // Build graph: crate with 5 modules, two independent cycles
         let mut graph = ArcGraph::new();
         let crate_idx = graph.add_node(Node::Crate {
@@ -761,10 +770,10 @@ mod tests {
             },
         );
 
-        let cycles = detect_cycles(&graph);
+        let cycles = graph.production_subgraph().elementary_cycles();
         let ir = build_layout(&graph, &cycles);
 
-        // Cycle edges should have a cycle_id
+        // Cycle edges should have cycle_ids
         let cycle_edges: Vec<_> = ir.edges.iter().filter(|e| e.cycle.is_some()).collect();
         assert!(
             cycle_edges.len() >= 5,
@@ -772,32 +781,34 @@ mod tests {
             cycle_edges.len()
         );
 
-        // All cycle edges should have cycle_id set
+        // All cycle edges should have non-empty cycle_ids
         for edge in &cycle_edges {
             assert!(
-                edge.cycle_id.is_some(),
-                "Cycle edge {}->{} should have cycle_id",
+                !edge.cycle_ids.is_empty(),
+                "Cycle edge {}->{} should have cycle_ids",
                 edge.from,
                 edge.to
             );
         }
 
-        // Edges within same cycle should share the same cycle_id
-        let cycle_ids: Vec<usize> = cycle_edges.iter().filter_map(|e| e.cycle_id).collect();
-        let unique_ids: HashSet<usize> = cycle_ids.iter().copied().collect();
+        // Edges within same cycle should share the same cycle_ids
+        let all_ids: HashSet<usize> = cycle_edges
+            .iter()
+            .flat_map(|e| e.cycle_ids.iter().copied())
+            .collect();
         assert_eq!(
-            unique_ids.len(),
+            all_ids.len(),
             2,
             "Should have exactly 2 distinct cycle IDs, got {:?}",
-            unique_ids
+            all_ids
         );
 
-        // Non-cycle edge (F → A) should have cycle_id = None
+        // Non-cycle edge (F → A) should have empty cycle_ids
         let non_cycle_edges: Vec<_> = ir.edges.iter().filter(|e| e.cycle.is_none()).collect();
         for edge in &non_cycle_edges {
             assert!(
-                edge.cycle_id.is_none(),
-                "Non-cycle edge {}->{} should have cycle_id = None",
+                edge.cycle_ids.is_empty(),
+                "Non-cycle edge {}->{} should have empty cycle_ids",
                 edge.from,
                 edge.to
             );
@@ -976,7 +987,7 @@ mod tests {
             to: 1,
             direction: EdgeDirection::Downward,
             cycle: None,
-            cycle_id: None,
+            cycle_ids: vec![],
             source_locations: vec![],
             context: EdgeContext::production(),
         };
@@ -985,7 +996,7 @@ mod tests {
             to: 0,
             direction: EdgeDirection::Downward,
             cycle: Some(CycleKind::Direct),
-            cycle_id: Some(0),
+            cycle_ids: vec![0],
             source_locations: vec![],
             context: EdgeContext::production(),
         };
@@ -994,7 +1005,7 @@ mod tests {
             to: 3,
             direction: EdgeDirection::Downward,
             cycle: Some(CycleKind::Transitive),
-            cycle_id: Some(1),
+            cycle_ids: vec![1],
             source_locations: vec![],
             context: EdgeContext::production(),
         };
@@ -1021,7 +1032,7 @@ mod tests {
             mod_id,
             EdgeDirection::Downward,
             None,
-            None,
+            vec![],
             vec![],
             EdgeContext::production(),
         );

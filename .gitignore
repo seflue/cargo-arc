@@ -2,4 +2,4 @@
 /tests/**/target/*
 .worktrees/
 *.svg
-
+node_modules/

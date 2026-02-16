@@ -1027,16 +1027,16 @@ describe("SidebarLogic", () => {
       savedArcs = globalThis.STATIC_DATA.arcs;
       savedCycles = globalThis.STATIC_DATA.cycles;
 
-      // Cycle: A → B → C → A (cycleId=0)
+      // Cycle: A → B → C → A (cycleIds=[0])
       globalThis.STATIC_DATA.arcs = {
         ...savedArcs,
-        "A-B": { from: "A", to: "B", cycleId: 0, usages: [
+        "A-B": { from: "A", to: "B", cycleIds: [0], usages: [
           { symbol: "sym1", modulePath: null, locations: [{ file: "a.rs", line: 1 }] }
         ]},
-        "B-C": { from: "B", to: "C", cycleId: 0, usages: [
+        "B-C": { from: "B", to: "C", cycleIds: [0], usages: [
           { symbol: "sym2", modulePath: null, locations: [{ file: "b.rs", line: 1 }, { file: "b.rs", line: 2 }, { file: "b.rs", line: 3 }] }
         ]},
-        "C-A": { from: "C", to: "A", cycleId: 0, usages: [
+        "C-A": { from: "C", to: "A", cycleIds: [0], usages: [
           { symbol: "sym3", modulePath: null, locations: [{ file: "c.rs", line: 1 }, { file: "c.rs", line: 2 }] }
         ]},
       };
@@ -1095,6 +1095,45 @@ describe("SidebarLogic", () => {
       expect(html).toContain("sidebar-header");
       expect(html).toContain("crate_a");
       expect(html).toContain("crate_b");
+    });
+
+    test("multi-cycle arc: shows grouped cycles header", () => {
+      // Arc B-C belongs to cycle 0 AND cycle 1
+      globalThis.STATIC_DATA.arcs["B-C"] = {
+        from: "B", to: "C", cycleIds: [0, 1], usages: [
+          { symbol: "sym2", modulePath: null, locations: [{ file: "b.rs", line: 1 }] }
+        ]
+      };
+      globalThis.STATIC_DATA.cycles.push(
+        { nodes: ["B", "C", "D"], arcs: ["B-C", "C-D", "D-B"] }
+      );
+      globalThis.STATIC_DATA.arcs["C-D"] = {
+        from: "C", to: "D", cycleIds: [1], usages: [
+          { symbol: "sym_cd", modulePath: null, locations: [{ file: "c.rs", line: 10 }] }
+        ]
+      };
+      globalThis.STATIC_DATA.arcs["D-B"] = {
+        from: "D", to: "B", cycleIds: [1], usages: [
+          { symbol: "sym_db", modulePath: null, locations: [{ file: "d.rs", line: 1 }] }
+        ]
+      };
+      globalThis.STATIC_DATA.nodes.D = { type: "module", name: "mod_d", parent: null };
+
+      const html = SidebarLogic.buildContent("B-C");
+      // Should show "Cycles (2)" header for multi-cycle
+      expect(html).toContain("Cycles (2)");
+      // Should contain arcs from both cycles
+      expect(html).toContain("a.rs");
+      expect(html).toContain("b.rs");
+      expect(html).toContain("c.rs");
+      expect(html).toContain("d.rs");
+    });
+
+    test("single-cycle arc: shows original 'Cycle' header", () => {
+      const html = SidebarLogic.buildContent("A-B");
+      expect(html).toContain("Cycle (");
+      expect(html).toContain("3 edges");
+      expect(html).not.toContain("Cycles (");
     });
   });
 });

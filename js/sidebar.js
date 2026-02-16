@@ -54,8 +54,8 @@ const SidebarLogic = {
     if (!arc) return "";
 
     // Cycle view: show all cycle arcs when clicking a cycle arc
-    if (!overrideData && arc.cycleId !== undefined && STATIC_DATA.cycles) {
-      return this._buildCycleContent(arcId, arc.cycleId);
+    if (!overrideData && arc.cycleIds && arc.cycleIds.length > 0 && STATIC_DATA.cycles) {
+      return this._buildCycleContent(arcId, arc.cycleIds);
     }
     const groups = arc.usages || [];
 
@@ -374,57 +374,119 @@ const SidebarLogic = {
 
   /**
    * Build HTML for cycle view: all cycle arcs sorted by source-location count.
+   * Single cycle: flat list. Multiple cycles: grouped by cycle with headers.
    * @param {string} selectedArcId - The clicked arc ID
-   * @param {number} cycleId - Index into STATIC_DATA.cycles
+   * @param {number[]} cycleIds - Indices into STATIC_DATA.cycles
    * @returns {string}
    */
-  _buildCycleContent(selectedArcId, cycleId) {
-    const cycle = STATIC_DATA.cycles[cycleId];
-    if (!cycle) return "";
+  _buildCycleContent(selectedArcId, cycleIds) {
+    // Single cycle: original flat layout
+    if (cycleIds.length === 1) {
+      const cycle = STATIC_DATA.cycles[cycleIds[0]];
+      if (!cycle) return "";
 
-    const arcInfos = cycle.arcs.map(arcId => {
-      const arc = STATIC_DATA.arcs[arcId];
-      const usages = arc?.usages || [];
-      const count = usages.reduce((sum, g) => sum + g.locations.length, 0);
-      return { arcId, arc, count, usages };
-    });
-    arcInfos.sort((a, b) => a.count - b.count);
+      const arcInfos = cycle.arcs.map(arcId => {
+        const arc = STATIC_DATA.arcs[arcId];
+        const usages = arc?.usages || [];
+        const count = usages.reduce((sum, g) => sum + g.locations.length, 0);
+        return { arcId, arc, count, usages };
+      });
+      arcInfos.sort((a, b) => a.count - b.count);
 
-    let html = `<div class="sidebar-header">`;
-    html += `<span class="sidebar-title">Cycle (${cycle.arcs.length} edges)</span>`;
-    html += `<button class="sidebar-close">&#x2715;</button>`;
-    html += `</div>`;
-
-    html += `<div class="sidebar-content">`;
-    for (const info of arcInfos) {
-      const isSelected = info.arcId === selectedArcId;
-      const fromNode = StaticData.getNode(info.arc.from);
-      const toNode = StaticData.getNode(info.arc.to);
-      const fromName = fromNode ? fromNode.name : info.arc.from;
-      const toName = toNode ? toNode.name : info.arc.to;
-
-      html += `<div class="sidebar-usage-group${isSelected ? ' sidebar-selected-arc' : ''}">`;
-      html += `<div class="sidebar-symbol">`;
-      html += `<span class="sidebar-toggle">&#x25BE;</span>`;
-      html += `<span class="sidebar-symbol-name">${fromName}</span>`;
-      html += `<span class="sidebar-arrow">&#x2192;</span>`;
-      html += `<span class="sidebar-symbol-name">${toName}</span>`;
-      html += `<span class="sidebar-ref-count">${info.count}</span>`;
+      let html = `<div class="sidebar-header">`;
+      html += `<span class="sidebar-title">Cycle (${cycle.arcs.length} edges)</span>`;
+      html += `<button class="sidebar-close">&#x2715;</button>`;
       html += `</div>`;
 
-      html += `<div class="sidebar-locations">`;
-      for (const group of info.usages) {
-        for (const loc of group.locations) {
-          html += `<div class="sidebar-location">${loc.file}<span class="sidebar-line-badge">:${loc.line}</span></div>`;
+      html += `<div class="sidebar-content">`;
+      for (const info of arcInfos) {
+        const isSelected = info.arcId === selectedArcId;
+        const fromNode = StaticData.getNode(info.arc.from);
+        const toNode = StaticData.getNode(info.arc.to);
+        const fromName = fromNode ? fromNode.name : info.arc.from;
+        const toName = toNode ? toNode.name : info.arc.to;
+
+        html += `<div class="sidebar-usage-group${isSelected ? ' sidebar-selected-arc' : ''}">`;
+        html += `<div class="sidebar-symbol">`;
+        html += `<span class="sidebar-toggle">&#x25BE;</span>`;
+        html += `<span class="sidebar-symbol-name">${fromName}</span>`;
+        html += `<span class="sidebar-arrow">&#x2192;</span>`;
+        html += `<span class="sidebar-symbol-name">${toName}</span>`;
+        html += `<span class="sidebar-ref-count">${info.count}</span>`;
+        html += `</div>`;
+
+        html += `<div class="sidebar-locations">`;
+        for (const group of info.usages) {
+          for (const loc of group.locations) {
+            html += `<div class="sidebar-location">${loc.file}<span class="sidebar-line-badge">:${loc.line}</span></div>`;
+          }
         }
+        html += `</div>`;
+        html += `</div>`;
       }
       html += `</div>`;
-      html += `</div>`;
-    }
-    html += `</div>`;
 
-    const totalLocs = arcInfos.reduce((sum, info) => sum + info.count, 0);
-    html += `<div class="sidebar-footer">${totalLocs} references \u00b7 ${cycle.arcs.length} edges</div>`;
+      const totalLocs = arcInfos.reduce((sum, info) => sum + info.count, 0);
+      html += `<div class="sidebar-footer">${totalLocs} references \u00b7 ${cycle.arcs.length} edges</div>`;
+
+      return html;
+    }
+
+    // Multi-cycle: grouped layout
+    let totalEdges = 0;
+    let totalLocs = 0;
+    let contentHtml = '';
+
+    for (const cid of cycleIds) {
+      const cycle = STATIC_DATA.cycles[cid];
+      if (!cycle) continue;
+      totalEdges += cycle.arcs.length;
+
+      const arcInfos = cycle.arcs.map(arcId => {
+        const arc = STATIC_DATA.arcs[arcId];
+        const usages = arc?.usages || [];
+        const count = usages.reduce((sum, g) => sum + g.locations.length, 0);
+        return { arcId, arc, count, usages };
+      });
+      arcInfos.sort((a, b) => a.count - b.count);
+
+      contentHtml += `<div class="sidebar-cycle-group">`;
+      contentHtml += `<div class="sidebar-cycle-group-header">Cycle ${cid + 1} (${cycle.arcs.length} edges)</div>`;
+      for (const info of arcInfos) {
+        const isSelected = info.arcId === selectedArcId;
+        const fromNode = StaticData.getNode(info.arc.from);
+        const toNode = StaticData.getNode(info.arc.to);
+        const fromName = fromNode ? fromNode.name : info.arc.from;
+        const toName = toNode ? toNode.name : info.arc.to;
+        totalLocs += info.count;
+
+        contentHtml += `<div class="sidebar-usage-group${isSelected ? ' sidebar-selected-arc' : ''}">`;
+        contentHtml += `<div class="sidebar-symbol">`;
+        contentHtml += `<span class="sidebar-toggle">&#x25BE;</span>`;
+        contentHtml += `<span class="sidebar-symbol-name">${fromName}</span>`;
+        contentHtml += `<span class="sidebar-arrow">&#x2192;</span>`;
+        contentHtml += `<span class="sidebar-symbol-name">${toName}</span>`;
+        contentHtml += `<span class="sidebar-ref-count">${info.count}</span>`;
+        contentHtml += `</div>`;
+
+        contentHtml += `<div class="sidebar-locations">`;
+        for (const group of info.usages) {
+          for (const loc of group.locations) {
+            contentHtml += `<div class="sidebar-location">${loc.file}<span class="sidebar-line-badge">:${loc.line}</span></div>`;
+          }
+        }
+        contentHtml += `</div>`;
+        contentHtml += `</div>`;
+      }
+      contentHtml += `</div>`;
+    }
+
+    let html = `<div class="sidebar-header">`;
+    html += `<span class="sidebar-title">Cycles (${cycleIds.length})</span>`;
+    html += `<button class="sidebar-close">&#x2715;</button>`;
+    html += `</div>`;
+    html += `<div class="sidebar-content">${contentHtml}</div>`;
+    html += `<div class="sidebar-footer">${totalLocs} references \u00b7 ${totalEdges} edges</div>`;
 
     return html;
   },

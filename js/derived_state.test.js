@@ -862,7 +862,7 @@ describe("DerivedState", () => {
   describe("cycle expansion (arc selection)", () => {
     const ROW_HEIGHT = 30;
 
-    // Cycle: A → B → C → A (cycleId=0), plus non-cycle A → D
+    // Cycle: A → B → C → A (cycleIds=[0]), plus non-cycle A → D
     const CYCLE_DATA = {
       nodes: {
         A: { type: "module", parent: null, x: 20, y: 60, width: 100, height: 20, hasChildren: false },
@@ -871,13 +871,13 @@ describe("DerivedState", () => {
         D: { type: "module", parent: null, x: 20, y: 150, width: 100, height: 20, hasChildren: false },
       },
       arcs: {
-        "A-B": { from: "A", to: "B", cycleId: 0, context: { kind: "production", subKind: null, features: [] }, usages: [
+        "A-B": { from: "A", to: "B", cycleIds: [0], context: { kind: "production", subKind: null, features: [] }, usages: [
           { symbol: "sym1", modulePath: null, locations: [{ file: "a.rs", line: 1 }] }
         ]},
-        "B-C": { from: "B", to: "C", cycleId: 0, context: { kind: "production", subKind: null, features: [] }, usages: [
+        "B-C": { from: "B", to: "C", cycleIds: [0], context: { kind: "production", subKind: null, features: [] }, usages: [
           { symbol: "sym2", modulePath: null, locations: [{ file: "b.rs", line: 1 }, { file: "b.rs", line: 2 }] }
         ]},
-        "C-A": { from: "C", to: "A", cycleId: 0, context: { kind: "production", subKind: null, features: [] }, usages: [
+        "C-A": { from: "C", to: "A", cycleIds: [0], context: { kind: "production", subKind: null, features: [] }, usages: [
           { symbol: "sym3", modulePath: null, locations: [{ file: "c.rs", line: 1 }] }
         ]},
         "A-D": { from: "A", to: "D", context: { kind: "production", subKind: null, features: [] }, usages: [
@@ -958,6 +958,75 @@ describe("DerivedState", () => {
       expect(result.arcHighlights.has("C-A")).toBe(false);
       expect(result.nodeHighlights.has("C")).toBe(false);
     });
+
+    test("multi-cycle arc: union of all cycle members highlighted", () => {
+      // Arc B-C belongs to both cycle 0 (A→B→C→A) and cycle 1 (B→C→E→B)
+      const MULTI_CYCLE_DATA = {
+        nodes: {
+          A: { type: "module", parent: null, x: 20, y: 60, width: 100, height: 20, hasChildren: false },
+          B: { type: "module", parent: null, x: 20, y: 90, width: 100, height: 20, hasChildren: false },
+          C: { type: "module", parent: null, x: 20, y: 120, width: 100, height: 20, hasChildren: false },
+          E: { type: "module", parent: null, x: 20, y: 150, width: 100, height: 20, hasChildren: false },
+        },
+        arcs: {
+          "A-B": { from: "A", to: "B", cycleIds: [0], context: { kind: "production", subKind: null, features: [] }, usages: [
+            { symbol: "sym1", modulePath: null, locations: [{ file: "a.rs", line: 1 }] }
+          ]},
+          "B-C": { from: "B", to: "C", cycleIds: [0, 1], context: { kind: "production", subKind: null, features: [] }, usages: [
+            { symbol: "sym2", modulePath: null, locations: [{ file: "b.rs", line: 1 }] }
+          ]},
+          "C-A": { from: "C", to: "A", cycleIds: [0], context: { kind: "production", subKind: null, features: [] }, usages: [
+            { symbol: "sym3", modulePath: null, locations: [{ file: "c.rs", line: 1 }] }
+          ]},
+          "C-E": { from: "C", to: "E", cycleIds: [1], context: { kind: "production", subKind: null, features: [] }, usages: [
+            { symbol: "sym4", modulePath: null, locations: [{ file: "c.rs", line: 5 }] }
+          ]},
+          "E-B": { from: "E", to: "B", cycleIds: [1], context: { kind: "production", subKind: null, features: [] }, usages: [
+            { symbol: "sym5", modulePath: null, locations: [{ file: "e.rs", line: 1 }] }
+          ]},
+        },
+      };
+      const multiPositions = new Map([
+        ["A", { x: 20, y: 60, width: 100, height: 20 }],
+        ["B", { x: 20, y: 90, width: 100, height: 20 }],
+        ["C", { x: 20, y: 120, width: 100, height: 20 }],
+        ["E", { x: 20, y: 150, width: 100, height: 20 }],
+      ]);
+
+      globalThis.STATIC_DATA = {
+        cycles: [
+          { nodes: ["A", "B", "C"], arcs: ["A-B", "B-C", "C-A"] },
+          { nodes: ["B", "C", "E"], arcs: ["B-C", "C-E", "E-B"] },
+        ]
+      };
+
+      const sd = createMockStaticData(MULTI_CYCLE_DATA);
+      const state = AppState.create();
+      AppState.setSelection(state, 'arc', 'B-C');
+
+      const result = DerivedState.deriveHighlightState(
+        state, sd, new Map(), new Set(), multiPositions, ROW_HEIGHT
+      );
+
+      expect(result).not.toBeNull();
+      // All arcs from both cycles should be highlighted
+      expect(result.arcHighlights.has("B-C")).toBe(true);
+      expect(result.arcHighlights.has("A-B")).toBe(true);
+      expect(result.arcHighlights.has("C-A")).toBe(true);
+      expect(result.arcHighlights.has("C-E")).toBe(true);
+      expect(result.arcHighlights.has("E-B")).toBe(true);
+      // All cycle nodes from union should be in nodeHighlights
+      // B and C are primary arc endpoints
+      expect(result.nodeHighlights.has("B")).toBe(true);
+      expect(result.nodeHighlights.has("C")).toBe(true);
+      // A and E are cycle-members from the two cycles
+      expect(result.nodeHighlights.get("A")).toEqual({
+        role: 'cycle-member', cssClass: 'cycleMember'
+      });
+      expect(result.nodeHighlights.get("E")).toEqual({
+        role: 'cycle-member', cssClass: 'cycleMember'
+      });
+    });
   });
 
   describe("node hover direct-cycle", () => {
@@ -973,17 +1042,17 @@ describe("DerivedState", () => {
     });
 
     test("direct-cycle node hover: partner gets cycle-member", () => {
-      // Direct cycle: X ↔ Y (both directions, cycleId=0)
+      // Direct cycle: X ↔ Y (both directions, cycleIds=[0])
       const DIRECT_DATA = {
         nodes: {
           X: { type: "module", parent: null, x: 20, y: 60, width: 100, height: 20, hasChildren: false },
           Y: { type: "module", parent: null, x: 20, y: 90, width: 100, height: 20, hasChildren: false },
         },
         arcs: {
-          "X-Y": { from: "X", to: "Y", cycleId: 0, context: { kind: "production", subKind: null, features: [] }, usages: [
+          "X-Y": { from: "X", to: "Y", cycleIds: [0], context: { kind: "production", subKind: null, features: [] }, usages: [
             { symbol: "sym1", modulePath: null, locations: [{ file: "x.rs", line: 1 }] }
           ]},
-          "Y-X": { from: "Y", to: "X", cycleId: 0, context: { kind: "production", subKind: null, features: [] }, usages: [
+          "Y-X": { from: "Y", to: "X", cycleIds: [0], context: { kind: "production", subKind: null, features: [] }, usages: [
             { symbol: "sym2", modulePath: null, locations: [{ file: "y.rs", line: 1 }] }
           ]},
         },
@@ -1019,13 +1088,13 @@ describe("DerivedState", () => {
           R: { type: "module", parent: null, x: 20, y: 120, width: 100, height: 20, hasChildren: false },
         },
         arcs: {
-          "P-Q": { from: "P", to: "Q", cycleId: 0, context: { kind: "production", subKind: null, features: [] }, usages: [
+          "P-Q": { from: "P", to: "Q", cycleIds: [0], context: { kind: "production", subKind: null, features: [] }, usages: [
             { symbol: "sym1", modulePath: null, locations: [{ file: "p.rs", line: 1 }] }
           ]},
-          "Q-R": { from: "Q", to: "R", cycleId: 0, context: { kind: "production", subKind: null, features: [] }, usages: [
+          "Q-R": { from: "Q", to: "R", cycleIds: [0], context: { kind: "production", subKind: null, features: [] }, usages: [
             { symbol: "sym2", modulePath: null, locations: [{ file: "q.rs", line: 1 }] }
           ]},
-          "R-P": { from: "R", to: "P", cycleId: 0, context: { kind: "production", subKind: null, features: [] }, usages: [
+          "R-P": { from: "R", to: "P", cycleIds: [0], context: { kind: "production", subKind: null, features: [] }, usages: [
             { symbol: "sym3", modulePath: null, locations: [{ file: "r.rs", line: 1 }] }
           ]},
         },

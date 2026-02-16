@@ -153,7 +153,7 @@ mod tests {
             10,
             EdgeDirection::Downward,
             None,
-            None,
+            vec![],
             vec![],
             EdgeContext::production(),
         );
