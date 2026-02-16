@@ -358,7 +358,7 @@ impl ArcGraph {
 
         // THEN: Stable topological sort using Kahn's algorithm
         // This preserves alphabetical order for independent nodes (tie-breaker)
-        let sorted = stable_toposort(&sibling_deps, &children, |idx| self[idx].name().to_owned());
+        let sorted = stable_toposort(&sibling_deps, |idx| self[idx].name().to_owned());
         if !sorted.is_empty() {
             children = sorted;
         }
@@ -398,9 +398,7 @@ impl ArcGraph {
             }
         }
 
-        stable_toposort(&crate_graph, &sorted_crates, |idx| {
-            self[idx].name().to_owned()
-        })
+        stable_toposort(&crate_graph, |idx| self[idx].name().to_owned())
     }
 
     /// Find crate pairs where ModuleDep edges exist (so CrateDep can be suppressed).

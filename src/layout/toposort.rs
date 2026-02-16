@@ -1,34 +1,219 @@
 //! Topological sorting algorithms for layout ordering.
 
+use itertools::Itertools;
+use petgraph::Direction;
 use petgraph::algo::tarjan_scc;
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
-use std::collections::HashMap;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap};
 
-/// SCC condensation fallback for stable_toposort when cycles exist.
-/// Applies ADR-017 pattern: condense → toposort → expand alphabetically.
-fn scc_fallback_sort(
-    graph: &DiGraph<NodeIndex, usize>,
-    node_to_orig: &HashMap<petgraph::graph::NodeIndex, NodeIndex>,
-    get_name: &dyn Fn(NodeIndex) -> String,
+/// Alias for local subgraph node indices (to distinguish from original ArcGraph `NodeIndex`).
+type LocalIdx = petgraph::graph::NodeIndex;
+
+/// Stable topological sort using Kahn's algorithm.
+/// Preserves alphabetical order for nodes without dependency relationships.
+pub(super) fn stable_toposort(
+    sibling_deps: &DiGraph<NodeIndex, usize>,
+    get_name: impl Fn(NodeIndex) -> String,
 ) -> Vec<NodeIndex> {
-    use std::collections::BinaryHeap;
+    if sibling_deps.node_count() == 0 {
+        return vec![];
+    }
 
-    let sccs = tarjan_scc(graph);
+    let ctx = ToposortGraph {
+        node_to_orig: sibling_deps
+            .node_indices()
+            .map(|node| (node, sibling_deps[node]))
+            .collect(),
+        subgraph: sibling_deps,
+        get_name,
+    };
 
-    // Build condensed DAG: each SCC becomes one node
-    let mut condensed: DiGraph<Vec<petgraph::graph::NodeIndex>, ()> = DiGraph::new();
-    let mut node_to_scc: HashMap<petgraph::graph::NodeIndex, petgraph::graph::NodeIndex> =
-        HashMap::new();
+    // NOTE: This duplicates the Kahn's algorithm structure from `kahns_toposort`,
+    // but cannot reuse it because the barycenter priority depends on `positions`
+    // which is mutated during iteration (each placed node affects subsequent priorities).
 
-    for scc in &sccs {
-        let scc_idx = condensed.add_node(scc.clone());
-        for &node in scc {
-            node_to_scc.insert(node, scc_idx);
+    // Compute in-degrees
+    let mut in_degree = vec![0usize; sibling_deps.node_count()];
+    for node in sibling_deps.node_indices() {
+        in_degree[node.index()] = sibling_deps
+            .edges_directed(node, Direction::Incoming)
+            .count();
+    }
+
+    // Barycenter score: average position of already-placed dependents.
+    // Nodes closer to their dependents get lower scores → fewer arc crossings.
+    let barycenter = |node: LocalIdx, positions: &HashMap<LocalIdx, usize>| -> f64 {
+        let (sum, count) = sibling_deps
+            .neighbors_directed(node, Direction::Incoming)
+            .filter_map(|predecessor| positions.get(&predecessor).copied())
+            .fold((0usize, 0usize), |(sum, count), pos| (sum + pos, count + 1));
+        if count == 0 {
+            f64::INFINITY
+        } else {
+            sum as f64 / count as f64
+        }
+    };
+
+    // Position tracking: maps local node index → placement order in result
+    let mut positions: HashMap<LocalIdx, usize> = HashMap::new();
+
+    // Initialize with nodes having in-degree 0 (all INFINITY — nothing placed yet)
+    let mut heap: BinaryHeap<Reverse<(Score, String, LocalIdx)>> = sibling_deps
+        .node_indices()
+        .filter(|&node| in_degree[node.index()] == 0)
+        .map(|node| Reverse((Score(f64::INFINITY), ctx.name(node), node)))
+        .collect();
+
+    let mut result = Vec::new();
+    while let Some(Reverse((_, _, node))) = heap.pop() {
+        positions.insert(node, result.len());
+        result.push(ctx.orig(node));
+
+        // Decrease in-degree of neighbors
+        for neighbor in sibling_deps.neighbors(node) {
+            let degree = &mut in_degree[neighbor.index()];
+            *degree -= 1;
+            if *degree == 0 {
+                let score = barycenter(neighbor, &positions);
+                heap.push(Reverse((Score(score), ctx.name(neighbor), neighbor)));
+            }
         }
     }
 
-    // Transfer edges between SCCs (skip intra-SCC)
+    // If not all nodes processed, there's a cycle — use SCC fallback
+    if result.len() != sibling_deps.node_count() {
+        return ctx.scc_fallback_sort();
+    }
+
+    result
+}
+
+/// Read-only context for toposort operations on a subgraph.
+struct ToposortGraph<'a, F> {
+    subgraph: &'a DiGraph<NodeIndex, usize>,
+    node_to_orig: HashMap<LocalIdx, NodeIndex>,
+    get_name: F,
+}
+
+impl<F: Fn(NodeIndex) -> String> ToposortGraph<'_, F> {
+    fn orig(&self, local: LocalIdx) -> NodeIndex {
+        self.node_to_orig[&local]
+    }
+
+    fn name(&self, local: LocalIdx) -> String {
+        (self.get_name)(self.orig(local))
+    }
+
+    /// SCC condensation fallback when cycles exist.
+    /// Applies ADR-017 pattern: condense → toposort → expand alphabetically.
+    fn scc_fallback_sort(&self) -> Vec<NodeIndex> {
+        let sccs = tarjan_scc(self.subgraph);
+        let (condensed, _node_to_scc) = condense_sccs(self.subgraph, &sccs);
+
+        // Stable Kahn's toposort on condensed DAG with alphabetical tiebreaker
+        let scc_sort_name = |scc_node: LocalIdx| -> String {
+            condensed[scc_node]
+                .iter()
+                .map(|&node| self.name(node))
+                .min()
+                .unwrap_or_default()
+        };
+        let scc_order = kahns_toposort(&condensed, scc_sort_name);
+
+        // Log cycles (SCCs with >1 member)
+        for &scc_node in &scc_order {
+            let members = &condensed[scc_node];
+            if members.len() > 1 {
+                let names: Vec<String> = members.iter().map(|&node| self.name(node)).collect();
+                tracing::debug!("SCC cycle ({} nodes): {}", members.len(), names.join(", "));
+            }
+        }
+
+        // Expand: multi-member SCCs via optimal_scc_order, singletons directly
+        scc_order
+            .into_iter()
+            .flat_map(|scc_node| {
+                let members = &condensed[scc_node];
+                if members.len() > 1 {
+                    self.optimal_scc_order(members)
+                } else {
+                    vec![self.orig(members[0])]
+                }
+            })
+            .collect()
+    }
+
+    /// Brute-force minimum-upward-permutation for SCC members.
+    /// Enumerates all permutations and picks the one with the lowest sum of
+    /// "upward" edge weights (edges from later → earlier in the permutation).
+    /// Falls back to alphabetical for n > 8 (40320 permutations limit).
+    fn optimal_scc_order(&self, members: &[LocalIdx]) -> Vec<NodeIndex> {
+        let scc_size = members.len();
+
+        // Guard: too many permutations → fallback alphabetical
+        if scc_size > 8 {
+            let mut result: Vec<NodeIndex> =
+                members.iter().map(|&member| self.orig(member)).collect();
+            result.sort_by_key(|&idx| (self.get_name)(idx));
+            return result;
+        }
+
+        // Extract pairwise weights: weights[src][dst] = edge weight from members[src] to members[dst]
+        let mut weights = vec![vec![0usize; scc_size]; scc_size];
+        for src in 0..scc_size {
+            for dst in 0..scc_size {
+                if src != dst
+                    && let Some(edge_idx) = self.subgraph.find_edge(members[src], members[dst])
+                {
+                    weights[src][dst] = self.subgraph[edge_idx];
+                }
+            }
+        }
+
+        // Enumerate all permutations, score by upward weight sum
+        let mut best_perm: Vec<usize> = (0..scc_size).collect();
+        let mut best_score = usize::MAX;
+        let mut best_names: Vec<String> = Vec::new();
+
+        for perm in (0..scc_size).permutations(scc_size) {
+            let score: usize = (0..scc_size)
+                .flat_map(|later| {
+                    let weights = &weights;
+                    let perm = &perm;
+                    (0..later).map(move |earlier| weights[perm[later]][perm[earlier]])
+                })
+                .sum();
+
+            let names: Vec<String> = perm.iter().map(|&i| self.name(members[i])).collect();
+            if (score, &names) < (best_score, &best_names) {
+                best_score = score;
+                best_names = names;
+                best_perm = perm;
+            }
+        }
+
+        best_perm.iter().map(|&i| self.orig(members[i])).collect()
+    }
+}
+
+/// Build a condensed DAG where each SCC becomes a single node.
+/// Returns (condensed graph, mapping from original node → SCC node).
+fn condense_sccs(
+    graph: &DiGraph<NodeIndex, usize>,
+    sccs: &[Vec<LocalIdx>],
+) -> (DiGraph<Vec<LocalIdx>, ()>, HashMap<LocalIdx, LocalIdx>) {
+    let mut condensed: DiGraph<Vec<LocalIdx>, ()> = DiGraph::new();
+    let mut node_to_scc: HashMap<LocalIdx, LocalIdx> = HashMap::new();
+
+    for scc in sccs {
+        let scc_node = condensed.add_node(scc.clone());
+        for &node in scc {
+            node_to_scc.insert(node, scc_node);
+        }
+    }
+
     for edge in graph.edge_references() {
         let src_scc = node_to_scc[&edge.source()];
         let dst_scc = node_to_scc[&edge.target()];
@@ -37,335 +222,124 @@ fn scc_fallback_sort(
         }
     }
 
-    // Stable Kahn's toposort on condensed DAG with alphabetical tiebreaker
-    let scc_order = {
-        let mut in_deg: HashMap<petgraph::graph::NodeIndex, usize> = HashMap::new();
-        for n in condensed.node_indices() {
-            in_deg.insert(n, 0);
-        }
-        for e in condensed.edge_references() {
-            *in_deg.get_mut(&e.target()).unwrap() += 1;
-        }
-
-        // Sort name = alphabetically first member
-        let scc_sort_name = |scc_idx: petgraph::graph::NodeIndex| -> String {
-            condensed[scc_idx]
-                .iter()
-                .map(|&n| get_name(node_to_orig[&n]))
-                .min()
-                .unwrap_or_default()
-        };
-
-        // Min-heap by name
-        let mut heap: BinaryHeap<std::cmp::Reverse<(String, petgraph::graph::NodeIndex)>> =
-            BinaryHeap::new();
-        for (&n, &deg) in &in_deg {
-            if deg == 0 {
-                heap.push(std::cmp::Reverse((scc_sort_name(n), n)));
-            }
-        }
-
-        let mut order = Vec::new();
-        while let Some(std::cmp::Reverse((_, n))) = heap.pop() {
-            order.push(n);
-            for neighbor in condensed.neighbors(n) {
-                let deg = in_deg.get_mut(&neighbor).unwrap();
-                *deg -= 1;
-                if *deg == 0 {
-                    heap.push(std::cmp::Reverse((scc_sort_name(neighbor), neighbor)));
-                }
-            }
-        }
-        order
-    };
-
-    // Log cycles (SCCs with >1 member)
-    for &scc_idx in &scc_order {
-        let members = &condensed[scc_idx];
-        if members.len() > 1 {
-            let names: Vec<String> = members
-                .iter()
-                .map(|&n| get_name(node_to_orig[&n]))
-                .collect();
-            tracing::debug!("SCC cycle ({} nodes): {}", members.len(), names.join(", "));
-        }
-    }
-
-    // Expand: multi-member SCCs via optimal_scc_order, singletons directly
-    scc_order
-        .into_iter()
-        .flat_map(|scc_idx| {
-            let members = &condensed[scc_idx];
-            if members.len() > 1 {
-                optimal_scc_order(members, graph, node_to_orig, get_name)
-            } else {
-                vec![node_to_orig[&members[0]]]
-            }
-        })
-        .collect()
+    (condensed, node_to_scc)
 }
 
-/// Brute-force minimum-upward-permutation for SCC members.
-/// Enumerates all permutations and picks the one with the lowest sum of
-/// "upward" edge weights (edges from later → earlier in the permutation).
-/// Falls back to alphabetical for n > 8 (40320 permutations limit).
-fn optimal_scc_order(
-    members: &[petgraph::graph::NodeIndex],
-    graph: &DiGraph<NodeIndex, usize>,
-    node_to_orig: &HashMap<petgraph::graph::NodeIndex, NodeIndex>,
-    get_name: &dyn Fn(NodeIndex) -> String,
-) -> Vec<NodeIndex> {
-    use itertools::Itertools;
-
-    let n = members.len();
-
-    // Guard: too many permutations → fallback alphabetical
-    if n > 8 {
-        let mut result: Vec<NodeIndex> = members.iter().map(|&m| node_to_orig[&m]).collect();
-        result.sort_by_key(|&idx| get_name(idx));
-        return result;
+/// Kahn's topological sort with a generic priority tiebreaker.
+fn kahns_toposort<N, E, P: Ord>(
+    graph: &DiGraph<N, E>,
+    priority: impl Fn(LocalIdx) -> P,
+) -> Vec<LocalIdx> {
+    let mut in_degree = vec![0usize; graph.node_count()];
+    for node in graph.node_indices() {
+        in_degree[node.index()] = graph.edges_directed(node, Direction::Incoming).count();
     }
 
-    // Extract pairwise weights: weights[i][j] = edge weight from members[i] to members[j]
-    let mut weights = vec![vec![0usize; n]; n];
-    for i in 0..n {
-        for j in 0..n {
-            if i != j
-                && let Some(edge_idx) = graph.find_edge(members[i], members[j])
-            {
-                weights[i][j] = graph[edge_idx];
-            }
-        }
-    }
-
-    // Enumerate all permutations, score by upward weight sum
-    let mut best_perm: Vec<usize> = (0..n).collect();
-    let mut best_score = usize::MAX;
-    let mut best_names: Vec<String> = Vec::new();
-
-    for perm in (0..n).permutations(n) {
-        // Score: sum of weights[perm[later]][perm[earlier]] for all later > earlier
-        let mut score = 0usize;
-        for later in 0..n {
-            for earlier in 0..later {
-                score += weights[perm[later]][perm[earlier]];
-            }
-        }
-
-        if score < best_score
-            || (score == best_score && {
-                let names: Vec<String> = perm
-                    .iter()
-                    .map(|&i| get_name(node_to_orig[&members[i]]))
-                    .collect();
-                names < best_names
-            })
-        {
-            best_score = score;
-            best_names = perm
-                .iter()
-                .map(|&i| get_name(node_to_orig[&members[i]]))
-                .collect();
-            best_perm = perm;
-        }
-    }
-
-    best_perm
-        .iter()
-        .map(|&i| node_to_orig[&members[i]])
-        .collect()
-}
-
-/// Stable topological sort using Kahn's algorithm.
-/// Preserves alphabetical order for nodes without dependency relationships.
-pub(super) fn stable_toposort(
-    sibling_deps: &DiGraph<NodeIndex, usize>,
-    children: &[NodeIndex],
-    get_name: impl Fn(NodeIndex) -> String,
-) -> Vec<NodeIndex> {
-    use std::collections::BinaryHeap;
-
-    if children.is_empty() {
-        return vec![];
-    }
-
-    // Map sibling_deps node indices to original NodeIndex
-    let node_to_orig: HashMap<petgraph::graph::NodeIndex, NodeIndex> = sibling_deps
+    let mut heap: BinaryHeap<Reverse<(P, LocalIdx)>> = graph
         .node_indices()
-        .map(|n| (n, sibling_deps[n]))
+        .filter(|&node| in_degree[node.index()] == 0)
+        .map(|node| Reverse((priority(node), node)))
         .collect();
 
-    // Compute in-degrees
-    let mut in_degree: HashMap<petgraph::graph::NodeIndex, usize> = HashMap::new();
-    for n in sibling_deps.node_indices() {
-        in_degree.insert(n, 0);
-    }
-    for edge in sibling_deps.edge_references() {
-        *in_degree.get_mut(&edge.target()).unwrap() += 1;
-    }
-
-    // Barycenter score: average position of already-placed dependents.
-    // Nodes closer to their dependents get lower scores → fewer arc crossings.
-    let barycenter = |n: petgraph::graph::NodeIndex,
-                      positions: &HashMap<petgraph::graph::NodeIndex, usize>|
-     -> f64 {
-        let placed: Vec<usize> = sibling_deps
-            .neighbors_directed(n, petgraph::Direction::Incoming)
-            .filter_map(|pred| positions.get(&pred).copied())
-            .collect();
-        if placed.is_empty() {
-            f64::INFINITY
-        } else {
-            placed.iter().sum::<usize>() as f64 / placed.len() as f64
-        }
-    };
-
-    // Use BinaryHeap with barycenter score as primary key, name as tiebreaker
-    struct Item(f64, String, petgraph::graph::NodeIndex);
-    impl PartialEq for Item {
-        fn eq(&self, other: &Self) -> bool {
-            self.0.to_bits() == other.0.to_bits() && self.1 == other.1
-        }
-    }
-    impl Eq for Item {}
-    impl Ord for Item {
-        fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-            // Reversed for min-heap: lower score = higher priority
-            other
-                .0
-                .partial_cmp(&self.0)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| other.1.cmp(&self.1))
-        }
-    }
-    impl PartialOrd for Item {
-        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-            Some(self.cmp(other))
-        }
-    }
-
-    // Position tracking: maps sibling_deps node index → placement order in result
-    let mut positions: HashMap<petgraph::graph::NodeIndex, usize> = HashMap::new();
-
-    // Initialize with nodes having in-degree 0 (all INFINITY — nothing placed yet)
-    let mut heap: BinaryHeap<Item> = BinaryHeap::new();
-    for (&n, &deg) in &in_degree {
-        if deg == 0 {
-            let orig = node_to_orig[&n];
-            heap.push(Item(f64::INFINITY, get_name(orig), n));
-        }
-    }
-
     let mut result = Vec::new();
-    while let Some(Item(_, _, n)) = heap.pop() {
-        positions.insert(n, result.len());
-        result.push(node_to_orig[&n]);
-
-        // Decrease in-degree of neighbors
-        for neighbor in sibling_deps.neighbors(n) {
-            let deg = in_degree.get_mut(&neighbor).unwrap();
-            *deg -= 1;
-            if *deg == 0 {
-                let orig = node_to_orig[&neighbor];
-                let score = barycenter(neighbor, &positions);
-                heap.push(Item(score, get_name(orig), neighbor));
+    while let Some(Reverse((_, node))) = heap.pop() {
+        result.push(node);
+        for neighbor in graph.neighbors(node) {
+            let degree = &mut in_degree[neighbor.index()];
+            *degree -= 1;
+            if *degree == 0 {
+                heap.push(Reverse((priority(neighbor), neighbor)));
             }
         }
     }
-
-    // If not all nodes processed, there's a cycle — use SCC fallback
-    if result.len() != children.len() {
-        return scc_fallback_sort(sibling_deps, &node_to_orig, &get_name);
-    }
-
     result
+}
+
+/// Float wrapper that implements `Eq`/`Ord` for use in `BinaryHeap`.
+struct Score(f64);
+impl PartialEq for Score {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+impl Eq for Score {}
+impl PartialOrd for Score {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for Score {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.total_cmp(&other.0)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::{ArcGraph, Node};
-    use petgraph::graph::NodeIndex;
-    use std::collections::HashMap;
+
+    /// Build a test digraph with named nodes and weighted edges.
+    /// Node weights are `NodeIndex::new(10 + i)` to avoid overlap with local indices.
+    fn test_graph(
+        names: &[&str],
+        edges: &[(usize, usize, usize)],
+    ) -> (DiGraph<NodeIndex, usize>, Vec<String>) {
+        let mut graph = DiGraph::new();
+        let base = 10;
+        let names: Vec<String> = names.iter().map(|s| s.to_string()).collect();
+        let locals: Vec<LocalIdx> = names
+            .iter()
+            .enumerate()
+            .map(|(i, _)| graph.add_node(NodeIndex::new(base + i)))
+            .collect();
+        for &(from, to, weight) in edges {
+            graph.add_edge(locals[from], locals[to], weight);
+        }
+        (graph, names)
+    }
+
+    /// Name lookup for test graphs with base offset 10.
+    fn name_fn(names: &[String]) -> impl Fn(NodeIndex) -> String + '_ {
+        move |idx| names[idx.index() - 10].clone()
+    }
+
+    /// Build a `ToposortGraph` from a test graph and name function.
+    fn build_ctx<'a, F>(graph: &'a DiGraph<NodeIndex, usize>, get_name: F) -> ToposortGraph<'a, F> {
+        ToposortGraph {
+            node_to_orig: graph
+                .node_indices()
+                .map(|node| (node, graph[node]))
+                .collect(),
+            subgraph: graph,
+            get_name,
+        }
+    }
 
     // === stable_toposort Cycle Tests ===
 
     #[test]
     fn test_stable_toposort_with_cycle_returns_sorted() {
-        use std::path::PathBuf;
+        let (sibling_deps, names) = test_graph(&["a", "b"], &[(0, 1, 1), (1, 0, 1)]);
+        let get_name = name_fn(&names);
 
-        // Build a graph with a cycle (A⇄B) — stable_toposort should return
-        // non-empty result via SCC fallback instead of vec![]
-        let mut graph = ArcGraph::new();
-        let crate_idx = graph.add_node(Node::Crate {
-            name: "test".to_string(),
-            path: PathBuf::from("/test"),
-        });
-        let a = graph.add_node(Node::Module {
-            name: "a".to_string(),
-            crate_idx,
-        });
-        let b = graph.add_node(Node::Module {
-            name: "b".to_string(),
-            crate_idx,
-        });
-
-        // Build sibling_deps DiGraph with cycle
-        let mut sibling_deps: DiGraph<NodeIndex, usize> = DiGraph::new();
-        let sa = sibling_deps.add_node(a);
-        let sb = sibling_deps.add_node(b);
-        sibling_deps.add_edge(sa, sb, 1);
-        sibling_deps.add_edge(sb, sa, 1); // cycle
-
-        let children = vec![a, b];
-        let result = stable_toposort(&sibling_deps, &children, |idx| match &graph[idx] {
-            Node::Module { name, .. } => name.clone(),
-            Node::Crate { name, .. } => name.clone(),
-        });
+        let result = stable_toposort(&sibling_deps, &get_name);
 
         assert_eq!(result.len(), 2, "Should return all nodes, not empty vec");
-        // Both nodes present
-        assert!(result.contains(&a), "Should contain a");
-        assert!(result.contains(&b), "Should contain b");
-        // Alphabetical within SCC
-        let pos_a = result.iter().position(|&n| n == a).unwrap();
-        let pos_b = result.iter().position(|&n| n == b).unwrap();
-        assert!(pos_a < pos_b, "a before b (alphabetical in SCC)");
+        let result_names: Vec<String> = result.iter().map(|&idx| get_name(idx)).collect();
+        assert_eq!(result_names, vec!["a", "b"], "Alphabetical within SCC");
     }
 
     // === SCC Fallback Tests ===
 
     #[test]
     fn test_scc_fallback_three_node_cycle() {
-        // Pure cycle: A→B→C→A — all nodes in one SCC
-        // Expected: alphabetical order [A, B, C]
-        let mut graph: DiGraph<NodeIndex, usize> = DiGraph::new();
-        let a_orig = NodeIndex::new(10);
-        let b_orig = NodeIndex::new(11);
-        let c_orig = NodeIndex::new(12);
-        let a = graph.add_node(a_orig);
-        let b = graph.add_node(b_orig);
-        let c = graph.add_node(c_orig);
-        graph.add_edge(a, b, 1);
-        graph.add_edge(b, c, 1);
-        graph.add_edge(c, a, 1);
+        let (graph, names) = test_graph(&["a", "b", "c"], &[(0, 1, 1), (1, 2, 1), (2, 0, 1)]);
+        let ctx = build_ctx(&graph, name_fn(&names));
 
-        let node_to_orig: HashMap<petgraph::graph::NodeIndex, NodeIndex> =
-            graph.node_indices().map(|n| (n, graph[n])).collect();
-
-        let get_name = |idx: NodeIndex| -> String {
-            match idx.index() {
-                10 => "a".to_string(),
-                11 => "b".to_string(),
-                12 => "c".to_string(),
-                _ => panic!("unexpected index"),
-            }
-        };
-
-        let result = scc_fallback_sort(&graph, &node_to_orig, &get_name);
-        let names: Vec<String> = result.iter().map(|&idx| get_name(idx)).collect();
+        let result = ctx.scc_fallback_sort();
+        let result_names: Vec<String> = result.iter().map(|&idx| (ctx.get_name)(idx)).collect();
         assert_eq!(
-            names,
+            result_names,
             vec!["a", "b", "c"],
             "SCC members sorted alphabetically"
         );
@@ -373,39 +347,13 @@ mod tests {
 
     #[test]
     fn test_scc_fallback_with_external_node() {
-        // SCC {A,B} (A⇄B) + standalone C, C→A edge
-        // Condensed: SCC{A,B} → C (C depends on SCC)
-        // Expected: [A, B, C] — SCC first (expanded alphabetically), C after
-        let mut graph: DiGraph<NodeIndex, usize> = DiGraph::new();
-        let a_orig = NodeIndex::new(10);
-        let b_orig = NodeIndex::new(11);
-        let c_orig = NodeIndex::new(12);
-        let a = graph.add_node(a_orig);
-        let b = graph.add_node(b_orig);
-        let c = graph.add_node(c_orig);
-        graph.add_edge(a, b, 1);
-        graph.add_edge(b, a, 1); // cycle A⇄B
-        graph.add_edge(c, a, 1); // C depends on A
+        let (graph, names) = test_graph(&["a", "b", "c"], &[(0, 1, 1), (1, 0, 1), (2, 0, 1)]);
+        let ctx = build_ctx(&graph, name_fn(&names));
 
-        let node_to_orig: HashMap<petgraph::graph::NodeIndex, NodeIndex> =
-            graph.node_indices().map(|n| (n, graph[n])).collect();
-
-        let get_name = |idx: NodeIndex| -> String {
-            match idx.index() {
-                10 => "a".to_string(),
-                11 => "b".to_string(),
-                12 => "c".to_string(),
-                _ => panic!("unexpected index"),
-            }
-        };
-
-        let result = scc_fallback_sort(&graph, &node_to_orig, &get_name);
-        let names: Vec<String> = result.iter().map(|&idx| get_name(idx)).collect();
-        // C depends on SCC{A,B}, so C comes first (dependent before dependency)
-        // Wait — in our convention: edge C→A means C depends on A.
-        // toposort: dependents come before dependencies → C first, then SCC{A,B}
+        let result = ctx.scc_fallback_sort();
+        let result_names: Vec<String> = result.iter().map(|&idx| (ctx.get_name)(idx)).collect();
         assert_eq!(
-            names,
+            result_names,
             vec!["c", "a", "b"],
             "Dependent C first, then SCC{{A,B}} alphabetically"
         );
@@ -415,18 +363,14 @@ mod tests {
 
     #[test]
     fn test_barycenter_incoming_gives_dependents() {
-        // Verify edge direction: A→B means "A depends on B"
-        // neighbors_directed(B, Incoming) should return A (the dependent)
         let mut g: DiGraph<NodeIndex, usize> = DiGraph::new();
         let a_orig = NodeIndex::new(0);
         let b_orig = NodeIndex::new(1);
         let a = g.add_node(a_orig);
         let b = g.add_node(b_orig);
-        g.add_edge(a, b, 1); // A depends on B
+        g.add_edge(a, b, 1);
 
-        let incoming: Vec<_> = g
-            .neighbors_directed(b, petgraph::Direction::Incoming)
-            .collect();
+        let incoming: Vec<_> = g.neighbors_directed(b, Direction::Incoming).collect();
         assert_eq!(incoming, vec![a], "Incoming neighbors of B should be [A]");
     }
 }
