@@ -449,7 +449,9 @@ mod tests {
     use crate::graph::{ArcGraph, Edge, Node};
     use crate::layout::ElementaryCycles;
     use crate::model::{DependencyKind, EdgeContext, SourceLocation, TestKind};
+    use assert2::check;
     use petgraph::graph::NodeIndex;
+    use rstest::rstest;
     use std::collections::{HashMap, HashSet};
     use std::path::PathBuf;
 
@@ -597,9 +599,61 @@ mod tests {
             self
         }
 
+        /// Add a ModuleDep with a dummy source location (for suppression tests).
+        fn prod_dep_located(&mut self, from: &str, to: &str) -> &mut Self {
+            self.prod_dep_with_location(from, to, "src/dummy.rs", 1, &["Sym"], to)
+        }
+
         /// Consume and return (graph, name->NodeIndex map).
         fn build(self) -> (ArcGraph, HashMap<String, NodeIndex>) {
             (self.graph, self.names)
+        }
+    }
+
+    /// Thin wrapper around `LayoutIR` to eliminate repetitive label-extraction boilerplate.
+    struct LayoutAssert {
+        ir: LayoutIR,
+    }
+
+    impl LayoutAssert {
+        fn new(ir: LayoutIR) -> Self {
+            Self { ir }
+        }
+
+        fn labels(&self) -> Vec<&str> {
+            self.ir.items.iter().map(|i| i.label.as_str()).collect()
+        }
+
+        fn pos(&self, name: &str) -> usize {
+            self.ir
+                .items
+                .iter()
+                .position(|i| i.label == name)
+                .unwrap_or_else(|| panic!("label {name:?} not found in {:?}", self.labels()))
+        }
+
+        fn assert_order(&self, before: &str, after: &str) {
+            assert!(
+                self.pos(before) < self.pos(after),
+                "{before:?} should come before {after:?}. Labels: {:?}",
+                self.labels()
+            );
+        }
+
+        /// Assert that the given labels appear in exactly this order (ignoring other items).
+        fn assert_top_level_order(&self, expected: &[&str]) {
+            let expected_set: HashSet<&str> = expected.iter().copied().collect();
+            let actual: Vec<&str> = self
+                .labels()
+                .into_iter()
+                .filter(|l| expected_set.contains(l))
+                .collect();
+            assert_eq!(
+                actual,
+                expected,
+                "Top-level order mismatch. All labels: {:?}",
+                self.labels()
+            );
         }
     }
 
@@ -684,45 +738,26 @@ mod tests {
         let cycles = graph.production_subgraph().elementary_cycles();
         let ir = build_layout(&graph, &cycles);
 
-        // Cycle edges should have cycle_ids
+        // Should have at least 5 cycle edges (3 from cycle 1 + 2 from cycle 2)
         let cycle_edges: Vec<_> = ir.edges.iter().filter(|e| e.cycle.is_some()).collect();
-        assert!(
-            cycle_edges.len() >= 5,
-            "Should have at least 5 cycle edges (3 from cycle 1 + 2 from cycle 2), got {}",
-            cycle_edges.len()
-        );
+        check!(cycle_edges.len() >= 5);
 
         // All cycle edges should have non-empty cycle_ids
         for edge in &cycle_edges {
-            assert!(
-                !edge.cycle_ids.is_empty(),
-                "Cycle edge {}->{} should have cycle_ids",
-                edge.from,
-                edge.to
-            );
+            check!(!edge.cycle_ids.is_empty());
         }
 
-        // Edges within same cycle should share the same cycle_ids
+        // Should have exactly 2 distinct cycle IDs
         let all_ids: HashSet<usize> = cycle_edges
             .iter()
             .flat_map(|e| e.cycle_ids.iter().copied())
             .collect();
-        assert_eq!(
-            all_ids.len(),
-            2,
-            "Should have exactly 2 distinct cycle IDs, got {:?}",
-            all_ids
-        );
+        check!(all_ids.len() == 2);
 
-        // Non-cycle edge (F → A) should have empty cycle_ids
+        // Non-cycle edges (F → A) should have empty cycle_ids
         let non_cycle_edges: Vec<_> = ir.edges.iter().filter(|e| e.cycle.is_none()).collect();
         for edge in &non_cycle_edges {
-            assert!(
-                edge.cycle_ids.is_empty(),
-                "Non-cycle edge {}->{} should have empty cycle_ids",
-                edge.from,
-                edge.to
-            );
+            check!(edge.cycle_ids.is_empty());
         }
     }
 
@@ -758,42 +793,24 @@ mod tests {
             .crate_with_modules("crate_b", &["mod_b1", "mod_b2"])
             .crate_dep("crate_a", "crate_b");
         let (graph, _) = b.build();
-        let ir = build_layout(&graph, &[]);
+        let la = LayoutAssert::new(build_layout(&graph, &[]));
 
-        // Should have 6 items (2 crates + 4 modules)
-        assert_eq!(ir.items.len(), 6);
+        check!(la.ir.items.len() == 6);
 
-        // Verify modules are grouped under their crates
-        // Find positions
-        let pos_crate_a = ir.items.iter().position(|i| i.label == "crate_a").unwrap();
-        let pos_mod_a1 = ir.items.iter().position(|i| i.label == "mod_a1").unwrap();
-        let pos_mod_a2 = ir.items.iter().position(|i| i.label == "mod_a2").unwrap();
-        let pos_crate_b = ir.items.iter().position(|i| i.label == "crate_b").unwrap();
-        let pos_mod_b1 = ir.items.iter().position(|i| i.label == "mod_b1").unwrap();
-        let pos_mod_b2 = ir.items.iter().position(|i| i.label == "mod_b2").unwrap();
+        // Crate A's modules between crate_a and crate_b
+        check!(la.pos("crate_a") < la.pos("mod_a1"));
+        check!(la.pos("mod_a1") < la.pos("crate_b"));
+        check!(la.pos("crate_a") < la.pos("mod_a2"));
+        check!(la.pos("mod_a2") < la.pos("crate_b"));
 
-        // Crate A's modules should appear right after Crate A, before Crate B
-        assert!(
-            pos_crate_a < pos_mod_a1 && pos_mod_a1 < pos_crate_b,
-            "mod_a1 should be between crate_a and crate_b"
-        );
-        assert!(
-            pos_crate_a < pos_mod_a2 && pos_mod_a2 < pos_crate_b,
-            "mod_a2 should be between crate_a and crate_b"
-        );
-
-        // Crate B's modules should appear after Crate B
-        assert!(pos_crate_b < pos_mod_b1, "mod_b1 should be after crate_b");
-        assert!(pos_crate_b < pos_mod_b2, "mod_b2 should be after crate_b");
+        // Crate B's modules after crate_b
+        check!(la.pos("crate_b") < la.pos("mod_b1"));
+        check!(la.pos("crate_b") < la.pos("mod_b2"));
 
         // CrateDep edge should be present (no ModuleDeps between crates)
-        assert_eq!(
-            ir.edges.len(),
-            1,
-            "Should have CrateDep edge (no ModuleDeps between crates)"
-        );
-        assert_eq!(ir.edges[0].from, pos_crate_a);
-        assert_eq!(ir.edges[0].to, pos_crate_b);
+        check!(la.ir.edges.len() == 1);
+        check!(la.ir.edges[0].from == la.pos("crate_a"));
+        check!(la.ir.edges[0].to == la.pos("crate_b"));
     }
 
     // === Layout Item Tests ===
@@ -854,17 +871,11 @@ mod tests {
     }
 
     #[test]
-    fn test_layout_item_default_source_path_is_none() {
+    fn test_layout_item_defaults() {
         let mut ir = LayoutIR::new();
         let id = ir.add_item(ItemKind::Crate, "test".to_string());
-        assert!(ir.items[id].source_path.is_none());
-    }
-
-    #[test]
-    fn test_layout_item_default_volatility_is_none() {
-        let mut ir = LayoutIR::new();
-        let id = ir.add_item(ItemKind::Crate, "test".to_string());
-        assert!(ir.items[id].volatility.is_none());
+        check!(ir.items[id].source_path.is_none());
+        check!(ir.items[id].volatility.is_none());
     }
 
     #[test]
@@ -880,223 +891,129 @@ mod tests {
             .nested_module("parent", "alpha_child")
             .nested_module("parent", "zebra_child");
         let (graph, _) = b.build();
-        let ir = build_layout(&graph, &[]);
+        let la = LayoutAssert::new(build_layout(&graph, &[]));
 
-        // Erwartete Reihenfolge:
-        // 1. test_crate
-        // 2. other_module (kein Kind, alphabetisch vor parent)
-        // 3. parent
-        // 4. alpha_child (Kind von parent, alphabetisch vor zebra)
-        // 5. zebra_child (Kind von parent)
-
-        let labels: Vec<&str> = ir.items.iter().map(|i| i.label.as_str()).collect();
-
-        let pos_crate = labels.iter().position(|&l| l == "test_crate").unwrap();
-        let pos_other = labels.iter().position(|&l| l == "other_module").unwrap();
-        let pos_parent = labels.iter().position(|&l| l == "parent").unwrap();
-        let pos_alpha = labels.iter().position(|&l| l == "alpha_child").unwrap();
-        let pos_zebra = labels.iter().position(|&l| l == "zebra_child").unwrap();
-
-        // Suppress unused variable warnings
-        let _ = pos_crate;
-        let _ = pos_other;
+        let pos_parent = la.pos("parent");
+        let pos_alpha = la.pos("alpha_child");
+        let pos_zebra = la.pos("zebra_child");
 
         // Kinder MÜSSEN direkt nach Parent kommen
         assert!(
             pos_alpha > pos_parent && pos_alpha < pos_parent + 3,
-            "alpha_child must directly follow parent, not scattered. Labels: {:?}",
-            labels
+            "alpha_child must directly follow parent. Labels: {:?}",
+            la.labels()
         );
         assert!(
             pos_zebra > pos_parent && pos_zebra < pos_parent + 3,
-            "zebra_child must directly follow parent, not scattered. Labels: {:?}",
-            labels
+            "zebra_child must directly follow parent. Labels: {:?}",
+            la.labels()
         );
 
         // Alphabetisch innerhalb Geschwister
-        assert!(
-            pos_alpha < pos_zebra,
-            "alpha_child should come before zebra_child (alphabetical). Labels: {:?}",
-            labels
-        );
+        la.assert_order("alpha_child", "zebra_child");
     }
 
-    #[test]
-    fn test_module_dependency_ordering() {
-        // Setup: 3 siblings with dependency chain
-        // zebra -> beta -> alpha (zebra depends on beta, beta depends on alpha)
-        // Alphabetical order: alpha, beta, zebra
-        // Dependency order: zebra, beta, alpha (dependents first)
+    /// Module ordering: crate with N modules + deps → assert full sequence.
+    ///
+    /// - `topo_overrides_alphabetical`: zebra→beta→alpha reverses alphabetical (dependents first)
+    /// - `topo_matches_alphabetical`: A→B→C — topo order matches alphabetical
+    #[rstest]
+    #[case::topo_overrides_alphabetical(
+        &["alpha", "beta", "zebra"],
+        &[("zebra", "beta"), ("beta", "alpha")],
+        &["zebra", "beta", "alpha"]
+    )]
+    #[case::topo_matches_alphabetical(
+        &["a", "b", "c"],
+        &[("a", "b"), ("b", "c")],
+        &["a", "b", "c"]
+    )]
+    fn test_module_ordering(
+        #[case] modules: &[&str],
+        #[case] deps: &[(&str, &str)],
+        #[case] expected_order: &[&str],
+    ) {
         let mut b = TestGraphBuilder::new();
-        b.crate_with_modules("test_crate", &["alpha", "beta", "zebra"])
-            .prod_dep("zebra", "beta")
-            .prod_dep("beta", "alpha");
+        b.crate_with_modules("test", modules);
+        for &(from, to) in deps {
+            b.prod_dep(from, to);
+        }
         let (graph, _) = b.build();
-        let ir = build_layout(&graph, &[]);
+        let la = LayoutAssert::new(build_layout(&graph, &[]));
 
-        let labels: Vec<&str> = ir.items.iter().map(|i| i.label.as_str()).collect();
-
-        let pos_alpha = labels.iter().position(|&l| l == "alpha").unwrap();
-        let pos_beta = labels.iter().position(|&l| l == "beta").unwrap();
-        let pos_zebra = labels.iter().position(|&l| l == "zebra").unwrap();
-
-        // Dependency order: zebra first (depends on others), then beta, then alpha
-        assert!(
-            pos_zebra < pos_beta,
-            "zebra should come before beta (zebra depends on beta). Labels: {:?}",
-            labels
-        );
-        assert!(
-            pos_beta < pos_alpha,
-            "beta should come before alpha (beta depends on alpha). Labels: {:?}",
-            labels
-        );
+        la.assert_top_level_order(expected_order);
     }
 
     #[test]
     fn test_test_edges_do_not_affect_sibling_sort_order() {
         let mut b = TestGraphBuilder::new();
+        // Production: alpha depends on beta → alpha should come first
         b.crate_with_modules("my_crate", &["alpha", "beta"])
-            // Production: alpha depends on beta → alpha should come first
             .prod_dep("alpha", "beta")
             // Test: beta depends on alpha (reverse direction) → must NOT affect order
             .test_dep("beta", "alpha", TestKind::Unit);
         let (graph, _) = b.build();
-        let ir = build_layout(&graph, &[]);
+        let la = LayoutAssert::new(build_layout(&graph, &[]));
 
-        let labels: Vec<&str> = ir.items.iter().map(|i| i.label.as_str()).collect();
-        let pos_alpha = labels.iter().position(|&l| l == "alpha").unwrap();
-        let pos_beta = labels.iter().position(|&l| l == "beta").unwrap();
-
-        assert!(
-            pos_alpha < pos_beta,
-            "alpha should come before beta (production dep alpha→beta). \
-             Test edge beta→alpha must not reverse this. Labels: {:?}",
-            labels
-        );
+        la.assert_order("alpha", "beta");
     }
 
     #[test]
     fn test_test_edges_do_not_affect_crate_sort_order() {
         let mut b = TestGraphBuilder::new();
+        // Production: aaa depends on bbb → aaa first
         b.crate_with_modules("aaa", &["mod_a"])
             .crate_with_modules("bbb", &["mod_b"])
-            // Production: aaa depends on bbb → aaa first
             .crate_dep("aaa", "bbb")
             // Test: bbb depends on aaa (reverse) → must NOT affect order
             .test_crate_dep("bbb", "aaa", TestKind::Unit);
         let (graph, _) = b.build();
-        let ir = build_layout(&graph, &[]);
+        let la = LayoutAssert::new(build_layout(&graph, &[]));
 
-        let labels: Vec<&str> = ir.items.iter().map(|i| i.label.as_str()).collect();
-        let pos_a = labels.iter().position(|&l| l == "aaa").unwrap();
-        let pos_b = labels.iter().position(|&l| l == "bbb").unwrap();
-
-        assert!(
-            pos_a < pos_b,
-            "aaa should come before bbb (production dep aaa→bbb). \
-             Test edge bbb→aaa must not reverse this. Labels: {:?}",
-            labels
-        );
+        la.assert_order("aaa", "bbb");
     }
 
-    #[test]
-    fn test_crate_dep_suppressed_for_entry_point_module_dep() {
-        // Setup: Crate A has module mod_a that imports from Crate B's entry point.
-        // This creates a ModuleDep from mod_a (Node::Module) to crate_b (Node::Crate).
-        // The CrateDep between crate_a and crate_b should be suppressed.
-        let mut b = TestGraphBuilder::new();
-        b.crate_with_modules("crate_a", &["mod_a"])
-            .crate_with_modules("crate_b", &[])
-            .crate_dep("crate_a", "crate_b")
-            .prod_dep_with_location(
-                "mod_a",
-                "crate_b",
-                "src/mod_a.rs",
-                1,
-                &["Helper"],
-                "crate_b",
-            );
-        let (graph, _) = b.build();
-        let ir = build_layout(&graph, &[]);
-
-        // Should have 3 items (2 crates + 1 module)
-        assert_eq!(ir.items.len(), 3);
-
-        // CrateDep should be suppressed — only the ModuleDep edge should remain
-        assert_eq!(
-            ir.edges.len(),
-            1,
-            "CrateDep should be suppressed when ModuleDep exists. Edges: {:?}",
-            ir.edges
-                .iter()
-                .map(|e| format!(
-                    "{}->{} locs={}",
-                    ir.items[e.from].label,
-                    ir.items[e.to].label,
-                    e.source_locations.len()
-                ))
-                .collect::<Vec<_>>()
-        );
-
-        // The remaining edge should be the ModuleDep (has source_locations)
-        assert!(
-            !ir.edges[0].source_locations.is_empty(),
-            "Remaining edge should be ModuleDep with source_locations"
-        );
+    /// CrateDep edges are suppressed whenever a ModuleDep exists between the same crate pair,
+    /// regardless of which node types (Crate or Module) the ModuleDep connects.
+    ///
+    /// - `module_to_entry_point`: mod_a (Module) → crate_b (Crate entry point)
+    /// - `crate_to_crate`: crate_a (Crate root/lib.rs) → crate_b (Crate entry point)
+    /// - `crate_to_module`: crate_a (Crate root/lib.rs) → mod_b (Module, not entry point)
+    struct SuppressionCase {
+        crate_a_modules: &'static [&'static str],
+        crate_b_modules: &'static [&'static str],
+        dep_from: &'static str,
+        dep_to: &'static str,
     }
 
-    #[test]
-    fn test_crate_dep_suppressed_for_crate_to_crate_module_dep() {
-        // Setup: Crate A's root (lib.rs) imports from Crate B's entry point.
-        // This creates a ModuleDep from crate_a (Node::Crate) to crate_b (Node::Crate).
-        // The CrateDep between crate_a and crate_b should be suppressed.
-        let mut b = TestGraphBuilder::new();
-        b.crate_with_modules("crate_a", &["dummy_a"])
-            .crate_with_modules("crate_b", &["dummy_b"])
-            .crate_dep("crate_a", "crate_b")
-            .prod_dep_with_location(
-                "crate_a",
-                "crate_b",
-                "src/lib.rs",
-                3,
-                &["Config"],
-                "crate_b",
-            );
-        let (graph, _) = b.build();
-        let ir = build_layout(&graph, &[]);
-
-        // CrateDep should be suppressed
-        assert_eq!(
-            ir.edges.len(),
-            1,
-            "CrateDep should be suppressed for Crate→Crate ModuleDep"
-        );
-        assert!(
-            !ir.edges[0].source_locations.is_empty(),
-            "Remaining edge should be ModuleDep"
-        );
+    impl SuppressionCase {
+        fn build_layout(&self) -> LayoutIR {
+            let mut b = TestGraphBuilder::new();
+            b.crate_with_modules("crate_a", self.crate_a_modules)
+                .crate_with_modules("crate_b", self.crate_b_modules)
+                .crate_dep("crate_a", "crate_b")
+                .prod_dep_located(self.dep_from, self.dep_to);
+            let (graph, _) = b.build();
+            super::build_layout(&graph, &[])
+        }
     }
 
-    #[test]
-    fn test_crate_dep_suppressed_for_crate_to_module_module_dep() {
-        // Setup: Crate A's root imports from Crate B's module (not entry point).
-        // ModuleDep from crate_a (Node::Crate) to mod_b (Node::Module).
-        // CrateDep should be suppressed.
-        let mut b = TestGraphBuilder::new();
-        b.crate_with_modules("crate_a", &["dummy_a"])
-            .crate_with_modules("crate_b", &["mod_b"])
-            .crate_dep("crate_a", "crate_b")
-            .prod_dep_with_location("crate_a", "mod_b", "src/lib.rs", 5, &["parse"], "mod_b");
-        let (graph, _) = b.build();
-        let ir = build_layout(&graph, &[]);
-
-        // CrateDep should be suppressed
-        assert_eq!(
-            ir.edges.len(),
-            1,
-            "CrateDep should be suppressed for Crate→Module ModuleDep"
-        );
+    #[rstest]
+    #[case::module_to_entry_point(SuppressionCase {
+        crate_a_modules: &["mod_a"], crate_b_modules: &[],
+        dep_from: "mod_a", dep_to: "crate_b",
+    })]
+    #[case::crate_to_crate(SuppressionCase {
+        crate_a_modules: &["dummy_a"], crate_b_modules: &["dummy_b"],
+        dep_from: "crate_a", dep_to: "crate_b",
+    })]
+    #[case::crate_to_module(SuppressionCase {
+        crate_a_modules: &["dummy_a"], crate_b_modules: &["mod_b"],
+        dep_from: "crate_a", dep_to: "mod_b",
+    })]
+    fn test_crate_dep_suppressed(#[case] case: SuppressionCase) {
+        let ir = case.build_layout();
+        assert_eq!(ir.edges.len(), 1, "CrateDep should be suppressed");
         assert!(
             !ir.edges[0].source_locations.is_empty(),
             "Remaining edge should be ModuleDep"
@@ -1120,20 +1037,9 @@ mod tests {
             .nested_module("parent_b", "child_b")
             .prod_dep("child_a", "child_b");
         let (graph, _) = b.build();
-        let ir = build_layout(&graph, &[]);
+        let la = LayoutAssert::new(build_layout(&graph, &[]));
 
-        let labels: Vec<&str> = ir.items.iter().map(|i| i.label.as_str()).collect();
-
-        let pos_parent_a = labels.iter().position(|&l| l == "parent_a").unwrap();
-        let pos_parent_b = labels.iter().position(|&l| l == "parent_b").unwrap();
-
-        // parent_a should come before parent_b because parent_a's subtree
-        // depends on parent_b's subtree (child_a -> child_b)
-        assert!(
-            pos_parent_a < pos_parent_b,
-            "parent_a should come before parent_b (subtree dependency). Labels: {:?}",
-            labels
-        );
+        la.assert_order("parent_a", "parent_b");
     }
 
     #[test]
@@ -1148,36 +1054,18 @@ mod tests {
             .crate_with_modules("crate_a", &["mod_a"])
             .prod_dep("mod_a", "mod_b"); // no CrateDep edge!
         let (graph, _) = b.build();
-        let ir = build_layout(&graph, &[]);
+        let la = LayoutAssert::new(build_layout(&graph, &[]));
 
-        let labels: Vec<&str> = ir.items.iter().map(|i| i.label.as_str()).collect();
-
-        let pos_crate_a = labels.iter().position(|&l| l == "crate_a").unwrap();
-        let pos_crate_b = labels.iter().position(|&l| l == "crate_b").unwrap();
-
-        // crate_a depends on crate_b (via module dep) → crate_a should come first
-        assert!(
-            pos_crate_a < pos_crate_b,
-            "crate_a should come before crate_b (inter-crate module dep). Labels: {:?}",
-            labels
-        );
+        la.assert_order("crate_a", "crate_b");
 
         // The ModuleDep edge should be Downward (not Upward)
-        let mod_a_to_mod_b = ir.edges.iter().find(|e| {
-            let from_label = &ir.items[e.from].label;
-            let to_label = &ir.items[e.to].label;
-            from_label == "mod_a" && to_label == "mod_b"
-        });
-        assert!(
-            mod_a_to_mod_b.is_some(),
-            "Should have edge from mod_a to mod_b"
-        );
-        let edge = mod_a_to_mod_b.unwrap();
-        assert_eq!(
-            edge.direction,
-            EdgeDirection::Downward,
-            "Inter-crate module dep should be Downward, not Upward"
-        );
+        let edge = la
+            .ir
+            .edges
+            .iter()
+            .find(|e| la.ir.items[e.from].label == "mod_a" && la.ir.items[e.to].label == "mod_b")
+            .expect("Should have edge from mod_a to mod_b");
+        assert_eq!(edge.direction, EdgeDirection::Downward);
         assert!(edge.cycle.is_none());
     }
 
@@ -1260,9 +1148,25 @@ mod tests {
     // === Barycenter Heuristic Tests (ca-0159) ===
 
     #[test]
+    fn test_barycenter_reduces_crossings() {
+        // Graph: A→D, B→C
+        // Barycenter places each dep adjacent to its dependent.
+        // d is interleaved before c because d's dependent (a) is already placed,
+        // giving d a lower barycenter score (0.0) than c (whose dependent b has score 1.0).
+        let mut b = TestGraphBuilder::new();
+        b.crate_with_modules("test", &["a", "b", "c", "d"])
+            .prod_dep("a", "d")
+            .prod_dep("b", "c");
+        let (graph, _) = b.build();
+        let la = LayoutAssert::new(build_layout(&graph, &[]));
+
+        la.assert_order("d", "c");
+    }
+
+    #[test]
     fn test_barycenter_symmetric_diamond() {
         // Symmetric diamond: A→C, A→D, B→C, B→D
-        // Barycenter scores identical → alphabetical fallback → A, B, C, D
+        // Equal barycenter scores → alphabetical fallback
         let mut b = TestGraphBuilder::new();
         b.crate_with_modules("test", &["a", "b", "c", "d"])
             .prod_dep("a", "c")
@@ -1270,63 +1174,10 @@ mod tests {
             .prod_dep("b", "c")
             .prod_dep("b", "d");
         let (graph, _) = b.build();
-        let ir = build_layout(&graph, &[]);
+        let la = LayoutAssert::new(build_layout(&graph, &[]));
 
-        let labels: Vec<&str> = ir.items.iter().map(|i| i.label.as_str()).collect();
-        let pos_a = labels.iter().position(|&l| l == "a").unwrap();
-        let pos_b = labels.iter().position(|&l| l == "b").unwrap();
-        let pos_c = labels.iter().position(|&l| l == "c").unwrap();
-        let pos_d = labels.iter().position(|&l| l == "d").unwrap();
-
-        // Symmetric: A and B before C and D, alphabetical within each group
-        assert!(pos_a < pos_c, "A before C. Labels: {labels:?}");
-        assert!(pos_b < pos_d, "B before D. Labels: {labels:?}");
-        assert!(
-            pos_a < pos_b,
-            "A before B (alphabetical). Labels: {labels:?}"
-        );
-    }
-
-    #[test]
-    fn test_barycenter_reduces_crossings() {
-        // Graph: A→D, B→C (A depends on D, B depends on C)
-        // Alphabetical: A(0), B(1), C(2), D(3) — Arc A→D crosses Arc B→C
-        // Barycenter: A(0), B(1), D(2) [score=0.0 from A@0], C(3) [score=1.0 from B@1]
-        // D should come before C to minimize crossings
-        let mut b = TestGraphBuilder::new();
-        b.crate_with_modules("test", &["a", "b", "c", "d"])
-            .prod_dep("a", "d")
-            .prod_dep("b", "c");
-        let (graph, _) = b.build();
-        let ir = build_layout(&graph, &[]);
-
-        let labels: Vec<&str> = ir.items.iter().map(|i| i.label.as_str()).collect();
-        let pos_c = labels.iter().position(|&l| l == "c").unwrap();
-        let pos_d = labels.iter().position(|&l| l == "d").unwrap();
-
-        // D should come before C (barycenter: D's dependent A is at pos 0, C's dependent B at pos 1)
-        assert!(
-            pos_d < pos_c,
-            "D should come before C (barycenter reduces crossings). Labels: {labels:?}"
-        );
-    }
-
-    #[test]
-    fn test_barycenter_linear_chain_unchanged() {
-        // Linear chain: A→B→C — should produce same order as alphabetical
-        let mut b = TestGraphBuilder::new();
-        b.crate_with_modules("test", &["a", "b", "c"])
-            .prod_dep("a", "b")
-            .prod_dep("b", "c");
-        let (graph, _) = b.build();
-        let ir = build_layout(&graph, &[]);
-
-        let labels: Vec<&str> = ir.items.iter().map(|i| i.label.as_str()).collect();
-        let pos_a = labels.iter().position(|&l| l == "a").unwrap();
-        let pos_b = labels.iter().position(|&l| l == "b").unwrap();
-        let pos_c = labels.iter().position(|&l| l == "c").unwrap();
-
-        assert!(pos_a < pos_b, "A before B. Labels: {labels:?}");
-        assert!(pos_b < pos_c, "B before C. Labels: {labels:?}");
+        la.assert_order("a", "c");
+        la.assert_order("b", "d");
+        la.assert_order("a", "b");
     }
 }
