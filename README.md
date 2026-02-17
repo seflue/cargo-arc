@@ -41,16 +41,13 @@ RUST_LOG=cargo_arc=debug cargo arc -o deps.svg 2>debug.log
 
 ## Development
 
-```bash
-cargo test
-cargo clippy
-cargo fmt
-```
-
-## Testing
+Requires [Just](https://github.com/casey/just) as task runner.
 
 ```bash
-cargo test
+just build
+just test    # Rust + JS
+just lint    # clippy + format check
+just fmt
 ```
 
 ## License
