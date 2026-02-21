@@ -569,13 +569,7 @@ pub(crate) fn parse_workspace_dependencies(
                 current_module_path,
                 *inline_depth,
             ) {
-                let dedup_key = (dep.full_target(), dep.context.kind);
-                if let Some(&idx) = seen_targets.get(&dedup_key) {
-                    deps[idx].context.features.extend(dep.context.features);
-                } else {
-                    seen_targets.insert(dedup_key, deps.len());
-                    deps.push(dep);
-                }
+                DependencyRef::dedup_push(&mut deps, &mut seen_targets, dep);
             }
         }
     }
@@ -613,13 +607,7 @@ pub(crate) fn parse_path_ref_dependencies(
             current_module_path,
             *inline_depth,
         ) {
-            let dedup_key = (dep.full_target(), dep.context.kind);
-            if let Some(&idx) = seen_targets.get(&dedup_key) {
-                deps[idx].context.features.extend(dep.context.features);
-            } else {
-                seen_targets.insert(dedup_key, deps.len());
-                deps.push(dep);
-            }
+            DependencyRef::dedup_push(&mut deps, &mut seen_targets, dep);
         }
     }
 

@@ -214,6 +214,33 @@ impl DependencyRef {
             format!("{}::{}", self.target_crate, self.target_module)
         }
     }
+
+    /// Build a lookup index from an existing slice of dependencies.
+    /// Maps `(full_target, kind)` to the position in the slice.
+    pub(crate) fn build_seen_index(
+        deps: &[DependencyRef],
+    ) -> HashMap<(String, DependencyKind), usize> {
+        deps.iter()
+            .enumerate()
+            .map(|(i, d)| ((d.full_target(), d.context.kind), i))
+            .collect()
+    }
+
+    /// Insert a dependency, deduplicating by `(full_target, kind)`.
+    /// If a duplicate exists, merges features into the existing entry.
+    pub(crate) fn dedup_push(
+        deps: &mut Vec<DependencyRef>,
+        seen: &mut HashMap<(String, DependencyKind), usize>,
+        dep: DependencyRef,
+    ) {
+        let key = (dep.full_target(), dep.context.kind);
+        if let Some(&idx) = seen.get(&key) {
+            deps[idx].context.features.extend(dep.context.features);
+        } else {
+            seen.insert(key, deps.len());
+            deps.push(dep);
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

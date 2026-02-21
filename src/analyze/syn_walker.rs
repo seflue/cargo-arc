@@ -1,7 +1,7 @@
 //! Module discovery via syn + filesystem walk.
 
 use anyhow::{Context, Result, bail};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use super::use_parser::{
@@ -9,8 +9,8 @@ use super::use_parser::{
 };
 use crate::model::normalize_crate_name;
 use crate::model::{
-    CrateExportMap, CrateInfo, DependencyKind, EdgeContext, ModuleInfo, ModulePathMap, ModuleTree,
-    TestKind, WorkspaceCrates,
+    CrateExportMap, CrateInfo, DependencyKind, DependencyRef, EdgeContext, ModuleInfo,
+    ModulePathMap, ModuleTree, TestKind, WorkspaceCrates,
 };
 
 /// Find root source files (lib.rs and/or main.rs) for a crate.
@@ -398,23 +398,10 @@ fn walk_module_syn(
     );
 
     // Merge: use-dependencies first (have priority), then path-dependencies (dedup by (full_target, kind))
-    let mut seen: HashMap<(String, DependencyKind), usize> = use_deps
-        .iter()
-        .enumerate()
-        .map(|(i, d)| ((d.full_target(), d.context.kind), i))
-        .collect();
+    let mut seen = DependencyRef::build_seen_index(&use_deps);
     let mut dependencies = use_deps;
     for dep in path_deps {
-        let dedup_key = (dep.full_target(), dep.context.kind);
-        if let Some(&idx) = seen.get(&dedup_key) {
-            dependencies[idx]
-                .context
-                .features
-                .extend(dep.context.features);
-        } else {
-            seen.insert(dedup_key, dependencies.len());
-            dependencies.push(dep);
-        }
+        DependencyRef::dedup_push(&mut dependencies, &mut seen, dep);
     }
 
     if !ctx.include_tests {
