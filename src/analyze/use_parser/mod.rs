@@ -29,11 +29,9 @@ pub(crate) fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
             syn::Meta::List(list) if list.path.is_ident("all") || list.path.is_ident("any") => {
                 let parser =
                     syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated;
-                if let Ok(nested) = parser.parse2(list.tokens.clone()) {
-                    nested.iter().any(meta_contains_test)
-                } else {
-                    false
-                }
+                parser
+                    .parse2(list.tokens.clone())
+                    .is_ok_and(|nested| nested.iter().any(meta_contains_test))
             }
             _ => false,
         }
@@ -43,10 +41,8 @@ pub(crate) fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
         if !attr.path().is_ident("cfg") {
             return false;
         }
-        match attr.parse_args::<syn::Meta>() {
-            Ok(meta) => meta_contains_test(&meta),
-            Err(_) => false,
-        }
+        attr.parse_args::<syn::Meta>()
+            .is_ok_and(|meta| meta_contains_test(&meta))
     })
 }
 
@@ -165,44 +161,27 @@ pub(crate) fn collect_all_path_refs(
     collector.paths
 }
 
+/// Join a prefix and segment with `::`, handling empty prefix.
+fn append_to_path(prefix: &str, segment: &str) -> String {
+    if prefix.is_empty() {
+        segment.to_string()
+    } else {
+        format!("{prefix}::{segment}")
+    }
+}
+
 /// Recursively resolve a `syn::UseTree` into fully-qualified path strings.
 ///
 /// Example: `use cli::{Args, Cargo, run}` → `["cli::Args", "cli::Cargo", "cli::run"]`
 fn resolve_use_tree(tree: &UseTree, prefix: &str) -> Vec<String> {
     match tree {
         UseTree::Path(p) => {
-            let segment = p.ident.to_string();
-            let new_prefix = if prefix.is_empty() {
-                segment
-            } else {
-                format!("{prefix}::{segment}")
-            };
-            resolve_use_tree(&p.tree, &new_prefix)
+            resolve_use_tree(&p.tree, &append_to_path(prefix, &p.ident.to_string()))
         }
-        UseTree::Name(n) => {
-            let name = n.ident.to_string();
-            if prefix.is_empty() {
-                vec![name]
-            } else {
-                vec![format!("{prefix}::{name}")]
-            }
-        }
-        UseTree::Rename(r) => {
-            // Use original name, not alias — we track the *source* dependency
-            let name = r.ident.to_string();
-            if prefix.is_empty() {
-                vec![name]
-            } else {
-                vec![format!("{prefix}::{name}")]
-            }
-        }
-        UseTree::Glob(_) => {
-            if prefix.is_empty() {
-                vec!["*".to_string()]
-            } else {
-                vec![format!("{prefix}::*")]
-            }
-        }
+        // Use original name for renames — we track the *source* dependency
+        UseTree::Name(n) => vec![append_to_path(prefix, &n.ident.to_string())],
+        UseTree::Rename(r) => vec![append_to_path(prefix, &r.ident.to_string())],
+        UseTree::Glob(_) => vec![append_to_path(prefix, "*")],
         UseTree::Group(g) => g
             .items
             .iter()
@@ -302,22 +281,17 @@ fn parse_bare_module_import(
 
     // Child-module has priority (Rust 2018+/2024 semantics:
     // bare `use foo::X` in non-root module means child, not sibling/top-level)
-    let is_child = !ctx.current_module_path.is_empty()
-        && module_paths.contains(&format!("{}::{first}", ctx.current_module_path));
-
-    if !is_child && !module_paths.contains(first) {
-        return None;
-    }
-
-    let prefix_segments: Vec<&str> = ctx.current_module_path.split("::").collect();
-    let effective_parts: Vec<&str> = if is_child {
-        prefix_segments
-            .iter()
-            .copied()
+    let effective_parts: Vec<&str> = if !ctx.current_module_path.is_empty()
+        && module_paths.contains(&format!("{}::{first}", ctx.current_module_path))
+    {
+        ctx.current_module_path
+            .split("::")
             .chain(parts.iter().copied())
             .collect()
-    } else {
+    } else if module_paths.contains(first) {
         parts
+    } else {
+        return None;
     };
 
     let (target_module, prefix_len) = find_longest_module_prefix(&effective_parts, module_paths);
@@ -362,26 +336,25 @@ fn parse_workspace_import(
     // Entry-point detection: if the resolved target_module is not a known module
     // and the first segment after the crate name is a known export, treat it as
     // an entry-point dependency (target_module = "").
-    if !module_paths.contains(&target_module)
+    let is_entry_point = !module_paths.contains(&target_module)
         && ctx
             .crate_exports
             .get(&target_crate_name)
-            .is_some_and(|e| e.contains(module_segment))
-    {
-        return Some(DependencyRef {
-            target_crate: crate_name.to_string(),
-            target_module: String::new(),
-            target_item: Some(module_segment.to_string()),
-            source_file: ctx.source_file.to_path_buf(),
-            line: line_num,
-            context: context.clone(),
-        });
-    }
+            .is_some_and(|e| e.contains(module_segment));
+
+    let (target_module, target_item) = if is_entry_point {
+        (String::new(), Some(module_segment.to_string()))
+    } else {
+        (
+            target_module,
+            extract_item_from_parts(&parts, 1 + prefix_len),
+        )
+    };
 
     Some(DependencyRef {
         target_crate: crate_name.to_string(),
         target_module,
-        target_item: extract_item_from_parts(&parts, 1 + prefix_len),
+        target_item,
         source_file: ctx.source_file.to_path_buf(),
         line: line_num,
         context: context.clone(),
@@ -390,59 +363,38 @@ fn parse_workspace_import(
 
 /// Resolve `super::` and `self::` relative paths to absolute crate-local paths.
 ///
-/// - `super::` → strip one segment from `current_module_path`, append remainder
-/// - Multiple `super::` → strip one segment per `super`
-/// - `self::` → prepend `current_module_path`
-/// - Anything else → `None`
+/// Returns `None` when the path is not relative, when `super::`/`self::` is absorbed
+/// by inline module depth, or when too many `super::` would go above crate root.
 fn resolve_relative_path(
     path: &str,
     current_module_path: &str,
     inline_depth: usize,
 ) -> Option<String> {
-    if path.starts_with("super::") {
-        let mut rest = path;
-        let mut super_count = 0;
-        while let Some(after) = rest.strip_prefix("super::") {
-            super_count += 1;
-            rest = after;
-        }
-        // First `inline_depth` supers navigate back through inline modules
-        // (e.g. `mod tests { use super::* }` → back to file module, not parent).
-        // Only supers beyond inline_depth strip from current_module_path.
-        if super_count <= inline_depth {
-            // Stays within or at the file module level — self-reference, not inter-module
-            return None;
-        }
-        let effective_supers = super_count - inline_depth;
-        let mut segments: Vec<&str> = if current_module_path.is_empty() {
-            Vec::new()
-        } else {
-            current_module_path.split("::").collect()
-        };
-        for _ in 0..effective_supers {
-            if segments.is_empty() {
-                return None;
-            }
-            segments.pop();
-        }
-        if segments.is_empty() {
-            Some(rest.to_string())
-        } else {
-            Some(format!("{}::{rest}", segments.join("::")))
-        }
-    } else if let Some(after) = path.strip_prefix("self::") {
-        if inline_depth > 0 {
-            // `self::` inside inline module refers to inline scope, not file module
-            return None;
-        }
-        if current_module_path.is_empty() {
-            Some(after.to_string())
-        } else {
-            Some(format!("{current_module_path}::{after}"))
-        }
-    } else {
-        None
+    let segments: Vec<&str> = path.split("::").collect();
+    let super_count = segments.iter().take_while(|&&s| s == "super").count();
+
+    if super_count > inline_depth {
+        let levels_up = super_count - inline_depth;
+        return join_module_segments(current_module_path, levels_up, &segments[super_count..]);
     }
+
+    if segments.first() == Some(&"self") && inline_depth == 0 {
+        return join_module_segments(current_module_path, 0, &segments[1..]);
+    }
+
+    None
+}
+
+/// Strip `levels_up` trailing segments from `base_path`, append `suffix`, join with `::`.
+/// Returns `None` if `levels_up` exceeds the number of segments in `base_path`.
+fn join_module_segments(base_path: &str, levels_up: usize, suffix: &[&str]) -> Option<String> {
+    let mut base: Vec<&str> = base_path.split("::").filter(|s| !s.is_empty()).collect();
+    if levels_up > base.len() {
+        return None;
+    }
+    base.truncate(base.len() - levels_up);
+    base.extend_from_slice(suffix);
+    Some(base.join("::"))
 }
 
 /// Resolve a single use path through the resolution chain: crate-local → bare module → workspace.
