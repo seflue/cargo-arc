@@ -2,20 +2,97 @@ use super::constants::{CSS, LAYOUT, RenderConfig};
 use super::positioning::PositionedItem;
 use crate::layout::{ItemKind, LayoutIR, NodeId};
 use crate::model::SourceLocation;
-use std::collections::HashSet;
+use serde::Serialize;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 include!(concat!(env!("OUT_DIR"), "/js_modules.rs"));
 
+// === Serialization structs ===
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StaticData {
+    nodes: BTreeMap<String, NodeData>,
+    arcs: BTreeMap<String, ArcData>,
+    cycles: Vec<CycleData>,
+    classes: BTreeMap<String, String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NodeData {
+    #[serde(rename = "type")]
+    node_type: &'static str,
+    name: String,
+    parent: Option<String>,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    has_children: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ArcData {
+    from: String,
+    to: String,
+    context: ArcContext,
+    usages: Vec<SymbolUsageGroup>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    cycle_ids: Vec<usize>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ArcContext {
+    kind: String,
+    sub_kind: Option<String>,
+    features: Vec<String>,
+}
+
+impl From<&crate::model::EdgeContext> for ArcContext {
+    fn from(ctx: &crate::model::EdgeContext) -> Self {
+        Self {
+            kind: ctx.kind.kind_js().to_string(),
+            sub_kind: ctx.kind.sub_kind_js().map(String::from),
+            features: ctx.features.clone(),
+        }
+    }
+}
+
+/// A group of usage locations for a single symbol
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SymbolUsageGroup {
+    symbol: String,
+    module_path: Option<String>,
+    locations: Vec<UsageLocation>,
+}
+
+/// A single usage location (file + line number)
+#[derive(Serialize)]
+struct UsageLocation {
+    file: String,
+    line: usize,
+}
+
+#[derive(Serialize)]
+struct CycleData {
+    nodes: Vec<String>,
+    arcs: Vec<String>,
+}
+
+// === Data building ===
+
 /// Format source locations grouped by symbol.
 ///
-/// Inverts the Location→Symbols structure to Symbol→Locations for structured display.
+/// Inverts the Location->Symbols structure to Symbol->Locations for structured display.
 ///
 /// Returns a Vec of SymbolUsageGroup objects. Bare locations (without symbols)
 /// are returned with symbol="". Groups are ordered: bare locations first, then
 /// symbol groups alphabetically.
 fn format_source_locations_by_symbol(locs: &[SourceLocation]) -> Vec<SymbolUsageGroup> {
-    use std::collections::BTreeMap;
-
     if locs.is_empty() {
         return Vec::new();
     }
@@ -24,8 +101,13 @@ fn format_source_locations_by_symbol(locs: &[SourceLocation]) -> Vec<SymbolUsage
         .first()
         .map(|l| l.module_path.clone())
         .unwrap_or_default();
+    let module_path_opt = if module_path.is_empty() {
+        None
+    } else {
+        Some(module_path)
+    };
 
-    // Invert: Symbol → Vec<(file, line)>
+    // Invert: Symbol -> Vec<(file, line)>
     let mut by_symbol: BTreeMap<String, Vec<(String, usize)>> = BTreeMap::new();
     let mut bare_locations: Vec<(String, usize)> = Vec::new();
 
@@ -56,7 +138,7 @@ fn format_source_locations_by_symbol(locs: &[SourceLocation]) -> Vec<SymbolUsage
         bare_locations.sort();
         groups.push(SymbolUsageGroup {
             symbol: String::new(),
-            module_path: module_path.clone(),
+            module_path: module_path_opt.clone(),
             locations: bare_locations
                 .into_iter()
                 .map(|(file, line)| UsageLocation { file, line })
@@ -68,7 +150,7 @@ fn format_source_locations_by_symbol(locs: &[SourceLocation]) -> Vec<SymbolUsage
     for (symbol, locations) in by_symbol {
         groups.push(SymbolUsageGroup {
             symbol,
-            module_path: module_path.clone(),
+            module_path: module_path_opt.clone(),
             locations: locations
                 .into_iter()
                 .map(|(file, line)| UsageLocation { file, line })
@@ -79,112 +161,54 @@ fn format_source_locations_by_symbol(locs: &[SourceLocation]) -> Vec<SymbolUsage
     groups
 }
 
-/// A group of usage locations for a single symbol
-struct SymbolUsageGroup {
-    symbol: String,
-    module_path: String,
-    locations: Vec<UsageLocation>,
-}
-
-/// A single usage location (file + line number)
-struct UsageLocation {
-    file: String,
-    line: usize,
-}
-
-fn generate_nodes_js(
+/// Generate STATIC_DATA JavaScript constant from layout data
+fn generate_static_data(
     ir: &LayoutIR,
     positioned: &[PositionedItem],
     parents: &HashSet<NodeId>,
 ) -> String {
-    let mut lines = Vec::new();
-    lines.push("  nodes: {".to_string());
-    for (i, pos) in positioned.iter().enumerate() {
+    let mut nodes = BTreeMap::new();
+    for pos in positioned {
         let item = &ir.items[pos.id];
         let node_type = match &item.kind {
             ItemKind::Crate => "crate",
             ItemKind::Module { .. } => "module",
         };
-        let parent_str = match &item.kind {
-            ItemKind::Crate => "null".to_string(),
-            ItemKind::Module { parent, .. } => format!("\"{}\"", parent),
+        let parent = match &item.kind {
+            ItemKind::Crate => None,
+            ItemKind::Module { parent, .. } => Some(parent.to_string()),
         };
-        let has_children = parents.contains(&pos.id);
-        let comma = if i < positioned.len() - 1 { "," } else { "" };
-
-        let name_escaped = escape_js_string(&item.label);
-        lines.push(format!(
-            "    \"{}\": {{ type: \"{}\", name: \"{}\", parent: {}, x: {}, y: {}, width: {}, height: {}, hasChildren: {} }}{}",
-            pos.id, node_type, name_escaped, parent_str, pos.x, pos.y, pos.width, pos.height, has_children, comma
-        ));
+        nodes.insert(
+            pos.id.to_string(),
+            NodeData {
+                node_type,
+                name: item.label.clone(),
+                parent,
+                x: pos.x,
+                y: pos.y,
+                width: pos.width,
+                height: pos.height,
+                has_children: parents.contains(&pos.id),
+            },
+        );
     }
-    lines.push("  },".to_string());
-    lines.join("\n")
-}
 
-fn generate_arcs_js(ir: &LayoutIR) -> String {
-    let mut lines = Vec::new();
-    lines.push("  arcs: {".to_string());
-    for (i, edge) in ir.edges.iter().enumerate() {
+    let mut arcs = BTreeMap::new();
+    for edge in &ir.edges {
         let arc_id = format!("{}-{}", edge.from, edge.to);
-
-        let usages_str = if edge.source_locations.is_empty() {
-            "[]".to_string()
-        } else {
-            let groups = format_source_locations_by_symbol(&edge.source_locations);
-            let mut group_strs = Vec::new();
-            for group in groups {
-                let symbol_escaped = escape_js_string(&group.symbol);
-                let mut loc_strs = Vec::new();
-                for loc in group.locations {
-                    let file_escaped = escape_js_string(&loc.file);
-                    loc_strs.push(format!(
-                        "{{ file: \"{}\", line: {} }}",
-                        file_escaped, loc.line
-                    ));
-                }
-                let mp = escape_js_string(&group.module_path);
-                let module_path_js = if mp.is_empty() {
-                    "null".to_string()
-                } else {
-                    format!("\"{}\"", mp)
-                };
-                group_strs.push(format!(
-                    "{{ symbol: \"{}\", modulePath: {}, locations: [{}] }}",
-                    symbol_escaped,
-                    module_path_js,
-                    loc_strs.join(", ")
-                ));
-            }
-            format!("[{}]", group_strs.join(", "))
-        };
-
-        let cycle_ids_str = if edge.cycle_ids.is_empty() {
-            String::new()
-        } else {
-            let ids: Vec<String> = edge.cycle_ids.iter().map(|id| id.to_string()).collect();
-            format!(", cycleIds: [{}]", ids.join(", "))
-        };
-
-        let comma = if i < ir.edges.len() - 1 { "," } else { "" };
-
-        lines.push(format!(
-            "    \"{}\": {{ from: \"{}\", to: \"{}\", context: {}, usages: {}{} }}{}",
+        let usages = format_source_locations_by_symbol(&edge.source_locations);
+        arcs.insert(
             arc_id,
-            edge.from,
-            edge.to,
-            edge.context.format_js(),
-            usages_str,
-            cycle_ids_str,
-            comma
-        ));
+            ArcData {
+                from: edge.from.to_string(),
+                to: edge.to.to_string(),
+                context: ArcContext::from(&edge.context),
+                usages,
+                cycle_ids: edge.cycle_ids.clone(),
+            },
+        );
     }
-    lines.push("  },".to_string());
-    lines.join("\n")
-}
 
-fn generate_cycles_js(ir: &LayoutIR) -> String {
-    use std::collections::{BTreeMap, BTreeSet};
     let mut cycle_map: BTreeMap<usize, (BTreeSet<NodeId>, BTreeSet<String>)> = BTreeMap::new();
     for edge in &ir.edges {
         for &cid in &edge.cycle_ids {
@@ -194,43 +218,15 @@ fn generate_cycles_js(ir: &LayoutIR) -> String {
             entry.1.insert(format!("{}-{}", edge.from, edge.to));
         }
     }
-    let mut lines = Vec::new();
-    lines.push("  cycles: [".to_string());
-    let cycle_count = cycle_map.len();
-    for (i, (_cid, (nodes, arcs))) in cycle_map.iter().enumerate() {
-        let nodes_str: Vec<String> = nodes.iter().map(|n| format!("\"{}\"", n)).collect();
-        let arcs_str: Vec<String> = arcs.iter().map(|a| format!("\"{}\"", a)).collect();
-        let comma = if i < cycle_count - 1 { "," } else { "" };
-        lines.push(format!(
-            "    {{ nodes: [{}], arcs: [{}] }}{}",
-            nodes_str.join(", "),
-            arcs_str.join(", "),
-            comma
-        ));
-    }
-    lines.push("  ],".to_string());
-    lines.join("\n")
-}
+    let cycles: Vec<CycleData> = cycle_map
+        .into_values()
+        .map(|(nodes, arcs)| CycleData {
+            nodes: nodes.iter().map(|n| n.to_string()).collect(),
+            arcs: arcs.into_iter().collect(),
+        })
+        .collect();
 
-/// Generate STATIC_DATA JavaScript constant from layout data
-fn generate_static_data(
-    ir: &LayoutIR,
-    positioned: &[PositionedItem],
-    parents: &HashSet<NodeId>,
-) -> String {
-    [
-        "const STATIC_DATA = {",
-        &generate_nodes_js(ir, positioned, parents),
-        &generate_arcs_js(ir),
-        &generate_cycles_js(ir),
-        &generate_classes_js(),
-        "};",
-    ]
-    .join("\n")
-}
-
-fn generate_classes_js() -> String {
-    let entries: &[(&str, &str)] = &[
+    let classes: BTreeMap<String, String> = [
         ("crateNode", CSS.nodes.crate_node),
         ("module", CSS.nodes.module),
         ("label", CSS.nodes.label),
@@ -270,21 +266,21 @@ fn generate_classes_js() -> String {
         ("arcCountBg", CSS.labels.arc_count_bg),
         ("arcCountGroup", CSS.labels.arc_count_group),
         ("hiddenByFilter", CSS.labels.hidden_by_filter),
-    ];
-    let mut lines = Vec::new();
-    lines.push("  classes: {".to_string());
-    let last = entries.len() - 1;
-    for (i, (key, value)) in entries.iter().enumerate() {
-        let comma = if i < last { "," } else { "" };
-        lines.push(format!("    {}: \"{}\"{}", key, value, comma));
-    }
-    lines.push("  }".to_string());
-    lines.join("\n")
-}
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect();
 
-/// Escape string for JavaScript (handles quotes and backslashes)
-fn escape_js_string(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
+    let data = StaticData {
+        nodes,
+        arcs,
+        cycles,
+        classes,
+    };
+    format!(
+        "const STATIC_DATA = {};",
+        serde_json::to_string(&data).expect("StaticData serialization cannot fail")
+    )
 }
 
 pub(super) fn render_script(
@@ -548,14 +544,14 @@ mod tests {
             script.contains("const STATIC_DATA = {"),
             "Script should contain STATIC_DATA declaration"
         );
-        // Must have nodes and arcs objects
+        // Must have nodes and arcs keys (JSON quoted)
         assert!(
-            script.contains("nodes: {"),
-            "STATIC_DATA should have nodes object"
+            script.contains(r#""nodes""#),
+            "STATIC_DATA should have nodes key"
         );
         assert!(
-            script.contains("arcs: {"),
-            "STATIC_DATA should have arcs object"
+            script.contains(r#""arcs""#),
+            "STATIC_DATA should have arcs key"
         );
     }
 
@@ -577,35 +573,29 @@ mod tests {
 
         let script = render_script(&config, &ir, &positioned, &parents);
 
-        // Node 0 (crate) should have type "crate", parent null, hasChildren true
-        assert!(script.contains(r#""0": {"#), "Should have node 0");
-        assert!(
-            script.contains(r#"type: "crate""#),
-            "Crate node should have type 'crate'"
-        );
-        assert!(
-            script.contains("parent: null"),
-            "Crate node should have parent null"
-        );
-        assert!(
-            script.contains("hasChildren: true"),
-            "Parent node should have hasChildren: true"
-        );
+        // Parse STATIC_DATA as JSON to verify structure
+        let json_str = script
+            .split("const STATIC_DATA = ")
+            .nth(1)
+            .unwrap()
+            .split(";\n")
+            .next()
+            .unwrap();
+        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
 
-        // Node 1 (module) should have type "module", parent "0", hasChildren false
-        assert!(script.contains(r#""1": {"#), "Should have node 1");
-        assert!(
-            script.contains(r#"type: "module""#),
-            "Module node should have type 'module'"
-        );
-        assert!(
-            script.contains(r#"parent: "0""#),
-            "Module node should have parent '0'"
-        );
-        assert!(
-            script.contains("hasChildren: false"),
-            "Leaf node should have hasChildren: false"
-        );
+        // Node 0 (crate)
+        let node0 = &data["nodes"]["0"];
+        assert_eq!(node0["type"], "crate");
+        assert_eq!(node0["name"], "test_crate");
+        assert!(node0["parent"].is_null());
+        assert_eq!(node0["hasChildren"], true);
+
+        // Node 1 (module)
+        let node1 = &data["nodes"]["1"];
+        assert_eq!(node1["type"], "module");
+        assert_eq!(node1["name"], "test_mod");
+        assert_eq!(node1["parent"], "0");
+        assert_eq!(node1["hasChildren"], false);
     }
 
     #[test]
@@ -620,8 +610,8 @@ mod tests {
         let script = render_script(&config, &ir, &positioned, &parents);
 
         // Node should have x and y coordinates
-        assert!(script.contains("x: "), "Node should have x coordinate");
-        assert!(script.contains("y: "), "Node should have y coordinate");
+        assert!(script.contains(r#""x""#), "Node should have x coordinate");
+        assert!(script.contains(r#""y""#), "Node should have y coordinate");
     }
 
     #[test]
@@ -661,24 +651,24 @@ mod tests {
 
         let script = render_script(&config, &ir, &positioned, &parents);
 
-        // Arc should have from, to, context, usages
-        assert!(script.contains(r#""1-2": {"#), "Should have arc 1-2");
-        assert!(script.contains(r#"from: "1""#), "Arc should have from");
-        assert!(script.contains(r#"to: "2""#), "Arc should have to");
-        assert!(
-            script.contains(r#"context: { kind: "production", subKind: null, features: [] }"#),
-            "Arc should have production context"
-        );
-        assert!(script.contains("usages: ["), "Arc should have usages array");
-        assert!(
-            script.contains(r#"symbol: "MyStruct""#),
-            "Usages should contain symbol"
-        );
-        assert!(
-            script.contains(r#"file: "src/a.rs""#),
-            "Usages should contain file"
-        );
-        assert!(script.contains("line: 5"), "Usages should contain line");
+        let json_str = script
+            .split("const STATIC_DATA = ")
+            .nth(1)
+            .unwrap()
+            .split(";\n")
+            .next()
+            .unwrap();
+        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
+
+        let arc = &data["arcs"]["1-2"];
+        assert_eq!(arc["from"], "1");
+        assert_eq!(arc["to"], "2");
+        assert_eq!(arc["context"]["kind"], "production");
+        assert!(arc["context"]["subKind"].is_null());
+        assert_eq!(arc["context"]["features"], serde_json::json!([]));
+        assert_eq!(arc["usages"][0]["symbol"], "MyStruct");
+        assert_eq!(arc["usages"][0]["locations"][0]["file"], "src/a.rs");
+        assert_eq!(arc["usages"][0]["locations"][0]["line"], 5);
     }
 
     #[test]
@@ -711,10 +701,18 @@ mod tests {
 
         let script = render_script(&config, &ir, &positioned, &parents);
 
-        assert!(
-            script.contains(r#"context: { kind: "test", subKind: "unit", features: [] }"#),
-            "Test arc should have context with kind test"
-        );
+        let json_str = script
+            .split("const STATIC_DATA = ")
+            .nth(1)
+            .unwrap()
+            .split(";\n")
+            .next()
+            .unwrap();
+        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
+
+        let arc = &data["arcs"]["1-2"];
+        assert_eq!(arc["context"]["kind"], "test");
+        assert_eq!(arc["context"]["subKind"], "unit");
     }
 
     #[test]
@@ -744,11 +742,17 @@ mod tests {
 
         let script = render_script(&config, &ir, &positioned, &parents);
 
-        // Arc without source locations should have empty usages array
-        assert!(
-            script.contains("usages: []"),
-            "Arc without locations should have empty usages array"
-        );
+        let json_str = script
+            .split("const STATIC_DATA = ")
+            .nth(1)
+            .unwrap()
+            .split(";\n")
+            .next()
+            .unwrap();
+        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
+
+        let arc = &data["arcs"]["1-2"];
+        assert_eq!(arc["usages"], serde_json::json!([]));
     }
 
     #[test]
@@ -794,30 +798,26 @@ mod tests {
 
         let script = render_script(&config, &ir, &positioned, &parents);
 
-        // Usages should be array of objects, not array of strings
-        assert!(script.contains("usages: ["), "Should have usages array");
-        assert!(
-            script.contains(r#"symbol: "Symbol1""#),
-            "Should have symbol field"
-        );
-        assert!(
-            script.contains("modulePath: null"),
-            "Should have modulePath field"
-        );
-        assert!(
-            script.contains("locations: ["),
-            "Should have locations array"
-        );
-        assert!(
-            script.contains(r#"file: "src/a.rs""#),
-            "Should have file field"
-        );
-        assert!(script.contains("line: 5"), "Should have line field");
-        // Should NOT contain pipe-separated string format
-        assert!(
-            !script.contains("Symbol1  ← src/a.rs:5"),
-            "Should NOT use old string format"
-        );
+        let json_str = script
+            .split("const STATIC_DATA = ")
+            .nth(1)
+            .unwrap()
+            .split(";\n")
+            .next()
+            .unwrap();
+        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
+
+        let arc = &data["arcs"]["1-2"];
+        let usages = arc["usages"].as_array().expect("usages is array");
+        assert_eq!(usages.len(), 1);
+        assert_eq!(usages[0]["symbol"], "Symbol1");
+        assert!(usages[0]["modulePath"].is_null());
+        let locations = usages[0]["locations"]
+            .as_array()
+            .expect("locations is array");
+        assert_eq!(locations.len(), 2);
+        assert_eq!(locations[0]["file"], "src/a.rs");
+        assert_eq!(locations[0]["line"], 5);
     }
 
     #[test]
@@ -847,11 +847,22 @@ mod tests {
             "STATIC_DATA should appear before IIFE"
         );
 
-        // Should end with }};
+        // Should end with };
         assert!(
             script.contains("};"),
             "STATIC_DATA should end with semicolon"
         );
+
+        // The JSON portion must be valid JSON
+        let json_str = script
+            .split("const STATIC_DATA = ")
+            .nth(1)
+            .unwrap()
+            .split(";\n")
+            .next()
+            .unwrap();
+        serde_json::from_str::<serde_json::Value>(json_str)
+            .expect("STATIC_DATA must be valid JSON");
     }
 
     #[test]
@@ -863,15 +874,18 @@ mod tests {
 
         let script = render_script(&config, &ir, &positioned, &parents);
 
-        // Empty IR should produce empty nodes and arcs (multiline format)
-        assert!(
-            script.contains("nodes: {\n  },"),
-            "Empty IR should have empty nodes object"
-        );
-        assert!(
-            script.contains("arcs: {\n  }"),
-            "Empty IR should have empty arcs object"
-        );
+        let json_str = script
+            .split("const STATIC_DATA = ")
+            .nth(1)
+            .unwrap()
+            .split(";\n")
+            .next()
+            .unwrap();
+        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
+
+        // Empty IR should produce empty nodes and arcs
+        assert_eq!(data["nodes"], serde_json::json!({}));
+        assert_eq!(data["arcs"], serde_json::json!({}));
     }
 
     #[test]
@@ -911,7 +925,7 @@ mod tests {
 
         let script = render_script(&config, &ir, &positioned, &parents);
 
-        // Quotes in symbols should be escaped
+        // serde_json escapes quotes correctly
         assert!(
             script.contains(r#"Test\"Quote"#),
             "Quotes in symbols should be escaped"
@@ -927,27 +941,34 @@ mod tests {
 
         let script = render_script(&config, &ir, &positioned, &parents);
 
-        // STATIC_DATA must contain a classes object
+        let json_str = script
+            .split("const STATIC_DATA = ")
+            .nth(1)
+            .unwrap()
+            .split(";\n")
+            .next()
+            .unwrap();
+        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
+
+        let classes = data["classes"].as_object().expect("classes is object");
         assert!(
-            script.contains("classes: {"),
-            "STATIC_DATA should have classes object"
+            classes.contains_key("depArc"),
+            "classes should contain depArc"
         );
-        // Spot-check: some key classes should be present with camelCase keys
-        assert!(script.contains("depArc:"), "classes should contain depArc");
         assert!(
-            script.contains("highlightedArc:"),
+            classes.contains_key("highlightedArc"),
             "classes should contain highlightedArc"
         );
         assert!(
-            script.contains("selectedCrate:"),
+            classes.contains_key("selectedCrate"),
             "classes should contain selectedCrate"
         );
         assert!(
-            script.contains("hiddenByFilter:"),
+            classes.contains_key("hiddenByFilter"),
             "classes should contain hiddenByFilter"
         );
         assert!(
-            script.contains("collapseToggle:"),
+            classes.contains_key("collapseToggle"),
             "classes should contain collapseToggle"
         );
     }
@@ -961,11 +982,17 @@ mod tests {
 
         let script = render_script(&config, &ir, &positioned, &parents);
 
-        assert!(
-            script.contains(&format!(
-                "groupMember: \"{}\"",
-                CSS.node_selection.group_member
-            )),
+        let json_str = script
+            .split("const STATIC_DATA = ")
+            .nth(1)
+            .unwrap()
+            .split(";\n")
+            .next()
+            .unwrap();
+        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
+
+        assert_eq!(
+            data["classes"]["groupMember"], CSS.node_selection.group_member,
             "classes should contain groupMember with value from CSS.node_selection.group_member"
         );
     }
@@ -979,33 +1006,26 @@ mod tests {
 
         let script = render_script(&config, &ir, &positioned, &parents);
 
-        // Values in STATIC_DATA.classes must match CSS.* constants
-        assert!(
-            script.contains(&format!("depArc: \"{}\"", CSS.direction.dep_arc)),
-            "depArc value should match CSS.direction.dep_arc"
+        let json_str = script
+            .split("const STATIC_DATA = ")
+            .nth(1)
+            .unwrap()
+            .split(";\n")
+            .next()
+            .unwrap();
+        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
+
+        assert_eq!(data["classes"]["depArc"], CSS.direction.dep_arc);
+        assert_eq!(
+            data["classes"]["highlightedArc"],
+            CSS.relation.highlighted_arc
         );
-        assert!(
-            script.contains(&format!(
-                "highlightedArc: \"{}\"",
-                CSS.relation.highlighted_arc
-            )),
-            "highlightedArc value should match CSS.relation.highlighted_arc"
+        assert_eq!(
+            data["classes"]["selectedCrate"],
+            CSS.node_selection.selected_crate
         );
-        assert!(
-            script.contains(&format!(
-                "selectedCrate: \"{}\"",
-                CSS.node_selection.selected_crate
-            )),
-            "selectedCrate value should match CSS.node_selection.selected_crate"
-        );
-        assert!(
-            script.contains(&format!("collapsed: \"{}\"", CSS.nodes.collapsed)),
-            "collapsed value should match CSS.nodes.collapsed"
-        );
-        assert!(
-            script.contains(&format!("virtualArc: \"{}\"", CSS.direction.virtual_arc)),
-            "virtualArc value should match CSS.direction.virtual_arc"
-        );
+        assert_eq!(data["classes"]["collapsed"], CSS.nodes.collapsed);
+        assert_eq!(data["classes"]["virtualArc"], CSS.direction.virtual_arc);
     }
 
     // === Struct / Helper Tests ===
@@ -1015,7 +1035,7 @@ mod tests {
         // Test struct creation with empty locations
         let group = SymbolUsageGroup {
             symbol: "TestSymbol".to_string(),
-            module_path: String::new(),
+            module_path: None,
             locations: vec![],
         };
         assert_eq!(group.symbol, "TestSymbol");
@@ -1024,7 +1044,7 @@ mod tests {
         // Test with populated locations
         let group_with_locs = SymbolUsageGroup {
             symbol: "AnotherSymbol".to_string(),
-            module_path: String::new(),
+            module_path: None,
             locations: vec![
                 UsageLocation {
                     file: "src/main.rs".to_string(),
@@ -1194,10 +1214,20 @@ mod tests {
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::from([0]);
         let script = render_script(&config, &ir, &positioned, &parents);
-        // Source locations are in STATIC_DATA usages array (structured format)
-        assert!(script.contains(r#"file: "src/a.rs""#));
-        assert!(script.contains("line: 5"));
-        assert!(script.contains("usages: ["));
+
+        let json_str = script
+            .split("const STATIC_DATA = ")
+            .nth(1)
+            .unwrap()
+            .split(";\n")
+            .next()
+            .unwrap();
+        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
+
+        let arc = &data["arcs"]["1-2"];
+        let usages = arc["usages"].as_array().expect("usages is array");
+        assert_eq!(usages[0]["locations"][0]["file"], "src/a.rs");
+        assert_eq!(usages[0]["locations"][0]["line"], 5);
     }
 
     #[test]
@@ -1221,7 +1251,7 @@ mod tests {
 
     #[test]
     fn test_static_data_cycle_info() {
-        // Graph with a cycle: A → B → C → A (cycle_ids=[0])
+        // Graph with a cycle: A -> B -> C -> A (cycle_ids=[0])
         let mut ir = LayoutIR::new();
         let c = ir.add_item(ItemKind::Crate, "c".into());
         let a = ir.add_item(
@@ -1268,54 +1298,44 @@ mod tests {
 
         let script = render_script(&config, &ir, &positioned, &parents);
 
-        // STATIC_DATA must have a cycles array
-        assert!(
-            script.contains("cycles: ["),
-            "STATIC_DATA should have cycles array"
-        );
+        let json_str = script
+            .split("const STATIC_DATA = ")
+            .nth(1)
+            .unwrap()
+            .split(";\n")
+            .next()
+            .unwrap();
+        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
+
+        // Cycles array should exist with one cycle
+        let cycles = data["cycles"].as_array().expect("cycles is array");
+        assert_eq!(cycles.len(), 1);
 
         // Cycle 0 should list the 3 nodes involved
-        assert!(
-            script.contains(r#""1""#) && script.contains(r#""2""#) && script.contains(r#""3""#),
-            "Cycle should reference node IDs 1, 2, 3"
-        );
+        let cycle_nodes = cycles[0]["nodes"].as_array().unwrap();
+        assert!(cycle_nodes.contains(&serde_json::json!("1")));
+        assert!(cycle_nodes.contains(&serde_json::json!("2")));
+        assert!(cycle_nodes.contains(&serde_json::json!("3")));
 
         // Cycle 0 should list the arc IDs
-        assert!(
-            script.contains(r#""1-2""#)
-                && script.contains(r#""2-3""#)
-                && script.contains(r#""3-1""#),
-            "Cycle should reference arc IDs"
-        );
+        let cycle_arcs = cycles[0]["arcs"].as_array().unwrap();
+        assert!(cycle_arcs.contains(&serde_json::json!("1-2")));
+        assert!(cycle_arcs.contains(&serde_json::json!("2-3")));
+        assert!(cycle_arcs.contains(&serde_json::json!("3-1")));
 
-        // Cycle arcs should have cycleIds field in their arc entry
-        // Find the arc entry for "1-2" and check it has cycleIds: [0]
-        let arc_section_start = script.find("arcs: {").expect("should have arcs section");
-        let arc_section = &script[arc_section_start..];
-        let arc_1_2_pos = arc_section.find(r#""1-2""#).expect("should have arc 1-2");
-        let arc_1_2_region = &arc_section[arc_1_2_pos..arc_1_2_pos + 200];
-        assert!(
-            arc_1_2_region.contains("cycleIds: [0]"),
-            "Cycle arc 1-2 should have cycleIds: [0], got: {}",
-            arc_1_2_region
-        );
+        // Cycle arc "1-2" should have cycleIds: [0]
+        assert_eq!(data["arcs"]["1-2"]["cycleIds"], serde_json::json!([0]));
 
-        // Non-cycle arc should NOT have cycleIds
-        let arc_1_3_pos = arc_section.find(r#""1-3""#).expect("should have arc 1-3");
-        let arc_1_3_region =
-            &arc_section[arc_1_3_pos..arc_1_3_pos + 200.min(arc_section.len() - arc_1_3_pos)];
+        // Non-cycle arc "1-3" should NOT have cycleIds
         assert!(
-            !arc_1_3_region.contains("cycleIds:"),
-            "Non-cycle arc 1-3 should NOT have cycleIds, got: {}",
-            arc_1_3_region
+            data["arcs"]["1-3"].get("cycleIds").is_none(),
+            "Non-cycle arc 1-3 should NOT have cycleIds"
         );
     }
 
     #[test]
     fn test_static_data_multi_cycle_ids() {
-        // Graph with overlapping cycles: B↔C (cycle 0) + B↔D (cycle 1)
-        // Edge B→C belongs to cycle 0, edge B→D belongs to cycle 1,
-        // and a shared edge could belong to both.
+        // Graph with overlapping cycles: B<->C (cycle 0) + B<->D (cycle 1)
         let mut ir = LayoutIR::new();
         let crt = ir.add_item(ItemKind::Crate, "c".into());
         let b = ir.add_item(
@@ -1339,22 +1359,22 @@ mod tests {
             },
             "d".into(),
         );
-        // B→C in cycle 0 only
+        // B->C in cycle 0 only
         ir.edges.push(
             LayoutEdge::new(b, c, EdgeContext::production())
                 .with_cycle(crate::layout::CycleKind::Direct, vec![0]),
         );
-        // C→B in cycle 0 only
+        // C->B in cycle 0 only
         ir.edges.push(
             LayoutEdge::new(c, b, EdgeContext::production())
                 .with_cycle(crate::layout::CycleKind::Direct, vec![0]),
         );
-        // B→D in cycle 1 only
+        // B->D in cycle 1 only
         ir.edges.push(
             LayoutEdge::new(b, d, EdgeContext::production())
                 .with_cycle(crate::layout::CycleKind::Direct, vec![1]),
         );
-        // D→B in cycle 1 only
+        // D->B in cycle 1 only
         ir.edges.push(
             LayoutEdge::new(d, b, EdgeContext::production())
                 .with_cycle(crate::layout::CycleKind::Direct, vec![1]),
@@ -1366,43 +1386,24 @@ mod tests {
 
         let script = render_script(&config, &ir, &positioned, &parents);
 
-        // Arc B→C should have cycleIds: [0]
-        let arc_section_start = script.find("arcs: {").expect("should have arcs section");
-        let arc_section = &script[arc_section_start..];
-        let arc_bc_pos = arc_section
-            .find(r#""1-2""#)
-            .expect("should have arc 1-2 (B→C)");
-        let arc_bc_region = &arc_section[arc_bc_pos..arc_bc_pos + 200];
-        assert!(
-            arc_bc_region.contains("cycleIds: [0]"),
-            "Arc B→C should have cycleIds: [0], got: {}",
-            arc_bc_region
-        );
+        let json_str = script
+            .split("const STATIC_DATA = ")
+            .nth(1)
+            .unwrap()
+            .split(";\n")
+            .next()
+            .unwrap();
+        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
 
-        // Arc B→D should have cycleIds: [1]
-        let arc_bd_pos = arc_section
-            .find(r#""1-3""#)
-            .expect("should have arc 1-3 (B→D)");
-        let arc_bd_region = &arc_section[arc_bd_pos..arc_bd_pos + 200];
-        assert!(
-            arc_bd_region.contains("cycleIds: [1]"),
-            "Arc B→D should have cycleIds: [1], got: {}",
-            arc_bd_region
-        );
+        // Arc B->C should have cycleIds: [0]
+        assert_eq!(data["arcs"]["1-2"]["cycleIds"], serde_json::json!([0]));
 
-        // Cycles array should have 2 entries (cycle 0 and cycle 1)
-        let cycles_start = script.find("cycles: [").expect("should have cycles array");
-        let cycles_section = &script[cycles_start..];
-        let cycle_entries: Vec<&str> = cycles_section
-            .match_indices("nodes: [")
-            .map(|(i, _)| &cycles_section[i..])
-            .collect();
-        assert_eq!(
-            cycle_entries.len(),
-            2,
-            "Should have exactly 2 cycle entries, got: {}",
-            cycle_entries.len()
-        );
+        // Arc B->D should have cycleIds: [1]
+        assert_eq!(data["arcs"]["1-3"]["cycleIds"], serde_json::json!([1]));
+
+        // Cycles array should have 2 entries
+        let cycles = data["cycles"].as_array().expect("cycles is array");
+        assert_eq!(cycles.len(), 2);
     }
 
     #[test]
@@ -1424,7 +1425,7 @@ mod tests {
             },
             "b".into(),
         );
-        // Edge A→B belongs to both cycle 0 and cycle 2
+        // Edge A->B belongs to both cycle 0 and cycle 2
         ir.edges.push(
             LayoutEdge::new(a, b, EdgeContext::production())
                 .with_cycle(crate::layout::CycleKind::Direct, vec![0, 2]),
@@ -1436,15 +1437,15 @@ mod tests {
 
         let script = render_script(&config, &ir, &positioned, &parents);
 
-        // Arc should have cycleIds: [0, 2] (JS array with both IDs)
-        let arc_section_start = script.find("arcs: {").expect("should have arcs section");
-        let arc_section = &script[arc_section_start..];
-        let arc_pos = arc_section.find(r#""1-2""#).expect("should have arc 1-2");
-        let arc_region = &arc_section[arc_pos..arc_pos + 200];
-        assert!(
-            arc_region.contains("cycleIds: [0, 2]"),
-            "Arc in two cycles should have cycleIds: [0, 2], got: {}",
-            arc_region
-        );
+        let json_str = script
+            .split("const STATIC_DATA = ")
+            .nth(1)
+            .unwrap()
+            .split(";\n")
+            .next()
+            .unwrap();
+        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
+
+        assert_eq!(data["arcs"]["1-2"]["cycleIds"], serde_json::json!([0, 2]));
     }
 }

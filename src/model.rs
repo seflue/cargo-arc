@@ -152,27 +152,6 @@ impl EdgeContext {
             features: vec![],
         }
     }
-
-    /// Serialize to JS object literal. No escaping needed: Cargo feature names
-    /// are `[a-zA-Z0-9_-]+` only, and the field is currently always empty.
-    /// ca-0118 replaces this with serde_json.
-    pub fn format_js(&self) -> String {
-        let kind = self.kind.kind_js();
-        let sub_kind_str = match self.kind.sub_kind_js() {
-            Some(s) => format!("\"{}\"", s),
-            None => "null".to_string(),
-        };
-        let features_str = self
-            .features
-            .iter()
-            .map(|f| format!("\"{}\"", f))
-            .collect::<Vec<_>>()
-            .join(", ");
-        format!(
-            "{{ kind: \"{}\", subKind: {}, features: [{}] }}",
-            kind, sub_kind_str, features_str
-        )
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -303,42 +282,6 @@ mod tests {
 
         assert_eq!(DependencyKind::Build.kind_js(), "build");
         assert_eq!(DependencyKind::Build.sub_kind_js(), None);
-    }
-
-    #[test]
-    fn test_edge_context_format_js() {
-        let prod = EdgeContext::production();
-        assert_eq!(
-            prod.format_js(),
-            r#"{ kind: "production", subKind: null, features: [] }"#
-        );
-
-        let test_unit = EdgeContext::test(TestKind::Unit);
-        assert_eq!(
-            test_unit.format_js(),
-            r#"{ kind: "test", subKind: "unit", features: [] }"#
-        );
-
-        let test_int = EdgeContext::test(TestKind::Integration);
-        assert_eq!(
-            test_int.format_js(),
-            r#"{ kind: "test", subKind: "integration", features: [] }"#
-        );
-
-        let build = EdgeContext::build();
-        assert_eq!(
-            build.format_js(),
-            r#"{ kind: "build", subKind: null, features: [] }"#
-        );
-
-        let with_features = EdgeContext {
-            kind: DependencyKind::Production,
-            features: vec!["serde".to_string(), "derive".to_string()],
-        };
-        assert_eq!(
-            with_features.format_js(),
-            r#"{ kind: "production", subKind: null, features: ["serde", "derive"] }"#
-        );
     }
 
     #[test]

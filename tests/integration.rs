@@ -1,5 +1,5 @@
 use cargo_arc::{Args, run};
-use regex::Regex;
+use serde_json::Value;
 use std::path::PathBuf;
 
 /// Helper: build Args for a fixture with common defaults.
@@ -48,26 +48,50 @@ fn self_args() -> (tempfile::NamedTempFile, Args) {
     (temp, args)
 }
 
-/// Extract crate names that appear as nodes in the SVG STATIC_DATA.
-fn extract_crate_names(svg: &str) -> Vec<String> {
-    let re = Regex::new(r#"type: "crate", name: "([^"]+)""#).unwrap();
-    re.captures_iter(svg).map(|c| c[1].to_string()).collect()
+/// Parse STATIC_DATA JSON from SVG output.
+fn parse_static_data(svg: &str) -> Value {
+    let json_str = svg
+        .split("const STATIC_DATA = ")
+        .nth(1)
+        .expect("SVG should contain STATIC_DATA")
+        .split(";\n")
+        .next()
+        .unwrap();
+    serde_json::from_str(json_str).expect("STATIC_DATA should be valid JSON")
 }
 
-/// Extract arc entries from STATIC_DATA (from→to with isTest flag).
+/// Extract crate names that appear as nodes in the SVG STATIC_DATA.
+fn extract_crate_names(svg: &str) -> Vec<String> {
+    let data = parse_static_data(svg);
+    let nodes = data["nodes"].as_object().expect("nodes is object");
+    nodes
+        .values()
+        .filter(|n| n["type"] == "crate")
+        .map(|n| n["name"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// Extract arc entries from STATIC_DATA (from→to with is_test derived from context.kind).
 fn extract_arcs(svg: &str) -> Vec<(String, String, bool)> {
-    let re =
-        Regex::new(r#""[^"]+": \{ from: "([^"]+)", to: "([^"]+)", isTest: (true|false)"#).unwrap();
-    re.captures_iter(svg)
-        .map(|c| (c[1].to_string(), c[2].to_string(), &c[3] == "true"))
+    let data = parse_static_data(svg);
+    let arcs = data["arcs"].as_object().expect("arcs is object");
+    arcs.values()
+        .map(|a| {
+            let from = a["from"].as_str().unwrap().to_string();
+            let to = a["to"].as_str().unwrap().to_string();
+            let is_test = a["context"]["kind"].as_str() == Some("test");
+            (from, to, is_test)
+        })
         .collect()
 }
 
 /// Extract node-id → name mapping from STATIC_DATA.
 fn extract_node_names(svg: &str) -> std::collections::HashMap<String, String> {
-    let re = Regex::new(r#""(\d+)": \{ type: "[^"]+", name: "([^"]+)""#).unwrap();
-    re.captures_iter(svg)
-        .map(|c| (c[1].to_string(), c[2].to_string()))
+    let data = parse_static_data(svg);
+    let nodes = data["nodes"].as_object().expect("nodes is object");
+    nodes
+        .iter()
+        .map(|(id, n)| (id.clone(), n["name"].as_str().unwrap().to_string()))
         .collect()
 }
 

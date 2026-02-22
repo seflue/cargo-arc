@@ -18,6 +18,8 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 itertools = "0.14"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 # ra_ap_* for HIR-based module analysis (optional, behind "hir" feature)
 ra_ap_hir = { version = "=0.0.316", optional = true }
@@ -46,6 +48,5 @@ hir = [
 
 [dev-dependencies]
 assert2 = "0.3"
-regex = "1.12.3"
 rstest = "0.25"
 tempfile = "3"
