@@ -22,14 +22,14 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # ra_ap_* for HIR-based module analysis (optional, behind "hir" feature)
-ra_ap_hir = { version = "=0.0.316", optional = true }
-ra_ap_ide = { version = "=0.0.316", optional = true }
-ra_ap_ide_db = { version = "=0.0.316", optional = true }
-ra_ap_load-cargo = { version = "=0.0.316", optional = true }
-ra_ap_paths = { version = "=0.0.316", optional = true }
-ra_ap_project_model = { version = "=0.0.316", optional = true }
-ra_ap_vfs = { version = "=0.0.316", optional = true }
-ra_ap_cfg = { version = "=0.0.316", optional = true }
+ra_ap_hir = { version = "=0.0.320", optional = true }
+ra_ap_ide = { version = "=0.0.320", optional = true }
+ra_ap_ide_db = { version = "=0.0.320", optional = true }
+ra_ap_load-cargo = { version = "=0.0.320", optional = true }
+ra_ap_paths = { version = "=0.0.320", optional = true }
+ra_ap_project_model = { version = "=0.0.320", optional = true }
+ra_ap_vfs = { version = "=0.0.320", optional = true }
+ra_ap_cfg = { version = "=0.0.320", optional = true }
 dunce = "1.0.4"
 syn = { version = "2", features = ["full", "visit"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }

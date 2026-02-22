@@ -97,6 +97,7 @@ pub fn load_workspace_hir(
         load_out_dirs_from_check: false,
         prefill_caches: false,
         with_proc_macro_server: load_cargo::ProcMacroServerChoice::None,
+        proc_macro_processes: 0,
     };
 
     // Discover project manifest - convert PathBuf -> Utf8PathBuf -> AbsPathBuf
