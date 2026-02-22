@@ -1155,12 +1155,8 @@ mod tests {
         let config = RenderConfig::default();
         let script = render_script(&config, &ir, &[], &HashSet::new());
         assert!(
-            script.contains("AppState.togglePinned(appState, 'node', nodeId)"),
-            "highlightNode should use AppState.togglePinned"
-        );
-        assert!(
-            script.contains("AppState.togglePinned(appState, 'arc', edgeId)"),
-            "highlightEdge should use AppState.togglePinned"
+            script.contains("AppState.togglePinned(appState, type, id)"),
+            "toggleHighlight should use AppState.togglePinned"
         );
     }
 

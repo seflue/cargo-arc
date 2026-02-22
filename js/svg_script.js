@@ -54,26 +54,25 @@ if (typeof document !== 'undefined') {
       HighlightRenderer.apply(DomAdapter, StaticData, virtualArcUsages, state);
     }
 
+    // Shared toggle core for all clickable elements (edge, node, virtual edge).
+    // The showSidebar callback provides the type-specific sidebar display logic.
+    function toggleHighlight(type, id, showSidebar) {
+      const isPinned = AppState.togglePinned(appState, type, id);
+      rerenderHighlights();
+      if (!isPinned) { SidebarLogic.hide(); return; }
+      showSidebar();
+    }
+
     function highlightEdge(from, to) {
       const edgeId = from + '-' + to;
-      const isPinned = AppState.togglePinned(appState, 'arc', edgeId);
-      rerenderHighlights();
-      if (!isPinned) {
-        SidebarLogic.hide();
-        return;
-      }
-      SidebarLogic.show(edgeId);
+      toggleHighlight('arc', edgeId, () => SidebarLogic.show(edgeId));
     }
 
     function highlightNode(nodeId) {
-      const isPinned = AppState.togglePinned(appState, 'node', nodeId);
-      rerenderHighlights();
-      if (!isPinned) {
-        SidebarLogic.hide();
-        return;
-      }
-      const relations = collectNodeRelations(nodeId);
-      SidebarLogic.showNode(nodeId, relations);
+      toggleHighlight('node', nodeId, () => {
+        const relations = collectNodeRelations(nodeId);
+        SidebarLogic.showNode(nodeId, relations);
+      });
     }
 
     function collectNodeRelations(nodeId) {
@@ -454,19 +453,14 @@ if (typeof document !== 'undefined') {
       });
     }
 
-    // Highlight virtual (aggregated) edge — thin wrapper
     function highlightVirtualEdge(fromId, toId) {
       const edgeId = fromId + '-' + toId;
-      const isPinned = AppState.togglePinned(appState, 'arc', edgeId);
-      rerenderHighlights();
-      if (!isPinned) {
-        SidebarLogic.hide();
-        return;
-      }
-      const usages = virtualArcUsages.get(edgeId) || [];
-      const originalArcs = virtualArcOriginals.get(edgeId) || [];
-      const mergedUsages = SidebarLogic.mergeSymbolGroups(usages);
-      SidebarLogic.show(edgeId, { from: fromId, to: toId, usages: mergedUsages, originalArcs });
+      toggleHighlight('arc', edgeId, () => {
+        const usages = virtualArcUsages.get(edgeId) || [];
+        const originalArcs = virtualArcOriginals.get(edgeId) || [];
+        const mergedUsages = SidebarLogic.mergeSymbolGroups(usages);
+        SidebarLogic.show(edgeId, { from: fromId, to: toId, usages: mergedUsages, originalArcs });
+      });
     }
 
     // --- Collapse helpers ---
