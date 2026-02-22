@@ -527,49 +527,69 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    struct TestProject {
+        files: Vec<(PathBuf, String)>,
+    }
+
+    impl TestProject {
+        fn new() -> Self {
+            Self { files: vec![] }
+        }
+
+        fn file(mut self, path: &str, content: &str) -> Self {
+            self.files.push((PathBuf::from(path), content.to_string()));
+            self
+        }
+
+        fn build(self) -> TempDir {
+            let tmp = TempDir::new().unwrap();
+            for (path, content) in &self.files {
+                let full = tmp.path().join(path);
+                if let Some(parent) = full.parent() {
+                    std::fs::create_dir_all(parent).unwrap();
+                }
+                std::fs::write(&full, content).unwrap();
+            }
+            tmp
+        }
+    }
+
     mod find_crate_root {
         use super::*;
 
         #[test]
         fn test_find_crate_root_lib() {
-            let tmp = TempDir::new().unwrap();
-            let src = tmp.path().join("src");
-            std::fs::create_dir_all(&src).unwrap();
-            std::fs::write(src.join("lib.rs"), "").unwrap();
-
+            let tmp = TestProject::new().file("src/lib.rs", "").build();
             let result = find_crate_root_files(tmp.path()).unwrap();
-            assert_eq!(result, vec![src.join("lib.rs")]);
+            assert_eq!(result, vec![tmp.path().join("src/lib.rs")]);
         }
 
         #[test]
         fn test_find_crate_root_main() {
-            let tmp = TempDir::new().unwrap();
-            let src = tmp.path().join("src");
-            std::fs::create_dir_all(&src).unwrap();
-            std::fs::write(src.join("main.rs"), "").unwrap();
-
+            let tmp = TestProject::new().file("src/main.rs", "").build();
             let result = find_crate_root_files(tmp.path()).unwrap();
-            assert_eq!(result, vec![src.join("main.rs")]);
+            assert_eq!(result, vec![tmp.path().join("src/main.rs")]);
         }
 
         #[test]
         fn test_find_crate_root_both_returns_vec() {
-            let tmp = TempDir::new().unwrap();
-            let src = tmp.path().join("src");
-            std::fs::create_dir_all(&src).unwrap();
-            std::fs::write(src.join("lib.rs"), "").unwrap();
-            std::fs::write(src.join("main.rs"), "").unwrap();
-
+            let tmp = TestProject::new()
+                .file("src/lib.rs", "")
+                .file("src/main.rs", "")
+                .build();
             let result = find_crate_root_files(tmp.path()).unwrap();
-            assert_eq!(result, vec![src.join("lib.rs"), src.join("main.rs")]);
+            assert_eq!(
+                result,
+                vec![
+                    tmp.path().join("src/lib.rs"),
+                    tmp.path().join("src/main.rs")
+                ]
+            );
         }
 
         #[test]
         fn test_find_crate_root_missing() {
-            let tmp = TempDir::new().unwrap();
-            let src = tmp.path().join("src");
-            std::fs::create_dir_all(&src).unwrap();
-
+            let tmp = TestProject::new().build();
             let result = find_crate_root_files(tmp.path());
             assert!(result.is_err());
         }
@@ -608,16 +628,10 @@ mod tests {
     mod parse_mod {
         use super::*;
 
-        fn write_rust_file(tmp: &TempDir, content: &str) -> PathBuf {
-            let path = tmp.path().join("test.rs");
-            std::fs::write(&path, content).unwrap();
-            path
-        }
-
         #[test]
         fn test_parse_mod_simple() {
-            let tmp = TempDir::new().unwrap();
-            let path = write_rust_file(&tmp, "mod foo;");
+            let tmp = TestProject::new().file("test.rs", "mod foo;").build();
+            let path = tmp.path().join("test.rs");
 
             let decls = parse_mod_declarations(&path, false).unwrap();
             assert_eq!(decls.len(), 1);
@@ -627,8 +641,10 @@ mod tests {
 
         #[test]
         fn test_parse_mod_cfg_test_filtered() {
-            let tmp = TempDir::new().unwrap();
-            let path = write_rust_file(&tmp, "#[cfg(test)]\nmod tests;");
+            let tmp = TestProject::new()
+                .file("test.rs", "#[cfg(test)]\nmod tests;")
+                .build();
+            let path = tmp.path().join("test.rs");
 
             let decls = parse_mod_declarations(&path, false).unwrap();
             assert!(decls.is_empty());
@@ -636,8 +652,10 @@ mod tests {
 
         #[test]
         fn test_parse_mod_multiple() {
-            let tmp = TempDir::new().unwrap();
-            let path = write_rust_file(&tmp, "mod alpha;\nmod beta;\nmod gamma;");
+            let tmp = TestProject::new()
+                .file("test.rs", "mod alpha;\nmod beta;\nmod gamma;")
+                .build();
+            let path = tmp.path().join("test.rs");
 
             let decls = parse_mod_declarations(&path, false).unwrap();
             let names: Vec<&str> = decls.iter().map(|d| d.name.as_str()).collect();
@@ -646,8 +664,10 @@ mod tests {
 
         #[test]
         fn test_parse_mod_inline_ignored() {
-            let tmp = TempDir::new().unwrap();
-            let path = write_rust_file(&tmp, "mod foo { fn bar() {} }");
+            let tmp = TestProject::new()
+                .file("test.rs", "mod foo { fn bar() {} }")
+                .build();
+            let path = tmp.path().join("test.rs");
 
             let decls = parse_mod_declarations(&path, false).unwrap();
             assert!(decls.is_empty());
@@ -655,8 +675,10 @@ mod tests {
 
         #[test]
         fn test_parse_mod_with_path_attribute() {
-            let tmp = TempDir::new().unwrap();
-            let path = write_rust_file(&tmp, "#[path = \"custom.rs\"]\nmod foo;");
+            let tmp = TestProject::new()
+                .file("test.rs", "#[path = \"custom.rs\"]\nmod foo;")
+                .build();
+            let path = tmp.path().join("test.rs");
 
             let decls = parse_mod_declarations(&path, false).unwrap();
             assert_eq!(decls.len(), 1);
@@ -670,40 +692,31 @@ mod tests {
 
         #[test]
         fn test_resolve_mod_file() {
-            let tmp = TempDir::new().unwrap();
-            std::fs::write(tmp.path().join("foo.rs"), "").unwrap();
-
+            let tmp = TestProject::new().file("foo.rs", "").build();
             let result = resolve_mod_path(tmp.path(), "foo");
             assert_eq!(result, Some(tmp.path().join("foo.rs")));
         }
 
         #[test]
         fn test_resolve_mod_dir() {
-            let tmp = TempDir::new().unwrap();
-            let dir = tmp.path().join("foo");
-            std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(dir.join("mod.rs"), "").unwrap();
-
+            let tmp = TestProject::new().file("foo/mod.rs", "").build();
             let result = resolve_mod_path(tmp.path(), "foo");
-            assert_eq!(result, Some(dir.join("mod.rs")));
+            assert_eq!(result, Some(tmp.path().join("foo/mod.rs")));
         }
 
         #[test]
         fn test_resolve_mod_missing() {
-            let tmp = TempDir::new().unwrap();
-
+            let tmp = TestProject::new().build();
             let result = resolve_mod_path(tmp.path(), "foo");
             assert_eq!(result, None);
         }
 
         #[test]
         fn test_resolve_mod_prefers_file() {
-            let tmp = TempDir::new().unwrap();
-            std::fs::write(tmp.path().join("foo.rs"), "").unwrap();
-            let dir = tmp.path().join("foo");
-            std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(dir.join("mod.rs"), "").unwrap();
-
+            let tmp = TestProject::new()
+                .file("foo.rs", "")
+                .file("foo/mod.rs", "")
+                .build();
             let result = resolve_mod_path(tmp.path(), "foo");
             assert_eq!(result, Some(tmp.path().join("foo.rs")));
         }
@@ -715,14 +728,11 @@ mod tests {
         #[test]
         fn test_collect_paths_synthetic() {
             // lib.rs → mod foo; → foo.rs → mod bar; → foo/bar.rs
-            let tmp = TempDir::new().unwrap();
-            let src = tmp.path().join("src");
-            std::fs::create_dir_all(&src).unwrap();
-            std::fs::write(src.join("lib.rs"), "mod foo;").unwrap();
-            std::fs::write(src.join("foo.rs"), "mod bar;").unwrap();
-            let foo_dir = src.join("foo");
-            std::fs::create_dir_all(&foo_dir).unwrap();
-            std::fs::write(foo_dir.join("bar.rs"), "").unwrap();
+            let tmp = TestProject::new()
+                .file("src/lib.rs", "mod foo;")
+                .file("src/foo.rs", "mod bar;")
+                .file("src/foo/bar.rs", "")
+                .build();
 
             let paths = collect_syn_module_paths(tmp.path(), "synth", false);
             assert!(
@@ -763,10 +773,9 @@ mod tests {
 
         #[test]
         fn test_collect_paths_empty_crate() {
-            let tmp = TempDir::new().unwrap();
-            let src = tmp.path().join("src");
-            std::fs::create_dir_all(&src).unwrap();
-            std::fs::write(src.join("lib.rs"), "// empty crate").unwrap();
+            let tmp = TestProject::new()
+                .file("src/lib.rs", "// empty crate")
+                .build();
 
             let paths = collect_syn_module_paths(tmp.path(), "empty", false);
             assert!(paths.is_empty(), "expected empty set, found: {paths:?}");
@@ -774,13 +783,12 @@ mod tests {
 
         #[test]
         fn test_mixed_crate_module_paths() {
-            let tmp = TempDir::new().unwrap();
-            let src = tmp.path().join("src");
-            std::fs::create_dir_all(&src).unwrap();
-            std::fs::write(src.join("lib.rs"), "mod a;").unwrap();
-            std::fs::write(src.join("main.rs"), "mod b;").unwrap();
-            std::fs::write(src.join("a.rs"), "").unwrap();
-            std::fs::write(src.join("b.rs"), "").unwrap();
+            let tmp = TestProject::new()
+                .file("src/lib.rs", "mod a;")
+                .file("src/main.rs", "mod b;")
+                .file("src/a.rs", "")
+                .file("src/b.rs", "")
+                .build();
 
             let paths = collect_syn_module_paths(tmp.path(), "mixed", false);
             assert!(paths.contains("a"), "should contain 'a', found: {paths:?}");
@@ -794,12 +802,10 @@ mod tests {
 
         #[test]
         fn test_collect_exports_pub_items() {
-            let tmp = TempDir::new().unwrap();
-            let src = tmp.path().join("src");
-            std::fs::create_dir_all(&src).unwrap();
-            std::fs::write(
-                src.join("lib.rs"),
-                r#"
+            let tmp = TestProject::new()
+                .file(
+                    "src/lib.rs",
+                    r#"
                     pub fn helper() {}
                     pub struct MyStruct;
                     pub enum MyEnum { A, B }
@@ -808,8 +814,8 @@ mod tests {
                     pub static GLOBAL: i32 = 0;
                     pub type Alias = i32;
                 "#,
-            )
-            .unwrap();
+                )
+                .build();
 
             let exports = collect_crate_exports(tmp.path());
             for name in [
@@ -825,10 +831,9 @@ mod tests {
 
         #[test]
         fn test_collect_exports_reexports() {
-            let tmp = TempDir::new().unwrap();
-            let src = tmp.path().join("src");
-            std::fs::create_dir_all(&src).unwrap();
-            std::fs::write(src.join("lib.rs"), "pub use some_crate::Widget;\n").unwrap();
+            let tmp = TestProject::new()
+                .file("src/lib.rs", "pub use some_crate::Widget;\n")
+                .build();
 
             let exports = collect_crate_exports(tmp.path());
             assert!(exports.contains("Widget"), "found: {exports:?}");
@@ -837,14 +842,9 @@ mod tests {
 
         #[test]
         fn test_collect_exports_alias_reexport() {
-            let tmp = TempDir::new().unwrap();
-            let src = tmp.path().join("src");
-            std::fs::create_dir_all(&src).unwrap();
-            std::fs::write(
-                src.join("lib.rs"),
-                "pub use some_crate::Original as Alias;\n",
-            )
-            .unwrap();
+            let tmp = TestProject::new()
+                .file("src/lib.rs", "pub use some_crate::Original as Alias;\n")
+                .build();
 
             let exports = collect_crate_exports(tmp.path());
             assert!(exports.contains("Alias"), "found: {exports:?}");
@@ -854,10 +854,9 @@ mod tests {
 
         #[test]
         fn test_collect_exports_multi_reexport() {
-            let tmp = TempDir::new().unwrap();
-            let src = tmp.path().join("src");
-            std::fs::create_dir_all(&src).unwrap();
-            std::fs::write(src.join("lib.rs"), "pub use some_crate::{Alpha, Beta};\n").unwrap();
+            let tmp = TestProject::new()
+                .file("src/lib.rs", "pub use some_crate::{Alpha, Beta};\n")
+                .build();
 
             let exports = collect_crate_exports(tmp.path());
             assert!(exports.contains("Alpha"), "found: {exports:?}");
@@ -867,19 +866,17 @@ mod tests {
 
         #[test]
         fn test_collect_exports_non_pub_ignored() {
-            let tmp = TempDir::new().unwrap();
-            let src = tmp.path().join("src");
-            std::fs::create_dir_all(&src).unwrap();
-            std::fs::write(
-                src.join("lib.rs"),
-                r#"
+            let tmp = TestProject::new()
+                .file(
+                    "src/lib.rs",
+                    r#"
                     fn private_fn() {}
                     struct PrivateStruct;
                     pub fn public_fn() {}
                     pub(crate) fn crate_fn() {}
                 "#,
-            )
-            .unwrap();
+                )
+                .build();
 
             let exports = collect_crate_exports(tmp.path());
             assert!(exports.contains("public_fn"), "found: {exports:?}");
@@ -891,14 +888,9 @@ mod tests {
 
         #[test]
         fn test_collect_exports_mod_ignored() {
-            let tmp = TempDir::new().unwrap();
-            let src = tmp.path().join("src");
-            std::fs::create_dir_all(&src).unwrap();
-            std::fs::write(
-                src.join("lib.rs"),
-                "pub mod foo;\npub fn real_export() {}\n",
-            )
-            .unwrap();
+            let tmp = TestProject::new()
+                .file("src/lib.rs", "pub mod foo;\npub fn real_export() {}\n")
+                .build();
 
             let exports = collect_crate_exports(tmp.path());
             assert!(exports.contains("real_export"), "found: {exports:?}");
@@ -908,10 +900,7 @@ mod tests {
 
         #[test]
         fn test_collect_exports_no_entry_file() {
-            let tmp = TempDir::new().unwrap();
-            let src = tmp.path().join("src");
-            std::fs::create_dir_all(&src).unwrap();
-            // No lib.rs or main.rs
+            let tmp = TestProject::new().build();
 
             let exports = collect_crate_exports(tmp.path());
             assert!(exports.is_empty(), "found: {exports:?}");
@@ -919,11 +908,10 @@ mod tests {
 
         #[test]
         fn test_mixed_crate_exports_only_lib() {
-            let tmp = TempDir::new().unwrap();
-            let src = tmp.path().join("src");
-            std::fs::create_dir_all(&src).unwrap();
-            std::fs::write(src.join("lib.rs"), "pub fn from_lib() {}").unwrap();
-            std::fs::write(src.join("main.rs"), "pub fn from_main() {}").unwrap();
+            let tmp = TestProject::new()
+                .file("src/lib.rs", "pub fn from_lib() {}")
+                .file("src/main.rs", "pub fn from_main() {}")
+                .build();
 
             let exports = collect_crate_exports(tmp.path());
             assert!(
@@ -1042,11 +1030,10 @@ mod tests {
 
         #[test]
         fn test_binary_only_crate() {
-            let tmp = TempDir::new().unwrap();
-            let src = tmp.path().join("src");
-            std::fs::create_dir_all(&src).unwrap();
-            std::fs::write(src.join("main.rs"), "mod cli;").unwrap();
-            std::fs::write(src.join("cli.rs"), "").unwrap();
+            let tmp = TestProject::new()
+                .file("src/main.rs", "mod cli;")
+                .file("src/cli.rs", "")
+                .build();
 
             // collect_syn_module_paths finds "cli"
             let paths = collect_syn_module_paths(tmp.path(), "binonly", false);
@@ -1088,20 +1075,17 @@ mod tests {
 
         #[test]
         fn test_path_ref_dependencies_collected() {
-            let tmp = TempDir::new().unwrap();
-            let src = tmp.path().join("src");
-            std::fs::create_dir_all(&src).unwrap();
-            // main.rs uses qualified path expressions (no use-imports)
-            std::fs::write(
-                src.join("main.rs"),
-                r#"
+            let tmp = TestProject::new()
+                .file(
+                    "src/main.rs",
+                    r#"
 fn main() {
     other_crate::module::run();
     let _x: other_crate::module::Config = todo!();
 }
 "#,
-            )
-            .unwrap();
+                )
+                .build();
 
             let ws: WorkspaceCrates = ["other_crate".to_string()].into_iter().collect();
             let mp: ModulePathMap = [("other_crate".to_string(), HashSet::from(["module".into()]))]
@@ -1130,20 +1114,17 @@ fn main() {
 
         #[test]
         fn test_path_ref_dedup_with_use() {
-            let tmp = TempDir::new().unwrap();
-            let src = tmp.path().join("src");
-            std::fs::create_dir_all(&src).unwrap();
-            // main.rs has both a use-import and a qualified path for the same target
-            std::fs::write(
-                src.join("main.rs"),
-                r#"
+            let tmp = TestProject::new()
+                .file(
+                    "src/main.rs",
+                    r#"
 use other_crate::module::Item;
 fn main() {
     other_crate::module::Item::new();
 }
 "#,
-            )
-            .unwrap();
+                )
+                .build();
 
             let ws: WorkspaceCrates = ["other_crate".to_string()].into_iter().collect();
             let mp: ModulePathMap = [("other_crate".to_string(), HashSet::from(["module".into()]))]
@@ -1180,13 +1161,12 @@ fn main() {
 
         #[test]
         fn test_mixed_crate_module_tree() {
-            let tmp = TempDir::new().unwrap();
-            let src = tmp.path().join("src");
-            std::fs::create_dir_all(&src).unwrap();
-            std::fs::write(src.join("lib.rs"), "mod a;").unwrap();
-            std::fs::write(src.join("main.rs"), "mod b;").unwrap();
-            std::fs::write(src.join("a.rs"), "").unwrap();
-            std::fs::write(src.join("b.rs"), "").unwrap();
+            let tmp = TestProject::new()
+                .file("src/lib.rs", "mod a;")
+                .file("src/main.rs", "mod b;")
+                .file("src/a.rs", "")
+                .file("src/b.rs", "")
+                .build();
 
             let crate_info = CrateInfo {
                 name: "mixed".to_string(),
@@ -1275,14 +1255,11 @@ fn main() {
 
         #[test]
         fn test_find_integration_test_files() {
-            let tmp = TempDir::new().unwrap();
-            let tests = tmp.path().join("tests");
-            std::fs::create_dir_all(&tests).unwrap();
-            std::fs::write(tests.join("smoke.rs"), "").unwrap();
-            std::fs::write(tests.join("check.rs"), "").unwrap();
-            let common = tests.join("common");
-            std::fs::create_dir_all(&common).unwrap();
-            std::fs::write(common.join("mod.rs"), "").unwrap();
+            let tmp = TestProject::new()
+                .file("tests/smoke.rs", "")
+                .file("tests/check.rs", "")
+                .file("tests/common/mod.rs", "")
+                .build();
 
             let files = find_integration_test_files(tmp.path());
             let names: Vec<&str> = files
@@ -1300,17 +1277,14 @@ fn main() {
 
         #[test]
         fn test_find_integration_test_files_no_tests_dir() {
-            let tmp = TempDir::new().unwrap();
+            let tmp = TestProject::new().build();
             let files = find_integration_test_files(tmp.path());
             assert!(files.is_empty());
         }
 
         #[test]
         fn test_find_crate_root_test_only_crate() {
-            let tmp = TempDir::new().unwrap();
-            let tests = tmp.path().join("tests");
-            std::fs::create_dir_all(&tests).unwrap();
-            std::fs::write(tests.join("check.rs"), "").unwrap();
+            let tmp = TestProject::new().file("tests/check.rs", "").build();
 
             let roots = find_crate_root_files(tmp.path()).unwrap();
             assert!(
@@ -1321,7 +1295,7 @@ fn main() {
 
         #[test]
         fn test_find_crate_root_no_src_no_tests_errors() {
-            let tmp = TempDir::new().unwrap();
+            let tmp = TestProject::new().build();
             let result = find_crate_root_files(tmp.path());
             assert!(result.is_err());
         }
@@ -1462,19 +1436,11 @@ fn main() {
 
         #[test]
         fn test_inline_cfg_test_deps_excluded_without_flag() {
-            let tmp = TempDir::new().unwrap();
-            let src = tmp.path().join("src");
-            std::fs::create_dir_all(&src).unwrap();
-            std::fs::write(
-                src.join("lib.rs"),
-                r#"
-mod alpha;
-"#,
-            )
-            .unwrap();
-            std::fs::write(
-                src.join("alpha.rs"),
-                r#"
+            let tmp = TestProject::new()
+                .file("src/lib.rs", "mod alpha;\n")
+                .file(
+                    "src/alpha.rs",
+                    r#"
 use crate::beta::helper;
 
 pub fn process() {}
@@ -1484,8 +1450,8 @@ mod tests {
     use crate::gamma::test_util;
 }
 "#,
-            )
-            .unwrap();
+                )
+                .build();
 
             let mp: ModulePathMap = [(
                 "my_crate".to_string(),
