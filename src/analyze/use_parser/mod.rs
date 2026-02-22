@@ -9,6 +9,8 @@ use std::path::Path;
 use syn::UseTree;
 use syn::visit::Visit;
 
+use super::reexports::{ReExportMap, resolve_reexport};
+
 /// Invariant context for dependency resolution within a single source file.
 pub(crate) struct ResolutionContext<'a> {
     pub(crate) current_crate: &'a str,
@@ -17,6 +19,7 @@ pub(crate) struct ResolutionContext<'a> {
     pub(crate) all_module_paths: &'a ModulePathMap,
     pub(crate) crate_exports: &'a CrateExportMap,
     pub(crate) current_module_path: &'a str,
+    pub(crate) reexport_map: &'a ReExportMap,
 }
 
 /// Check whether attributes contain `#[cfg(test)]`, including compound
@@ -172,19 +175,26 @@ fn append_to_path(prefix: &str, segment: &str) -> String {
 /// Recursively resolve a `syn::UseTree` into fully-qualified path strings.
 ///
 /// Example: `use cli::{Args, Cargo, run}` → `["cli::Args", "cli::Cargo", "cli::run"]`
-fn resolve_use_tree(tree: &UseTree, prefix: &str) -> Vec<String> {
+///
+/// When `use_alias` is true, renames return the alias (`as X` → `X`).
+/// When false, renames return the original name (source dependency tracking).
+pub(crate) fn resolve_use_tree(tree: &UseTree, prefix: &str, use_alias: bool) -> Vec<String> {
     match tree {
-        UseTree::Path(p) => {
-            resolve_use_tree(&p.tree, &append_to_path(prefix, &p.ident.to_string()))
-        }
-        // Use original name for renames — we track the *source* dependency
+        UseTree::Path(p) => resolve_use_tree(
+            &p.tree,
+            &append_to_path(prefix, &p.ident.to_string()),
+            use_alias,
+        ),
         UseTree::Name(n) => vec![append_to_path(prefix, &n.ident.to_string())],
-        UseTree::Rename(r) => vec![append_to_path(prefix, &r.ident.to_string())],
+        UseTree::Rename(r) => {
+            let name = if use_alias { &r.rename } else { &r.ident };
+            vec![append_to_path(prefix, &name.to_string())]
+        }
         UseTree::Glob(_) => vec![append_to_path(prefix, "*")],
         UseTree::Group(g) => g
             .items
             .iter()
-            .flat_map(|item| resolve_use_tree(item, prefix))
+            .flat_map(|item| resolve_use_tree(item, prefix, use_alias))
             .collect(),
     }
 }
@@ -390,7 +400,7 @@ fn join_module_segments(base_path: &str, levels_up: usize, suffix: &[&str]) -> O
 
 /// Resolve a single use path through the resolution chain: crate-local → bare module → workspace.
 /// Handles glob paths (`crate::module::*`) by stripping the glob and setting `target_item` = "*".
-fn resolve_single_path(
+pub(crate) fn resolve_single_path(
     ctx: &ResolutionContext,
     path: &str,
     line_num: usize,
@@ -447,10 +457,12 @@ pub(crate) fn parse_workspace_dependencies(
 
     for (item, context, inline_depth) in use_items {
         let line_num = item.use_token.span.start().line;
-        let paths = resolve_use_tree(&item.tree, "");
+        let paths = resolve_use_tree(&item.tree, "", false);
 
         for path in paths {
-            if let Some(dep) = resolve_single_path(ctx, &path, line_num, context, *inline_depth) {
+            if let Some(mut dep) = resolve_single_path(ctx, &path, line_num, context, *inline_depth)
+            {
+                resolve_reexport(&mut dep, ctx.reexport_map);
                 DependencyRef::dedup_push(&mut deps, &mut seen_targets, dep);
             }
         }
@@ -472,7 +484,8 @@ pub(crate) fn parse_path_ref_dependencies(
     let mut seen_targets: HashMap<(String, DependencyKind), usize> = HashMap::new();
 
     for (path, line_num, context, inline_depth) in paths {
-        if let Some(dep) = resolve_single_path(ctx, path, *line_num, context, *inline_depth) {
+        if let Some(mut dep) = resolve_single_path(ctx, path, *line_num, context, *inline_depth) {
+            resolve_reexport(&mut dep, ctx.reexport_map);
             DependencyRef::dedup_push(&mut deps, &mut seen_targets, dep);
         }
     }

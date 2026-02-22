@@ -46,3 +46,4 @@ src/
 | 017 | [SCC Condensation for Deterministic Cycle Resolution](adr/017-scc-condensation-for-cycle-resolution.md) | Active | 2026-02-11 |
 | 018 | [EdgeContext Enum for Production and Test Context on Edges](adr/018-edge-context-enum.md) | Active | 2026-02-11 |
 | 019 | [Detect Elementary Cycles via Johnson's Algorithm](adr/019-elementary-cycles-via-johnsons-algorithm.md) | Active | 2026-02-16 |
+| 020 | [Resolve Re-Exports to Determine True Dependencies](adr/020-resolve-reexports-for-true-dependencies.md) | Active | 2026-02-23 |

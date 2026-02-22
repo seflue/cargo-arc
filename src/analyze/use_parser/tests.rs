@@ -1,10 +1,12 @@
 use super::*;
+use crate::analyze::reexports::ReExportMap;
 use std::path::Path;
 use std::sync::LazyLock;
 
 static DEFAULT_WS: LazyLock<WorkspaceCrates> = LazyLock::new(WorkspaceCrates::default);
 static DEFAULT_MP: LazyLock<ModulePathMap> = LazyLock::new(ModulePathMap::default);
 static DEFAULT_EXPORTS: LazyLock<CrateExportMap> = LazyLock::new(CrateExportMap::default);
+static DEFAULT_REEXPORT_MAP: LazyLock<ReExportMap> = LazyLock::new(ReExportMap::default);
 
 struct ResolutionContextBuilder<'a> {
     current_crate: &'a str,
@@ -13,6 +15,7 @@ struct ResolutionContextBuilder<'a> {
     all_module_paths: &'a ModulePathMap,
     crate_exports: &'a CrateExportMap,
     current_module_path: &'a str,
+    reexport_map: &'a ReExportMap,
 }
 
 impl<'a> ResolutionContextBuilder<'a> {
@@ -24,6 +27,7 @@ impl<'a> ResolutionContextBuilder<'a> {
             all_module_paths: &DEFAULT_MP,
             crate_exports: &DEFAULT_EXPORTS,
             current_module_path: "",
+            reexport_map: &DEFAULT_REEXPORT_MAP,
         }
     }
 
@@ -52,6 +56,11 @@ impl<'a> ResolutionContextBuilder<'a> {
         self
     }
 
+    fn reexport_map(mut self, map: &'a ReExportMap) -> Self {
+        self.reexport_map = map;
+        self
+    }
+
     fn build(self) -> ResolutionContext<'a> {
         ResolutionContext {
             current_crate: self.current_crate,
@@ -60,6 +69,7 @@ impl<'a> ResolutionContextBuilder<'a> {
             all_module_paths: self.all_module_paths,
             crate_exports: self.crate_exports,
             current_module_path: self.current_module_path,
+            reexport_map: self.reexport_map,
         }
     }
 }
@@ -744,14 +754,14 @@ mod resolve_use_tree_tests {
     #[test]
     fn test_simple_path() {
         let tree = parse_use_tree("use crate::graph::build;");
-        let paths = resolve_use_tree(&tree, "");
+        let paths = resolve_use_tree(&tree, "", false);
         assert_eq!(paths, vec!["crate::graph::build"]);
     }
 
     #[test]
     fn test_multi_import() {
         let tree = parse_use_tree("use cli::{Args, Cargo};");
-        let mut paths = resolve_use_tree(&tree, "");
+        let mut paths = resolve_use_tree(&tree, "", false);
         paths.sort();
         assert_eq!(paths, vec!["cli::Args", "cli::Cargo"]);
     }
@@ -759,21 +769,21 @@ mod resolve_use_tree_tests {
     #[test]
     fn test_glob() {
         let tree = parse_use_tree("use model::*;");
-        let paths = resolve_use_tree(&tree, "");
+        let paths = resolve_use_tree(&tree, "", false);
         assert_eq!(paths, vec!["model::*"]);
     }
 
     #[test]
     fn test_rename() {
         let tree = parse_use_tree("use cli::Args as CliArgs;");
-        let paths = resolve_use_tree(&tree, "");
+        let paths = resolve_use_tree(&tree, "", false);
         assert_eq!(paths, vec!["cli::Args"]);
     }
 
     #[test]
     fn test_nested_groups() {
         let tree = parse_use_tree("use a::{b::{C, D}, e::F};");
-        let mut paths = resolve_use_tree(&tree, "");
+        let mut paths = resolve_use_tree(&tree, "", false);
         paths.sort();
         assert_eq!(paths, vec!["a::b::C", "a::b::D", "a::e::F"]);
     }
@@ -781,14 +791,21 @@ mod resolve_use_tree_tests {
     #[test]
     fn test_empty_prefix_root_level() {
         let tree = parse_use_tree("use std;");
-        let paths = resolve_use_tree(&tree, "");
+        let paths = resolve_use_tree(&tree, "", false);
         assert_eq!(paths, vec!["std"]);
+    }
+
+    #[test]
+    fn test_rename_with_alias() {
+        let tree = parse_use_tree("use cli::Args as CliArgs;");
+        let paths = resolve_use_tree(&tree, "", true);
+        assert_eq!(paths, vec!["cli::CliArgs"]);
     }
 
     #[test]
     fn test_with_prefix() {
         let tree = parse_use_tree("use bar::Baz;");
-        let paths = resolve_use_tree(&tree, "foo");
+        let paths = resolve_use_tree(&tree, "foo", false);
         assert_eq!(paths, vec!["foo::bar::Baz"]);
     }
 }
@@ -1869,6 +1886,152 @@ mod context_aware_dedup_tests {
             features,
             vec!["feat-a".to_string(), "feat-b".to_string()],
             "features should be merged: {features:?}"
+        );
+    }
+}
+
+mod reexport_resolution_tests {
+    use super::*;
+    use crate::analyze::reexports::{ModuleExportInfo, ReExportMap, ReExportTarget};
+
+    #[test]
+    fn without_reexport_map_unchanged() {
+        let mp: ModulePathMap = [(
+            "my_crate".to_string(),
+            HashSet::from(["parent".into(), "parent::sibling".into()]),
+        )]
+        .into_iter()
+        .collect();
+        let uses = parse_test_uses("use crate::parent::Item;");
+        let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs"))
+            .module_paths(&mp)
+            .build();
+        let deps = parse_workspace_dependencies(&uses, &ctx);
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].target_module, "parent");
+        assert_eq!(deps[0].target_item, Some("Item".to_string()));
+    }
+
+    #[test]
+    fn super_import_resolved_via_reexport_map() {
+        let mp: ModulePathMap = [(
+            "my_crate".to_string(),
+            HashSet::from(["parent".into(), "parent::sibling".into(), "consumer".into()]),
+        )]
+        .into_iter()
+        .collect();
+
+        let mut parent_info = ModuleExportInfo::default();
+        parent_info.explicit_reexports.insert(
+            "Item".to_string(),
+            ReExportTarget {
+                module: "parent::sibling".to_string(),
+                original_name: "Item".to_string(),
+            },
+        );
+        let mut sibling_info = ModuleExportInfo::default();
+        sibling_info.definitions.insert("Item".to_string());
+        let mut crate_exports = HashMap::new();
+        crate_exports.insert("parent".to_string(), parent_info);
+        crate_exports.insert("parent::sibling".to_string(), sibling_info);
+        let map: ReExportMap = [("my_crate".to_string(), crate_exports)]
+            .into_iter()
+            .collect();
+
+        let uses = parse_test_uses("use super::parent::Item;");
+        let ctx = ResolutionContextBuilder::new(Path::new("src/consumer.rs"))
+            .module_paths(&mp)
+            .current_module_path("consumer")
+            .reexport_map(&map)
+            .build();
+        let deps = parse_workspace_dependencies(&uses, &ctx);
+        assert_eq!(deps.len(), 1);
+        assert_eq!(
+            deps[0].target_module, "parent::sibling",
+            "should resolve through re-export to sibling"
+        );
+    }
+
+    #[test]
+    fn crate_path_resolved_via_reexport_map() {
+        let mp: ModulePathMap = [(
+            "my_crate".to_string(),
+            HashSet::from(["parent".into(), "parent::child".into()]),
+        )]
+        .into_iter()
+        .collect();
+
+        let mut parent_info = ModuleExportInfo::default();
+        parent_info.explicit_reexports.insert(
+            "Config".to_string(),
+            ReExportTarget {
+                module: "parent::child".to_string(),
+                original_name: "Config".to_string(),
+            },
+        );
+        let mut child_info = ModuleExportInfo::default();
+        child_info.definitions.insert("Config".to_string());
+        let mut crate_exports = HashMap::new();
+        crate_exports.insert("parent".to_string(), parent_info);
+        crate_exports.insert("parent::child".to_string(), child_info);
+        let map: ReExportMap = [("my_crate".to_string(), crate_exports)]
+            .into_iter()
+            .collect();
+
+        let uses = parse_test_uses("use crate::parent::Config;");
+        let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs"))
+            .module_paths(&mp)
+            .reexport_map(&map)
+            .build();
+        let deps = parse_workspace_dependencies(&uses, &ctx);
+        assert_eq!(deps.len(), 1);
+        assert_eq!(
+            deps[0].target_module, "parent::child",
+            "should resolve crate:: path through re-export"
+        );
+    }
+
+    #[test]
+    fn path_ref_resolved_via_reexport_map() {
+        let mp: ModulePathMap = [(
+            "my_crate".to_string(),
+            HashSet::from(["parent".into(), "parent::child".into()]),
+        )]
+        .into_iter()
+        .collect();
+
+        let mut parent_info = ModuleExportInfo::default();
+        parent_info.explicit_reexports.insert(
+            "Config".to_string(),
+            ReExportTarget {
+                module: "parent::child".to_string(),
+                original_name: "Config".to_string(),
+            },
+        );
+        let mut child_info = ModuleExportInfo::default();
+        child_info.definitions.insert("Config".to_string());
+        let mut crate_exports = HashMap::new();
+        crate_exports.insert("parent".to_string(), parent_info);
+        crate_exports.insert("parent::child".to_string(), child_info);
+        let map: ReExportMap = [("my_crate".to_string(), crate_exports)]
+            .into_iter()
+            .collect();
+
+        let paths = vec![(
+            "crate::parent::Config".to_string(),
+            5,
+            EdgeContext::production(),
+            0,
+        )];
+        let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs"))
+            .module_paths(&mp)
+            .reexport_map(&map)
+            .build();
+        let deps = parse_path_ref_dependencies(&paths, &ctx);
+        assert_eq!(deps.len(), 1);
+        assert_eq!(
+            deps[0].target_module, "parent::child",
+            "path refs should also resolve through re-export"
         );
     }
 }

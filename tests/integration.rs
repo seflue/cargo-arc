@@ -267,6 +267,37 @@ fn test_entry_point_imports() {
 ///   - consumer→foundation and `consumer→test_helper` arcs present
 ///   - `foundation→test_helper` arc present
 #[test]
+fn test_reexport_resolution() {
+    let (temp, args) = fixture_args("reexport_workspace", false);
+
+    let result = run(args);
+    assert!(result.is_ok(), "run() should succeed: {result:?}");
+
+    let svg = std::fs::read_to_string(temp.path()).unwrap();
+    let arcs = extract_arcs(&svg);
+    let nodes = extract_node_names(&svg);
+    let named_arcs = resolve_arc_names(&arcs, &nodes);
+
+    // Re-export resolved: child -> sibling (via Widget defined in sibling)
+    let has_child_to_sibling = named_arcs
+        .iter()
+        .any(|(from, to, _)| from == "child" && to == "sibling");
+    assert!(
+        has_child_to_sibling,
+        "child -> sibling arc should exist (re-export resolved), found arcs: {named_arcs:?}"
+    );
+
+    // Re-export resolved means NO child -> parent arc (Widget is not defined in parent)
+    let has_child_to_parent = named_arcs
+        .iter()
+        .any(|(from, to, _)| from == "child" && to == "parent");
+    assert!(
+        !has_child_to_parent,
+        "child -> parent arc should NOT exist (re-export should be resolved to sibling), found arcs: {named_arcs:?}"
+    );
+}
+
+#[test]
 fn test_dev_dep_crate_hidden_without_include_tests() {
     let (temp, args) = fixture_args("dev_dep_sorting", false);
     let result = run(args);

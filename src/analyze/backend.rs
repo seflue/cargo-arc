@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use super::hir::FeatureConfig;
+use super::reexports::ReExportMap;
 use super::syn_walker::{analyze_modules_syn, collect_syn_module_paths};
 use crate::model::{CrateExportMap, CrateInfo, ModulePathMap, ModuleTree, WorkspaceCrates};
 
@@ -69,12 +70,13 @@ impl AnalysisBackend {
 
     /// Full module analysis with dependency extraction.
     #[allow(clippy::missing_errors_doc)]
-    pub fn analyze_modules(
+    pub(crate) fn analyze_modules(
         &self,
         crate_info: &CrateInfo,
         workspace_crates: &WorkspaceCrates,
         all_module_paths: &ModulePathMap,
         crate_exports: &CrateExportMap,
+        reexport_map: &ReExportMap,
     ) -> Result<ModuleTree> {
         match self {
             Self::Syn { include_tests } => analyze_modules_syn(
@@ -82,17 +84,21 @@ impl AnalysisBackend {
                 workspace_crates,
                 all_module_paths,
                 crate_exports,
+                reexport_map,
                 *include_tests,
             ),
             #[cfg(feature = "hir")]
-            Self::Hir { host, vfs } => super::hir::analyze_modules(
-                crate_info,
-                host,
-                vfs,
-                workspace_crates,
-                all_module_paths,
-                crate_exports,
-            ),
+            Self::Hir { host, vfs } => {
+                let _ = reexport_map;
+                super::hir::analyze_modules(
+                    crate_info,
+                    host,
+                    vfs,
+                    workspace_crates,
+                    all_module_paths,
+                    crate_exports,
+                )
+            }
         }
     }
 }

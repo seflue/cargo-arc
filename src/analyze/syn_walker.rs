@@ -4,6 +4,7 @@ use anyhow::{Context, Result, bail};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use super::reexports::ReExportMap;
 use super::use_parser::{
     ResolutionContext, collect_all_path_refs, is_cfg_test, parse_path_ref_dependencies,
     parse_workspace_dependencies,
@@ -17,7 +18,7 @@ use crate::model::{
 /// Find root source files (lib.rs and/or main.rs) for a crate.
 /// Returns all existing root files, lib.rs first.
 /// Returns empty Vec (not error) when src/ is missing but tests/ exists (test-only crate).
-fn find_crate_root_files(crate_path: &Path) -> Result<Vec<PathBuf>> {
+pub(crate) fn find_crate_root_files(crate_path: &Path) -> Result<Vec<PathBuf>> {
     let src = crate_path.join("src");
     let mut roots = Vec::new();
     let lib_rs = src.join("lib.rs");
@@ -62,9 +63,9 @@ fn find_integration_test_files(crate_path: &Path) -> Vec<PathBuf> {
 }
 
 /// A declared `mod` item (external, not inline).
-struct ModDecl {
-    name: String,
-    explicit_path: Option<String>,
+pub(crate) struct ModDecl {
+    pub(crate) name: String,
+    pub(crate) explicit_path: Option<String>,
 }
 
 /// Extract the value of a `#[path = "..."]` attribute, if present.
@@ -87,7 +88,7 @@ fn extract_path_attribute(attrs: &[syn::Attribute]) -> Option<String> {
 
 /// Extract external `mod` declarations from a parsed syntax tree,
 /// filtering out `#[cfg(test)]` modules (unless included) and inline modules.
-fn extract_mod_declarations(syntax: &syn::File, include_tests: bool) -> Vec<ModDecl> {
+pub(crate) fn extract_mod_declarations(syntax: &syn::File, include_tests: bool) -> Vec<ModDecl> {
     let mut decls = Vec::new();
     for item in &syntax.items {
         if let syn::Item::Mod(item_mod) = item {
@@ -119,7 +120,7 @@ fn parse_mod_declarations(file_path: &Path, include_tests: bool) -> Result<Vec<M
 
 /// Resolve a module name to its file path.
 /// Checks `foo.rs` first, then `foo/mod.rs` (Rust 2018 convention).
-fn resolve_mod_path(parent_dir: &Path, mod_name: &str) -> Option<PathBuf> {
+pub(crate) fn resolve_mod_path(parent_dir: &Path, mod_name: &str) -> Option<PathBuf> {
     let file_path = parent_dir.join(format!("{mod_name}.rs"));
     if file_path.exists() {
         return Some(file_path);
@@ -134,7 +135,7 @@ fn resolve_mod_path(parent_dir: &Path, mod_name: &str) -> Option<PathBuf> {
 /// Determine the directory where child modules are resolved.
 /// dir-style files (lib.rs, main.rs, mod.rs): same directory.
 /// file-style files (foo.rs): subdirectory foo/.
-fn child_resolve_dir(file_path: &Path) -> PathBuf {
+pub(crate) fn child_resolve_dir(file_path: &Path) -> PathBuf {
     let dir = file_path.parent().unwrap_or(Path::new("."));
     let file_name = file_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     if file_name == "mod.rs" || file_name == "lib.rs" || file_name == "main.rs" {
@@ -314,6 +315,7 @@ struct WalkContext<'a> {
     workspace_crates: &'a WorkspaceCrates,
     all_module_paths: &'a ModulePathMap,
     crate_exports: &'a CrateExportMap,
+    reexport_map: &'a ReExportMap,
     include_tests: bool,
     base_context: EdgeContext,
 }
@@ -377,6 +379,7 @@ fn walk_module_syn(
         all_module_paths: ctx.all_module_paths,
         crate_exports: ctx.crate_exports,
         current_module_path,
+        reexport_map: ctx.reexport_map,
     };
     let use_deps = parse_workspace_dependencies(&use_items, &res_ctx);
 
@@ -435,6 +438,7 @@ pub(crate) fn analyze_modules_syn(
     workspace_crates: &WorkspaceCrates,
     all_module_paths: &ModulePathMap,
     crate_exports: &CrateExportMap,
+    reexport_map: &ReExportMap,
     include_tests: bool,
 ) -> Result<ModuleTree> {
     let root_files = find_crate_root_files(&crate_info.path)?;
@@ -446,6 +450,7 @@ pub(crate) fn analyze_modules_syn(
         workspace_crates,
         all_module_paths,
         crate_exports,
+        reexport_map,
         include_tests,
         base_context: EdgeContext::production(),
     };
@@ -942,6 +947,7 @@ mod tests {
                 &workspace_crates,
                 &ModulePathMap::default(),
                 &CrateExportMap::default(),
+                &ReExportMap::default(),
                 false,
             )
             .expect("should analyze");
@@ -1006,6 +1012,7 @@ mod tests {
                 &workspace_crates,
                 &all_module_paths,
                 &CrateExportMap::default(),
+                &ReExportMap::default(),
                 false,
             )
             .expect("should analyze");
@@ -1059,6 +1066,7 @@ mod tests {
                 &WorkspaceCrates::default(),
                 &ModulePathMap::default(),
                 &CrateExportMap::default(),
+                &ReExportMap::default(),
                 false,
             )
             .expect("should analyze binary-only crate");
@@ -1095,9 +1103,15 @@ fn main() {
                 dependencies: vec![],
                 dev_dependencies: vec![],
             };
-            let tree =
-                analyze_modules_syn(&crate_info, &ws, &mp, &CrateExportMap::default(), false)
-                    .expect("should analyze");
+            let tree = analyze_modules_syn(
+                &crate_info,
+                &ws,
+                &mp,
+                &CrateExportMap::default(),
+                &ReExportMap::default(),
+                false,
+            )
+            .expect("should analyze");
 
             // Path expressions should be detected as dependencies
             assert!(
@@ -1134,9 +1148,15 @@ fn main() {
                 dependencies: vec![],
                 dev_dependencies: vec![],
             };
-            let tree =
-                analyze_modules_syn(&crate_info, &ws, &mp, &CrateExportMap::default(), false)
-                    .expect("should analyze");
+            let tree = analyze_modules_syn(
+                &crate_info,
+                &ws,
+                &mp,
+                &CrateExportMap::default(),
+                &ReExportMap::default(),
+                false,
+            )
+            .expect("should analyze");
 
             // Should have exactly 1 dep for other_crate::module::Item (deduped)
             let item_deps: Vec<_> = tree
@@ -1177,6 +1197,7 @@ fn main() {
                 &WorkspaceCrates::default(),
                 &ModulePathMap::default(),
                 &CrateExportMap::default(),
+                &ReExportMap::default(),
                 false,
             )
             .expect("should analyze mixed crate");
@@ -1220,6 +1241,7 @@ fn main() {
                 &workspace_crates,
                 &all_module_paths,
                 &CrateExportMap::default(),
+                &ReExportMap::default(),
                 false,
             )
             .expect("should analyze");
@@ -1325,6 +1347,7 @@ fn main() {
                 &ws,
                 &ModulePathMap::default(),
                 &CrateExportMap::default(),
+                &ReExportMap::default(),
                 true,
             )
             .expect("should analyze");
@@ -1367,6 +1390,7 @@ fn main() {
                 &WorkspaceCrates::default(),
                 &ModulePathMap::default(),
                 &CrateExportMap::default(),
+                &ReExportMap::default(),
                 false,
             )
             .expect("should analyze");
@@ -1399,6 +1423,7 @@ fn main() {
                 &ws,
                 &ModulePathMap::default(),
                 &CrateExportMap::default(),
+                &ReExportMap::default(),
                 true,
             )
             .expect("should analyze test-only crate");
@@ -1428,6 +1453,7 @@ fn main() {
                 &WorkspaceCrates::default(),
                 &ModulePathMap::default(),
                 &CrateExportMap::default(),
+                &ReExportMap::default(),
                 false,
             )
             .expect("should not error for test-only crate");
@@ -1471,6 +1497,7 @@ mod tests {
                 &WorkspaceCrates::default(),
                 &mp,
                 &CrateExportMap::default(),
+                &ReExportMap::default(),
                 false,
             )
             .expect("should analyze");

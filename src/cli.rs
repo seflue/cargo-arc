@@ -6,7 +6,8 @@ use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 
 use crate::analyze::{
-    AnalysisBackend, FeatureConfig, analyze_workspace, collect_crate_exports, normalize_crate_name,
+    AnalysisBackend, FeatureConfig, ReExportMap, analyze_workspace, collect_crate_exports,
+    collect_crate_reexports, normalize_crate_name,
 };
 use crate::graph::ArcGraph;
 use crate::layout::{ElementaryCycles, LayoutIR, build_layout};
@@ -182,6 +183,20 @@ fn build_dependency_graph(
         })
         .collect();
 
+    let reexport_map: ReExportMap = crates
+        .iter()
+        .map(|krate| {
+            let name = normalize_crate_name(&krate.name);
+            let exports = collect_crate_reexports(
+                krate,
+                &all_module_paths,
+                &workspace_crates,
+                &crate_exports,
+            );
+            (name, exports)
+        })
+        .collect();
+
     let modules: Vec<_> = crates
         .iter()
         .filter_map(|krate| {
@@ -190,6 +205,7 @@ fn build_dependency_graph(
                 &workspace_crates,
                 &all_module_paths,
                 &crate_exports,
+                &reexport_map,
             ) {
                 Ok(tree) => Some(tree),
                 Err(err) => {
