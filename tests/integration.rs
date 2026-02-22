@@ -26,6 +26,28 @@ fn fixture_args(fixture: &str, include_tests: bool) -> (tempfile::NamedTempFile,
     (temp, args)
 }
 
+/// Helper: build Args for self-analysis (cargo-arc's own Cargo.toml).
+fn self_args() -> (tempfile::NamedTempFile, Args) {
+    let temp = tempfile::NamedTempFile::new().unwrap();
+    let args = Args {
+        output: Some(temp.path().to_path_buf()),
+        manifest_path: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"),
+        features: vec![],
+        all_features: false,
+        no_default_features: false,
+        include_tests: false,
+        debug: false,
+        volatility: false,
+        no_volatility: true,
+        volatility_months: 6,
+        volatility_low: 2,
+        volatility_high: 10,
+        #[cfg(feature = "hir")]
+        hir: false,
+    };
+    (temp, args)
+}
+
 /// Extract crate names that appear as nodes in the SVG STATIC_DATA.
 fn extract_crate_names(svg: &str) -> Vec<String> {
     let re = Regex::new(r#"type: "crate", name: "([^"]+)""#).unwrap();
@@ -63,26 +85,7 @@ fn resolve_arc_names(
 
 #[test]
 fn test_multi_crate_fixture() {
-    let fixture_path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multi_crate/Cargo.toml");
-
-    let temp = tempfile::NamedTempFile::new().unwrap();
-    let args = Args {
-        output: Some(temp.path().to_path_buf()),
-        manifest_path: fixture_path,
-        features: vec![],
-        all_features: false,
-        no_default_features: false,
-        include_tests: false,
-        debug: false,
-        volatility: false,
-        no_volatility: false,
-        volatility_months: 6,
-        volatility_low: 2,
-        volatility_high: 10,
-        #[cfg(feature = "hir")]
-        hir: false,
-    };
+    let (temp, args) = fixture_args("multi_crate", false);
 
     let result = run(args);
     assert!(result.is_ok(), "run() should succeed: {:?}", result);
@@ -104,23 +107,7 @@ fn test_multi_crate_fixture() {
 
 #[test]
 fn test_self_analysis() {
-    let temp = tempfile::NamedTempFile::new().unwrap();
-    let args = Args {
-        output: Some(temp.path().to_path_buf()),
-        manifest_path: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"),
-        features: vec![],
-        all_features: false,
-        no_default_features: false,
-        include_tests: false,
-        debug: false,
-        volatility: false,
-        no_volatility: false,
-        volatility_months: 6,
-        volatility_low: 2,
-        volatility_high: 10,
-        #[cfg(feature = "hir")]
-        hir: false,
-    };
+    let (temp, args) = self_args();
 
     let result = run(args);
     assert!(result.is_ok(), "run() should succeed: {:?}", result);
@@ -141,26 +128,7 @@ fn test_self_analysis() {
 
 #[test]
 fn test_cfg_test_excluded_by_default() {
-    let fixture_path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multi_crate/Cargo.toml");
-
-    let temp = tempfile::NamedTempFile::new().unwrap();
-    let args = Args {
-        output: Some(temp.path().to_path_buf()),
-        manifest_path: fixture_path,
-        features: vec![],
-        all_features: false,
-        no_default_features: false,
-        include_tests: false, // No --cfg test flag
-        debug: false,
-        volatility: false,
-        no_volatility: false,
-        volatility_months: 6,
-        volatility_low: 2,
-        volatility_high: 10,
-        #[cfg(feature = "hir")]
-        hir: false,
-    };
+    let (temp, args) = fixture_args("multi_crate", false);
 
     let result = run(args);
     assert!(result.is_ok(), "run() should succeed: {:?}", result);
