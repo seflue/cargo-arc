@@ -236,70 +236,49 @@ pub fn analyze_modules(
     let crate_name = &crate_info.name;
     // Use actual crate name (normalized) as root path for inter-crate dependency resolution
     let normalized_crate_name = normalize_crate_name(crate_name);
-    let root = walk_module(
-        root_module,
+    let ctx = HirWalkContext {
         db,
         vfs,
-        &normalized_crate_name,
-        &crate_info.path,
+        crate_root: &crate_info.path,
         crate_name,
         workspace_crates,
         all_module_paths,
         crate_exports,
-    );
+    };
+    let root = walk_module(root_module, &normalized_crate_name, &ctx);
 
     Ok(ModuleTree { root })
 }
 
+/// Invariant parameters shared across the recursive HIR module walk.
 #[cfg(feature = "hir")]
-#[allow(clippy::too_many_arguments)]
-fn walk_module(
-    module: hir::Module,
-    db: &ide::RootDatabase,
-    vfs: &ra_ap_vfs::Vfs,
-    parent_path: &str,
-    crate_root: &Path,
-    crate_name: &str,
-    workspace_crates: &WorkspaceCrates,
-    all_module_paths: &ModulePathMap,
-    crate_exports: &CrateExportMap,
-) -> ModuleInfo {
-    let (name, full_path) = resolve_module_name_and_path(module, db, parent_path);
+struct HirWalkContext<'a> {
+    db: &'a ide::RootDatabase,
+    vfs: &'a ra_ap_vfs::Vfs,
+    crate_root: &'a Path,
+    crate_name: &'a str,
+    workspace_crates: &'a WorkspaceCrates,
+    all_module_paths: &'a ModulePathMap,
+    crate_exports: &'a CrateExportMap,
+}
+
+#[cfg(feature = "hir")]
+fn walk_module(module: hir::Module, parent_path: &str, ctx: &HirWalkContext) -> ModuleInfo {
+    let (name, full_path) = resolve_module_name_and_path(module, ctx.db, parent_path);
 
     // Relative module path within the crate (e.g. "render" for render/mod.rs, "" for root)
     let current_module_path = full_path
-        .strip_prefix(&format!("{}::", crate_name))
+        .strip_prefix(&format!("{}::", ctx.crate_name))
         .unwrap_or("");
 
-    // Extract module dependencies from imports/uses in this module's scope
-    let dependencies = extract_module_dependencies(
-        module,
-        db,
-        vfs,
-        crate_root,
-        crate_name,
-        workspace_crates,
-        all_module_paths,
-        crate_exports,
-        current_module_path,
-    );
+    let dependencies = extract_module_dependencies(module, current_module_path, ctx);
 
     let children: Vec<ModuleInfo> = module
-        .declarations(db)
+        .declarations(ctx.db)
         .into_iter()
         .filter_map(|decl| {
             if let hir::ModuleDef::Module(child_module) = decl {
-                Some(walk_module(
-                    child_module,
-                    db,
-                    vfs,
-                    &full_path,
-                    crate_root,
-                    crate_name,
-                    workspace_crates,
-                    all_module_paths,
-                    crate_exports,
-                ))
+                Some(walk_module(child_module, &full_path, ctx))
             } else {
                 None
             }
@@ -318,29 +297,23 @@ fn walk_module(
 #[cfg(feature = "hir")]
 fn extract_module_dependencies(
     module: hir::Module,
-    db: &ide::RootDatabase,
-    vfs: &ra_ap_vfs::Vfs,
-    crate_root: &Path,
-    crate_name: &str,
-    workspace_crates: &WorkspaceCrates,
-    all_module_paths: &ModulePathMap,
-    crate_exports: &CrateExportMap,
     current_module_path: &str,
+    ctx: &HirWalkContext,
 ) -> Vec<DependencyRef> {
     // Get the source file for this module
-    let source = module.definition_source(db);
-    let editioned_file_id = source.file_id.original_file(db);
-    let file_id = editioned_file_id.file_id(db);
+    let source = module.definition_source(ctx.db);
+    let editioned_file_id = source.file_id.original_file(ctx.db);
+    let file_id = editioned_file_id.file_id(ctx.db);
 
     // Get file path from VFS and read from disk
-    let vfs_path = vfs.file_path(file_id);
+    let vfs_path = ctx.vfs.file_path(file_id);
     let Some(abs_path) = vfs_path.as_path() else {
         return Vec::new();
     };
     // Make path relative to crate root
     let abs_path_buf = PathBuf::from(abs_path.as_str());
     let source_file = abs_path_buf
-        .strip_prefix(crate_root)
+        .strip_prefix(ctx.crate_root)
         .map(|p| p.to_path_buf())
         .unwrap_or(abs_path_buf);
     // Graceful degradation: rust-analyzer already parsed this file successfully,
@@ -352,11 +325,11 @@ fn extract_module_dependencies(
     };
 
     let res_ctx = ResolutionContext {
-        current_crate: crate_name,
-        workspace_crates,
+        current_crate: ctx.crate_name,
+        workspace_crates: ctx.workspace_crates,
         source_file: &source_file,
-        all_module_paths,
-        crate_exports,
+        all_module_paths: ctx.all_module_paths,
+        crate_exports: ctx.crate_exports,
         current_module_path,
     };
     parse_workspace_dependencies_from_source(&source_text, &res_ctx)
