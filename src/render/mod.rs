@@ -1,7 +1,7 @@
 //! SVG Generation
 
 use crate::layout::{ItemKind, LayoutIR, NodeId};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 mod constants;
 mod css;
@@ -14,7 +14,8 @@ use elements::{
     render_edges, render_header, render_nodes, render_sidebar, render_toolbar, render_tree_lines,
 };
 use positioning::{
-    calculate_box_width, calculate_canvas_size, calculate_max_arc_width, calculate_positions,
+    PositionedItem, calculate_box_width, calculate_canvas_size, calculate_max_arc_width,
+    calculate_positions,
 };
 use static_data::render_script;
 
@@ -22,7 +23,9 @@ use static_data::render_script;
 pub fn render(ir: &LayoutIR, config: &RenderConfig) -> String {
     let box_width = calculate_box_width(ir);
     let positioned = calculate_positions(ir, config, box_width);
-    let max_arc_width = calculate_max_arc_width(&positioned, ir, config.row_height);
+    let positioned_index: HashMap<NodeId, &PositionedItem> =
+        positioned.iter().map(|p| (p.id, p)).collect();
+    let max_arc_width = calculate_max_arc_width(&positioned_index, ir, config.row_height);
     let (width, height) = calculate_canvas_size(&positioned, config, max_arc_width);
 
     // Collect all node IDs that are parents (have children)
@@ -38,9 +41,9 @@ pub fn render(ir: &LayoutIR, config: &RenderConfig) -> String {
     let mut svg = String::new();
     svg.push_str(&render_header(width, height));
     svg.push_str(&render_styles());
-    svg.push_str(&render_tree_lines(&positioned, ir));
+    svg.push_str(&render_tree_lines(&positioned_index, ir));
     svg.push_str(&render_nodes(&positioned, &parents));
-    svg.push_str(&render_edges(&positioned, ir, config.row_height));
+    svg.push_str(&render_edges(&positioned_index, ir, config.row_height));
     svg.push_str(&render_toolbar(width));
     svg.push_str(&render_sidebar(width));
     svg.push_str(&render_script(config, ir, &positioned, &parents));

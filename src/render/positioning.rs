@@ -1,5 +1,6 @@
 use super::constants::{LAYOUT, RenderConfig};
 use crate::layout::{ItemKind, LayoutIR, NodeId};
+use std::collections::HashMap;
 
 /// Calculate text width based on character count
 fn calculate_text_width(text: &str) -> f32 {
@@ -17,15 +18,15 @@ pub(super) fn calculate_box_width(ir: &LayoutIR) -> f32 {
 
 /// Calculate maximum arc width from edges
 pub(super) fn calculate_max_arc_width(
-    positioned: &[PositionedItem],
+    positioned_index: &HashMap<NodeId, &PositionedItem>,
     ir: &LayoutIR,
     row_height: f32,
 ) -> f32 {
     ir.edges
         .iter()
         .filter_map(|edge| {
-            let from = positioned.iter().find(|p| p.id == edge.from)?;
-            let to = positioned.iter().find(|p| p.id == edge.to)?;
+            let from = positioned_index.get(&edge.from).copied()?;
+            let to = positioned_index.get(&edge.to).copied()?;
             let hops = ((to.y - from.y).abs() / row_height).round().max(1.0);
             Some(LAYOUT.arc_base + hops * LAYOUT.arc_scale + LAYOUT.arrow_length)
         })
@@ -107,6 +108,7 @@ mod tests {
     use super::*;
     use crate::layout::{ItemKind, LayoutEdge, LayoutIR};
     use crate::model::EdgeContext;
+    use std::collections::HashMap;
 
     #[test]
     fn test_calculate_text_width() {
@@ -154,7 +156,8 @@ mod tests {
         let config = RenderConfig::default();
         let box_width = calculate_box_width(&ir);
         let positioned = calculate_positions(&ir, &config, box_width);
-        let max_arc_width = calculate_max_arc_width(&positioned, &ir, config.row_height);
+        let positioned_index: HashMap<_, _> = positioned.iter().map(|p| (p.id, p)).collect();
+        let max_arc_width = calculate_max_arc_width(&positioned_index, &ir, config.row_height);
         let (width, _height) = calculate_canvas_size(&positioned, &config, max_arc_width);
 
         // max_arc for 9 hops = 20 + 9*15 + 8 = 163px
@@ -201,7 +204,8 @@ mod tests {
         let config = RenderConfig::default();
         let box_width = calculate_box_width(&ir);
         let positioned = calculate_positions(&ir, &config, box_width);
-        let max_arc_width = calculate_max_arc_width(&positioned, &ir, config.row_height);
+        let positioned_index: HashMap<_, _> = positioned.iter().map(|p| (p.id, p)).collect();
+        let max_arc_width = calculate_max_arc_width(&positioned_index, &ir, config.row_height);
         let (_width, height) = calculate_canvas_size(&positioned, &config, max_arc_width);
 
         // Height should include LAYOUT.toolbar.height (40) + margin (20*2) + 1 row (30) + shadow padding

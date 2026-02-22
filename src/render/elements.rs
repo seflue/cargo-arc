@@ -2,7 +2,7 @@ use super::constants::{COLORS, CSS, LAYOUT};
 use super::positioning::PositionedItem;
 use crate::layout::{CycleKind, EdgeDirection, ItemKind, LayoutIR, NodeId};
 use crate::model::DependencyKind;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub(super) fn render_header(width: f32, height: f32) -> String {
     format!(
@@ -104,15 +104,18 @@ pub(super) fn render_toolbar(width: f32) -> String {
     toolbar
 }
 
-pub(super) fn render_tree_lines(positioned: &[PositionedItem], ir: &LayoutIR) -> String {
+pub(super) fn render_tree_lines(
+    positioned_index: &HashMap<NodeId, &PositionedItem>,
+    ir: &LayoutIR,
+) -> String {
     let mut lines = String::new();
     lines.push_str("  <g id=\"tree-lines\">\n");
 
     // Find children for each parent
     for item in &ir.items {
         if let ItemKind::Module { parent, .. } = &item.kind {
-            let parent_pos = positioned.iter().find(|p| p.id == *parent);
-            let child_pos = positioned.iter().find(|p| p.id == item.id);
+            let parent_pos = positioned_index.get(parent).copied();
+            let child_pos = positioned_index.get(&item.id).copied();
 
             if let (Some(parent_pos), Some(child_pos)) = (parent_pos, child_pos) {
                 let line_x = parent_pos.x + LAYOUT.tree_line_x_offset;
@@ -205,7 +208,7 @@ pub(super) fn render_nodes(positioned: &[PositionedItem], parents: &HashSet<Node
 }
 
 pub(super) fn render_edges(
-    positioned: &[PositionedItem],
+    positioned_index: &HashMap<NodeId, &PositionedItem>,
     ir: &LayoutIR,
     row_height: f32,
 ) -> String {
@@ -213,8 +216,8 @@ pub(super) fn render_edges(
     let mut hitareas = String::new();
 
     // Find the rightmost edge of all nodes for base arc position
-    let base_x = positioned
-        .iter()
+    let base_x = positioned_index
+        .values()
         .map(|p| p.x + p.width)
         .fold(0.0_f32, |a, b| a.max(b));
 
@@ -233,8 +236,8 @@ pub(super) fn render_edges(
 
     for &idx in &edge_order {
         let edge = &ir.edges[idx];
-        let from_pos = positioned.iter().find(|p| p.id == edge.from);
-        let to_pos = positioned.iter().find(|p| p.id == edge.to);
+        let from_pos = positioned_index.get(&edge.from).copied();
+        let to_pos = positioned_index.get(&edge.to).copied();
 
         if let (Some(from), Some(to)) = (from_pos, to_pos) {
             let from_x = from.x + from.width;
@@ -369,6 +372,7 @@ mod tests {
     use super::*;
     use crate::layout::LayoutEdge;
     use crate::model::EdgeContext;
+    use std::collections::HashMap;
 
     #[test]
     fn test_render_sidebar_basic_structure() {
@@ -411,7 +415,8 @@ mod tests {
         let config = RenderConfig::default();
         let box_width = calculate_box_width(&ir);
         let positioned = calculate_positions(&ir, &config, box_width);
-        let output = render_tree_lines(&positioned, &ir);
+        let positioned_index: HashMap<_, _> = positioned.iter().map(|p| (p.id, p)).collect();
+        let output = render_tree_lines(&positioned_index, &ir);
         assert!(output.contains("tree-line"));
     }
 
@@ -429,7 +434,8 @@ mod tests {
         let config = RenderConfig::default();
         let box_width = calculate_box_width(&ir);
         let positioned = calculate_positions(&ir, &config, box_width);
-        let output = render_tree_lines(&positioned, &ir);
+        let positioned_index: HashMap<_, _> = positioned.iter().map(|p| (p.id, p)).collect();
+        let output = render_tree_lines(&positioned_index, &ir);
         assert!(
             output.contains(r#"class="tree-line""#) && output.contains(r#"data-parent="0""#),
             "Tree lines should have data-parent attribute"
@@ -613,8 +619,9 @@ mod tests {
         let config = RenderConfig::default();
         let box_width = calculate_box_width(&ir);
         let positioned = calculate_positions(&ir, &config, box_width);
+        let positioned_index: HashMap<_, _> = positioned.iter().map(|p| (p.id, p)).collect();
 
-        let output = render_edges(&positioned, &ir, config.row_height);
+        let output = render_edges(&positioned_index, &ir, config.row_height);
         assert!(output.contains(r#"id="edge-1-2""#), "Edge should have id");
         assert!(
             output.contains(r#"data-from="1""#),
@@ -653,8 +660,9 @@ mod tests {
         let config = RenderConfig::default();
         let box_width = calculate_box_width(&ir);
         let positioned = calculate_positions(&ir, &config, box_width);
+        let positioned_index: HashMap<_, _> = positioned.iter().map(|p| (p.id, p)).collect();
 
-        let output = render_edges(&positioned, &ir, config.row_height);
+        let output = render_edges(&positioned_index, &ir, config.row_height);
 
         assert!(
             output.contains(r#"class="arc-hitarea""#),
@@ -693,8 +701,9 @@ mod tests {
         let config = RenderConfig::default();
         let box_width = calculate_box_width(&ir);
         let positioned = calculate_positions(&ir, &config, box_width);
+        let positioned_index: HashMap<_, _> = positioned.iter().map(|p| (p.id, p)).collect();
 
-        let output = render_edges(&positioned, &ir, config.row_height);
+        let output = render_edges(&positioned_index, &ir, config.row_height);
         assert!(
             output.contains("crate-dep-arc"),
             "Crate-to-crate edges should have crate-dep-arc class"
@@ -737,8 +746,9 @@ mod tests {
         let config = RenderConfig::default();
         let box_width = calculate_box_width(&ir);
         let positioned = calculate_positions(&ir, &config, box_width);
+        let positioned_index: HashMap<_, _> = positioned.iter().map(|p| (p.id, p)).collect();
 
-        let output = render_edges(&positioned, &ir, config.row_height);
+        let output = render_edges(&positioned_index, &ir, config.row_height);
 
         // Cycle arc path should have data-cycle-ids="0"
         let cycle_path = output
@@ -812,7 +822,8 @@ mod tests {
         let config = RenderConfig::default();
         let box_width = calculate_box_width(&ir);
         let positioned = calculate_positions(&ir, &config, box_width);
-        let output = render_edges(&positioned, &ir, config.row_height);
+        let positioned_index: HashMap<_, _> = positioned.iter().map(|p| (p.id, p)).collect();
+        let output = render_edges(&positioned_index, &ir, config.row_height);
 
         // Visible path should have comma-separated cycle IDs
         let cycle_path = output
