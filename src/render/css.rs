@@ -423,7 +423,7 @@ fn build_css_rules() -> Vec<CssRule> {
             ],
         ),
         CssRule::new(
-            ".sidebar-arrow",
+            &format!(".{}", c.sidebar.arrow),
             &[
                 ("color", GRAY_400),
                 ("font-family", "sans-serif"),
@@ -557,7 +557,7 @@ fn build_css_rules() -> Vec<CssRule> {
             ],
         ),
         CssRule::new(
-            ".sidebar-node-crate",
+            &format!(".{}", c.sidebar.node_crate),
             &[
                 ("background", BLUE_100),
                 ("padding", "1px 4px"),
@@ -565,7 +565,7 @@ fn build_css_rules() -> Vec<CssRule> {
             ],
         ),
         CssRule::new(
-            ".sidebar-node-module",
+            &format!(".{}", c.sidebar.node_module),
             &[
                 ("background", ORANGE_100),
                 ("padding", "1px 4px"),
@@ -573,22 +573,22 @@ fn build_css_rules() -> Vec<CssRule> {
             ],
         ),
         CssRule::new(
-            ".sidebar-node-from",
+            &format!(".{}", c.sidebar.node_from),
             &[("border", &format!("2px solid {}", PURPLE))],
         ),
         CssRule::new(
-            ".sidebar-node-to",
+            &format!(".{}", c.sidebar.node_to),
             &[("border", &format!("2px solid {}", GREEN))],
         ),
         CssRule::new(
-            ".sidebar-node-crate.sidebar-node-selected",
+            &format!(".{}.{}", c.sidebar.node_crate, c.sidebar.node_selected),
             &[
                 ("background", BLUE_300),
                 ("border", &format!("2px solid {}", BLUE)),
             ],
         ),
         CssRule::new(
-            ".sidebar-node-module.sidebar-node-selected",
+            &format!(".{}.{}", c.sidebar.node_module, c.sidebar.node_selected),
             &[
                 ("background", ORANGE_300),
                 ("border", &format!("2px solid {}", ORANGE)),
@@ -596,20 +596,20 @@ fn build_css_rules() -> Vec<CssRule> {
         ),
         // Transient sidebar mode (hover preview): hide close button and collapse toggles
         CssRule::new(
-            &format!(".{}.sidebar-transient .{}", c.sidebar.root, c.sidebar.close),
+            &format!(".{}.{} .{}", c.sidebar.root, c.sidebar.transient, c.sidebar.close),
             &[("display", "none")],
         ),
         CssRule::new(
             &format!(
-                ".{}.sidebar-transient .{}",
-                c.sidebar.root, c.sidebar.collapse_all
+                ".{}.{} .{}",
+                c.sidebar.root, c.sidebar.transient, c.sidebar.collapse_all
             ),
             &[("display", "none")],
         ),
         CssRule::new(
             &format!(
-                ".{}.sidebar-transient .{}",
-                c.sidebar.root, c.sidebar.toggle
+                ".{}.{} .{}",
+                c.sidebar.root, c.sidebar.transient, c.sidebar.toggle
             ),
             &[
                 ("visibility", "hidden"),

@@ -307,6 +307,13 @@ pub(super) struct SidebarClasses {
     pub line_badge: &'static str,
     pub divider: &'static str,
     pub footer: &'static str,
+    pub arrow: &'static str,
+    pub node_crate: &'static str,
+    pub node_module: &'static str,
+    pub node_from: &'static str,
+    pub node_to: &'static str,
+    pub node_selected: &'static str,
+    pub transient: &'static str,
 }
 
 #[allow(dead_code)]
@@ -397,6 +404,13 @@ pub(super) static CSS: CssClassNames = CssClassNames {
         line_badge: "sidebar-line-badge",
         divider: "sidebar-divider",
         footer: "sidebar-footer",
+        arrow: "sidebar-arrow",
+        node_crate: "sidebar-node-crate",
+        node_module: "sidebar-node-module",
+        node_from: "sidebar-node-from",
+        node_to: "sidebar-node-to",
+        node_selected: "sidebar-node-selected",
+        transient: "sidebar-transient",
     },
 };
 
