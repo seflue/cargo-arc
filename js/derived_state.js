@@ -355,6 +355,7 @@ const DerivedState = {
         toInSet: true,
         originalWidth: staticData.getArcStrokeWidth(arcId),
         isVirtual: false,
+        isCycle: !!arc.cycleIds?.length,
       });
     }
     if (virtualArcUsages.has(arcId)) {
@@ -402,6 +403,7 @@ const DerivedState = {
               toInSet: true,
               originalWidth: staticData.getArcStrokeWidth(cycleArcId),
               isVirtual: false,
+              isCycle: true,
             });
           }
         }
@@ -443,6 +445,7 @@ const DerivedState = {
         originalWidth: staticData.getArcStrokeWidth(arcId),
         isVirtual: false,
         isNonProduction: arc.context?.kind !== 'production',
+        isCycle: !!arc.cycleIds?.length,
       });
     }
     return descs;
@@ -510,6 +513,7 @@ const DerivedState = {
         fromPos,
         toPos,
         ctx,
+        !!desc.isCycle,
       );
 
       result.arcHighlights.set(desc.key, arcHighlight);
@@ -533,6 +537,7 @@ const DerivedState = {
     fromPos,
     toPos,
     ctx,
+    isCycle,
   ) {
     const highlightWidth =
       HighlightLogic.calculateHighlightWidth(originalWidth);
@@ -547,12 +552,20 @@ const DerivedState = {
         fromPos,
         toPos,
         ctx,
+        isCycle,
       ),
     };
   },
 
   /** @private Compute shadow glow data for an arc path. */
-  _computeShadowEntry(originalWidth, relationType, fromPos, toPos, ctx) {
+  _computeShadowEntry(
+    originalWidth,
+    relationType,
+    fromPos,
+    toPos,
+    ctx,
+    isCycle,
+  ) {
     if (!fromPos || !toPos) return null;
     const pathData = this._computeArcPath(
       fromPos,
@@ -563,11 +576,16 @@ const DerivedState = {
     );
     const pathLength = ArcLogic.estimatePathLength(pathData.path);
     const sd = HighlightLogic.calculateShadowData(originalWidth, pathLength);
+    const glowClass = isCycle
+      ? 'glowCycle'
+      : relationType === 'dep'
+        ? 'glowIncoming'
+        : 'glowOutgoing';
     return {
       shadowWidth: sd.shadowWidth,
       visibleLength: sd.visibleLength,
       dashOffset: sd.dashOffset,
-      glowClass: relationType === 'dep' ? 'glowIncoming' : 'glowOutgoing',
+      glowClass,
     };
   },
 

@@ -1564,6 +1564,49 @@ describe('DerivedState', () => {
       expect(result.nodeHighlights.has('C')).toBe(false);
     });
 
+    test('cycle-arc selection: shadow uses glowCycle class', () => {
+      const sd = createMockStaticData(CYCLE_DATA);
+      const state = AppState.create();
+      AppState.setSelection(state, 'arc', 'A-B');
+
+      const result = DerivedState.deriveHighlightState(
+        state,
+        sd,
+        new Map(),
+        new Set(),
+        CYCLE_POSITIONS,
+        ROW_HEIGHT,
+      );
+
+      expect(result).not.toBeNull();
+      // All cycle arcs should use glowCycle, not glowIncoming/glowOutgoing
+      for (const cycleArcId of ['A-B', 'B-C', 'C-A']) {
+        const shadow = result.shadowData.get(cycleArcId);
+        expect(shadow).toBeDefined();
+        expect(shadow.glowClass).toBe('glowCycle');
+      }
+    });
+
+    test('non-cycle arc: shadow uses glowIncoming, not glowCycle', () => {
+      const sd = createMockStaticData(CYCLE_DATA);
+      const state = AppState.create();
+      AppState.setSelection(state, 'arc', 'A-D');
+
+      const result = DerivedState.deriveHighlightState(
+        state,
+        sd,
+        new Map(),
+        new Set(),
+        CYCLE_POSITIONS,
+        ROW_HEIGHT,
+      );
+
+      expect(result).not.toBeNull();
+      const shadow = result.shadowData.get('A-D');
+      expect(shadow).toBeDefined();
+      expect(shadow.glowClass).toBe('glowIncoming');
+    });
+
     test('multi-cycle arc: union of all cycle members highlighted', () => {
       // Arc B-C belongs to both cycle 0 (A→B→C→A) and cycle 1 (B→C→E→B)
       const MULTI_CYCLE_DATA = {

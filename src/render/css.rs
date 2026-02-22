@@ -124,6 +124,7 @@ fn build_css_rules() -> Vec<CssRule> {
         // Glow classes
         CssRule::class(c.relation.glow_incoming, &[("stroke", r.dependency)]),
         CssRule::class(c.relation.glow_outgoing, &[("stroke", r.dependent)]),
+        CssRule::class(c.relation.glow_cycle, &[("stroke", d.cycle)]),
         // Node borders (relation)
         CssRule::class(
             c.relation.dep_node,

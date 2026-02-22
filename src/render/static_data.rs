@@ -260,6 +260,7 @@ fn generate_static_data(
         ("shadowPath", CSS.relation.shadow_path),
         ("glowIncoming", CSS.relation.glow_incoming),
         ("glowOutgoing", CSS.relation.glow_outgoing),
+        ("glowCycle", CSS.relation.glow_cycle),
         ("viewOptions", CSS.toolbar.view_options),
         ("toolbarBtn", CSS.toolbar.btn),
         ("toolbarCheckbox", CSS.toolbar.checkbox),
