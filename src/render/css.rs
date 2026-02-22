@@ -18,6 +18,10 @@ impl CssRule {
                 .collect(),
         }
     }
+
+    fn class(name: &str, properties: &[(&str, &str)]) -> Self {
+        Self::new(&format!(".{}", name), properties)
+    }
 }
 
 fn build_css_rules() -> Vec<CssRule> {
@@ -30,32 +34,32 @@ fn build_css_rules() -> Vec<CssRule> {
 
     vec![
         // Node base styles
-        CssRule::new(
-            &format!(".{}", c.nodes.crate_node),
+        CssRule::class(
+            c.nodes.crate_node,
             &[
                 ("fill", n.crate_fill),
                 ("stroke", n.crate_stroke),
                 ("stroke-width", "1.5"),
             ],
         ),
-        CssRule::new(
-            &format!(".{}", c.nodes.module),
+        CssRule::class(
+            c.nodes.module,
             &[
                 ("fill", n.module_fill),
                 ("stroke", n.module_stroke),
                 ("stroke-width", "1.5"),
             ],
         ),
-        CssRule::new(
-            &format!(".{}", c.nodes.label),
+        CssRule::class(
+            c.nodes.label,
             &[
                 ("font-family", "monospace"),
                 ("font-size", "12px"),
                 ("pointer-events", "none"),
             ],
         ),
-        CssRule::new(
-            &format!(".{}", c.nodes.tree_line),
+        CssRule::class(
+            c.nodes.tree_line,
             &[("stroke", n.tree_line), ("stroke-width", "1")],
         ),
         // Arc base styles
@@ -63,8 +67,8 @@ fn build_css_rules() -> Vec<CssRule> {
             &format!(".{}, .{}", c.direction.dep_arc, c.direction.cycle_arc),
             &[("pointer-events", "none")],
         ),
-        CssRule::new(
-            &format!(".{}", c.direction.dep_arc),
+        CssRule::class(
+            c.direction.dep_arc,
             &[("fill", "none"), ("stroke-width", "0.5")],
         ),
         CssRule::new(
@@ -75,29 +79,20 @@ fn build_css_rules() -> Vec<CssRule> {
             &format!(".{}.{}", c.direction.dep_arc, c.direction.upward),
             &[("stroke", d.upward)],
         ),
-        CssRule::new(
-            &format!(".{}", c.direction.dep_arrow),
-            &[("fill", d.downward)],
-        ),
-        CssRule::new(
-            &format!(".{}", c.direction.upward_arrow),
-            &[("fill", d.upward)],
-        ),
-        CssRule::new(
-            &format!(".{}", c.direction.cycle_arc),
+        CssRule::class(c.direction.dep_arrow, &[("fill", d.downward)]),
+        CssRule::class(c.direction.upward_arrow, &[("fill", d.upward)]),
+        CssRule::class(
+            c.direction.cycle_arc,
             &[
                 ("fill", "none"),
                 ("stroke", d.cycle),
                 ("stroke-width", "1.0"),
             ],
         ),
-        CssRule::new(
-            &format!(".{}", c.direction.cycle_arrow),
-            &[("fill", d.cycle)],
-        ),
+        CssRule::class(c.direction.cycle_arrow, &[("fill", d.cycle)]),
         // Hit-area
-        CssRule::new(
-            &format!(".{}", c.direction.arc_hitarea),
+        CssRule::class(
+            c.direction.arc_hitarea,
             &[
                 ("fill", "none"),
                 ("stroke", "transparent"),
@@ -107,45 +102,39 @@ fn build_css_rules() -> Vec<CssRule> {
             ],
         ),
         // Selection
-        CssRule::new(
-            &format!(".{}", c.node_selection.selected_crate),
+        CssRule::class(
+            c.node_selection.selected_crate,
             &[("fill", ns.crate_fill), ("stroke-width", "3")],
         ),
-        CssRule::new(
-            &format!(".{}", c.node_selection.selected_module),
+        CssRule::class(
+            c.node_selection.selected_module,
             &[("fill", ns.module_fill), ("stroke-width", "3")],
         ),
-        CssRule::new(
-            &format!(".{}", c.node_selection.group_member),
+        CssRule::class(
+            c.node_selection.group_member,
             &[("stroke", r.dependency), ("stroke-width", "2")],
         ),
-        CssRule::new(
-            &format!(".{}", c.node_selection.cycle_member),
+        CssRule::class(
+            c.node_selection.cycle_member,
             &[("stroke", d.cycle), ("stroke-width", "1.5")],
         ),
         // Highlighted arc (marker class)
-        CssRule::new(&format!(".{}", c.relation.highlighted_arc), &[]),
+        CssRule::class(c.relation.highlighted_arc, &[]),
         // Glow classes
-        CssRule::new(
-            &format!(".{}", c.relation.glow_incoming),
-            &[("stroke", r.dependency)],
-        ),
-        CssRule::new(
-            &format!(".{}", c.relation.glow_outgoing),
-            &[("stroke", r.dependent)],
-        ),
+        CssRule::class(c.relation.glow_incoming, &[("stroke", r.dependency)]),
+        CssRule::class(c.relation.glow_outgoing, &[("stroke", r.dependent)]),
         // Node borders (relation)
-        CssRule::new(
-            &format!(".{}", c.relation.dep_node),
+        CssRule::class(
+            c.relation.dep_node,
             &[("stroke", r.dependency), ("stroke-width", "2.5")],
         ),
-        CssRule::new(
-            &format!(".{}", c.relation.dependent_node),
+        CssRule::class(
+            c.relation.dependent_node,
             &[("stroke", r.dependent), ("stroke-width", "2.5")],
         ),
         // Dimmed
-        CssRule::new(
-            &format!(".{}", c.relation.dimmed),
+        CssRule::class(
+            c.relation.dimmed,
             &[("opacity", "0.3"), ("pointer-events", "none")],
         ),
         CssRule::new(
@@ -241,8 +230,8 @@ fn build_css_rules() -> Vec<CssRule> {
             &[("cursor", "pointer")],
         ),
         // Collapse
-        CssRule::new(
-            &format!(".{}", c.nodes.collapse_toggle),
+        CssRule::class(
+            c.nodes.collapse_toggle,
             &[
                 ("font-family", "monospace"),
                 ("font-size", "14px"),
@@ -254,10 +243,10 @@ fn build_css_rules() -> Vec<CssRule> {
             &format!(".{}:hover", c.nodes.collapse_toggle),
             &[("fill", n.collapse_hover)],
         ),
-        CssRule::new(&format!(".{}", c.nodes.collapsed), &[("display", "none")]),
+        CssRule::class(c.nodes.collapsed, &[("display", "none")]),
         // Virtual arcs
-        CssRule::new(
-            &format!(".{}", c.direction.virtual_arc),
+        CssRule::class(
+            c.direction.virtual_arc,
             &[("fill", "none"), ("stroke-width", "0.5")],
         ),
         CssRule::new(
@@ -268,10 +257,7 @@ fn build_css_rules() -> Vec<CssRule> {
             &format!(".{}.{}", c.direction.virtual_arc, c.direction.upward),
             &[("stroke", d.upward)],
         ),
-        CssRule::new(
-            &format!(".{}", c.direction.virtual_arrow),
-            &[("cursor", "pointer")],
-        ),
+        CssRule::class(c.direction.virtual_arrow, &[("cursor", "pointer")]),
         CssRule::new(
             &format!(".{}.{}", c.direction.virtual_arrow, c.direction.downward),
             &[("fill", d.downward)],
@@ -281,8 +267,8 @@ fn build_css_rules() -> Vec<CssRule> {
             &[("fill", d.upward)],
         ),
         // Arc count labels
-        CssRule::new(
-            &format!(".{}", c.labels.arc_count),
+        CssRule::class(
+            c.labels.arc_count,
             &[
                 ("font-family", "monospace"),
                 ("font-size", "10px"),
@@ -290,10 +276,7 @@ fn build_css_rules() -> Vec<CssRule> {
                 ("text-anchor", "middle"),
             ],
         ),
-        CssRule::new(
-            &format!(".{}", c.labels.arc_count_bg),
-            &[("fill", d.count_bg), ("rx", "2")],
-        ),
+        CssRule::class(c.labels.arc_count_bg, &[("fill", d.count_bg), ("rx", "2")]),
         CssRule::new(
             &format!(".{}.dep-edge", c.labels.arc_count),
             &[
@@ -316,22 +299,19 @@ fn build_css_rules() -> Vec<CssRule> {
             &format!(".{}.{}", c.labels.arc_count, c.relation.dimmed),
             &[("opacity", "0.3"), ("fill", r.dimmed)],
         ),
-        CssRule::new(
-            &format!(".{}", c.nodes.child_count),
+        CssRule::class(
+            c.nodes.child_count,
             &[("font-size", "10px"), ("fill", n.child_count)],
         ),
         // Shadow path
-        CssRule::new(
-            &format!(".{}", c.relation.shadow_path),
+        CssRule::class(
+            c.relation.shadow_path,
             &[("pointer-events", "none"), ("stroke-linecap", "round")],
         ),
         // Toolbar
-        CssRule::new(
-            &format!(".{}", c.toolbar.view_options),
-            &[("cursor", "default")],
-        ),
-        CssRule::new(
-            &format!(".{}", c.toolbar.btn),
+        CssRule::class(c.toolbar.view_options, &[("cursor", "default")]),
+        CssRule::class(
+            c.toolbar.btn,
             &[
                 ("fill", t.btn_fill),
                 ("stroke", t.btn_stroke),
@@ -343,16 +323,16 @@ fn build_css_rules() -> Vec<CssRule> {
             &format!(".{}:hover", c.toolbar.btn),
             &[("fill", t.btn_hover)],
         ),
-        CssRule::new(
-            &format!(".{}", c.toolbar.btn_text),
+        CssRule::class(
+            c.toolbar.btn_text,
             &[
                 ("font-family", "sans-serif"),
                 ("font-size", "11px"),
                 ("text-anchor", "middle"),
             ],
         ),
-        CssRule::new(
-            &format!(".{}", c.toolbar.checkbox),
+        CssRule::class(
+            c.toolbar.checkbox,
             &[
                 ("fill", t.checkbox),
                 ("stroke", t.btn_stroke),
@@ -364,30 +344,24 @@ fn build_css_rules() -> Vec<CssRule> {
             &format!(".{}.{}", c.toolbar.checkbox, c.toolbar.checked),
             &[("fill", t.checkbox_checked)],
         ),
-        CssRule::new(
-            &format!(".{}", c.toolbar.label),
+        CssRule::class(
+            c.toolbar.label,
             &[
                 ("font-family", "sans-serif"),
                 ("font-size", "11px"),
                 ("cursor", "pointer"),
             ],
         ),
-        CssRule::new(
-            &format!(".{}", c.toolbar.separator),
-            &[("stroke", t.separator)],
-        ),
-        CssRule::new(
-            &format!(".{}", c.toolbar.disabled),
+        CssRule::class(c.toolbar.separator, &[("stroke", t.separator)]),
+        CssRule::class(
+            c.toolbar.disabled,
             &[("opacity", "0.4"), ("pointer-events", "none")],
         ),
         // Filter visibility
-        CssRule::new(
-            &format!(".{}", c.labels.hidden_by_filter),
-            &[("display", "none")],
-        ),
+        CssRule::class(c.labels.hidden_by_filter, &[("display", "none")]),
         // Sidebar
-        CssRule::new(
-            &format!(".{}", c.sidebar.root),
+        CssRule::class(
+            c.sidebar.root,
             &[
                 ("background", GRAY_50),
                 ("border", &format!("1px solid {}", GRAY_200)),
@@ -402,8 +376,8 @@ fn build_css_rules() -> Vec<CssRule> {
                 ("user-select", "text"),
             ],
         ),
-        CssRule::new(
-            &format!(".{}", c.sidebar.header),
+        CssRule::class(
+            c.sidebar.header,
             &[
                 ("display", "flex"),
                 ("justify-content", "space-between"),
@@ -412,8 +386,8 @@ fn build_css_rules() -> Vec<CssRule> {
                 ("border-bottom", &format!("1px solid {}", GRAY_200)),
             ],
         ),
-        CssRule::new(
-            &format!(".{}", c.sidebar.title),
+        CssRule::class(
+            c.sidebar.title,
             &[
                 ("font-weight", "bold"),
                 ("font-size", "13px"),
@@ -422,8 +396,8 @@ fn build_css_rules() -> Vec<CssRule> {
                 ("gap", "6px"),
             ],
         ),
-        CssRule::new(
-            &format!(".{}", c.sidebar.arrow),
+        CssRule::class(
+            c.sidebar.arrow,
             &[
                 ("color", GRAY_400),
                 ("font-family", "sans-serif"),
@@ -431,8 +405,8 @@ fn build_css_rules() -> Vec<CssRule> {
                 ("font-weight", "normal"),
             ],
         ),
-        CssRule::new(
-            &format!(".{}", c.sidebar.close),
+        CssRule::class(
+            c.sidebar.close,
             &[
                 ("cursor", "pointer"),
                 ("font-size", "16px"),
@@ -446,16 +420,16 @@ fn build_css_rules() -> Vec<CssRule> {
             &format!(".{}:hover", c.sidebar.close),
             &[("color", GRAY_600)],
         ),
-        CssRule::new(
-            &format!(".{}", c.sidebar.header_actions),
+        CssRule::class(
+            c.sidebar.header_actions,
             &[
                 ("display", "flex"),
                 ("align-items", "center"),
                 ("gap", "2px"),
             ],
         ),
-        CssRule::new(
-            &format!(".{}", c.sidebar.collapse_all),
+        CssRule::class(
+            c.sidebar.collapse_all,
             &[
                 ("cursor", "pointer"),
                 ("font-size", "16px"),
@@ -469,20 +443,17 @@ fn build_css_rules() -> Vec<CssRule> {
             &format!(".{}:hover", c.sidebar.collapse_all),
             &[("color", GRAY_600)],
         ),
-        CssRule::new(
-            &format!(".{}", c.sidebar.content),
+        CssRule::class(
+            c.sidebar.content,
             &[
                 ("overflow-y", "auto"),
                 ("padding", "8px 10px"),
                 ("flex", "1"),
             ],
         ),
-        CssRule::new(
-            &format!(".{}", c.sidebar.usage_group),
-            &[("margin-bottom", "10px")],
-        ),
-        CssRule::new(
-            &format!(".{}", c.sidebar.symbol),
+        CssRule::class(c.sidebar.usage_group, &[("margin-bottom", "10px")]),
+        CssRule::class(
+            c.sidebar.symbol,
             &[
                 ("cursor", "pointer"),
                 ("display", "flex"),
@@ -492,8 +463,8 @@ fn build_css_rules() -> Vec<CssRule> {
                 ("white-space", "nowrap"),
             ],
         ),
-        CssRule::new(
-            &format!(".{}", c.sidebar.location),
+        CssRule::class(
+            c.sidebar.location,
             &[
                 ("color", GRAY_400),
                 ("padding-left", "12px"),
@@ -501,36 +472,27 @@ fn build_css_rules() -> Vec<CssRule> {
                 ("white-space", "nowrap"),
             ],
         ),
-        CssRule::new(
-            &format!(".{}", c.sidebar.toggle),
+        CssRule::class(
+            c.sidebar.toggle,
             &[
                 ("font-size", "10px"),
                 ("color", GRAY_400),
                 ("width", "12px"),
             ],
         ),
-        CssRule::new(
-            &format!(".{}", c.sidebar.symbol_name),
-            &[("font-weight", "bold")],
-        ),
-        CssRule::new(
-            &format!(".{}", c.sidebar.ns),
-            &[("color", GRAY_400), ("font-size", "10px")],
-        ),
-        CssRule::new(
-            &format!(".{}", c.sidebar.ref_count),
+        CssRule::class(c.sidebar.symbol_name, &[("font-weight", "bold")]),
+        CssRule::class(c.sidebar.ns, &[("color", GRAY_400), ("font-size", "10px")]),
+        CssRule::class(
+            c.sidebar.ref_count,
             &[
                 ("color", GRAY_400),
                 ("font-size", "10px"),
                 ("margin-left", "auto"),
             ],
         ),
-        CssRule::new(
-            &format!(".{}", c.sidebar.locations),
-            &[("padding-left", "16px")],
-        ),
-        CssRule::new(
-            &format!(".{}", c.sidebar.line_badge),
+        CssRule::class(c.sidebar.locations, &[("padding-left", "16px")]),
+        CssRule::class(
+            c.sidebar.line_badge,
             &[
                 ("background", BLUE_100),
                 ("color", BLUE),
@@ -539,16 +501,16 @@ fn build_css_rules() -> Vec<CssRule> {
                 ("font-size", "10px"),
             ],
         ),
-        CssRule::new(
-            &format!(".{}", c.sidebar.divider),
+        CssRule::class(
+            c.sidebar.divider,
             &[
                 ("border", "none"),
                 ("border-top", &format!("1px solid {}", GRAY_200)),
                 ("margin", "6px 0"),
             ],
         ),
-        CssRule::new(
-            &format!(".{}", c.sidebar.footer),
+        CssRule::class(
+            c.sidebar.footer,
             &[
                 ("padding", "6px 10px"),
                 ("border-top", &format!("1px solid {}", GRAY_200)),
@@ -556,28 +518,28 @@ fn build_css_rules() -> Vec<CssRule> {
                 ("color", GRAY_400),
             ],
         ),
-        CssRule::new(
-            &format!(".{}", c.sidebar.node_crate),
+        CssRule::class(
+            c.sidebar.node_crate,
             &[
                 ("background", BLUE_100),
                 ("padding", "1px 4px"),
                 ("border-radius", "3px"),
             ],
         ),
-        CssRule::new(
-            &format!(".{}", c.sidebar.node_module),
+        CssRule::class(
+            c.sidebar.node_module,
             &[
                 ("background", ORANGE_100),
                 ("padding", "1px 4px"),
                 ("border-radius", "3px"),
             ],
         ),
-        CssRule::new(
-            &format!(".{}", c.sidebar.node_from),
+        CssRule::class(
+            c.sidebar.node_from,
             &[("border", &format!("2px solid {}", PURPLE))],
         ),
-        CssRule::new(
-            &format!(".{}", c.sidebar.node_to),
+        CssRule::class(
+            c.sidebar.node_to,
             &[("border", &format!("2px solid {}", GREEN))],
         ),
         CssRule::new(
@@ -596,7 +558,10 @@ fn build_css_rules() -> Vec<CssRule> {
         ),
         // Transient sidebar mode (hover preview): hide close button and collapse toggles
         CssRule::new(
-            &format!(".{}.{} .{}", c.sidebar.root, c.sidebar.transient, c.sidebar.close),
+            &format!(
+                ".{}.{} .{}",
+                c.sidebar.root, c.sidebar.transient, c.sidebar.close
+            ),
             &[("display", "none")],
         ),
         CssRule::new(
