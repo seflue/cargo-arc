@@ -40,59 +40,10 @@ function createFakeElement(tagName) {
   };
 }
 
-function createMockDomAdapter() {
-  const calls = new Map();
-  const elements = new Map();
-  const selectorResults = new Map();
-  function track(method, args) {
-    if (!calls.has(method)) calls.set(method, []);
-    calls.get(method).push([...args]);
-  }
-  return {
-    getElementById(id) { track("getElementById", [id]); return elements.get(id) ?? null; },
-    querySelector(sel) { track("querySelector", [sel]); return selectorResults.get(sel) ?? null; },
-    querySelectorAll(sel) { track("querySelectorAll", [sel]); return selectorResults.get(sel) ?? []; },
-    createSvgElement(tag) { track("createSvgElement", [tag]); return createFakeElement(tag); },
-    // Convenience methods (use Selectors)
-    getNode(nodeId) { return this.getElementById(Selectors.nodeId(nodeId)); },
-    // Raw access - returns arc regardless of visibility (for reset operations)
-    getArc(arcId) { return this.querySelector(Selectors.baseArc(arcId)); },
-    // Filtered access - returns only VISIBLE arc (for apply/highlight operations)
-    getVisibleArc(arcId) {
-      const arc = this.getArc(arcId);
-      if (!arc || arc.style.display === 'none') return null;
-      return arc;
-    },
-    getHitarea(arcId) { return this.querySelector(Selectors.hitarea(arcId)); },
-    getArrows(arcId) { return this.querySelectorAll(Selectors.arrows(arcId)); },
-    getVisibleArrows(arcId) {
-      const arrows = this.getArrows(arcId);
-      return Array.from(arrows).filter(arr => arr.style.display !== 'none');
-    },
-    getVirtualArrows(arcId) { return this.querySelectorAll(Selectors.virtualArrows(arcId)); },
-    getLabelGroup(arcId) { return this.querySelector(Selectors.labelGroup(arcId)); },
-    getCollapseToggle(nodeId) { return this.querySelector(Selectors.collapseToggle(nodeId)); },
-    getCountLabel(nodeId) { return this.getElementById(Selectors.countId(nodeId)); },
-    getTreeLines(nodeId, role) {
-      const sel = role === 'child' ? Selectors.treeLineChild(nodeId) : Selectors.treeLineParent(nodeId);
-      return this.querySelectorAll(sel);
-    },
-    getSvgRoot() { return this.querySelector('svg'); },
-    getAllHitareas() { return this.querySelectorAll(Selectors.allHitareas()); },
-    _getCalls(method) { return calls.get(method) ?? []; },
-    _registerElement(id, el) { elements.set(id, el); },
-    _registerSelector(sel, result) { selectorResults.set(sel, result); },
-  };
-}
-
-const SVG_NS = "http://www.w3.org/2000/svg";
-
-const DomAdapter = {
-  getElementById(id) { return document.getElementById(id); },
-  querySelector(sel) { return document.querySelector(sel); },
-  querySelectorAll(sel) { return document.querySelectorAll(sel); },
-  createSvgElement(tag) { return document.createElementNS(SVG_NS, tag); },
-  // Convenience methods (use Selectors)
+// Convenience methods shared between DomAdapter and mock.
+// These only call this.getElementById/querySelector/querySelectorAll,
+// so they work on any object that provides those four base methods.
+const convenienceMethods = {
   getNode(nodeId) { return this.getElementById(Selectors.nodeId(nodeId)); },
   // Raw access - returns arc regardless of visibility (for reset operations)
   getArc(arcId) { return this.querySelector(Selectors.baseArc(arcId)); },
@@ -120,6 +71,36 @@ const DomAdapter = {
   },
   getSvgRoot() { return this.querySelector('svg'); },
   getAllHitareas() { return this.querySelectorAll(Selectors.allHitareas()); },
+};
+
+function createMockDomAdapter() {
+  const calls = new Map();
+  const elements = new Map();
+  const selectorResults = new Map();
+  function track(method, args) {
+    if (!calls.has(method)) calls.set(method, []);
+    calls.get(method).push([...args]);
+  }
+  return {
+    getElementById(id) { track("getElementById", [id]); return elements.get(id) ?? null; },
+    querySelector(sel) { track("querySelector", [sel]); return selectorResults.get(sel) ?? null; },
+    querySelectorAll(sel) { track("querySelectorAll", [sel]); return selectorResults.get(sel) ?? []; },
+    createSvgElement(tag) { track("createSvgElement", [tag]); return createFakeElement(tag); },
+    ...convenienceMethods,
+    _getCalls(method) { return calls.get(method) ?? []; },
+    _registerElement(id, el) { elements.set(id, el); },
+    _registerSelector(sel, result) { selectorResults.set(sel, result); },
+  };
+}
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+const DomAdapter = {
+  getElementById(id) { return document.getElementById(id); },
+  querySelector(sel) { return document.querySelector(sel); },
+  querySelectorAll(sel) { return document.querySelectorAll(sel); },
+  createSvgElement(tag) { return document.createElementNS(SVG_NS, tag); },
+  ...convenienceMethods,
 };
 
 // Export for Bun/Node
