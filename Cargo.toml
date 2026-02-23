@@ -1,13 +1,21 @@
 [package]
 name = "cargo-arc"
-version = "0.0.1"
+version = "0.1.0"
 edition = "2024"
 description = "Visualize crate and module dependencies in Cargo workspaces"
 license = "MIT OR Apache-2.0"
-keywords = ["cargo", "dependencies", "architecture", "visualization", "workspace"]
+keywords = [
+  "cargo",
+  "dependencies",
+  "architecture",
+  "visualization",
+  "workspace",
+]
 categories = ["development-tools::cargo-plugins"]
 authors = ["Sebastian Flügge"]
 readme = "README.md"
+repository = "https://github.com/seflue/cargo-arc"
+homepage = "https://github.com/seflue/cargo-arc"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
@@ -50,6 +58,6 @@ hir = [
 pedantic = { level = "warn", priority = -1 }
 
 [dev-dependencies]
-assert2 = "0.3"
-rstest = "0.25"
+assert2 = "0.4"
+rstest = "0.26"
 tempfile = "3"
