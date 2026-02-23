@@ -1,12 +1,15 @@
 //! Module discovery via syn + filesystem walk.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use super::reexports::ReExportMap;
+use super::mod_resolver::{
+    ModDecl, child_resolve_dir, extract_mod_declarations, find_crate_root_files, resolve_mod_path,
+};
+use super::use_parser::ReExportMap;
 use super::use_parser::{
-    ResolutionContext, collect_all_path_refs, is_cfg_test, parse_path_ref_dependencies,
+    ResolutionContext, collect_all_path_refs, parse_path_ref_dependencies,
     parse_workspace_dependencies,
 };
 use crate::model::normalize_crate_name;
@@ -14,31 +17,6 @@ use crate::model::{
     CrateExportMap, CrateInfo, DependencyKind, DependencyRef, EdgeContext, ModuleInfo,
     ModulePathMap, ModuleTree, TestKind, WorkspaceCrates,
 };
-
-/// Find root source files (lib.rs and/or main.rs) for a crate.
-/// Returns all existing root files, lib.rs first.
-/// Returns empty Vec (not error) when src/ is missing but tests/ exists (test-only crate).
-pub(crate) fn find_crate_root_files(crate_path: &Path) -> Result<Vec<PathBuf>> {
-    let src = crate_path.join("src");
-    let mut roots = Vec::new();
-    let lib_rs = src.join("lib.rs");
-    if lib_rs.exists() {
-        roots.push(lib_rs);
-    }
-    let main_rs = src.join("main.rs");
-    if main_rs.exists() {
-        roots.push(main_rs);
-    }
-    if roots.is_empty() {
-        // Test-only crates (no src/ but have tests/) are valid
-        let tests_dir = crate_path.join("tests");
-        if tests_dir.is_dir() {
-            return Ok(roots);
-        }
-        bail!("no lib.rs or main.rs found in {}", src.display());
-    }
-    Ok(roots)
-}
 
 /// Find integration test files in `tests/*.rs`.
 /// Each top-level `.rs` file is an independent test binary.
@@ -62,52 +40,6 @@ fn find_integration_test_files(crate_path: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// A declared `mod` item (external, not inline).
-pub(crate) struct ModDecl {
-    pub(crate) name: String,
-    pub(crate) explicit_path: Option<String>,
-}
-
-/// Extract the value of a `#[path = "..."]` attribute, if present.
-fn extract_path_attribute(attrs: &[syn::Attribute]) -> Option<String> {
-    attrs.iter().find_map(|attr| {
-        if !attr.path().is_ident("path") {
-            return None;
-        }
-        if let syn::Meta::NameValue(nv) = &attr.meta
-            && let syn::Expr::Lit(syn::ExprLit {
-                lit: syn::Lit::Str(s),
-                ..
-            }) = &nv.value
-        {
-            return Some(s.value());
-        }
-        None
-    })
-}
-
-/// Extract external `mod` declarations from a parsed syntax tree,
-/// filtering out `#[cfg(test)]` modules (unless included) and inline modules.
-pub(crate) fn extract_mod_declarations(syntax: &syn::File, include_tests: bool) -> Vec<ModDecl> {
-    let mut decls = Vec::new();
-    for item in &syntax.items {
-        if let syn::Item::Mod(item_mod) = item {
-            if item_mod.content.is_some() {
-                continue;
-            }
-            // Skip #[cfg(test)] modules unless --include-tests was passed
-            if !include_tests && is_cfg_test(&item_mod.attrs) {
-                continue;
-            }
-            decls.push(ModDecl {
-                name: item_mod.ident.to_string(),
-                explicit_path: extract_path_attribute(&item_mod.attrs),
-            });
-        }
-    }
-    decls
-}
-
 /// Parse a Rust source file and return all external `mod` declarations.
 /// Convenience wrapper around `extract_mod_declarations` for callers with a file path.
 fn parse_mod_declarations(file_path: &Path, include_tests: bool) -> Result<Vec<ModDecl>> {
@@ -116,34 +48,6 @@ fn parse_mod_declarations(file_path: &Path, include_tests: bool) -> Result<Vec<M
     let syntax =
         syn::parse_file(&source).with_context(|| format!("parsing {}", file_path.display()))?;
     Ok(extract_mod_declarations(&syntax, include_tests))
-}
-
-/// Resolve a module name to its file path.
-/// Checks `foo.rs` first, then `foo/mod.rs` (Rust 2018 convention).
-pub(crate) fn resolve_mod_path(parent_dir: &Path, mod_name: &str) -> Option<PathBuf> {
-    let file_path = parent_dir.join(format!("{mod_name}.rs"));
-    if file_path.exists() {
-        return Some(file_path);
-    }
-    let dir_path = parent_dir.join(mod_name).join("mod.rs");
-    if dir_path.exists() {
-        return Some(dir_path);
-    }
-    None
-}
-
-/// Determine the directory where child modules are resolved.
-/// dir-style files (lib.rs, main.rs, mod.rs): same directory.
-/// file-style files (foo.rs): subdirectory foo/.
-pub(crate) fn child_resolve_dir(file_path: &Path) -> PathBuf {
-    let dir = file_path.parent().unwrap_or(Path::new("."));
-    let file_name = file_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    if file_name == "mod.rs" || file_name == "lib.rs" || file_name == "main.rs" {
-        dir.to_path_buf()
-    } else {
-        let stem = file_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-        dir.join(stem)
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -553,77 +457,6 @@ mod tests {
         }
     }
 
-    mod find_crate_root {
-        use super::*;
-
-        #[test]
-        fn test_find_crate_root_lib() {
-            let tmp = TestProject::new().file("src/lib.rs", "").build();
-            let result = find_crate_root_files(tmp.path()).unwrap();
-            assert_eq!(result, vec![tmp.path().join("src/lib.rs")]);
-        }
-
-        #[test]
-        fn test_find_crate_root_main() {
-            let tmp = TestProject::new().file("src/main.rs", "").build();
-            let result = find_crate_root_files(tmp.path()).unwrap();
-            assert_eq!(result, vec![tmp.path().join("src/main.rs")]);
-        }
-
-        #[test]
-        fn test_find_crate_root_both_returns_vec() {
-            let tmp = TestProject::new()
-                .file("src/lib.rs", "")
-                .file("src/main.rs", "")
-                .build();
-            let result = find_crate_root_files(tmp.path()).unwrap();
-            assert_eq!(
-                result,
-                vec![
-                    tmp.path().join("src/lib.rs"),
-                    tmp.path().join("src/main.rs")
-                ]
-            );
-        }
-
-        #[test]
-        fn test_find_crate_root_missing() {
-            let tmp = TestProject::new().build();
-            let result = find_crate_root_files(tmp.path());
-            assert!(result.is_err());
-        }
-    }
-
-    mod is_cfg_test_tests {
-        use super::*;
-
-        fn parse_attrs(code: &str) -> Vec<syn::Attribute> {
-            let file: syn::File = syn::parse_str(code).unwrap();
-            match &file.items[0] {
-                syn::Item::Mod(m) => m.attrs.clone(),
-                _ => panic!("expected mod item"),
-            }
-        }
-
-        #[test]
-        fn test_is_cfg_test_positive() {
-            let attrs = parse_attrs("#[cfg(test)] mod tests;");
-            assert!(is_cfg_test(&attrs));
-        }
-
-        #[test]
-        fn test_is_cfg_test_negative() {
-            let attrs = parse_attrs("#[cfg(feature = \"foo\")] mod x;");
-            assert!(!is_cfg_test(&attrs));
-        }
-
-        #[test]
-        fn test_is_cfg_test_no_attrs() {
-            let attrs = parse_attrs("mod foo;");
-            assert!(!is_cfg_test(&attrs));
-        }
-    }
-
     mod parse_mod {
         use super::*;
 
@@ -683,41 +516,6 @@ mod tests {
             assert_eq!(decls.len(), 1);
             assert_eq!(decls[0].name, "foo");
             assert_eq!(decls[0].explicit_path.as_deref(), Some("custom.rs"));
-        }
-    }
-
-    mod resolve_mod {
-        use super::*;
-
-        #[test]
-        fn test_resolve_mod_file() {
-            let tmp = TestProject::new().file("foo.rs", "").build();
-            let result = resolve_mod_path(tmp.path(), "foo");
-            assert_eq!(result, Some(tmp.path().join("foo.rs")));
-        }
-
-        #[test]
-        fn test_resolve_mod_dir() {
-            let tmp = TestProject::new().file("foo/mod.rs", "").build();
-            let result = resolve_mod_path(tmp.path(), "foo");
-            assert_eq!(result, Some(tmp.path().join("foo/mod.rs")));
-        }
-
-        #[test]
-        fn test_resolve_mod_missing() {
-            let tmp = TestProject::new().build();
-            let result = resolve_mod_path(tmp.path(), "foo");
-            assert_eq!(result, None);
-        }
-
-        #[test]
-        fn test_resolve_mod_prefers_file() {
-            let tmp = TestProject::new()
-                .file("foo.rs", "")
-                .file("foo/mod.rs", "")
-                .build();
-            let result = resolve_mod_path(tmp.path(), "foo");
-            assert_eq!(result, Some(tmp.path().join("foo.rs")));
         }
     }
 

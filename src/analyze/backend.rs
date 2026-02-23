@@ -5,8 +5,8 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use super::hir::FeatureConfig;
-use super::reexports::ReExportMap;
 use super::syn_walker::{analyze_modules_syn, collect_syn_module_paths};
+use super::use_parser::ReExportMap;
 use crate::model::{CrateExportMap, CrateInfo, ModulePathMap, ModuleTree, WorkspaceCrates};
 
 #[cfg(feature = "hir")]

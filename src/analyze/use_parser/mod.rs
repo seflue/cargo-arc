@@ -5,11 +5,157 @@ use crate::model::{
     WorkspaceCrates, normalize_crate_name,
 };
 use std::collections::{HashMap, HashSet};
+use std::ops::Deref;
 use std::path::Path;
 use syn::UseTree;
 use syn::visit::Visit;
 
-use super::reexports::{ReExportMap, resolve_reexport};
+use super::mod_resolver::is_cfg_test;
+
+// ---------------------------------------------------------------------------
+// Re-export resolution types (moved from reexports.rs)
+// ---------------------------------------------------------------------------
+
+/// Where a re-exported symbol originally comes from.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ReExportTarget {
+    /// Source module path (crate-relative, e.g. `"render::elements"`)
+    pub(crate) module: String,
+    /// Original name in the source module (differs from map key on rename)
+    pub(crate) original_name: String,
+}
+
+/// Export and re-export information for a single module.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct ModuleExportInfo {
+    /// Own public definitions (pub fn, pub struct, etc.)
+    pub(crate) definitions: HashSet<String>,
+    /// Explicit re-exports: alias/name → source target
+    pub(crate) explicit_reexports: HashMap<String, ReExportTarget>,
+    /// Glob re-export sources (module paths from `pub use *`)
+    pub(crate) glob_sources: Vec<String>,
+}
+
+impl ModuleExportInfo {
+    #[must_use]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.definitions.is_empty()
+            && self.explicit_reexports.is_empty()
+            && self.glob_sources.is_empty()
+    }
+}
+
+/// Crate name → (module path → export info).
+/// Module paths are crate-relative (e.g. `"render"`, `"analyze::use_parser"`).
+/// Empty string "" = crate root (lib.rs/main.rs).
+#[derive(Debug, Default, Clone)]
+pub(crate) struct ReExportMap(HashMap<String, HashMap<String, ModuleExportInfo>>);
+
+impl Deref for ReExportMap {
+    type Target = HashMap<String, HashMap<String, ModuleExportInfo>>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl FromIterator<(String, HashMap<String, ModuleExportInfo>)> for ReExportMap {
+    fn from_iter<I: IntoIterator<Item = (String, HashMap<String, ModuleExportInfo>)>>(
+        iter: I,
+    ) -> Self {
+        Self(iter.into_iter().collect())
+    }
+}
+
+/// Resolve re-exports in a [`DependencyRef`]: follow the re-export chain
+/// until the original definition module is found.
+/// Modifies `dep.target_module` in place. No-op if no re-export applies.
+pub(crate) fn resolve_reexport(dep: &mut DependencyRef, reexport_map: &ReExportMap) {
+    let Some(crate_exports) = reexport_map.get(&dep.target_crate) else {
+        return;
+    };
+    let mut visited = HashSet::new();
+    let mut lookup_name = dep.target_item.clone();
+
+    loop {
+        if !visited.insert(dep.target_module.clone()) {
+            break;
+        }
+        let Some(module_info) = crate_exports.get(&dep.target_module) else {
+            break;
+        };
+        let Some(item) = &lookup_name else {
+            break;
+        };
+
+        if module_info.definitions.contains(item) {
+            break;
+        }
+
+        // Tier 1: Explicit re-export
+        if let Some(target) = module_info.explicit_reexports.get(item) {
+            let original_target = dep.target_module.clone();
+            dep.target_module = target.module.clone();
+            tracing::debug!(
+                "re-export resolved: {} -> {} (via re-export in {})",
+                original_target,
+                dep.target_module,
+                original_target
+            );
+            lookup_name = Some(target.original_name.clone());
+            continue;
+        }
+
+        // Tier 2: Glob re-exports
+        let mut found = false;
+        for glob_src in &module_info.glob_sources {
+            let mut glob_visited = HashSet::new();
+            if module_exports_symbol(crate_exports, glob_src, item, &mut glob_visited) {
+                let original_target = dep.target_module.clone();
+                dep.target_module = glob_src.clone();
+                tracing::debug!(
+                    "re-export resolved: {} -> {} (via glob re-export in {})",
+                    original_target,
+                    dep.target_module,
+                    original_target
+                );
+                found = true;
+                break;
+            }
+        }
+        if found {
+            continue;
+        }
+
+        break;
+    }
+}
+
+/// Check whether a module exports a symbol (own definition OR re-export).
+fn module_exports_symbol(
+    crate_exports: &HashMap<String, ModuleExportInfo>,
+    module_path: &str,
+    symbol: &str,
+    visited: &mut HashSet<String>,
+) -> bool {
+    if !visited.insert(module_path.to_string()) {
+        return false;
+    }
+    let Some(info) = crate_exports.get(module_path) else {
+        return false;
+    };
+    if info.definitions.contains(symbol) {
+        return true;
+    }
+    if info.explicit_reexports.contains_key(symbol) {
+        return true;
+    }
+    for glob_src in &info.glob_sources {
+        if module_exports_symbol(crate_exports, glob_src, symbol, visited) {
+            return true;
+        }
+    }
+    false
+}
 
 /// Invariant context for dependency resolution within a single source file.
 pub(crate) struct ResolutionContext<'a> {
@@ -20,33 +166,6 @@ pub(crate) struct ResolutionContext<'a> {
     pub(crate) crate_exports: &'a CrateExportMap,
     pub(crate) current_module_path: &'a str,
     pub(crate) reexport_map: &'a ReExportMap,
-}
-
-/// Check whether attributes contain `#[cfg(test)]`, including compound
-/// expressions like `#[cfg(all(test, feature = "..."))]`.
-pub(crate) fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
-    fn meta_contains_test(meta: &syn::Meta) -> bool {
-        use syn::parse::Parser;
-        match meta {
-            syn::Meta::Path(path) => path.is_ident("test"),
-            syn::Meta::List(list) if list.path.is_ident("all") || list.path.is_ident("any") => {
-                let parser =
-                    syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated;
-                parser
-                    .parse2(list.tokens.clone())
-                    .is_ok_and(|nested| nested.iter().any(meta_contains_test))
-            }
-            _ => false,
-        }
-    }
-
-    attrs.iter().any(|attr| {
-        if !attr.path().is_ident("cfg") {
-            return false;
-        }
-        attr.parse_args::<syn::Meta>()
-            .is_ok_and(|meta| meta_contains_test(&meta))
-    })
 }
 
 /// Promote any context to a test context. Production becomes Unit test;

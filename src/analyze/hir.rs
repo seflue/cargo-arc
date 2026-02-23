@@ -326,7 +326,7 @@ fn extract_module_dependencies(
         Err(_) => return Vec::new(),
     };
 
-    let empty_reexport_map = super::reexports::ReExportMap::default();
+    let empty_reexport_map = super::use_parser::ReExportMap::default();
     let res_ctx = ResolutionContext {
         current_crate: ctx.crate_name,
         workspace_crates: ctx.workspace_crates,

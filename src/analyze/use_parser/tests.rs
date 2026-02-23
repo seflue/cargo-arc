@@ -1,5 +1,5 @@
+use super::ReExportMap;
 use super::*;
-use crate::analyze::reexports::ReExportMap;
 use std::path::Path;
 use std::sync::LazyLock;
 
@@ -1891,8 +1891,8 @@ mod context_aware_dedup_tests {
 }
 
 mod reexport_resolution_tests {
+    use super::super::{ModuleExportInfo, ReExportMap, ReExportTarget};
     use super::*;
-    use crate::analyze::reexports::{ModuleExportInfo, ReExportMap, ReExportTarget};
 
     #[test]
     fn without_reexport_map_unchanged() {
@@ -2033,5 +2033,281 @@ mod reexport_resolution_tests {
             deps[0].target_module, "parent::child",
             "path refs should also resolve through re-export"
         );
+    }
+}
+
+mod resolve_reexport_tests {
+    use super::super::{ModuleExportInfo, ReExportMap, ReExportTarget, resolve_reexport};
+    use crate::model::{DependencyRef, EdgeContext};
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    fn test_dep(crate_name: &str, module: &str, item: Option<&str>) -> DependencyRef {
+        DependencyRef {
+            target_crate: crate_name.to_string(),
+            target_module: module.to_string(),
+            target_item: item.map(String::from),
+            source_file: PathBuf::from("src/lib.rs"),
+            line: 1,
+            context: EdgeContext::production(),
+        }
+    }
+
+    // --- resolve_reexport: Cycle 1 — No target_item → dep unchanged ---
+
+    #[test]
+    fn resolve_noop_without_target_item() {
+        let map = ReExportMap::default();
+        let mut dep = test_dep("my_crate", "render", None);
+        resolve_reexport(&mut dep, &map);
+        assert_eq!(dep.target_module, "render");
+    }
+
+    // --- resolve_reexport: Cycle 2 — Crate not in map → dep unchanged ---
+
+    #[test]
+    fn resolve_noop_when_crate_not_in_map() {
+        let map = ReExportMap::default();
+        let mut dep = test_dep("my_crate", "render", Some("Widget"));
+        resolve_reexport(&mut dep, &map);
+        assert_eq!(dep.target_module, "render");
+    }
+
+    // --- resolve_reexport: Cycle 3 — Own definition → dep unchanged ---
+
+    #[test]
+    fn resolve_noop_when_own_definition() {
+        let mut module_info = ModuleExportInfo::default();
+        module_info.definitions.insert("Widget".to_string());
+        let mut crate_exports = HashMap::new();
+        crate_exports.insert("render".to_string(), module_info);
+        let map: ReExportMap = [("my_crate".to_string(), crate_exports)]
+            .into_iter()
+            .collect();
+
+        let mut dep = test_dep("my_crate", "render", Some("Widget"));
+        resolve_reexport(&mut dep, &map);
+        assert_eq!(dep.target_module, "render");
+    }
+
+    // --- resolve_reexport: Cycle 4 — Explicit re-export → target_module updated ---
+
+    #[test]
+    fn resolve_explicit_reexport() {
+        let mut m_info = ModuleExportInfo::default();
+        m_info.explicit_reexports.insert(
+            "Widget".to_string(),
+            ReExportTarget {
+                module: "render::elements".to_string(),
+                original_name: "Widget".to_string(),
+            },
+        );
+        let mut n_info = ModuleExportInfo::default();
+        n_info.definitions.insert("Widget".to_string());
+
+        let mut crate_exports = HashMap::new();
+        crate_exports.insert("render".to_string(), m_info);
+        crate_exports.insert("render::elements".to_string(), n_info);
+        let map: ReExportMap = [("my_crate".to_string(), crate_exports)]
+            .into_iter()
+            .collect();
+
+        let mut dep = test_dep("my_crate", "render", Some("Widget"));
+        resolve_reexport(&mut dep, &map);
+        assert_eq!(dep.target_module, "render::elements");
+    }
+
+    // --- resolve_reexport: Cycle 5 — Transitive chain M → N → O ---
+
+    #[test]
+    fn resolve_transitive_chain() {
+        let mut m_info = ModuleExportInfo::default();
+        m_info.explicit_reexports.insert(
+            "Widget".to_string(),
+            ReExportTarget {
+                module: "middle".to_string(),
+                original_name: "Widget".to_string(),
+            },
+        );
+        let mut n_info = ModuleExportInfo::default();
+        n_info.explicit_reexports.insert(
+            "Widget".to_string(),
+            ReExportTarget {
+                module: "origin".to_string(),
+                original_name: "Widget".to_string(),
+            },
+        );
+        let mut o_info = ModuleExportInfo::default();
+        o_info.definitions.insert("Widget".to_string());
+
+        let mut crate_exports = HashMap::new();
+        crate_exports.insert("root".to_string(), m_info);
+        crate_exports.insert("middle".to_string(), n_info);
+        crate_exports.insert("origin".to_string(), o_info);
+        let map: ReExportMap = [("my_crate".to_string(), crate_exports)]
+            .into_iter()
+            .collect();
+
+        let mut dep = test_dep("my_crate", "root", Some("Widget"));
+        resolve_reexport(&mut dep, &map);
+        assert_eq!(dep.target_module, "origin");
+    }
+
+    // --- resolve_reexport: Cycle 6 — Rename chain follows original_name ---
+
+    #[test]
+    fn resolve_rename_chain() {
+        let mut m_info = ModuleExportInfo::default();
+        m_info.explicit_reexports.insert(
+            "Alias".to_string(),
+            ReExportTarget {
+                module: "origin".to_string(),
+                original_name: "Original".to_string(),
+            },
+        );
+        let mut o_info = ModuleExportInfo::default();
+        o_info.definitions.insert("Original".to_string());
+
+        let mut crate_exports = HashMap::new();
+        crate_exports.insert("facade".to_string(), m_info);
+        crate_exports.insert("origin".to_string(), o_info);
+        let map: ReExportMap = [("my_crate".to_string(), crate_exports)]
+            .into_iter()
+            .collect();
+
+        let mut dep = test_dep("my_crate", "facade", Some("Alias"));
+        resolve_reexport(&mut dep, &map);
+        assert_eq!(dep.target_module, "origin");
+    }
+
+    // --- resolve_reexport: Cycle 7 — Glob resolution ---
+
+    #[test]
+    fn resolve_glob_reexport() {
+        let mut m_info = ModuleExportInfo::default();
+        m_info.glob_sources.push("elements".to_string());
+        let mut n_info = ModuleExportInfo::default();
+        n_info.definitions.insert("Widget".to_string());
+
+        let mut crate_exports = HashMap::new();
+        crate_exports.insert("render".to_string(), m_info);
+        crate_exports.insert("elements".to_string(), n_info);
+        let map: ReExportMap = [("my_crate".to_string(), crate_exports)]
+            .into_iter()
+            .collect();
+
+        let mut dep = test_dep("my_crate", "render", Some("Widget"));
+        resolve_reexport(&mut dep, &map);
+        assert_eq!(dep.target_module, "elements");
+    }
+
+    // --- resolve_reexport: Cycle 8 — Glob + transitive ---
+
+    #[test]
+    fn resolve_glob_then_explicit() {
+        let mut m_info = ModuleExportInfo::default();
+        m_info.glob_sources.push("middle".to_string());
+        let mut n_info = ModuleExportInfo::default();
+        n_info.explicit_reexports.insert(
+            "Widget".to_string(),
+            ReExportTarget {
+                module: "origin".to_string(),
+                original_name: "Widget".to_string(),
+            },
+        );
+        let mut o_info = ModuleExportInfo::default();
+        o_info.definitions.insert("Widget".to_string());
+
+        let mut crate_exports = HashMap::new();
+        crate_exports.insert("facade".to_string(), m_info);
+        crate_exports.insert("middle".to_string(), n_info);
+        crate_exports.insert("origin".to_string(), o_info);
+        let map: ReExportMap = [("my_crate".to_string(), crate_exports)]
+            .into_iter()
+            .collect();
+
+        let mut dep = test_dep("my_crate", "facade", Some("Widget"));
+        resolve_reexport(&mut dep, &map);
+        assert_eq!(dep.target_module, "origin");
+    }
+
+    // --- resolve_reexport: Cycle 9 — Cycle guard (no infinite loop) ---
+
+    #[test]
+    fn resolve_cycle_guard() {
+        let mut a_info = ModuleExportInfo::default();
+        a_info.explicit_reexports.insert(
+            "Widget".to_string(),
+            ReExportTarget {
+                module: "b".to_string(),
+                original_name: "Widget".to_string(),
+            },
+        );
+        let mut b_info = ModuleExportInfo::default();
+        b_info.explicit_reexports.insert(
+            "Widget".to_string(),
+            ReExportTarget {
+                module: "a".to_string(),
+                original_name: "Widget".to_string(),
+            },
+        );
+
+        let mut crate_exports = HashMap::new();
+        crate_exports.insert("a".to_string(), a_info);
+        crate_exports.insert("b".to_string(), b_info);
+        let map: ReExportMap = [("my_crate".to_string(), crate_exports)]
+            .into_iter()
+            .collect();
+
+        let mut dep = test_dep("my_crate", "a", Some("Widget"));
+        resolve_reexport(&mut dep, &map);
+        // Terminates without infinite loop; ends back at "a"
+        assert_eq!(dep.target_module, "a");
+    }
+
+    // --- resolve_reexport: Cycle 10 — Cross-crate resolution ---
+
+    #[test]
+    fn resolve_cross_crate() {
+        let mut root_info = ModuleExportInfo::default();
+        root_info.explicit_reexports.insert(
+            "Config".to_string(),
+            ReExportTarget {
+                module: "settings".to_string(),
+                original_name: "Config".to_string(),
+            },
+        );
+        let mut settings_info = ModuleExportInfo::default();
+        settings_info.definitions.insert("Config".to_string());
+
+        let mut crate_exports = HashMap::new();
+        crate_exports.insert(String::new(), root_info);
+        crate_exports.insert("settings".to_string(), settings_info);
+        let map: ReExportMap = [("other_crate".to_string(), crate_exports)]
+            .into_iter()
+            .collect();
+
+        let mut dep = test_dep("other_crate", "", Some("Config"));
+        resolve_reexport(&mut dep, &map);
+        assert_eq!(dep.target_module, "settings");
+    }
+
+    // --- ModuleExportInfo default ---
+
+    #[test]
+    fn is_empty_when_default() {
+        let info = ModuleExportInfo::default();
+        assert!(info.is_empty());
+    }
+
+    // --- ReExportMap from_iter + deref ---
+
+    #[test]
+    fn from_iterator_and_deref() {
+        let mut inner = HashMap::new();
+        inner.insert("render".to_string(), ModuleExportInfo::default());
+        let map: ReExportMap = [("my_crate".to_string(), inner)].into_iter().collect();
+        assert!(map.contains_key("my_crate"));
+        assert!(map["my_crate"].contains_key("render"));
     }
 }
