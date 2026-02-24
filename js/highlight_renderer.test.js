@@ -20,6 +20,7 @@ Object.assign(globalThis.STATIC_DATA.classes, {
   hasHighlight: 'has-highlight',
   selectedCrate: 'selectedCrate',
   selectedModule: 'selectedModule',
+  selectedExternal: 'selectedExternal',
   depNode: 'depNode',
   dependentNode: 'dependentNode',
   highlightedArc: 'highlightedArc',

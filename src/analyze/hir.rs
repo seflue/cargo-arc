@@ -228,6 +228,7 @@ pub fn analyze_modules(
     workspace_crates: &WorkspaceCrates,
     all_module_paths: &ModulePathMap,
     crate_exports: &CrateExportMap,
+    external_crate_names: &std::collections::HashMap<String, String>,
 ) -> Result<ModuleTree> {
     // Find crate in already-loaded workspace
     let krate = find_crate_in_workspace(crate_info, host, vfs)?;
@@ -246,6 +247,7 @@ pub fn analyze_modules(
         workspace_crates,
         all_module_paths,
         crate_exports,
+        external_crate_names,
     };
     let root = walk_module(root_module, &normalized_crate_name, &ctx);
 
@@ -262,6 +264,7 @@ struct HirWalkContext<'a> {
     workspace_crates: &'a WorkspaceCrates,
     all_module_paths: &'a ModulePathMap,
     crate_exports: &'a CrateExportMap,
+    external_crate_names: &'a std::collections::HashMap<String, String>,
 }
 
 #[cfg(feature = "hir")]
@@ -335,6 +338,7 @@ fn extract_module_dependencies(
         crate_exports: ctx.crate_exports,
         current_module_path,
         reexport_map: &empty_reexport_map,
+        external_crate_names: ctx.external_crate_names,
     };
     parse_workspace_dependencies_from_source(&source_text, &res_ctx)
 }

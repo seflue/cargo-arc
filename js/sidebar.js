@@ -89,8 +89,8 @@ const SidebarLogic = {
 
     const fromNode = StaticData.getNode(arc.from);
     const toNode = StaticData.getNode(arc.to);
-    const fromName = fromNode ? fromNode.name : arc.from;
-    const toName = toNode ? toNode.name : arc.to;
+    const fromName = this._formatNodeName(fromNode, arc.from);
+    const toName = this._formatNodeName(toNode, arc.to);
     const fromClass = `${fromNode ? `sidebar-node-${fromNode.type} ` : ''}sidebar-node-from`;
     const toClass = `${toNode ? `sidebar-node-${toNode.type} ` : ''}sidebar-node-to`;
 
@@ -157,7 +157,7 @@ const SidebarLogic = {
    */
   buildNodeContent(nodeId, relations) {
     const node = StaticData.getNode(nodeId);
-    const nodeName = node ? node.name : nodeId;
+    const nodeName = this._formatNodeName(node, nodeId);
     const nodeType = node ? node.type : '';
     const hasRelations =
       relations.incoming.length > 0 || relations.outgoing.length > 0;
@@ -228,7 +228,7 @@ const SidebarLogic = {
    */
   _buildRelationSection(rel, _nodeId, nodeName, nodeType, direction) {
     const target = StaticData.getNode(rel.targetId);
-    const targetName = target ? target.name : rel.targetId;
+    const targetName = this._formatNodeName(target, rel.targetId);
     const targetType = target ? target.type : '';
 
     // Build From→To pair: direction determines which side the selected node is on
@@ -297,6 +297,18 @@ const SidebarLogic = {
 
     html += `</div>`;
     return html;
+  },
+
+  /**
+   * Format node display name, appending version for external crates.
+   * @param {Object|null} node - Node data from StaticData
+   * @param {string} fallback - Fallback ID if node is null
+   * @returns {string}
+   */
+  _formatNodeName(node, fallback) {
+    if (!node) return fallback;
+    if (node.version) return `${node.name} v${node.version}`;
+    return node.name;
   },
 
   /**

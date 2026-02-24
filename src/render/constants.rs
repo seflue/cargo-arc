@@ -138,6 +138,10 @@ pub(super) struct NodeColors {
     pub crate_stroke: &'static str,
     pub module_fill: &'static str,
     pub module_stroke: &'static str,
+    pub external_section_fill: &'static str,
+    pub external_section_stroke: &'static str,
+    pub external_crate_fill: &'static str,
+    pub external_crate_stroke: &'static str,
     pub tree_line: &'static str,
     pub child_count: &'static str,
     pub collapse_toggle: &'static str,
@@ -154,6 +158,7 @@ pub(super) struct DirectionColors {
 pub(super) struct NodeSelectionColors {
     pub crate_fill: &'static str,
     pub module_fill: &'static str,
+    pub external_fill: &'static str,
 }
 
 pub(super) struct RelationColors {
@@ -189,6 +194,10 @@ pub(super) static COLORS: ColorPalette = ColorPalette {
         crate_stroke: BLUE,
         module_fill: ORANGE_100,
         module_stroke: ORANGE,
+        external_section_fill: GRAY_200,
+        external_section_stroke: GRAY_400,
+        external_crate_fill: GRAY_50,
+        external_crate_stroke: GRAY_400,
         tree_line: GRAY_600,
         child_count: GRAY_400,
         collapse_toggle: GRAY_600,
@@ -203,6 +212,7 @@ pub(super) static COLORS: ColorPalette = ColorPalette {
     node_selection: NodeSelectionColors {
         crate_fill: BLUE_300,
         module_fill: ORANGE_300,
+        external_fill: GRAY_300,
     },
     relation: RelationColors {
         dependency: GREEN,
@@ -227,6 +237,8 @@ pub(super) static COLORS: ColorPalette = ColorPalette {
 pub(super) struct NodeClasses {
     pub crate_node: &'static str,
     pub module: &'static str,
+    pub external_section: &'static str,
+    pub external_crate: &'static str,
     pub label: &'static str,
     pub child_count: &'static str,
     pub tree_line: &'static str,
@@ -255,6 +267,7 @@ pub(super) struct DirectionClasses {
 pub(super) struct NodeSelectionClasses {
     pub selected_crate: &'static str,
     pub selected_module: &'static str,
+    pub selected_external: &'static str,
     pub group_member: &'static str,
     pub cycle_member: &'static str,
 }
@@ -358,6 +371,8 @@ pub(super) static CSS: CssClassNames = CssClassNames {
     nodes: NodeClasses {
         crate_node: "crate",
         module: "module",
+        external_section: "external-section",
+        external_crate: "external",
         label: "label",
         child_count: "child-count",
         tree_line: "tree-line",
@@ -382,6 +397,7 @@ pub(super) static CSS: CssClassNames = CssClassNames {
     node_selection: NodeSelectionClasses {
         selected_crate: "selected-crate",
         selected_module: "selected-module",
+        selected_external: "selected-external",
         group_member: "group-member",
         cycle_member: "cycle-member",
     },
@@ -523,6 +539,7 @@ mod tests {
 
         assert!(!CSS.node_selection.selected_crate.is_empty());
         assert!(!CSS.node_selection.selected_module.is_empty());
+        assert!(!CSS.node_selection.selected_external.is_empty());
         assert!(!CSS.node_selection.group_member.is_empty());
 
         assert!(!CSS.relation.highlighted_arc.is_empty());

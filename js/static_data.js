@@ -106,6 +106,49 @@ const StaticData = {
   },
 
   /**
+   * Check if a node is an external type (external-section or external crate).
+   * @param {string} nodeId
+   * @returns {boolean}
+   */
+  isExternalNode(nodeId) {
+    const node = STATIC_DATA.nodes[nodeId];
+    if (!node) return false;
+    return node.type === 'external-section' || node.type === 'external';
+  },
+
+  /**
+   * Check if an arc connects to any external node.
+   * @param {string} arcId
+   * @returns {boolean}
+   */
+  isExternalArc(arcId) {
+    const arc = STATIC_DATA.arcs[arcId];
+    if (!arc) return false;
+    return this.isExternalNode(arc.from) || this.isExternalNode(arc.to);
+  },
+
+  /**
+   * Get external crate nodes grouped by name.
+   * Crates with same name but different versions are grouped together.
+   * @returns {Map<string, string[]>} name -> [nodeId, ...] sorted by version
+   */
+  getExternalGroups() {
+    const groups = new Map();
+    for (const [nodeId, node] of Object.entries(STATIC_DATA.nodes)) {
+      if (node.type !== 'external') continue;
+      const name = node.name;
+      if (!groups.has(name)) groups.set(name, []);
+      groups.get(name).push(nodeId);
+    }
+    // Only return groups with multiple versions
+    const result = new Map();
+    for (const [name, ids] of groups) {
+      if (ids.length > 1) result.set(name, ids);
+    }
+    return result;
+  },
+
+  /**
    * Get all relations (incoming + outgoing arcs) for a node.
    * @param {string} nodeId
    * @returns {{ outgoing: Array<{targetId: string, weight: number, usages: Array, arcId: string}>, incoming: Array<{targetId: string, weight: number, usages: Array, arcId: string}> }}

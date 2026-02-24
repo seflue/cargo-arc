@@ -1,6 +1,7 @@
 //! Workspace & Module Analysis
 
 mod backend;
+pub(crate) mod externals;
 mod filtering;
 mod hir;
 mod mod_resolver;

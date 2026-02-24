@@ -45,6 +45,7 @@ if (typeof document !== 'undefined') {
           widthOverrides.set(nodeId, parseFloat(rect.getAttribute('width')));
         }
       }
+      const hiddenByFilter = getFilterHiddenNodeIds();
       const positions = DerivedState.computeCurrentPositions(
         appState.collapsed,
         StaticData,
@@ -52,6 +53,7 @@ if (typeof document !== 'undefined') {
         TOOLBAR_HEIGHT,
         ROW_HEIGHT,
         widthOverrides,
+        hiddenByFilter,
       );
       const state = DerivedState.deriveHighlightState(
         appState,
@@ -362,13 +364,27 @@ if (typeof document !== 'undefined') {
       });
     }
 
+    // Collect node IDs hidden by active filters (external-dep toggle etc.)
+    function getFilterHiddenNodeIds() {
+      const hidden = new Set();
+      for (const nodeId of StaticData.getAllNodeIds()) {
+        const node = DomAdapter.getNode(nodeId);
+        if (node?.classList.contains(C.hiddenByFilter)) {
+          hidden.add(nodeId);
+        }
+      }
+      return hidden;
+    }
+
     // Recalculate and show virtual edges for collapsed nodes
     function recalculateVirtualEdges() {
       cleanupVirtualElements();
 
+      const hiddenByFilter = getFilterHiddenNodeIds();
       const visibleNodes = DerivedState.deriveNodeVisibility(
         appState.collapsed,
         StaticData,
+        hiddenByFilter,
       );
       // Read current DOM widths for collapsed nodes whose boxes were expanded
       const widthOverrides = new Map();
@@ -385,6 +401,7 @@ if (typeof document !== 'undefined') {
         TOOLBAR_HEIGHT,
         ROW_HEIGHT,
         widthOverrides,
+        hiddenByFilter,
       );
       const maxRight = DerivedState.computeMaxRight(currentPositions);
 
@@ -744,6 +761,83 @@ if (typeof document !== 'undefined') {
       );
     }
 
+    // Toggle visibility of external dependency nodes and their arcs
+    function toggleExternalDepVisibility() {
+      const checkbox = DomAdapter.querySelector('#external-dep-checkbox');
+      if (!checkbox) return;
+
+      const isChecked = checkbox.classList.toggle(C.checked);
+
+      // Toggle external-section and external nodes
+      StaticData.getAllNodeIds().forEach((nodeId) => {
+        const node = StaticData.getNode(nodeId);
+        if (!node) return;
+        if (node.type !== 'external-section' && node.type !== 'external')
+          return;
+        const rect = DomAdapter.getNode(nodeId);
+        if (!rect) return;
+        const label = rect.nextElementSibling;
+        const toggle = DomAdapter.getCollapseToggle(nodeId);
+        if (isChecked) {
+          rect.classList.remove(C.hiddenByFilter);
+          label?.classList.remove(C.hiddenByFilter);
+          toggle?.classList.remove(C.hiddenByFilter);
+        } else {
+          rect.classList.add(C.hiddenByFilter);
+          label?.classList.add(C.hiddenByFilter);
+          toggle?.classList.add(C.hiddenByFilter);
+        }
+        // Toggle tree lines for external nodes
+        DomAdapter.getTreeLines(nodeId, 'child').forEach((line) => {
+          if (isChecked) {
+            line.classList.remove(C.hiddenByFilter);
+          } else {
+            line.classList.add(C.hiddenByFilter);
+          }
+        });
+        DomAdapter.getTreeLines(nodeId, 'parent').forEach((line) => {
+          if (isChecked) {
+            line.classList.remove(C.hiddenByFilter);
+          } else {
+            line.classList.add(C.hiddenByFilter);
+          }
+        });
+      });
+
+      // Toggle arcs connected to external nodes
+      DomAdapter.querySelectorAll(
+        `.${C.arcHitarea}:not(.${C.virtualHitarea})`,
+      ).forEach((hitarea) => {
+        const arcId = hitarea.dataset.arcId;
+        if (!StaticData.isExternalArc(arcId)) return;
+
+        if (isChecked) {
+          hitarea.classList.remove(C.hiddenByFilter);
+          AppState.showArc(appState, arcId);
+        } else {
+          hitarea.classList.add(C.hiddenByFilter);
+          AppState.hideArc(appState, arcId);
+        }
+        const visibleArc = DomAdapter.getArc(arcId);
+        if (visibleArc) {
+          if (isChecked) {
+            visibleArc.classList.remove(C.hiddenByFilter);
+          } else {
+            visibleArc.classList.add(C.hiddenByFilter);
+          }
+        }
+        DomAdapter.getArrows(arcId).forEach((arrow) => {
+          if (isChecked) {
+            arrow.classList.remove(C.hiddenByFilter);
+          } else {
+            arrow.classList.add(C.hiddenByFilter);
+          }
+        });
+      });
+
+      relayout();
+    }
+
     // Sync foreignObject height with actual toolbar content height (flex-wrap may grow)
     function syncToolbarHeight() {
       const fo = DomAdapter.getElementById('toolbar-fo');
@@ -844,6 +938,13 @@ if (typeof document !== 'undefined') {
       ?.addEventListener('click', (e) => {
         e.stopPropagation();
         toggleModuleDepVisibility();
+      });
+
+    DomAdapter.querySelector('#external-dep-checkbox')
+      ?.closest('label')
+      ?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleExternalDepVisibility();
       });
 
     // Event handlers on hit-area paths (invisible, 12px wide) — regular arcs only

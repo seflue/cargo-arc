@@ -1962,4 +1962,233 @@ describe('DerivedState', () => {
       expect(rRole).not.toBe('cycle-member');
     });
   });
+
+  describe('external node highlighting', () => {
+    const ROW_HEIGHT = 30;
+
+    // Fixture: internal module with arcs to external crates
+    //
+    // crate
+    // └── mod_a
+    //
+    // external-section
+    // ├── serde (external)
+    // └── tokio (external)
+    //
+    // Arcs:
+    // mod_a -> serde (production)
+    // mod_a -> tokio (production)
+    const EXTERNAL_DATA = {
+      nodes: {
+        crate: {
+          type: 'crate',
+          parent: null,
+          x: 0,
+          y: 0,
+          width: 100,
+          height: 24,
+          hasChildren: true,
+        },
+        mod_a: {
+          type: 'module',
+          parent: 'crate',
+          x: 20,
+          y: 30,
+          width: 100,
+          height: 20,
+          hasChildren: false,
+        },
+        ext_section: {
+          type: 'external-section',
+          parent: null,
+          x: 0,
+          y: 100,
+          width: 100,
+          height: 24,
+          hasChildren: true,
+        },
+        serde: {
+          type: 'external',
+          parent: 'ext_section',
+          x: 20,
+          y: 130,
+          width: 100,
+          height: 20,
+          hasChildren: false,
+        },
+        tokio: {
+          type: 'external',
+          parent: 'ext_section',
+          x: 20,
+          y: 160,
+          width: 100,
+          height: 20,
+          hasChildren: false,
+        },
+      },
+      arcs: {
+        'mod_a-serde': {
+          from: 'mod_a',
+          to: 'serde',
+          context: { kind: 'production', subKind: null, features: [] },
+          usages: [
+            {
+              symbol: 'Serialize',
+              modulePath: null,
+              locations: [{ file: 'mod_a.rs', line: 1 }],
+            },
+          ],
+        },
+        'mod_a-tokio': {
+          from: 'mod_a',
+          to: 'tokio',
+          context: { kind: 'production', subKind: null, features: [] },
+          usages: [
+            {
+              symbol: 'spawn',
+              modulePath: null,
+              locations: [
+                { file: 'mod_a.rs', line: 5 },
+                { file: 'mod_a.rs', line: 10 },
+              ],
+            },
+          ],
+        },
+        'crate-mod_a': {
+          from: 'crate',
+          to: 'mod_a',
+          context: { kind: 'production', subKind: null, features: [] },
+          usages: [
+            {
+              symbol: 'mod_a',
+              modulePath: null,
+              locations: [{ file: 'lib.rs', line: 1 }],
+            },
+          ],
+        },
+      },
+    };
+
+    const EXTERNAL_POSITIONS = new Map([
+      ['crate', { x: 0, y: 60, width: 100, height: 24 }],
+      ['mod_a', { x: 20, y: 90, width: 100, height: 20 }],
+      ['ext_section', { x: 0, y: 120, width: 100, height: 24 }],
+      ['serde', { x: 20, y: 150, width: 100, height: 20 }],
+      ['tokio', { x: 20, y: 180, width: 100, height: 20 }],
+    ]);
+
+    test('click external crate: connected internal modules highlighted', () => {
+      const sd = createMockStaticData(EXTERNAL_DATA);
+      const state = AppState.create();
+      AppState.setSelection(state, 'node', 'serde');
+
+      const result = DerivedState.deriveHighlightState(
+        state,
+        sd,
+        new Map(),
+        new Set(),
+        EXTERNAL_POSITIONS,
+        ROW_HEIGHT,
+      );
+
+      expect(result).not.toBeNull();
+      // serde is selected (external type gets selectedExternal class)
+      expect(result.nodeHighlights.get('serde')).toEqual({
+        role: 'current',
+        cssClass: 'selectedExternal',
+      });
+      // mod_a→serde arc is highlighted
+      expect(result.arcHighlights.has('mod_a-serde')).toBe(true);
+      // mod_a is marked as dependent (it uses serde)
+      expect(result.nodeHighlights.get('mod_a').cssClass).toBe('dependentNode');
+    });
+
+    test('click internal module: connected external crates highlighted', () => {
+      const sd = createMockStaticData(EXTERNAL_DATA);
+      const state = AppState.create();
+      AppState.setSelection(state, 'node', 'mod_a');
+
+      const result = DerivedState.deriveHighlightState(
+        state,
+        sd,
+        new Map(),
+        new Set(),
+        EXTERNAL_POSITIONS,
+        ROW_HEIGHT,
+      );
+
+      expect(result).not.toBeNull();
+      expect(result.nodeHighlights.get('mod_a').role).toBe('current');
+      // Both external arcs highlighted
+      expect(result.arcHighlights.has('mod_a-serde')).toBe(true);
+      expect(result.arcHighlights.has('mod_a-tokio')).toBe(true);
+      // Both external crates marked as dependencies
+      expect(result.nodeHighlights.get('serde').cssClass).toBe('depNode');
+      expect(result.nodeHighlights.get('tokio').cssClass).toBe('depNode');
+    });
+
+    test('external arcs hidden by filter: excluded from highlights', () => {
+      const sd = createMockStaticData(EXTERNAL_DATA);
+      const state = AppState.create();
+      AppState.setSelection(state, 'node', 'mod_a');
+      const hidden = new Set(['mod_a-serde', 'mod_a-tokio']);
+
+      const result = DerivedState.deriveHighlightState(
+        state,
+        sd,
+        new Map(),
+        hidden,
+        EXTERNAL_POSITIONS,
+        ROW_HEIGHT,
+      );
+
+      expect(result).not.toBeNull();
+      // External arcs filtered out
+      expect(result.arcHighlights.has('mod_a-serde')).toBe(false);
+      expect(result.arcHighlights.has('mod_a-tokio')).toBe(false);
+      // Internal arc still visible
+      expect(result.arcHighlights.has('crate-mod_a')).toBe(true);
+    });
+
+    test('click arc to external crate: both endpoints get roles', () => {
+      const sd = createMockStaticData(EXTERNAL_DATA);
+      const state = AppState.create();
+      AppState.setSelection(state, 'arc', 'mod_a-serde');
+
+      const result = DerivedState.deriveHighlightState(
+        state,
+        sd,
+        new Map(),
+        new Set(),
+        EXTERNAL_POSITIONS,
+        ROW_HEIGHT,
+      );
+
+      expect(result).not.toBeNull();
+      expect(result.nodeHighlights.get('mod_a').cssClass).toBe('dependentNode');
+      expect(result.nodeHighlights.get('serde').cssClass).toBe('depNode');
+      expect(result.arcHighlights.has('mod_a-serde')).toBe(true);
+    });
+
+    test('external-section node gets selectedExternal class', () => {
+      const sd = createMockStaticData(EXTERNAL_DATA);
+      const state = AppState.create();
+      AppState.setSelection(state, 'node', 'ext_section');
+
+      const result = DerivedState.deriveHighlightState(
+        state,
+        sd,
+        new Map(),
+        new Set(),
+        EXTERNAL_POSITIONS,
+        ROW_HEIGHT,
+      );
+
+      expect(result).not.toBeNull();
+      expect(result.nodeHighlights.get('ext_section')).toEqual({
+        role: 'current',
+        cssClass: 'selectedExternal',
+      });
+    });
+  });
 });

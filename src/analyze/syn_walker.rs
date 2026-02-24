@@ -220,6 +220,7 @@ struct WalkContext<'a> {
     all_module_paths: &'a ModulePathMap,
     crate_exports: &'a CrateExportMap,
     reexport_map: &'a ReExportMap,
+    external_crate_names: &'a std::collections::HashMap<String, String>,
     include_tests: bool,
     base_context: EdgeContext,
 }
@@ -284,6 +285,7 @@ fn walk_module_syn(
         crate_exports: ctx.crate_exports,
         current_module_path,
         reexport_map: ctx.reexport_map,
+        external_crate_names: ctx.external_crate_names,
     };
     let use_deps = parse_workspace_dependencies(&use_items, &res_ctx);
 
@@ -343,6 +345,7 @@ pub(crate) fn analyze_modules_syn(
     all_module_paths: &ModulePathMap,
     crate_exports: &CrateExportMap,
     reexport_map: &ReExportMap,
+    external_crate_names: &std::collections::HashMap<String, String>,
     include_tests: bool,
 ) -> Result<ModuleTree> {
     let root_files = find_crate_root_files(&crate_info.path)?;
@@ -355,6 +358,7 @@ pub(crate) fn analyze_modules_syn(
         all_module_paths,
         crate_exports,
         reexport_map,
+        external_crate_names,
         include_tests,
         base_context: EdgeContext::production(),
     };
@@ -746,6 +750,7 @@ mod tests {
                 &ModulePathMap::default(),
                 &CrateExportMap::default(),
                 &ReExportMap::default(),
+                &std::collections::HashMap::new(),
                 false,
             )
             .expect("should analyze");
@@ -811,6 +816,7 @@ mod tests {
                 &all_module_paths,
                 &CrateExportMap::default(),
                 &ReExportMap::default(),
+                &std::collections::HashMap::new(),
                 false,
             )
             .expect("should analyze");
@@ -865,6 +871,7 @@ mod tests {
                 &ModulePathMap::default(),
                 &CrateExportMap::default(),
                 &ReExportMap::default(),
+                &std::collections::HashMap::new(),
                 false,
             )
             .expect("should analyze binary-only crate");
@@ -907,6 +914,7 @@ fn main() {
                 &mp,
                 &CrateExportMap::default(),
                 &ReExportMap::default(),
+                &std::collections::HashMap::new(),
                 false,
             )
             .expect("should analyze");
@@ -952,6 +960,7 @@ fn main() {
                 &mp,
                 &CrateExportMap::default(),
                 &ReExportMap::default(),
+                &std::collections::HashMap::new(),
                 false,
             )
             .expect("should analyze");
@@ -996,6 +1005,7 @@ fn main() {
                 &ModulePathMap::default(),
                 &CrateExportMap::default(),
                 &ReExportMap::default(),
+                &std::collections::HashMap::new(),
                 false,
             )
             .expect("should analyze mixed crate");
@@ -1040,6 +1050,7 @@ fn main() {
                 &all_module_paths,
                 &CrateExportMap::default(),
                 &ReExportMap::default(),
+                &std::collections::HashMap::new(),
                 false,
             )
             .expect("should analyze");
@@ -1146,6 +1157,7 @@ fn main() {
                 &ModulePathMap::default(),
                 &CrateExportMap::default(),
                 &ReExportMap::default(),
+                &std::collections::HashMap::new(),
                 true,
             )
             .expect("should analyze");
@@ -1189,6 +1201,7 @@ fn main() {
                 &ModulePathMap::default(),
                 &CrateExportMap::default(),
                 &ReExportMap::default(),
+                &std::collections::HashMap::new(),
                 false,
             )
             .expect("should analyze");
@@ -1222,6 +1235,7 @@ fn main() {
                 &ModulePathMap::default(),
                 &CrateExportMap::default(),
                 &ReExportMap::default(),
+                &std::collections::HashMap::new(),
                 true,
             )
             .expect("should analyze test-only crate");
@@ -1252,6 +1266,7 @@ fn main() {
                 &ModulePathMap::default(),
                 &CrateExportMap::default(),
                 &ReExportMap::default(),
+                &std::collections::HashMap::new(),
                 false,
             )
             .expect("should not error for test-only crate");
@@ -1296,6 +1311,7 @@ mod tests {
                 &mp,
                 &CrateExportMap::default(),
                 &ReExportMap::default(),
+                &std::collections::HashMap::new(),
                 false,
             )
             .expect("should analyze");

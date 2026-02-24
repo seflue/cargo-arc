@@ -1801,4 +1801,92 @@ describe('SidebarLogic', () => {
       expect(SidebarLogic.formatArcSymbols(usages)).toBe('::{Foo, Bar}');
     });
   });
+
+  describe('_formatNodeName', () => {
+    test('returns fallback when node is null', () => {
+      expect(SidebarLogic._formatNodeName(null, 'fallback-id')).toBe(
+        'fallback-id',
+      );
+    });
+
+    test('returns name without version for regular nodes', () => {
+      const node = { name: 'my_crate', type: 'crate' };
+      expect(SidebarLogic._formatNodeName(node, 'id')).toBe('my_crate');
+    });
+
+    test('appends version for external crates', () => {
+      const node = { name: 'serde', type: 'external', version: '1.0.204' };
+      expect(SidebarLogic._formatNodeName(node, 'id')).toBe('serde v1.0.204');
+    });
+
+    test('no version suffix when version is undefined', () => {
+      const node = { name: 'tokio', type: 'external' };
+      expect(SidebarLogic._formatNodeName(node, 'id')).toBe('tokio');
+    });
+  });
+
+  describe('buildContent with external nodes', () => {
+    test('shows version in header for external arc', () => {
+      globalThis.STATIC_DATA.nodes.ext_serde = {
+        type: 'external',
+        name: 'serde',
+        version: '1.0.204',
+        parent: null,
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 30,
+        hasChildren: false,
+      };
+      globalThis.STATIC_DATA.arcs['crate_a-ext_serde'] = {
+        from: 'crate_a',
+        to: 'ext_serde',
+        usages: [],
+      };
+      const html = SidebarLogic.buildContent('crate_a-ext_serde');
+      expect(html).toContain('serde v1.0.204');
+      expect(html).toContain('Cargo.toml dependency');
+      delete globalThis.STATIC_DATA.nodes.ext_serde;
+      delete globalThis.STATIC_DATA.arcs['crate_a-ext_serde'];
+    });
+
+    test('shows version in node sidebar for external crate', () => {
+      globalThis.STATIC_DATA.nodes.ext_tokio = {
+        type: 'external',
+        name: 'tokio',
+        version: '1.35.0',
+        parent: null,
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 30,
+        hasChildren: false,
+      };
+      const relations = {
+        incoming: [
+          {
+            targetId: 'crate_a',
+            weight: 3,
+            arcId: 'crate_a-ext_tokio',
+            usages: [
+              {
+                symbol: 'Runtime',
+                modulePath: 'runtime',
+                locations: [
+                  { file: 'src/main.rs', line: 5 },
+                  { file: 'src/main.rs', line: 10 },
+                  { file: 'src/main.rs', line: 15 },
+                ],
+              },
+            ],
+          },
+        ],
+        outgoing: [],
+      };
+      const html = SidebarLogic.buildNodeContent('ext_tokio', relations);
+      expect(html).toContain('tokio v1.35.0');
+      expect(html).toContain('sidebar-header');
+      delete globalThis.STATIC_DATA.nodes.ext_tokio;
+    });
+  });
 });

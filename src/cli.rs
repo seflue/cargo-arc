@@ -7,7 +7,7 @@ use tracing_subscriber::EnvFilter;
 
 use crate::analyze::{
     AnalysisBackend, FeatureConfig, ReExportMap, analyze_workspace, collect_crate_exports,
-    collect_crate_reexports, normalize_crate_name,
+    collect_crate_reexports, externals::analyze_externals, normalize_crate_name,
 };
 use crate::graph::ArcGraph;
 use crate::layout::{Cycle, ElementaryCycles, LayoutIR, build_layout};
@@ -80,6 +80,10 @@ pub struct Args {
     #[arg(long, default_value = "10")]
     pub volatility_high: usize,
 
+    /// Include external crate dependencies in visualization
+    #[arg(long)]
+    pub externals: bool,
+
     /// Use rust-analyzer HIR backend instead of syn (slower but may catch more)
     #[cfg(feature = "hir")]
     #[arg(long)]
@@ -112,7 +116,12 @@ pub fn run(args: Args) -> Result<()> {
         #[cfg(not(feature = "hir"))]
         let use_hir = false;
 
-        let graph = build_dependency_graph(&args.manifest_path, &feature_config, use_hir)?;
+        let graph = build_dependency_graph(
+            &args.manifest_path,
+            &feature_config,
+            use_hir,
+            args.externals,
+        )?;
         let cycles = graph.production_subgraph().elementary_cycles();
         if cycles.is_empty() {
             return Ok(());
@@ -144,7 +153,12 @@ pub fn run(args: Args) -> Result<()> {
     #[cfg(not(feature = "hir"))]
     let use_hir = false;
 
-    let graph = build_dependency_graph(&args.manifest_path, &feature_config, use_hir)?;
+    let graph = build_dependency_graph(
+        &args.manifest_path,
+        &feature_config,
+        use_hir,
+        args.externals,
+    )?;
     let cycles = graph.production_subgraph().elementary_cycles();
     let mut layout = build_layout(&graph, &cycles);
 
@@ -187,6 +201,7 @@ fn build_dependency_graph(
     manifest_path: &Path,
     feature_config: &FeatureConfig,
     use_hir: bool,
+    externals: bool,
 ) -> Result<ArcGraph> {
     let crates = analyze_workspace(manifest_path, feature_config)?;
     let workspace_crates: WorkspaceCrates = crates.iter().map(|krate| krate.name.clone()).collect();
@@ -224,15 +239,32 @@ fn build_dependency_graph(
         })
         .collect();
 
+    // Run externals analysis before module analysis so crate_name_map
+    // is available for use-parser resolution of external crate imports.
+    let ext_result = if externals {
+        use cargo_metadata::MetadataCommand;
+        let metadata = MetadataCommand::new().manifest_path(manifest_path).exec()?;
+        Some(analyze_externals(&metadata))
+    } else {
+        None
+    };
+
+    let empty_name_map = std::collections::HashMap::new();
     let modules: Vec<_> = crates
         .iter()
         .filter_map(|krate| {
+            let name = normalize_crate_name(&krate.name);
+            let ext_names = ext_result
+                .as_ref()
+                .and_then(|r| r.crate_name_map.get(&name))
+                .unwrap_or(&empty_name_map);
             match backend.analyze_modules(
                 krate,
                 &workspace_crates,
                 &all_module_paths,
                 &crate_exports,
                 &reexport_map,
+                ext_names,
             ) {
                 Ok(tree) => Some(tree),
                 Err(err) => {
@@ -243,7 +275,7 @@ fn build_dependency_graph(
         })
         .collect();
 
-    Ok(ArcGraph::build(&crates, &modules))
+    Ok(ArcGraph::build(&crates, &modules, ext_result.as_ref()))
 }
 
 /// Format detected cycles as compiler-style error messages.
@@ -450,6 +482,18 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_externals_flag() {
+        let args = parse_args(&["cargo", "arc", "--externals"]);
+        assert!(args.externals);
+    }
+
+    #[test]
+    fn test_parse_externals_flag_default() {
+        let args = parse_args(&["cargo", "arc"]);
+        assert!(!args.externals);
+    }
+
+    #[test]
     fn test_cli_volatility_config_defaults() {
         let args = parse_args(&["cargo", "arc"]);
         assert!(!args.no_volatility);
@@ -476,6 +520,7 @@ mod tests {
             volatility_months: 6,
             volatility_low: 2,
             volatility_high: 10,
+            externals: false,
             #[cfg(feature = "hir")]
             hir: false,
         };

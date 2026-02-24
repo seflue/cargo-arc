@@ -166,6 +166,9 @@ pub(crate) struct ResolutionContext<'a> {
     pub(crate) crate_exports: &'a CrateExportMap,
     pub(crate) current_module_path: &'a str,
     pub(crate) reexport_map: &'a ReExportMap,
+    /// Code-side crate name -> `package_id` for external crates visible to
+    /// the current workspace crate. Populated from `crate_name_map[current_crate]`.
+    pub(crate) external_crate_names: &'a HashMap<String, String>,
 }
 
 /// Promote any context to a test context. Production becomes Unit test;
@@ -558,6 +561,42 @@ pub(crate) fn resolve_single_path(
                 None
             }
         })
+        .or_else(|| parse_external_crate_import(ctx, path, line_num, context))
+}
+
+/// Parse external crate imports: `use serde::Deserialize` where `serde` is a known external crate.
+/// Fallback at the end of the resolution chain — only matches if no workspace resolution succeeded.
+fn parse_external_crate_import(
+    ctx: &ResolutionContext,
+    path: &str,
+    line_num: usize,
+    context: &EdgeContext,
+) -> Option<DependencyRef> {
+    let parts: Vec<&str> = path.split("::").collect();
+    let first = parts.first()?.trim();
+    if first.is_empty() {
+        return None;
+    }
+
+    // Check if the first path segment is a known external crate name
+    if !ctx.external_crate_names.contains_key(first) {
+        return None;
+    }
+
+    let target_item = if parts.len() > 1 {
+        Some(parts[1..].join("::"))
+    } else {
+        None
+    };
+
+    Some(DependencyRef {
+        target_crate: first.to_string(),
+        target_module: String::new(),
+        target_item,
+        source_file: ctx.source_file.to_path_buf(),
+        line: line_num,
+        context: context.clone(),
+    })
 }
 
 /// Parse syn-based use items, extracting workspace-relevant dependencies.

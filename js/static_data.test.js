@@ -278,4 +278,179 @@ describe('StaticData', () => {
       expect(result.outgoing[1].arcId).toBe('fn_1-fn_2');
     });
   });
+
+  describe('isExternalNode', () => {
+    test('returns false for non-external node types', () => {
+      expect(StaticData.isExternalNode('crate')).toBe(false);
+      expect(StaticData.isExternalNode('mod_a')).toBe(false);
+      expect(StaticData.isExternalNode('fn_1')).toBe(false);
+    });
+
+    test('returns false for non-existent node', () => {
+      expect(StaticData.isExternalNode('nonexistent')).toBe(false);
+    });
+
+    test('returns true for external-section type', () => {
+      TEST_STATIC_DATA.nodes.ext_section = {
+        type: 'external-section',
+        name: 'External Dependencies',
+        parent: null,
+        x: 0,
+        y: 0,
+        width: 200,
+        height: 24,
+        hasChildren: true,
+      };
+
+      expect(StaticData.isExternalNode('ext_section')).toBe(true);
+
+      delete TEST_STATIC_DATA.nodes.ext_section;
+    });
+
+    test('returns true for external crate type', () => {
+      TEST_STATIC_DATA.nodes.ext_serde = {
+        type: 'external',
+        name: 'serde',
+        parent: 'ext_section',
+        x: 10,
+        y: 30,
+        width: 100,
+        height: 20,
+        hasChildren: false,
+        version: '1.0.0',
+      };
+
+      expect(StaticData.isExternalNode('ext_serde')).toBe(true);
+
+      delete TEST_STATIC_DATA.nodes.ext_serde;
+    });
+  });
+
+  describe('isExternalArc', () => {
+    test('returns false for arc between internal nodes', () => {
+      expect(StaticData.isExternalArc('fn_1-fn_2')).toBe(false);
+      expect(StaticData.isExternalArc('mod_a-crate')).toBe(false);
+    });
+
+    test('returns false for non-existent arc', () => {
+      expect(StaticData.isExternalArc('nonexistent')).toBe(false);
+    });
+
+    test('returns true when from-node is external', () => {
+      TEST_STATIC_DATA.nodes.ext_serde = {
+        type: 'external',
+        name: 'serde',
+        parent: null,
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 20,
+        hasChildren: false,
+      };
+      TEST_STATIC_DATA.arcs['ext_serde-fn_1'] = {
+        from: 'ext_serde',
+        to: 'fn_1',
+        usages: [
+          {
+            symbol: 'Serialize',
+            modulePath: null,
+            locations: [{ file: 'mod_a.rs', line: 1 }],
+          },
+        ],
+      };
+
+      expect(StaticData.isExternalArc('ext_serde-fn_1')).toBe(true);
+
+      delete TEST_STATIC_DATA.nodes.ext_serde;
+      delete TEST_STATIC_DATA.arcs['ext_serde-fn_1'];
+    });
+
+    test('returns true when to-node is external', () => {
+      TEST_STATIC_DATA.nodes.ext_tokio = {
+        type: 'external',
+        name: 'tokio',
+        parent: null,
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 20,
+        hasChildren: false,
+      };
+      TEST_STATIC_DATA.arcs['fn_1-ext_tokio'] = {
+        from: 'fn_1',
+        to: 'ext_tokio',
+        usages: [
+          {
+            symbol: 'spawn',
+            modulePath: null,
+            locations: [{ file: 'mod_a.rs', line: 5 }],
+          },
+        ],
+      };
+
+      expect(StaticData.isExternalArc('fn_1-ext_tokio')).toBe(true);
+
+      delete TEST_STATIC_DATA.nodes.ext_tokio;
+      delete TEST_STATIC_DATA.arcs['fn_1-ext_tokio'];
+    });
+  });
+
+  describe('getExternalGroups', () => {
+    test('returns empty map when no external nodes', () => {
+      const groups = StaticData.getExternalGroups();
+      expect(groups.size).toBe(0);
+    });
+
+    test('groups external crates by name with multiple versions', () => {
+      TEST_STATIC_DATA.nodes.ext_serde_1 = {
+        type: 'external',
+        name: 'serde',
+        parent: null,
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 20,
+        hasChildren: false,
+        version: '1.0.0',
+      };
+      TEST_STATIC_DATA.nodes.ext_serde_2 = {
+        type: 'external',
+        name: 'serde',
+        parent: null,
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 20,
+        hasChildren: false,
+        version: '2.0.0',
+      };
+      TEST_STATIC_DATA.nodes.ext_tokio = {
+        type: 'external',
+        name: 'tokio',
+        parent: null,
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 20,
+        hasChildren: false,
+        version: '1.0.0',
+      };
+
+      const groups = StaticData.getExternalGroups();
+      // Only serde has multiple versions
+      expect(groups.size).toBe(1);
+      expect(groups.has('serde')).toBe(true);
+      expect(groups.get('serde')).toHaveLength(2);
+
+      delete TEST_STATIC_DATA.nodes.ext_serde_1;
+      delete TEST_STATIC_DATA.nodes.ext_serde_2;
+      delete TEST_STATIC_DATA.nodes.ext_tokio;
+    });
+
+    test('ignores non-external nodes', () => {
+      // Existing nodes are crate/module/function types, not external
+      const groups = StaticData.getExternalGroups();
+      expect(groups.size).toBe(0);
+    });
+  });
 });

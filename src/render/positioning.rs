@@ -56,12 +56,13 @@ pub(super) fn calculate_positions(
         .enumerate()
         .map(|(index, item)| {
             let nesting = match &item.kind {
-                ItemKind::Crate => 0,
+                ItemKind::Crate | ItemKind::ExternalSection => 0,
                 ItemKind::Module { nesting, .. } => *nesting,
+                ItemKind::ExternalCrate { .. } => 1,
             };
             let height = match &item.kind {
-                ItemKind::Crate => LAYOUT.crate_height,
-                ItemKind::Module { .. } => LAYOUT.module_height,
+                ItemKind::Crate | ItemKind::ExternalSection => LAYOUT.crate_height,
+                ItemKind::Module { .. } | ItemKind::ExternalCrate { .. } => LAYOUT.module_height,
             };
             PositionedItem {
                 id: item.id,

@@ -120,6 +120,7 @@ fn collect_use_reexports(
     let original_paths = resolve_use_tree(&use_item.tree, "", false);
 
     let empty_reexport_map = ReExportMap::default();
+    let empty_ext_names = std::collections::HashMap::new();
     let res_ctx = ResolutionContext {
         current_crate: ctx.crate_name,
         workspace_crates: ctx.workspace_crates,
@@ -128,6 +129,7 @@ fn collect_use_reexports(
         crate_exports: ctx.crate_exports,
         current_module_path: module_path,
         reexport_map: &empty_reexport_map,
+        external_crate_names: &empty_ext_names,
     };
 
     for (alias_path, original_path) in alias_paths.iter().zip(original_paths.iter()) {

@@ -8,6 +8,7 @@ use super::hir::FeatureConfig;
 use super::syn_walker::{analyze_modules_syn, collect_syn_module_paths};
 use super::use_parser::ReExportMap;
 use crate::model::{CrateExportMap, CrateInfo, ModulePathMap, ModuleTree, WorkspaceCrates};
+use std::collections::HashMap;
 
 #[cfg(feature = "hir")]
 use {
@@ -77,6 +78,7 @@ impl AnalysisBackend {
         all_module_paths: &ModulePathMap,
         crate_exports: &CrateExportMap,
         reexport_map: &ReExportMap,
+        external_crate_names: &HashMap<String, String>,
     ) -> Result<ModuleTree> {
         match self {
             Self::Syn { include_tests } => analyze_modules_syn(
@@ -85,6 +87,7 @@ impl AnalysisBackend {
                 all_module_paths,
                 crate_exports,
                 reexport_map,
+                external_crate_names,
                 *include_tests,
             ),
             #[cfg(feature = "hir")]
@@ -97,6 +100,7 @@ impl AnalysisBackend {
                     workspace_crates,
                     all_module_paths,
                     crate_exports,
+                    external_crate_names,
                 )
             }
         }

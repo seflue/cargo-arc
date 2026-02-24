@@ -30,6 +30,8 @@ struct NodeData {
     width: f32,
     height: f32,
     has_children: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -174,10 +176,14 @@ fn generate_static_data(
         let node_type = match &item.kind {
             ItemKind::Crate => "crate",
             ItemKind::Module { .. } => "module",
+            ItemKind::ExternalSection => "external-section",
+            ItemKind::ExternalCrate { .. } => "external",
         };
         let parent = match &item.kind {
-            ItemKind::Crate => None,
-            ItemKind::Module { parent, .. } => Some(parent.to_string()),
+            ItemKind::Crate | ItemKind::ExternalSection => None,
+            ItemKind::Module { parent, .. } | ItemKind::ExternalCrate { parent } => {
+                Some(parent.to_string())
+            }
         };
         nodes.insert(
             pos.id.to_string(),
@@ -190,6 +196,7 @@ fn generate_static_data(
                 width: pos.width,
                 height: pos.height,
                 has_children: parents.contains(&pos.id),
+                version: item.version.clone(),
             },
         );
     }
@@ -248,6 +255,7 @@ fn generate_static_data(
         ("virtualHitarea", CSS.direction.virtual_hitarea),
         ("selectedCrate", CSS.node_selection.selected_crate),
         ("selectedModule", CSS.node_selection.selected_module),
+        ("selectedExternal", CSS.node_selection.selected_external),
         ("groupMember", CSS.node_selection.group_member),
         ("cycleMember", CSS.node_selection.cycle_member),
         ("highlightedArc", CSS.relation.highlighted_arc),
@@ -971,6 +979,10 @@ mod tests {
             "classes should contain selectedCrate"
         );
         assert!(
+            classes.contains_key("selectedExternal"),
+            "classes should contain selectedExternal"
+        );
+        assert!(
             classes.contains_key("hiddenByFilter"),
             "classes should contain hiddenByFilter"
         );
@@ -1030,6 +1042,10 @@ mod tests {
         assert_eq!(
             data["classes"]["selectedCrate"],
             CSS.node_selection.selected_crate
+        );
+        assert_eq!(
+            data["classes"]["selectedExternal"],
+            CSS.node_selection.selected_external
         );
         assert_eq!(data["classes"]["collapsed"], CSS.nodes.collapsed);
         assert_eq!(data["classes"]["virtualArc"], CSS.direction.virtual_arc);

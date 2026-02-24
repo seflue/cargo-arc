@@ -35,9 +35,24 @@ pub(super) fn render_sidebar(width: f32) -> String {
 }
 
 #[allow(clippy::cast_possible_truncation)] // SVG pixel coordinates fit in i32
-pub(super) fn render_toolbar(width: f32) -> String {
+pub(super) fn render_toolbar(width: f32, has_externals: bool) -> String {
     let ct = &CSS.toolbar;
     let height = LAYOUT.toolbar.height as i32;
+
+    let external_checkbox = if has_externals {
+        format!(
+            concat!(
+                "      <label class=\"{}\">\n",
+                "        <span class=\"{} {}\" id=\"external-dep-checkbox\"></span>\n",
+                "        External Dependencies\n",
+                "      </label>\n",
+            ),
+            ct.toggle, ct.checkbox, ct.checked,
+        )
+    } else {
+        String::new()
+    };
+
     format!(
         concat!(
             "  <foreignObject id=\"toolbar-fo\" x=\"0\" y=\"0\" width=\"{}\" height=\"{}\"",
@@ -53,6 +68,7 @@ pub(super) fn render_toolbar(width: f32) -> String {
             "        <span class=\"{} {}\" id=\"module-dep-checkbox\"></span>\n",
             "        Show Module Dependencies\n",
             "      </label>\n",
+            "{}",
             "      <span class=\"{}\"></span>\n",
             "      <div class=\"{}\">\n",
             "        <div class=\"{}\">\n",
@@ -82,6 +98,7 @@ pub(super) fn render_toolbar(width: f32) -> String {
         ct.toggle,  // label.toolbar-toggle (module dep)
         ct.checkbox,
         ct.checked,              // checkbox span (checked)
+        external_checkbox,       // optional external dep checkbox
         ct.separator_v,          // separator
         ct.search_group,         // .toolbar-search-group
         ct.search_input_wrapper, // .toolbar-search-input-wrapper
@@ -143,16 +160,20 @@ pub(super) fn render_nodes(positioned: &[PositionedItem], parents: &HashSet<Node
         let class = match &item.kind {
             ItemKind::Crate => CSS.nodes.crate_node,
             ItemKind::Module { .. } => CSS.nodes.module,
+            ItemKind::ExternalSection => CSS.nodes.external_section,
+            ItemKind::ExternalCrate { .. } => CSS.nodes.external_crate,
         };
         let rx = match &item.kind {
-            ItemKind::Crate => LAYOUT.crate_border_radius,
-            ItemKind::Module { .. } => LAYOUT.module_border_radius,
+            ItemKind::Crate | ItemKind::ExternalSection => LAYOUT.crate_border_radius,
+            ItemKind::Module { .. } | ItemKind::ExternalCrate { .. } => LAYOUT.module_border_radius,
         };
 
-        // data-parent attribute for modules
+        // data-parent attribute for modules and external crates
         let parent_attr = match &item.kind {
-            ItemKind::Module { parent, .. } => format!(r#" data-parent="{parent}""#),
-            ItemKind::Crate => String::new(),
+            ItemKind::Module { parent, .. } | ItemKind::ExternalCrate { parent } => {
+                format!(r#" data-parent="{parent}""#)
+            }
+            ItemKind::Crate | ItemKind::ExternalSection => String::new(),
         };
 
         // data-has-children attribute for parents
@@ -277,7 +298,13 @@ pub(super) fn render_edges(
             };
 
             // Add crate-dep-arc or module-dep-arc class based on edge type
-            let is_crate_dep = matches!((&from.kind, &to.kind), (ItemKind::Crate, ItemKind::Crate));
+            let is_crate_dep = matches!(
+                (&from.kind, &to.kind),
+                (
+                    ItemKind::Crate | ItemKind::ExternalCrate { .. },
+                    ItemKind::Crate | ItemKind::ExternalCrate { .. }
+                )
+            );
             let arc_class = if is_crate_dep {
                 format!("{} {}", base_arc_class, cd.crate_dep_arc)
             } else {
@@ -567,7 +594,7 @@ mod tests {
 
     #[test]
     fn test_render_toolbar_contains_elements() {
-        let output = render_toolbar(800.0);
+        let output = render_toolbar(800.0, false);
         assert!(
             output.contains(r#"id="toolbar-fo""#),
             "Should have foreignObject with toolbar-fo id"
@@ -615,6 +642,28 @@ mod tests {
         assert!(
             output.contains("xmlns=\"http://www.w3.org/1999/xhtml\""),
             "Should have XHTML namespace"
+        );
+    }
+
+    #[test]
+    fn test_render_toolbar_external_checkbox_when_externals_present() {
+        let output = render_toolbar(800.0, true);
+        assert!(
+            output.contains(r#"id="external-dep-checkbox""#),
+            "Should have external-dep checkbox when externals present"
+        );
+        assert!(
+            output.contains("External Dependencies"),
+            "Should have external dependency label"
+        );
+    }
+
+    #[test]
+    fn test_render_toolbar_no_external_checkbox_without_externals() {
+        let output = render_toolbar(800.0, false);
+        assert!(
+            !output.contains(r#"id="external-dep-checkbox""#),
+            "Should NOT have external-dep checkbox without externals"
         );
     }
 

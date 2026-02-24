@@ -1,5 +1,6 @@
 //! Graph Types & Builder
 
+use crate::analyze::externals::ExternalsResult;
 use crate::model::{
     CrateInfo, DependencyKind, DependencyRef, EdgeContext, ModuleInfo, ModuleTree, SourceLocation,
     TestKind,
@@ -11,8 +12,19 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
 pub enum Node {
-    Crate { name: String, path: PathBuf },
-    Module { name: String, crate_idx: NodeIndex },
+    Crate {
+        name: String,
+        path: PathBuf,
+    },
+    Module {
+        name: String,
+        crate_idx: NodeIndex,
+    },
+    ExternalCrate {
+        name: String,
+        version: String,
+        package_id: String,
+    },
 }
 
 impl Node {
@@ -22,9 +34,16 @@ impl Node {
     }
 
     #[must_use]
+    pub fn is_external(&self) -> bool {
+        matches!(self, Node::ExternalCrate { .. })
+    }
+
+    #[must_use]
     pub fn name(&self) -> &str {
         match self {
-            Node::Crate { name, .. } | Node::Module { name, .. } => name,
+            Node::Crate { name, .. }
+            | Node::Module { name, .. }
+            | Node::ExternalCrate { name, .. } => name,
         }
     }
 }
@@ -130,7 +149,7 @@ impl ArcGraph {
     pub fn owning_crate(&self, idx: NodeIndex) -> NodeIndex {
         match &self[idx] {
             Node::Module { crate_idx, .. } => *crate_idx,
-            Node::Crate { .. } => idx,
+            Node::Crate { .. } | Node::ExternalCrate { .. } => idx,
         }
     }
 
@@ -224,12 +243,19 @@ impl ArcGraph {
 
     /// Build a unified graph from crate and module analysis data.
     #[must_use]
-    pub fn build(crates: &[CrateInfo], modules: &[ModuleTree]) -> Self {
+    pub(crate) fn build(
+        crates: &[CrateInfo],
+        modules: &[ModuleTree],
+        externals: Option<&ExternalsResult>,
+    ) -> Self {
         let mut builder = GraphBuilder::new();
         builder.add_crates(crates);
         builder.add_modules(modules);
         builder.add_crate_deps(crates);
         builder.add_module_deps();
+        if let Some(ext) = externals {
+            builder.add_externals(ext);
+        }
         builder.graph
     }
 }
@@ -238,6 +264,7 @@ struct GraphBuilder {
     graph: ArcGraph,
     crate_map: HashMap<String, NodeIndex>,
     module_map: HashMap<String, NodeIndex>,
+    external_map: HashMap<String, NodeIndex>,
     module_deps: Vec<(String, Vec<DependencyRef>)>,
 }
 
@@ -247,6 +274,7 @@ impl GraphBuilder {
             graph: ArcGraph::new(),
             crate_map: HashMap::new(),
             module_map: HashMap::new(),
+            external_map: HashMap::new(),
             module_deps: Vec::new(),
         }
     }
@@ -364,11 +392,63 @@ impl GraphBuilder {
         }
     }
 
+    fn add_externals(&mut self, ext: &ExternalsResult) {
+        /// Map `cargo_metadata` `DependencyKind`s to our `EdgeContext`.
+        /// Dev-only deps get `test()`, everything else `production()`.
+        fn edge_context_from_dep_kinds(kinds: &[cargo_metadata::DependencyKind]) -> EdgeContext {
+            let has_normal = kinds
+                .iter()
+                .any(|k| matches!(k, cargo_metadata::DependencyKind::Normal));
+            if has_normal {
+                EdgeContext::production()
+            } else {
+                EdgeContext::test(TestKind::Unit)
+            }
+        }
+
+        // Add external crate nodes, build package_id -> NodeIndex map
+        let mut pkg_index: HashMap<&str, NodeIndex> = HashMap::new();
+        for info in &ext.crates {
+            let idx = self.graph.add_node(Node::ExternalCrate {
+                name: info.name.clone(),
+                version: info.version.clone(),
+                package_id: info.package_id.clone(),
+            });
+            pkg_index.insert(&info.package_id, idx);
+            self.external_map.insert(info.name.clone(), idx);
+        }
+
+        // Workspace -> external CrateDep edges
+        for dep in &ext.workspace_deps {
+            let Some(&ext_idx) = pkg_index.get(dep.external_pkg_id.as_str()) else {
+                continue;
+            };
+            let context = edge_context_from_dep_kinds(&dep.dep_kinds);
+            let Some(&ws_idx) = self.crate_map.get(&dep.workspace_crate) else {
+                // Try with hyphen variant
+                let hyphen_name = dep.workspace_crate.replace('_', "-");
+                let Some(&ws_idx) = self.crate_map.get(&hyphen_name) else {
+                    continue;
+                };
+                self.graph
+                    .add_edge(ws_idx, ext_idx, Edge::CrateDep { context });
+                continue;
+            };
+            self.graph
+                .add_edge(ws_idx, ext_idx, Edge::CrateDep { context });
+        }
+
+        // External -> external edges intentionally skipped:
+        // only direct workspace dependencies are visualized.
+    }
+
     fn resolve_node(&self, name: &str) -> Option<NodeIndex> {
         self.module_map
             .get(name)
             .or_else(|| self.crate_map.get(name))
             .or_else(|| self.crate_map.get(&name.replace('_', "-")))
+            .or_else(|| self.external_map.get(name))
+            .or_else(|| self.external_map.get(&name.replace('_', "-")))
             .copied()
     }
 }
@@ -493,7 +573,7 @@ mod tests {
 
     #[test]
     fn test_build_graph_single_crate() {
-        let graph = ArcGraph::build(&[crate_("my_crate")], &[]);
+        let graph = ArcGraph::build(&[crate_("my_crate")], &[], None);
         assert_eq!(graph.node_count(), 1);
         assert_eq!(graph.edge_count(), 0);
     }
@@ -505,7 +585,7 @@ mod tests {
             children: vec![module("foo", "crate::foo"), module("bar", "crate::bar")],
             ..module("my_crate", "crate")
         })];
-        let graph = ArcGraph::build(&crates, &modules);
+        let graph = ArcGraph::build(&crates, &modules, None);
         assert_eq!(graph.node_count(), 3);
         let (cd, md, c) = count_edges(&graph);
         assert_eq!((cd, md, c), (0, 0, 2));
@@ -514,7 +594,7 @@ mod tests {
     #[test]
     fn test_build_graph_crate_deps() {
         let crates = vec![crate_with_deps("crate_a", &["crate_b"]), crate_("crate_b")];
-        let graph = ArcGraph::build(&crates, &[]);
+        let graph = ArcGraph::build(&crates, &[], None);
         assert_eq!(graph.node_count(), 2);
         let (cd, _, _) = count_edges(&graph);
         assert_eq!(cd, 1);
@@ -533,7 +613,7 @@ mod tests {
             ],
             ..module("my_crate", "crate")
         })];
-        let graph = ArcGraph::build(&crates, &modules);
+        let graph = ArcGraph::build(&crates, &modules, None);
         assert_eq!(graph.node_count(), 3);
         let (cd, md, c) = count_edges(&graph);
         assert_eq!((cd, md, c), (0, 1, 2));
@@ -555,7 +635,7 @@ mod tests {
                 ..module("crate_b", "crate_b")
             }),
         ];
-        let graph = ArcGraph::build(&crates, &modules);
+        let graph = ArcGraph::build(&crates, &modules, None);
         assert_eq!(graph.node_count(), 4);
         let (cd, md, c) = count_edges(&graph);
         assert_eq!((cd, md, c), (1, 1, 2));
@@ -574,7 +654,7 @@ mod tests {
             dependencies: vec![dep("crate_a", "gamma", "src/lib.rs", 5)],
             ..module("crate_a", "crate_a")
         })];
-        let graph = ArcGraph::build(&crates, &modules);
+        let graph = ArcGraph::build(&crates, &modules, None);
         let (_, locs) =
             find_module_dep(&graph, "crate_a", "gamma").expect("expected ModuleDep root→gamma");
         assert_eq!(locs[0].file, PathBuf::from("src/lib.rs"));
@@ -596,7 +676,7 @@ mod tests {
             }),
             tree(module("crate_b", "crate_b")),
         ];
-        let graph = ArcGraph::build(&crates, &modules);
+        let graph = ArcGraph::build(&crates, &modules, None);
         let (_, locs) = find_module_dep(&graph, "beta", "crate_b")
             .expect("expected ModuleDep from beta to crate_b");
         assert_eq!(locs[0].module_path, "crate_b");
@@ -616,7 +696,7 @@ mod tests {
                 ..module("crate_b", "crate_b")
             }),
         ];
-        let graph = ArcGraph::build(&crates, &modules);
+        let graph = ArcGraph::build(&crates, &modules, None);
         let (_, locs) =
             find_module_dep(&graph, "crate_a", "gamma").expect("expected ModuleDep root→gamma");
         assert_eq!(locs[0].file, PathBuf::from("src/lib.rs"));
@@ -635,7 +715,7 @@ mod tests {
             }),
             tree(module("crate_b", "crate_b")),
         ];
-        let graph = ArcGraph::build(&crates, &modules);
+        let graph = ArcGraph::build(&crates, &modules, None);
         let (_, locs) = find_module_dep(&graph, "crate_a", "crate_b")
             .expect("expected ModuleDep crate_a→crate_b");
         assert_eq!(locs[0].module_path, "crate_b");
@@ -659,7 +739,7 @@ mod tests {
             ],
             ..module("my_crate", "crate")
         })];
-        let graph = ArcGraph::build(&crates, &modules);
+        let graph = ArcGraph::build(&crates, &modules, None);
         let (ctx, _) = find_module_dep(&graph, "bar", "foo").expect("expected ModuleDep bar→foo");
         assert_eq!(*ctx, EdgeContext::test(TestKind::Unit));
     }
@@ -687,10 +767,137 @@ mod tests {
             ],
             ..module("my_crate", "crate")
         })];
-        let graph = ArcGraph::build(&crates, &modules);
+        let graph = ArcGraph::build(&crates, &modules, None);
         let (ctx, locs) =
             find_module_dep(&graph, "bar", "foo").expect("expected ModuleDep bar→foo");
         assert_eq!(*ctx, EdgeContext::production());
         assert_eq!(locs.len(), 2);
+    }
+
+    #[test]
+    fn test_external_crate_node_properties() {
+        let node = Node::ExternalCrate {
+            name: "serde".into(),
+            version: "1.0.0".into(),
+            package_id: "serde 1.0.0 (registry+...)".into(),
+        };
+        assert!(!node.is_crate());
+        assert!(node.is_external());
+        assert_eq!(node.name(), "serde");
+    }
+
+    #[test]
+    fn test_production_reachable_excludes_external() {
+        let mut graph = ArcGraph::new();
+        let crate_idx = graph.add_node(Node::Crate {
+            name: "my_crate".into(),
+            path: "/path".into(),
+        });
+        let mod_idx = graph.add_node(Node::Module {
+            name: "foo".into(),
+            crate_idx,
+        });
+        graph.add_edge(crate_idx, mod_idx, Edge::Contains);
+        let ext_idx = graph.add_node(Node::ExternalCrate {
+            name: "serde".into(),
+            version: "1.0.0".into(),
+            package_id: "serde-pkg".into(),
+        });
+        graph.add_edge(
+            crate_idx,
+            ext_idx,
+            Edge::CrateDep {
+                context: EdgeContext::production(),
+            },
+        );
+        let reachable = graph.production_reachable();
+        assert!(reachable.contains(&crate_idx));
+        assert!(
+            !reachable.contains(&ext_idx),
+            "ExternalCrate should not be in production_reachable"
+        );
+    }
+
+    #[test]
+    fn test_owning_crate_external() {
+        let mut graph = ArcGraph::new();
+        let ext_idx = graph.add_node(Node::ExternalCrate {
+            name: "serde".into(),
+            version: "1.0.0".into(),
+            package_id: "serde-pkg".into(),
+        });
+        assert_eq!(graph.owning_crate(ext_idx), ext_idx);
+    }
+
+    #[test]
+    fn test_build_graph_with_externals() {
+        use crate::analyze::externals::*;
+        use cargo_metadata::DependencyKind as DK;
+
+        let crates = vec![crate_("my_crate")];
+        let externals = ExternalsResult {
+            crates: vec![
+                ExternalCrateInfo {
+                    name: "serde".into(),
+                    version: "1.0.0".into(),
+                    package_id: "serde-pkg".into(),
+                },
+                ExternalCrateInfo {
+                    name: "tokio".into(),
+                    version: "1.0.0".into(),
+                    package_id: "tokio-pkg".into(),
+                },
+            ],
+            workspace_deps: vec![WorkspaceExternalDep {
+                workspace_crate: "my_crate".into(),
+                external_pkg_id: "serde-pkg".into(),
+                dep_kinds: vec![DK::Normal],
+            }],
+            external_deps: vec![ExternalDep {
+                from_pkg_id: "serde-pkg".into(),
+                to_pkg_id: "tokio-pkg".into(),
+                dep_kinds: vec![DK::Normal],
+            }],
+            crate_name_map: std::collections::HashMap::new(),
+        };
+        let graph = ArcGraph::build(&crates, &[], Some(&externals));
+        // 1 workspace + 2 external = 3 nodes
+        assert_eq!(graph.node_count(), 3);
+        // 1 workspace->serde (extern->extern skipped)
+        let (cd, _, _) = count_edges(&graph);
+        assert_eq!(cd, 1);
+    }
+
+    #[test]
+    fn test_build_graph_externals_none() {
+        let crates = vec![crate_with_deps("a", &["b"]), crate_("b")];
+        let graph = ArcGraph::build(&crates, &[], None);
+        assert_eq!(graph.node_count(), 2);
+        let (cd, _, _) = count_edges(&graph);
+        assert_eq!(cd, 1);
+    }
+
+    #[test]
+    fn test_resolve_node_finds_external() {
+        use crate::analyze::externals::*;
+
+        let crates = vec![crate_("my_crate")];
+        let externals = ExternalsResult {
+            crates: vec![ExternalCrateInfo {
+                name: "serde".into(),
+                version: "1.0.0".into(),
+                package_id: "serde-pkg".into(),
+            }],
+            workspace_deps: vec![],
+            external_deps: vec![],
+            crate_name_map: std::collections::HashMap::new(),
+        };
+        let graph = ArcGraph::build(&crates, &[], Some(&externals));
+        // Verify the external node exists
+        let ext_node = graph
+            .node_indices()
+            .find(|&idx| graph[idx].name() == "serde");
+        assert!(ext_node.is_some(), "should find serde external node");
+        assert!(graph[ext_node.unwrap()].is_external());
     }
 }

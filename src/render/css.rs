@@ -52,6 +52,22 @@ fn build_css_rules() -> Vec<CssRule> {
             ],
         ),
         CssRule::class(
+            c.nodes.external_section,
+            &[
+                ("fill", n.external_section_fill),
+                ("stroke", n.external_section_stroke),
+                ("stroke-width", "1.5"),
+            ],
+        ),
+        CssRule::class(
+            c.nodes.external_crate,
+            &[
+                ("fill", n.external_crate_fill),
+                ("stroke", n.external_crate_stroke),
+                ("stroke-width", "1.5"),
+            ],
+        ),
+        CssRule::class(
             c.nodes.label,
             &[
                 ("font-family", "monospace"),
@@ -112,6 +128,10 @@ fn build_css_rules() -> Vec<CssRule> {
             &[("fill", ns.module_fill), ("stroke-width", "3")],
         ),
         CssRule::class(
+            c.node_selection.selected_external,
+            &[("fill", ns.external_fill), ("stroke-width", "3")],
+        ),
+        CssRule::class(
             c.node_selection.group_member,
             &[("stroke", r.dependency), ("stroke-width", "2")],
         ),
@@ -160,10 +180,11 @@ fn build_css_rules() -> Vec<CssRule> {
         // CSS-only dimming via has-highlight on SVG root (leaf elements only)
         CssRule::new(
             &format!(
-                "svg.{} rect:not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{})",
+                "svg.{} rect:not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{})",
                 c.relation.has_highlight,
                 c.node_selection.selected_crate,
                 c.node_selection.selected_module,
+                c.node_selection.selected_external,
                 c.node_selection.group_member,
                 c.node_selection.cycle_member,
                 c.relation.dep_node,
@@ -779,6 +800,7 @@ mod tests {
         // Selection styles
         assert!(css.contains(&format!(".{}", CSS.node_selection.selected_crate)));
         assert!(css.contains(&format!(".{}", CSS.node_selection.selected_module)));
+        assert!(css.contains(&format!(".{}", CSS.node_selection.selected_external)));
 
         // Relation styles
         assert!(css.contains(&format!(".{}", CSS.relation.dep_node)));

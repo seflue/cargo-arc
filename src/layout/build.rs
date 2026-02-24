@@ -16,6 +16,8 @@ pub type NodeId = usize;
 pub enum ItemKind {
     Crate,
     Module { nesting: u32, parent: NodeId },
+    ExternalSection,
+    ExternalCrate { parent: NodeId },
 }
 
 #[derive(Debug, Clone)]
@@ -25,6 +27,7 @@ pub struct LayoutItem {
     pub label: String,
     pub source_path: Option<String>,
     pub volatility: Option<(Volatility, usize)>,
+    pub version: Option<String>,
 }
 
 impl LayoutItem {
@@ -35,6 +38,7 @@ impl LayoutItem {
             label: label.into(),
             source_path: None,
             volatility: None,
+            version: None,
         }
     }
 }
@@ -125,12 +129,26 @@ pub fn build_layout(graph: &ArcGraph, cycles: &[Cycle]) -> LayoutIR {
     let edge_to_cycles = build_edge_cycle_index(cycles);
     let parent_map = graph.parent_map();
 
-    let (crate_indices, module_indices): (Vec<_>, Vec<_>) =
-        graph.node_indices().partition(|&idx| graph[idx].is_crate());
+    // 3-way partition: workspace crates, modules, external crates
+    let mut crate_indices = Vec::new();
+    let mut module_indices = Vec::new();
+    let mut external_indices = Vec::new();
+    for idx in graph.node_indices() {
+        match &graph[idx] {
+            Node::Crate { .. } => crate_indices.push(idx),
+            Node::Module { .. } => module_indices.push(idx),
+            Node::ExternalCrate { .. } => external_indices.push(idx),
+        }
+    }
+
     let crate_indices = graph.order_crates(&crate_indices);
     let reachable = graph.production_reachable();
     let ordered = graph.order_items(&crate_indices, &module_indices, &reachable);
-    let node_map = populate_items(&mut ir, graph, &ordered, &parent_map);
+    let mut node_map = populate_items(&mut ir, graph, &ordered, &parent_map);
+
+    if !external_indices.is_empty() {
+        populate_external_items(&mut ir, graph, &external_indices, &mut node_map);
+    }
 
     let suppressed = graph.suppressed_crate_pairs();
     populate_edges(&mut ir, graph, &node_map, &edge_to_cycles, &suppressed);
@@ -165,6 +183,7 @@ fn populate_items(
                     module_source_path(graph, idx),
                 )
             }
+            Node::ExternalCrate { .. } => continue, // handled by populate_external_items
         };
 
         let layout_id = ir.add_item(kind, label);
@@ -172,6 +191,69 @@ fn populate_items(
         ir.items[layout_id].source_path = source_path;
     }
     node_map
+}
+
+/// Add external crate nodes to the layout IR, preceded by a section header.
+/// Sorted topologically by inter-external `CrateDep` edges so that dependencies appear
+/// below their dependents, eliminating upward edges.  Incoming edge count (descending)
+/// serves as tiebreaker to preserve the "most-used first" aesthetic where topology
+/// does not constrain ordering.
+fn populate_external_items(
+    ir: &mut LayoutIR,
+    graph: &ArcGraph,
+    external_indices: &[NodeIndex],
+    node_map: &mut HashMap<NodeIndex, NodeId>,
+) {
+    let section_id = ir.add_item(
+        ItemKind::ExternalSection,
+        "External Dependencies".to_string(),
+    );
+
+    // Build a subgraph of only external nodes + their CrateDep edges.
+    let mut ext_graph: DiGraph<NodeIndex, usize> = DiGraph::new();
+    let orig_to_local: HashMap<NodeIndex, NodeIndex> = external_indices
+        .iter()
+        .map(|&idx| (idx, ext_graph.add_node(idx)))
+        .collect();
+
+    for edge in graph.edge_references() {
+        if edge.weight().is_production_crate_dep()
+            && let (Some(&src), Some(&dst)) = (
+                orig_to_local.get(&edge.source()),
+                orig_to_local.get(&edge.target()),
+            )
+        {
+            ext_graph.increment_edge(src, dst);
+        }
+    }
+
+    // Incoming edge count per node (from full graph, not subgraph) for tiebreaking.
+    let incoming_counts: HashMap<NodeIndex, usize> = external_indices
+        .iter()
+        .map(|&idx| {
+            let count = graph
+                .edges_directed(idx, petgraph::Direction::Incoming)
+                .count();
+            (idx, count)
+        })
+        .collect();
+
+    // Topological sort with incoming-count-descending tiebreaker.
+    // `stable_toposort` breaks ties by `get_name` (lexicographic ascending).
+    // Encode inverted incoming count as zero-padded prefix so higher counts sort first.
+    let sorted = stable_toposort(&ext_graph, |orig_idx| {
+        let count = incoming_counts.get(&orig_idx).copied().unwrap_or(0);
+        format!("{:010}_{}", usize::MAX - count, graph[orig_idx].name())
+    });
+
+    for &idx in &sorted {
+        if let Node::ExternalCrate { name, version, .. } = &graph[idx] {
+            let layout_id =
+                ir.add_item(ItemKind::ExternalCrate { parent: section_id }, name.clone());
+            ir.items[layout_id].version = Some(version.clone());
+            node_map.insert(idx, layout_id);
+        }
+    }
 }
 
 /// Add dependency edges (`CrateDep` and `ModuleDep`) to the layout IR.
@@ -507,7 +589,7 @@ mod tests {
             let parent_idx = self.names[parent];
             let crate_idx = match &self.graph[parent_idx] {
                 Node::Module { crate_idx, .. } => *crate_idx,
-                Node::Crate { .. } => parent_idx,
+                Node::Crate { .. } | Node::ExternalCrate { .. } => parent_idx,
             };
             let child_idx = self.graph.add_node(Node::Module {
                 name: child.to_string(),
@@ -573,6 +655,17 @@ mod tests {
                     context: EdgeContext::test(kind),
                 },
             );
+            self
+        }
+
+        /// Add an external crate node.
+        fn external_crate(&mut self, name: &str, version: &str) -> &mut Self {
+            let idx = self.graph.add_node(Node::ExternalCrate {
+                name: name.to_string(),
+                version: version.to_string(),
+                package_id: format!("{name}-pkg"),
+            });
+            self.names.insert(name.to_string(), idx);
             self
         }
 
@@ -1187,5 +1280,67 @@ mod tests {
         la.assert_order("a", "c");
         la.assert_order("b", "d");
         la.assert_order("a", "b");
+    }
+
+    // === External Dependency Ordering Tests ===
+
+    #[test]
+    fn test_transitive_external_deps_no_upward_edges() {
+        // Workspace crate depends on serde, serde depends on proc-macro2.
+        // Old sort: proc-macro2 had more incoming edges → placed above serde → upward edge.
+        // Fixed sort: topological order ensures serde (dependent) above proc-macro2 (leaf).
+        let mut b = TestGraphBuilder::new();
+        b.crate_with_modules("my_app", &[])
+            .external_crate("serde", "1.0.0")
+            .external_crate("proc-macro2", "1.0.0")
+            // my_app depends on serde
+            .crate_dep("my_app", "serde")
+            // serde depends on proc-macro2 (transitive external dep)
+            .crate_dep("serde", "proc-macro2");
+        let (graph, _) = b.build();
+        let ir = build_layout(&graph, &[]);
+
+        // All CrateDep edges between external crates should be Downward
+        for edge in &ir.edges {
+            let from_item = &ir.items[edge.from];
+            let to_item = &ir.items[edge.to];
+            if matches!(from_item.kind, ItemKind::ExternalCrate { .. })
+                && matches!(to_item.kind, ItemKind::ExternalCrate { .. })
+            {
+                check!(
+                    edge.direction == EdgeDirection::Downward,
+                    "Edge {} → {} should be Downward, was {:?}",
+                    from_item.label,
+                    to_item.label,
+                    edge.direction,
+                );
+            }
+        }
+
+        // serde (dependent) must appear before proc-macro2 (leaf)
+        let la = LayoutAssert::new(ir);
+        la.assert_order("serde", "proc-macro2");
+    }
+
+    #[test]
+    fn test_external_deps_incoming_count_tiebreaker() {
+        // Two external crates with no inter-external edges but different incoming counts.
+        // Both are depended on by workspace crates, but tokio has more dependents.
+        // Tiebreaker: higher incoming count → placed first.
+        let mut b = TestGraphBuilder::new();
+        b.crate_with_modules("app_a", &[])
+            .crate_with_modules("app_b", &[])
+            .external_crate("alpha_crate", "1.0.0")
+            .external_crate("tokio", "1.0.0")
+            // Both apps depend on tokio (2 incoming), only app_a depends on alpha_crate (1 incoming)
+            .crate_dep("app_a", "tokio")
+            .crate_dep("app_b", "tokio")
+            .crate_dep("app_a", "alpha_crate");
+        let (graph, _) = b.build();
+        let la = LayoutAssert::new(build_layout(&graph, &[]));
+
+        // tokio (2 incoming) should appear before alpha_crate (1 incoming),
+        // despite alpha_crate being alphabetically first.
+        la.assert_order("tokio", "alpha_crate");
     }
 }

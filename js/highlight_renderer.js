@@ -101,6 +101,7 @@ const HighlightRenderer = {
     const nodeClasses = [
       C.selectedCrate,
       C.selectedModule,
+      C.selectedExternal,
       C.groupMember,
       C.cycleMember,
       C.depNode,

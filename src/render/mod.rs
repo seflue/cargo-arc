@@ -34,8 +34,8 @@ pub fn render(ir: &LayoutIR, config: &RenderConfig) -> String {
         .items
         .iter()
         .filter_map(|item| match &item.kind {
-            ItemKind::Module { parent, .. } => Some(*parent),
-            ItemKind::Crate => None,
+            ItemKind::Module { parent, .. } | ItemKind::ExternalCrate { parent } => Some(*parent),
+            ItemKind::Crate | ItemKind::ExternalSection => None,
         })
         .collect();
 
@@ -47,7 +47,11 @@ pub fn render(ir: &LayoutIR, config: &RenderConfig) -> String {
     svg.push_str(&render_nodes(&positioned, &parents));
     svg.push_str(&render_edges(&positioned_index, ir, config.row_height));
     svg.push_str("  </g>\n");
-    svg.push_str(&render_toolbar(width));
+    let has_externals = ir
+        .items
+        .iter()
+        .any(|item| matches!(item.kind, ItemKind::ExternalSection));
+    svg.push_str(&render_toolbar(width, has_externals));
     svg.push_str(&render_sidebar(width));
     svg.push_str(&render_script(config, ir, &positioned, &parents));
     svg.push_str("</svg>\n");

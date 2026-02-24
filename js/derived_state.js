@@ -8,17 +8,20 @@
 
 const DerivedState = {
   /**
-   * Derive which nodes are visible based on collapsed state.
-   * A node is visible if getVisibleAncestor(nodeId) === nodeId
+   * Derive which nodes are visible based on collapsed and filter state.
+   * A node is visible if getVisibleAncestor(nodeId) === nodeId and it is not
+   * hidden by a filter.
    * @param {Set<string>} collapsed - Set of collapsed node IDs
    * @param {Object} staticData - StaticData accessor
+   * @param {Set<string>} [hiddenByFilter] - Node IDs hidden by active filters
    * @returns {Set<string>} - Set of visible node IDs
    */
-  deriveNodeVisibility(collapsed, staticData) {
+  deriveNodeVisibility(collapsed, staticData, hiddenByFilter) {
     const parentMap = staticData.buildParentMap();
     const visibleNodes = new Set();
 
     for (const nodeId of staticData.getAllNodeIds()) {
+      if (hiddenByFilter && hiddenByFilter.has(nodeId)) continue;
       const visibleAncestor = TreeLogic.getVisibleAncestor(
         nodeId,
         collapsed,
@@ -143,8 +146,13 @@ const DerivedState = {
     toolbarHeight,
     rowHeight,
     widthOverrides,
+    hiddenByFilter,
   ) {
-    const visibleNodes = this.deriveNodeVisibility(collapsed, staticData);
+    const visibleNodes = this.deriveNodeVisibility(
+      collapsed,
+      staticData,
+      hiddenByFilter,
+    );
     const positions = new Map();
 
     // Sort visible nodes by original Y position
@@ -264,7 +272,12 @@ const DerivedState = {
     const primaryNode = staticData.getNode(selection.id);
     if (primaryNode) {
       const cssClass =
-        primaryNode.type === 'crate' ? 'selectedCrate' : 'selectedModule';
+        primaryNode.type === 'crate'
+          ? 'selectedCrate'
+          : primaryNode.type === 'external-section' ||
+              primaryNode.type === 'external'
+            ? 'selectedExternal'
+            : 'selectedModule';
       result.nodeHighlights.set(selection.id, { role: 'current', cssClass });
     }
 

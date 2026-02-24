@@ -7,6 +7,7 @@ static DEFAULT_WS: LazyLock<WorkspaceCrates> = LazyLock::new(WorkspaceCrates::de
 static DEFAULT_MP: LazyLock<ModulePathMap> = LazyLock::new(ModulePathMap::default);
 static DEFAULT_EXPORTS: LazyLock<CrateExportMap> = LazyLock::new(CrateExportMap::default);
 static DEFAULT_REEXPORT_MAP: LazyLock<ReExportMap> = LazyLock::new(ReExportMap::default);
+static DEFAULT_EXT_NAMES: LazyLock<HashMap<String, String>> = LazyLock::new(HashMap::new);
 
 struct ResolutionContextBuilder<'a> {
     current_crate: &'a str,
@@ -16,6 +17,7 @@ struct ResolutionContextBuilder<'a> {
     crate_exports: &'a CrateExportMap,
     current_module_path: &'a str,
     reexport_map: &'a ReExportMap,
+    external_crate_names: &'a HashMap<String, String>,
 }
 
 impl<'a> ResolutionContextBuilder<'a> {
@@ -28,6 +30,7 @@ impl<'a> ResolutionContextBuilder<'a> {
             crate_exports: &DEFAULT_EXPORTS,
             current_module_path: "",
             reexport_map: &DEFAULT_REEXPORT_MAP,
+            external_crate_names: &DEFAULT_EXT_NAMES,
         }
     }
 
@@ -61,6 +64,11 @@ impl<'a> ResolutionContextBuilder<'a> {
         self
     }
 
+    fn external_crate_names(mut self, names: &'a HashMap<String, String>) -> Self {
+        self.external_crate_names = names;
+        self
+    }
+
     fn build(self) -> ResolutionContext<'a> {
         ResolutionContext {
             current_crate: self.current_crate,
@@ -70,6 +78,7 @@ impl<'a> ResolutionContextBuilder<'a> {
             crate_exports: self.crate_exports,
             current_module_path: self.current_module_path,
             reexport_map: self.reexport_map,
+            external_crate_names: self.external_crate_names,
         }
     }
 }
@@ -2309,5 +2318,51 @@ mod resolve_reexport_tests {
         let map: ReExportMap = [("my_crate".to_string(), inner)].into_iter().collect();
         assert!(map.contains_key("my_crate"));
         assert!(map["my_crate"].contains_key("render"));
+    }
+}
+
+mod external_crate_tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_external_crate_import() {
+        let ext_names: HashMap<String, String> =
+            [("serde".to_string(), "serde-pkg-id".to_string())]
+                .into_iter()
+                .collect();
+        let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs"))
+            .external_crate_names(&ext_names)
+            .build();
+        let dep = resolve_single_path(&ctx, "serde::Deserialize", 1, &EdgeContext::production(), 0);
+        assert!(dep.is_some(), "should resolve external crate import");
+        let dep = dep.unwrap();
+        assert_eq!(dep.target_crate, "serde");
+        assert_eq!(dep.target_item, Some("Deserialize".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_external_does_not_shadow_workspace() {
+        let ws: WorkspaceCrates = ["serde"].into_iter().collect();
+        let ext_names: HashMap<String, String> =
+            [("serde".to_string(), "serde-pkg-id".to_string())]
+                .into_iter()
+                .collect();
+        let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs"))
+            .workspace_crates(&ws)
+            .external_crate_names(&ext_names)
+            .build();
+        // With serde as both workspace crate and external, workspace should win
+        let dep = resolve_single_path(&ctx, "serde::Foo", 1, &EdgeContext::production(), 0);
+        assert!(dep.is_some());
+        let dep = dep.unwrap();
+        // Workspace import resolution takes priority
+        assert_eq!(dep.target_crate, "serde");
+    }
+
+    #[test]
+    fn test_resolve_external_no_match() {
+        let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs")).build();
+        let dep = resolve_single_path(&ctx, "unknown_crate::Foo", 1, &EdgeContext::production(), 0);
+        assert!(dep.is_none(), "unknown crate should not resolve");
     }
 }
