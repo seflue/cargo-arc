@@ -5,6 +5,24 @@
 // ArcLogic is loaded from arc_logic.js before this file
 // Placeholders replaced at runtime: __ROW_HEIGHT__, __MARGIN__, __TOOLBAR_HEIGHT__
 
+function createHighlightDebouncer(renderFn, delay) {
+  let timer = null;
+  return {
+    debounced() {
+      clearTimeout(timer);
+      timer = setTimeout(renderFn, delay);
+    },
+    immediate() {
+      clearTimeout(timer);
+      renderFn();
+    },
+  };
+}
+
+if (typeof module !== 'undefined') {
+  module.exports = { createHighlightDebouncer };
+}
+
 // IIFE for SVG embedding (DOM-code) - only runs in browser with placeholders replaced
 if (typeof document !== 'undefined') {
   (() => {
@@ -66,11 +84,13 @@ if (typeof document !== 'undefined') {
       HighlightRenderer.apply(DomAdapter, StaticData, virtualArcUsages, state);
     }
 
+    const highlightTiming = createHighlightDebouncer(rerenderHighlights, 30);
+
     // Shared toggle core for all clickable elements (edge, node, virtual edge).
     // The showSidebar callback provides the type-specific sidebar display logic.
     function toggleHighlight(type, id, showSidebar) {
       const isPinned = AppState.togglePinned(appState, type, id);
-      rerenderHighlights();
+      highlightTiming.immediate();
       if (!isPinned) {
         SidebarLogic.hide();
         return;
@@ -122,7 +142,7 @@ if (typeof document !== 'undefined') {
     function handleMouseEnter(type, id) {
       if (AppState.hasPinnedSelection(appState)) return;
       AppState.setHover(appState, type, id);
-      rerenderHighlights();
+      highlightTiming.debounced();
       if (type === 'node') {
         const relations = collectNodeRelations(id);
         SidebarLogic.showTransientNode(id, relations);
@@ -134,14 +154,14 @@ if (typeof document !== 'undefined') {
     function handleMouseLeave() {
       if (AppState.hasPinnedSelection(appState)) return;
       AppState.clearHover(appState);
-      rerenderHighlights();
+      highlightTiming.debounced();
       SidebarLogic.hideTransient();
     }
 
     function handleVirtualMouseEnter(arcId, fromId, toId) {
       if (AppState.hasPinnedSelection(appState)) return;
       AppState.setHover(appState, 'arc', arcId);
-      rerenderHighlights();
+      highlightTiming.debounced();
       const usages = virtualArcUsages.get(arcId) || [];
       const originalArcs = virtualArcOriginals.get(arcId) || [];
       const mergedUsages = SidebarLogic.mergeSymbolGroups(usages);
@@ -251,7 +271,7 @@ if (typeof document !== 'undefined') {
       recalculateVirtualEdges();
 
       // Re-apply highlights after edges were recreated
-      rerenderHighlights();
+      highlightTiming.immediate();
 
       // Update sidebar position after layout changed arc positions
       if (SidebarLogic.isVisible()) SidebarLogic.updatePosition();
@@ -735,7 +755,7 @@ if (typeof document !== 'undefined') {
         }
       });
 
-      rerenderHighlights();
+      highlightTiming.immediate();
     }
 
     // Toggle visibility of crate-to-crate dependency arcs
@@ -969,7 +989,7 @@ if (typeof document !== 'undefined') {
 
     DomAdapter.getSvgRoot().addEventListener('click', () => {
       AppState.clearPinned(appState);
-      rerenderHighlights();
+      highlightTiming.immediate();
       SidebarLogic.hide();
     });
 
@@ -980,7 +1000,7 @@ if (typeof document !== 'undefined') {
         e.stopPropagation(); // Prevent SVG background click
         if (e.target.classList.contains('sidebar-close')) {
           AppState.clearPinned(appState);
-          rerenderHighlights();
+          highlightTiming.immediate();
           SidebarLogic.hide();
         }
       });
