@@ -113,7 +113,11 @@ const StaticData = {
   isExternalNode(nodeId) {
     const node = STATIC_DATA.nodes[nodeId];
     if (!node) return false;
-    return node.type === 'external-section' || node.type === 'external';
+    return (
+      node.type === 'external-section' ||
+      node.type === 'external' ||
+      node.type === 'external-transitive'
+    );
   },
 
   /**
@@ -135,7 +139,8 @@ const StaticData = {
   getExternalGroups() {
     const groups = new Map();
     for (const [nodeId, node] of Object.entries(STATIC_DATA.nodes)) {
-      if (node.type !== 'external') continue;
+      if (node.type !== 'external' && node.type !== 'external-transitive')
+        continue;
       const name = node.name;
       if (!groups.has(name)) groups.set(name, []);
       groups.get(name).push(nodeId);

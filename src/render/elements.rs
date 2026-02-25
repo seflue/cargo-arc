@@ -161,7 +161,14 @@ pub(super) fn render_nodes(positioned: &[PositionedItem], parents: &HashSet<Node
             ItemKind::Crate => CSS.nodes.crate_node,
             ItemKind::Module { .. } => CSS.nodes.module,
             ItemKind::ExternalSection => CSS.nodes.external_section,
-            ItemKind::ExternalCrate { .. } => CSS.nodes.external_crate,
+            ItemKind::ExternalCrate {
+                is_direct_dependency: true,
+                ..
+            } => CSS.nodes.external_crate,
+            ItemKind::ExternalCrate {
+                is_direct_dependency: false,
+                ..
+            } => CSS.nodes.external_transitive,
         };
         let rx = match &item.kind {
             ItemKind::Crate | ItemKind::ExternalSection => LAYOUT.crate_border_radius,
@@ -170,7 +177,7 @@ pub(super) fn render_nodes(positioned: &[PositionedItem], parents: &HashSet<Node
 
         // data-parent attribute for modules and external crates
         let parent_attr = match &item.kind {
-            ItemKind::Module { parent, .. } | ItemKind::ExternalCrate { parent } => {
+            ItemKind::Module { parent, .. } | ItemKind::ExternalCrate { parent, .. } => {
                 format!(r#" data-parent="{parent}""#)
             }
             ItemKind::Crate | ItemKind::ExternalSection => String::new(),

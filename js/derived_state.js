@@ -21,7 +21,7 @@ const DerivedState = {
     const visibleNodes = new Set();
 
     for (const nodeId of staticData.getAllNodeIds()) {
-      if (hiddenByFilter && hiddenByFilter.has(nodeId)) continue;
+      if (hiddenByFilter?.has(nodeId)) continue;
       const visibleAncestor = TreeLogic.getVisibleAncestor(
         nodeId,
         collapsed,
@@ -274,10 +274,12 @@ const DerivedState = {
       const cssClass =
         primaryNode.type === 'crate'
           ? 'selectedCrate'
-          : primaryNode.type === 'external-section' ||
-              primaryNode.type === 'external'
-            ? 'selectedExternal'
-            : 'selectedModule';
+          : primaryNode.type === 'external-transitive'
+            ? 'selectedExternalTransitive'
+            : primaryNode.type === 'external-section' ||
+                primaryNode.type === 'external'
+              ? 'selectedExternal'
+              : 'selectedModule';
       result.nodeHighlights.set(selection.id, { role: 'current', cssClass });
     }
 

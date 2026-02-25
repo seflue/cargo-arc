@@ -68,6 +68,14 @@ fn build_css_rules() -> Vec<CssRule> {
             ],
         ),
         CssRule::class(
+            c.nodes.external_transitive,
+            &[
+                ("fill", n.external_transitive_fill),
+                ("stroke", n.external_transitive_stroke),
+                ("stroke-width", "1.5"),
+            ],
+        ),
+        CssRule::class(
             c.nodes.label,
             &[
                 ("font-family", "monospace"),
@@ -132,6 +140,10 @@ fn build_css_rules() -> Vec<CssRule> {
             &[("fill", ns.external_fill), ("stroke-width", "3")],
         ),
         CssRule::class(
+            c.node_selection.selected_external_transitive,
+            &[("fill", ns.external_transitive_fill), ("stroke-width", "3")],
+        ),
+        CssRule::class(
             c.node_selection.group_member,
             &[("stroke", r.dependency), ("stroke-width", "2")],
         ),
@@ -180,11 +192,12 @@ fn build_css_rules() -> Vec<CssRule> {
         // CSS-only dimming via has-highlight on SVG root (leaf elements only)
         CssRule::new(
             &format!(
-                "svg.{} rect:not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{})",
+                "svg.{} rect:not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{})",
                 c.relation.has_highlight,
                 c.node_selection.selected_crate,
                 c.node_selection.selected_module,
                 c.node_selection.selected_external,
+                c.node_selection.selected_external_transitive,
                 c.node_selection.group_member,
                 c.node_selection.cycle_member,
                 c.relation.dep_node,
@@ -247,8 +260,12 @@ fn build_css_rules() -> Vec<CssRule> {
         // Cursor
         CssRule::new(
             &format!(
-                ".{}, .{}, .{}, .{}",
-                c.nodes.crate_node, c.nodes.module, c.direction.dep_arc, c.direction.cycle_arc
+                ".{}, .{}, .{}, .{}, .{}",
+                c.nodes.crate_node,
+                c.nodes.module,
+                c.nodes.external_transitive,
+                c.direction.dep_arc,
+                c.direction.cycle_arc
             ),
             &[("cursor", "pointer")],
         ),

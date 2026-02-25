@@ -324,6 +324,24 @@ describe('StaticData', () => {
 
       delete TEST_STATIC_DATA.nodes.ext_serde;
     });
+
+    test('returns true for external-transitive crate type', () => {
+      TEST_STATIC_DATA.nodes.ext_tokio = {
+        type: 'external-transitive',
+        name: 'tokio',
+        parent: 'ext_section',
+        x: 10,
+        y: 50,
+        width: 100,
+        height: 20,
+        hasChildren: false,
+        version: '1.0.0',
+      };
+
+      expect(StaticData.isExternalNode('ext_tokio')).toBe(true);
+
+      delete TEST_STATIC_DATA.nodes.ext_tokio;
+    });
   });
 
   describe('isExternalArc', () => {

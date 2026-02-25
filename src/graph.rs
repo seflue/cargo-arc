@@ -24,6 +24,7 @@ pub enum Node {
         name: String,
         version: String,
         package_id: String,
+        is_direct_dependency: bool,
     },
 }
 
@@ -406,6 +407,13 @@ impl GraphBuilder {
             }
         }
 
+        // Collect package IDs that are direct workspace dependencies for O(1) lookup.
+        let direct_pkg_ids: HashSet<&str> = ext
+            .workspace_deps
+            .iter()
+            .map(|dep| dep.external_pkg_id.as_str())
+            .collect();
+
         // Add external crate nodes, build package_id -> NodeIndex map
         let mut pkg_index: HashMap<&str, NodeIndex> = HashMap::new();
         for info in &ext.crates {
@@ -413,6 +421,7 @@ impl GraphBuilder {
                 name: info.name.clone(),
                 version: info.version.clone(),
                 package_id: info.package_id.clone(),
+                is_direct_dependency: direct_pkg_ids.contains(info.package_id.as_str()),
             });
             pkg_index.insert(&info.package_id, idx);
             self.external_map.insert(info.name.clone(), idx);
@@ -788,6 +797,7 @@ mod tests {
             name: "serde".into(),
             version: "1.0.0".into(),
             package_id: "serde 1.0.0 (registry+...)".into(),
+            is_direct_dependency: true,
         };
         assert!(!node.is_crate());
         assert!(node.is_external());
@@ -810,6 +820,7 @@ mod tests {
             name: "serde".into(),
             version: "1.0.0".into(),
             package_id: "serde-pkg".into(),
+            is_direct_dependency: true,
         });
         graph.add_edge(
             crate_idx,
@@ -833,6 +844,7 @@ mod tests {
             name: "serde".into(),
             version: "1.0.0".into(),
             package_id: "serde-pkg".into(),
+            is_direct_dependency: true,
         });
         assert_eq!(graph.owning_crate(ext_idx), ext_idx);
     }
@@ -874,6 +886,72 @@ mod tests {
         // 1 workspace->serde + 1 serde->tokio = 2 CrateDep edges
         let (cd, _, _) = count_edges(&graph);
         assert_eq!(cd, 2);
+    }
+
+    #[test]
+    fn test_external_is_direct_dependency_flag() {
+        use crate::analyze::externals::*;
+        use cargo_metadata::DependencyKind as DK;
+
+        let crates = vec![crate_("my_crate")];
+        let externals = ExternalsResult {
+            crates: vec![
+                ExternalCrateInfo {
+                    name: "serde".into(),
+                    version: "1.0.0".into(),
+                    package_id: "serde-pkg".into(),
+                },
+                ExternalCrateInfo {
+                    name: "tokio".into(),
+                    version: "1.0.0".into(),
+                    package_id: "tokio-pkg".into(),
+                },
+            ],
+            workspace_deps: vec![WorkspaceExternalDep {
+                workspace_crate: "my_crate".into(),
+                external_pkg_id: "serde-pkg".into(),
+                dep_kinds: vec![DK::Normal],
+            }],
+            external_deps: vec![ExternalDep {
+                from_pkg_id: "serde-pkg".into(),
+                to_pkg_id: "tokio-pkg".into(),
+                dep_kinds: vec![DK::Normal],
+            }],
+            crate_name_map: std::collections::HashMap::new(),
+        };
+        let graph = ArcGraph::build(&crates, &[], Some(&externals));
+
+        // serde is a direct workspace dependency
+        let serde = graph
+            .node_indices()
+            .find(|&idx| graph[idx].name() == "serde")
+            .expect("serde node should exist");
+        assert!(
+            matches!(
+                &graph[serde],
+                Node::ExternalCrate {
+                    is_direct_dependency: true,
+                    ..
+                }
+            ),
+            "serde should be a direct dependency"
+        );
+
+        // tokio is only reachable transitively (serde -> tokio)
+        let tokio = graph
+            .node_indices()
+            .find(|&idx| graph[idx].name() == "tokio")
+            .expect("tokio node should exist");
+        assert!(
+            matches!(
+                &graph[tokio],
+                Node::ExternalCrate {
+                    is_direct_dependency: false,
+                    ..
+                }
+            ),
+            "tokio should be a transitive dependency"
+        );
     }
 
     #[test]

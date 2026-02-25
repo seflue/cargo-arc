@@ -15,9 +15,15 @@ pub type NodeId = usize;
 #[derive(Debug, Clone, PartialEq)]
 pub enum ItemKind {
     Crate,
-    Module { nesting: u32, parent: NodeId },
+    Module {
+        nesting: u32,
+        parent: NodeId,
+    },
     ExternalSection,
-    ExternalCrate { parent: NodeId },
+    ExternalCrate {
+        parent: NodeId,
+        is_direct_dependency: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -247,9 +253,20 @@ fn populate_external_items(
     });
 
     for &idx in &sorted {
-        if let Node::ExternalCrate { name, version, .. } = &graph[idx] {
-            let layout_id =
-                ir.add_item(ItemKind::ExternalCrate { parent: section_id }, name.clone());
+        if let Node::ExternalCrate {
+            name,
+            version,
+            is_direct_dependency,
+            ..
+        } = &graph[idx]
+        {
+            let layout_id = ir.add_item(
+                ItemKind::ExternalCrate {
+                    parent: section_id,
+                    is_direct_dependency: *is_direct_dependency,
+                },
+                name.clone(),
+            );
             ir.items[layout_id].version = Some(version.clone());
             node_map.insert(idx, layout_id);
         }
@@ -664,6 +681,7 @@ mod tests {
                 name: name.to_string(),
                 version: version.to_string(),
                 package_id: format!("{name}-pkg"),
+                is_direct_dependency: true,
             });
             self.names.insert(name.to_string(), idx);
             self

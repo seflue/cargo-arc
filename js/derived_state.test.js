@@ -2170,6 +2170,29 @@ describe('DerivedState', () => {
       expect(result.arcHighlights.has('mod_a-serde')).toBe(true);
     });
 
+    test('transitive external crate gets selectedExternalTransitive class', () => {
+      const transitiveData = structuredClone(EXTERNAL_DATA);
+      transitiveData.nodes.tokio.type = 'external-transitive';
+      const sd = createMockStaticData(transitiveData);
+      const state = AppState.create();
+      AppState.setSelection(state, 'node', 'tokio');
+
+      const result = DerivedState.deriveHighlightState(
+        state,
+        sd,
+        new Map(),
+        new Set(),
+        EXTERNAL_POSITIONS,
+        ROW_HEIGHT,
+      );
+
+      expect(result).not.toBeNull();
+      expect(result.nodeHighlights.get('tokio')).toEqual({
+        role: 'current',
+        cssClass: 'selectedExternalTransitive',
+      });
+    });
+
     test('external-section node gets selectedExternal class', () => {
       const sd = createMockStaticData(EXTERNAL_DATA);
       const state = AppState.create();

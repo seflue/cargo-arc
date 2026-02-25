@@ -34,7 +34,9 @@ pub fn render(ir: &LayoutIR, config: &RenderConfig) -> String {
         .items
         .iter()
         .filter_map(|item| match &item.kind {
-            ItemKind::Module { parent, .. } | ItemKind::ExternalCrate { parent } => Some(*parent),
+            ItemKind::Module { parent, .. } | ItemKind::ExternalCrate { parent, .. } => {
+                Some(*parent)
+            }
             ItemKind::Crate | ItemKind::ExternalSection => None,
         })
         .collect();

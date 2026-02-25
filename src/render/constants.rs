@@ -142,6 +142,8 @@ pub(super) struct NodeColors {
     pub external_section_stroke: &'static str,
     pub external_crate_fill: &'static str,
     pub external_crate_stroke: &'static str,
+    pub external_transitive_fill: &'static str,
+    pub external_transitive_stroke: &'static str,
     pub tree_line: &'static str,
     pub child_count: &'static str,
     pub collapse_toggle: &'static str,
@@ -155,10 +157,12 @@ pub(super) struct DirectionColors {
     pub count_bg: &'static str,
 }
 
+#[allow(clippy::struct_field_names)] // "_fill" suffix groups related color values
 pub(super) struct NodeSelectionColors {
     pub crate_fill: &'static str,
     pub module_fill: &'static str,
     pub external_fill: &'static str,
+    pub external_transitive_fill: &'static str,
 }
 
 pub(super) struct RelationColors {
@@ -196,8 +200,10 @@ pub(super) static COLORS: ColorPalette = ColorPalette {
         module_stroke: ORANGE,
         external_section_fill: GRAY_200,
         external_section_stroke: GRAY_400,
-        external_crate_fill: GRAY_50,
-        external_crate_stroke: GRAY_400,
+        external_crate_fill: GRAY_200,
+        external_crate_stroke: GRAY_600,
+        external_transitive_fill: GRAY_100,
+        external_transitive_stroke: "#bbb",
         tree_line: GRAY_600,
         child_count: GRAY_400,
         collapse_toggle: GRAY_600,
@@ -213,6 +219,7 @@ pub(super) static COLORS: ColorPalette = ColorPalette {
         crate_fill: BLUE_300,
         module_fill: ORANGE_300,
         external_fill: GRAY_300,
+        external_transitive_fill: GRAY_200,
     },
     relation: RelationColors {
         dependency: GREEN,
@@ -239,6 +246,7 @@ pub(super) struct NodeClasses {
     pub module: &'static str,
     pub external_section: &'static str,
     pub external_crate: &'static str,
+    pub external_transitive: &'static str,
     pub label: &'static str,
     pub child_count: &'static str,
     pub tree_line: &'static str,
@@ -268,6 +276,7 @@ pub(super) struct NodeSelectionClasses {
     pub selected_crate: &'static str,
     pub selected_module: &'static str,
     pub selected_external: &'static str,
+    pub selected_external_transitive: &'static str,
     pub group_member: &'static str,
     pub cycle_member: &'static str,
 }
@@ -373,6 +382,7 @@ pub(super) static CSS: CssClassNames = CssClassNames {
         module: "module",
         external_section: "external-section",
         external_crate: "external",
+        external_transitive: "external-transitive",
         label: "label",
         child_count: "child-count",
         tree_line: "tree-line",
@@ -398,6 +408,7 @@ pub(super) static CSS: CssClassNames = CssClassNames {
         selected_crate: "selected-crate",
         selected_module: "selected-module",
         selected_external: "selected-external",
+        selected_external_transitive: "selected-external-transitive",
         group_member: "group-member",
         cycle_member: "cycle-member",
     },

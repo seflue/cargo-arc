@@ -102,6 +102,7 @@ const HighlightRenderer = {
       C.selectedCrate,
       C.selectedModule,
       C.selectedExternal,
+      C.selectedExternalTransitive,
       C.groupMember,
       C.cycleMember,
       C.depNode,

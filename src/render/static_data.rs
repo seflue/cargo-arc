@@ -177,11 +177,18 @@ fn generate_static_data(
             ItemKind::Crate => "crate",
             ItemKind::Module { .. } => "module",
             ItemKind::ExternalSection => "external-section",
-            ItemKind::ExternalCrate { .. } => "external",
+            ItemKind::ExternalCrate {
+                is_direct_dependency: true,
+                ..
+            } => "external",
+            ItemKind::ExternalCrate {
+                is_direct_dependency: false,
+                ..
+            } => "external-transitive",
         };
         let parent = match &item.kind {
             ItemKind::Crate | ItemKind::ExternalSection => None,
-            ItemKind::Module { parent, .. } | ItemKind::ExternalCrate { parent } => {
+            ItemKind::Module { parent, .. } | ItemKind::ExternalCrate { parent, .. } => {
                 Some(parent.to_string())
             }
         };
@@ -256,6 +263,10 @@ fn generate_static_data(
         ("selectedCrate", CSS.node_selection.selected_crate),
         ("selectedModule", CSS.node_selection.selected_module),
         ("selectedExternal", CSS.node_selection.selected_external),
+        (
+            "selectedExternalTransitive",
+            CSS.node_selection.selected_external_transitive,
+        ),
         ("groupMember", CSS.node_selection.group_member),
         ("cycleMember", CSS.node_selection.cycle_member),
         ("highlightedArc", CSS.relation.highlighted_arc),
