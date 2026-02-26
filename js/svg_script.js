@@ -389,7 +389,11 @@ if (typeof document !== 'undefined') {
     }
 
     // Collect node IDs hidden by active filters (external-dep toggle etc.)
+    // Cached: recomputed only after filter toggles invalidate via invalidateFilterHiddenNodeIds().
+    let _filterHiddenNodeIds = null;
+
     function getFilterHiddenNodeIds() {
+      if (_filterHiddenNodeIds !== null) return _filterHiddenNodeIds;
       const hidden = new Set();
       for (const nodeId of StaticData.getAllNodeIds()) {
         const node = DomAdapter.getNode(nodeId);
@@ -397,7 +401,12 @@ if (typeof document !== 'undefined') {
           hidden.add(nodeId);
         }
       }
+      _filterHiddenNodeIds = hidden;
       return hidden;
+    }
+
+    function invalidateFilterHiddenNodeIds() {
+      _filterHiddenNodeIds = null;
     }
 
     // Recalculate and show virtual edges for collapsed nodes
@@ -782,6 +791,7 @@ if (typeof document !== 'undefined') {
         }
       });
 
+      invalidateFilterHiddenNodeIds();
       highlightTiming.immediate();
     }
 
@@ -895,6 +905,7 @@ if (typeof document !== 'undefined') {
         }
       }
 
+      invalidateFilterHiddenNodeIds();
       relayout();
     }
 
@@ -972,6 +983,7 @@ if (typeof document !== 'undefined') {
         });
       });
 
+      invalidateFilterHiddenNodeIds();
       relayout();
     }
 
