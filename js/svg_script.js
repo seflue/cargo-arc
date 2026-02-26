@@ -918,6 +918,13 @@ if (typeof document !== 'undefined') {
       const rect = svg.getBoundingClientRect();
       const scrollTop = Math.max(0, -rect.top);
       fo.setAttribute('y', scrollTop);
+
+      // Keep toolbar aligned to visible viewport during horizontal scroll
+      const scrollLeft = Math.max(0, -rect.left);
+      const visibleWidth = Math.min(window.innerWidth, rect.width - scrollLeft);
+      fo.setAttribute('x', scrollLeft);
+      fo.setAttribute('width', visibleWidth);
+
       if (SidebarLogic.isVisible()) SidebarLogic.updatePosition();
     }
 
