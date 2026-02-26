@@ -52,11 +52,19 @@ function createFakeElement(tagName) {
       return clone;
     },
     appendChild(child) {
+      // Mimic real DOM: remove from previous parent before appending
+      if (child._parentRef) {
+        child._parentRef.removeChild(child);
+      }
       children.push(child);
+      child._parentRef = this;
     },
     removeChild(child) {
       const idx = children.indexOf(child);
-      if (idx !== -1) children.splice(idx, 1);
+      if (idx !== -1) {
+        children.splice(idx, 1);
+        child._parentRef = null;
+      }
     },
   };
 }

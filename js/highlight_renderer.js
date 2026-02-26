@@ -6,8 +6,13 @@
 // Reset uses data-iteration (StaticData/virtualArcUsages), not CSS selectors.
 
 const HighlightRenderer = {
+  // Dirty sets: track which elements were styled in last apply() for O(1) reset
+  _prevNodeIds: new Set(),
+  _prevRegularArcIds: new Set(),
+  _prevVirtualArcIds: new Set(),
+
   /**
-   * Apply highlight state to DOM. Resets everything first, then applies state.
+   * Apply highlight state to DOM. Resets only previously-styled elements, then applies state.
    * @param {Object} dom - DomAdapter instance
    * @param {Object} staticData - StaticData accessor
    * @param {Map<string, Array>} virtualArcUsages - Runtime virtual arc usage map
@@ -17,7 +22,12 @@ const HighlightRenderer = {
     const C = STATIC_DATA.classes;
     this.resetToBase(dom, C, staticData, virtualArcUsages);
 
-    if (!state) return;
+    if (!state) {
+      this._prevNodeIds = new Set();
+      this._prevRegularArcIds = new Set();
+      this._prevVirtualArcIds = new Set();
+      return;
+    }
 
     this._applyNodeClasses(dom, C, state.nodeHighlights);
     this._applyArcHighlights(dom, C, state.arcHighlights);
@@ -30,6 +40,18 @@ const HighlightRenderer = {
       state.promotedHitareas,
     );
     this._activateDimming(dom, C);
+
+    // Update dirty sets for next reset
+    this._prevNodeIds = new Set(state.nodeHighlights.keys());
+    this._prevRegularArcIds = new Set();
+    this._prevVirtualArcIds = new Set();
+    for (const [key, { isVirtual }] of state.arcHighlights) {
+      if (isVirtual) {
+        this._prevVirtualArcIds.add(key.slice(2));
+      } else {
+        this._prevRegularArcIds.add(key);
+      }
+    }
   },
 
   /**
@@ -44,7 +66,7 @@ const HighlightRenderer = {
     this._resetDimming(dom, C);
     this._resetLayers(dom);
     this._clearShadowLayer(dom);
-    this._resetNodeClasses(dom, C, staticData);
+    this._resetNodeClasses(dom, C);
     this._resetArcStyles(dom, C, staticData);
     this._resetVirtualArcStyles(dom, C, virtualArcUsages);
   },
@@ -95,9 +117,9 @@ const HighlightRenderer = {
   },
 
   /**
-   * Remove highlight CSS classes from all nodes (data-iteration).
+   * Remove highlight CSS classes from previously-highlighted nodes (dirty-set).
    */
-  _resetNodeClasses(dom, C, staticData) {
+  _resetNodeClasses(dom, C) {
     const nodeClasses = [
       C.selectedCrate,
       C.selectedModule,
@@ -108,7 +130,7 @@ const HighlightRenderer = {
       C.depNode,
       C.dependentNode,
     ];
-    for (const nodeId of staticData.getAllNodeIds()) {
+    for (const nodeId of this._prevNodeIds) {
       const node = dom.getNode(nodeId);
       if (node) {
         for (const cls of nodeClasses) node.classList.remove(cls);
@@ -117,10 +139,10 @@ const HighlightRenderer = {
   },
 
   /**
-   * Reset all regular arcs to base styling (data-iteration).
+   * Reset previously-highlighted regular arcs to base styling (dirty-set).
    */
   _resetArcStyles(dom, C, staticData) {
-    for (const arcId of staticData.getAllArcIds()) {
+    for (const arcId of this._prevRegularArcIds) {
       const arc = dom.getArc(arcId);
       if (arc) {
         arc.classList.remove(C.highlightedArc);
@@ -292,39 +314,42 @@ const HighlightRenderer = {
   },
 
   /**
-   * Reset all virtual arcs to base styling (data-iteration over virtualArcUsages).
+   * Reset previously-highlighted virtual arcs to base styling (dirty-set + cache).
+   * Uses DomAdapter cache (getArc/getArrows/getLabelGroup) instead of querySelectorAll.
    */
   _resetVirtualArcStyles(dom, C, virtualArcUsages) {
-    for (const [arcId, usages] of virtualArcUsages) {
+    for (const arcId of this._prevVirtualArcIds) {
+      const usages = virtualArcUsages.get(arcId);
+      if (!usages) continue;
       const count = usages.reduce((sum, g) => sum + g.locations.length, 0);
       const strokeWidth = ArcLogic.calculateStrokeWidth(count);
       const scale = ArcLogic.scaleFromStrokeWidth(strokeWidth);
 
-      // Virtual arc paths
-      dom
-        .querySelectorAll(`.${C.virtualArc}[data-arc-id="${arcId}"]`)
-        .forEach((arc) => {
-          arc.classList.remove(C.highlightedArc);
-          arc.style.strokeWidth = `${strokeWidth}px`;
-        });
+      // Virtual arc path (from cache)
+      const arc = dom.getArc(arcId);
+      if (arc) {
+        arc.classList.remove(C.highlightedArc);
+        arc.style.strokeWidth = `${strokeWidth}px`;
+      }
 
-      // Virtual arrows
-      dom
-        .querySelectorAll(`.${C.virtualArrow}[data-vedge="${arcId}"]`)
-        .forEach((arrow) => {
-          arrow.classList.remove(C.highlightedArrow);
-          const tip = ArcLogic.parseTipFromPoints(arrow.getAttribute('points'));
-          if (tip) {
-            arrow.setAttribute('points', ArcLogic.getArrowPoints(tip, scale));
+      // Virtual arrows (from cache)
+      dom.getArrows(arcId).forEach((arrow) => {
+        arrow.classList.remove(C.highlightedArrow);
+        const tip = ArcLogic.parseTipFromPoints(arrow.getAttribute('points'));
+        if (tip) {
+          arrow.setAttribute('points', ArcLogic.getArrowPoints(tip, scale));
+        }
+      });
+
+      // Virtual labels (from cache)
+      const labelGroup = dom.getLabelGroup(arcId);
+      if (labelGroup) {
+        for (const child of labelGroup.children) {
+          if (child.classList?.contains(C.arcCount)) {
+            child.classList.remove(C.highlightedLabel);
           }
-        });
-
-      // Virtual labels
-      dom
-        .querySelectorAll(`.${C.arcCount}[data-vedge="${arcId}"]`)
-        .forEach((el) => {
-          el.classList.remove(C.highlightedLabel);
-        });
+        }
+      }
     }
   },
 };

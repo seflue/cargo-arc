@@ -87,6 +87,10 @@ describe('HighlightRenderer', () => {
     dom = createMockDomAdapter();
     svg = registerSvgRoot(dom);
     layers = registerLayers(dom);
+    // Reset dirty-set state from previous tests (singleton)
+    HighlightRenderer._prevNodeIds = new Set();
+    HighlightRenderer._prevRegularArcIds = new Set();
+    HighlightRenderer._prevVirtualArcIds = new Set();
   });
 
   describe('apply(null) — reset', () => {
@@ -99,62 +103,89 @@ describe('HighlightRenderer', () => {
       expect(svg.classList.contains(C.hasHighlight)).toBe(false);
     });
 
-    test('resets node classes via data-iteration', () => {
+    test('resets node classes via dirty-set', () => {
       const nodeEl = createFakeElement('g');
-      nodeEl.classList.add(C.selectedCrate);
       dom._registerElement(Selectors.nodeId('n1'), nodeEl);
 
       const staticData = createRendererStaticData(['n1'], {});
-      HighlightRenderer.apply(dom, staticData, new Map(), null);
+      // Apply state to populate dirty set
+      HighlightRenderer.apply(dom, staticData, new Map(), {
+        nodeHighlights: new Map([
+          ['n1', { role: 'current', cssClass: 'selectedCrate' }],
+        ]),
+        arcHighlights: new Map(),
+        shadowData: new Map(),
+        promotedHitareas: new Set(),
+      });
+      expect(nodeEl.classList.contains(C.selectedCrate)).toBe(true);
 
-      // Note: mock classList.remove() only handles first arg per call,
-      // but resetNodeClasses passes multiple. First arg (selectedCrate) is verified.
+      // Reset clears only dirty-set nodes
+      HighlightRenderer.apply(dom, staticData, new Map(), null);
       expect(nodeEl.classList.contains(C.selectedCrate)).toBe(false);
     });
 
     test('resets regular arc strokeWidth to base from staticData', () => {
       const arcEl = createFakeElement('path');
-      arcEl.style.strokeWidth = '2px'; // highlighted width
-      arcEl.classList.add(C.highlightedArc);
       dom._registerSelector(Selectors.baseArc('a-b'), arcEl);
 
       const arrowEl = createFakeElement('polygon');
       arrowEl.setAttribute(
         'points',
-        ArcLogic.getArrowPoints({ x: 100, y: 200 }, 1.3),
+        ArcLogic.getArrowPoints({ x: 100, y: 200 }, 0.33),
       );
-      arrowEl.classList.add(C.highlightedArrow);
       dom._registerSelector(Selectors.arrows('a-b'), [arrowEl]);
 
       const staticData = createRendererStaticData([], {
         'a-b': { from: 'a', to: 'b', strokeWidth: 0.5 },
       });
-      HighlightRenderer.apply(dom, staticData, new Map(), null);
+      // Apply highlight to populate dirty set
+      HighlightRenderer.apply(dom, staticData, new Map(), {
+        nodeHighlights: new Map(),
+        arcHighlights: new Map([
+          [
+            'a-b',
+            {
+              highlightWidth: 2.0,
+              arrowScale: 1.3,
+              relationType: 'dep',
+              isVirtual: false,
+            },
+          ],
+        ]),
+        shadowData: new Map(),
+        promotedHitareas: new Set(),
+      });
+      expect(arcEl.classList.contains(C.highlightedArc)).toBe(true);
 
+      // Reset
+      HighlightRenderer.apply(dom, staticData, new Map(), null);
       expect(arcEl.classList.contains(C.highlightedArc)).toBe(false);
       expect(parseFloat(arcEl.style.strokeWidth)).toBeCloseTo(0.5, 2);
       expect(arrowEl.classList.contains(C.highlightedArrow)).toBe(false);
     });
 
-    test('resets virtual arc styles via virtualArcUsages iteration', () => {
+    test('resets virtual arc styles via dirty-set and cache', () => {
       const vArcEl = createFakeElement('path');
       vArcEl.classList.add(C.virtualArc);
-      vArcEl.classList.add(C.highlightedArc);
-      vArcEl.style.strokeWidth = '1.5px';
-      dom._registerSelector(`.${C.virtualArc}[data-arc-id="x-y"]`, [vArcEl]);
 
       const vArrowEl = createFakeElement('polygon');
       vArrowEl.classList.add(C.virtualArrow);
-      vArrowEl.classList.add(C.highlightedArrow);
       vArrowEl.setAttribute(
         'points',
         ArcLogic.getArrowPoints({ x: 50, y: 100 }, 1.0),
       );
-      dom._registerSelector(`.${C.virtualArrow}[data-vedge="x-y"]`, [vArrowEl]);
 
       const vLabelEl = createFakeElement('text');
       vLabelEl.classList.add(C.arcCount);
-      vLabelEl.classList.add(C.highlightedLabel);
+      const labelGroup = createFakeElement('g');
+      labelGroup.appendChild(vLabelEl);
+
+      // Register in cache (used by reset via dirty-set + cache)
+      dom.cacheArcElements('x-y', vArcEl, [vArrowEl], labelGroup);
+
+      // Register querySelectorAll results (used by apply phase for virtual arcs)
+      dom._registerSelector(`.${C.virtualArc}[data-arc-id="x-y"]`, [vArcEl]);
+      dom._registerSelector(`.${C.virtualArrow}[data-vedge="x-y"]`, [vArrowEl]);
       dom._registerSelector(`.${C.arcCount}[data-vedge="x-y"]`, [vLabelEl]);
 
       const virtualArcUsages = new Map([
@@ -171,8 +202,27 @@ describe('HighlightRenderer', () => {
       ]);
 
       const staticData = createRendererStaticData([], {});
-      HighlightRenderer.apply(dom, staticData, virtualArcUsages, null);
+      // Apply highlight with virtual arc to populate dirty set
+      HighlightRenderer.apply(dom, staticData, virtualArcUsages, {
+        nodeHighlights: new Map(),
+        arcHighlights: new Map([
+          [
+            'v:x-y',
+            {
+              highlightWidth: 1.5,
+              arrowScale: 1.0,
+              relationType: 'dep',
+              isVirtual: true,
+            },
+          ],
+        ]),
+        shadowData: new Map(),
+        promotedHitareas: new Set(),
+      });
+      expect(vArcEl.classList.contains(C.highlightedArc)).toBe(true);
 
+      // Reset
+      HighlightRenderer.apply(dom, staticData, virtualArcUsages, null);
       expect(vArcEl.classList.contains(C.highlightedArc)).toBe(false);
       expect(vArrowEl.classList.contains(C.highlightedArrow)).toBe(false);
       expect(vLabelEl.classList.contains(C.highlightedLabel)).toBe(false);
@@ -388,12 +438,22 @@ describe('HighlightRenderer', () => {
 
     test('cycle-member: resetToBase removes cycle-member class', () => {
       const nodeEl = createFakeElement('g');
-      nodeEl.classList.add(C.cycleMember);
       dom._registerElement(Selectors.nodeId('n1'), nodeEl);
 
       const staticData = createRendererStaticData(['n1'], {});
-      HighlightRenderer.apply(dom, staticData, new Map(), null);
+      // Apply cycle-member state to populate dirty set
+      HighlightRenderer.apply(dom, staticData, new Map(), {
+        nodeHighlights: new Map([
+          ['n1', { role: 'cycle-member', cssClass: 'cycleMember' }],
+        ]),
+        arcHighlights: new Map(),
+        shadowData: new Map(),
+        promotedHitareas: new Set(),
+      });
+      expect(nodeEl.classList.contains(C.cycleMember)).toBe(true);
 
+      // Reset
+      HighlightRenderer.apply(dom, staticData, new Map(), null);
       expect(nodeEl.classList.contains(C.cycleMember)).toBe(false);
     });
 
