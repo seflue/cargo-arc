@@ -796,6 +796,8 @@ fn build_css_rules() -> Vec<CssRule> {
                 ("border", &format!("2px solid {GRAY_400}")),
             ],
         ),
+        // Badge navigation: clickable node badges
+        CssRule::new("[data-node-id]", &[("cursor", "pointer")]),
         // Transient sidebar mode (hover preview): hide close button and collapse toggles
         CssRule::new(
             &format!(
@@ -1123,6 +1125,19 @@ mod tests {
         assert!(
             ext_t_section.contains(GRAY_400),
             "External-transitive selected should use GRAY_400 border"
+        );
+    }
+
+    #[test]
+    fn test_css_contains_badge_navigation_cursor() {
+        let css = render_styles();
+        let idx = css
+            .find("[data-node-id]")
+            .expect("CSS should contain [data-node-id] selector");
+        let section = &css[idx..idx + 80];
+        assert!(
+            section.contains("cursor: pointer"),
+            "Badge navigation rule should set cursor: pointer, got: {section}"
         );
     }
 

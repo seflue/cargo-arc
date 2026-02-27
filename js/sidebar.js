@@ -20,6 +20,7 @@ const SIDEBAR_MIN_WIDTH = 280;
 const SidebarLogic = {
   _isTransient: false,
   _debounceTimer: null,
+  _onBadgeClick: null,
   /**
    * Merge symbol groups: combine groups with same symbol, deduplicate locations by file+line.
    * @param {Array<{symbol: string, modulePath: string|null, locations: Array<{file: string, line: number}>}>} groups
@@ -94,7 +95,7 @@ const SidebarLogic = {
     const toClass = `${toNode ? `sidebar-node-${toNode.type} ` : ''}sidebar-node-to`;
 
     let html = `<div class="sidebar-header">`;
-    html += `<span class="sidebar-title"><span class="${fromClass}">${fromName}</span><span class="sidebar-arrow">&#x2192;</span><span class="${toClass}">${toName}</span></span>`;
+    html += `<span class="sidebar-title"><span class="${fromClass}" data-node-id="${arc.from}">${fromName}</span><span class="sidebar-arrow">&#x2192;</span><span class="${toClass}" data-node-id="${arc.to}">${toName}</span></span>`;
     const hasSymbols = groups.some((g) => g.symbol);
     if (hasSymbols) {
       html += `<div class="sidebar-header-actions">`;
@@ -163,7 +164,7 @@ const SidebarLogic = {
 
     // Header: Node name + Collapse-All ("+", since all L1 start collapsed) + Close
     let html = `<div class="sidebar-header">`;
-    html += `<span class="sidebar-title"><span class="sidebar-node-${nodeType} sidebar-node-selected">${nodeName}</span></span>`;
+    html += `<span class="sidebar-title"><span class="sidebar-node-${nodeType} sidebar-node-selected" data-node-id="${nodeId}">${nodeName}</span></span>`;
     if (hasRelations) {
       html += `<div class="sidebar-header-actions">`;
       html += `<button class="sidebar-collapse-all">+</button>`;
@@ -225,29 +226,40 @@ const SidebarLogic = {
    * @param {'incoming'|'outgoing'} direction
    * @returns {string}
    */
-  _buildRelationSection(rel, _nodeId, nodeName, nodeType, direction) {
+  _buildRelationSection(rel, nodeId, nodeName, nodeType, direction) {
     const target = StaticData.getNode(rel.targetId);
     const targetName = this._formatNodeName(target, rel.targetId);
     const targetType = target ? target.type : '';
 
     // Build From→To pair: direction determines which side the selected node is on
-    let fromName, fromType, fromSelected, toName, toType, toSelected;
+    let fromName,
+      fromType,
+      fromSelected,
+      fromId,
+      toName,
+      toType,
+      toSelected,
+      toId;
     if (direction === 'incoming') {
       // source → [selected]: selected is on the right
       fromName = targetName;
       fromType = targetType;
       fromSelected = false;
+      fromId = rel.targetId;
       toName = nodeName;
       toType = nodeType;
       toSelected = true;
+      toId = nodeId;
     } else {
       // [selected] → target: selected is on the left
       fromName = nodeName;
       fromType = nodeType;
       fromSelected = true;
+      fromId = nodeId;
       toName = targetName;
       toType = targetType;
       toSelected = false;
+      toId = rel.targetId;
     }
 
     const fromClass = `sidebar-node-${fromType}${fromSelected ? ' sidebar-node-selected' : ' sidebar-node-from'}`;
@@ -257,9 +269,9 @@ const SidebarLogic = {
     // Level 1 header (collapsed)
     html += `<div class="sidebar-symbol" data-collapsed="true">`;
     html += `<span class="sidebar-toggle">&#x25B8;</span>`;
-    html += `<span class="${fromClass} sidebar-symbol-name">${fromName}</span>`;
+    html += `<span class="${fromClass} sidebar-symbol-name" data-node-id="${fromId}">${fromName}</span>`;
     html += `<span class="sidebar-arrow">&#x2192;</span>`;
-    html += `<span class="${toClass} sidebar-symbol-name">${toName}</span>`;
+    html += `<span class="${toClass} sidebar-symbol-name" data-node-id="${toId}">${toName}</span>`;
     html += `<span class="sidebar-ref-count">${rel.weight}</span>`;
     html += `</div>`;
 
@@ -492,9 +504,9 @@ const SidebarLogic = {
         html += `<div class="sidebar-usage-group${isSelected ? ' sidebar-selected-arc' : ''}">`;
         html += `<div class="sidebar-symbol" data-collapsed="true">`;
         html += `<span class="sidebar-toggle">&#x25B8;</span>`;
-        html += `<span class="sidebar-symbol-name">${fromName}</span>`;
+        html += `<span class="sidebar-symbol-name" data-node-id="${info.arc.from}">${fromName}</span>`;
         html += `<span class="sidebar-arrow">&#x2192;</span>`;
-        html += `<span class="sidebar-symbol-name">${toName}</span>`;
+        html += `<span class="sidebar-symbol-name" data-node-id="${info.arc.to}">${toName}</span>`;
         const singleSymSuffix = this.formatArcSymbols(info.usages);
         if (singleSymSuffix) {
           html += `<span class="sidebar-arc-symbols">${singleSymSuffix}</span>`;
@@ -566,9 +578,9 @@ const SidebarLogic = {
         contentHtml += `<div class="sidebar-usage-group${isSelected ? ' sidebar-selected-arc' : ''}">`;
         contentHtml += `<div class="sidebar-symbol" data-collapsed="true">`;
         contentHtml += `<span class="sidebar-toggle">&#x25B8;</span>`;
-        contentHtml += `<span class="sidebar-symbol-name">${fromName}</span>`;
+        contentHtml += `<span class="sidebar-symbol-name" data-node-id="${info.arc.from}">${fromName}</span>`;
         contentHtml += `<span class="sidebar-arrow">&#x2192;</span>`;
-        contentHtml += `<span class="sidebar-symbol-name">${toName}</span>`;
+        contentHtml += `<span class="sidebar-symbol-name" data-node-id="${info.arc.to}">${toName}</span>`;
         const multiSymSuffix = this.formatArcSymbols(info.usages);
         if (multiSymSuffix) {
           contentHtml += `<span class="sidebar-arc-symbols">${multiSymSuffix}</span>`;
@@ -638,6 +650,17 @@ const SidebarLogic = {
       }
       SidebarLogic.updatePosition();
     });
+    if (root.querySelectorAll) {
+      const badges = root.querySelectorAll('[data-node-id]');
+      for (const badge of badges) {
+        badge.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (SidebarLogic._onBadgeClick) {
+            SidebarLogic._onBadgeClick(badge.dataset.nodeId);
+          }
+        });
+      }
+    }
     const collapseAllBtn = root.querySelector('.sidebar-collapse-all');
     if (!collapseAllBtn) return;
     collapseAllBtn.addEventListener('click', () => {

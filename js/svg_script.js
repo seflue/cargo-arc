@@ -139,6 +139,30 @@ if (typeof document !== 'undefined') {
       return base;
     }
 
+    function scrollToNode(nodeId) {
+      const nodeRect = DomAdapter.getNode(nodeId);
+      if (!nodeRect) return;
+      const svg = DomAdapter.getSvgRoot();
+      if (!svg) return;
+      const svgRect = svg.getBoundingClientRect();
+      const vb = svg.viewBox.baseVal;
+      const scaleY = vb.height / svgRect.height;
+      const nodeY = parseFloat(nodeRect.getAttribute('y'));
+      const nodeH = parseFloat(nodeRect.getAttribute('height'));
+      const nodeCenterSvg = nodeY + nodeH / 2;
+      const nodeCenterPage =
+        nodeCenterSvg / scaleY + svgRect.top + window.scrollY;
+      const targetScroll = nodeCenterPage - window.innerHeight / 2;
+      const maxScroll =
+        document.documentElement.scrollHeight - window.innerHeight;
+      window.scrollTo({
+        top: Math.max(0, Math.min(targetScroll, maxScroll)),
+        behavior: 'smooth',
+      });
+    }
+
+    SidebarLogic._onBadgeClick = (nodeId) => scrollToNode(nodeId);
+
     function handleMouseEnter(type, id) {
       if (AppState.hasPinnedSelection(appState)) return;
       AppState.setHover(appState, type, id);

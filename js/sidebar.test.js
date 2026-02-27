@@ -2077,4 +2077,242 @@ describe('SidebarLogic', () => {
       delete globalThis.STATIC_DATA.nodes.ext_tokio;
     });
   });
+
+  describe('data-node-id attributes on badges', () => {
+    test('buildContent adds data-node-id to header from/to badges', () => {
+      const html = SidebarLogic.buildContent('crate_a-crate_b');
+      expect(html).toContain('data-node-id="crate_a"');
+      expect(html).toContain('data-node-id="crate_b"');
+    });
+
+    test('buildNodeContent adds data-node-id to header badge', () => {
+      const html = SidebarLogic.buildNodeContent('crate_a', {
+        incoming: [],
+        outgoing: [],
+      });
+      expect(html).toContain('data-node-id="crate_a"');
+    });
+
+    test('_buildRelationSection adds data-node-id to from/to badges (incoming)', () => {
+      const relations = {
+        incoming: [
+          {
+            targetId: 'mod_render',
+            weight: 2,
+            arcId: 'mod_render-crate_a',
+            usages: [],
+          },
+        ],
+        outgoing: [],
+      };
+      const html = SidebarLogic.buildNodeContent('crate_a', relations);
+      // incoming: from=mod_render, to=crate_a
+      expect(html).toContain('data-node-id="mod_render"');
+      expect(html).toContain('data-node-id="crate_a"');
+    });
+
+    test('_buildRelationSection adds data-node-id to from/to badges (outgoing)', () => {
+      const relations = {
+        incoming: [],
+        outgoing: [
+          {
+            targetId: 'crate_b',
+            weight: 2,
+            arcId: 'crate_a-crate_b',
+            usages: [],
+          },
+        ],
+      };
+      const html = SidebarLogic.buildNodeContent('crate_a', relations);
+      // outgoing: from=crate_a, to=crate_b
+      expect(html).toContain('data-node-id="crate_a"');
+      expect(html).toContain('data-node-id="crate_b"');
+    });
+
+    test('_buildCycleContent adds data-node-id to arc from/to badges (single cycle)', () => {
+      const savedArcs = globalThis.STATIC_DATA.arcs;
+      const savedCycles = globalThis.STATIC_DATA.cycles;
+      const savedNodes = globalThis.STATIC_DATA.nodes;
+
+      globalThis.STATIC_DATA.arcs = {
+        'A-B': {
+          from: 'A',
+          to: 'B',
+          cycleIds: [0],
+          usages: [
+            {
+              symbol: 'sym1',
+              modulePath: null,
+              locations: [{ file: 'a.rs', line: 1 }],
+            },
+          ],
+        },
+        'B-A': {
+          from: 'B',
+          to: 'A',
+          cycleIds: [0],
+          usages: [],
+        },
+      };
+      globalThis.STATIC_DATA.cycles = [{ arcs: ['A-B', 'B-A'] }];
+      globalThis.STATIC_DATA.nodes = {
+        ...savedNodes,
+        A: { type: 'module', name: 'mod_a', parent: null },
+        B: { type: 'module', name: 'mod_b', parent: null },
+      };
+
+      const html = SidebarLogic.buildContent('A-B');
+      expect(html).toContain('data-node-id="A"');
+      expect(html).toContain('data-node-id="B"');
+
+      globalThis.STATIC_DATA.arcs = savedArcs;
+      globalThis.STATIC_DATA.cycles = savedCycles;
+      globalThis.STATIC_DATA.nodes = savedNodes;
+    });
+
+    test('_buildCycleContent adds data-node-id to arc from/to badges (multi cycle)', () => {
+      const savedArcs = globalThis.STATIC_DATA.arcs;
+      const savedCycles = globalThis.STATIC_DATA.cycles;
+      const savedNodes = globalThis.STATIC_DATA.nodes;
+
+      globalThis.STATIC_DATA.arcs = {
+        'X-Y': {
+          from: 'X',
+          to: 'Y',
+          cycleIds: [0, 1],
+          usages: [],
+        },
+        'Y-X': {
+          from: 'Y',
+          to: 'X',
+          cycleIds: [0],
+          usages: [],
+        },
+        'Y-Z': {
+          from: 'Y',
+          to: 'Z',
+          cycleIds: [1],
+          usages: [],
+        },
+        'Z-X': {
+          from: 'Z',
+          to: 'X',
+          cycleIds: [1],
+          usages: [],
+        },
+      };
+      globalThis.STATIC_DATA.cycles = [
+        { arcs: ['X-Y', 'Y-X'] },
+        { arcs: ['X-Y', 'Y-Z', 'Z-X'] },
+      ];
+      globalThis.STATIC_DATA.nodes = {
+        ...savedNodes,
+        X: { type: 'module', name: 'mod_x', parent: null },
+        Y: { type: 'module', name: 'mod_y', parent: null },
+        Z: { type: 'module', name: 'mod_z', parent: null },
+      };
+
+      const html = SidebarLogic.buildContent('X-Y');
+      expect(html).toContain('data-node-id="X"');
+      expect(html).toContain('data-node-id="Y"');
+      expect(html).toContain('data-node-id="Z"');
+
+      globalThis.STATIC_DATA.arcs = savedArcs;
+      globalThis.STATIC_DATA.cycles = savedCycles;
+      globalThis.STATIC_DATA.nodes = savedNodes;
+    });
+  });
+
+  describe('badge click handler', () => {
+    function makeBadgeMock(nodeId) {
+      const listeners = new Map();
+      return {
+        dataset: { nodeId },
+        addEventListener(evt, fn) {
+          if (!listeners.has(evt)) listeners.set(evt, []);
+          listeners.get(evt).push(fn);
+        },
+        _fire(evt, event) {
+          for (const fn of listeners.get(evt) || []) fn(event);
+        },
+      };
+    }
+
+    function makeBadgeHandlerDom(badges) {
+      const contentListeners = new Map();
+      const content = {
+        querySelectorAll(sel) {
+          if (sel === ':scope > .sidebar-usage-group > .sidebar-symbol')
+            return [];
+          if (sel === '.sidebar-symbol') return [];
+          return [];
+        },
+        addEventListener(evt, fn) {
+          if (!contentListeners.has(evt)) contentListeners.set(evt, []);
+          contentListeners.get(evt).push(fn);
+        },
+      };
+      const root = {
+        querySelector(sel) {
+          if (sel === '.sidebar-content') return content;
+          if (sel === '.sidebar-collapse-all') return null;
+          return null;
+        },
+        querySelectorAll(sel) {
+          if (sel === '[data-node-id]') return badges;
+          return [];
+        },
+      };
+      return { root, content, contentListeners };
+    }
+
+    test('_onBadgeClick is null by default', () => {
+      expect(SidebarLogic._onBadgeClick).toBeNull();
+    });
+
+    test('badge click calls _onBadgeClick with node ID', () => {
+      const calls = [];
+      SidebarLogic._onBadgeClick = (id) => calls.push(id);
+
+      const badge = makeBadgeMock('test_node');
+      const dom = makeBadgeHandlerDom([badge]);
+      SidebarLogic._setupCollapseHandlers(dom.root);
+
+      badge._fire('click', { stopPropagation() {} });
+      expect(calls).toEqual(['test_node']);
+
+      SidebarLogic._onBadgeClick = null;
+    });
+
+    test('badge click calls stopPropagation', () => {
+      SidebarLogic._onBadgeClick = () => {};
+
+      const badge = makeBadgeMock('test_node');
+      const dom = makeBadgeHandlerDom([badge]);
+      SidebarLogic._setupCollapseHandlers(dom.root);
+
+      let stopped = false;
+      badge._fire('click', {
+        stopPropagation() {
+          stopped = true;
+        },
+      });
+      expect(stopped).toBe(true);
+
+      SidebarLogic._onBadgeClick = null;
+    });
+
+    test('badge click does nothing when _onBadgeClick is null', () => {
+      SidebarLogic._onBadgeClick = null;
+
+      const badge = makeBadgeMock('test_node');
+      const dom = makeBadgeHandlerDom([badge]);
+      SidebarLogic._setupCollapseHandlers(dom.root);
+
+      // Should not throw
+      expect(() => {
+        badge._fire('click', { stopPropagation() {} });
+      }).not.toThrow();
+    });
+  });
 });
