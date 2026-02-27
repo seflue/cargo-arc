@@ -186,17 +186,32 @@ describe('SearchLogic', () => {
         };
         return {
           classList: {
-            add(c) { counts.add++; classes.add(c); },
-            remove(c) { counts.remove++; classes.delete(c); },
-            contains(c) { return classes.has(c); },
+            add(c) {
+              counts.add++;
+              classes.add(c);
+            },
+            remove(c) {
+              counts.remove++;
+              classes.delete(c);
+            },
+            contains(c) {
+              return classes.has(c);
+            },
           },
           nextElementSibling: label,
           _counts: counts,
-          _resetCounts() { counts.add = 0; counts.remove = 0; },
+          _resetCounts() {
+            counts.add = 0;
+            counts.remove = 0;
+          },
         };
       }
 
-      const elements = { a: trackingElement(), b: trackingElement(), c: trackingElement() };
+      const elements = {
+        a: trackingElement(),
+        b: trackingElement(),
+        c: trackingElement(),
+      };
       DomAdapter.getNode = (id) => elements[id] ?? null;
 
       // First search: "a" matches all three (auth-service, auth-utils, database)
