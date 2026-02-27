@@ -35,5 +35,8 @@ fix:
 diagram:
     cargo run -- arc
 
+install:
+    cargo install --path .
+
 clean:
     cargo clean
