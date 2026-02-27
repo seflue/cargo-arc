@@ -8,7 +8,6 @@ Object.assign(globalThis.STATIC_DATA.classes, {
   module: 'module',
   searchMatch: 'search-match',
   searchMatchParent: 'search-match-parent',
-  searchDimmed: 'search-dimmed',
   label: 'label',
   toolbarScopeActive: 'scope-active',
   depArc: 'dep-arc',
@@ -20,6 +19,11 @@ Object.assign(globalThis.STATIC_DATA.classes, {
   virtualArrow: 'virtual-arrow',
   arcCount: 'arc-count',
   arcCountBg: 'arc-count-bg',
+  externalSection: 'external-section',
+  externalCrate: 'external',
+  externalTransitive: 'external-transitive',
+  searchActive: 'search-active',
+  treeLine: 'tree-line',
 });
 
 // Minimal DomAdapter mock
@@ -29,6 +33,9 @@ globalThis.DomAdapter = {
   getElementById: () => null,
   getSvgRoot: () => null,
   getNode: () => null,
+  getVisibleArc: () => null,
+  getVisibleArrows: () => [],
+  getLabelGroup: () => null,
 };
 
 // Minimal StaticData mock
@@ -269,6 +276,388 @@ describe('SearchLogic', () => {
 
       StaticData.getAllNodeIds = origGetAllNodeIds;
       StaticData.getNode = origGetNode;
+    });
+
+    test('external crates match in scope all', () => {
+      const origGetAllNodeIds = StaticData.getAllNodeIds;
+      const origGetNode = StaticData.getNode;
+      StaticData.getAllNodeIds = () => ['int-1', 'ext-1', 'ext-2'];
+      StaticData.getNode = (id) =>
+        ({
+          'int-1': { name: 'my-app', type: 'crate', parent: null },
+          'ext-1': { name: 'serde', type: 'external', parent: null },
+          'ext-2': { name: 'tokio', type: 'external-transitive', parent: null },
+        })[id];
+
+      const result = SearchLogic.executeSearch('serde', 'all');
+      expect(result).toBe(1);
+      expect(SearchLogic.getMatchedNodeIds().has('ext-1')).toBe(true);
+      expect(SearchLogic.getMatchedNodeIds().has('int-1')).toBe(false);
+
+      StaticData.getAllNodeIds = origGetAllNodeIds;
+      StaticData.getNode = origGetNode;
+    });
+
+    test('search-active class is set on SVG root when search is active', () => {
+      const origGetAllNodeIds = StaticData.getAllNodeIds;
+      const origGetNode = StaticData.getNode;
+      const origGetSvgRoot = DomAdapter.getSvgRoot;
+      const origDomGetNode = DomAdapter.getNode;
+
+      StaticData.getAllNodeIds = () => ['int-1', 'ext-1'];
+      StaticData.getNode = (id) =>
+        ({
+          'int-1': { name: 'my-app', type: 'crate', parent: null },
+          'ext-1': { name: 'serde', type: 'external', parent: null },
+        })[id];
+
+      const svgClasses = new Set();
+      DomAdapter.getSvgRoot = () => ({
+        classList: {
+          add: (c) => svgClasses.add(c),
+          remove: (c) => svgClasses.delete(c),
+        },
+      });
+
+      const matchLabel = {
+        classList: { contains: () => true, add: () => {}, remove: () => {} },
+      };
+      DomAdapter.getNode = (id) =>
+        id === 'int-1'
+          ? {
+              classList: {
+                add: () => {},
+                remove: () => {},
+                contains: () => false,
+              },
+              nextElementSibling: matchLabel,
+            }
+          : null;
+
+      SearchLogic.executeSearch('my-app', 'all');
+      expect(svgClasses.has('search-active')).toBe(true);
+
+      StaticData.getAllNodeIds = origGetAllNodeIds;
+      StaticData.getNode = origGetNode;
+      DomAdapter.getSvgRoot = origGetSvgRoot;
+      DomAdapter.getNode = origDomGetNode;
+    });
+
+    test('search-active class removed from SVG root on clearSearch', () => {
+      const origGetAllNodeIds = StaticData.getAllNodeIds;
+      const origGetNode = StaticData.getNode;
+      const origGetSvgRoot = DomAdapter.getSvgRoot;
+      const origDomGetNode = DomAdapter.getNode;
+
+      StaticData.getAllNodeIds = () => ['n1'];
+      StaticData.getNode = (id) =>
+        id === 'n1' ? { name: 'my-crate', type: 'crate', parent: null } : null;
+
+      const svgClasses = new Set();
+      DomAdapter.getSvgRoot = () => ({
+        classList: {
+          add: (c) => svgClasses.add(c),
+          remove: (c) => svgClasses.delete(c),
+        },
+      });
+
+      const matchLabel = {
+        classList: { contains: () => true, add: () => {}, remove: () => {} },
+      };
+      DomAdapter.getNode = (id) =>
+        id === 'n1'
+          ? {
+              classList: {
+                add: () => {},
+                remove: () => {},
+                contains: () => false,
+              },
+              nextElementSibling: matchLabel,
+            }
+          : null;
+
+      SearchLogic.executeSearch('my-crate', 'all');
+      expect(svgClasses.has('search-active')).toBe(true);
+
+      SearchLogic.clearSearch();
+      expect(svgClasses.has('search-active')).toBe(false);
+
+      StaticData.getAllNodeIds = origGetAllNodeIds;
+      StaticData.getNode = origGetNode;
+      DomAdapter.getSvgRoot = origGetSvgRoot;
+      DomAdapter.getNode = origDomGetNode;
+    });
+
+    test('matching external crate gets search-match class', () => {
+      const origGetAllNodeIds = StaticData.getAllNodeIds;
+      const origGetNode = StaticData.getNode;
+      const origGetSvgRoot = DomAdapter.getSvgRoot;
+      const origDomGetNode = DomAdapter.getNode;
+
+      StaticData.getAllNodeIds = () => ['ext-1'];
+      StaticData.getNode = (id) =>
+        id === 'ext-1'
+          ? { name: 'serde', type: 'external', parent: null }
+          : null;
+
+      const classes = new Set();
+      const extRect = {
+        classList: {
+          add: (c) => classes.add(c),
+          remove: (c) => classes.delete(c),
+          contains: (c) => classes.has(c),
+        },
+      };
+
+      DomAdapter.getSvgRoot = () => ({
+        classList: { add: () => {}, remove: () => {} },
+      });
+
+      const matchLabel = {
+        classList: { contains: () => true, add: () => {}, remove: () => {} },
+      };
+      DomAdapter.getNode = (id) =>
+        id === 'ext-1'
+          ? { classList: extRect.classList, nextElementSibling: matchLabel }
+          : null;
+
+      SearchLogic.executeSearch('serde', 'all');
+      expect(classes.has('search-match')).toBe(true);
+
+      StaticData.getAllNodeIds = origGetAllNodeIds;
+      StaticData.getNode = origGetNode;
+      DomAdapter.getSvgRoot = origGetSvgRoot;
+      DomAdapter.getNode = origDomGetNode;
+    });
+  });
+
+  describe('arc symbol dimming', () => {
+    test('symbol match adds search-match to arc, arrows, and label children', () => {
+      const origGetAllNodeIds = StaticData.getAllNodeIds;
+      const origGetNode = StaticData.getNode;
+      const origGetAllArcIds = StaticData.getAllArcIds;
+      const origGetArc = StaticData.getArc;
+      const origGetSvgRoot = DomAdapter.getSvgRoot;
+      const origDomGetNode = DomAdapter.getNode;
+      const origGetVisibleArc = DomAdapter.getVisibleArc;
+      const origGetVisibleArrows = DomAdapter.getVisibleArrows;
+      const origGetLabelGroup = DomAdapter.getLabelGroup;
+
+      StaticData.getAllNodeIds = () => ['n1', 'n2'];
+      StaticData.getNode = (id) =>
+        ({
+          n1: { name: 'my-crate', type: 'crate', parent: null },
+          n2: { name: 'other', type: 'crate', parent: null },
+        })[id];
+      StaticData.getAllArcIds = () => ['arc-1'];
+      StaticData.getArc = (id) =>
+        id === 'arc-1'
+          ? { from: 'n1', to: 'n2', usages: [{ symbol: 'HashMap' }] }
+          : null;
+
+      const arcClasses = new Set();
+      const arrowClasses = new Set();
+      const labelChildClasses = new Set();
+
+      const arcEl = {
+        classList: {
+          add: (c) => arcClasses.add(c),
+          remove: (c) => arcClasses.delete(c),
+        },
+      };
+      const arrowEl = {
+        classList: {
+          add: (c) => arrowClasses.add(c),
+          remove: (c) => arrowClasses.delete(c),
+        },
+      };
+      const labelChild = {
+        classList: {
+          add: (c) => labelChildClasses.add(c),
+          remove: (c) => labelChildClasses.delete(c),
+        },
+      };
+
+      DomAdapter.getSvgRoot = () => ({
+        classList: { add: () => {}, remove: () => {} },
+      });
+      DomAdapter.getNode = (id) =>
+        ['n1', 'n2'].includes(id)
+          ? {
+              classList: { add: () => {}, remove: () => {} },
+              nextElementSibling: {
+                classList: {
+                  contains: () => true,
+                  add: () => {},
+                  remove: () => {},
+                },
+              },
+            }
+          : null;
+      DomAdapter.getVisibleArc = (id) => (id === 'arc-1' ? arcEl : null);
+      DomAdapter.getVisibleArrows = (id) => (id === 'arc-1' ? [arrowEl] : []);
+      DomAdapter.getLabelGroup = (id) =>
+        id === 'arc-1' ? { children: [labelChild] } : null;
+
+      SearchLogic.executeSearch('hashmap', 'all');
+
+      expect(arcClasses.has('search-match')).toBe(true);
+      expect(arrowClasses.has('search-match')).toBe(true);
+      expect(labelChildClasses.has('search-match')).toBe(true);
+
+      StaticData.getAllNodeIds = origGetAllNodeIds;
+      StaticData.getNode = origGetNode;
+      StaticData.getAllArcIds = origGetAllArcIds;
+      StaticData.getArc = origGetArc;
+      DomAdapter.getSvgRoot = origGetSvgRoot;
+      DomAdapter.getNode = origDomGetNode;
+      DomAdapter.getVisibleArc = origGetVisibleArc;
+      DomAdapter.getVisibleArrows = origGetVisibleArrows;
+      DomAdapter.getLabelGroup = origGetLabelGroup;
+    });
+
+    test('arc connected to matched node gets search-match', () => {
+      const origGetAllNodeIds = StaticData.getAllNodeIds;
+      const origGetNode = StaticData.getNode;
+      const origGetAllArcIds = StaticData.getAllArcIds;
+      const origGetArc = StaticData.getArc;
+      const origGetSvgRoot = DomAdapter.getSvgRoot;
+      const origDomGetNode = DomAdapter.getNode;
+      const origGetVisibleArc = DomAdapter.getVisibleArc;
+      const origGetVisibleArrows = DomAdapter.getVisibleArrows;
+      const origGetLabelGroup = DomAdapter.getLabelGroup;
+
+      StaticData.getAllNodeIds = () => ['n1', 'n2'];
+      StaticData.getNode = (id) =>
+        ({
+          n1: { name: 'my-crate', type: 'crate', parent: null },
+          n2: { name: 'other', type: 'crate', parent: null },
+        })[id];
+      StaticData.getAllArcIds = () => ['arc-1'];
+      StaticData.getArc = (id) =>
+        id === 'arc-1'
+          ? { from: 'n1', to: 'n2', usages: [{ symbol: 'HashMap' }] }
+          : null;
+
+      const arcClasses = new Set();
+      const arcEl = {
+        classList: {
+          add: (c) => arcClasses.add(c),
+          remove: (c) => arcClasses.delete(c),
+        },
+      };
+
+      DomAdapter.getSvgRoot = () => ({
+        classList: { add: () => {}, remove: () => {} },
+      });
+      const matchLabel = {
+        classList: { contains: () => true, add: () => {}, remove: () => {} },
+      };
+      DomAdapter.getNode = (id) =>
+        id === 'n1'
+          ? {
+              classList: { add: () => {}, remove: () => {} },
+              nextElementSibling: matchLabel,
+            }
+          : null;
+      DomAdapter.getVisibleArc = (id) => (id === 'arc-1' ? arcEl : null);
+      DomAdapter.getVisibleArrows = () => [];
+      DomAdapter.getLabelGroup = () => null;
+
+      // Search by node name — arc endpoint matches
+      SearchLogic.executeSearch('my-crate', 'all');
+
+      expect(arcClasses.has('search-match')).toBe(true);
+
+      StaticData.getAllNodeIds = origGetAllNodeIds;
+      StaticData.getNode = origGetNode;
+      StaticData.getAllArcIds = origGetAllArcIds;
+      StaticData.getArc = origGetArc;
+      DomAdapter.getSvgRoot = origGetSvgRoot;
+      DomAdapter.getNode = origDomGetNode;
+      DomAdapter.getVisibleArc = origGetVisibleArc;
+      DomAdapter.getVisibleArrows = origGetVisibleArrows;
+      DomAdapter.getLabelGroup = origGetLabelGroup;
+    });
+
+    test('arc between non-matching nodes has no search-match', () => {
+      const origGetAllNodeIds = StaticData.getAllNodeIds;
+      const origGetNode = StaticData.getNode;
+      const origGetAllArcIds = StaticData.getAllArcIds;
+      const origGetArc = StaticData.getArc;
+      const origGetSvgRoot = DomAdapter.getSvgRoot;
+      const origDomGetNode = DomAdapter.getNode;
+      const origGetVisibleArc = DomAdapter.getVisibleArc;
+      const origGetVisibleArrows = DomAdapter.getVisibleArrows;
+      const origGetLabelGroup = DomAdapter.getLabelGroup;
+
+      StaticData.getAllNodeIds = () => ['n1', 'n2', 'n3'];
+      StaticData.getNode = (id) =>
+        ({
+          n1: { name: 'alpha', type: 'crate', parent: null },
+          n2: { name: 'beta', type: 'crate', parent: null },
+          n3: { name: 'target-crate', type: 'crate', parent: null },
+        })[id];
+      StaticData.getAllArcIds = () => ['arc-1'];
+      StaticData.getArc = (id) =>
+        id === 'arc-1'
+          ? { from: 'n1', to: 'n2', usages: [{ symbol: 'Foo' }] }
+          : null;
+
+      const arcClasses = new Set();
+
+      DomAdapter.getSvgRoot = () => ({
+        classList: { add: () => {}, remove: () => {} },
+      });
+      const matchLabel = {
+        classList: { contains: () => true, add: () => {}, remove: () => {} },
+      };
+      DomAdapter.getNode = (id) =>
+        id === 'n3'
+          ? {
+              classList: { add: () => {}, remove: () => {} },
+              nextElementSibling: matchLabel,
+            }
+          : null;
+      DomAdapter.getVisibleArc = () => null;
+      DomAdapter.getVisibleArrows = () => [];
+      DomAdapter.getLabelGroup = () => null;
+
+      // Search matches n3, but arc-1 connects n1↔n2 — no search-match
+      SearchLogic.executeSearch('target', 'all');
+
+      expect(arcClasses.has('search-match')).toBe(false);
+
+      StaticData.getAllNodeIds = origGetAllNodeIds;
+      StaticData.getNode = origGetNode;
+      StaticData.getAllArcIds = origGetAllArcIds;
+      StaticData.getArc = origGetArc;
+      DomAdapter.getSvgRoot = origGetSvgRoot;
+      DomAdapter.getNode = origDomGetNode;
+      DomAdapter.getVisibleArc = origGetVisibleArc;
+      DomAdapter.getVisibleArrows = origGetVisibleArrows;
+      DomAdapter.getLabelGroup = origGetLabelGroup;
+    });
+
+    test("scope='symbol' skips node names", () => {
+      const origGetAllNodeIds = StaticData.getAllNodeIds;
+      const origGetNode = StaticData.getNode;
+      const origGetAllArcIds = StaticData.getAllArcIds;
+      const origGetArc = StaticData.getArc;
+
+      StaticData.getAllNodeIds = () => ['n1'];
+      StaticData.getNode = (id) =>
+        id === 'n1' ? { name: 'HashMap', type: 'crate', parent: null } : null;
+      StaticData.getAllArcIds = () => [];
+      StaticData.getArc = () => null;
+
+      const result = SearchLogic.executeSearch('HashMap', 'symbol');
+      expect(result).toBe(0);
+
+      StaticData.getAllNodeIds = origGetAllNodeIds;
+      StaticData.getNode = origGetNode;
+      StaticData.getAllArcIds = origGetAllArcIds;
+      StaticData.getArc = origGetArc;
     });
   });
 });

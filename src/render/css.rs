@@ -540,8 +540,73 @@ fn build_css_rules() -> Vec<CssRule> {
                 ("min-width", "60px"),
             ],
         ),
-        // Search dimming: direct class on non-matching elements (no ancestor selector)
-        CssRule::class(c.search.search_dimmed, &[("opacity", "0.15")]),
+        // CSS-only search dimming via search-active on SVG root
+        // Rects: dim all except search matches, toolbar buttons, and arc-count backgrounds
+        CssRule::new(
+            &format!(
+                "svg.{} rect:not(.{}):not(.{}):not(.{}):not(.{})",
+                c.search.search_active,
+                c.search.search_match,
+                c.search.search_match_parent,
+                c.toolbar.btn,
+                c.labels.arc_count_bg
+            ),
+            &[("opacity", "0.3")],
+        ),
+        // Paths: dim all except search matches, hitareas, and shadow paths
+        CssRule::new(
+            &format!(
+                "svg.{} path:not(.{}):not(.{}):not(.{}):not(.{})",
+                c.search.search_active,
+                c.search.search_match,
+                c.direction.arc_hitarea,
+                c.direction.virtual_hitarea,
+                c.relation.shadow_path
+            ),
+            &[("opacity", "0.3"), ("stroke", r.dimmed)],
+        ),
+        // Polygons (arrows): dim all except search matches
+        CssRule::new(
+            &format!(
+                "svg.{} polygon:not(.{})",
+                c.search.search_active, c.search.search_match
+            ),
+            &[("opacity", "0.3"), ("fill", r.dimmed)],
+        ),
+        // Arc count text: dim except search matches
+        CssRule::new(
+            &format!(
+                "svg.{} text.{}:not(.{})",
+                c.search.search_active, c.labels.arc_count, c.search.search_match
+            ),
+            &[("opacity", "0.3"), ("fill", r.dimmed)],
+        ),
+        // Arc count backgrounds: dim except search matches
+        CssRule::new(
+            &format!(
+                "svg.{} rect.{}:not(.{})",
+                c.search.search_active, c.labels.arc_count_bg, c.search.search_match
+            ),
+            &[("opacity", "0.3")],
+        ),
+        // Lines: dim all
+        CssRule::new(
+            &format!("svg.{} line", c.search.search_active),
+            &[("opacity", "0.3")],
+        ),
+        // Toolbar exception: elements inside .view-options never dim during search
+        CssRule::new(
+            &format!(
+                "svg.{0} .{1} rect, svg.{0} .{1} text, svg.{0} .{1} line",
+                c.search.search_active, c.toolbar.view_options
+            ),
+            &[("opacity", "1")],
+        ),
+        // Sidebar exception: elements inside sidebar never dim during search
+        CssRule::new(
+            &format!("svg.{} .{} *", c.search.search_active, c.sidebar.root),
+            &[("opacity", "1")],
+        ),
         CssRule::new(
             &format!("rect.{}", c.search.search_match_parent),
             &[
@@ -930,8 +995,8 @@ mod tests {
         assert!(css.contains(&format!(".{}", CSS.toolbar.dropdown_panel)));
         assert!(css.contains(&format!(".{}", CSS.toolbar.scope)));
 
-        // Search highlighting
-        assert!(css.contains(&format!(".{}", CSS.search.search_dimmed)));
+        // Search highlighting (CSS-only dimming via svg.search-active)
+        assert!(css.contains(&format!("svg.{}", CSS.search.search_active)));
         assert!(css.contains(&format!(".{}", CSS.search.search_match_parent)));
 
         // Labels
@@ -1323,16 +1388,37 @@ mod tests {
     }
 
     #[test]
-    fn test_search_dimmed_class_exists() {
+    fn test_search_active_dimming_rules_exist() {
         let css = render_styles();
-        let sd = CSS.search.search_dimmed;
+        let sa = CSS.search.search_active;
+        let sm = CSS.search.search_match;
+
+        // Rect dimming rule with search-match exclusion
+        let rect_rule = format!("svg.{sa} rect:not(.{sm})");
         assert!(
-            css.contains(&format!(".{sd}")),
-            "CSS should contain .search-dimmed class"
+            css.contains(&rect_rule),
+            "CSS should contain svg.search-active rect dimming rule"
         );
+
+        // Path dimming rule with search-match exclusion
+        let path_rule = format!("svg.{sa} path:not(.{sm})");
         assert!(
-            css.contains("opacity: 0.15"),
-            "search-dimmed should set opacity to 0.15"
+            css.contains(&path_rule),
+            "CSS should contain svg.search-active path dimming rule"
+        );
+
+        // Polygon dimming rule with search-match exclusion
+        let polygon_rule = format!("svg.{sa} polygon:not(.{sm})");
+        assert!(
+            css.contains(&polygon_rule),
+            "CSS should contain svg.search-active polygon dimming rule"
+        );
+
+        // Line dimming rule
+        let line_rule = format!("svg.{sa} line");
+        assert!(
+            css.contains(&line_rule),
+            "CSS should contain svg.search-active line dimming rule"
         );
     }
 

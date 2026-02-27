@@ -244,7 +244,11 @@ fn generate_static_data(
     let classes: BTreeMap<String, String> = [
         ("crateNode", CSS.nodes.crate_node),
         ("module", CSS.nodes.module),
+        ("externalSection", CSS.nodes.external_section),
+        ("externalCrate", CSS.nodes.external_crate),
+        ("externalTransitive", CSS.nodes.external_transitive),
         ("label", CSS.nodes.label),
+        ("treeLine", CSS.nodes.tree_line),
         ("collapseToggle", CSS.nodes.collapse_toggle),
         ("collapsed", CSS.nodes.collapsed),
         ("depArc", CSS.direction.dep_arc),
@@ -294,9 +298,9 @@ fn generate_static_data(
         ("toolbarDropdown", CSS.toolbar.dropdown),
         ("toolbarDropdownBtn", CSS.toolbar.dropdown_btn),
         ("toolbarDropdownPanel", CSS.toolbar.dropdown_panel),
+        ("searchActive", CSS.search.search_active),
         ("searchMatch", CSS.search.search_match),
         ("searchMatchParent", CSS.search.search_match_parent),
-        ("searchDimmed", CSS.search.search_dimmed),
         ("arcCount", CSS.labels.arc_count),
         ("arcCountBg", CSS.labels.arc_count_bg),
         ("arcCountGroup", CSS.labels.arc_count_group),
@@ -1005,6 +1009,18 @@ mod tests {
             classes.contains_key("collapseToggle"),
             "classes should contain collapseToggle"
         );
+        assert!(
+            classes.contains_key("externalSection"),
+            "classes should contain externalSection"
+        );
+        assert!(
+            classes.contains_key("externalCrate"),
+            "classes should contain externalCrate"
+        );
+        assert!(
+            classes.contains_key("externalTransitive"),
+            "classes should contain externalTransitive"
+        );
     }
 
     #[test]
@@ -1064,6 +1080,15 @@ mod tests {
         );
         assert_eq!(data["classes"]["collapsed"], CSS.nodes.collapsed);
         assert_eq!(data["classes"]["virtualArc"], CSS.direction.virtual_arc);
+        assert_eq!(
+            data["classes"]["externalSection"],
+            CSS.nodes.external_section
+        );
+        assert_eq!(data["classes"]["externalCrate"], CSS.nodes.external_crate);
+        assert_eq!(
+            data["classes"]["externalTransitive"],
+            CSS.nodes.external_transitive
+        );
     }
 
     // === Struct / Helper Tests ===

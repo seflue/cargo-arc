@@ -10,6 +10,7 @@ const SearchLogic = {
     scope: 'all',
     matchedNodeIds: new Set(),
     matchParentIds: new Set(),
+    matchedArcIds: new Set(),
     debounceTimer: null,
   },
 
@@ -93,6 +94,8 @@ const SearchLogic = {
       }
     }
 
+    const matchedArcs = new Set();
+
     if (scope === 'all' || scope === 'symbol') {
       for (const arcId of StaticData.getAllArcIds()) {
         const arc = StaticData.getArc(arcId);
@@ -101,6 +104,7 @@ const SearchLogic = {
           if (group.symbol?.toLowerCase().includes(q)) {
             matchedNodes.add(arc.from);
             matchedNodes.add(arc.to);
+            matchedArcs.add(arcId);
             break;
           }
         }
@@ -120,6 +124,22 @@ const SearchLogic = {
       }
     }
 
+    // Undim arcs connected to matched nodes
+    const allVisibleMatches = new Set([...directMatches, ...parentMatches]);
+    for (const arcId of StaticData.getAllArcIds()) {
+      if (matchedArcs.has(arcId)) continue;
+      const arc = StaticData.getArc(arcId);
+      if (!arc) continue;
+      const fromVisible = this._resolveVisibleAncestor(arc.from);
+      const toVisible = this._resolveVisibleAncestor(arc.to);
+      if (
+        allVisibleMatches.has(fromVisible) ||
+        allVisibleMatches.has(toVisible)
+      ) {
+        matchedArcs.add(arcId);
+      }
+    }
+
     // Diff-based DOM updates for match/parent highlight classes
     this._applySearchDiff(
       this._state.matchedNodeIds,
@@ -128,12 +148,15 @@ const SearchLogic = {
       parentMatches,
     );
 
-    // Dim all dimmable elements, then undim matches/parents
-    this._applyDimming(directMatches, parentMatches);
+    // Mark matched arc elements so CSS excludes them from dimming
+    this._applyDimming(matchedArcs);
 
     this._state.matchedNodeIds = directMatches;
     this._state.matchParentIds = parentMatches;
+    this._state.matchedArcIds = matchedArcs;
     this._state.active = true;
+    const svg = DomAdapter.getSvgRoot();
+    if (svg) svg.classList.add(STATIC_DATA.classes.searchActive);
 
     const total = directMatches.size + parentMatches.size;
     const countEl = DomAdapter.getElementById('search-result-count');
@@ -151,10 +174,13 @@ const SearchLogic = {
    */
   clearSearch() {
     this._clearDom();
+    const svg = DomAdapter.getSvgRoot();
+    if (svg) svg.classList.remove(STATIC_DATA.classes.searchActive);
     this._state.active = false;
     this._state.query = '';
     this._state.matchedNodeIds = new Set();
     this._state.matchParentIds = new Set();
+    this._state.matchedArcIds = new Set();
 
     const countEl = DomAdapter.getElementById('search-result-count');
     if (countEl) countEl.textContent = '';
@@ -198,10 +224,24 @@ const SearchLogic = {
       this._setNodeClass(nodeId, C.searchMatchParent, false);
     }
 
-    const svg = DomAdapter.getSvgRoot();
-    if (svg) {
-      for (const el of svg.querySelectorAll(`.${C.searchDimmed}`)) {
-        el.classList.remove(C.searchDimmed);
+    this._clearArcMatches();
+  },
+
+  /** Remove search-match class from all arc elements (paths, arrows, labels). */
+  _clearArcMatches() {
+    const C = STATIC_DATA.classes;
+
+    for (const arcId of this._state.matchedArcIds) {
+      const arc = DomAdapter.getVisibleArc(arcId);
+      if (arc) arc.classList.remove(C.searchMatch);
+      for (const arrow of DomAdapter.getVisibleArrows(arcId)) {
+        arrow.classList.remove(C.searchMatch);
+      }
+      const labelGroup = DomAdapter.getLabelGroup(arcId);
+      if (labelGroup) {
+        for (const child of labelGroup.children) {
+          child.classList.remove(C.searchMatch);
+        }
       }
     }
   },
@@ -254,39 +294,26 @@ const SearchLogic = {
     }
   },
 
-  /** Dim all dimmable elements, then undim matched/parent node rects. */
-  _applyDimming(directMatches, parentMatches) {
+  /** Add search-match class to matched arc elements (CSS-only dimming via svg.search-active). */
+  _applyDimming(matchedArcs) {
     const C = STATIC_DATA.classes;
-    const svg = DomAdapter.getSvgRoot();
-    if (!svg) return;
 
-    const dimmable = svg.querySelectorAll(
-      [
-        `rect.${C.crateNode}`,
-        `rect.${C.module}`,
-        `path.${C.depArc}`,
-        `path.${C.cycleArc}`,
-        `path.${C.virtualArc}`,
-        `polygon.${C.depArrow}`,
-        `polygon.${C.upwardArrow}`,
-        `polygon.${C.cycleArrow}`,
-        `polygon.${C.virtualArrow}`,
-        `text.${C.arcCount}`,
-        `rect.${C.arcCountBg}`,
-      ].join(', '),
-    );
+    // Clear previous arc matches before applying new ones
+    this._clearArcMatches();
 
-    for (const el of dimmable) {
-      el.classList.add(C.searchDimmed);
-    }
-
-    for (const nodeId of directMatches) {
-      const rect = DomAdapter.getNode(nodeId);
-      if (rect) rect.classList.remove(C.searchDimmed);
-    }
-    for (const nodeId of parentMatches) {
-      const rect = DomAdapter.getNode(nodeId);
-      if (rect) rect.classList.remove(C.searchDimmed);
+    // Add search-match to matched arc elements so CSS excludes them from dimming
+    for (const arcId of matchedArcs) {
+      const arc = DomAdapter.getVisibleArc(arcId);
+      if (arc) arc.classList.add(C.searchMatch);
+      for (const arrow of DomAdapter.getVisibleArrows(arcId)) {
+        arrow.classList.add(C.searchMatch);
+      }
+      const labelGroup = DomAdapter.getLabelGroup(arcId);
+      if (labelGroup) {
+        for (const child of labelGroup.children) {
+          child.classList.add(C.searchMatch);
+        }
+      }
     }
   },
 
