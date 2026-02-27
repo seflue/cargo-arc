@@ -10,8 +10,11 @@ const SearchLogic = {
     scope: 'all',
     matchedNodeIds: new Set(),
     matchParentIds: new Set(),
+    dimmedNodeIds: new Set(),
     debounceTimer: null,
   },
+
+  _arcElements: null,
 
   /**
    * Initialize search event listeners.
@@ -120,20 +123,34 @@ const SearchLogic = {
       }
     }
 
+    // Compute dimmed set: dimmable nodes (crate/module) not in match/parent sets
+    const dimmedNodes = new Set();
+    for (const nodeId of StaticData.getAllNodeIds()) {
+      if (directMatches.has(nodeId) || parentMatches.has(nodeId)) continue;
+      const node = StaticData.getNode(nodeId);
+      if (node && (node.type === 'crate' || node.type === 'module')) {
+        dimmedNodes.add(nodeId);
+      }
+    }
+
     // Diff-based DOM updates: only touch elements whose highlight state changed
     this._applySearchDiff(
       this._state.matchedNodeIds,
       this._state.matchParentIds,
+      this._state.dimmedNodeIds,
       directMatches,
       parentMatches,
+      dimmedNodes,
     );
 
-    const C = STATIC_DATA.classes;
-    const svg = DomAdapter.getSvgRoot();
-    if (svg) svg.classList.add(C.searchActive);
+    // Dim arc elements on first activation; they stay dimmed between searches
+    if (!this._state.active) {
+      this._dimArcElements(true);
+    }
 
     this._state.matchedNodeIds = directMatches;
     this._state.matchParentIds = parentMatches;
+    this._state.dimmedNodeIds = dimmedNodes;
     this._state.active = true;
 
     const total = directMatches.size + parentMatches.size;
@@ -156,6 +173,7 @@ const SearchLogic = {
     this._state.query = '';
     this._state.matchedNodeIds = new Set();
     this._state.matchParentIds = new Set();
+    this._state.dimmedNodeIds = new Set();
 
     const countEl = DomAdapter.getElementById('search-result-count');
     if (countEl) countEl.textContent = '';
@@ -179,6 +197,8 @@ const SearchLogic = {
 
   refresh() {
     if (this._state.active && this._state.query) {
+      // Invalidate arc cache — DOM may have changed after collapse/expand
+      this._arcElements = null;
       this.executeSearch(this._state.query, this._state.scope);
     }
   },
@@ -191,8 +211,6 @@ const SearchLogic = {
 
   _clearDom() {
     const C = STATIC_DATA.classes;
-    const svg = DomAdapter.getSvgRoot();
-    if (svg) svg.classList.remove(C.searchActive);
 
     for (const nodeId of this._state.matchedNodeIds) {
       this._setNodeClass(nodeId, C.searchMatch, false);
@@ -200,13 +218,25 @@ const SearchLogic = {
     for (const nodeId of this._state.matchParentIds) {
       this._setNodeClass(nodeId, C.searchMatchParent, false);
     }
+    for (const nodeId of this._state.dimmedNodeIds) {
+      this._setNodeDimClass(nodeId, false);
+    }
+    this._dimArcElements(false);
+    this._arcElements = null;
   },
 
   /**
-   * Diff old vs new match sets; only touch DOM elements whose state changed.
+   * Diff old vs new match/dimmed sets; only touch DOM elements whose state changed.
    * Reduces DOM mutations from O(total) to O(delta) during incremental typing.
    */
-  _applySearchDiff(oldDirect, oldParent, newDirect, newParent) {
+  _applySearchDiff(
+    oldDirect,
+    oldParent,
+    oldDimmed,
+    newDirect,
+    newParent,
+    newDimmed,
+  ) {
     const C = STATIC_DATA.classes;
 
     // Remove classes from nodes that left their set
@@ -220,6 +250,11 @@ const SearchLogic = {
         this._setNodeClass(nodeId, C.searchMatchParent, false);
       }
     }
+    for (const nodeId of oldDimmed) {
+      if (!newDimmed.has(nodeId)) {
+        this._setNodeDimClass(nodeId, false);
+      }
+    }
 
     // Add classes to nodes that joined their set
     for (const nodeId of newDirect) {
@@ -231,6 +266,11 @@ const SearchLogic = {
       if (newDirect.has(nodeId)) continue;
       if (!oldParent.has(nodeId)) {
         this._setNodeClass(nodeId, C.searchMatchParent, true);
+      }
+    }
+    for (const nodeId of newDimmed) {
+      if (!oldDimmed.has(nodeId)) {
+        this._setNodeDimClass(nodeId, true);
       }
     }
   },
@@ -247,6 +287,48 @@ const SearchLogic = {
     } else {
       rect.classList.remove(className);
       if (label) label.classList.remove(className);
+    }
+  },
+
+  /** Add/remove search-dimmed on a node rect only (labels stay visible). */
+  _setNodeDimClass(nodeId, add) {
+    const rect = DomAdapter.getNode(nodeId);
+    if (!rect) return;
+    if (add) {
+      rect.classList.add(STATIC_DATA.classes.searchDimmed);
+    } else {
+      rect.classList.remove(STATIC_DATA.classes.searchDimmed);
+    }
+  },
+
+  /** Dim/undim all arc-related SVG elements (paths, arrows, labels). */
+  _dimArcElements(dim) {
+    const C = STATIC_DATA.classes;
+    const svg = DomAdapter.getSvgRoot();
+    if (!svg) return;
+
+    if (!this._arcElements) {
+      this._arcElements = svg.querySelectorAll(
+        [
+          `path.${C.depArc}`,
+          `path.${C.cycleArc}`,
+          `path.${C.virtualArc}`,
+          `polygon.${C.depArrow}`,
+          `polygon.${C.upwardArrow}`,
+          `polygon.${C.cycleArrow}`,
+          `polygon.${C.virtualArrow}`,
+          `text.${C.arcCount}`,
+          `rect.${C.arcCountBg}`,
+        ].join(', '),
+      );
+    }
+
+    for (const el of this._arcElements) {
+      if (dim) {
+        el.classList.add(C.searchDimmed);
+      } else {
+        el.classList.remove(C.searchDimmed);
+      }
     }
   },
 

@@ -327,6 +327,7 @@ pub(super) struct SearchClasses {
     pub search_active: &'static str,
     pub search_match: &'static str,
     pub search_match_parent: &'static str,
+    pub search_dimmed: &'static str,
 }
 
 #[allow(dead_code)]
@@ -490,6 +491,7 @@ pub(super) static CSS: CssClassNames = CssClassNames {
         search_active: "search-active",
         search_match: "search-match",
         search_match_parent: "search-match-parent",
+        search_dimmed: "search-dimmed",
     },
 };
 
@@ -592,6 +594,7 @@ mod tests {
         assert!(!CSS.search.search_active.is_empty());
         assert!(!CSS.search.search_match.is_empty());
         assert!(!CSS.search.search_match_parent.is_empty());
+        assert!(!CSS.search.search_dimmed.is_empty());
 
         assert!(!CSS.labels.arc_count.is_empty());
         assert!(!CSS.labels.arc_count_bg.is_empty());

@@ -296,6 +296,7 @@ fn generate_static_data(
         ("searchActive", CSS.search.search_active),
         ("searchMatch", CSS.search.search_match),
         ("searchMatchParent", CSS.search.search_match_parent),
+        ("searchDimmed", CSS.search.search_dimmed),
         ("arcCount", CSS.labels.arc_count),
         ("arcCountBg", CSS.labels.arc_count_bg),
         ("arcCountGroup", CSS.labels.arc_count_group),

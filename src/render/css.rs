@@ -521,40 +521,13 @@ fn build_css_rules() -> Vec<CssRule> {
                 ("min-width", "60px"),
             ],
         ),
-        // Search highlighting (SVG graph dimming)
-        CssRule::new(
-            &[
-                format!("rect.{}", c.nodes.crate_node),
-                format!("rect.{}", c.nodes.module),
-                format!("path.{}", c.direction.dep_arc),
-                format!("path.{}", c.direction.cycle_arc),
-                format!("path.{}", c.direction.virtual_arc),
-                format!("polygon.{}", c.direction.dep_arrow),
-                format!("polygon.{}", c.direction.upward_arrow),
-                format!("polygon.{}", c.direction.cycle_arrow),
-                format!("polygon.{}", c.direction.virtual_arrow),
-                format!("text.{}", c.labels.arc_count),
-                format!("rect.{}", c.labels.arc_count_bg),
-            ]
-            .map(|s| format!("svg.{} {}", c.search.search_active, s))
-            .join(", "),
+        // Search dimming: direct class on non-matching elements (no ancestor selector)
+        CssRule::class(
+            c.search.search_dimmed,
             &[("opacity", "0.15"), ("transition", "opacity 0.15s")],
         ),
         CssRule::new(
-            &format!(
-                "svg.{} rect.{}, svg.{} text.{}",
-                c.search.search_active,
-                c.search.search_match,
-                c.search.search_active,
-                c.search.search_match,
-            ),
-            &[("opacity", "1")],
-        ),
-        CssRule::new(
-            &format!(
-                "svg.{} rect.{}",
-                c.search.search_active, c.search.search_match_parent,
-            ),
+            &format!("rect.{}", c.search.search_match_parent),
             &[
                 ("opacity", "0.8"),
                 ("stroke", "#4a90d9"),
@@ -859,8 +832,7 @@ mod tests {
         assert!(css.contains(&format!(".{}", CSS.toolbar.scope)));
 
         // Search highlighting
-        assert!(css.contains(&format!(".{}", CSS.search.search_active)));
-        assert!(css.contains(&format!(".{}", CSS.search.search_match)));
+        assert!(css.contains(&format!(".{}", CSS.search.search_dimmed)));
         assert!(css.contains(&format!(".{}", CSS.search.search_match_parent)));
 
         // Labels
@@ -1129,29 +1101,17 @@ mod tests {
     }
 
     #[test]
-    fn test_search_active_dims_all_arc_types() {
+    fn test_search_dimmed_class_exists() {
         let css = render_styles();
-        let sa = CSS.search.search_active;
-        let cd = &CSS.direction;
-        let cl = &CSS.labels;
-
-        for (element, class, label) in [
-            ("path", cd.dep_arc, "dep-arc"),
-            ("path", cd.cycle_arc, "cycle-arc"),
-            ("path", cd.virtual_arc, "virtual-arc"),
-            ("polygon", cd.dep_arrow, "dep-arrow"),
-            ("polygon", cd.upward_arrow, "upward-arrow"),
-            ("polygon", cd.cycle_arrow, "cycle-arrow"),
-            ("polygon", cd.virtual_arrow, "virtual-arrow"),
-            ("text", cl.arc_count, "arc-count"),
-            ("rect", cl.arc_count_bg, "arc-count-bg"),
-        ] {
-            let selector = format!("svg.{sa} {element}.{class}");
-            assert!(
-                css.contains(&selector),
-                "search-active should dim {label}: expected '{selector}'"
-            );
-        }
+        let sd = CSS.search.search_dimmed;
+        assert!(
+            css.contains(&format!(".{sd}")),
+            "CSS should contain .search-dimmed class"
+        );
+        assert!(
+            css.contains("opacity: 0.15"),
+            "search-dimmed should set opacity to 0.15"
+        );
     }
 
     #[test]
