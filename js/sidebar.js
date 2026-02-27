@@ -139,7 +139,10 @@ const SidebarLogic = {
     // Footer
     const totalLocs = groups.reduce((sum, g) => sum + g.locations.length, 0);
     const symbolCount = groups.filter((g) => g.symbol).length;
-    let footerText = `${totalLocs} Referenzen \u00b7 ${symbolCount} Symbole`;
+    let footerText =
+      groups.length === 0
+        ? 'Cargo.toml dependency'
+        : `${totalLocs} Referenzen \u00b7 ${symbolCount} Symbole`;
     if (overrideData?.originalArcs) {
       footerText += ` \u00b7 ${overrideData.originalArcs.length} Relations`;
     }
@@ -265,7 +268,22 @@ const SidebarLogic = {
     const fromClass = `sidebar-node-${fromType}${fromSelected ? ' sidebar-node-selected' : ' sidebar-node-from'}`;
     const toClass = `sidebar-node-${toType}${toSelected ? ' sidebar-node-selected' : ' sidebar-node-to'}`;
 
+    const groups = rel.usages || [];
     let html = `<div class="sidebar-usage-group">`;
+
+    // External dependency without source references: flat row, no expand
+    if (groups.length === 0) {
+      html += `<div class="sidebar-symbol" style="cursor:default">`;
+      html += `<span class="sidebar-toggle"></span>`;
+      html += `<span class="${fromClass} sidebar-symbol-name" data-node-id="${fromId}">${fromName}</span>`;
+      html += `<span class="sidebar-arrow">&#x2192;</span>`;
+      html += `<span class="${toClass} sidebar-symbol-name" data-node-id="${toId}">${toName}</span>`;
+      html += `<span class="sidebar-ext-info" title="Cargo.toml dependency &#8212; source references are not tracked for external crates">i</span>`;
+      html += `</div>`;
+      html += `</div>`;
+      return html;
+    }
+
     // Level 1 header (collapsed)
     html += `<div class="sidebar-symbol" data-collapsed="true">`;
     html += `<span class="sidebar-toggle">&#x25B8;</span>`;
@@ -277,32 +295,27 @@ const SidebarLogic = {
 
     // Level 2 content (hidden because L1 is collapsed)
     html += `<div class="sidebar-locations" style="display:none">`;
-    const groups = rel.usages || [];
-    if (groups.length === 0) {
-      html += `<div class="sidebar-usage-group">Cargo.toml dependency</div>`;
-    } else {
-      const sorted = [...groups].sort(
-        (a, b) => b.locations.length - a.locations.length,
-      );
-      for (const group of sorted) {
-        html += `<div class="sidebar-usage-group">`;
-        if (group.symbol) {
-          html += `<div class="sidebar-symbol">`;
-          html += `<span class="sidebar-toggle">&#x25BE;</span>`;
-          if (group.modulePath) {
-            html += `<span class="sidebar-ns">${group.modulePath}::</span>`;
-          }
-          html += `<span class="sidebar-symbol-name">${group.symbol}</span>`;
-          html += `<span class="sidebar-ref-count">${group.locations.length}</span>`;
-          html += `</div>`;
+    const sorted = [...groups].sort(
+      (a, b) => b.locations.length - a.locations.length,
+    );
+    for (const group of sorted) {
+      html += `<div class="sidebar-usage-group">`;
+      if (group.symbol) {
+        html += `<div class="sidebar-symbol">`;
+        html += `<span class="sidebar-toggle">&#x25BE;</span>`;
+        if (group.modulePath) {
+          html += `<span class="sidebar-ns">${group.modulePath}::</span>`;
         }
-        html += `<div class="sidebar-locations">`;
-        for (const loc of group.locations) {
-          html += `<div class="sidebar-location">${loc.file}<span class="sidebar-line-badge">:${loc.line}</span></div>`;
-        }
-        html += `</div>`;
+        html += `<span class="sidebar-symbol-name">${group.symbol}</span>`;
+        html += `<span class="sidebar-ref-count">${group.locations.length}</span>`;
         html += `</div>`;
       }
+      html += `<div class="sidebar-locations">`;
+      for (const loc of group.locations) {
+        html += `<div class="sidebar-location">${loc.file}<span class="sidebar-line-badge">:${loc.line}</span></div>`;
+      }
+      html += `</div>`;
+      html += `</div>`;
     }
     html += `</div>`;
 
