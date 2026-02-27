@@ -4,7 +4,8 @@ import { beforeEach, describe, expect, test } from 'bun:test';
 if (!globalThis.STATIC_DATA) globalThis.STATIC_DATA = {};
 if (!globalThis.STATIC_DATA.classes) globalThis.STATIC_DATA.classes = {};
 Object.assign(globalThis.STATIC_DATA.classes, {
-  searchActive: 'search-active',
+  crateNode: 'crate',
+  module: 'module',
   searchMatch: 'search-match',
   searchMatchParent: 'search-match-parent',
   searchDimmed: 'search-dimmed',
@@ -243,9 +244,8 @@ describe('SearchLogic', () => {
       expect(elements.b._counts.add).toBe(0);
       expect(elements.b._counts.remove).toBe(0);
 
-      // Dropped match (c) transitions: search-match removed, search-dimmed added
+      // Dropped match (c): search-match removed from rect + label
       expect(elements.c._counts.remove).toBeGreaterThan(0);
-      expect(elements.c._counts.add).toBeGreaterThan(0);
 
       StaticData.getAllNodeIds = origGetAllNodeIds;
       StaticData.getNode = origGetNode;
