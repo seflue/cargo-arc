@@ -162,11 +162,13 @@ if (typeof document !== 'undefined') {
         'scrollend',
         () => {
           _isNavigating = false;
+          if (SidebarLogic.isVisible()) SidebarLogic.updatePosition();
         },
         { once: true },
       );
       setTimeout(() => {
         _isNavigating = false;
+        if (SidebarLogic.isVisible()) SidebarLogic.updatePosition();
       }, 600);
       window.scrollTo({
         top: Math.max(0, Math.min(targetScroll, maxScroll)),
