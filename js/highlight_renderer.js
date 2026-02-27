@@ -39,7 +39,7 @@ const HighlightRenderer = {
       state.arcHighlights,
       state.promotedHitareas,
     );
-    this._activateDimming(dom, C);
+    this._activateDimming(dom, C, state.isPinned);
 
     // Update dirty sets for next reset
     this._prevNodeIds = new Set(state.nodeHighlights.keys());
@@ -76,15 +76,21 @@ const HighlightRenderer = {
    */
   _resetDimming(dom, C) {
     const svg = dom.getSvgRoot();
-    if (svg) svg.classList.remove(C.hasHighlight);
+    if (svg) {
+      svg.classList.remove(C.hasHighlight);
+      svg.classList.remove(C.hasPinned);
+    }
   },
 
   /**
    * Add has-highlight class to SVG root (CSS-only dimming activation).
    */
-  _activateDimming(dom, C) {
+  _activateDimming(dom, C, isPinned) {
     const svg = dom.getSvgRoot();
-    if (svg) svg.classList.add(C.hasHighlight);
+    if (svg) {
+      svg.classList.add(C.hasHighlight);
+      if (isPinned) svg.classList.add(C.hasPinned);
+    }
   },
 
   /**

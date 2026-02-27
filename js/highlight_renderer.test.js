@@ -18,6 +18,7 @@ Object.assign(globalThis.STATIC_DATA.classes, {
   depArrow: 'dep-arrow',
   cycleArrow: 'cycle-arrow',
   hasHighlight: 'has-highlight',
+  hasPinned: 'has-pinned',
   selectedCrate: 'selectedCrate',
   selectedModule: 'selectedModule',
   selectedExternal: 'selectedExternal',
@@ -478,6 +479,47 @@ describe('HighlightRenderer', () => {
 
       expect(nodeA.classList.contains(C.cycleMember)).toBe(true);
       expect(nodeB.classList.contains(C.cycleMember)).toBe(true);
+    });
+
+    test('isPinned true: adds has-pinned class to SVG root', () => {
+      const staticData = createRendererStaticData([], {});
+      const state = {
+        nodeHighlights: new Map(),
+        arcHighlights: new Map(),
+        shadowData: new Map(),
+        promotedHitareas: new Set(),
+        isPinned: true,
+      };
+
+      HighlightRenderer.apply(dom, staticData, new Map(), state);
+
+      expect(svg.classList.contains(C.hasPinned)).toBe(true);
+      expect(svg.classList.contains(C.hasHighlight)).toBe(true);
+    });
+
+    test('isPinned false: does not add has-pinned class to SVG root', () => {
+      const staticData = createRendererStaticData([], {});
+      const state = {
+        nodeHighlights: new Map(),
+        arcHighlights: new Map(),
+        shadowData: new Map(),
+        promotedHitareas: new Set(),
+        isPinned: false,
+      };
+
+      HighlightRenderer.apply(dom, staticData, new Map(), state);
+
+      expect(svg.classList.contains(C.hasPinned)).toBe(false);
+      expect(svg.classList.contains(C.hasHighlight)).toBe(true);
+    });
+
+    test('apply(null) removes has-pinned class from SVG root', () => {
+      svg.classList.add(C.hasPinned);
+
+      const staticData = createRendererStaticData([], {});
+      HighlightRenderer.apply(dom, staticData, new Map(), null);
+
+      expect(svg.classList.contains(C.hasPinned)).toBe(false);
     });
   });
 });

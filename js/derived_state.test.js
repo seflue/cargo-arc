@@ -670,6 +670,32 @@ describe('DerivedState', () => {
       expect(result).toBeNull();
     });
 
+    test('click selection: isPinned is true', () => {
+      AppState.setSelection(appState, 'node', 'fn_1');
+      const result = DerivedState.deriveHighlightState(
+        appState,
+        staticData,
+        emptyVirtualArcs,
+        emptyHidden,
+        positions,
+        ROW_HEIGHT,
+      );
+      expect(result.isPinned).toBe(true);
+    });
+
+    test('hover-only selection: isPinned is false', () => {
+      AppState.setHover(appState, 'node', 'fn_1');
+      const result = DerivedState.deriveHighlightState(
+        appState,
+        staticData,
+        emptyVirtualArcs,
+        emptyHidden,
+        positions,
+        ROW_HEIGHT,
+      );
+      expect(result.isPinned).toBe(false);
+    });
+
     test("node click: selected node has 'current' role", () => {
       AppState.setSelection(appState, 'node', 'fn_1');
       const result = DerivedState.deriveHighlightState(

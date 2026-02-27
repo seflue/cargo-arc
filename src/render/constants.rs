@@ -294,6 +294,7 @@ pub(super) struct RelationClasses {
     pub glow_incoming: &'static str,
     pub glow_outgoing: &'static str,
     pub glow_cycle: &'static str,
+    pub has_pinned: &'static str,
 }
 
 #[allow(dead_code)]
@@ -430,6 +431,7 @@ pub(super) static CSS: CssClassNames = CssClassNames {
         glow_incoming: "glow-incoming",
         glow_outgoing: "glow-outgoing",
         glow_cycle: "glow-cycle",
+        has_pinned: "has-pinned",
     },
     toolbar: ToolbarClasses {
         view_options: "view-options",

@@ -219,6 +219,7 @@ const DerivedState = {
       arcHighlights: new Map(),
       shadowData: new Map(),
       promotedHitareas: new Set(),
+      isPinned: selection.mode === 'click',
     };
     const ctx = {
       maxRight: this.computeMaxRight(positions),

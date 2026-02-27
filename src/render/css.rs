@@ -207,6 +207,25 @@ fn build_css_rules() -> Vec<CssRule> {
             ),
             &[("opacity", "0.3"), ("pointer-events", "none")],
         ),
+        // Pinned override: restore pointer-events on dimmed node rects so clicking
+        // a different node while one is pinned works (same exclusions as dimming rule)
+        CssRule::new(
+            &format!(
+                "svg.{} rect:not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{})",
+                c.relation.has_pinned,
+                c.node_selection.selected_crate,
+                c.node_selection.selected_module,
+                c.node_selection.selected_external,
+                c.node_selection.selected_external_transitive,
+                c.node_selection.group_member,
+                c.node_selection.cycle_member,
+                c.relation.dep_node,
+                c.relation.dependent_node,
+                c.toolbar.btn,
+                c.labels.arc_count_bg
+            ),
+            &[("pointer-events", "auto"), ("cursor", "pointer")],
+        ),
         CssRule::new(
             &format!(
                 "svg.{} path:not(.{}):not(.{}):not(.{}):not(.{})",
@@ -1104,6 +1123,23 @@ mod tests {
         assert!(
             ext_t_section.contains(GRAY_400),
             "External-transitive selected should use GRAY_400 border"
+        );
+    }
+
+    #[test]
+    fn test_css_has_pinned_override_rule() {
+        let css = render_styles();
+        let pinned_start = css
+            .find(&format!("svg.{} rect:not(", CSS.relation.has_pinned))
+            .expect("has-pinned override rule should exist");
+        let pinned_section = &css[pinned_start..pinned_start + 400];
+        assert!(
+            pinned_section.contains("pointer-events: auto"),
+            "has-pinned rule should restore pointer-events, got: {pinned_section}"
+        );
+        assert!(
+            pinned_section.contains("cursor: pointer"),
+            "has-pinned rule should set cursor: pointer, got: {pinned_section}"
         );
     }
 
