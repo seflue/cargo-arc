@@ -740,7 +740,6 @@ fn build_css_rules() -> Vec<CssRule> {
                 ("width", "12px"),
             ],
         ),
-        CssRule::class(c.sidebar.symbol_name, &[("font-weight", "bold")]),
         CssRule::class(
             c.sidebar.arc_symbols,
             &[("opacity", "0.7"), ("font-size", "10px")],
@@ -1051,10 +1050,6 @@ mod tests {
         assert!(
             css.contains(&format!(".{}", CSS.sidebar.toggle)),
             "CSS should contain .sidebar-toggle"
-        );
-        assert!(
-            css.contains(&format!(".{}", CSS.sidebar.symbol_name)),
-            "CSS should contain .sidebar-symbol-name"
         );
         assert!(
             css.contains(&format!(".{}", CSS.sidebar.ns)),
