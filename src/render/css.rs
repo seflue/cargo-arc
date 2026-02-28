@@ -880,12 +880,21 @@ fn build_css_rules() -> Vec<CssRule> {
         ),
         // Badge navigation: clickable node badges
         CssRule::new("[data-node-id]", &[("cursor", "pointer")]),
+        // Symbol name badges: inline-flex so min-width works and collapse indicator right-aligns
+        CssRule::class(
+            c.sidebar.symbol_name,
+            &[
+                ("display", "inline-flex"),
+                ("align-items", "baseline"),
+                ("gap", "2px"),
+            ],
+        ),
         // Collapse indicator (+/−) inside node badges
         CssRule::class(
             c.sidebar.collapse_indicator,
             &[
                 ("cursor", "pointer"),
-                ("margin-left", "2px"),
+                ("margin-left", "auto"),
                 ("font-weight", "bold"),
                 ("opacity", "0.6"),
             ],

@@ -188,6 +188,8 @@ const SidebarLogic = {
     if (!hasRelations) {
       html += `<div class="sidebar-usage-group">No relations</div>`;
     } else {
+      const badgeLens = this._computeMaxBadgeLengths(relations, nodeId, nodeName);
+
       // Incoming (Dependents) first — selected node on the right
       for (const rel of relations.incoming) {
         html += this._buildRelationSection(
@@ -196,6 +198,8 @@ const SidebarLogic = {
           nodeName,
           nodeType,
           'incoming',
+          badgeLens.incoming.maxFrom,
+          badgeLens.incoming.maxTo,
         );
       }
 
@@ -212,6 +216,8 @@ const SidebarLogic = {
           nodeName,
           nodeType,
           'outgoing',
+          badgeLens.outgoing.maxFrom,
+          badgeLens.outgoing.maxTo,
         );
       }
     }
@@ -232,9 +238,19 @@ const SidebarLogic = {
    * @param {string} nodeName - Selected node display name
    * @param {string} nodeType - Selected node type (crate/module)
    * @param {'incoming'|'outgoing'} direction
+   * @param {number} [maxFromLen=0] - Minimum badge width (ch) for from-badge
+   * @param {number} [maxToLen=0] - Minimum badge width (ch) for to-badge
    * @returns {string}
    */
-  _buildRelationSection(rel, nodeId, nodeName, nodeType, direction) {
+  _buildRelationSection(
+    rel,
+    nodeId,
+    nodeName,
+    nodeType,
+    direction,
+    maxFromLen = 0,
+    maxToLen = 0,
+  ) {
     const target = StaticData.getNode(rel.targetId);
     const targetName = this._formatNodeName(target, rel.targetId);
     const targetType = target ? target.type : '';
@@ -272,6 +288,9 @@ const SidebarLogic = {
 
     const fromClass = `sidebar-node-${fromType}${fromSelected ? ' sidebar-node-selected' : ' sidebar-node-from'}`;
     const toClass = `sidebar-node-${toType}${toSelected ? ' sidebar-node-selected' : ' sidebar-node-to'}`;
+    const fromStyle =
+      maxFromLen > 0 ? ` style="min-width: ${maxFromLen}ch"` : '';
+    const toStyle = maxToLen > 0 ? ` style="min-width: ${maxToLen}ch"` : '';
 
     const groups = rel.usages || [];
     let html = `<div class="sidebar-usage-group">`;
@@ -280,9 +299,9 @@ const SidebarLogic = {
     if (groups.length === 0) {
       html += `<div class="sidebar-symbol" style="cursor:default">`;
       html += `<span class="sidebar-toggle"></span>`;
-      html += `<span class="${fromClass} sidebar-symbol-name" data-node-id="${fromId}">${fromName}${this._renderCollapseIndicator(fromId)}</span>`;
+      html += `<span class="${fromClass} sidebar-symbol-name"${fromStyle} data-node-id="${fromId}">${fromName}${this._renderCollapseIndicator(fromId)}</span>`;
       html += `<span class="sidebar-arrow">&#x2192;</span>`;
-      html += `<span class="${toClass} sidebar-symbol-name" data-node-id="${toId}">${toName}${this._renderCollapseIndicator(toId)}</span>`;
+      html += `<span class="${toClass} sidebar-symbol-name"${toStyle} data-node-id="${toId}">${toName}${this._renderCollapseIndicator(toId)}</span>`;
       html += `<span class="sidebar-ext-info" title="Cargo.toml dependency &#8212; source references are not tracked for external crates">i</span>`;
       html += `</div>`;
       html += `</div>`;
@@ -292,9 +311,9 @@ const SidebarLogic = {
     // Level 1 header (collapsed)
     html += `<div class="sidebar-symbol" data-collapsible="" data-collapsed="true">`;
     html += `<span class="sidebar-toggle">&#x25B8;</span>`;
-    html += `<span class="${fromClass} sidebar-symbol-name" data-node-id="${fromId}">${fromName}${this._renderCollapseIndicator(fromId)}</span>`;
+    html += `<span class="${fromClass} sidebar-symbol-name"${fromStyle} data-node-id="${fromId}">${fromName}${this._renderCollapseIndicator(fromId)}</span>`;
     html += `<span class="sidebar-arrow">&#x2192;</span>`;
-    html += `<span class="${toClass} sidebar-symbol-name" data-node-id="${toId}">${toName}${this._renderCollapseIndicator(toId)}</span>`;
+    html += `<span class="${toClass} sidebar-symbol-name"${toStyle} data-node-id="${toId}">${toName}${this._renderCollapseIndicator(toId)}</span>`;
     html += `<span class="sidebar-ref-count">${rel.weight}</span>`;
     html += `</div>`;
 
@@ -326,6 +345,46 @@ const SidebarLogic = {
 
     html += `</div>`;
     return html;
+  },
+
+  /**
+   * Compute maximum badge text lengths per section for width normalization.
+   * Accounts for the +/- collapse indicator (1ch extra) when present.
+   * @param {{ incoming: Array, outgoing: Array }} relations
+   * @param {string} nodeId - ID of the selected node
+   * @param {string} nodeName - Display name of the selected node
+   * @returns {{ incoming: { maxFrom: number, maxTo: number }, outgoing: { maxFrom: number, maxTo: number } }}
+   */
+  _computeMaxBadgeLengths(relations, nodeId, nodeName) {
+    const effectiveLen = (id, name) => {
+      let len = name.length;
+      if (StaticData.hasChildren(id)) {
+        const collapsed = this._isNodeCollapsed?.(id);
+        if (collapsed !== undefined && collapsed !== null) len += 1;
+      }
+      return len;
+    };
+    const selectedLen = effectiveLen(nodeId, nodeName);
+    let inMaxFrom = 0;
+    let inMaxTo = 0;
+    for (const rel of relations.incoming) {
+      const target = StaticData.getNode(rel.targetId);
+      const targetName = this._formatNodeName(target, rel.targetId);
+      inMaxFrom = Math.max(inMaxFrom, effectiveLen(rel.targetId, targetName));
+      inMaxTo = Math.max(inMaxTo, selectedLen);
+    }
+    let outMaxFrom = 0;
+    let outMaxTo = 0;
+    for (const rel of relations.outgoing) {
+      const target = StaticData.getNode(rel.targetId);
+      const targetName = this._formatNodeName(target, rel.targetId);
+      outMaxFrom = Math.max(outMaxFrom, selectedLen);
+      outMaxTo = Math.max(outMaxTo, effectiveLen(rel.targetId, targetName));
+    }
+    return {
+      incoming: { maxFrom: inMaxFrom, maxTo: inMaxTo },
+      outgoing: { maxFrom: outMaxFrom, maxTo: outMaxTo },
+    };
   },
 
   /**

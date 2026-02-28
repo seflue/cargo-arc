@@ -2813,4 +2813,225 @@ describe('SidebarLogic', () => {
       }).not.toThrow();
     });
   });
+
+  describe('_computeMaxBadgeLengths', () => {
+    test('returns correct max lengths for incoming and outgoing', () => {
+      // incoming: targets are "render" (6), "cli" (3) — these become fromName
+      // selected node "crate_a" (7) is toName for all incoming
+      // outgoing: selected "crate_a" (7) is fromName, target "crate_b" (7) is toName
+      const relations = {
+        incoming: [
+          { targetId: 'mod_render', weight: 5, arcId: 'r-a', usages: [] },
+          { targetId: 'mod_cli', weight: 3, arcId: 'c-a', usages: [] },
+        ],
+        outgoing: [
+          { targetId: 'crate_b', weight: 2, arcId: 'a-b', usages: [] },
+        ],
+      };
+      const result = SidebarLogic._computeMaxBadgeLengths(relations, 'crate_a', 'crate_a');
+      // incoming fromNames: "render"(6), "cli"(3) → maxFrom=6
+      // incoming toName: always "crate_a"(7) → maxTo=7
+      expect(result.incoming.maxFrom).toBe(6);
+      expect(result.incoming.maxTo).toBe(7);
+      // outgoing fromName: always "crate_a"(7) → maxFrom=7
+      // outgoing toNames: "crate_b"(7) → maxTo=7
+      expect(result.outgoing.maxFrom).toBe(7);
+      expect(result.outgoing.maxTo).toBe(7);
+    });
+
+    test('empty sections return 0', () => {
+      const relations = { incoming: [], outgoing: [] };
+      const result = SidebarLogic._computeMaxBadgeLengths(relations, 'crate_a', 'crate_a');
+      expect(result.incoming.maxFrom).toBe(0);
+      expect(result.incoming.maxTo).toBe(0);
+      expect(result.outgoing.maxFrom).toBe(0);
+      expect(result.outgoing.maxTo).toBe(0);
+    });
+
+    test('external node with version includes version in length', () => {
+      globalThis.STATIC_DATA.nodes.ext_serde = {
+        type: 'crate',
+        name: 'serde',
+        version: '1.0.0',
+        parent: null,
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 30,
+        hasChildren: false,
+      };
+      const relations = {
+        incoming: [],
+        outgoing: [
+          { targetId: 'ext_serde', weight: 1, arcId: 'a-s', usages: [] },
+        ],
+      };
+      const result = SidebarLogic._computeMaxBadgeLengths(relations, 'crate_a', 'crate_a');
+      // "serde v1.0.0" = 12 characters
+      expect(result.outgoing.maxTo).toBe(12);
+      delete globalThis.STATIC_DATA.nodes.ext_serde;
+    });
+  });
+
+  describe('_buildRelationSection min-width', () => {
+    test('applies min-width to from and to badge spans', () => {
+      const rel = {
+        targetId: 'mod_render',
+        weight: 2,
+        arcId: 'r-a',
+        usages: [],
+      };
+      const html = SidebarLogic._buildRelationSection(
+        rel,
+        'crate_a',
+        'crate_a',
+        'crate',
+        'incoming',
+        10,
+        8,
+      );
+      expect(html).toContain('min-width: 10ch');
+      expect(html).toContain('min-width: 8ch');
+    });
+
+    test('applies min-width to badges with usages (L1 header)', () => {
+      const rel = {
+        targetId: 'mod_render',
+        weight: 3,
+        arcId: 'r-a',
+        usages: [
+          {
+            symbol: 'Config',
+            modulePath: 'config',
+            locations: [{ file: 'src/render.rs', line: 10 }],
+          },
+        ],
+      };
+      const html = SidebarLogic._buildRelationSection(
+        rel,
+        'crate_a',
+        'crate_a',
+        'crate',
+        'incoming',
+        12,
+        9,
+      );
+      expect(html).toContain('min-width: 12ch');
+      expect(html).toContain('min-width: 9ch');
+    });
+
+    test('maxFromLen=0 omits min-width style on from badge', () => {
+      const rel = {
+        targetId: 'mod_render',
+        weight: 2,
+        arcId: 'r-a',
+        usages: [],
+      };
+      const html = SidebarLogic._buildRelationSection(
+        rel,
+        'crate_a',
+        'crate_a',
+        'crate',
+        'incoming',
+        0,
+        5,
+      );
+      // from badge should not have min-width
+      const fromBadge = html.match(/sidebar-node-from[^>]*>render/);
+      expect(fromBadge).not.toBeNull();
+      expect(fromBadge[0]).not.toContain('min-width');
+      // to badge should still have min-width
+      expect(html).toContain('min-width: 5ch');
+    });
+  });
+
+  describe('buildNodeContent badge width normalization', () => {
+    test('incoming badges get normalized min-width from longest name', () => {
+      // incoming targets: "render" (6ch), "cli" (3ch)
+      // selected node "crate_a" (7ch) is toName for all incoming
+      const relations = {
+        incoming: [
+          {
+            targetId: 'mod_render',
+            weight: 5,
+            arcId: 'r-a',
+            usages: [
+              {
+                symbol: 'Config',
+                modulePath: null,
+                locations: [{ file: 'src/render.rs', line: 10 }],
+              },
+            ],
+          },
+          {
+            targetId: 'mod_cli',
+            weight: 3,
+            arcId: 'c-a',
+            usages: [
+              {
+                symbol: 'run',
+                modulePath: null,
+                locations: [{ file: 'src/cli.rs', line: 5 }],
+              },
+            ],
+          },
+        ],
+        outgoing: [],
+      };
+      const html = SidebarLogic.buildNodeContent('crate_a', relations);
+      // All from-badges in incoming should have min-width: 6ch (max of "render", "cli")
+      expect(html).toContain('min-width: 6ch');
+      // All to-badges in incoming should have min-width: 7ch ("crate_a")
+      expect(html).toContain('min-width: 7ch');
+    });
+
+    test('outgoing badges normalized independently from incoming', () => {
+      // incoming: "render"(6) → "crate_a"(7)
+      // outgoing: "crate_a"(7) → "crate_b"(7)
+      const relations = {
+        incoming: [
+          {
+            targetId: 'mod_render',
+            weight: 2,
+            arcId: 'r-a',
+            usages: [
+              {
+                symbol: 'X',
+                modulePath: null,
+                locations: [{ file: 'a.rs', line: 1 }],
+              },
+            ],
+          },
+        ],
+        outgoing: [
+          {
+            targetId: 'crate_b',
+            weight: 1,
+            arcId: 'a-b',
+            usages: [
+              {
+                symbol: 'Y',
+                modulePath: null,
+                locations: [{ file: 'b.rs', line: 1 }],
+              },
+            ],
+          },
+        ],
+      };
+      const html = SidebarLogic.buildNodeContent('crate_a', relations);
+      // incoming from: "render"(6) → min-width: 6ch
+      // outgoing from: "crate_a"(7) and outgoing to: "crate_b"(7) → min-width: 7ch
+      // Both 6ch and 7ch must appear
+      expect(html).toContain('min-width: 6ch');
+      expect(html).toContain('min-width: 7ch');
+    });
+
+    test('no relations: no min-width styles', () => {
+      const html = SidebarLogic.buildNodeContent('crate_a', {
+        incoming: [],
+        outgoing: [],
+      });
+      expect(html).not.toContain('min-width');
+    });
+  });
 });
