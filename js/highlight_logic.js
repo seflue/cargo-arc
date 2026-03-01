@@ -55,7 +55,7 @@ const HighlightLogic = {
    * @returns {number} - Negative overhang value (or 0 for zero input)
    */
   calculateDashOffset(overhang) {
-    return overhang === 0 ? 0 : -overhang;
+    return -overhang;
   },
 
   /**

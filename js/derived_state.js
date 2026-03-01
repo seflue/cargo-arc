@@ -518,11 +518,7 @@ const DerivedState = {
       if (!desc.isVirtual && (!fromPos || !toPos)) continue;
 
       const relationType =
-        desc.fromInSet && !desc.toInSet
-          ? 'dep'
-          : !desc.fromInSet && desc.toInSet
-            ? 'reverse'
-            : 'dep';
+        !desc.fromInSet && desc.toInSet ? 'reverse' : 'dep';
 
       const { arcHighlight, shadow } = this._computeArcHighlightEntry(
         desc.originalWidth,

@@ -35,20 +35,12 @@ function createFakeElement(tagName) {
         return classes.has(c);
       },
     },
-    style: new Proxy(styleData, {
-      get(target, prop) {
-        return target[prop];
-      },
-      set(target, prop, value) {
-        target[prop] = value;
-        return true;
-      },
-    }),
+    style: styleData,
     cloneNode(_deep) {
       const clone = createFakeElement(tagName);
       for (const [k, v] of attrs) clone.setAttribute(k, v);
       for (const c of classes) clone.classList.add(c);
-      Object.assign(clone.style, { ...styleData });
+      Object.assign(clone.style, styleData);
       return clone;
     },
     appendChild(child) {

@@ -151,14 +151,14 @@ const HighlightRenderer = {
    */
   _resetArcStyles(dom, C, staticData) {
     for (const arcId of this._prevRegularArcIds) {
+      const originalWidth = staticData.getArcStrokeWidth(arcId);
       const arc = dom.getArc(arcId);
       if (arc) {
         arc.classList.remove(C.highlightedArc);
-        arc.style.strokeWidth = `${staticData.getArcStrokeWidth(arcId)}px`;
+        arc.style.strokeWidth = `${originalWidth}px`;
       }
 
       // Reset arrows (including hidden — prevents stale state after collapse/expand)
-      const originalWidth = staticData.getArcStrokeWidth(arcId);
       const scale = ArcLogic.scaleFromStrokeWidth(originalWidth);
       dom.getArrows(arcId).forEach((arrow) => {
         arrow.classList.remove(C.highlightedArrow);

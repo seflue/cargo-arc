@@ -419,17 +419,6 @@ if (typeof document !== 'undefined') {
       if (SidebarLogic.isVisible()) SidebarLogic.updatePosition();
     }
 
-    // Helper: Calculate arc path from position objects (no DOM read)
-    function calculateArcPathFromPositions(fromPos, toPos, yOffset, maxRight) {
-      return ArcLogic.calculateArcPathFromPositions(
-        fromPos,
-        toPos,
-        yOffset,
-        maxRight,
-        ROW_HEIGHT,
-      );
-    }
-
     // Helper: Extract edge data from STATIC_DATA to pure objects
     // Single code path for all scenarios (with/without expand-level, interactive collapse)
     function extractEdgeData(visibleNodes) {
@@ -499,11 +488,12 @@ if (typeof document !== 'undefined') {
           const fromPos = currentPositions.get(fromId);
           const toPos = currentPositions.get(toId);
           if (fromPos && toPos) {
-            const arc = calculateArcPathFromPositions(
+            const arc = ArcLogic.calculateArcPathFromPositions(
               fromPos,
               toPos,
               3,
               maxRight,
+              ROW_HEIGHT,
             );
             if (hitarea) hitarea.setAttribute('d', arc.path);
             const visibleArc = DomAdapter.getVisibleArc(arcId);
@@ -534,7 +524,7 @@ if (typeof document !== 'undefined') {
         const toPos = currentPositions.get(toId);
         if (!fromPos || !toPos) return;
 
-        const arc = calculateArcPathFromPositions(fromPos, toPos, 3, maxRight);
+        const arc = ArcLogic.calculateArcPathFromPositions(fromPos, toPos, 3, maxRight, ROW_HEIGHT);
         const strokeWidth = StaticData.getArcStrokeWidth(arcId);
         const staticArc = StaticData.getArc(arcId);
         const isCycle = staticArc.cycleIds && staticArc.cycleIds.length > 0;
@@ -1386,9 +1376,7 @@ if (typeof document !== 'undefined') {
         handleMouseEnter('arc', edgeId),
       );
 
-      hitarea.addEventListener('mouseleave', () => {
-        handleMouseLeave();
-      });
+      hitarea.addEventListener('mouseleave', handleMouseLeave);
     });
 
     DomAdapter.getSvgRoot().addEventListener('click', () => {

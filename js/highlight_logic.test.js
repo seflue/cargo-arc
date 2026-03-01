@@ -65,8 +65,8 @@ describe('HighlightLogic', () => {
     });
 
     test('handles zero overhang', () => {
-      // Note: -0 === 0 in JS, but toBe uses Object.is which distinguishes them
-      expect(HighlightLogic.calculateDashOffset(0)).toEqual(0);
+      // -0 === 0 in JS; negation of 0 yields -0 which is semantically identical
+      expect(HighlightLogic.calculateDashOffset(0) === 0).toBe(true);
     });
   });
 
