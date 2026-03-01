@@ -106,7 +106,7 @@ function createConvenienceMethods() {
       return Array.from(arrows).filter((arr) => arr.style.display !== 'none');
     },
     getVirtualArrows(arcId) {
-      return this.querySelectorAll(Selectors.virtualArrows(arcId));
+      return Array.from(this.querySelectorAll(Selectors.virtualArrows(arcId)));
     },
     getLabelGroup(arcId) {
       if (_arcCache.has(arcId)) return _arcCache.get(arcId).labelGroup;

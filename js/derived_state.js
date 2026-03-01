@@ -391,14 +391,9 @@ const DerivedState = {
     }
 
     // Cycle expansion: highlight all arcs and nodes in all associated cycles
-    if (
-      arc?.cycleIds &&
-      arc.cycleIds.length > 0 &&
-      typeof STATIC_DATA !== 'undefined' &&
-      STATIC_DATA.cycles
-    ) {
+    if (arc?.cycleIds && arc.cycleIds.length > 0) {
       for (const cid of arc.cycleIds) {
-        const cycle = STATIC_DATA.cycles[cid];
+        const cycle = staticData.getCycle(cid);
         if (!cycle) continue;
         for (const nodeId of cycle.nodes) {
           if (!result.nodeHighlights.has(nodeId)) {
@@ -517,8 +512,7 @@ const DerivedState = {
       // positions are missing.
       if (!desc.isVirtual && (!fromPos || !toPos)) continue;
 
-      const relationType =
-        !desc.fromInSet && desc.toInSet ? 'reverse' : 'dep';
+      const relationType = !desc.fromInSet && desc.toInSet ? 'reverse' : 'dep';
 
       const { arcHighlight, shadow } = this._computeArcHighlightEntry(
         desc.originalWidth,

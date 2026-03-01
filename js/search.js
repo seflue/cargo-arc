@@ -31,8 +31,7 @@ const SearchLogic = {
     if (clearBtn) {
       clearBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        const inp = DomAdapter.querySelector('#search-input');
-        if (inp) inp.value = '';
+        if (input) input.value = '';
         clearBtn.style.display = 'none';
         this.clearSearch();
       });
@@ -148,8 +147,9 @@ const SearchLogic = {
       parentMatches,
     );
 
-    // Mark matched arc elements so CSS excludes them from dimming
-    this._applyDimming(matchedArcs);
+    // Clear previous arc matches, then mark new matched arc elements
+    this._clearArcMatches();
+    this._applyArcMatches(matchedArcs);
 
     this._state.matchedNodeIds = directMatches;
     this._state.matchParentIds = parentMatches;
@@ -282,24 +282,16 @@ const SearchLogic = {
   _setNodeClass(nodeId, className, add) {
     const rect = DomAdapter.getNode(nodeId);
     if (!rect) return;
+    rect.classList.toggle(className, add);
     const label = rect.nextElementSibling;
-    if (add) {
-      rect.classList.add(className);
-      if (label?.classList.contains(STATIC_DATA.classes.label)) {
-        label.classList.add(className);
-      }
-    } else {
-      rect.classList.remove(className);
-      if (label) label.classList.remove(className);
+    if (label?.classList.contains(STATIC_DATA.classes.label)) {
+      label.classList.toggle(className, add);
     }
   },
 
   /** Add search-match class to matched arc elements (CSS-only dimming via svg.search-active). */
-  _applyDimming(matchedArcs) {
+  _applyArcMatches(matchedArcs) {
     const C = STATIC_DATA.classes;
-
-    // Clear previous arc matches before applying new ones
-    this._clearArcMatches();
 
     // Add search-match to matched arc elements so CSS excludes them from dimming
     for (const arcId of matchedArcs) {

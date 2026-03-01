@@ -205,7 +205,7 @@ const AppState = {
    */
   getPinned(state) {
     if (state.clickSelection.type === null) return null;
-    return { type: state.clickSelection.type, id: state.clickSelection.id };
+    return { ...state.clickSelection };
   },
 
   /**

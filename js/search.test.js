@@ -200,6 +200,10 @@ describe('SearchLogic', () => {
             contains: () => true,
             add: () => counts.add++,
             remove: () => counts.remove++,
+            toggle(_c, force) {
+              if (force) counts.add++;
+              else counts.remove++;
+            },
           },
         };
         return {
@@ -211,6 +215,15 @@ describe('SearchLogic', () => {
             remove(c) {
               counts.remove++;
               classes.delete(c);
+            },
+            toggle(c, force) {
+              if (force) {
+                counts.add++;
+                classes.add(c);
+              } else {
+                counts.remove++;
+                classes.delete(c);
+              }
             },
             contains(c) {
               return classes.has(c);
@@ -320,7 +333,12 @@ describe('SearchLogic', () => {
       });
 
       const matchLabel = {
-        classList: { contains: () => true, add: () => {}, remove: () => {} },
+        classList: {
+          contains: () => true,
+          add: () => {},
+          remove: () => {},
+          toggle: () => {},
+        },
       };
       DomAdapter.getNode = (id) =>
         id === 'int-1'
@@ -328,6 +346,7 @@ describe('SearchLogic', () => {
               classList: {
                 add: () => {},
                 remove: () => {},
+                toggle: () => {},
                 contains: () => false,
               },
               nextElementSibling: matchLabel,
@@ -362,7 +381,12 @@ describe('SearchLogic', () => {
       });
 
       const matchLabel = {
-        classList: { contains: () => true, add: () => {}, remove: () => {} },
+        classList: {
+          contains: () => true,
+          add: () => {},
+          remove: () => {},
+          toggle: () => {},
+        },
       };
       DomAdapter.getNode = (id) =>
         id === 'n1'
@@ -370,6 +394,7 @@ describe('SearchLogic', () => {
               classList: {
                 add: () => {},
                 remove: () => {},
+                toggle: () => {},
                 contains: () => false,
               },
               nextElementSibling: matchLabel,
@@ -405,16 +430,25 @@ describe('SearchLogic', () => {
         classList: {
           add: (c) => classes.add(c),
           remove: (c) => classes.delete(c),
+          toggle: (c, force) => {
+            if (force) classes.add(c);
+            else classes.delete(c);
+          },
           contains: (c) => classes.has(c),
         },
       };
 
       DomAdapter.getSvgRoot = () => ({
-        classList: { add: () => {}, remove: () => {} },
+        classList: { add: () => {}, remove: () => {}, toggle: () => {} },
       });
 
       const matchLabel = {
-        classList: { contains: () => true, add: () => {}, remove: () => {} },
+        classList: {
+          contains: () => true,
+          add: () => {},
+          remove: () => {},
+          toggle: () => {},
+        },
       };
       DomAdapter.getNode = (id) =>
         id === 'ext-1'
@@ -479,17 +513,18 @@ describe('SearchLogic', () => {
       };
 
       DomAdapter.getSvgRoot = () => ({
-        classList: { add: () => {}, remove: () => {} },
+        classList: { add: () => {}, remove: () => {}, toggle: () => {} },
       });
       DomAdapter.getNode = (id) =>
         ['n1', 'n2'].includes(id)
           ? {
-              classList: { add: () => {}, remove: () => {} },
+              classList: { add: () => {}, remove: () => {}, toggle: () => {} },
               nextElementSibling: {
                 classList: {
                   contains: () => true,
                   add: () => {},
                   remove: () => {},
+                  toggle: () => {},
                 },
               },
             }
@@ -548,15 +583,20 @@ describe('SearchLogic', () => {
       };
 
       DomAdapter.getSvgRoot = () => ({
-        classList: { add: () => {}, remove: () => {} },
+        classList: { add: () => {}, remove: () => {}, toggle: () => {} },
       });
       const matchLabel = {
-        classList: { contains: () => true, add: () => {}, remove: () => {} },
+        classList: {
+          contains: () => true,
+          add: () => {},
+          remove: () => {},
+          toggle: () => {},
+        },
       };
       DomAdapter.getNode = (id) =>
         id === 'n1'
           ? {
-              classList: { add: () => {}, remove: () => {} },
+              classList: { add: () => {}, remove: () => {}, toggle: () => {} },
               nextElementSibling: matchLabel,
             }
           : null;
@@ -607,15 +647,20 @@ describe('SearchLogic', () => {
       const arcClasses = new Set();
 
       DomAdapter.getSvgRoot = () => ({
-        classList: { add: () => {}, remove: () => {} },
+        classList: { add: () => {}, remove: () => {}, toggle: () => {} },
       });
       const matchLabel = {
-        classList: { contains: () => true, add: () => {}, remove: () => {} },
+        classList: {
+          contains: () => true,
+          add: () => {},
+          remove: () => {},
+          toggle: () => {},
+        },
       };
       DomAdapter.getNode = (id) =>
         id === 'n3'
           ? {
-              classList: { add: () => {}, remove: () => {} },
+              classList: { add: () => {}, remove: () => {}, toggle: () => {} },
               nextElementSibling: matchLabel,
             }
           : null;

@@ -215,6 +215,7 @@ function createMockStaticData(data = TEST_STATIC_DATA) {
       }
       return parentMap;
     },
+    getCycle: (cycleId) => data.cycles?.[cycleId] ?? null,
   };
 }
 
@@ -1517,6 +1518,7 @@ describe('DerivedState', () => {
           ],
         },
       },
+      cycles: [{ nodes: ['A', 'B', 'C'], arcs: ['A-B', 'B-C', 'C-A'] }],
     };
 
     const CYCLE_POSITIONS = new Map([
@@ -1531,7 +1533,7 @@ describe('DerivedState', () => {
     beforeEach(() => {
       savedStaticData = globalThis.STATIC_DATA;
       globalThis.STATIC_DATA = {
-        cycles: [{ nodes: ['A', 'B', 'C'], arcs: ['A-B', 'B-C', 'C-A'] }],
+        cycles: CYCLE_DATA.cycles,
       };
     });
 
@@ -1757,6 +1759,10 @@ describe('DerivedState', () => {
             ],
           },
         },
+        cycles: [
+          { nodes: ['A', 'B', 'C'], arcs: ['A-B', 'B-C', 'C-A'] },
+          { nodes: ['B', 'C', 'E'], arcs: ['B-C', 'C-E', 'E-B'] },
+        ],
       };
       const multiPositions = new Map([
         ['A', { x: 20, y: 60, width: 100, height: 20 }],
@@ -1766,10 +1772,7 @@ describe('DerivedState', () => {
       ]);
 
       globalThis.STATIC_DATA = {
-        cycles: [
-          { nodes: ['A', 'B', 'C'], arcs: ['A-B', 'B-C', 'C-A'] },
-          { nodes: ['B', 'C', 'E'], arcs: ['B-C', 'C-E', 'E-B'] },
-        ],
+        cycles: MULTI_CYCLE_DATA.cycles,
       };
 
       const sd = createMockStaticData(MULTI_CYCLE_DATA);

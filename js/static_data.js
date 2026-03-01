@@ -171,6 +171,15 @@ const StaticData = {
   },
 
   /**
+   * Get cycle data by ID.
+   * @param {number} cycleId
+   * @returns {Object|null}
+   */
+  getCycle(cycleId) {
+    return STATIC_DATA.cycles?.[cycleId] ?? null;
+  },
+
+  /**
    * Get external crate nodes grouped by name.
    * Crates with same name but different versions are grouped together.
    * @returns {Map<string, string[]>} name -> [nodeId, ...] sorted by version
@@ -202,25 +211,17 @@ const StaticData = {
     const incoming = [];
     for (const [arcId, arc] of Object.entries(STATIC_DATA.arcs)) {
       if (arc.from === nodeId) {
-        const weight = (arc.usages || []).reduce(
-          (s, g) => s + g.locations.length,
-          0,
-        );
         outgoing.push({
           targetId: arc.to,
-          weight,
-          usages: arc.usages || [],
+          weight: this.getArcWeight(arcId),
+          usages: arc.usages ?? [],
           arcId,
         });
       } else if (arc.to === nodeId) {
-        const weight = (arc.usages || []).reduce(
-          (s, g) => s + g.locations.length,
-          0,
-        );
         incoming.push({
           targetId: arc.from,
-          weight,
-          usages: arc.usages || [],
+          weight: this.getArcWeight(arcId),
+          usages: arc.usages ?? [],
           arcId,
         });
       }

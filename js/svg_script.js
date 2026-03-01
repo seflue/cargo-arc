@@ -524,7 +524,13 @@ if (typeof document !== 'undefined') {
         const toPos = currentPositions.get(toId);
         if (!fromPos || !toPos) return;
 
-        const arc = ArcLogic.calculateArcPathFromPositions(fromPos, toPos, 3, maxRight, ROW_HEIGHT);
+        const arc = ArcLogic.calculateArcPathFromPositions(
+          fromPos,
+          toPos,
+          3,
+          maxRight,
+          ROW_HEIGHT,
+        );
         const strokeWidth = StaticData.getArcStrokeWidth(arcId);
         const staticArc = StaticData.getArc(arcId);
         const isCycle = staticArc.cycleIds && staticArc.cycleIds.length > 0;
