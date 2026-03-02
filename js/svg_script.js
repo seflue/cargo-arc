@@ -695,12 +695,24 @@ if (typeof document !== 'undefined') {
 
     // Create virtual arc elements (arcs, arrows, labels, hitareas)
     function renderVirtualElements(mergedEdges, layers) {
-      // Pass 1: Arcs + Arrows (bottom layer)
+      const arcElements = [];
+      const labelElements = [];
+      const hitareaElements = [];
+
       mergedEdges.forEach((data, _key) => {
-        const { fromId, toId, arc, strokeWidth, direction } = data;
+        const {
+          fromId,
+          toId,
+          arc,
+          strokeWidth,
+          direction,
+          count,
+          hiddenEdgeData,
+          originalArcs,
+        } = data;
         const arcId = `${fromId}-${toId}`;
 
-        // Visible path (styled, no pointer events)
+        // Arc path
         const path = DomAdapter.createSvgElement('path');
         path.setAttribute('class', `${C.virtualArc} ${direction}`);
         path.setAttribute('d', arc.path);
@@ -708,7 +720,7 @@ if (typeof document !== 'undefined') {
         path.setAttribute('data-from', fromId);
         path.setAttribute('data-to', toId);
         path.style.strokeWidth = `${strokeWidth}px`;
-        layers.baseArcs.appendChild(path);
+        arcElements.push(path);
 
         // Arrow (scaled to match stroke width)
         const scale = strokeWidth / 1.5;
@@ -725,24 +737,20 @@ if (typeof document !== 'undefined') {
           e.stopPropagation();
           highlightVirtualEdge(fromId, toId);
         });
-        layers.baseArcs.appendChild(arrow);
-      });
+        arcElements.push(arrow);
 
-      // Pass 2: Labels (middle layer, above arcs)
-      mergedEdges.forEach((data, _key) => {
-        const { fromId, toId, arc, count } = data;
-
+        // Label (only for multi-edge arcs)
+        let labelGroup = null;
         if (count > 1) {
-          const labelGroup = DomAdapter.createSvgElement('g');
+          labelGroup = DomAdapter.createSvgElement('g');
           labelGroup.setAttribute('class', C.arcCountGroup);
-          labelGroup.setAttribute('data-vedge', `${fromId}-${toId}`);
+          labelGroup.setAttribute('data-vedge', arcId);
           labelGroup.setAttribute('data-from', fromId);
           labelGroup.setAttribute('data-to', toId);
           const text = `(${count})`;
           const x = arc.ctrlX + 5;
           const y = arc.midY + 3;
 
-          // Background rect (2-3px padding)
           const padding = 2;
           const textWidth = text.length * 6; // ~6px per char at 10px font
           const bg = DomAdapter.createSvgElement('rect');
@@ -753,10 +761,9 @@ if (typeof document !== 'undefined') {
           bg.setAttribute('height', 12 + padding * 2);
           bg.setAttribute('rx', '2');
 
-          // Text label
           const countLabel = DomAdapter.createSvgElement('text');
           countLabel.setAttribute('class', C.arcCount);
-          countLabel.setAttribute('data-vedge', `${fromId}-${toId}`);
+          countLabel.setAttribute('data-vedge', arcId);
           countLabel.setAttribute('x', x);
           countLabel.setAttribute('y', y);
           countLabel.textContent = text;
@@ -769,29 +776,22 @@ if (typeof document !== 'undefined') {
             highlightVirtualEdge(fromId, toId);
           });
           labelGroup.addEventListener('mouseenter', () =>
-            handleMouseEnter('arc', `${fromId}-${toId}`),
+            handleMouseEnter('arc', arcId),
           );
           labelGroup.addEventListener('mouseleave', handleMouseLeave);
 
-          layers.baseLabels.appendChild(labelGroup);
+          labelElements.push(labelGroup);
         }
-      });
 
-      // Pass 3: Hitareas (hitareas layer, always on top)
-      mergedEdges.forEach((data, _key) => {
-        const { fromId, toId, arc, hiddenEdgeData, originalArcs } = data;
-        const arcId = `${fromId}-${toId}`;
-
+        // Hitarea
         const hitarea = DomAdapter.createSvgElement('path');
         hitarea.setAttribute('class', `${C.virtualHitarea} ${C.arcHitarea}`);
         hitarea.setAttribute('d', arc.path);
         hitarea.setAttribute('data-arc-id', arcId);
         hitarea.setAttribute('data-from', fromId);
         hitarea.setAttribute('data-to', toId);
-        // Store structured usages and originalArcs in runtime Map (not DOM attribute)
         if (hiddenEdgeData.length > 0) {
-          const allUsages = hiddenEdgeData.flat();
-          virtualArcUsages.set(arcId, allUsages);
+          virtualArcUsages.set(arcId, hiddenEdgeData.flat());
         }
         if (originalArcs && originalArcs.length > 0) {
           virtualArcOriginals.set(arcId, originalArcs);
@@ -806,31 +806,15 @@ if (typeof document !== 'undefined') {
         hitarea.addEventListener('mouseleave', () => {
           handleMouseLeave();
         });
-        layers.hitareas.appendChild(hitarea);
+        hitareaElements.push(hitarea);
+
+        // Cache with direct references (no DOM queries needed)
+        DomAdapter.cacheArcElements(arcId, path, [arrow], labelGroup);
       });
 
-      // Cache virtual arc elements for O(1) lookups during highlight
-      mergedEdges.forEach((data, _key) => {
-        const { fromId, toId } = data;
-        const arcId = `${fromId}-${toId}`;
-        const arcs = DomAdapter.querySelectorAll(
-          `.${C.virtualArc}[data-arc-id="${arcId}"]`,
-        );
-        const arrows = Array.from(
-          DomAdapter.querySelectorAll(
-            `.${C.virtualArrow}[data-vedge="${arcId}"]`,
-          ),
-        );
-        const labelGroup = DomAdapter.querySelector(
-          `.${C.arcCountGroup}[data-vedge="${arcId}"]`,
-        );
-        DomAdapter.cacheArcElements(
-          arcId,
-          arcs.length === 1 ? arcs[0] : null,
-          arrows,
-          labelGroup,
-        );
-      });
+      for (const el of arcElements) layers.baseArcs.appendChild(el);
+      for (const el of labelElements) layers.baseLabels.appendChild(el);
+      for (const el of hitareaElements) layers.hitareas.appendChild(el);
     }
 
     function highlightVirtualEdge(fromId, toId) {
