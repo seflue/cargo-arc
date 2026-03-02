@@ -854,15 +854,9 @@ if (typeof document !== 'undefined') {
       const node = DomAdapter.getNode(descId);
       const label = node?.nextElementSibling;
       const toggle = DomAdapter.getCollapseToggle(descId);
-      if (collapsed) {
-        node?.classList.add(C.collapsed);
-        label?.classList.add(C.collapsed);
-        toggle?.classList.add(C.collapsed);
-      } else {
-        node?.classList.remove(C.collapsed);
-        label?.classList.remove(C.collapsed);
-        toggle?.classList.remove(C.collapsed);
-      }
+      node?.classList.toggle(C.collapsed, collapsed);
+      label?.classList.toggle(C.collapsed, collapsed);
+      toggle?.classList.toggle(C.collapsed, collapsed);
       DomAdapter.getTreeLines(descId, 'child').forEach((line) => {
         if (collapsed) {
           line.classList.add(C.collapsed);
@@ -992,11 +986,7 @@ if (typeof document !== 'undefined') {
       const isChecked = checkbox.classList.toggle(C.checked);
 
       DomAdapter.querySelectorAll(`.${arcClass}`).forEach((arc) => {
-        if (isChecked) {
-          arc.classList.remove(C.hiddenByFilter);
-        } else {
-          arc.classList.add(C.hiddenByFilter);
-        }
+        arc.classList.toggle(C.hiddenByFilter, !isChecked);
       });
 
       // Also hide/show associated hitareas and arrows, track in AppState
@@ -1016,11 +1006,7 @@ if (typeof document !== 'undefined') {
             AppState.hideArc(appState, arcId);
           }
           DomAdapter.getArrows(arcId).forEach((arrow) => {
-            if (isChecked) {
-              arrow.classList.remove(C.hiddenByFilter);
-            } else {
-              arrow.classList.add(C.hiddenByFilter);
-            }
+            arrow.classList.toggle(C.hiddenByFilter, !isChecked);
           });
         }
       });
@@ -1043,11 +1029,7 @@ if (typeof document !== 'undefined') {
       const isChecked = checkbox?.classList.contains(C.checked);
       DomAdapter.querySelectorAll(Selectors.allVirtualElements()).forEach(
         (el) => {
-          if (isChecked) {
-            el.classList.remove(C.hiddenByFilter);
-          } else {
-            el.classList.add(C.hiddenByFilter);
-          }
+          el.classList.toggle(C.hiddenByFilter, !isChecked);
         },
       );
     }
@@ -1068,29 +1050,15 @@ if (typeof document !== 'undefined') {
         if (!rect) return;
         const label = rect.nextElementSibling;
         const toggle = DomAdapter.getCollapseToggle(nodeId);
-        if (isChecked) {
-          rect.classList.remove(C.hiddenByFilter);
-          label?.classList.remove(C.hiddenByFilter);
-          toggle?.classList.remove(C.hiddenByFilter);
-        } else {
-          rect.classList.add(C.hiddenByFilter);
-          label?.classList.add(C.hiddenByFilter);
-          toggle?.classList.add(C.hiddenByFilter);
-        }
+        rect.classList.toggle(C.hiddenByFilter, !isChecked);
+        label?.classList.toggle(C.hiddenByFilter, !isChecked);
+        toggle?.classList.toggle(C.hiddenByFilter, !isChecked);
         // Toggle tree lines for external nodes
         DomAdapter.getTreeLines(nodeId, 'child').forEach((line) => {
-          if (isChecked) {
-            line.classList.remove(C.hiddenByFilter);
-          } else {
-            line.classList.add(C.hiddenByFilter);
-          }
+          line.classList.toggle(C.hiddenByFilter, !isChecked);
         });
         DomAdapter.getTreeLines(nodeId, 'parent').forEach((line) => {
-          if (isChecked) {
-            line.classList.remove(C.hiddenByFilter);
-          } else {
-            line.classList.add(C.hiddenByFilter);
-          }
+          line.classList.toggle(C.hiddenByFilter, !isChecked);
         });
       });
 
@@ -1109,19 +1077,9 @@ if (typeof document !== 'undefined') {
           AppState.hideArc(appState, arcId);
         }
         const visibleArc = DomAdapter.getArc(arcId);
-        if (visibleArc) {
-          if (isChecked) {
-            visibleArc.classList.remove(C.hiddenByFilter);
-          } else {
-            visibleArc.classList.add(C.hiddenByFilter);
-          }
-        }
+        visibleArc?.classList.toggle(C.hiddenByFilter, !isChecked);
         DomAdapter.getArrows(arcId).forEach((arrow) => {
-          if (isChecked) {
-            arrow.classList.remove(C.hiddenByFilter);
-          } else {
-            arrow.classList.add(C.hiddenByFilter);
-          }
+          arrow.classList.toggle(C.hiddenByFilter, !isChecked);
         });
       });
 
@@ -1129,15 +1087,7 @@ if (typeof document !== 'undefined') {
       const transitiveCheckbox = DomAdapter.querySelector(
         '#transitive-dep-checkbox',
       );
-      if (transitiveCheckbox) {
-        if (!isChecked) {
-          // Externals hidden → force transitive unchecked
-          transitiveCheckbox.classList.remove(C.checked);
-        } else {
-          // Externals shown → restore transitive to checked
-          transitiveCheckbox.classList.add(C.checked);
-        }
-      }
+      transitiveCheckbox?.classList.toggle(C.checked, isChecked);
 
       invalidateFilterHiddenNodeIds();
       relayout();
@@ -1161,28 +1111,14 @@ if (typeof document !== 'undefined') {
         if (!rect) return;
         const label = rect.nextElementSibling;
         const toggle = DomAdapter.getCollapseToggle(nodeId);
-        if (isChecked) {
-          rect.classList.remove(C.hiddenByFilter);
-          label?.classList.remove(C.hiddenByFilter);
-          toggle?.classList.remove(C.hiddenByFilter);
-        } else {
-          rect.classList.add(C.hiddenByFilter);
-          label?.classList.add(C.hiddenByFilter);
-          toggle?.classList.add(C.hiddenByFilter);
-        }
+        rect.classList.toggle(C.hiddenByFilter, !isChecked);
+        label?.classList.toggle(C.hiddenByFilter, !isChecked);
+        toggle?.classList.toggle(C.hiddenByFilter, !isChecked);
         DomAdapter.getTreeLines(nodeId, 'child').forEach((line) => {
-          if (isChecked) {
-            line.classList.remove(C.hiddenByFilter);
-          } else {
-            line.classList.add(C.hiddenByFilter);
-          }
+          line.classList.toggle(C.hiddenByFilter, !isChecked);
         });
         DomAdapter.getTreeLines(nodeId, 'parent').forEach((line) => {
-          if (isChecked) {
-            line.classList.remove(C.hiddenByFilter);
-          } else {
-            line.classList.add(C.hiddenByFilter);
-          }
+          line.classList.toggle(C.hiddenByFilter, !isChecked);
         });
       });
 
@@ -1201,19 +1137,9 @@ if (typeof document !== 'undefined') {
           AppState.hideArc(appState, arcId);
         }
         const visibleArc = DomAdapter.getArc(arcId);
-        if (visibleArc) {
-          if (isChecked) {
-            visibleArc.classList.remove(C.hiddenByFilter);
-          } else {
-            visibleArc.classList.add(C.hiddenByFilter);
-          }
-        }
+        visibleArc?.classList.toggle(C.hiddenByFilter, !isChecked);
         DomAdapter.getArrows(arcId).forEach((arrow) => {
-          if (isChecked) {
-            arrow.classList.remove(C.hiddenByFilter);
-          } else {
-            arrow.classList.add(C.hiddenByFilter);
-          }
+          arrow.classList.toggle(C.hiddenByFilter, !isChecked);
         });
       });
 

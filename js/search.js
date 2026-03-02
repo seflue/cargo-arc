@@ -329,11 +329,7 @@ const SearchLogic = {
     if (!selector) return;
     const buttons = selector.querySelectorAll('[data-scope]');
     buttons.forEach((btn) => {
-      if (btn.dataset.scope === scope) {
-        btn.classList.add(C.toolbarScopeActive);
-      } else {
-        btn.classList.remove(C.toolbarScopeActive);
-      }
+      btn.classList.toggle(C.toolbarScopeActive, btn.dataset.scope === scope);
     });
   },
 };
