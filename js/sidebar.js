@@ -549,17 +549,16 @@ const SidebarLogic = {
   },
 
   /**
-   * Show sidebar with content for given arc.
-   * @param {string} arcId
-   * @param {{ from: string, to: string, usages: StaticArcData["usages"], originalArcs?: string[], cycleIds?: number[] }} [overrideData]
+   * Shared pinned-show logic: inject HTML, remove transient state, wire handlers, position.
+   * @param {string} html - Pre-built sidebar HTML content
    */
-  show(arcId, overrideData) {
+  _showWithContent(html) {
     const el = this._getElement();
     if (!el) return;
     /** @type {HTMLElement|null} */
     const innerDiv = el.querySelector('.sidebar-root');
     if (innerDiv) {
-      innerDiv.innerHTML = this.buildContent(arcId, overrideData);
+      innerDiv.innerHTML = html;
       innerDiv.classList.remove('sidebar-transient');
       this._setupCollapseHandlers(innerDiv);
     }
@@ -569,6 +568,15 @@ const SidebarLogic = {
     this._cachedMaxArcRightX = null;
     this._cachedX = this._calcX();
     this.updatePosition();
+  },
+
+  /**
+   * Show sidebar with content for given arc.
+   * @param {string} arcId
+   * @param {{ from: string, to: string, usages: StaticArcData["usages"], originalArcs?: string[], cycleIds?: number[] }} [overrideData]
+   */
+  show(arcId, overrideData) {
+    this._showWithContent(this.buildContent(arcId, overrideData));
   },
 
   /**
@@ -797,21 +805,7 @@ const SidebarLogic = {
    * @param {{ incoming: Array, outgoing: Array }} relations
    */
   showNode(nodeId, relations) {
-    const el = this._getElement();
-    if (!el) return;
-    /** @type {HTMLElement|null} */
-    const innerDiv = el.querySelector('.sidebar-root');
-    if (innerDiv) {
-      innerDiv.innerHTML = this.buildNodeContent(nodeId, relations);
-      innerDiv.classList.remove('sidebar-transient');
-      this._setupCollapseHandlers(innerDiv);
-    }
-    el.style.display = 'block';
-    this._isTransient = false;
-    clearTimeout(this._debounceTimer);
-    this._cachedMaxArcRightX = null;
-    this._cachedX = this._calcX();
-    this.updatePosition();
+    this._showWithContent(this.buildNodeContent(nodeId, relations));
   },
 
   /**
