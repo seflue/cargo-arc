@@ -1018,117 +1018,80 @@ if (typeof document !== 'undefined') {
       );
     }
 
-    // Toggle visibility of external dependency nodes and their arcs
+    function toggleFilteredNodes(isChecked, isTargetNode, isTargetArc) {
+      StaticData.getAllNodeIds().forEach((nodeId) => {
+        if (!isTargetNode(nodeId)) return;
+        const rect = DomAdapter.getNode(nodeId);
+        if (!rect) return;
+        const label = rect.nextElementSibling;
+        const toggle = DomAdapter.getCollapseToggle(nodeId);
+        rect.classList.toggle(C.hiddenByFilter, !isChecked);
+        label?.classList.toggle(C.hiddenByFilter, !isChecked);
+        toggle?.classList.toggle(C.hiddenByFilter, !isChecked);
+        DomAdapter.getTreeLines(nodeId, 'child').forEach((line) => {
+          line.classList.toggle(C.hiddenByFilter, !isChecked);
+        });
+        DomAdapter.getTreeLines(nodeId, 'parent').forEach((line) => {
+          line.classList.toggle(C.hiddenByFilter, !isChecked);
+        });
+      });
+
+      DomAdapter.querySelectorAll(
+        `.${C.arcHitarea}:not(.${C.virtualHitarea})`,
+      ).forEach((hitarea) => {
+        const arcId = hitarea.dataset.arcId;
+        if (!isTargetArc(arcId)) return;
+
+        if (isChecked) {
+          hitarea.classList.remove(C.hiddenByFilter);
+          AppState.showArc(appState, arcId);
+        } else {
+          hitarea.classList.add(C.hiddenByFilter);
+          AppState.hideArc(appState, arcId);
+        }
+        const visibleArc = DomAdapter.getArc(arcId);
+        visibleArc?.classList.toggle(C.hiddenByFilter, !isChecked);
+        DomAdapter.getArrows(arcId).forEach((arrow) => {
+          arrow.classList.toggle(C.hiddenByFilter, !isChecked);
+        });
+      });
+
+      invalidateFilterHiddenNodeIds();
+      relayout();
+    }
+
     function toggleExternalDepVisibility() {
       const checkbox = DomAdapter.querySelector('#external-dep-checkbox');
       if (!checkbox) return;
 
       const isChecked = checkbox.classList.toggle(C.checked);
 
-      // Toggle external-section and external nodes
-      StaticData.getAllNodeIds().forEach((nodeId) => {
-        const node = StaticData.getNode(nodeId);
-        if (!node) return;
-        if (!StaticData.isExternalNode(nodeId)) return;
-        const rect = DomAdapter.getNode(nodeId);
-        if (!rect) return;
-        const label = rect.nextElementSibling;
-        const toggle = DomAdapter.getCollapseToggle(nodeId);
-        rect.classList.toggle(C.hiddenByFilter, !isChecked);
-        label?.classList.toggle(C.hiddenByFilter, !isChecked);
-        toggle?.classList.toggle(C.hiddenByFilter, !isChecked);
-        // Toggle tree lines for external nodes
-        DomAdapter.getTreeLines(nodeId, 'child').forEach((line) => {
-          line.classList.toggle(C.hiddenByFilter, !isChecked);
-        });
-        DomAdapter.getTreeLines(nodeId, 'parent').forEach((line) => {
-          line.classList.toggle(C.hiddenByFilter, !isChecked);
-        });
-      });
+      toggleFilteredNodes(
+        isChecked,
+        (nodeId) => StaticData.isExternalNode(nodeId),
+        (arcId) => StaticData.isExternalArc(arcId),
+      );
 
-      // Toggle arcs connected to external nodes
-      DomAdapter.querySelectorAll(
-        `.${C.arcHitarea}:not(.${C.virtualHitarea})`,
-      ).forEach((hitarea) => {
-        const arcId = hitarea.dataset.arcId;
-        if (!StaticData.isExternalArc(arcId)) return;
-
-        if (isChecked) {
-          hitarea.classList.remove(C.hiddenByFilter);
-          AppState.showArc(appState, arcId);
-        } else {
-          hitarea.classList.add(C.hiddenByFilter);
-          AppState.hideArc(appState, arcId);
-        }
-        const visibleArc = DomAdapter.getArc(arcId);
-        visibleArc?.classList.toggle(C.hiddenByFilter, !isChecked);
-        DomAdapter.getArrows(arcId).forEach((arrow) => {
-          arrow.classList.toggle(C.hiddenByFilter, !isChecked);
-        });
-      });
-
-      // Sync transitive checkbox state when externals are toggled off
       const transitiveCheckbox = DomAdapter.querySelector(
         '#transitive-dep-checkbox',
       );
       transitiveCheckbox?.classList.toggle(C.checked, isChecked);
-
-      invalidateFilterHiddenNodeIds();
-      relayout();
     }
 
-    // Toggle visibility of transitive external dependency nodes and their arcs
     function toggleTransitiveDepVisibility() {
       const checkbox = DomAdapter.querySelector('#transitive-dep-checkbox');
       if (!checkbox) return;
 
-      // If external deps are hidden, transitive toggle is a no-op
       const extCheckbox = DomAdapter.querySelector('#external-dep-checkbox');
       if (extCheckbox && !extCheckbox.classList.contains(C.checked)) return;
 
       const isChecked = checkbox.classList.toggle(C.checked);
 
-      // Toggle transitive external nodes
-      StaticData.getAllNodeIds().forEach((nodeId) => {
-        if (!StaticData.isTransitiveNode(nodeId)) return;
-        const rect = DomAdapter.getNode(nodeId);
-        if (!rect) return;
-        const label = rect.nextElementSibling;
-        const toggle = DomAdapter.getCollapseToggle(nodeId);
-        rect.classList.toggle(C.hiddenByFilter, !isChecked);
-        label?.classList.toggle(C.hiddenByFilter, !isChecked);
-        toggle?.classList.toggle(C.hiddenByFilter, !isChecked);
-        DomAdapter.getTreeLines(nodeId, 'child').forEach((line) => {
-          line.classList.toggle(C.hiddenByFilter, !isChecked);
-        });
-        DomAdapter.getTreeLines(nodeId, 'parent').forEach((line) => {
-          line.classList.toggle(C.hiddenByFilter, !isChecked);
-        });
-      });
-
-      // Toggle arcs connected to transitive nodes
-      DomAdapter.querySelectorAll(
-        `.${C.arcHitarea}:not(.${C.virtualHitarea})`,
-      ).forEach((hitarea) => {
-        const arcId = hitarea.dataset.arcId;
-        if (!StaticData.isTransitiveArc(arcId)) return;
-
-        if (isChecked) {
-          hitarea.classList.remove(C.hiddenByFilter);
-          AppState.showArc(appState, arcId);
-        } else {
-          hitarea.classList.add(C.hiddenByFilter);
-          AppState.hideArc(appState, arcId);
-        }
-        const visibleArc = DomAdapter.getArc(arcId);
-        visibleArc?.classList.toggle(C.hiddenByFilter, !isChecked);
-        DomAdapter.getArrows(arcId).forEach((arrow) => {
-          arrow.classList.toggle(C.hiddenByFilter, !isChecked);
-        });
-      });
-
-      invalidateFilterHiddenNodeIds();
-      relayout();
+      toggleFilteredNodes(
+        isChecked,
+        (nodeId) => StaticData.isTransitiveNode(nodeId),
+        (arcId) => StaticData.isTransitiveArc(arcId),
+      );
     }
 
     // Sync foreignObject height with actual toolbar content height (flex-wrap may grow)
