@@ -177,15 +177,30 @@ impl ArcGraph {
                 .collect();
         }
 
-        // Anchors: crates with Contains edges (= have modules to visualize)
-        let anchors: HashSet<NodeIndex> = self
+        let all_crates: HashSet<NodeIndex> = self
             .node_indices()
             .filter(|&node| self[node].is_crate())
-            .filter(|&node| {
-                self.edges(node)
-                    .any(|edge| matches!(edge.weight(), Edge::Contains))
-            })
             .collect();
+
+        // Pure crate-level diagram (no crate has submodules): all crates are anchors.
+        // Mixed diagram: only crates with Contains edges are anchors; single-file
+        // crates become reachable via BFS if a production dep points to them.
+        let has_any_contains = all_crates.iter().any(|&node| {
+            self.edges(node)
+                .any(|edge| matches!(edge.weight(), Edge::Contains))
+        });
+        let anchors: HashSet<NodeIndex> = if has_any_contains {
+            all_crates
+                .iter()
+                .copied()
+                .filter(|&node| {
+                    self.edges(node)
+                        .any(|edge| matches!(edge.weight(), Edge::Contains))
+                })
+                .collect()
+        } else {
+            all_crates
+        };
 
         // Forward-BFS from anchors over production CrateDep edges
         let mut reachable = anchors.clone();
@@ -835,6 +850,30 @@ mod tests {
             !reachable.contains(&ext_idx),
             "ExternalCrate should not be in production_reachable"
         );
+    }
+
+    #[test]
+    fn test_production_reachable_crates_without_submodules() {
+        let mut graph = ArcGraph::new();
+        let a = graph.add_node(Node::Crate {
+            name: "alpha".into(),
+            path: "/path".into(),
+        });
+        let b = graph.add_node(Node::Crate {
+            name: "beta".into(),
+            path: "/path".into(),
+        });
+        graph.add_edge(
+            a,
+            b,
+            Edge::CrateDep {
+                context: EdgeContext::production(),
+            },
+        );
+        // No Contains edges anywhere → pure crate-level diagram
+        let reachable = graph.production_reachable();
+        assert!(reachable.contains(&a), "alpha should be reachable");
+        assert!(reachable.contains(&b), "beta should be reachable");
     }
 
     #[test]
