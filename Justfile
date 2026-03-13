@@ -39,31 +39,9 @@ diagram:
 install:
     cargo install --path .
 
-# validate, test, commit, and tag a release (bump version + changelog first)
+# idempotent release: bump version + changelog first, then run this
 release:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    version=$(cargo metadata --no-deps --format-version=1 | grep -oP '"version":"\K[^"]+')
-    tag="v${version}"
-    # guard: tag must not exist yet
-    if git rev-parse "$tag" >/dev/null 2>&1; then
-      echo "❌ Tag $tag already exists. Bump version in Cargo.toml first." >&2; exit 1
-    fi
-    # guard: changelog must mention this version
-    if ! grep -qF "[${version}]" CHANGELOG.md; then
-      echo "❌ CHANGELOG.md has no entry for [${version}]. Add one first." >&2; exit 1
-    fi
-    echo "Releasing ${tag}..."
-    just lint
-    just test
-    cargo package --allow-dirty
-    git add -A
-    git commit -m "Release ${tag}"
-    git tag "$tag"
-    echo ""
-    echo "✅ Tagged ${tag}. Next steps:"
-    echo "   git push origin development --tags"
-    echo "   cargo publish"
+    ./scripts/release.sh
 
 clean:
     cargo clean
