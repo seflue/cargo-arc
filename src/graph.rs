@@ -593,7 +593,8 @@ mod tests {
             .edge_indices()
             .find_map(|edge_idx| match &graph[edge_idx] {
                 Edge::ModuleDep { context, locations } => {
-                    let (from_node, to_node) = graph.edge_endpoints(edge_idx).unwrap();
+                    let (from_node, to_node) =
+                        graph.edge_endpoints(edge_idx).expect("edge should exist");
                     (graph[from_node].name() == from_name && graph[to_node].name() == to_name)
                         .then_some((context, locations.as_slice()))
                 }
