@@ -1,0 +1,8 @@
+[package]
+name = "application"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+domain = { path = "../domain" }
+infra = { path = "../infra" }

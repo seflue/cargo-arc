@@ -1,5 +1,5 @@
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -10,9 +10,12 @@ use crate::analyze::{
     collect_crate_reexports, externals::analyze_externals, normalize_crate_name,
 };
 use crate::graph::ArcGraph;
-use crate::layout::{Cycle, ElementaryCycles, LayoutIR, build_layout};
+use crate::layout::{ElementaryCycles, LayoutIR, build_layout};
 use crate::model::{CrateExportMap, ModulePathMap, WorkspaceCrates};
 use crate::render::{RenderConfig, render};
+use crate::rules::config::{ArcConfig, ConfigError};
+use crate::rules::engine::check_rules;
+use crate::rules::format::{format_cycle_errors, format_violations};
 use crate::volatility::{VolatilityAnalyzer, VolatilityConfig};
 use std::path::Path;
 
@@ -20,45 +23,27 @@ use std::path::Path;
 #[derive(Parser)]
 #[command(name = "cargo", bin_name = "cargo")]
 pub enum Cargo {
-    /// Visualize workspace dependencies as SVG
+    /// Visualize workspace dependencies as SVG or check architecture rules
     #[command(name = "arc", version, author)]
-    Arc(Args),
+    Arc(ArcCommand),
 }
 
 #[allow(clippy::struct_excessive_bools)] // CLI flags map 1:1 to fields
 #[derive(Parser)]
-pub struct Args {
+pub struct ArcCommand {
+    #[command(subcommand)]
+    pub command: Option<Command>,
+
+    #[command(flatten)]
+    pub common: CommonArgs,
+
+    /// Validate dependency graph (exit 1 if cycles found) [legacy, use `check` subcommand]
+    #[arg(long, hide = true)]
+    pub check: bool,
+
     /// Output file (default: stdout)
     #[arg(short, long)]
     pub output: Option<PathBuf>,
-
-    /// Path to Cargo.toml (default: ./Cargo.toml)
-    #[arg(short, long, default_value = "Cargo.toml")]
-    pub manifest_path: PathBuf,
-
-    /// Comma-separated list of features to activate
-    #[arg(long, value_delimiter = ',')]
-    pub features: Vec<String>,
-
-    /// Activate all available features
-    #[arg(long)]
-    pub all_features: bool,
-
-    /// Do not activate the `default` feature
-    #[arg(long)]
-    pub no_default_features: bool,
-
-    /// Include test code in analysis (unit tests, integration tests)
-    #[arg(long)]
-    pub include_tests: bool,
-
-    /// Validate dependency graph (exit 1 if cycles found)
-    #[arg(long)]
-    pub check: bool,
-
-    /// Enable debug output to stderr (shows filtering decisions)
-    #[arg(long)]
-    pub debug: bool,
 
     /// Print volatility report (text) instead of dependency SVG
     #[arg(long)]
@@ -98,9 +83,51 @@ pub struct Args {
     pub hir: bool,
 }
 
+#[derive(Subcommand)]
+pub enum Command {
+    /// Check architecture rules against dependency graph
+    Check(CheckArgs),
+}
+
+#[derive(Parser)]
+pub struct CheckArgs {
+    /// Path to rules file (default: arc-rules.toml in workspace root)
+    #[arg(long)]
+    pub rules: Option<PathBuf>,
+}
+
+/// Shared flags for analysis configuration, used by both diagram and check modes.
+#[allow(clippy::struct_excessive_bools)] // CLI flags map 1:1 to fields
+#[derive(Parser)]
+pub struct CommonArgs {
+    /// Path to Cargo.toml (default: ./Cargo.toml)
+    #[arg(short, long, default_value = "Cargo.toml")]
+    pub manifest_path: PathBuf,
+
+    /// Comma-separated list of features to activate
+    #[arg(long, value_delimiter = ',')]
+    pub features: Vec<String>,
+
+    /// Activate all available features
+    #[arg(long)]
+    pub all_features: bool,
+
+    /// Do not activate the `default` feature
+    #[arg(long)]
+    pub no_default_features: bool,
+
+    /// Include test code in analysis (unit tests, integration tests)
+    #[arg(long)]
+    pub include_tests: bool,
+
+    /// Enable debug output to stderr (shows filtering decisions)
+    #[arg(long)]
+    pub debug: bool,
+}
+
 #[allow(clippy::missing_errors_doc, clippy::missing_panics_doc)]
-pub fn run(args: Args) -> Result<()> {
-    if args.debug {
+pub fn run(args: ArcCommand) -> Result<()> {
+    if args.common.debug {
         tracing_subscriber::fmt()
             .with_env_filter(
                 EnvFilter::from_default_env().add_directive("cargo_arc=debug".parse().unwrap()),
@@ -110,35 +137,16 @@ pub fn run(args: Args) -> Result<()> {
             .init();
     }
 
-    if args.check {
-        let feature_config = FeatureConfig {
-            features: args.features,
-            all_features: args.all_features,
-            no_default_features: args.no_default_features,
-            include_tests: args.include_tests,
-            debug: args.debug,
-        };
-
-        #[cfg(feature = "hir")]
-        let use_hir = args.hir;
-        #[cfg(not(feature = "hir"))]
-        let use_hir = false;
-
-        let graph = build_dependency_graph(
-            &args.manifest_path,
-            &feature_config,
-            use_hir,
-            args.externals,
-            args.transitive_deps,
-        )?;
-        tracing::debug!("phase: cycle detection start (--check)");
-        let cycles = graph.production_subgraph().elementary_cycles();
-        tracing::debug!("phase: cycle detection done ({} cycles)", cycles.len());
-        if cycles.is_empty() {
-            return Ok(());
+    // Handle `check` subcommand or legacy `--check` flag
+    match args.command {
+        Some(Command::Check(check_args)) => {
+            return run_check(&check_args, &args.common);
         }
-        eprint!("{}", format_cycle_errors(&graph, &cycles));
-        anyhow::bail!("dependency cycle(s) detected");
+        None if args.check => {
+            let check_args = CheckArgs { rules: None };
+            return run_check(&check_args, &args.common);
+        }
+        None => {}
     }
 
     let vol_config = VolatilityConfig {
@@ -148,16 +156,10 @@ pub fn run(args: Args) -> Result<()> {
     };
 
     if args.volatility {
-        return run_volatility_report(&args.manifest_path, vol_config, args.output.as_ref());
+        return run_volatility_report(&args.common.manifest_path, vol_config, args.output.as_ref());
     }
 
-    let feature_config = FeatureConfig {
-        features: args.features,
-        all_features: args.all_features,
-        no_default_features: args.no_default_features,
-        include_tests: args.include_tests,
-        debug: args.debug,
-    };
+    let feature_config = build_feature_config(&args.common);
 
     #[cfg(feature = "hir")]
     let use_hir = args.hir;
@@ -165,7 +167,7 @@ pub fn run(args: Args) -> Result<()> {
     let use_hir = false;
 
     let graph = build_dependency_graph(
-        &args.manifest_path,
+        &args.common.manifest_path,
         &feature_config,
         use_hir,
         args.externals,
@@ -178,7 +180,7 @@ pub fn run(args: Args) -> Result<()> {
     tracing::debug!("phase: layout built ({} items)", layout.items.len());
 
     if !args.no_volatility {
-        enrich_volatility(&mut layout, &args.manifest_path, vol_config);
+        enrich_volatility(&mut layout, &args.common.manifest_path, vol_config);
     }
 
     let config = RenderConfig {
@@ -188,6 +190,79 @@ pub fn run(args: Args) -> Result<()> {
     let svg = render(&layout, &config);
     tracing::debug!("phase: render done ({} bytes)", svg.len());
     write_output(&svg, args.output.as_ref())
+}
+
+/// Run the `check` subcommand: load rules, evaluate against graph, report violations.
+fn run_check(check_args: &CheckArgs, common: &CommonArgs) -> Result<()> {
+    let feature_config = build_feature_config(common);
+
+    #[cfg(feature = "hir")]
+    let use_hir = false; // check mode doesn't support HIR
+    #[cfg(not(feature = "hir"))]
+    let use_hir = false;
+
+    let graph = build_dependency_graph(
+        &common.manifest_path,
+        &feature_config,
+        use_hir,
+        false,
+        false,
+    )?;
+
+    let workspace_root = resolve_repo_path(&common.manifest_path);
+    let default_rules_path = workspace_root.join("arc-rules.toml");
+    let rules_path = check_args.rules.as_deref().unwrap_or(&default_rules_path);
+    let explicit = check_args.rules.is_some();
+
+    let config = match ArcConfig::load(rules_path) {
+        Ok(config) => config,
+        Err(ConfigError::FileNotFound(..)) if !explicit => {
+            // No arc-rules.toml and not explicitly requested → legacy cycle check
+            return run_legacy_cycle_check(&graph);
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(2);
+        }
+    };
+
+    tracing::debug!("phase: rule check start");
+    let result = check_rules(&graph, &config);
+    tracing::debug!(
+        "phase: rule check done ({} violations)",
+        result.violations.len()
+    );
+    if !result.violations.is_empty() {
+        eprint!("{}", format_violations(&result));
+    }
+
+    let code = result.exit_code();
+    if code != 0 {
+        std::process::exit(code);
+    }
+    Ok(())
+}
+
+/// Legacy fallback: global cycle check when no arc-rules.toml exists.
+fn run_legacy_cycle_check(graph: &ArcGraph) -> Result<()> {
+    tracing::debug!("phase: cycle detection start (--check)");
+    let cycles = graph.production_subgraph().elementary_cycles();
+    tracing::debug!("phase: cycle detection done ({} cycles)", cycles.len());
+    if cycles.is_empty() {
+        return Ok(());
+    }
+    eprint!("{}", format_cycle_errors(graph, &cycles));
+    anyhow::bail!("dependency cycle(s) detected");
+}
+
+fn build_feature_config(common: &CommonArgs) -> FeatureConfig {
+    FeatureConfig {
+        features: common.features.clone(),
+        all_features: common.all_features,
+        no_default_features: common.no_default_features,
+        include_tests: common.include_tests,
+        debug: common.debug,
+    }
 }
 
 fn resolve_repo_path(manifest_path: &Path) -> &Path {
@@ -311,40 +386,6 @@ fn build_dependency_graph(
     Ok(graph)
 }
 
-/// Format detected cycles as compiler-style error messages.
-///
-/// Returns an empty string when `cycles` is empty. Otherwise produces one
-/// `error[cycle]:` line per cycle (using `<->` for direct / `->` chains for
-/// transitive) followed by a summary line.
-fn format_cycle_errors(graph: &ArcGraph, cycles: &[Cycle]) -> String {
-    use std::fmt::Write;
-
-    if cycles.is_empty() {
-        return String::new();
-    }
-
-    let mut output = String::new();
-    for cycle in cycles {
-        let names: Vec<&str> = cycle.path.iter().map(|&idx| graph[idx].name()).collect();
-        if names.len() == 2 {
-            let _ = writeln!(output, "error[cycle]: {} <-> {}", names[0], names[1]);
-        } else {
-            let _ = writeln!(
-                output,
-                "error[cycle]: {} -> {}",
-                names.join(" -> "),
-                names[0]
-            );
-        }
-    }
-    let _ = write!(
-        output,
-        "\nerror: found {} cycle(s) in dependency graph\n",
-        cycles.len()
-    );
-    output
-}
-
 fn enrich_volatility(layout: &mut LayoutIR, manifest_path: &Path, vol_config: VolatilityConfig) {
     let repo_path = resolve_repo_path(manifest_path);
     let mut analyzer = VolatilityAnalyzer::new(vol_config);
@@ -368,141 +409,114 @@ fn enrich_volatility(layout: &mut LayoutIR, manifest_path: &Path, vol_config: Vo
 mod tests {
     use super::*;
 
-    /// Helper to parse Args via Cargo wrapper
-    fn parse_args(args: &[&str]) -> Args {
-        let Cargo::Arc(args) = Cargo::parse_from(args);
-        args
+    /// Helper to parse ArcCommand via Cargo wrapper
+    fn parse_args(args: &[&str]) -> ArcCommand {
+        let Cargo::Arc(cmd) = Cargo::parse_from(args);
+        cmd
     }
 
-    use crate::graph::Node;
-    use crate::layout::Cycle;
-    use petgraph::graph::NodeIndex;
+    // ===== Task 3.2: check subcommand parsing tests =====
 
-    /// Build a test graph with named module nodes.
-    fn test_graph(names: &[&str]) -> (ArcGraph, Vec<NodeIndex>) {
-        let mut graph = ArcGraph::new();
-        let crate_idx = graph.add_node(Node::Crate {
-            name: "test".into(),
-            path: "/test".into(),
-        });
-        let indices: Vec<_> = names
-            .iter()
-            .map(|name| {
-                graph.add_node(Node::Module {
-                    name: (*name).into(),
-                    crate_idx,
-                })
-            })
-            .collect();
-        (graph, indices)
+    #[test]
+    fn test_parse_check_subcommand() {
+        let cmd = parse_args(&["cargo", "arc", "check"]);
+        assert!(matches!(cmd.command, Some(Command::Check(ref args)) if args.rules.is_none()));
     }
 
     #[test]
-    fn test_parse_check_flag() {
-        let args = parse_args(&["cargo", "arc", "--check"]);
-        assert!(args.check);
+    fn test_parse_check_with_rules() {
+        let cmd = parse_args(&["cargo", "arc", "check", "--rules", "x.toml"]);
+        match cmd.command {
+            Some(Command::Check(ref args)) => {
+                assert_eq!(args.rules, Some(PathBuf::from("x.toml")));
+            }
+            _ => panic!("expected Command::Check"),
+        }
     }
 
     #[test]
-    fn test_parse_check_flag_default() {
-        let args = parse_args(&["cargo", "arc"]);
-        assert!(!args.check);
+    fn test_parse_legacy_check_flag() {
+        let cmd = parse_args(&["cargo", "arc", "--check"]);
+        assert!(cmd.check);
+        assert!(cmd.command.is_none());
     }
 
     #[test]
-    fn test_format_cycle_errors_transitive() {
-        let (graph, idx) = test_graph(&["A", "B", "C"]);
-        let cycles = vec![Cycle {
-            path: vec![idx[0], idx[1], idx[2]],
-        }];
-        let output = format_cycle_errors(&graph, &cycles);
-        assert!(output.contains("error[cycle]: A -> B -> C -> A"));
+    fn test_parse_diagram_default() {
+        let cmd = parse_args(&["cargo", "arc"]);
+        assert!(cmd.command.is_none());
+        assert!(!cmd.check);
     }
 
     #[test]
-    fn test_format_cycle_errors_direct() {
-        let (graph, idx) = test_graph(&["A", "B"]);
-        let cycles = vec![Cycle {
-            path: vec![idx[0], idx[1]],
-        }];
-        let output = format_cycle_errors(&graph, &cycles);
-        assert!(output.contains("error[cycle]: A <-> B"));
+    fn test_parse_common_args_on_check() {
+        // Common args must come before the subcommand
+        let cmd = parse_args(&["cargo", "arc", "--features", "web", "check"]);
+        assert!(matches!(cmd.command, Some(Command::Check(..))));
+        assert_eq!(cmd.common.features, vec!["web"]);
     }
 
     #[test]
-    fn test_format_cycle_errors_empty() {
-        let (graph, _) = test_graph(&["A", "B"]);
-        let output = format_cycle_errors(&graph, &[]);
-        assert!(output.is_empty());
+    fn test_parse_check_flag_plus_subcommand() {
+        // --check + check subcommand: subcommand takes precedence
+        let cmd = parse_args(&["cargo", "arc", "--check", "check"]);
+        assert!(matches!(cmd.command, Some(Command::Check(..))));
     }
 
-    #[test]
-    fn test_format_cycle_errors_summary() {
-        let (graph, idx) = test_graph(&["A", "B", "C", "D"]);
-        let cycles = vec![
-            Cycle {
-                path: vec![idx[0], idx[1]],
-            },
-            Cycle {
-                path: vec![idx[2], idx[3]],
-            },
-        ];
-        let output = format_cycle_errors(&graph, &cycles);
-        assert!(output.contains("error: found 2 cycle(s) in dependency graph"));
-    }
+    // ===== Legacy CLI parsing tests (adapted from old Args) =====
 
     #[test]
     fn test_cli_default_args() {
-        let args = parse_args(&["cargo", "arc"]);
-        assert!(args.output.is_none());
-        assert_eq!(args.manifest_path, PathBuf::from("Cargo.toml"));
+        let cmd = parse_args(&["cargo", "arc"]);
+        assert!(cmd.output.is_none());
+        assert_eq!(cmd.common.manifest_path, PathBuf::from("Cargo.toml"));
     }
 
     #[test]
     fn test_cli_features_parsing() {
-        let args = parse_args(&["cargo", "arc", "--features", "web,server"]);
-        assert_eq!(args.features, vec!["web", "server"]);
+        let cmd = parse_args(&["cargo", "arc", "--features", "web,server"]);
+        assert_eq!(cmd.common.features, vec!["web", "server"]);
     }
 
     #[test]
     fn test_cli_all_features() {
-        let args = parse_args(&["cargo", "arc", "--all-features"]);
-        assert!(args.all_features);
+        let cmd = parse_args(&["cargo", "arc", "--all-features"]);
+        assert!(cmd.common.all_features);
     }
 
     #[test]
     fn test_cli_include_tests_flag() {
-        let args = parse_args(&["cargo", "arc", "--include-tests"]);
-        assert!(args.include_tests);
+        let cmd = parse_args(&["cargo", "arc", "--include-tests"]);
+        assert!(cmd.common.include_tests);
     }
 
     #[test]
     fn test_cli_no_default_features_flag() {
-        let args = parse_args(&["cargo", "arc", "--no-default-features"]);
-        assert!(args.no_default_features);
+        let cmd = parse_args(&["cargo", "arc", "--no-default-features"]);
+        assert!(cmd.common.no_default_features);
     }
 
     #[test]
     fn test_cli_volatility_flag() {
-        let args = parse_args(&["cargo", "arc", "--volatility"]);
-        assert!(args.volatility);
+        let cmd = parse_args(&["cargo", "arc", "--volatility"]);
+        assert!(cmd.volatility);
     }
 
     #[test]
     fn test_cli_no_volatility_flag() {
-        let args = parse_args(&["cargo", "arc", "--no-volatility"]);
-        assert!(args.no_volatility);
+        let cmd = parse_args(&["cargo", "arc", "--no-volatility"]);
+        assert!(cmd.no_volatility);
     }
 
     #[test]
     fn test_cli_volatility_months() {
-        let args = parse_args(&["cargo", "arc", "--volatility-months", "3"]);
-        assert_eq!(args.volatility_months, 3);
+        let cmd = parse_args(&["cargo", "arc", "--volatility-months", "3"]);
+        assert_eq!(cmd.volatility_months, 3);
     }
 
     #[test]
     fn test_cli_volatility_thresholds() {
-        let args = parse_args(&[
+        let cmd = parse_args(&[
             "cargo",
             "arc",
             "--volatility-low",
@@ -510,75 +524,78 @@ mod tests {
             "--volatility-high",
             "20",
         ]);
-        assert_eq!(args.volatility_low, 5);
-        assert_eq!(args.volatility_high, 20);
+        assert_eq!(cmd.volatility_low, 5);
+        assert_eq!(cmd.volatility_high, 20);
     }
 
     #[test]
     fn test_parse_externals_flag() {
-        let args = parse_args(&["cargo", "arc", "--externals"]);
-        assert!(args.externals);
+        let cmd = parse_args(&["cargo", "arc", "--externals"]);
+        assert!(cmd.externals);
     }
 
     #[test]
     fn test_parse_externals_flag_default() {
-        let args = parse_args(&["cargo", "arc"]);
-        assert!(!args.externals);
+        let cmd = parse_args(&["cargo", "arc"]);
+        assert!(!cmd.externals);
     }
 
     #[test]
     fn test_parse_transitive_deps_flag() {
-        let args = parse_args(&["cargo", "arc", "--externals", "--transitive-deps"]);
-        assert!(args.externals);
-        assert!(args.transitive_deps);
+        let cmd = parse_args(&["cargo", "arc", "--externals", "--transitive-deps"]);
+        assert!(cmd.externals);
+        assert!(cmd.transitive_deps);
     }
 
     #[test]
     fn test_parse_transitive_deps_flag_default() {
-        let args = parse_args(&["cargo", "arc"]);
-        assert!(!args.transitive_deps);
+        let cmd = parse_args(&["cargo", "arc"]);
+        assert!(!cmd.transitive_deps);
     }
 
     #[test]
     fn test_parse_expand_level() {
-        let args = parse_args(&["cargo", "arc", "--expand-level", "0"]);
-        assert_eq!(args.expand_level, Some(0));
+        let cmd = parse_args(&["cargo", "arc", "--expand-level", "0"]);
+        assert_eq!(cmd.expand_level, Some(0));
     }
 
     #[test]
     fn test_parse_expand_level_two() {
-        let args = parse_args(&["cargo", "arc", "--expand-level", "2"]);
-        assert_eq!(args.expand_level, Some(2));
+        let cmd = parse_args(&["cargo", "arc", "--expand-level", "2"]);
+        assert_eq!(cmd.expand_level, Some(2));
     }
 
     #[test]
     fn test_parse_expand_level_default() {
-        let args = parse_args(&["cargo", "arc"]);
-        assert!(args.expand_level.is_none());
+        let cmd = parse_args(&["cargo", "arc"]);
+        assert!(cmd.expand_level.is_none());
     }
 
     #[test]
     fn test_cli_volatility_config_defaults() {
-        let args = parse_args(&["cargo", "arc"]);
-        assert!(!args.no_volatility);
-        assert_eq!(args.volatility_months, 6);
-        assert_eq!(args.volatility_low, 2);
-        assert_eq!(args.volatility_high, 10);
+        let cmd = parse_args(&["cargo", "arc"]);
+        assert!(!cmd.no_volatility);
+        assert_eq!(cmd.volatility_months, 6);
+        assert_eq!(cmd.volatility_low, 2);
+        assert_eq!(cmd.volatility_high, 10);
     }
 
     #[test]
     #[ignore] // Smoke test - requires rust-analyzer (~30s)
     fn test_run_with_output_file() {
         let temp = tempfile::NamedTempFile::new().unwrap();
-        let args = Args {
-            output: Some(temp.path().to_path_buf()),
-            manifest_path: PathBuf::from("Cargo.toml"),
-            features: vec![],
-            all_features: false,
-            no_default_features: false,
-            include_tests: false,
+        let cmd = ArcCommand {
+            command: None,
+            common: CommonArgs {
+                manifest_path: PathBuf::from("Cargo.toml"),
+                features: vec![],
+                all_features: false,
+                no_default_features: false,
+                include_tests: false,
+                debug: false,
+            },
             check: false,
-            debug: false,
+            output: Some(temp.path().to_path_buf()),
             volatility: false,
             no_volatility: false,
             volatility_months: 6,
@@ -590,7 +607,7 @@ mod tests {
             #[cfg(feature = "hir")]
             hir: false,
         };
-        let result = run(args);
+        let result = run(cmd);
         assert!(result.is_ok());
         let content = std::fs::read_to_string(temp.path()).unwrap();
         assert!(content.contains("<svg"));

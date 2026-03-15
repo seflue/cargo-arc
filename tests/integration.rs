@@ -1,21 +1,26 @@
-use cargo_arc::{Args, run};
+use cargo_arc::cli::CommonArgs;
+use cargo_arc::{ArcCommand, run};
 use serde_json::Value;
 use std::path::PathBuf;
+use std::process::Command;
 
-/// Helper: build Args for a fixture with common defaults.
-fn fixture_args(fixture: &str, include_tests: bool) -> (tempfile::NamedTempFile, Args) {
+/// Helper: build ArcCommand for a fixture with common defaults.
+fn fixture_args(fixture: &str, include_tests: bool) -> (tempfile::NamedTempFile, ArcCommand) {
     let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join(format!("tests/fixtures/{fixture}/Cargo.toml"));
     let temp = tempfile::NamedTempFile::new().unwrap();
-    let args = Args {
-        output: Some(temp.path().to_path_buf()),
-        manifest_path: fixture_path,
-        features: vec![],
-        all_features: false,
-        no_default_features: false,
-        include_tests,
+    let cmd = ArcCommand {
+        command: None,
+        common: CommonArgs {
+            manifest_path: fixture_path,
+            features: vec![],
+            all_features: false,
+            no_default_features: false,
+            include_tests,
+            debug: false,
+        },
         check: false,
-        debug: false,
+        output: Some(temp.path().to_path_buf()),
         volatility: false,
         no_volatility: true,
         volatility_months: 6,
@@ -27,21 +32,24 @@ fn fixture_args(fixture: &str, include_tests: bool) -> (tempfile::NamedTempFile,
         #[cfg(feature = "hir")]
         hir: false,
     };
-    (temp, args)
+    (temp, cmd)
 }
 
-/// Helper: build Args for self-analysis (cargo-arc's own Cargo.toml).
-fn self_args() -> (tempfile::NamedTempFile, Args) {
+/// Helper: build ArcCommand for self-analysis (cargo-arc's own Cargo.toml).
+fn self_args() -> (tempfile::NamedTempFile, ArcCommand) {
     let temp = tempfile::NamedTempFile::new().unwrap();
-    let args = Args {
-        output: Some(temp.path().to_path_buf()),
-        manifest_path: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"),
-        features: vec![],
-        all_features: false,
-        no_default_features: false,
-        include_tests: false,
+    let cmd = ArcCommand {
+        command: None,
+        common: CommonArgs {
+            manifest_path: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"),
+            features: vec![],
+            all_features: false,
+            no_default_features: false,
+            include_tests: false,
+            debug: false,
+        },
         check: false,
-        debug: false,
+        output: Some(temp.path().to_path_buf()),
         volatility: false,
         no_volatility: true,
         volatility_months: 6,
@@ -53,7 +61,7 @@ fn self_args() -> (tempfile::NamedTempFile, Args) {
         #[cfg(feature = "hir")]
         hir: false,
     };
-    (temp, args)
+    (temp, cmd)
 }
 
 /// Parse `STATIC_DATA` JSON from SVG output.
@@ -117,9 +125,9 @@ fn resolve_arc_names(
 
 #[test]
 fn test_multi_crate_fixture() {
-    let (temp, args) = fixture_args("multi_crate", false);
+    let (temp, cmd) = fixture_args("multi_crate", false);
 
-    let result = run(args);
+    let result = run(cmd);
     assert!(result.is_ok(), "run() should succeed: {result:?}");
 
     let svg = std::fs::read_to_string(temp.path()).unwrap();
@@ -139,9 +147,9 @@ fn test_multi_crate_fixture() {
 
 #[test]
 fn test_self_analysis() {
-    let (temp, args) = self_args();
+    let (temp, cmd) = self_args();
 
-    let result = run(args);
+    let result = run(cmd);
     assert!(result.is_ok(), "run() should succeed: {result:?}");
 
     let svg = std::fs::read_to_string(temp.path()).unwrap();
@@ -160,9 +168,9 @@ fn test_self_analysis() {
 
 #[test]
 fn test_cfg_test_excluded_by_default() {
-    let (temp, args) = fixture_args("multi_crate", false);
+    let (temp, cmd) = fixture_args("multi_crate", false);
 
-    let result = run(args);
+    let result = run(cmd);
     assert!(result.is_ok(), "run() should succeed: {result:?}");
 
     let svg = std::fs::read_to_string(temp.path()).unwrap();
@@ -180,15 +188,18 @@ fn test_cfg_test_included_with_flag() {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multi_crate/Cargo.toml");
 
     let temp = tempfile::NamedTempFile::new().unwrap();
-    let args = Args {
-        output: Some(temp.path().to_path_buf()),
-        manifest_path: fixture_path,
-        features: vec![],
-        all_features: false,
-        no_default_features: false,
-        include_tests: true, // --include-tests flag
+    let cmd = ArcCommand {
+        command: None,
+        common: CommonArgs {
+            manifest_path: fixture_path,
+            features: vec![],
+            all_features: false,
+            no_default_features: false,
+            include_tests: true,
+            debug: false,
+        },
         check: false,
-        debug: false,
+        output: Some(temp.path().to_path_buf()),
         volatility: false,
         no_volatility: false,
         volatility_months: 6,
@@ -201,7 +212,7 @@ fn test_cfg_test_included_with_flag() {
         hir: false,
     };
 
-    let result = run(args);
+    let result = run(cmd);
     assert!(result.is_ok(), "run() should succeed: {result:?}");
 
     let svg = std::fs::read_to_string(temp.path()).unwrap();
@@ -219,15 +230,18 @@ fn test_entry_point_imports() {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/entry_point/Cargo.toml");
 
     let temp = tempfile::NamedTempFile::new().unwrap();
-    let args = Args {
-        output: Some(temp.path().to_path_buf()),
-        manifest_path: fixture_path,
-        features: vec![],
-        all_features: false,
-        no_default_features: false,
-        include_tests: false,
+    let cmd = ArcCommand {
+        command: None,
+        common: CommonArgs {
+            manifest_path: fixture_path,
+            features: vec![],
+            all_features: false,
+            no_default_features: false,
+            include_tests: false,
+            debug: false,
+        },
         check: false,
-        debug: false,
+        output: Some(temp.path().to_path_buf()),
         volatility: false,
         no_volatility: false,
         volatility_months: 6,
@@ -240,7 +254,7 @@ fn test_entry_point_imports() {
         hir: false,
     };
 
-    let result = run(args);
+    let result = run(cmd);
     assert!(result.is_ok(), "run() should succeed: {result:?}");
 
     let svg = std::fs::read_to_string(temp.path()).unwrap();
@@ -284,9 +298,9 @@ fn test_entry_point_imports() {
 ///   - `foundation→test_helper` arc present
 #[test]
 fn test_reexport_resolution() {
-    let (temp, args) = fixture_args("reexport_workspace", false);
+    let (temp, cmd) = fixture_args("reexport_workspace", false);
 
-    let result = run(args);
+    let result = run(cmd);
     assert!(result.is_ok(), "run() should succeed: {result:?}");
 
     let svg = std::fs::read_to_string(temp.path()).unwrap();
@@ -315,8 +329,8 @@ fn test_reexport_resolution() {
 
 #[test]
 fn test_dev_dep_crate_hidden_without_include_tests() {
-    let (temp, args) = fixture_args("dev_dep_sorting", false);
-    let result = run(args);
+    let (temp, cmd) = fixture_args("dev_dep_sorting", false);
+    let result = run(cmd);
     assert!(result.is_ok(), "run() should succeed: {result:?}");
 
     let svg = std::fs::read_to_string(temp.path()).unwrap();
@@ -378,8 +392,8 @@ fn test_dev_dep_crate_hidden_without_include_tests() {
 
 #[test]
 fn test_dev_dep_crate_visible_with_include_tests() {
-    let (temp, args) = fixture_args("dev_dep_sorting", true);
-    let result = run(args);
+    let (temp, cmd) = fixture_args("dev_dep_sorting", true);
+    let result = run(cmd);
     assert!(result.is_ok(), "run() should succeed: {result:?}");
 
     let svg = std::fs::read_to_string(temp.path()).unwrap();
@@ -401,5 +415,120 @@ fn test_dev_dep_crate_visible_with_include_tests() {
     assert!(
         crates.contains(&"shared_lib".to_string()),
         "shared_lib should be visible with --include-tests"
+    );
+}
+
+// ===== Phase 4: check subcommand integration tests =====
+
+/// Run `cargo-arc arc --manifest-path <fixture>/Cargo.toml check [check_args...]` as subprocess.
+/// Returns (exit_code, stderr).
+fn cargo_arc_check(fixture: &str, check_args: &[&str]) -> (i32, String) {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join(format!("tests/fixtures/{fixture}/Cargo.toml"));
+    let output = Command::new(env!("CARGO_BIN_EXE_cargo-arc"))
+        .arg("arc")
+        .arg("--manifest-path")
+        .arg(&manifest)
+        .arg("check")
+        .args(check_args)
+        .output()
+        .expect("failed to execute cargo-arc");
+    let code = output.status.code().unwrap_or(-1);
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    (code, stderr)
+}
+
+/// Run `cargo-arc arc --manifest-path <fixture>/Cargo.toml --check` (legacy flag) as subprocess.
+fn cargo_arc_legacy_check(fixture: &str) -> (i32, String) {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join(format!("tests/fixtures/{fixture}/Cargo.toml"));
+    let output = Command::new(env!("CARGO_BIN_EXE_cargo-arc"))
+        .arg("arc")
+        .arg("--manifest-path")
+        .arg(&manifest)
+        .arg("--check")
+        .output()
+        .expect("failed to execute cargo-arc");
+    let code = output.status.code().unwrap_or(-1);
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    (code, stderr)
+}
+
+#[test]
+fn test_check_with_violations() {
+    let (code, stderr) = cargo_arc_check("arch_violation_workspace", &[]);
+    assert_eq!(code, 1, "should exit 1 on violations, stderr: {stderr}");
+    assert!(
+        stderr.contains("error[forbidden-dependency]"),
+        "should report forbidden-dependency violation, stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("error[layers]"),
+        "should report layers violation, stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("error[no-cycles]"),
+        "should report no-cycles violation, stderr: {stderr}"
+    );
+}
+
+#[test]
+fn test_check_without_violations() {
+    // multi_crate has no cycles and no arc-rules.toml, use a rules file with
+    // a no-cycles rule — multi_crate has no module cycles so this should pass.
+    let rules = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(
+        rules.path(),
+        r#"
+[config]
+version = 1
+
+[[rules]]
+type = "no-cycles"
+name = "global no-cycles"
+scope = "**"
+"#,
+    )
+    .unwrap();
+
+    let rules_arg = format!("--rules={}", rules.path().display());
+    let (code, stderr) = cargo_arc_check("multi_crate", &[&rules_arg]);
+    assert_eq!(
+        code, 0,
+        "should exit 0 with no violations, stderr: {stderr}"
+    );
+}
+
+#[test]
+fn test_check_no_config_fallback() {
+    // multi_crate has no arc-rules.toml → legacy global cycle check → exit 0 (no cycles)
+    let (code, stderr) = cargo_arc_check("multi_crate", &[]);
+    assert_eq!(
+        code, 0,
+        "should exit 0 with legacy fallback (no cycles), stderr: {stderr}"
+    );
+}
+
+#[test]
+fn test_check_invalid_config() {
+    let rules = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(rules.path(), "this is not valid { toml [").unwrap();
+
+    let rules_arg = format!("--rules={}", rules.path().display());
+    let (code, stderr) = cargo_arc_check("multi_crate", &[&rules_arg]);
+    assert_eq!(code, 2, "should exit 2 on config error, stderr: {stderr}");
+    assert!(
+        stderr.contains("invalid config file"),
+        "should report config parse error, stderr: {stderr}"
+    );
+}
+
+#[test]
+fn test_legacy_check_flag() {
+    // --check flag on a fixture without cycles → exit 0
+    let (code, stderr) = cargo_arc_legacy_check("multi_crate");
+    assert_eq!(
+        code, 0,
+        "legacy --check should work (no cycles → exit 0), stderr: {stderr}"
     );
 }

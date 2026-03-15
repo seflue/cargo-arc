@@ -1,0 +1,22 @@
+[config]
+version = 1
+
+[[rules]]
+type = "forbidden-dependency"
+name = "no infra in domain"
+from = "domain::**"
+to = "infra::**"
+severity = "error"
+
+[[rules]]
+type = "layers"
+name = "architecture layers"
+layers = ["domain", "application", "infra"]
+direction = "top-down"
+severity = "error"
+
+[[rules]]
+type = "no-cycles"
+name = "no cycles in domain"
+scope = "domain::**"
+severity = "error"
