@@ -47,16 +47,18 @@ struct JohnsonState {
     blocked: HashSet<NodeIndex>,
     block_map: HashMap<NodeIndex, HashSet<NodeIndex>>,
     raw_cycles: Vec<Vec<NodeIndex>>,
+    limit: usize,
 }
 
 impl JohnsonState {
-    fn new(start: NodeIndex) -> Self {
+    fn new(start: NodeIndex, limit: usize) -> Self {
         Self {
             start,
             stack: Vec::new(),
             blocked: HashSet::new(),
             block_map: HashMap::new(),
             raw_cycles: Vec::new(),
+            limit,
         }
     }
 
@@ -71,11 +73,20 @@ impl JohnsonState {
     }
 
     fn circuit(&mut self, johnson: &JohnsonGraph, node: NodeIndex) -> bool {
+        if self.raw_cycles.len() >= self.limit {
+            return true;
+        }
+
         let mut found_cycle = false;
         self.stack.push(node);
         self.blocked.insert(node);
 
-        for next in johnson.neighbors(node) {
+        let neighbors: Vec<_> = johnson.neighbors(node).collect();
+        for next in neighbors {
+            if self.raw_cycles.len() >= self.limit {
+                found_cycle = true;
+                break;
+            }
             if next == self.start {
                 self.raw_cycles.push(self.stack.clone());
                 found_cycle = true;
@@ -87,7 +98,8 @@ impl JohnsonState {
         if found_cycle {
             self.unblock(node);
         } else {
-            for next in johnson.neighbors(node) {
+            let neighbors: Vec<_> = johnson.neighbors(node).collect();
+            for next in neighbors {
                 self.block_map.entry(next).or_default().insert(node);
             }
         }
@@ -99,66 +111,94 @@ impl JohnsonState {
 
 /// Extension trait for Johnson's circuit-finding algorithm.
 pub trait JohnsonCycles {
-    /// Find all elementary cycles using Johnson's algorithm.
+    /// Find elementary cycles using Johnson's algorithm, up to `limit`.
     ///
     /// Expects node weights to be the original `NodeIndex` values (e.g. produced
     /// by `filter_map`). Returns ordered paths — each cycle is a distinct
     /// elementary circuit, so overlapping cycles (e.g. B↔C + B↔D) produce
     /// separate entries.
-    fn johnson_cycles(&self) -> Vec<Cycle>;
+    ///
+    /// Stops searching after `limit` cycles are found. Pass `usize::MAX` for no limit.
+    fn johnson_cycles(&self, limit: usize) -> Vec<Cycle>;
 }
 
 impl JohnsonCycles for petgraph::graph::DiGraph<NodeIndex, ()> {
-    fn johnson_cycles(&self) -> Vec<Cycle> {
+    fn johnson_cycles(&self, limit: usize) -> Vec<Cycle> {
         let sorted_nodes = {
             let mut v: Vec<_> = self.node_indices().collect();
             v.sort_unstable_by_key(|n| n.index());
             v
         };
 
+        let mut result = Vec::new();
+
         // Johnson's least-vertex optimization: for each start node, only nodes
         // at or after its position in sorted order are active.
-        sorted_nodes
-            .iter()
-            .enumerate()
-            .flat_map(|(start_pos, &start)| {
-                let active = sorted_nodes[start_pos..].iter().copied().collect();
-                let johnson = JohnsonGraph {
-                    graph: self,
-                    active,
-                };
-                let mut state = JohnsonState::new(start);
-                state.circuit(&johnson, start);
+        for (start_pos, &start) in sorted_nodes.iter().enumerate() {
+            if result.len() >= limit {
+                break;
+            }
+            let active = sorted_nodes[start_pos..].iter().copied().collect();
+            let johnson = JohnsonGraph {
+                graph: self,
+                active,
+            };
+            let remaining = limit - result.len();
+            let mut state = JohnsonState::new(start, remaining);
+            state.circuit(&johnson, start);
 
-                state.raw_cycles.into_iter().map(move |raw| Cycle {
+            for raw in state.raw_cycles {
+                result.push(Cycle {
                     path: raw.iter().map(|&node| self[node]).collect(),
-                })
-            })
-            .collect()
+                });
+            }
+        }
+
+        result
     }
 }
 
+/// Cycle limit to prevent exponential blowup on large, densely connected graphs.
+///
+/// Johnson's algorithm enumerates ALL elementary cycles — output-sensitive at
+/// O((n+e)(c+1)).  Graphs like wgpu (578 nodes, 2701 edges) can have billions
+/// of overlapping cycles. This limit caps enumeration; a future cycle-basis
+/// algorithm (ca-0340) will replace Johnson's entirely.
+const CYCLE_LIMIT: usize = 10_000;
+
 /// Extension trait for finding elementary cycles with SCC pre-filtering.
 pub trait ElementaryCycles {
-    /// Find all elementary cycles, using Tarjan SCCs to prune acyclic subgraphs
+    /// Find elementary cycles, using Tarjan SCCs to prune acyclic subgraphs
     /// before running Johnson's algorithm on each component.
+    ///
+    /// Stops after [`CYCLE_LIMIT`] cycles to prevent exponential blowup
+    /// on graphs with many overlapping cycles.
     fn elementary_cycles(&self) -> Vec<Cycle>;
 }
 
 impl ElementaryCycles for petgraph::graph::DiGraph<NodeIndex, ()> {
     fn elementary_cycles(&self) -> Vec<Cycle> {
-        tarjan_scc(self)
-            .into_iter()
-            .filter(|scc| scc.len() > 1)
-            .flat_map(|scc| {
-                let scc_set: HashSet<_> = scc.into_iter().collect();
-                self.filter_map(
-                    |idx, &weight| scc_set.contains(&idx).then_some(weight),
-                    |_, ()| Some(()),
-                )
-                .johnson_cycles()
-            })
-            .collect()
+        let mut result = Vec::new();
+        for scc in tarjan_scc(self) {
+            if scc.len() <= 1 {
+                continue;
+            }
+            let remaining = CYCLE_LIMIT.saturating_sub(result.len());
+            if remaining == 0 {
+                eprintln!(
+                    "warning: cycle detection stopped after {CYCLE_LIMIT} cycles \
+                     (graph too dense for exhaustive enumeration)"
+                );
+                break;
+            }
+            let scc_set: HashSet<_> = scc.into_iter().collect();
+            let sub = self.filter_map(
+                |idx, &weight| scc_set.contains(&idx).then_some(weight),
+                |_, ()| Some(()),
+            );
+            result.extend(sub.johnson_cycles(remaining));
+        }
+        result
     }
 }
 

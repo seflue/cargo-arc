@@ -131,7 +131,9 @@ pub fn run(args: Args) -> Result<()> {
             args.externals,
             args.transitive_deps,
         )?;
+        tracing::debug!("phase: cycle detection start (--check)");
         let cycles = graph.production_subgraph().elementary_cycles();
+        tracing::debug!("phase: cycle detection done ({} cycles)", cycles.len());
         if cycles.is_empty() {
             return Ok(());
         }
@@ -169,8 +171,11 @@ pub fn run(args: Args) -> Result<()> {
         args.externals,
         args.transitive_deps,
     )?;
+    tracing::debug!("phase: cycle detection start");
     let cycles = graph.production_subgraph().elementary_cycles();
+    tracing::debug!("phase: cycle detection done ({} cycles)", cycles.len());
     let mut layout = build_layout(&graph, &cycles);
+    tracing::debug!("phase: layout built ({} items)", layout.items.len());
 
     if !args.no_volatility {
         enrich_volatility(&mut layout, &args.manifest_path, vol_config);
@@ -181,6 +186,7 @@ pub fn run(args: Args) -> Result<()> {
         ..RenderConfig::default()
     };
     let svg = render(&layout, &config);
+    tracing::debug!("phase: render done ({} bytes)", svg.len());
     write_output(&svg, args.output.as_ref())
 }
 
@@ -219,6 +225,7 @@ fn build_dependency_graph(
     transitive_deps: bool,
 ) -> Result<ArcGraph> {
     let crates = analyze_workspace(manifest_path, feature_config)?;
+    tracing::debug!("phase: workspace analyzed ({} crates)", crates.len());
     let workspace_crates: WorkspaceCrates = crates.iter().map(|krate| krate.name.clone()).collect();
     let backend = AnalysisBackend::new(manifest_path, feature_config, use_hir)?;
 
@@ -230,6 +237,7 @@ fn build_dependency_graph(
             (name, paths)
         })
         .collect();
+    tracing::debug!("phase: module paths collected");
 
     let crate_exports: CrateExportMap = crates
         .iter()
@@ -239,6 +247,7 @@ fn build_dependency_graph(
             (name, exports)
         })
         .collect();
+    tracing::debug!("phase: crate exports collected");
 
     let reexport_map: ReExportMap = crates
         .iter()
@@ -253,6 +262,7 @@ fn build_dependency_graph(
             (name, exports)
         })
         .collect();
+    tracing::debug!("phase: reexport map collected");
 
     // Run externals analysis before module analysis so crate_name_map
     // is available for use-parser resolution of external crate imports.
@@ -269,6 +279,7 @@ fn build_dependency_graph(
         .iter()
         .filter_map(|krate| {
             let name = normalize_crate_name(&krate.name);
+            tracing::debug!("analyzing crate: {name}");
             let ext_names = ext_result
                 .as_ref()
                 .and_then(|r| r.crate_name_map.get(&name))
@@ -289,8 +300,15 @@ fn build_dependency_graph(
             }
         })
         .collect();
+    tracing::debug!("phase: all crates analyzed");
 
-    Ok(ArcGraph::build(&crates, &modules, ext_result.as_ref()))
+    let graph = ArcGraph::build(&crates, &modules, ext_result.as_ref());
+    tracing::debug!(
+        "phase: graph built ({} nodes, {} edges)",
+        graph.node_count(),
+        graph.edge_count()
+    );
+    Ok(graph)
 }
 
 /// Format detected cycles as compiler-style error messages.
