@@ -76,7 +76,7 @@ pub(super) fn render_toolbar(
     format!(
         concat!(
             "  <foreignObject id=\"toolbar-fo\" x=\"0\" y=\"0\" width=\"{}\" height=\"{}\"",
-            " style=\"overflow:visible\">\n",
+            " style=\"display:none; overflow:visible\">\n",
             "    <div class=\"{}\" xmlns=\"http://www.w3.org/1999/xhtml\">\n",
             "      <button id=\"collapse-toggle-btn\" class=\"{}\">{}</button>\n",
             "      <span class=\"{}\"></span>\n",

@@ -1094,12 +1094,15 @@ if (typeof document !== 'undefined') {
       );
     }
 
-    // Sync foreignObject height with actual toolbar content height (flex-wrap may grow)
+    // Sync foreignObject height with actual toolbar content height (flex-wrap may grow).
+    // The toolbar foreignObject starts with display:none in the static SVG
+    // so it doesn't appear when viewing the file outside a browser.
     function syncToolbarHeight() {
       const fo = DomAdapter.getElementById('toolbar-fo');
       const root = DomAdapter.querySelector(`.${C.toolbarRoot}`);
       const graph = DomAdapter.getElementById('graph-content');
       if (!fo || !root) return;
+      fo.style.display = '';
       const baseH = root.offsetHeight;
       if (baseH > 0) {
         // Include dropdown panel height when visible (absolutely positioned, outside normal flow)

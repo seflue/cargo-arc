@@ -128,22 +128,19 @@ pub(super) fn calculate_canvas_size(
     } else {
         config.margin * 2.0 + positioned.len() as f32 * config.row_height
     };
-    // Sidebar box-shadow extends below the SVG canvas edge when the panel sits
-    // near the bottom. The SVG element itself clips anything beyond its viewBox,
-    // so we add padding to ensure the shadow renders fully.
-    let height = base_height + LAYOUT.toolbar.height + LAYOUT.sidebar.shadow_padding();
+    // Toolbar offset is kept in height (nodes are positioned below toolbar area).
+    // Sidebar shadow padding is handled dynamically by JS when the sidebar opens.
+    let height = base_height + LAYOUT.toolbar.height;
 
-    // Width: max(box_right_edge) + arc_space + sidebar_width + margin
+    // Width: max(box_right_edge) + arc_space + margin
+    // Sidebar space is added dynamically by JS when the sidebar opens.
     let max_x = positioned
         .iter()
         .map(|p| p.x + p.width)
         .fold(0.0_f32, f32::max);
     // Use calculated max_arc_width, with a minimum buffer for short/no edges
     let arc_space = max_arc_width.max(LAYOUT.arc_min_space);
-    // Reserve space for the sidebar (280px min-width + shadow padding) so it
-    // doesn't get clipped when the rightmost arc is selected.
-    let sidebar_space = 280.0 + LAYOUT.sidebar.shadow_padding();
-    let width = max_x + arc_space + sidebar_space + config.margin;
+    let width = max_x + arc_space + config.margin;
     (width, height)
 }
 
@@ -360,7 +357,7 @@ mod tests {
         let max_arc_width = calculate_max_arc_width(&positioned_index, &ir, config.row_height);
         let (_width, height) = calculate_canvas_size(&positioned, &config, max_arc_width);
 
-        // Height should include LAYOUT.toolbar.height (40) + margin (20*2) + 1 row (30) + shadow padding
+        // Height should include LAYOUT.toolbar.height (40) + margin (20*2) + 1 row (30)
         assert!(
             height >= LAYOUT.toolbar.height + config.margin * 2.0 + config.row_height,
             "Canvas height {} should include toolbar height {}",
