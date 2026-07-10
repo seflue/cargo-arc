@@ -1,9 +1,9 @@
-//! Cycle detection for directed graphs using Johnson's algorithm.
+//! Minimal-cycle-per-edge detection for directed graphs.
 
 use petgraph::algo::tarjan_scc;
 use petgraph::graph::NodeIndex;
 use petgraph::visit::EdgeRef;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// An elementary cycle in the module dependency graph (ordered path).
 #[derive(Debug, Clone, PartialEq)]
@@ -25,187 +25,151 @@ impl Cycle {
     }
 }
 
-/// Read-only graph data for one iteration of Johnson's least-vertex optimization.
-struct JohnsonGraph<'a> {
-    graph: &'a petgraph::graph::DiGraph<NodeIndex, ()>,
-    active: HashSet<NodeIndex>,
+/// Result of the minimal-cycle-per-edge analysis.
+pub struct CycleAnalysis {
+    /// Deduplicated minimal cycles (one shortest cycle per edge, dedup'd by
+    /// arc-set, each rotated to start at its smallest `NodeIndex`).
+    pub cycles: Vec<Cycle>,
+    /// For every cyclic edge: ascending indices into `cycles` it lies on.
+    pub edge_cycles: HashMap<(NodeIndex, NodeIndex), Vec<usize>>,
 }
 
-impl JohnsonGraph<'_> {
-    fn neighbors(&self, node: NodeIndex) -> impl Iterator<Item = NodeIndex> + '_ {
-        self.graph
-            .edges(node)
-            .map(|e| e.target())
-            .filter(|n| self.active.contains(n))
-    }
-}
-
-/// Mutable DFS state for Johnson's circuit-finding algorithm.
-struct JohnsonState {
-    start: NodeIndex,
-    stack: Vec<NodeIndex>,
-    blocked: HashSet<NodeIndex>,
-    block_map: HashMap<NodeIndex, HashSet<NodeIndex>>,
-    raw_cycles: Vec<Vec<NodeIndex>>,
-    limit: usize,
-}
-
-impl JohnsonState {
-    fn new(start: NodeIndex, limit: usize) -> Self {
-        Self {
-            start,
-            stack: Vec::new(),
-            blocked: HashSet::new(),
-            block_map: HashMap::new(),
-            raw_cycles: Vec::new(),
-            limit,
-        }
-    }
-
-    fn unblock(&mut self, node: NodeIndex) {
-        if self.blocked.remove(&node)
-            && let Some(dependents) = self.block_map.remove(&node)
-        {
-            for dep in dependents {
-                self.unblock(dep);
-            }
-        }
-    }
-
-    fn circuit(&mut self, johnson: &JohnsonGraph, node: NodeIndex) -> bool {
-        if self.raw_cycles.len() >= self.limit {
-            return true;
-        }
-
-        let mut found_cycle = false;
-        self.stack.push(node);
-        self.blocked.insert(node);
-
-        let neighbors: Vec<_> = johnson.neighbors(node).collect();
-        for next in neighbors {
-            if self.raw_cycles.len() >= self.limit {
-                found_cycle = true;
-                break;
-            }
-            if next == self.start {
-                self.raw_cycles.push(self.stack.clone());
-                found_cycle = true;
-            } else if !self.blocked.contains(&next) && self.circuit(johnson, next) {
-                found_cycle = true;
-            }
-        }
-
-        if found_cycle {
-            self.unblock(node);
-        } else {
-            let neighbors: Vec<_> = johnson.neighbors(node).collect();
-            for next in neighbors {
-                self.block_map.entry(next).or_default().insert(node);
-            }
-        }
-
-        self.stack.pop();
-        found_cycle
-    }
-}
-
-/// Extension trait for Johnson's circuit-finding algorithm.
-pub trait JohnsonCycles {
-    /// Find elementary cycles using Johnson's algorithm, up to `limit`.
+/// Shortest cycle per edge, bounded and deterministic (replaces exhaustive
+/// elementary-cycle enumeration).
+pub trait MinimalCycles {
+    /// For each edge inside a non-trivial SCC, compute the shortest cycle that
+    /// carries it, then deduplicate by arc-set. `O(V·(V+E))` per SCC — no cap.
     ///
-    /// Expects node weights to be the original `NodeIndex` values (e.g. produced
-    /// by `filter_map`). Returns ordered paths — each cycle is a distinct
-    /// elementary circuit, so overlapping cycles (e.g. B↔C + B↔D) produce
-    /// separate entries.
-    ///
-    /// Stops searching after `limit` cycles are found. Pass `usize::MAX` for no limit.
-    fn johnson_cycles(&self, limit: usize) -> Vec<Cycle>;
+    /// Expects node weights to be the original `NodeIndex` values.
+    fn minimal_cycles(&self) -> CycleAnalysis;
 }
 
-impl JohnsonCycles for petgraph::graph::DiGraph<NodeIndex, ()> {
-    fn johnson_cycles(&self, limit: usize) -> Vec<Cycle> {
-        let sorted_nodes = {
-            let mut v: Vec<_> = self.node_indices().collect();
-            v.sort_unstable_by_key(|n| n.index());
-            v
-        };
+impl MinimalCycles for petgraph::graph::DiGraph<NodeIndex, ()> {
+    fn minimal_cycles(&self) -> CycleAnalysis {
+        let mut raw: Vec<Cycle> = Vec::new();
 
-        let mut result = Vec::new();
-
-        // Johnson's least-vertex optimization: for each start node, only nodes
-        // at or after its position in sorted order are active.
-        for (start_pos, &start) in sorted_nodes.iter().enumerate() {
-            if result.len() >= limit {
-                break;
-            }
-            let active = sorted_nodes[start_pos..].iter().copied().collect();
-            let johnson = JohnsonGraph {
-                graph: self,
-                active,
-            };
-            let remaining = limit - result.len();
-            let mut state = JohnsonState::new(start, remaining);
-            state.circuit(&johnson, start);
-
-            for raw in state.raw_cycles {
-                result.push(Cycle {
-                    path: raw.iter().map(|&node| self[node]).collect(),
-                });
-            }
-        }
-
-        result
-    }
-}
-
-/// Cycle limit to prevent exponential blowup on large, densely connected graphs.
-///
-/// Johnson's algorithm enumerates ALL elementary cycles — output-sensitive at
-/// O((n+e)(c+1)).  Graphs like wgpu (578 nodes, 2701 edges) can have billions
-/// of overlapping cycles. This limit caps enumeration; a future cycle-basis
-/// algorithm (ca-0340) will replace Johnson's entirely.
-const CYCLE_LIMIT: usize = 10_000;
-
-/// Extension trait for finding elementary cycles with SCC pre-filtering.
-pub trait ElementaryCycles {
-    /// Find elementary cycles, using Tarjan SCCs to prune acyclic subgraphs
-    /// before running Johnson's algorithm on each component.
-    ///
-    /// Stops after [`CYCLE_LIMIT`] cycles to prevent exponential blowup
-    /// on graphs with many overlapping cycles.
-    fn elementary_cycles(&self) -> Vec<Cycle>;
-}
-
-impl ElementaryCycles for petgraph::graph::DiGraph<NodeIndex, ()> {
-    fn elementary_cycles(&self) -> Vec<Cycle> {
-        let mut result = Vec::new();
         for scc in tarjan_scc(self) {
             if scc.len() <= 1 {
                 continue;
             }
-            let remaining = CYCLE_LIMIT.saturating_sub(result.len());
-            if remaining == 0 {
-                eprintln!(
-                    "warning: cycle detection stopped after {CYCLE_LIMIT} cycles \
-                     (graph too dense for exhaustive enumeration)"
-                );
-                break;
+            let scc_set: HashSet<NodeIndex> = scc.iter().copied().collect();
+
+            let mut nodes = scc;
+            nodes.sort_unstable_by_key(|n| n.index());
+
+            for &v in &nodes {
+                let parent = bfs_parents(self, v, &scc_set);
+
+                // Every in-edge u->v of the SCC gets its shortest cycle v⇝u + u->v.
+                let mut sources: Vec<NodeIndex> = self
+                    .edges_directed(v, petgraph::Direction::Incoming)
+                    .map(|e| e.source())
+                    .filter(|u| scc_set.contains(u) && *u != v)
+                    .collect();
+                sources.sort_unstable_by_key(|n| n.index());
+
+                for u in sources {
+                    if let Some(local_path) = reconstruct(&parent, v, u) {
+                        raw.push(Cycle {
+                            path: local_path.iter().map(|&n| self[n]).collect(),
+                        });
+                    }
+                }
             }
-            let scc_set: HashSet<_> = scc.into_iter().collect();
-            let sub = self.filter_map(
-                |idx, &weight| scc_set.contains(&idx).then_some(weight),
-                |_, ()| Some(()),
-            );
-            result.extend(sub.johnson_cycles(remaining));
         }
-        result
+
+        // Deduplicate by arc-set; keep one canonical rotation per distinct cycle.
+        let mut seen: HashSet<BTreeSet<(NodeIndex, NodeIndex)>> = HashSet::new();
+        let mut cycles: Vec<Cycle> = Vec::new();
+        for cycle in raw {
+            let arc_set: BTreeSet<(NodeIndex, NodeIndex)> = cycle.edges().collect();
+            if seen.insert(arc_set) {
+                cycles.push(Cycle {
+                    path: canonical_rotation(cycle.path),
+                });
+            }
+        }
+
+        // edge_cycles: every edge of every kept cycle -> that cycle's index.
+        let mut edge_cycles: HashMap<(NodeIndex, NodeIndex), Vec<usize>> = HashMap::new();
+        for (idx, cycle) in cycles.iter().enumerate() {
+            for edge in cycle.edges() {
+                edge_cycles.entry(edge).or_default().push(idx);
+            }
+        }
+
+        CycleAnalysis {
+            cycles,
+            edge_cycles,
+        }
     }
+}
+
+/// Level-synchronous forward BFS from `source`, restricted to `scc`. Returns a
+/// parent pointer per reached node (`source`'s parent is itself). Each frontier
+/// is processed in ascending index order, so a node's parent is the
+/// smallest-index predecessor at the shortest distance — making reconstruction
+/// deterministic.
+fn bfs_parents(
+    graph: &petgraph::graph::DiGraph<NodeIndex, ()>,
+    source: NodeIndex,
+    scc: &HashSet<NodeIndex>,
+) -> HashMap<NodeIndex, NodeIndex> {
+    let mut parent: HashMap<NodeIndex, NodeIndex> = HashMap::new();
+    parent.insert(source, source);
+    let mut frontier = vec![source];
+    while !frontier.is_empty() {
+        frontier.sort_unstable_by_key(|n| n.index());
+        let mut next = Vec::new();
+        for u in frontier {
+            let mut targets: Vec<NodeIndex> = graph
+                .edges(u)
+                .map(|e| e.target())
+                .filter(|w| scc.contains(w))
+                .collect();
+            targets.sort_unstable_by_key(|n| n.index());
+            for w in targets {
+                if let std::collections::hash_map::Entry::Vacant(slot) = parent.entry(w) {
+                    slot.insert(u);
+                    next.push(w);
+                }
+            }
+        }
+        frontier = next;
+    }
+    parent
+}
+
+/// Reconstruct shortest path `source ⇝ target` from a `bfs_parents(source)` map.
+/// Returns `[source, …, target]`, or `None` if `target` was unreachable.
+fn reconstruct(
+    parent: &HashMap<NodeIndex, NodeIndex>,
+    source: NodeIndex,
+    target: NodeIndex,
+) -> Option<Vec<NodeIndex>> {
+    parent.get(&target)?;
+    let mut path = vec![target];
+    let mut current = target;
+    while current != source {
+        current = parent[&current];
+        path.push(current);
+    }
+    path.reverse();
+    Some(path)
+}
+
+/// Rotate a cycle path to start at its smallest `NodeIndex`, preserving
+/// direction — a stable representative for display.
+fn canonical_rotation(mut path: Vec<NodeIndex>) -> Vec<NodeIndex> {
+    if let Some(min_pos) = (0..path.len()).min_by_key(|&i| path[i].index()) {
+        path.rotate_left(min_pos);
+    }
+    path
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
 
     /// Build a test digraph with `n` nodes and the given directed edges.
     fn digraph(
@@ -225,67 +189,84 @@ mod tests {
     }
 
     #[test]
-    fn test_no_elementary_cycles() {
-        // A -> B -> C (linear, no cycle)
+    fn minimal_no_cycles() {
         let graph = digraph(3, &[(0, 1), (1, 2)]);
-        let cycles = graph.elementary_cycles();
-        assert!(cycles.is_empty(), "Linear graph should have no cycles");
+        let a = graph.minimal_cycles();
+        assert!(a.cycles.is_empty());
+        assert!(a.edge_cycles.is_empty());
     }
 
     #[test]
-    fn test_direct_elementary_cycle() {
-        // A <-> B
+    fn minimal_direct_cycle() {
         let graph = digraph(2, &[(0, 1), (1, 0)]);
-        let cycles = graph.elementary_cycles();
-        assert_eq!(cycles.len(), 1);
-        assert_eq!(cycles[0].path.len(), 2);
-        let nodes: HashSet<_> = cycles[0].path.iter().copied().collect();
-        assert!(nodes.contains(&node(0)));
-        assert!(nodes.contains(&node(1)));
+        let a = graph.minimal_cycles();
+        assert_eq!(a.cycles.len(), 1);
+        assert_eq!(a.cycles[0].path.len(), 2);
     }
 
     #[test]
-    fn test_transitive_elementary_cycle() {
-        // A -> B -> C -> A
+    fn minimal_transitive_cycle() {
         let graph = digraph(3, &[(0, 1), (1, 2), (2, 0)]);
-        let cycles = graph.elementary_cycles();
-        assert_eq!(cycles.len(), 1);
-        assert_eq!(cycles[0].path.len(), 3);
+        let a = graph.minimal_cycles();
+        assert_eq!(a.cycles.len(), 1);
+        assert_eq!(a.cycles[0].path.len(), 3);
     }
 
     #[test]
-    fn test_overlapping_elementary_cycles() {
-        // B <-> C and B <-> D — two overlapping cycles sharing node B.
-        // Tarjan SCC merges into one SCC {B, C, D}.
-        // Johnson's should find 2 separate elementary cycles.
+    fn minimal_overlapping_cycles() {
+        // 0<->1 and 0<->2 — one SCC, two disjoint minimal cycles.
         let graph = digraph(3, &[(0, 1), (1, 0), (0, 2), (2, 0)]);
-        let cycles = graph.elementary_cycles();
-        assert_eq!(
-            cycles.len(),
-            2,
-            "Should detect 2 overlapping elementary cycles, got {}",
-            cycles.len()
-        );
-
-        for cycle in &cycles {
-            assert_eq!(cycle.path.len(), 2);
+        let a = graph.minimal_cycles();
+        assert_eq!(a.cycles.len(), 2);
+        for c in &a.cycles {
+            assert_eq!(c.path.len(), 2);
         }
-
-        let b_count = cycles.iter().filter(|c| c.path.contains(&node(0))).count();
-        assert_eq!(b_count, 2, "B should participate in both cycles");
     }
 
     #[test]
-    fn test_independent_elementary_cycles() {
-        // A <-> B (cycle 1), C <-> D (cycle 2) — disjoint
+    fn minimal_independent_cycles() {
         let graph = digraph(4, &[(0, 1), (1, 0), (2, 3), (3, 2)]);
-        let cycles = graph.elementary_cycles();
-        assert_eq!(cycles.len(), 2);
+        let a = graph.minimal_cycles();
+        assert_eq!(a.cycles.len(), 2);
+    }
 
-        let all_nodes: HashSet<_> = cycles.iter().flat_map(|c| c.path.iter().copied()).collect();
-        assert!(all_nodes.contains(&node(0)));
-        assert!(all_nodes.contains(&node(1)));
-        assert!(all_nodes.contains(&node(2)));
-        assert!(all_nodes.contains(&node(3)));
+    #[test]
+    fn minimal_prefers_shortcut_over_triangle() {
+        // Triangle 0->1->2->0 plus a 2-cycle 0<->2. The minimal cycle carrying
+        // edge 0->2 must be the length-2 loop, not the triangle.
+        let graph = digraph(3, &[(0, 1), (1, 2), (2, 0), (0, 2)]);
+        let a = graph.minimal_cycles();
+        let idxs = &a.edge_cycles[&(node(0), node(2))];
+        assert!(
+            idxs.iter().any(|&i| a.cycles[i].path.len() == 2),
+            "edge 0->2 should lie on a length-2 minimal cycle"
+        );
+    }
+
+    #[test]
+    fn minimal_shared_edge_lists_all_cycles() {
+        // Two triangles sharing directed edge 0->1:
+        //   0->1->2->0  and  0->1->3->0
+        let graph = digraph(4, &[(0, 1), (1, 2), (2, 0), (1, 3), (3, 0)]);
+        let a = graph.minimal_cycles();
+        assert_eq!(a.cycles.len(), 2);
+        assert_eq!(a.edge_cycles[&(node(0), node(1))].len(), 2);
+    }
+
+    #[test]
+    fn minimal_covers_every_scc_edge() {
+        let graph = digraph(3, &[(0, 1), (1, 2), (2, 0)]);
+        let a = graph.minimal_cycles();
+        for e in [(node(0), node(1)), (node(1), node(2)), (node(2), node(0))] {
+            assert!(a.edge_cycles.contains_key(&e), "edge {e:?} not covered");
+        }
+    }
+
+    #[test]
+    fn minimal_is_deterministic() {
+        let edges = &[(0, 1), (1, 2), (2, 0), (1, 3), (3, 0)];
+        let a = digraph(4, edges).minimal_cycles();
+        let b = digraph(4, edges).minimal_cycles();
+        assert_eq!(a.cycles, b.cycles);
     }
 }

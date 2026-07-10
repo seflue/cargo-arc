@@ -10,7 +10,7 @@ use crate::analyze::{
     collect_crate_reexports, externals::analyze_externals, normalize_crate_name,
 };
 use crate::graph::ArcGraph;
-use crate::layout::{ElementaryCycles, LayoutIR, build_layout};
+use crate::layout::{LayoutIR, MinimalCycles, build_layout};
 use crate::model::{CrateExportMap, ModulePathMap, WorkspaceCrates};
 use crate::render::{RenderConfig, render};
 use crate::rules::config::{ArcConfig, ConfigError};
@@ -174,9 +174,12 @@ pub fn run(args: ArcCommand) -> Result<()> {
         args.transitive_deps,
     )?;
     tracing::debug!("phase: cycle detection start");
-    let cycles = graph.production_subgraph().elementary_cycles();
-    tracing::debug!("phase: cycle detection done ({} cycles)", cycles.len());
-    let mut layout = build_layout(&graph, &cycles);
+    let analysis = graph.production_subgraph().minimal_cycles();
+    tracing::debug!(
+        "phase: cycle detection done ({} cycles)",
+        analysis.cycles.len()
+    );
+    let mut layout = build_layout(&graph, &analysis);
     tracing::debug!("phase: layout built ({} items)", layout.items.len());
 
     if !args.no_volatility {
@@ -246,12 +249,15 @@ fn run_check(check_args: &CheckArgs, common: &CommonArgs) -> Result<()> {
 /// Legacy fallback: global cycle check when no arc-rules.toml exists.
 fn run_legacy_cycle_check(graph: &ArcGraph) -> Result<()> {
     tracing::debug!("phase: cycle detection start (--check)");
-    let cycles = graph.production_subgraph().elementary_cycles();
-    tracing::debug!("phase: cycle detection done ({} cycles)", cycles.len());
-    if cycles.is_empty() {
+    let analysis = graph.production_subgraph().minimal_cycles();
+    tracing::debug!(
+        "phase: cycle detection done ({} cycles)",
+        analysis.cycles.len()
+    );
+    if analysis.cycles.is_empty() {
         return Ok(());
     }
-    eprint!("{}", format_cycle_errors(graph, &cycles));
+    eprint!("{}", format_cycle_errors(graph, &analysis.cycles));
     anyhow::bail!("dependency cycle(s) detected");
 }
 

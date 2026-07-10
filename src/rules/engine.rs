@@ -3,7 +3,7 @@
 //! Checks architecture rules against the dependency graph and collects violations.
 
 use crate::graph::{ArcGraph, Edge};
-use crate::layout::ElementaryCycles;
+use crate::layout::MinimalCycles;
 use crate::model::SourceLocation;
 use crate::rules::config::{ArcConfig, Direction, Rule, Severity};
 use crate::rules::matching::{module_path, resolve_pattern};
@@ -133,7 +133,8 @@ fn check_cycles(graph: &ArcGraph, rule: &Rule) -> Vec<Violation> {
     );
 
     subgraph
-        .elementary_cycles()
+        .minimal_cycles()
+        .cycles
         .into_iter()
         .map(|cycle| {
             let path_names: Vec<String> = cycle

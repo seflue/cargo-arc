@@ -103,7 +103,7 @@ fn package_matches_features(
     debug!(pkg = pkg_name, features = ?pkg.features.keys(), "checking");
 
     let matches = parsed_features.iter().any(|(crate_filter, feature_name)| {
-        let crate_matches = crate_filter.map(|c| c == pkg_name).unwrap_or(true);
+        let crate_matches = crate_filter.is_none_or(|c| c == pkg_name);
         let feature_exists = pkg.features.contains_key(*feature_name);
 
         debug!(?crate_filter, feature_name, crate_matches, feature_exists,);

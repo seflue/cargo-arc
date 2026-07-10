@@ -1,6 +1,6 @@
 # ADR-019: Detect Elementary Cycles via Johnson's Algorithm
 
-- **Status:** Active
+- **Status:** Superseded by ADR-021
 - **Decided:** 2026-02-16
 
 ## Context

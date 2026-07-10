@@ -1,6 +1,6 @@
 //! Build layout IR from graph and cycle information.
 
-use super::cycles::Cycle;
+use super::cycles::CycleAnalysis;
 use super::toposort::stable_toposort;
 use crate::graph::{ArcGraph, Edge, Node};
 use crate::model::{EdgeContext, SourceLocation};
@@ -130,9 +130,9 @@ impl LayoutIR {
 /// Converts graph nodes to `LayoutItems` with proper nesting and edges with cycle markers.
 /// `CrateDep` edges are skipped when `ModuleDep` edges exist between the same crates.
 #[must_use]
-pub fn build_layout(graph: &ArcGraph, cycles: &[Cycle]) -> LayoutIR {
+pub fn build_layout(graph: &ArcGraph, analysis: &CycleAnalysis) -> LayoutIR {
     let mut ir = LayoutIR::new();
-    let edge_to_cycles = build_edge_cycle_index(cycles);
+    let edge_to_cycles = &analysis.edge_cycles;
     let parent_map = graph.parent_map();
 
     // 3-way partition: workspace crates, modules, external crates
@@ -157,7 +157,7 @@ pub fn build_layout(graph: &ArcGraph, cycles: &[Cycle]) -> LayoutIR {
     }
 
     let suppressed = graph.suppressed_crate_pairs();
-    populate_edges(&mut ir, graph, &node_map, &edge_to_cycles, &suppressed);
+    populate_edges(&mut ir, graph, &node_map, edge_to_cycles, &suppressed);
 
     ir
 }
@@ -331,21 +331,6 @@ fn nesting_depth(idx: NodeIndex, parent_map: &HashMap<NodeIndex, NodeIndex>) -> 
         current = parent;
     }
     depth
-}
-
-/// Build edge-to-cycles mapping: for each directed edge (src, dst) in any cycle,
-/// record which cycle indices it belongs to.
-fn build_edge_cycle_index(cycles: &[Cycle]) -> HashMap<(NodeIndex, NodeIndex), Vec<usize>> {
-    let mut edge_to_cycles: HashMap<(NodeIndex, NodeIndex), Vec<usize>> = HashMap::new();
-    for (cycle_idx, cycle) in cycles.iter().enumerate() {
-        for (src, dst) in cycle.edges() {
-            edge_to_cycles
-                .entry((src, dst))
-                .or_default()
-                .push(cycle_idx);
-        }
-    }
-    edge_to_cycles
 }
 
 /// Determine cycle kind and cycle IDs for an edge.
@@ -551,13 +536,21 @@ impl ArcGraph {
 mod tests {
     use super::*;
     use crate::graph::{ArcGraph, Edge, Node};
-    use crate::layout::ElementaryCycles;
+    use crate::layout::cycles::MinimalCycles;
     use crate::model::{DependencyKind, EdgeContext, SourceLocation, TestKind};
     use assert2::check;
     use petgraph::graph::NodeIndex;
     use rstest::rstest;
     use std::collections::{HashMap, HashSet};
     use std::path::PathBuf;
+
+    /// `CycleAnalysis` for graphs with no cycles.
+    fn no_cycles() -> CycleAnalysis {
+        CycleAnalysis {
+            cycles: Vec::new(),
+            edge_cycles: HashMap::new(),
+        }
+    }
 
     struct TestGraphBuilder {
         graph: ArcGraph,
@@ -807,7 +800,7 @@ mod tests {
         b.crate_with_modules("my_crate", &["mod_a", "mod_b"])
             .prod_dep("mod_a", "mod_b");
         let (graph, _) = b.build();
-        let ir = build_layout(&graph, &[]);
+        let ir = build_layout(&graph, &no_cycles());
 
         // Should have 3 items (1 crate + 2 modules)
         assert_eq!(ir.items.len(), 3);
@@ -826,8 +819,8 @@ mod tests {
             .prod_dep("a", "b")
             .prod_dep("b", "a");
         let (graph, _) = b.build();
-        let cycles = graph.production_subgraph().elementary_cycles();
-        let ir = build_layout(&graph, &cycles);
+        let analysis = graph.production_subgraph().minimal_cycles();
+        let ir = build_layout(&graph, &analysis);
 
         // Should have 2 items
         assert_eq!(ir.items.len(), 2);
@@ -854,8 +847,8 @@ mod tests {
             // Non-cycle edge: F → A
             .prod_dep("f", "a");
         let (graph, _) = b.build();
-        let cycles = graph.production_subgraph().elementary_cycles();
-        let ir = build_layout(&graph, &cycles);
+        let analysis = graph.production_subgraph().minimal_cycles();
+        let ir = build_layout(&graph, &analysis);
 
         // Should have at least 5 cycle edges (3 from cycle 1 + 2 from cycle 2)
         let cycle_edges: Vec<_> = ir.edges.iter().filter(|e| e.cycle.is_some()).collect();
@@ -888,7 +881,7 @@ mod tests {
         let mut b = TestGraphBuilder::new();
         b.crate_with_modules("test", &["a", "b"]).prod_dep("a", "b"); // a depends on b
         let (graph, _) = b.build();
-        let ir = build_layout(&graph, &[]);
+        let ir = build_layout(&graph, &no_cycles());
 
         // There should be exactly one edge
         assert_eq!(ir.edges.len(), 1);
@@ -912,7 +905,7 @@ mod tests {
             .crate_with_modules("crate_b", &["mod_b1", "mod_b2"])
             .crate_dep("crate_a", "crate_b");
         let (graph, _) = b.build();
-        let la = LayoutAssert::new(build_layout(&graph, &[]));
+        let la = LayoutAssert::new(build_layout(&graph, &no_cycles()));
 
         check!(la.ir.items.len() == 6);
 
@@ -1010,7 +1003,7 @@ mod tests {
             .nested_module("parent", "alpha_child")
             .nested_module("parent", "zebra_child");
         let (graph, _) = b.build();
-        let la = LayoutAssert::new(build_layout(&graph, &[]));
+        let la = LayoutAssert::new(build_layout(&graph, &no_cycles()));
 
         let pos_parent = la.pos("parent");
         let pos_alpha = la.pos("alpha_child");
@@ -1058,7 +1051,7 @@ mod tests {
             b.prod_dep(from, to);
         }
         let (graph, _) = b.build();
-        let la = LayoutAssert::new(build_layout(&graph, &[]));
+        let la = LayoutAssert::new(build_layout(&graph, &no_cycles()));
 
         la.assert_top_level_order(expected_order);
     }
@@ -1072,7 +1065,7 @@ mod tests {
             // Test: beta depends on alpha (reverse direction) → must NOT affect order
             .test_dep("beta", "alpha", TestKind::Unit);
         let (graph, _) = b.build();
-        let la = LayoutAssert::new(build_layout(&graph, &[]));
+        let la = LayoutAssert::new(build_layout(&graph, &no_cycles()));
 
         la.assert_order("alpha", "beta");
     }
@@ -1087,7 +1080,7 @@ mod tests {
             // Test: bbb depends on aaa (reverse) → must NOT affect order
             .test_crate_dep("bbb", "aaa", TestKind::Unit);
         let (graph, _) = b.build();
-        let la = LayoutAssert::new(build_layout(&graph, &[]));
+        let la = LayoutAssert::new(build_layout(&graph, &no_cycles()));
 
         la.assert_order("aaa", "bbb");
     }
@@ -1113,7 +1106,7 @@ mod tests {
                 .crate_dep("crate_a", "crate_b")
                 .prod_dep_located(self.dep_from, self.dep_to);
             let (graph, _) = b.build();
-            super::build_layout(&graph, &[])
+            super::build_layout(&graph, &no_cycles())
         }
     }
 
@@ -1156,7 +1149,7 @@ mod tests {
             .nested_module("parent_b", "child_b")
             .prod_dep("child_a", "child_b");
         let (graph, _) = b.build();
-        let la = LayoutAssert::new(build_layout(&graph, &[]));
+        let la = LayoutAssert::new(build_layout(&graph, &no_cycles()));
 
         la.assert_order("parent_a", "parent_b");
     }
@@ -1173,7 +1166,7 @@ mod tests {
             .crate_with_modules("crate_a", &["mod_a"])
             .prod_dep("mod_a", "mod_b"); // no CrateDep edge!
         let (graph, _) = b.build();
-        let la = LayoutAssert::new(build_layout(&graph, &[]));
+        let la = LayoutAssert::new(build_layout(&graph, &no_cycles()));
 
         la.assert_order("crate_a", "crate_b");
 
@@ -1238,7 +1231,7 @@ mod tests {
             .prod_dep("d1", "b2")
             .prod_dep("d3", "c");
         let (graph, _) = b.build();
-        let ir = build_layout(&graph, &[]);
+        let ir = build_layout(&graph, &no_cycles());
 
         let labels: Vec<&str> = ir.items.iter().map(|i| i.label.as_str()).collect();
         let top_level: Vec<&str> = labels
@@ -1277,7 +1270,7 @@ mod tests {
             .prod_dep("a", "d")
             .prod_dep("b", "c");
         let (graph, _) = b.build();
-        let la = LayoutAssert::new(build_layout(&graph, &[]));
+        let la = LayoutAssert::new(build_layout(&graph, &no_cycles()));
 
         la.assert_order("d", "c");
     }
@@ -1293,7 +1286,7 @@ mod tests {
             .prod_dep("b", "c")
             .prod_dep("b", "d");
         let (graph, _) = b.build();
-        let la = LayoutAssert::new(build_layout(&graph, &[]));
+        let la = LayoutAssert::new(build_layout(&graph, &no_cycles()));
 
         la.assert_order("a", "c");
         la.assert_order("b", "d");
@@ -1316,7 +1309,7 @@ mod tests {
             // serde depends on proc-macro2 (transitive external dep)
             .crate_dep("serde", "proc-macro2");
         let (graph, _) = b.build();
-        let ir = build_layout(&graph, &[]);
+        let ir = build_layout(&graph, &no_cycles());
 
         // All CrateDep edges between external crates should be Downward
         for edge in &ir.edges {
@@ -1355,7 +1348,7 @@ mod tests {
             .crate_dep("app_b", "tokio")
             .crate_dep("app_a", "alpha_crate");
         let (graph, _) = b.build();
-        let la = LayoutAssert::new(build_layout(&graph, &[]));
+        let la = LayoutAssert::new(build_layout(&graph, &no_cycles()));
 
         // tokio (2 incoming) should appear before alpha_crate (1 incoming),
         // despite alpha_crate being alphabetically first.
