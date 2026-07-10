@@ -36,7 +36,6 @@ These mixed-edge cycles are resolved silently, without visualizing them — they
 - Minimal upward edges within cycle clusters
 
 ### Negative
-- Double SCC computation, though performance overhead is negligible
 - Real module-level cycles within a cluster are resolved along with the false positives
 - Brute-force ordering limited to clusters of n≤8 nodes (40,320 permutations)
 

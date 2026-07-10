@@ -19,7 +19,6 @@ The sidebar can be pinned via click so that content remains visible. With the si
 
 ### Positive
 - Persistent detail display via pin
-- Unified visual model, no duplicated code
 
 ### Negative
 - Sidebar needs more space than a tooltip

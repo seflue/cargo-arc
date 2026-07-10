@@ -21,7 +21,6 @@ We generate SVG programmatically in Rust (`format!`-based). No DOT intermediate 
 
 ### Positive
 - Control over SVG structure and interactivity
-- No dependency on external rendering tools
 
 ### Negative
 - No access to layout algorithms of existing libraries

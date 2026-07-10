@@ -26,4 +26,3 @@ Rust is the single source of truth for all metadata. The DOM is never read as a 
 
 ### Negative
 - SVG file size grows with embedded data and JS
-- Changes to metadata require regeneration

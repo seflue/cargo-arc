@@ -26,7 +26,6 @@ We structure processing as a linear four-stage pipeline with defined intermediat
 
 ### Positive
 - Clear responsibilities per module
-- Analysis backend is swappable (see ADR-013)
 
 ### Negative
 - Intermediate formats must be kept consistent when changes occur

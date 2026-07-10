@@ -17,7 +17,6 @@ cargo-arc resolves re-exports to determine the true dependencies between modules
 
 - Import style is a matter of taste and architecturally irrelevant — what matters is the actual dependency direction
 - Without resolution, edges point to the parent module instead of the originating module — this distorts the graph in both directions: real dependencies disappear, and spurious dependencies to the parent module appear
-- Consistent with practice in large Rust projects: architecture rules concern module layering, not import syntax
 
 ## Consequences
 
