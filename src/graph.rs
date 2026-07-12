@@ -154,6 +154,38 @@ impl ArcGraph {
         }
     }
 
+    /// Fully-qualified name of a node: `<crate>::<module::path>`.
+    ///
+    /// Reconstructs the module path by walking `Contains` edges up to the
+    /// owning crate, so distinct modules sharing a leaf name (e.g. `error` and
+    /// `device::error`) stay distinguishable. The crate segment is the Cargo
+    /// package name (dash form). A node with no incoming `Contains` edge
+    /// degrades to its leaf name.
+    #[must_use]
+    pub fn qualified_name(&self, idx: NodeIndex) -> String {
+        let mut segments = vec![self[idx].name().to_string()];
+        let mut current = idx;
+        let mut crate_name = None;
+        while let Some(edge) = self
+            .edges_directed(current, petgraph::Direction::Incoming)
+            .find(|edge| matches!(edge.weight(), Edge::Contains))
+        {
+            let parent = edge.source();
+            if self[parent].is_crate() {
+                crate_name = Some(self[parent].name());
+                break;
+            }
+            segments.push(self[parent].name().to_string());
+            current = parent;
+        }
+        segments.reverse();
+        let path = segments.join("::");
+        match crate_name {
+            Some(crate_name) => format!("{crate_name}::{path}"),
+            None => path,
+        }
+    }
+
     /// Compute the set of production-reachable crate nodes.
     ///
     /// A crate is reachable if:
@@ -887,6 +919,43 @@ mod tests {
             is_direct_dependency: true,
         });
         assert_eq!(graph.owning_crate(ext_idx), ext_idx);
+    }
+
+    #[test]
+    fn test_qualified_name_disambiguates_same_leaf() {
+        let mut graph = ArcGraph::new();
+        let crate_idx = graph.add_node(Node::Crate {
+            name: "my-crate".into(),
+            path: "/my-crate".into(),
+        });
+        let top_store = graph.add_node(Node::Module {
+            name: "store".into(),
+            crate_idx,
+        });
+        graph.add_edge(crate_idx, top_store, Edge::Contains);
+        let core = graph.add_node(Node::Module {
+            name: "core".into(),
+            crate_idx,
+        });
+        graph.add_edge(crate_idx, core, Edge::Contains);
+        let core_store = graph.add_node(Node::Module {
+            name: "store".into(),
+            crate_idx,
+        });
+        graph.add_edge(core, core_store, Edge::Contains);
+
+        assert_eq!(graph.qualified_name(top_store), "my-crate::store");
+        assert_eq!(graph.qualified_name(core_store), "my-crate::core::store");
+    }
+
+    #[test]
+    fn test_qualified_name_orphan_falls_back_to_leaf() {
+        let mut graph = ArcGraph::new();
+        let idx = graph.add_node(Node::Module {
+            name: "lonely".into(),
+            crate_idx: NodeIndex::new(0),
+        });
+        assert_eq!(graph.qualified_name(idx), "lonely");
     }
 
     #[test]

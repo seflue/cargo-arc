@@ -66,7 +66,11 @@ pub fn format_cycle_errors(
 
     let mut output = String::new();
     for cycle in cycles {
-        let names: Vec<&str> = cycle.path.iter().map(|&idx| graph[idx].name()).collect();
+        let names: Vec<String> = cycle
+            .path
+            .iter()
+            .map(|&idx| graph.qualified_name(idx))
+            .collect();
         if names.len() == 2 {
             let _ = writeln!(output, "error[cycle]: {} <-> {}", names[0], names[1]);
         } else {
@@ -184,7 +188,7 @@ mod tests {
 
     // ===== format_cycle_errors tests (migrated from cli.rs) =====
 
-    use crate::graph::{ArcGraph, Node};
+    use crate::graph::{ArcGraph, Edge, Node};
     use crate::layout::Cycle;
     use petgraph::graph::NodeIndex;
 
@@ -224,6 +228,39 @@ mod tests {
         }];
         let output = format_cycle_errors(&graph, &cycles);
         assert!(output.contains("error[cycle]: A <-> B"));
+    }
+
+    #[test]
+    fn test_format_cycle_errors_qualifies_same_leaf_modules() {
+        let mut graph = ArcGraph::new();
+        let crate_idx = graph.add_node(Node::Crate {
+            name: "my-crate".into(),
+            path: "/my-crate".into(),
+        });
+        let top_store = graph.add_node(Node::Module {
+            name: "store".into(),
+            crate_idx,
+        });
+        graph.add_edge(crate_idx, top_store, Edge::Contains);
+        let core = graph.add_node(Node::Module {
+            name: "core".into(),
+            crate_idx,
+        });
+        graph.add_edge(crate_idx, core, Edge::Contains);
+        let core_store = graph.add_node(Node::Module {
+            name: "store".into(),
+            crate_idx,
+        });
+        graph.add_edge(core, core_store, Edge::Contains);
+
+        let cycles = vec![Cycle {
+            path: vec![top_store, core_store],
+        }];
+        let output = format_cycle_errors(&graph, &cycles);
+        assert!(
+            output.contains("error[cycle]: my-crate::store <-> my-crate::core::store"),
+            "got: {output}"
+        );
     }
 
     #[test]
