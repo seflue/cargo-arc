@@ -758,4 +758,40 @@ describe('StaticData', () => {
       delete TEST_STATIC_DATA.nodes.fn_2.nesting;
     });
   });
+
+  describe('qualifiedParts', () => {
+    test('splits crate from same-leaf module paths', () => {
+      const saved = globalThis.STATIC_DATA;
+      globalThis.STATIC_DATA = {
+        nodes: {
+          krate: { type: 'crate', name: 'my-crate', parent: null },
+          topStore: { type: 'module', name: 'store', parent: 'krate' },
+          core: { type: 'module', name: 'core', parent: 'krate' },
+          coreStore: { type: 'module', name: 'store', parent: 'core' },
+          orphan: { type: 'module', name: 'lonely', parent: null },
+        },
+        arcs: {},
+      };
+      try {
+        expect(StaticData.qualifiedParts('topStore')).toEqual({
+          crate: 'my-crate',
+          path: 'store',
+        });
+        expect(StaticData.qualifiedParts('coreStore')).toEqual({
+          crate: 'my-crate',
+          path: 'core::store',
+        });
+        expect(StaticData.qualifiedParts('orphan')).toEqual({
+          crate: null,
+          path: 'lonely',
+        });
+        expect(StaticData.qualifiedParts('missing')).toEqual({
+          crate: null,
+          path: 'missing',
+        });
+      } finally {
+        globalThis.STATIC_DATA = saved;
+      }
+    });
+  });
 });

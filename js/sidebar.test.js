@@ -107,6 +107,26 @@ globalThis.StaticData = {
   hasChildren(nodeId) {
     return globalThis.STATIC_DATA.nodes?.[nodeId]?.hasChildren ?? false;
   },
+  qualifiedParts(nodeId) {
+    const nodes = globalThis.STATIC_DATA.nodes;
+    const node = nodes?.[nodeId];
+    if (!node) return { crate: null, path: nodeId };
+    const segments = [node.name];
+    let crate = null;
+    let parentId = node.parent;
+    while (parentId != null) {
+      const parent = nodes?.[parentId];
+      if (!parent) break;
+      if (parent.type === 'crate') {
+        crate = parent.name;
+        break;
+      }
+      segments.push(parent.name);
+      parentId = parent.parent;
+    }
+    segments.reverse();
+    return { crate, path: segments.join('::') };
+  },
 };
 
 describe('SidebarLogic', () => {
@@ -1956,10 +1976,12 @@ describe('SidebarLogic', () => {
       expect(html).toContain('Cycle 1');
       expect(html).toContain('Cycle 2');
       // All sidebar-symbol divs should be collapsible and collapsed
-      const symbolDivs = html.match(/<div class="sidebar-symbol"/g) || [];
+      const symbolDivs =
+        html.match(/<div class="sidebar-symbol[^"]*" data-collapsible=""/g) ||
+        [];
       const collapsedDivs =
         html.match(
-          /<div class="sidebar-symbol" data-collapsible="" data-collapsed="true"/g,
+          /<div class="sidebar-symbol[^"]*" data-collapsible="" data-collapsed="true"/g,
         ) || [];
       expect(symbolDivs.length).toBeGreaterThan(0);
       expect(collapsedDivs.length).toBe(symbolDivs.length);
@@ -2009,10 +2031,12 @@ describe('SidebarLogic', () => {
     test('single-cycle: arcs start collapsed', () => {
       const html = SidebarLogic.buildContent('A-B');
       // All sidebar-symbol divs should have data-collapsible and data-collapsed="true"
-      const symbolDivs = html.match(/<div class="sidebar-symbol"/g) || [];
+      const symbolDivs =
+        html.match(/<div class="sidebar-symbol[^"]*" data-collapsible=""/g) ||
+        [];
       const collapsedDivs =
         html.match(
-          /<div class="sidebar-symbol" data-collapsible="" data-collapsed="true"/g,
+          /<div class="sidebar-symbol[^"]*" data-collapsible="" data-collapsed="true"/g,
         ) || [];
       expect(symbolDivs.length).toBeGreaterThan(0);
       expect(collapsedDivs.length).toBe(symbolDivs.length);
@@ -2035,8 +2059,7 @@ describe('SidebarLogic', () => {
 
     test('single-cycle: arc headers show symbol annotation', () => {
       const html = SidebarLogic.buildContent('A-B');
-      // Symbols should appear in sidebar-arc-symbols spans
-      expect(html).toContain('sidebar-arc-symbols');
+      // Symbols are appended to the target node label as plain text
       expect(html).toContain('::sym1');
       expect(html).toContain('::sym2');
       expect(html).toContain('::sym3');
@@ -2058,18 +2081,17 @@ describe('SidebarLogic', () => {
       };
       globalThis.STATIC_DATA.cycles[0].arcs = ['A-B', 'B-C', 'C-A'];
       const html = SidebarLogic.buildContent('A-B');
-      // B→C still has sym2, so sidebar-arc-symbols should appear there
-      expect(html).toContain('sidebar-arc-symbols');
-      // But A→B header area should not have ::
-      // Count: we should have 2 symbol annotations (B→C with sym2, C→A with sym3), not 3
-      const symbolSpans = html.match(/sidebar-arc-symbols/g) || [];
-      expect(symbolSpans).toHaveLength(2);
+      // B→C still has sym2, C→A has sym3; A→B (empty symbol) has none.
+      expect(html).toContain('::sym2');
+      expect(html).toContain('::sym3');
+      // Two annotations, not three (A→B carries no symbol suffix).
+      const symbolSuffixes = html.match(/::sym\d/g) || [];
+      expect(symbolSuffixes).toHaveLength(2);
     });
 
     test('multi-cycle: arc headers show symbol annotation', () => {
       setupMultiCycleData();
       const html = SidebarLogic.buildContent('B-C');
-      expect(html).toContain('sidebar-arc-symbols');
       expect(html).toContain('::sym2');
       expect(html).toContain('::sym_cd');
       expect(html).toContain('::sym_db');

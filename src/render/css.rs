@@ -228,12 +228,13 @@ fn build_css_rules() -> Vec<CssRule> {
         ),
         CssRule::new(
             &format!(
-                "svg.{} path:not(.{}):not(.{}):not(.{}):not(.{})",
+                "svg.{} path:not(.{}):not(.{}):not(.{}):not(.{}):not(.{})",
                 c.relation.has_highlight,
                 c.relation.highlighted_arc,
                 c.direction.arc_hitarea,
                 c.direction.virtual_hitarea,
-                c.relation.shadow_path
+                c.relation.shadow_path,
+                c.sidebar.cycle_arrow_path
             ),
             &[
                 ("opacity", "0.3"),
@@ -556,12 +557,13 @@ fn build_css_rules() -> Vec<CssRule> {
         // Paths: dim all except search matches, hitareas, and shadow paths
         CssRule::new(
             &format!(
-                "svg.{} path:not(.{}):not(.{}):not(.{}):not(.{})",
+                "svg.{} path:not(.{}):not(.{}):not(.{}):not(.{}):not(.{})",
                 c.search.search_active,
                 c.search.search_match,
                 c.direction.arc_hitarea,
                 c.direction.virtual_hitarea,
-                c.relation.shadow_path
+                c.relation.shadow_path,
+                c.sidebar.cycle_arrow_path
             ),
             &[("opacity", "0.3"), ("stroke", r.dimmed)],
         ),
@@ -738,11 +740,35 @@ fn build_css_rules() -> Vec<CssRule> {
                 ("font-size", "10px"),
                 ("color", GRAY_400),
                 ("width", "12px"),
+                ("user-select", "none"),
+                ("-webkit-user-select", "none"),
             ],
         ),
         CssRule::class(
-            c.sidebar.arc_symbols,
-            &[("opacity", "0.7"), ("font-size", "10px")],
+            c.sidebar.cycle_edge,
+            &[
+                ("display", "flex"),
+                ("flex-direction", "column"),
+                ("align-items", "flex-start"),
+                ("flex", "1"),
+                ("min-width", "0"),
+                ("white-space", "normal"),
+                ("overflow-wrap", "anywhere"),
+                ("line-height", "1.35"),
+            ],
+        ),
+        CssRule::class(
+            c.sidebar.cycle_arrow,
+            &[("display", "block"), ("margin", "1px 0")],
+        ),
+        CssRule::new(
+            &format!(".{} path", c.sidebar.cycle_arrow),
+            &[("stroke", GRAY_600)],
+        ),
+        CssRule::class(c.sidebar.cycle_node, &[("overflow-wrap", "anywhere")]),
+        CssRule::new(
+            &format!(".{}.{}", c.sidebar.symbol, c.sidebar.symbol_stacked),
+            &[("align-items", "flex-start")],
         ),
         CssRule::class(c.sidebar.ns, &[("color", GRAY_400), ("font-size", "10px")]),
         CssRule::class(
@@ -751,6 +777,8 @@ fn build_css_rules() -> Vec<CssRule> {
                 ("color", GRAY_400),
                 ("font-size", "10px"),
                 ("margin-left", "auto"),
+                ("user-select", "none"),
+                ("-webkit-user-select", "none"),
             ],
         ),
         CssRule::class(
@@ -1114,8 +1142,12 @@ mod tests {
             "CSS should contain transient sidebar collapse-all rule"
         );
         assert!(
-            css.contains(&format!(".{}", CSS.sidebar.arc_symbols)),
-            "CSS should contain .sidebar-arc-symbols"
+            css.contains(&format!(".{}", CSS.sidebar.cycle_edge)),
+            "CSS should contain .sidebar-cycle-edge"
+        );
+        assert!(
+            css.contains(&format!(".{}", CSS.sidebar.cycle_arrow)),
+            "CSS should contain .sidebar-cycle-arrow"
         );
     }
 

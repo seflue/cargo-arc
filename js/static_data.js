@@ -105,6 +105,37 @@ const StaticData = {
   },
 
   /**
+   * Split a node into its owning crate and crate-relative module path.
+   *
+   * Walks the `parent` chain up to the owning crate so that distinct modules
+   * sharing a leaf name (e.g. `resource` and `device::resource`) stay
+   * distinguishable via `path` alone. `crate` is the Cargo package name (dash
+   * form), or null for nodes without a crate ancestor. `path` falls back to the
+   * id itself for unknown nodes.
+   * @param {string} nodeId
+   * @returns {{ crate: string|null, path: string }}
+   */
+  qualifiedParts(nodeId) {
+    const node = STATIC_DATA.nodes[nodeId];
+    if (!node) return { crate: null, path: nodeId };
+    const segments = [node.name];
+    let crate = null;
+    let parentId = node.parent;
+    while (parentId != null) {
+      const parent = STATIC_DATA.nodes[parentId];
+      if (!parent) break;
+      if (parent.type === 'crate') {
+        crate = parent.name;
+        break;
+      }
+      segments.push(parent.name);
+      parentId = parent.parent;
+    }
+    segments.reverse();
+    return { crate, path: segments.join('::') };
+  },
+
+  /**
    * Check if a node is an external type (external-section or external crate).
    * @param {string} nodeId
    * @returns {boolean}

@@ -595,9 +595,12 @@ const SidebarLogic = {
       if (!cycle) return '';
 
       const arcInfos = this._buildCycleArcInfos(cycle);
+      const crate = arcInfos.length
+        ? StaticData.qualifiedParts(arcInfos[0].arc.from).crate
+        : null;
 
       let html = `<div class="sidebar-header">`;
-      html += `<span class="sidebar-title">Cycle (${cycle.arcs.length} edges)</span>`;
+      html += `<span class="sidebar-title">Cycle${crate ? ` · ${crate}` : ''} (${cycle.arcs.length} edges)</span>`;
       html += `<div class="sidebar-header-actions">`;
       html += `<button class="sidebar-collapse-all">+</button>`;
       html += `<button class="sidebar-close">&#x2715;</button>`;
@@ -622,6 +625,7 @@ const SidebarLogic = {
     let contentHtml = '';
 
     let cycleNum = 0;
+    let crate = null;
     for (const cid of cycleIds) {
       const cycle = STATIC_DATA.cycles[cid];
       if (!cycle) continue;
@@ -629,6 +633,9 @@ const SidebarLogic = {
       totalEdges += cycle.arcs.length;
 
       const arcInfos = this._buildCycleArcInfos(cycle);
+      if (crate === null && arcInfos.length) {
+        crate = StaticData.qualifiedParts(arcInfos[0].arc.from).crate;
+      }
 
       const cycleLocs = arcInfos.reduce((sum, info) => sum + info.count, 0);
       totalLocs += cycleLocs;
@@ -650,7 +657,7 @@ const SidebarLogic = {
     }
 
     let html = `<div class="sidebar-header">`;
-    html += `<span class="sidebar-title">Cycles (${cycleIds.length})</span>`;
+    html += `<span class="sidebar-title">Cycles${crate ? ` · ${crate}` : ''} (${cycleIds.length})</span>`;
     html += `<div class="sidebar-header-actions">`;
     html += `<button class="sidebar-collapse-all">+</button>`;
     html += `<button class="sidebar-close">&#x2715;</button>`;
@@ -686,21 +693,18 @@ const SidebarLogic = {
    */
   _buildCycleArcRow(info, selectedArcId) {
     const isSelected = info.arcId === selectedArcId;
-    const fromNode = StaticData.getNode(info.arc.from);
-    const toNode = StaticData.getNode(info.arc.to);
-    const fromName = fromNode ? fromNode.name : info.arc.from;
-    const toName = toNode ? toNode.name : info.arc.to;
+    const fromName = StaticData.qualifiedParts(info.arc.from).path;
+    const toName = StaticData.qualifiedParts(info.arc.to).path;
+    const symSuffix = this.formatArcSymbols(info.usages);
 
     let html = `<div class="sidebar-usage-group${isSelected ? ' sidebar-selected-arc' : ''}">`;
-    html += `<div class="sidebar-symbol" data-collapsible="" data-collapsed="true">`;
+    html += `<div class="sidebar-symbol sidebar-symbol-stacked" data-collapsible="" data-collapsed="true">`;
     html += `<span class="sidebar-toggle">&#x25B8;</span>`;
-    html += `<span class="sidebar-symbol-name" data-node-id="${info.arc.from}">${fromName}${this._renderCollapseIndicator(info.arc.from)}</span>`;
-    html += `<span class="sidebar-arrow">&#x2192;</span>`;
-    html += `<span class="sidebar-symbol-name" data-node-id="${info.arc.to}">${toName}${this._renderCollapseIndicator(info.arc.to)}</span>`;
-    const symSuffix = this.formatArcSymbols(info.usages);
-    if (symSuffix) {
-      html += `<span class="sidebar-arc-symbols">${symSuffix}</span>`;
-    }
+    html += `<div class="sidebar-cycle-edge">`;
+    html += `<span class="sidebar-cycle-node" data-node-id="${info.arc.from}">${fromName}</span>`;
+    html += `<svg class="sidebar-cycle-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path class="sidebar-cycle-arrow-path" d="M6 1.5 V10 M2.75 6.75 L6 10 L9.25 6.75" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+    html += `<span class="sidebar-cycle-node" data-node-id="${info.arc.to}">${toName}${symSuffix}</span>`;
+    html += `</div>`;
     html += `<span class="sidebar-ref-count">${info.count}</span>`;
     html += `</div>`;
 
