@@ -245,6 +245,7 @@ const DerivedState = {
     } else if (selection.type === 'arc') {
       this._deriveForArcSelection(
         selection,
+        appState,
         staticData,
         virtualArcUsages,
         hiddenByFilter,
@@ -342,9 +343,12 @@ const DerivedState = {
     }
   },
 
-  /** @private Arc-selection: specific arc + its virtual variant + cycle expansion. */
+  /** @private Arc-selection: specific arc + its virtual variant. When cluster
+   *  mode is on and the arc lies in an SCC, the whole SCC is highlighted so the
+   *  cluster reads as one unit regardless of which arc in it was picked. */
   _deriveForArcSelection(
     selection,
+    appState,
     staticData,
     virtualArcUsages,
     hiddenByFilter,
@@ -364,8 +368,11 @@ const DerivedState = {
       cssClass: 'depNode',
     });
 
-    const descs = [];
     const arc = staticData.getArc(arcId);
+    const sccId = arc?.sccId;
+    const expandCluster = AppState.isClusterMode(appState) && sccId != null;
+
+    const descs = [];
     if (arc && !hiddenByFilter.has(arcId)) {
       descs.push({
         key: arcId,
@@ -375,7 +382,7 @@ const DerivedState = {
         toInSet: true,
         originalWidth: staticData.getArcStrokeWidth(arcId),
         isVirtual: false,
-        isCycle: !!arc.cycleIds?.length,
+        isCycle: expandCluster,
       });
     }
     if (virtualArcUsages.has(arcId)) {
@@ -392,35 +399,31 @@ const DerivedState = {
       });
     }
 
-    // Cycle expansion: highlight all arcs and nodes in all associated cycles
-    if (arc?.cycleIds && arc.cycleIds.length > 0) {
-      for (const cid of arc.cycleIds) {
-        const cycle = staticData.getCycle(cid);
-        if (!cycle) continue;
-        for (const nodeId of cycle.nodes) {
-          if (!result.nodeHighlights.has(nodeId)) {
-            result.nodeHighlights.set(nodeId, {
-              role: 'cycle-member',
-              cssClass: 'cycleMember',
-            });
-          }
+    // Cluster expansion: highlight every node and arc sharing the SCC.
+    if (expandCluster) {
+      for (const nodeId of staticData.getAllNodeIds()) {
+        if (result.nodeHighlights.has(nodeId)) continue;
+        if (staticData.getNode(nodeId)?.sccId === sccId) {
+          result.nodeHighlights.set(nodeId, {
+            role: 'cycle-member',
+            cssClass: 'cycleMember',
+          });
         }
-        for (const cycleArcId of cycle.arcs) {
-          if (cycleArcId === arcId) continue;
-          if (result.arcHighlights.has(cycleArcId)) continue;
-          const cycleArc = staticData.getArc(cycleArcId);
-          if (cycleArc && !hiddenByFilter.has(cycleArcId)) {
-            descs.push({
-              key: cycleArcId,
-              fromId: cycleArc.from,
-              toId: cycleArc.to,
-              fromInSet: true,
-              toInSet: true,
-              originalWidth: staticData.getArcStrokeWidth(cycleArcId),
-              isVirtual: false,
-              isCycle: true,
-            });
-          }
+      }
+      for (const otherArcId of staticData.getAllArcIds()) {
+        if (otherArcId === arcId) continue;
+        const other = staticData.getArc(otherArcId);
+        if (other?.sccId === sccId && !hiddenByFilter.has(otherArcId)) {
+          descs.push({
+            key: otherArcId,
+            fromId: other.from,
+            toId: other.to,
+            fromInSet: true,
+            toInSet: true,
+            originalWidth: staticData.getArcStrokeWidth(otherArcId),
+            isVirtual: false,
+            isCycle: true,
+          });
         }
       }
     }

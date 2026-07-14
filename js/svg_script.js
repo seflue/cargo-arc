@@ -975,65 +975,92 @@ if (typeof document !== 'undefined') {
       return collapsed;
     }
 
-    // Generic toggle for arc-class visibility (shared by crate-dep and module-dep)
-    function toggleArcClassVisibility(checkboxSelector, arcClass) {
-      const checkbox = DomAdapter.querySelector(checkboxSelector);
-      if (!checkbox) return;
+    // Read which arc-visibility layers are currently active from their checkboxes.
+    function readActiveArcLayers() {
+      const isOn = (selector) =>
+        !!DomAdapter.querySelector(selector)?.classList.contains(C.checked);
+      return {
+        crateDep: isOn('#crate-dep-checkbox'),
+        moduleDep: isOn('#module-dep-checkbox'),
+        reexport: isOn('#reexport-dep-checkbox'),
+        clusterMode: isOn('#cycles-checkbox'),
+      };
+    }
 
-      const isChecked = checkbox.classList.toggle(C.checked);
+    // Derive an arc's layer membership from the classes it carries.
+    function arcLayerMembership(arc) {
+      return {
+        isCrateDep: arc.classList.contains(C.crateDepArc),
+        isModuleDep: arc.classList.contains(C.moduleDepArc),
+        isReexport: arc.classList.contains(C.reexportArc),
+        isCycle: arc.classList.contains(C.cycleArc),
+      };
+    }
 
-      DomAdapter.querySelectorAll(`.${arcClass}`).forEach((arc) => {
-        arc.classList.toggle(C.hiddenByFilter, !isChecked);
-      });
+    // Recompute visibility of every arc from the active layers. An arc is
+    // visible when any layer it belongs to (its dep-type, plus the cluster
+    // layer for cycle arcs) is active. Replaces per-class toggling so the
+    // outcome is deterministic regardless of toggle order. Arcs with an
+    // endpoint hidden by the node filter (external/transitive) stay hidden:
+    // both filters share the hidden-by-filter class, so the layer recompute
+    // must not resurrect node-filtered arcs.
+    function recomputeArcVisibility() {
+      const active = readActiveArcLayers();
+      const filterHiddenNodes = getFilterHiddenNodeIds();
 
-      // Also hide/show associated hitareas and arrows, track in AppState
       DomAdapter.querySelectorAll(
         `.${C.arcHitarea}:not(.${C.virtualHitarea})`,
       ).forEach((hitarea) => {
         const arcId = hitarea.dataset.arcId;
-        const visibleArc = DomAdapter.querySelector(
-          `.${arcClass}[data-arc-id="${arcId}"]`,
-        );
-        if (visibleArc) {
-          if (isChecked) {
-            hitarea.classList.remove(C.hiddenByFilter);
-            AppState.showArc(appState, arcId);
-          } else {
-            hitarea.classList.add(C.hiddenByFilter);
-            AppState.hideArc(appState, arcId);
-          }
-          DomAdapter.getArrows(arcId).forEach((arrow) => {
-            arrow.classList.toggle(C.hiddenByFilter, !isChecked);
-          });
+        const arc = DomAdapter.getArc(arcId);
+        if (!arc) return;
+
+        const endpoints = StaticData.getArc(arcId);
+        const nodeFilteredOut =
+          !!endpoints &&
+          (filterHiddenNodes.has(endpoints.from) ||
+            filterHiddenNodes.has(endpoints.to));
+        const visible =
+          !nodeFilteredOut &&
+          ArcLogic.isArcVisibleForLayers(arcLayerMembership(arc), active);
+        arc.classList.toggle(C.hiddenByFilter, !visible);
+        hitarea.classList.toggle(C.hiddenByFilter, !visible);
+        DomAdapter.getArrows(arcId).forEach((arrow) => {
+          arrow.classList.toggle(C.hiddenByFilter, !visible);
+        });
+        if (visible) {
+          AppState.showArc(appState, arcId);
+        } else {
+          AppState.hideArc(appState, arcId);
         }
       });
+
+      // Virtual arcs are aggregated module-deps — they follow module-dep.
+      DomAdapter.querySelectorAll(Selectors.allVirtualElements()).forEach(
+        (el) => {
+          el.classList.toggle(C.hiddenByFilter, !active.moduleDep);
+        },
+      );
 
       invalidateFilterHiddenNodeIds();
       highlightTiming.immediate();
     }
 
-    // Toggle visibility of crate-to-crate dependency arcs
-    function toggleCrateDepVisibility() {
-      toggleArcClassVisibility('#crate-dep-checkbox', C.crateDepArc);
+    // Flip one dep-type layer's checkbox, then recompute arc visibility.
+    function toggleLayerCheckbox(checkboxSelector) {
+      DomAdapter.querySelector(checkboxSelector)?.classList.toggle(C.checked);
+      recomputeArcVisibility();
     }
 
-    // Toggle visibility of re-export arcs (default hidden)
-    function toggleReexportVisibility() {
-      toggleArcClassVisibility('#reexport-dep-checkbox', C.reexportArc);
-    }
-
-    // Toggle visibility of module-to-module dependency arcs
-    function toggleModuleDepVisibility() {
-      toggleArcClassVisibility('#module-dep-checkbox', C.moduleDepArc);
-
-      // Virtual arcs are aggregated module-deps — toggle them too
-      const checkbox = DomAdapter.querySelector('#module-dep-checkbox');
-      const isChecked = checkbox?.classList.contains(C.checked);
-      DomAdapter.querySelectorAll(Selectors.allVirtualElements()).forEach(
-        (el) => {
-          el.classList.toggle(C.hiddenByFilter, !isChecked);
-        },
-      );
+    // Toggle the cluster (cycles) layer: styling state on the SVG root plus
+    // visibility of cycle arcs. Cycle styling (red) is CSS-gated on the root
+    // class; visibility is recomputed like the other layers.
+    function toggleCyclesVisibility() {
+      const checkbox = DomAdapter.querySelector('#cycles-checkbox');
+      const isChecked = checkbox ? checkbox.classList.toggle(C.checked) : false;
+      DomAdapter.getSvgRoot()?.classList.toggle(C.clusterModeOn, isChecked);
+      AppState.setClusterMode(appState, isChecked);
+      recomputeArcVisibility();
     }
 
     function toggleFilteredNodes(isChecked, isTargetNode, isTargetArc) {
@@ -1220,21 +1247,28 @@ if (typeof document !== 'undefined') {
       ?.closest('label')
       ?.addEventListener('click', (e) => {
         e.stopPropagation();
-        toggleCrateDepVisibility();
+        toggleLayerCheckbox('#crate-dep-checkbox');
       });
 
     DomAdapter.querySelector('#module-dep-checkbox')
       ?.closest('label')
       ?.addEventListener('click', (e) => {
         e.stopPropagation();
-        toggleModuleDepVisibility();
+        toggleLayerCheckbox('#module-dep-checkbox');
       });
 
     DomAdapter.querySelector('#reexport-dep-checkbox')
       ?.closest('label')
       ?.addEventListener('click', (e) => {
         e.stopPropagation();
-        toggleReexportVisibility();
+        toggleLayerCheckbox('#reexport-dep-checkbox');
+      });
+
+    DomAdapter.querySelector('#cycles-checkbox')
+      ?.closest('label')
+      ?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleCyclesVisibility();
       });
 
     DomAdapter.querySelector('#external-dep-checkbox')

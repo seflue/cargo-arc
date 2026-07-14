@@ -32,6 +32,9 @@ pub struct CycleAnalysis {
     pub cycles: Vec<Cycle>,
     /// For every cyclic edge: ascending indices into `cycles` it lies on.
     pub edge_cycles: HashMap<(NodeIndex, NodeIndex), Vec<usize>>,
+    /// For every node in a non-trivial SCC: its SCC id. Nodes outside any cycle
+    /// are absent. Ids are assigned sequentially in `tarjan_scc` order.
+    pub node_scc: HashMap<NodeIndex, usize>,
 }
 
 /// Shortest cycle per edge, bounded and deterministic (replaces exhaustive
@@ -47,10 +50,17 @@ pub trait MinimalCycles {
 impl MinimalCycles for petgraph::graph::DiGraph<NodeIndex, ()> {
     fn minimal_cycles(&self) -> CycleAnalysis {
         let mut raw: Vec<Cycle> = Vec::new();
+        let mut node_scc: HashMap<NodeIndex, usize> = HashMap::new();
+        let mut next_scc_id = 0;
 
         for scc in tarjan_scc(self) {
             if scc.len() <= 1 {
                 continue;
+            }
+            let scc_id = next_scc_id;
+            next_scc_id += 1;
+            for &node in &scc {
+                node_scc.insert(self[node], scc_id);
             }
             let scc_set: HashSet<NodeIndex> = scc.iter().copied().collect();
 
@@ -101,6 +111,7 @@ impl MinimalCycles for petgraph::graph::DiGraph<NodeIndex, ()> {
         CycleAnalysis {
             cycles,
             edge_cycles,
+            node_scc,
         }
     }
 }
@@ -194,6 +205,7 @@ mod tests {
         let a = graph.minimal_cycles();
         assert!(a.cycles.is_empty());
         assert!(a.edge_cycles.is_empty());
+        assert!(a.node_scc.is_empty());
     }
 
     #[test]
@@ -221,6 +233,10 @@ mod tests {
         for c in &a.cycles {
             assert_eq!(c.path.len(), 2);
         }
+        // All three nodes belong to the same SCC.
+        let scc = a.node_scc[&node(0)];
+        assert_eq!(a.node_scc[&node(1)], scc);
+        assert_eq!(a.node_scc[&node(2)], scc);
     }
 
     #[test]
@@ -228,6 +244,10 @@ mod tests {
         let graph = digraph(4, &[(0, 1), (1, 0), (2, 3), (3, 2)]);
         let a = graph.minimal_cycles();
         assert_eq!(a.cycles.len(), 2);
+        // Two disjoint SCCs {0,1} and {2,3} get distinct ids; each pair shares one.
+        assert_eq!(a.node_scc[&node(0)], a.node_scc[&node(1)]);
+        assert_eq!(a.node_scc[&node(2)], a.node_scc[&node(3)]);
+        assert_ne!(a.node_scc[&node(0)], a.node_scc[&node(2)]);
     }
 
     #[test]

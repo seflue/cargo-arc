@@ -106,15 +106,25 @@ fn build_css_rules() -> Vec<CssRule> {
         ),
         CssRule::class(c.direction.dep_arrow, &[("fill", d.downward)]),
         CssRule::class(c.direction.upward_arrow, &[("fill", d.upward)]),
-        CssRule::class(
-            c.direction.cycle_arc,
+        // Cycle color applies only under the container state. Without it, cycle
+        // edges keep their directional dep color (they carry dep-arc + direction
+        // classes). Placed after the dep rules so the tie in specificity with
+        // `.dep-arc.downward` resolves in this rule's favor via source order.
+        CssRule::new(
+            &format!(".{} .{}", c.relation.cluster_mode_on, c.direction.cycle_arc),
             &[
                 ("fill", "none"),
                 ("stroke", d.cycle),
                 ("stroke-width", "1.0"),
             ],
         ),
-        CssRule::class(c.direction.cycle_arrow, &[("fill", d.cycle)]),
+        CssRule::new(
+            &format!(
+                ".{} .{}",
+                c.relation.cluster_mode_on, c.direction.cycle_arrow
+            ),
+            &[("fill", d.cycle)],
+        ),
         // Hit-area
         CssRule::class(
             c.direction.arc_hitarea,
@@ -1001,6 +1011,32 @@ pub(super) fn render_styles() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_cycle_color_gated_by_cluster_mode() {
+        // The cycle color must only apply under the .cluster-mode-on container
+        // state; without it, cycle edges keep the directional dependency color.
+        let css = render_styles();
+        let d = &CSS.direction;
+        let state = CSS.relation.cluster_mode_on;
+        let cycle_color = COLORS.direction.cycle;
+        // Gated cycle-arc rule carries the cycle stroke color.
+        assert!(
+            css.contains(&format!(
+                ".{state} .{} {{ fill: none; stroke: {cycle_color}",
+                d.cycle_arc
+            )),
+            "cycle-arc color should be gated behind .cluster-mode-on"
+        );
+        // Gated cycle-arrow rule carries the cycle fill color.
+        assert!(
+            css.contains(&format!(
+                ".{state} .{} {{ fill: {cycle_color}",
+                d.cycle_arrow
+            )),
+            "cycle-arrow color should be gated behind .cluster-mode-on"
+        );
+    }
 
     #[test]
     fn test_css_builder_parity() {

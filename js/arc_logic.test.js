@@ -65,3 +65,49 @@ describe('ArcLogic (Arrow functions)', () => {
     });
   });
 });
+
+describe('ArcLogic.isArcVisibleForLayers', () => {
+  test('cycle arc is visible via cluster layer when its dep-type layer is off', () => {
+    const membership = { isModuleDep: true, isCycle: true };
+    const active = { moduleDep: false, clusterMode: true };
+    expect(ArcLogic.isArcVisibleForLayers(membership, active)).toBe(true);
+  });
+
+  test('cycle arc is visible via its dep-type layer when cluster is off', () => {
+    const membership = { isModuleDep: true, isCycle: true };
+    const active = { moduleDep: true, clusterMode: false };
+    expect(ArcLogic.isArcVisibleForLayers(membership, active)).toBe(true);
+  });
+
+  test('cycle arc is hidden when both its dep-type and cluster layers are off', () => {
+    const membership = { isModuleDep: true, isCycle: true };
+    const active = { moduleDep: false, clusterMode: false };
+    expect(ArcLogic.isArcVisibleForLayers(membership, active)).toBe(false);
+  });
+
+  test('non-cycle dep arc is hidden when its dep-type layer is off, even with cluster on', () => {
+    const membership = { isModuleDep: true, isCycle: false };
+    const active = { moduleDep: false, clusterMode: true };
+    expect(ArcLogic.isArcVisibleForLayers(membership, active)).toBe(false);
+  });
+
+  test('crate-dep arc follows the crate layer', () => {
+    const membership = { isCrateDep: true };
+    expect(ArcLogic.isArcVisibleForLayers(membership, { crateDep: true })).toBe(
+      true,
+    );
+    expect(
+      ArcLogic.isArcVisibleForLayers(membership, { crateDep: false }),
+    ).toBe(false);
+  });
+
+  test('reexport arc follows the reexport layer', () => {
+    const membership = { isReexport: true };
+    expect(ArcLogic.isArcVisibleForLayers(membership, { reexport: true })).toBe(
+      true,
+    );
+    expect(
+      ArcLogic.isArcVisibleForLayers(membership, { reexport: false }),
+    ).toBe(false);
+  });
+});

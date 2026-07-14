@@ -67,6 +67,24 @@ const ArcLogic = {
     });
   },
 
+  /**
+   * Decide whether an arc should be visible given active toggle layers.
+   * An arc belongs to its dependency-type layer (crate/module/reexport) and,
+   * if it is part of a cycle, additionally to the cluster layer. Visibility is
+   * the OR over all layers the arc belongs to that are currently active.
+   * @param {{isCrateDep?: boolean, isModuleDep?: boolean, isReexport?: boolean, isCycle?: boolean}} membership
+   * @param {{crateDep?: boolean, moduleDep?: boolean, reexport?: boolean, clusterMode?: boolean}} active
+   * @returns {boolean}
+   */
+  isArcVisibleForLayers(membership, active) {
+    return Boolean(
+      (membership.isCrateDep && active.crateDep) ||
+        (membership.isModuleDep && active.moduleDep) ||
+        (membership.isReexport && active.reexport) ||
+        (membership.isCycle && active.clusterMode),
+    );
+  },
+
   // Expose constants for testing
   ARROW_LENGTH,
   ARROW_HALF_WIDTH,

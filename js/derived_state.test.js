@@ -1419,106 +1419,49 @@ describe('DerivedState', () => {
     });
   });
 
-  describe('cycle expansion (arc selection)', () => {
+  describe('SCC expansion (arc selection)', () => {
     const ROW_HEIGHT = 30;
 
-    // Cycle: A → B → C → A (cycleIds=[0]), plus non-cycle A → D
+    // Node/arc factories: sccId is attached only when provided, matching the
+    // Rust output where non-cycle nodes/arcs carry no sccId.
+    const mkNode = (y, sccId) => ({
+      type: 'module',
+      parent: null,
+      x: 20,
+      y,
+      width: 100,
+      height: 20,
+      hasChildren: false,
+      ...(sccId !== undefined ? { sccId } : {}),
+    });
+    const mkArc = (from, to, sccId) => ({
+      from,
+      to,
+      context: { kind: 'production', subKind: null, features: [] },
+      usages: [
+        {
+          symbol: 's',
+          modulePath: null,
+          locations: [{ file: 'x.rs', line: 1 }],
+        },
+      ],
+      ...(sccId !== undefined ? { sccId } : {}),
+    });
+
+    // SCC {A,B,C} via arcs A→B→C→A (sccId=0), plus non-cycle A→D.
     const CYCLE_DATA = {
       nodes: {
-        A: {
-          type: 'module',
-          parent: null,
-          x: 20,
-          y: 60,
-          width: 100,
-          height: 20,
-          hasChildren: false,
-        },
-        B: {
-          type: 'module',
-          parent: null,
-          x: 20,
-          y: 90,
-          width: 100,
-          height: 20,
-          hasChildren: false,
-        },
-        C: {
-          type: 'module',
-          parent: null,
-          x: 20,
-          y: 120,
-          width: 100,
-          height: 20,
-          hasChildren: false,
-        },
-        D: {
-          type: 'module',
-          parent: null,
-          x: 20,
-          y: 150,
-          width: 100,
-          height: 20,
-          hasChildren: false,
-        },
+        A: mkNode(60, 0),
+        B: mkNode(90, 0),
+        C: mkNode(120, 0),
+        D: mkNode(150),
       },
       arcs: {
-        'A-B': {
-          from: 'A',
-          to: 'B',
-          cycleIds: [0],
-          context: { kind: 'production', subKind: null, features: [] },
-          usages: [
-            {
-              symbol: 'sym1',
-              modulePath: null,
-              locations: [{ file: 'a.rs', line: 1 }],
-            },
-          ],
-        },
-        'B-C': {
-          from: 'B',
-          to: 'C',
-          cycleIds: [0],
-          context: { kind: 'production', subKind: null, features: [] },
-          usages: [
-            {
-              symbol: 'sym2',
-              modulePath: null,
-              locations: [
-                { file: 'b.rs', line: 1 },
-                { file: 'b.rs', line: 2 },
-              ],
-            },
-          ],
-        },
-        'C-A': {
-          from: 'C',
-          to: 'A',
-          cycleIds: [0],
-          context: { kind: 'production', subKind: null, features: [] },
-          usages: [
-            {
-              symbol: 'sym3',
-              modulePath: null,
-              locations: [{ file: 'c.rs', line: 1 }],
-            },
-          ],
-        },
-        'A-D': {
-          from: 'A',
-          to: 'D',
-          context: { kind: 'production', subKind: null, features: [] },
-          usages: [
-            {
-              symbol: 'sym4',
-              modulePath: null,
-              locations: [{ file: 'a.rs', line: 5 }],
-            },
-          ],
-        },
+        'A-B': mkArc('A', 'B', 0),
+        'B-C': mkArc('B', 'C', 0),
+        'C-A': mkArc('C', 'A', 0),
+        'A-D': mkArc('A', 'D'),
       },
-      cycles: [{ nodes: ['A', 'B', 'C'], arcs: ['A-B', 'B-C', 'C-A'] }],
     };
 
     const CYCLE_POSITIONS = new Map([
@@ -1527,19 +1470,6 @@ describe('DerivedState', () => {
       ['C', { x: 20, y: 120, width: 100, height: 20 }],
       ['D', { x: 20, y: 150, width: 100, height: 20 }],
     ]);
-
-    let savedStaticData;
-
-    beforeEach(() => {
-      savedStaticData = globalThis.STATIC_DATA;
-      globalThis.STATIC_DATA = {
-        cycles: CYCLE_DATA.cycles,
-      };
-    });
-
-    afterEach(() => {
-      globalThis.STATIC_DATA = savedStaticData;
-    });
 
     test('cycle-arc selection: all cycle arcs in arcHighlights', () => {
       const sd = createMockStaticData(CYCLE_DATA);
@@ -1651,118 +1581,23 @@ describe('DerivedState', () => {
       expect(shadow.glowClass).toBe('glowIncoming');
     });
 
-    test('multi-cycle arc: union of all cycle members highlighted', () => {
-      // Arc B-C belongs to both cycle 0 (A→B→C→A) and cycle 1 (B→C→E→B)
+    test('multi-cycle arc: whole SCC highlighted (two cycles, one SCC)', () => {
+      // Two elementary cycles A→B→C→A and B→C→E→B share the arc B-C, so all
+      // four nodes are mutually reachable: one SCC (sccId=0).
       const MULTI_CYCLE_DATA = {
         nodes: {
-          A: {
-            type: 'module',
-            parent: null,
-            x: 20,
-            y: 60,
-            width: 100,
-            height: 20,
-            hasChildren: false,
-          },
-          B: {
-            type: 'module',
-            parent: null,
-            x: 20,
-            y: 90,
-            width: 100,
-            height: 20,
-            hasChildren: false,
-          },
-          C: {
-            type: 'module',
-            parent: null,
-            x: 20,
-            y: 120,
-            width: 100,
-            height: 20,
-            hasChildren: false,
-          },
-          E: {
-            type: 'module',
-            parent: null,
-            x: 20,
-            y: 150,
-            width: 100,
-            height: 20,
-            hasChildren: false,
-          },
+          A: mkNode(60, 0),
+          B: mkNode(90, 0),
+          C: mkNode(120, 0),
+          E: mkNode(150, 0),
         },
         arcs: {
-          'A-B': {
-            from: 'A',
-            to: 'B',
-            cycleIds: [0],
-            context: { kind: 'production', subKind: null, features: [] },
-            usages: [
-              {
-                symbol: 'sym1',
-                modulePath: null,
-                locations: [{ file: 'a.rs', line: 1 }],
-              },
-            ],
-          },
-          'B-C': {
-            from: 'B',
-            to: 'C',
-            cycleIds: [0, 1],
-            context: { kind: 'production', subKind: null, features: [] },
-            usages: [
-              {
-                symbol: 'sym2',
-                modulePath: null,
-                locations: [{ file: 'b.rs', line: 1 }],
-              },
-            ],
-          },
-          'C-A': {
-            from: 'C',
-            to: 'A',
-            cycleIds: [0],
-            context: { kind: 'production', subKind: null, features: [] },
-            usages: [
-              {
-                symbol: 'sym3',
-                modulePath: null,
-                locations: [{ file: 'c.rs', line: 1 }],
-              },
-            ],
-          },
-          'C-E': {
-            from: 'C',
-            to: 'E',
-            cycleIds: [1],
-            context: { kind: 'production', subKind: null, features: [] },
-            usages: [
-              {
-                symbol: 'sym4',
-                modulePath: null,
-                locations: [{ file: 'c.rs', line: 5 }],
-              },
-            ],
-          },
-          'E-B': {
-            from: 'E',
-            to: 'B',
-            cycleIds: [1],
-            context: { kind: 'production', subKind: null, features: [] },
-            usages: [
-              {
-                symbol: 'sym5',
-                modulePath: null,
-                locations: [{ file: 'e.rs', line: 1 }],
-              },
-            ],
-          },
+          'A-B': mkArc('A', 'B', 0),
+          'B-C': mkArc('B', 'C', 0),
+          'C-A': mkArc('C', 'A', 0),
+          'C-E': mkArc('C', 'E', 0),
+          'E-B': mkArc('E', 'B', 0),
         },
-        cycles: [
-          { nodes: ['A', 'B', 'C'], arcs: ['A-B', 'B-C', 'C-A'] },
-          { nodes: ['B', 'C', 'E'], arcs: ['B-C', 'C-E', 'E-B'] },
-        ],
       };
       const multiPositions = new Map([
         ['A', { x: 20, y: 60, width: 100, height: 20 }],
@@ -1770,10 +1605,6 @@ describe('DerivedState', () => {
         ['C', { x: 20, y: 120, width: 100, height: 20 }],
         ['E', { x: 20, y: 150, width: 100, height: 20 }],
       ]);
-
-      globalThis.STATIC_DATA = {
-        cycles: MULTI_CYCLE_DATA.cycles,
-      };
 
       const sd = createMockStaticData(MULTI_CYCLE_DATA);
       const state = AppState.create();
@@ -1789,7 +1620,7 @@ describe('DerivedState', () => {
       );
 
       expect(result).not.toBeNull();
-      // All arcs from both cycles should be highlighted
+      // All arcs of the SCC should be highlighted
       expect(result.arcHighlights.has('B-C')).toBe(true);
       expect(result.arcHighlights.has('A-B')).toBe(true);
       expect(result.arcHighlights.has('C-A')).toBe(true);
@@ -1808,6 +1639,50 @@ describe('DerivedState', () => {
         role: 'cycle-member',
         cssClass: 'cycleMember',
       });
+    });
+
+    test('cluster stability: any arc of an SCC highlights the same set', () => {
+      const sd = createMockStaticData(CYCLE_DATA);
+
+      const highlightsFor = (arcId) => {
+        const state = AppState.create();
+        AppState.setSelection(state, 'arc', arcId);
+        const result = DerivedState.deriveHighlightState(
+          state,
+          sd,
+          new Map(),
+          new Set(),
+          CYCLE_POSITIONS,
+          ROW_HEIGHT,
+        );
+        return [...result.arcHighlights.keys()].sort();
+      };
+
+      // Picking A→B or C→A of the same SCC yields an identical arc set.
+      expect(highlightsFor('A-B')).toEqual(highlightsFor('C-A'));
+    });
+
+    test('clusterMode off: arc selection highlights only that edge', () => {
+      const sd = createMockStaticData(CYCLE_DATA);
+      const state = AppState.create();
+      AppState.setClusterMode(state, false);
+      AppState.setSelection(state, 'arc', 'A-B');
+
+      const result = DerivedState.deriveHighlightState(
+        state,
+        sd,
+        new Map(),
+        new Set(),
+        CYCLE_POSITIONS,
+        ROW_HEIGHT,
+      );
+
+      expect(result.arcHighlights.has('A-B')).toBe(true);
+      expect(result.arcHighlights.has('B-C')).toBe(false);
+      expect(result.arcHighlights.has('C-A')).toBe(false);
+      expect(result.nodeHighlights.has('C')).toBe(false);
+      // No cycle glow when the cluster layer is off.
+      expect(result.shadowData.get('A-B')?.glowClass).not.toBe('glowCycle');
     });
   });
 

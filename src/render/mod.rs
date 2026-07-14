@@ -212,6 +212,19 @@ mod tests {
     }
 
     #[test]
+    fn test_svg_root_has_cluster_mode_on_by_default() {
+        let ir = LayoutIR::new();
+        let svg = render(&ir, &RenderConfig::default());
+        assert!(
+            svg.contains(&format!(
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" class=\"{}\"",
+                crate::render::constants::CSS.relation.cluster_mode_on
+            )),
+            "SVG root should carry the cluster-mode-on state class by default"
+        );
+    }
+
+    #[test]
     fn test_render_single_crate() {
         let mut ir = LayoutIR::new();
         ir.add_item(ItemKind::Crate, "my_crate".into());
@@ -265,14 +278,17 @@ mod tests {
         );
 
         // Test DirectCycle
-        ir.edges.push(
-            LayoutEdge::new(a, b, EdgeContext::production()).with_cycle(CycleKind::Direct, vec![0]),
-        );
+        ir.edges
+            .push(LayoutEdge::new(a, b, EdgeContext::production()).with_cycle(
+                CycleKind::Direct,
+                vec![0],
+                0,
+            ));
         let svg = render(&ir, &RenderConfig::default());
         assert!(svg.contains("cycle-arc"));
-        // DirectCycle should have two arrows (bidirectional)
-        // Count polygon elements with cycle-arrow class (not style definition)
-        assert_eq!(svg.matches(r#"class="cycle-arrow""#).count(), 2);
+        // DirectCycle should have two arrows (bidirectional). cycle-arrow is an
+        // additive marker on top of the directional arrow class.
+        assert_eq!(svg.matches(r#"class="dep-arrow cycle-arrow""#).count(), 2);
 
         // Test TransitiveCycle
         let mut ir2 = LayoutIR::new();
@@ -292,8 +308,11 @@ mod tests {
             "b".into(),
         );
         ir2.edges.push(
-            LayoutEdge::new(a2, b2, EdgeContext::production())
-                .with_cycle(CycleKind::Transitive, vec![0]),
+            LayoutEdge::new(a2, b2, EdgeContext::production()).with_cycle(
+                CycleKind::Transitive,
+                vec![0],
+                0,
+            ),
         );
         let svg2 = render(&ir2, &RenderConfig::default());
         assert!(svg2.contains("cycle-arc"));
@@ -446,9 +465,12 @@ mod tests {
         );
 
         // Add edges in "wrong" order: cycle first, then production, then test
-        ir.edges.push(
-            LayoutEdge::new(a, b, EdgeContext::production()).with_cycle(CycleKind::Direct, vec![0]),
-        );
+        ir.edges
+            .push(LayoutEdge::new(a, b, EdgeContext::production()).with_cycle(
+                CycleKind::Direct,
+                vec![0],
+                0,
+            ));
         ir.edges
             .push(LayoutEdge::new(b, d, EdgeContext::production()));
         ir.edges

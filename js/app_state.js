@@ -16,7 +16,8 @@ const AppState = {
    *   collapsed: Set<string>,
    *   clickSelection: { type: 'node'|'arc'|null, id: string|null },
    *   hoverSelection: { type: 'node'|'arc'|null, id: string|null },
-   *   hiddenArcIds: Set<string>
+   *   hiddenArcIds: Set<string>,
+   *   clusterMode: boolean
    * }}
    */
   create() {
@@ -25,6 +26,7 @@ const AppState = {
       clickSelection: { type: null, id: null },
       hoverSelection: { type: null, id: null },
       hiddenArcIds: new Set(),
+      clusterMode: true,
     };
   },
 
@@ -193,6 +195,18 @@ const AppState = {
   getPinned(state) {
     if (state.clickSelection.type === null) return null;
     return { ...state.clickSelection };
+  },
+
+  // === Cluster Mode ===
+
+  /** @param {Object} state @returns {boolean} */
+  isClusterMode(state) {
+    return state.clusterMode;
+  },
+
+  /** @param {Object} state @param {boolean} on */
+  setClusterMode(state, on) {
+    state.clusterMode = on;
   },
 };
 

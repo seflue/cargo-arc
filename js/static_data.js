@@ -201,15 +201,6 @@ const StaticData = {
   },
 
   /**
-   * Get cycle data by ID.
-   * @param {number} cycleId
-   * @returns {Object|null}
-   */
-  getCycle(cycleId) {
-    return STATIC_DATA.cycles?.[cycleId] ?? null;
-  },
-
-  /**
    * Get external crate nodes grouped by name.
    * Crates with same name but different versions are grouped together.
    * @returns {Map<string, string[]>} name -> [nodeId, ...] sorted by version

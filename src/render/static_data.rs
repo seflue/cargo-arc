@@ -35,6 +35,8 @@ struct NodeData {
     nesting: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scc_id: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -46,6 +48,8 @@ struct ArcData {
     usages: Vec<SymbolUsageGroup>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     cycle_ids: Vec<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scc_id: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -83,9 +87,19 @@ struct UsageLocation {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct CycleData {
     nodes: Vec<String>,
     arcs: Vec<String>,
+    scc_id: usize,
+}
+
+/// Accumulates a cycle's nodes, arcs, and SCC id while iterating edges.
+#[derive(Default)]
+struct CycleAccum {
+    nodes: BTreeSet<NodeId>,
+    arcs: BTreeSet<String>,
+    scc_id: Option<usize>,
 }
 
 // === Data building ===
@@ -209,6 +223,7 @@ fn generate_static_data(
                 has_children: parents.contains(&pos.id),
                 nesting: super::positioning::item_nesting(&item.kind),
                 version: item.version.clone(),
+                scc_id: item.scc_id,
             },
         );
     }
@@ -225,24 +240,31 @@ fn generate_static_data(
                 context: ArcContext::from(&edge.context),
                 usages,
                 cycle_ids: edge.cycle_ids.clone(),
+                scc_id: edge.scc_id,
             },
         );
     }
 
-    let mut cycle_map: BTreeMap<usize, (BTreeSet<NodeId>, BTreeSet<String>)> = BTreeMap::new();
+    let mut cycle_map: BTreeMap<usize, CycleAccum> = BTreeMap::new();
     for edge in &ir.edges {
         for &cid in &edge.cycle_ids {
             let entry = cycle_map.entry(cid).or_default();
-            entry.0.insert(edge.from);
-            entry.0.insert(edge.to);
-            entry.1.insert(format!("{}-{}", edge.from, edge.to));
+            entry.nodes.insert(edge.from);
+            entry.nodes.insert(edge.to);
+            entry.arcs.insert(format!("{}-{}", edge.from, edge.to));
+            entry.scc_id = entry.scc_id.or(edge.scc_id);
         }
     }
     let cycles: Vec<CycleData> = cycle_map
         .into_values()
-        .map(|(nodes, arcs)| CycleData {
-            nodes: nodes.iter().map(std::string::ToString::to_string).collect(),
-            arcs: arcs.into_iter().collect(),
+        .map(|accum| CycleData {
+            nodes: accum
+                .nodes
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
+            arcs: accum.arcs.into_iter().collect(),
+            scc_id: accum.scc_id.expect("every cycle lies in an SCC"),
         })
         .collect();
 
@@ -263,6 +285,7 @@ fn generate_static_data(
         ("upwardArrow", CSS.direction.upward_arrow),
         ("cycleArc", CSS.direction.cycle_arc),
         ("cycleArrow", CSS.direction.cycle_arrow),
+        ("clusterModeOn", CSS.relation.cluster_mode_on),
         ("arcHitarea", CSS.direction.arc_hitarea),
         ("crateDepArc", CSS.direction.crate_dep_arc),
         ("moduleDepArc", CSS.direction.module_dep_arc),
@@ -1361,18 +1384,30 @@ mod tests {
             },
             "m_c".into(),
         );
-        // Cycle edges with cycle_ids=[0]
+        // Cycle nodes a, b, m_c are in SCC 0; the crate node is not.
+        ir.items[a].scc_id = Some(0);
+        ir.items[b].scc_id = Some(0);
+        ir.items[m_c].scc_id = Some(0);
+        // Cycle edges with cycle_ids=[0], all in SCC 0
+        ir.edges
+            .push(LayoutEdge::new(a, b, EdgeContext::production()).with_cycle(
+                crate::layout::CycleKind::Transitive,
+                vec![0],
+                0,
+            ));
         ir.edges.push(
-            LayoutEdge::new(a, b, EdgeContext::production())
-                .with_cycle(crate::layout::CycleKind::Transitive, vec![0]),
+            LayoutEdge::new(b, m_c, EdgeContext::production()).with_cycle(
+                crate::layout::CycleKind::Transitive,
+                vec![0],
+                0,
+            ),
         );
         ir.edges.push(
-            LayoutEdge::new(b, m_c, EdgeContext::production())
-                .with_cycle(crate::layout::CycleKind::Transitive, vec![0]),
-        );
-        ir.edges.push(
-            LayoutEdge::new(m_c, a, EdgeContext::production())
-                .with_cycle(crate::layout::CycleKind::Transitive, vec![0]),
+            LayoutEdge::new(m_c, a, EdgeContext::production()).with_cycle(
+                crate::layout::CycleKind::Transitive,
+                vec![0],
+                0,
+            ),
         );
         // Non-cycle edge (no cycle_ids)
         ir.edges
@@ -1417,6 +1452,17 @@ mod tests {
             data["arcs"]["1-3"].get("cycleIds").is_none(),
             "Non-cycle arc 1-3 should NOT have cycleIds"
         );
+
+        // Cycle carries its SCC id.
+        assert_eq!(cycles[0]["sccId"], serde_json::json!(0));
+
+        // Cycle arc "1-2" and cycle node "1" carry sccId 0.
+        assert_eq!(data["arcs"]["1-2"]["sccId"], serde_json::json!(0));
+        assert_eq!(data["nodes"]["1"]["sccId"], serde_json::json!(0));
+
+        // Non-cycle arc "1-3" and the crate node "0" have no sccId.
+        assert!(data["arcs"]["1-3"].get("sccId").is_none());
+        assert!(data["nodes"]["0"].get("sccId").is_none());
     }
 
     #[test]
@@ -1445,26 +1491,35 @@ mod tests {
             },
             "d".into(),
         );
+        // B<->C and B<->D share node B, so all four edges form one SCC (id 0).
         // B->C in cycle 0 only
-        ir.edges.push(
-            LayoutEdge::new(b, c, EdgeContext::production())
-                .with_cycle(crate::layout::CycleKind::Direct, vec![0]),
-        );
+        ir.edges
+            .push(LayoutEdge::new(b, c, EdgeContext::production()).with_cycle(
+                crate::layout::CycleKind::Direct,
+                vec![0],
+                0,
+            ));
         // C->B in cycle 0 only
-        ir.edges.push(
-            LayoutEdge::new(c, b, EdgeContext::production())
-                .with_cycle(crate::layout::CycleKind::Direct, vec![0]),
-        );
+        ir.edges
+            .push(LayoutEdge::new(c, b, EdgeContext::production()).with_cycle(
+                crate::layout::CycleKind::Direct,
+                vec![0],
+                0,
+            ));
         // B->D in cycle 1 only
-        ir.edges.push(
-            LayoutEdge::new(b, d, EdgeContext::production())
-                .with_cycle(crate::layout::CycleKind::Direct, vec![1]),
-        );
+        ir.edges
+            .push(LayoutEdge::new(b, d, EdgeContext::production()).with_cycle(
+                crate::layout::CycleKind::Direct,
+                vec![1],
+                0,
+            ));
         // D->B in cycle 1 only
-        ir.edges.push(
-            LayoutEdge::new(d, b, EdgeContext::production())
-                .with_cycle(crate::layout::CycleKind::Direct, vec![1]),
-        );
+        ir.edges
+            .push(LayoutEdge::new(d, b, EdgeContext::production()).with_cycle(
+                crate::layout::CycleKind::Direct,
+                vec![1],
+                0,
+            ));
 
         let config = RenderConfig::default();
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
@@ -1490,6 +1545,12 @@ mod tests {
         // Cycles array should have 2 entries
         let cycles = data["cycles"].as_array().expect("cycles is array");
         assert_eq!(cycles.len(), 2);
+
+        // Two elementary cycles, one SCC: both carry sccId 0, as do both arcs.
+        assert_eq!(cycles[0]["sccId"], serde_json::json!(0));
+        assert_eq!(cycles[1]["sccId"], serde_json::json!(0));
+        assert_eq!(data["arcs"]["1-2"]["sccId"], serde_json::json!(0));
+        assert_eq!(data["arcs"]["1-3"]["sccId"], serde_json::json!(0));
     }
 
     #[test]
@@ -1512,10 +1573,12 @@ mod tests {
             "b".into(),
         );
         // Edge A->B belongs to both cycle 0 and cycle 2
-        ir.edges.push(
-            LayoutEdge::new(a, b, EdgeContext::production())
-                .with_cycle(crate::layout::CycleKind::Direct, vec![0, 2]),
-        );
+        ir.edges
+            .push(LayoutEdge::new(a, b, EdgeContext::production()).with_cycle(
+                crate::layout::CycleKind::Direct,
+                vec![0, 2],
+                0,
+            ));
 
         let config = RenderConfig::default();
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));

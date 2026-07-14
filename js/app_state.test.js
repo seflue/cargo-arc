@@ -239,4 +239,19 @@ describe('AppState', () => {
       expect(AppState.isArcHidden(state, '1-2')).toBe(false);
     });
   });
+
+  describe('cluster mode', () => {
+    test('defaults to on', () => {
+      const state = AppState.create();
+      expect(AppState.isClusterMode(state)).toBe(true);
+    });
+
+    test('setClusterMode updates the flag', () => {
+      const state = AppState.create();
+      AppState.setClusterMode(state, false);
+      expect(AppState.isClusterMode(state)).toBe(false);
+      AppState.setClusterMode(state, true);
+      expect(AppState.isClusterMode(state)).toBe(true);
+    });
+  });
 });

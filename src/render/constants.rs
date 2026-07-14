@@ -297,6 +297,10 @@ pub(super) struct RelationClasses {
     pub glow_outgoing: &'static str,
     pub glow_cycle: &'static str,
     pub has_pinned: &'static str,
+    /// Container state class on the SVG root: when present, cycle-arc/cycle-arrow
+    /// render in the cycle color. Absent, they fall back to dependency styling.
+    /// Sits with the other root state classes ([`has_highlight`], [`has_pinned`]).
+    pub cluster_mode_on: &'static str,
 }
 
 #[allow(dead_code)]
@@ -441,6 +445,7 @@ pub(super) static CSS: CssClassNames = CssClassNames {
         glow_outgoing: "glow-outgoing",
         glow_cycle: "glow-cycle",
         has_pinned: "has-pinned",
+        cluster_mode_on: "cluster-mode-on",
     },
     toolbar: ToolbarClasses {
         view_options: "view-options",

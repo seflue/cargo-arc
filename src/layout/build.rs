@@ -34,6 +34,8 @@ pub struct LayoutItem {
     pub source_path: Option<String>,
     pub volatility: Option<(Volatility, usize)>,
     pub version: Option<String>,
+    /// SCC id when this node lies in a dependency cycle, else `None`.
+    pub scc_id: Option<usize>,
 }
 
 impl LayoutItem {
@@ -45,6 +47,7 @@ impl LayoutItem {
             source_path: None,
             volatility: None,
             version: None,
+            scc_id: None,
         }
     }
 }
@@ -68,6 +71,8 @@ pub struct LayoutEdge {
     pub direction: EdgeDirection,
     pub cycle: Option<CycleKind>,
     pub cycle_ids: Vec<usize>,
+    /// SCC id when this edge lies inside a cycle, else `None`.
+    pub scc_id: Option<usize>,
     pub source_locations: Vec<SourceLocation>,
     pub context: EdgeContext,
     /// Edge republishes names via `pub use` only (no behavioral coupling).
@@ -91,6 +96,7 @@ impl LayoutEdge {
             direction,
             cycle: None,
             cycle_ids: vec![],
+            scc_id: None,
             source_locations: vec![],
             context,
             reexport: false,
@@ -98,9 +104,10 @@ impl LayoutEdge {
     }
 
     #[must_use]
-    pub fn with_cycle(mut self, kind: CycleKind, ids: Vec<usize>) -> Self {
+    pub fn with_cycle(mut self, kind: CycleKind, ids: Vec<usize>, scc_id: usize) -> Self {
         self.cycle = Some(kind);
         self.cycle_ids = ids;
+        self.scc_id = Some(scc_id);
         self
     }
 
@@ -154,14 +161,21 @@ pub fn build_layout(graph: &ArcGraph, analysis: &CycleAnalysis) -> LayoutIR {
     let crate_indices = graph.order_crates(&crate_indices);
     let reachable = graph.production_reachable();
     let ordered = graph.order_items(&crate_indices, &module_indices, &reachable);
-    let mut node_map = populate_items(&mut ir, graph, &ordered, &parent_map);
+    let mut node_map = populate_items(&mut ir, graph, &ordered, &parent_map, &analysis.node_scc);
 
     if !external_indices.is_empty() {
         populate_external_items(&mut ir, graph, &external_indices, &mut node_map);
     }
 
     let suppressed = graph.suppressed_crate_pairs();
-    populate_edges(&mut ir, graph, &node_map, edge_to_cycles, &suppressed);
+    populate_edges(
+        &mut ir,
+        graph,
+        &node_map,
+        edge_to_cycles,
+        &analysis.node_scc,
+        &suppressed,
+    );
 
     ir
 }
@@ -172,6 +186,7 @@ fn populate_items(
     graph: &ArcGraph,
     ordered: &[NodeIndex],
     parent_map: &HashMap<NodeIndex, NodeIndex>,
+    node_scc: &HashMap<NodeIndex, usize>,
 ) -> HashMap<NodeIndex, NodeId> {
     let mut node_map = HashMap::new();
     for &idx in ordered {
@@ -199,6 +214,7 @@ fn populate_items(
         let layout_id = ir.add_item(kind, label);
         node_map.insert(idx, layout_id);
         ir.items[layout_id].source_path = source_path;
+        ir.items[layout_id].scc_id = node_scc.get(&idx).copied();
     }
     node_map
 }
@@ -285,6 +301,7 @@ fn populate_edges(
     graph: &ArcGraph,
     node_map: &HashMap<NodeIndex, NodeId>,
     edge_to_cycles: &HashMap<(NodeIndex, NodeIndex), Vec<usize>>,
+    node_scc: &HashMap<NodeIndex, usize>,
     suppressed: &HashSet<(NodeIndex, NodeIndex)>,
 ) {
     for edge in graph.edge_references() {
@@ -302,11 +319,12 @@ fn populate_edges(
         };
 
         if let (Some(&from), Some(&to)) = (node_map.get(&src), node_map.get(&dst)) {
-            let (cycle, cycle_ids) =
-                compute_cycle_info(src, dst, edge_to_cycles, graph, is_module_dep);
+            let (cycle, cycle_ids, scc_id) =
+                compute_cycle_info(src, dst, edge_to_cycles, node_scc, graph, is_module_dep);
             ir.edges.push(LayoutEdge {
                 cycle,
                 cycle_ids,
+                scc_id,
                 source_locations: locations,
                 reexport: edge.weight().is_reexport_module_dep(),
                 ..LayoutEdge::new(from, to, context)
@@ -345,12 +363,13 @@ fn compute_cycle_info(
     src: NodeIndex,
     dst: NodeIndex,
     edge_to_cycles: &HashMap<(NodeIndex, NodeIndex), Vec<usize>>,
+    node_scc: &HashMap<NodeIndex, usize>,
     graph: &ArcGraph,
     is_module_dep: bool,
-) -> (Option<CycleKind>, Vec<usize>) {
+) -> (Option<CycleKind>, Vec<usize>, Option<usize>) {
     let cycle_ids = edge_to_cycles.get(&(src, dst)).cloned().unwrap_or_default();
     if cycle_ids.is_empty() {
-        return (None, cycle_ids);
+        return (None, cycle_ids, None);
     }
 
     let has_reverse_module_dep = is_module_dep
@@ -363,7 +382,7 @@ fn compute_cycle_info(
     } else {
         CycleKind::Transitive
     };
-    (Some(kind), cycle_ids)
+    (Some(kind), cycle_ids, node_scc.get(&src).copied())
 }
 
 /// Extension trait for incrementing weighted edge counts.
@@ -554,6 +573,7 @@ mod tests {
         CycleAnalysis {
             cycles: Vec::new(),
             edge_cycles: HashMap::new(),
+            node_scc: HashMap::new(),
         }
     }
 
@@ -878,6 +898,18 @@ mod tests {
         for edge in &non_cycle_edges {
             check!(edge.cycle_ids.is_empty());
         }
+
+        // Cycle edges carry an scc_id; the two independent cycles are two SCCs.
+        for edge in &cycle_edges {
+            check!(edge.scc_id.is_some());
+        }
+        let scc_ids: HashSet<usize> = cycle_edges.iter().filter_map(|e| e.scc_id).collect();
+        check!(scc_ids.len() == 2);
+
+        // Non-cycle edges have no scc_id.
+        for edge in &non_cycle_edges {
+            check!(edge.scc_id.is_none());
+        }
     }
 
     #[test]
@@ -959,10 +991,16 @@ mod tests {
     #[test]
     fn test_layout_edge_kinds() {
         let normal = LayoutEdge::new(0, 1, EdgeContext::production());
-        let direct =
-            LayoutEdge::new(1, 0, EdgeContext::production()).with_cycle(CycleKind::Direct, vec![0]);
-        let trans = LayoutEdge::new(2, 3, EdgeContext::production())
-            .with_cycle(CycleKind::Transitive, vec![1]);
+        let direct = LayoutEdge::new(1, 0, EdgeContext::production()).with_cycle(
+            CycleKind::Direct,
+            vec![0],
+            0,
+        );
+        let trans = LayoutEdge::new(2, 3, EdgeContext::production()).with_cycle(
+            CycleKind::Transitive,
+            vec![1],
+            0,
+        );
 
         assert_eq!(normal.from, 0);
         assert_eq!(direct.cycle, Some(CycleKind::Direct));

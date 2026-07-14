@@ -6,10 +6,13 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 pub(super) fn render_header(width: f32, height: f32) -> String {
+    // cluster-mode-on defaults on (cycles checkbox checked), matching the other
+    // root state classes (has-highlight/has-pinned) that JS toggles on the SVG.
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">
-"#
+<svg xmlns="http://www.w3.org/2000/svg" class="{}" width="{width}" height="{height}" viewBox="0 0 {width} {height}">
+"#,
+        CSS.relation.cluster_mode_on
     )
 }
 
@@ -95,6 +98,10 @@ pub(super) fn render_toolbar(
             "            <span class=\"{}\" id=\"reexport-dep-checkbox\"></span>\n",
             "            Show Re-Export Dependencies\n",
             "          </label>\n",
+            "          <label class=\"{}\">\n",
+            "            <span class=\"{} {}\" id=\"cycles-checkbox\"></span>\n",
+            "            Show Cycles\n",
+            "          </label>\n",
             "{}",
             "        </div>\n",
             "      </div>\n",
@@ -135,9 +142,12 @@ pub(super) fn render_toolbar(
         ct.checked, // checkbox span (checked)
         ct.toggle,  // label.toolbar-toggle (module dep)
         ct.checkbox,
-        ct.checked,              // checkbox span (checked)
-        ct.toggle,               // label.toolbar-toggle (re-export dep)
-        ct.checkbox,             // checkbox span (unchecked → default hidden)
+        ct.checked,  // checkbox span (checked)
+        ct.toggle,   // label.toolbar-toggle (re-export dep)
+        ct.checkbox, // checkbox span (unchecked → default hidden)
+        ct.toggle,   // label.toolbar-toggle (cycles)
+        ct.checkbox,
+        ct.checked,              // checkbox span (checked → cluster mode on)
         external_checkbox,       // optional external dep checkbox
         ct.separator_v,          // separator
         ct.search_group,         // .toolbar-search-group
@@ -388,18 +398,18 @@ pub(super) fn render_edges(
             );
 
             let cd = &CSS.direction;
-            let (base_arc_class, arrow_class, direction) = match (edge.cycle, edge.direction) {
-                (Some(_), _) => (cd.cycle_arc.to_string(), cd.cycle_arrow, "cycle"),
-                (None, EdgeDirection::Downward) => (
-                    format!("{} {}", cd.dep_arc, cd.downward),
-                    cd.dep_arrow,
-                    "downward",
-                ),
-                (None, EdgeDirection::Upward) => (
-                    format!("{} {}", cd.dep_arc, cd.upward),
-                    cd.upward_arrow,
-                    "upward",
-                ),
+            // Every edge carries its directional dep classes so that, with
+            // cluster mode off, cycle edges fall back to the normal dependency
+            // color. cycle-arc/cycle-arrow are additive markers the container
+            // state (.cluster-mode-on) styles red.
+            let (dir_arc_class, dir_arrow_class, direction) = match edge.direction {
+                EdgeDirection::Downward => (cd.downward, cd.dep_arrow, "downward"),
+                EdgeDirection::Upward => (cd.upward, cd.upward_arrow, "upward"),
+            };
+            let (arc_cycle_marker, arrow_cycle_marker) = if edge.cycle.is_some() {
+                (format!(" {}", cd.cycle_arc), format!(" {}", cd.cycle_arrow))
+            } else {
+                (String::new(), String::new())
             };
 
             // Add crate-dep-arc, module-dep-arc, or reexport-arc class based on edge type.
@@ -425,7 +435,10 @@ pub(super) fn render_edges(
             } else {
                 String::new()
             };
-            let arc_class = format!("{base_arc_class} {type_class}{hidden}");
+            let arc_class = format!(
+                "{} {dir_arc_class}{arc_cycle_marker} {type_class}{hidden}",
+                cd.dep_arc
+            );
 
             let edge_id = format!("{}-{}", edge.from, edge.to);
             let cycle_ids_attr = if edge.cycle_ids.is_empty() {
@@ -454,7 +467,7 @@ pub(super) fn render_edges(
             );
 
             // Arrow head pointing to target → base-arcs layer
-            let arrow_class = format!("{arrow_class}{hidden}");
+            let arrow_class = format!("{dir_arrow_class}{arrow_cycle_marker}{hidden}");
             let arrow = render_arrow(to_x, to_y, &arrow_class, &edge_id);
             base_arcs.push_str(&arrow);
 
@@ -540,6 +553,21 @@ mod tests {
         // Narrow canvas: x should be 0
         let narrow = render_sidebar(200.0);
         assert!(narrow.contains("x=\"0\""));
+    }
+
+    #[test]
+    fn test_toolbar_has_cycles_checkbox_checked_by_default() {
+        let toolbar = render_toolbar(800.0, false, false, false);
+        let idx = toolbar
+            .find("id=\"cycles-checkbox\"")
+            .expect("Toolbar should render the cycles checkbox");
+        let span_start = toolbar[..idx]
+            .rfind("<span")
+            .expect("cycles checkbox should be a span");
+        assert!(
+            toolbar[span_start..idx].contains(CSS.toolbar.checked),
+            "Cycles checkbox should have the checked class by default (cluster mode on)"
+        );
     }
 
     #[test]
@@ -1085,9 +1113,12 @@ mod tests {
             "m".into(),
         );
         // Cycle edge with cycle_ids=[0]
-        ir.edges.push(
-            LayoutEdge::new(a, b, EdgeContext::production()).with_cycle(CycleKind::Direct, vec![0]),
-        );
+        ir.edges
+            .push(LayoutEdge::new(a, b, EdgeContext::production()).with_cycle(
+                CycleKind::Direct,
+                vec![0],
+                0,
+            ));
         // Non-cycle edge
         ir.edges
             .push(LayoutEdge::new(a, m, EdgeContext::production()));
@@ -1141,6 +1172,52 @@ mod tests {
     }
 
     #[test]
+    fn test_cycle_edge_carries_direction_and_dep_class() {
+        // Cycle edges keep dep-arc + direction classes so that, with cluster
+        // mode off, they fall back to the normal directional dependency color.
+        // cycle-arc is an additive marker gated by the container state.
+        let mut ir = LayoutIR::new();
+        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let a = ir.add_item(
+            ItemKind::Module {
+                nesting: 1,
+                parent: c,
+            },
+            "a".into(),
+        );
+        let b = ir.add_item(
+            ItemKind::Module {
+                nesting: 1,
+                parent: c,
+            },
+            "b".into(),
+        );
+        ir.edges
+            .push(LayoutEdge::new(a, b, EdgeContext::production()).with_cycle(
+                CycleKind::Direct,
+                vec![0],
+                0,
+            ));
+
+        let config = RenderConfig::default();
+        let box_width = calculate_box_width(&ir);
+        let positioned = calculate_positions(&ir, &config, box_width);
+        let positioned_index: HashMap<_, _> = positioned.iter().map(|p| (p.id, p)).collect();
+        let output = render_edges(&positioned_index, &ir, config.row_height, None);
+
+        let cycle_path = output
+            .lines()
+            .find(|l| l.contains("id=\"edge-1-2\""))
+            .expect("Should find visible path for edge 1-2");
+        assert!(
+            cycle_path.contains(CSS.direction.dep_arc)
+                && cycle_path.contains(CSS.direction.downward)
+                && cycle_path.contains(CSS.direction.cycle_arc),
+            "Cycle edge should carry dep-arc + downward + cycle-arc, got: {cycle_path}"
+        );
+    }
+
+    #[test]
     fn test_multi_cycle_ids_attribute() {
         let mut ir = LayoutIR::new();
         let c = ir.add_item(ItemKind::Crate, "c".into());
@@ -1159,10 +1236,12 @@ mod tests {
             "b".into(),
         );
         // Edge belonging to two cycles
-        ir.edges.push(
-            LayoutEdge::new(a, b, EdgeContext::production())
-                .with_cycle(CycleKind::Direct, vec![0, 2]),
-        );
+        ir.edges
+            .push(LayoutEdge::new(a, b, EdgeContext::production()).with_cycle(
+                CycleKind::Direct,
+                vec![0, 2],
+                0,
+            ));
 
         let config = RenderConfig::default();
         let box_width = calculate_box_width(&ir);

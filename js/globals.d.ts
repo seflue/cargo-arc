@@ -36,6 +36,7 @@ interface StaticNodeData {
   hasChildren: boolean;
   nesting: number;
   version?: string;
+  sccId?: number;
 }
 interface StaticArcData {
   from: string;
@@ -47,10 +48,12 @@ interface StaticArcData {
     locations: { file: string; line: number }[];
   }[];
   cycleIds?: number[];
+  sccId?: number;
 }
 interface StaticCycleData {
   nodes: string[];
   arcs: string[];
+  sccId: number;
 }
 declare const STATIC_DATA: {
   nodes: Record<string, StaticNodeData>;
