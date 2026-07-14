@@ -220,6 +220,7 @@ mod tests {
                     line: 42,
                     symbols: vec![],
                     module_path: String::new(),
+                    via_reexport: false,
                 }],
             }],
         };
@@ -298,6 +299,7 @@ mod tests {
                     line: i + 1,
                     symbols: vec![],
                     module_path: String::new(),
+                    via_reexport: false,
                 })
                 .collect();
             g.add_edge(
@@ -314,7 +316,7 @@ mod tests {
 
     fn report_of(g: &ArcGraph) -> (CycleAnalysis, ClusterReport) {
         let analysis = g.production_subgraph().minimal_cycles();
-        let report = g.cluster_report(&analysis);
+        let report = g.cluster_report(&analysis, true);
         (analysis, report)
     }
 

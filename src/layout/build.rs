@@ -70,6 +70,9 @@ pub struct LayoutEdge {
     pub cycle_ids: Vec<usize>,
     pub source_locations: Vec<SourceLocation>,
     pub context: EdgeContext,
+    /// Edge republishes names via `pub use` only (no behavioral coupling).
+    /// Rendered as a distinct teal, dashed, default-hidden arc.
+    pub reexport: bool,
 }
 
 impl LayoutEdge {
@@ -90,6 +93,7 @@ impl LayoutEdge {
             cycle_ids: vec![],
             source_locations: vec![],
             context,
+            reexport: false,
         }
     }
 
@@ -304,6 +308,7 @@ fn populate_edges(
                 cycle,
                 cycle_ids,
                 source_locations: locations,
+                reexport: edge.weight().is_reexport_module_dep(),
                 ..LayoutEdge::new(from, to, context)
             });
         }
@@ -704,6 +709,7 @@ mod tests {
                             .map(std::string::ToString::to_string)
                             .collect(),
                         module_path: module_path.to_string(),
+                        via_reexport: false,
                     }],
                     context: EdgeContext::production(),
                 },
@@ -786,6 +792,7 @@ mod tests {
                 line: 42,
                 symbols: vec![],
                 module_path: String::new(),
+                via_reexport: false,
             },
         ]);
         assert_eq!(edge.source_locations.len(), 1);

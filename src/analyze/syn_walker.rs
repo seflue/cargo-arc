@@ -985,6 +985,100 @@ fn main() {
         }
 
         #[test]
+        fn test_pub_use_marked_via_reexport() {
+            let tmp = TestProject::new()
+                .file("src/lib.rs", "mod parent;\nmod child;\n")
+                .file("src/parent.rs", "pub use crate::child::Thing;\n")
+                .file("src/child.rs", "pub struct Thing;\n")
+                .build();
+            let mp: ModulePathMap = [(
+                "my_crate".to_string(),
+                HashSet::from(["parent".into(), "child".into()]),
+            )]
+            .into_iter()
+            .collect();
+            let crate_info = CrateInfo {
+                name: "my_crate".to_string(),
+                path: tmp.path().to_path_buf(),
+                dependencies: vec![],
+                dev_dependencies: vec![],
+            };
+            let tree = analyze_modules_syn(
+                &crate_info,
+                &WorkspaceCrates::default(),
+                &mp,
+                &CrateExportMap::default(),
+                &ReExportMap::default(),
+                &std::collections::HashMap::new(),
+                false,
+            )
+            .expect("should analyze");
+
+            let parent = tree
+                .root
+                .children
+                .iter()
+                .find(|m| m.name == "parent")
+                .expect("parent module should exist");
+            let dep = parent
+                .dependencies
+                .iter()
+                .find(|d| d.module_target() == "my_crate::child")
+                .expect("parent should depend on child");
+            assert!(
+                dep.via_reexport,
+                "pub use should be marked via_reexport, found: {dep:?}"
+            );
+        }
+
+        #[test]
+        fn test_plain_use_not_via_reexport() {
+            let tmp = TestProject::new()
+                .file("src/lib.rs", "mod parent;\nmod child;\n")
+                .file("src/parent.rs", "use crate::child::Thing;\n")
+                .file("src/child.rs", "pub struct Thing;\n")
+                .build();
+            let mp: ModulePathMap = [(
+                "my_crate".to_string(),
+                HashSet::from(["parent".into(), "child".into()]),
+            )]
+            .into_iter()
+            .collect();
+            let crate_info = CrateInfo {
+                name: "my_crate".to_string(),
+                path: tmp.path().to_path_buf(),
+                dependencies: vec![],
+                dev_dependencies: vec![],
+            };
+            let tree = analyze_modules_syn(
+                &crate_info,
+                &WorkspaceCrates::default(),
+                &mp,
+                &CrateExportMap::default(),
+                &ReExportMap::default(),
+                &std::collections::HashMap::new(),
+                false,
+            )
+            .expect("should analyze");
+
+            let parent = tree
+                .root
+                .children
+                .iter()
+                .find(|m| m.name == "parent")
+                .expect("parent module should exist");
+            let dep = parent
+                .dependencies
+                .iter()
+                .find(|d| d.module_target() == "my_crate::child")
+                .expect("parent should depend on child");
+            assert!(
+                !dep.via_reexport,
+                "plain use should not be via_reexport, found: {dep:?}"
+            );
+        }
+
+        #[test]
         fn test_mixed_crate_module_tree() {
             let tmp = TestProject::new()
                 .file("src/lib.rs", "mod a;")

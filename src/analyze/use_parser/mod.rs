@@ -16,6 +16,18 @@ use super::mod_resolver::is_cfg_test;
 // Re-export resolution types (moved from reexports.rs)
 // ---------------------------------------------------------------------------
 
+/// Check whether visibility qualifies as a re-export:
+/// pub, pub(crate), pub(super) — but NOT private or pub(in path).
+pub(crate) fn is_reexport_visibility(vis: &syn::Visibility) -> bool {
+    match vis {
+        syn::Visibility::Public(_) => true,
+        syn::Visibility::Restricted(r) => {
+            r.in_token.is_none() && (r.path.is_ident("crate") || r.path.is_ident("super"))
+        }
+        syn::Visibility::Inherited => false,
+    }
+}
+
 /// Where a re-exported symbol originally comes from.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ReExportTarget {
@@ -379,6 +391,7 @@ fn parse_crate_local_import(
         source_file: ctx.source_file.to_path_buf(),
         line: line_num,
         context: context.clone(),
+        via_reexport: false,
     })
 }
 
@@ -430,6 +443,7 @@ fn parse_bare_module_import(
         source_file: ctx.source_file.to_path_buf(),
         line: line_num,
         context: context.clone(),
+        via_reexport: false,
     })
 }
 
@@ -481,6 +495,7 @@ fn parse_workspace_import(
         source_file: ctx.source_file.to_path_buf(),
         line: line_num,
         context: context.clone(),
+        via_reexport: false,
     })
 }
 
@@ -556,6 +571,7 @@ pub(crate) fn resolve_single_path(
                     source_file: ctx.source_file.to_path_buf(),
                     line: line_num,
                     context: context.clone(),
+                    via_reexport: false,
                 })
             } else {
                 None
@@ -596,6 +612,7 @@ fn parse_external_crate_import(
         source_file: ctx.source_file.to_path_buf(),
         line: line_num,
         context: context.clone(),
+        via_reexport: false,
     })
 }
 
@@ -616,10 +633,15 @@ pub(crate) fn parse_workspace_dependencies(
     for (item, context, inline_depth) in use_items {
         let line_num = item.use_token.span.start().line;
         let paths = resolve_use_tree(&item.tree, "", false);
+        // A `use` that republishes a name under a visibility reachable from
+        // outside the module is a re-export. Path references (non-use) are never
+        // re-exports.
+        let via_reexport = is_reexport_visibility(&item.vis);
 
         for path in paths {
             if let Some(mut dep) = resolve_single_path(ctx, &path, line_num, context, *inline_depth)
             {
+                dep.via_reexport = via_reexport;
                 resolve_reexport(&mut dep, ctx.reexport_map);
                 DependencyRef::dedup_push(&mut deps, &mut seen_targets, dep);
             }

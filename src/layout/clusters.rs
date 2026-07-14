@@ -43,11 +43,16 @@ pub struct ClusterReport {
 impl ArcGraph {
     /// Aggregate `analysis` into SCC clusters, each with a proven cut-set.
     ///
-    /// `analysis` must come from `self.production_subgraph().minimal_cycles()`
-    /// so that its `NodeIndex` values address nodes in `self`.
+    /// `analysis` must come from `self.cycle_subgraph(include_reexports).minimal_cycles()`
+    /// so that its `NodeIndex` values address nodes in `self` and the cut-sets are
+    /// computed over the same subgraph.
     #[must_use]
-    pub fn cluster_report(&self, analysis: &CycleAnalysis) -> ClusterReport {
-        let sub = self.production_subgraph();
+    pub fn cluster_report(
+        &self,
+        analysis: &CycleAnalysis,
+        include_reexports: bool,
+    ) -> ClusterReport {
+        let sub = self.cycle_subgraph(include_reexports);
 
         // Map each node of a non-trivial SCC to its cluster id.
         let mut node_scc: HashMap<NodeIndex, usize> = HashMap::new();
@@ -286,6 +291,7 @@ mod tests {
                     line: i + 1,
                     symbols: vec![],
                     module_path: String::new(),
+                    via_reexport: false,
                 })
                 .collect();
             g.add_edge(
@@ -302,7 +308,7 @@ mod tests {
 
     fn report(g: &ArcGraph) -> ClusterReport {
         let analysis = g.production_subgraph().minimal_cycles();
-        g.cluster_report(&analysis)
+        g.cluster_report(&analysis, true)
     }
 
     /// Assert that removing `cuts` leaves the cluster `nodes` acyclic.

@@ -11,6 +11,7 @@ const SearchLogic = {
     matchedNodeIds: new Set(),
     matchParentIds: new Set(),
     matchedArcIds: new Set(),
+    /** @type {number | null} */
     debounceTimer: null,
   },
 
@@ -51,7 +52,7 @@ const SearchLogic = {
     const clearBtn = DomAdapter.querySelector('#search-clear');
     if (clearBtn) clearBtn.style.display = query ? 'block' : 'none';
 
-    clearTimeout(this._state.debounceTimer);
+    clearTimeout(this._state.debounceTimer ?? undefined);
 
     if (!query.trim()) {
       this.clearSearch();
@@ -313,7 +314,7 @@ const SearchLogic = {
     let current = nodeId;
     while (current) {
       const node = StaticData.getNode(current);
-      if (!node || node.parent === null) return current;
+      if (!node || node.parent == null) return current;
       if (AppState.isCollapsed(this._appState, node.parent)) {
         current = node.parent;
       } else {

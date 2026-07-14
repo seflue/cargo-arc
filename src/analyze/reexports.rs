@@ -14,21 +14,9 @@ use super::mod_resolver::{
     child_resolve_dir, extract_mod_declarations, find_crate_root_files, resolve_mod_path,
 };
 use super::use_parser::{
-    ModuleExportInfo, ReExportMap, ReExportTarget, ResolutionContext, resolve_single_path,
-    resolve_use_tree,
+    ModuleExportInfo, ReExportMap, ReExportTarget, ResolutionContext, is_reexport_visibility,
+    resolve_single_path, resolve_use_tree,
 };
-
-/// Check whether visibility qualifies as a re-export:
-/// pub, pub(crate), pub(super) — but NOT private or pub(in path).
-fn is_reexport_visibility(vis: &syn::Visibility) -> bool {
-    match vis {
-        syn::Visibility::Public(_) => true,
-        syn::Visibility::Restricted(r) => {
-            r.in_token.is_none() && (r.path.is_ident("crate") || r.path.is_ident("super"))
-        }
-        syn::Visibility::Inherited => false,
-    }
-}
 
 /// Invariant parameters shared across the recursive re-export walk.
 struct CollectContext<'a> {
@@ -234,47 +222,6 @@ mod tests {
             dependencies: vec![],
             dev_dependencies: vec![],
         }
-    }
-
-    // --- Cycle 3: is_reexport_visibility ---
-
-    fn parse_visibility(code: &str) -> syn::Visibility {
-        let file: syn::File = syn::parse_str(code).unwrap();
-        match &file.items[0] {
-            syn::Item::Use(u) => u.vis.clone(),
-            syn::Item::Struct(s) => s.vis.clone(),
-            _ => panic!("expected use or struct item"),
-        }
-    }
-
-    #[test]
-    fn pub_is_reexport() {
-        let vis = parse_visibility("pub use foo::Bar;");
-        assert!(is_reexport_visibility(&vis));
-    }
-
-    #[test]
-    fn pub_crate_is_reexport() {
-        let vis = parse_visibility("pub(crate) use foo::Bar;");
-        assert!(is_reexport_visibility(&vis));
-    }
-
-    #[test]
-    fn pub_super_is_reexport() {
-        let vis = parse_visibility("pub(super) use foo::Bar;");
-        assert!(is_reexport_visibility(&vis));
-    }
-
-    #[test]
-    fn private_is_not_reexport() {
-        let vis = parse_visibility("use foo::Bar;");
-        assert!(!is_reexport_visibility(&vis));
-    }
-
-    #[test]
-    fn pub_in_path_is_not_reexport() {
-        let vis = parse_visibility("pub(in crate::parent) use foo::Bar;");
-        assert!(!is_reexport_visibility(&vis));
     }
 
     // --- Cycles 5-12: collect_crate_reexports ---

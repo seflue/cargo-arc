@@ -1,6 +1,6 @@
 use super::constants::{
     BLUE, BLUE_100, BLUE_300, COLORS, CSS, GRAY_50, GRAY_100, GRAY_200, GRAY_300, GRAY_400,
-    GRAY_600, GREEN, LAYOUT, ORANGE, ORANGE_100, ORANGE_300, PURPLE,
+    GRAY_600, GREEN, LAYOUT, ORANGE, ORANGE_100, ORANGE_300, PURPLE, TEAL,
 };
 use std::fmt::Write as _;
 
@@ -304,6 +304,15 @@ fn build_css_rules() -> Vec<CssRule> {
             &[("fill", n.collapse_hover)],
         ),
         CssRule::class(c.nodes.collapsed, &[("display", "none")]),
+        // Re-export arcs (teal, dashed) — republish names without behavioral coupling
+        CssRule::class(
+            c.direction.reexport_arc,
+            &[
+                ("fill", "none"),
+                ("stroke", TEAL),
+                ("stroke-dasharray", "2 3"),
+            ],
+        ),
         // Virtual arcs
         CssRule::class(
             c.direction.virtual_arc,
@@ -1412,6 +1421,10 @@ mod tests {
         assert!(
             css.contains(".virtual-arc"),
             "CSS should contain .virtual-arc style"
+        );
+        assert!(
+            css.contains(".reexport-arc"),
+            "CSS should contain .reexport-arc style"
         );
         assert!(
             css.contains(".arc-count"),

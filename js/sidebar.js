@@ -19,9 +19,13 @@ const SIDEBAR_MIN_WIDTH = 280;
 
 const SidebarLogic = {
   _isTransient: false,
+  /** @type {number | null} */
   _debounceTimer: null,
+  /** @type {((nodeId: string | undefined) => void) | null} */
   _onBadgeClick: null,
+  /** @type {((target: string | undefined) => void) | null} */
   _onCollapseToggle: null,
+  /** @type {((id: string) => boolean) | null} */
   _isNodeCollapsed: null,
   /**
    * Merge symbol groups: combine groups with same symbol, deduplicate locations by file+line.
@@ -465,13 +469,13 @@ const SidebarLogic = {
     this._originalViewBoxWidth = null;
   },
 
-  /** Cached X position — set once in show(), reused by updatePosition(). */
+  /** Cached X position — set once in show(), reused by updatePosition(). @type {number | null} */
   _cachedX: null,
-  /** Cached max arc right X — only changes on collapse/relayout, not on hover. */
+  /** Cached max arc right X — only changes on collapse/relayout, not on hover. @type {number | null} */
   _cachedMaxArcRightX: null,
-  /** Original SVG viewBox height — stored to restore after sidebar close. */
+  /** Original SVG viewBox height — stored to restore after sidebar close. @type {number | null} */
   _originalViewBoxHeight: null,
-  /** Original SVG viewBox width — stored to restore after sidebar close. */
+  /** Original SVG viewBox width — stored to restore after sidebar close. @type {number | null} */
   _originalViewBoxWidth: null,
 
   /**
@@ -523,7 +527,7 @@ const SidebarLogic = {
    * @param {{ from: string, to: string, usages: StaticArcData["usages"], originalArcs?: string[], cycleIds?: number[] }} [overrideData]
    */
   showTransient(arcId, overrideData) {
-    clearTimeout(this._debounceTimer);
+    clearTimeout(this._debounceTimer ?? undefined);
     this._debounceTimer = setTimeout(() => {
       const el = this._getElement();
       if (!el) return;
@@ -544,7 +548,7 @@ const SidebarLogic = {
    * Hide a transient sidebar. Does nothing if sidebar is pinned.
    */
   hideTransient() {
-    clearTimeout(this._debounceTimer);
+    clearTimeout(this._debounceTimer ?? undefined);
     if (!this._isTransient) return;
     this.hide();
     this._isTransient = false;
@@ -566,7 +570,7 @@ const SidebarLogic = {
     }
     el.style.display = 'block';
     this._isTransient = false;
-    clearTimeout(this._debounceTimer);
+    clearTimeout(this._debounceTimer ?? undefined);
     this._cachedMaxArcRightX = null;
     this._cachedX = this._calcX();
     this.updatePosition();
@@ -589,6 +593,8 @@ const SidebarLogic = {
    * @returns {string}
    */
   _buildCycleContent(selectedArcId, cycleIds) {
+    if (!STATIC_DATA.cycles) return '';
+
     // Single cycle: original flat layout
     if (cycleIds.length === 1) {
       const cycle = STATIC_DATA.cycles[cycleIds[0]];
@@ -820,7 +826,7 @@ const SidebarLogic = {
    * @param {{ incoming: Array, outgoing: Array }} relations
    */
   showTransientNode(nodeId, relations) {
-    clearTimeout(this._debounceTimer);
+    clearTimeout(this._debounceTimer ?? undefined);
     this._debounceTimer = setTimeout(() => {
       const el = this._getElement();
       if (!el) return;
@@ -847,7 +853,7 @@ const SidebarLogic = {
     this._cachedX = null;
     this._cachedMaxArcRightX = null;
     this._isTransient = false;
-    clearTimeout(this._debounceTimer);
+    clearTimeout(this._debounceTimer ?? undefined);
 
     // Restore original SVG canvas dimensions
     if (
@@ -941,22 +947,24 @@ const SidebarLogic = {
     // Expand SVG canvas if sidebar extends beyond viewBox
     if (svg) {
       const vb = svg.viewBox.baseVal;
+      const originalH = this._originalViewBoxHeight ?? vb.height;
       if (this._originalViewBoxHeight === null) {
         this._originalViewBoxHeight = vb.height;
       }
       const sidebarBottom = pos.y + effectiveH + SIDEBAR_SHADOW_PAD;
-      const neededH = Math.max(this._originalViewBoxHeight, sidebarBottom);
+      const neededH = Math.max(originalH, sidebarBottom);
       if (vb.height !== neededH) {
         vb.height = neededH;
         svg.setAttribute('height', String(neededH));
       }
 
       // Also expand width when sidebar extends beyond viewBox
+      const originalW = this._originalViewBoxWidth ?? vb.width;
       if (this._originalViewBoxWidth === null) {
         this._originalViewBoxWidth = vb.width;
       }
       const sidebarRight = x + Math.round(width) + SIDEBAR_SHADOW_PAD;
-      const neededW = Math.max(this._originalViewBoxWidth, sidebarRight);
+      const neededW = Math.max(originalW, sidebarRight);
       if (vb.width !== neededW) {
         vb.width = neededW;
         svg.setAttribute('width', String(neededW));

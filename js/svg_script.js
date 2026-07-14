@@ -68,9 +68,11 @@ if (typeof document !== 'undefined') {
     const expandLevel = StaticData.getExpandLevel();
     if (expandLevel !== null) {
       for (const nodeId of StaticData.getAllNodeIds()) {
+        const nesting = StaticData.getNodeNesting(nodeId);
         if (
           StaticData.hasChildren(nodeId) &&
-          StaticData.getNodeNesting(nodeId) >= expandLevel
+          nesting !== undefined &&
+          nesting >= expandLevel
         ) {
           AppState.setCollapsed(appState, nodeId, true);
         }
@@ -221,13 +223,18 @@ if (typeof document !== 'undefined') {
       window.scrollTo({ top: clampedTarget, behavior: 'smooth' });
     }
 
-    SidebarLogic._onBadgeClick = (nodeId) => scrollToNode(nodeId);
-    SidebarLogic._onCollapseToggle = (nodeId) => {
+    /** @type {{ _onBadgeClick: ((nodeId: any) => void) | null }} */ (
+      SidebarLogic
+    )._onBadgeClick = (nodeId) => scrollToNode(nodeId);
+    /** @type {{ _onCollapseToggle: ((nodeId: any) => void) | null }} */ (
+      SidebarLogic
+    )._onCollapseToggle = (nodeId) => {
       toggleCollapse(nodeId);
       updateToolbarPosition();
     };
-    SidebarLogic._isNodeCollapsed = (nodeId) =>
-      AppState.isCollapsed(appState, nodeId);
+    /** @type {{ _isNodeCollapsed: ((nodeId: any) => boolean) | null }} */ (
+      SidebarLogic
+    )._isNodeCollapsed = (nodeId) => AppState.isCollapsed(appState, nodeId);
 
     function handleMouseEnter(type, id) {
       if (AppState.hasPinnedSelection(appState)) return;
@@ -323,12 +330,14 @@ if (typeof document !== 'undefined') {
       let maxNodeRight = 0;
       for (const nodeId of visiblePositionY.keys()) {
         const orig = StaticData.getOriginalPosition(nodeId);
+        if (!orig) continue;
         maxNodeRight = Math.max(maxNodeRight, orig.x + orig.width);
       }
 
       let maxArcWidth = 50; // arc_min_space
       for (const arcId of StaticData.getAllArcIds()) {
         const arc = StaticData.getArc(arcId);
+        if (!arc) continue;
         const fromY = visiblePositionY.get(arc.from);
         const toY = visiblePositionY.get(arc.to);
         if (fromY === undefined || toY === undefined) continue;
@@ -363,7 +372,7 @@ if (typeof document !== 'undefined') {
       const sortedIds = StaticData.getAllNodeIds().sort((a, b) => {
         const posA = StaticData.getOriginalPosition(a);
         const posB = StaticData.getOriginalPosition(b);
-        return posA.y - posB.y;
+        return (posA?.y ?? 0) - (posB?.y ?? 0);
       });
 
       sortedIds.forEach((nodeId) => {
@@ -373,7 +382,9 @@ if (typeof document !== 'undefined') {
         if (node.classList.contains(C.hiddenByFilter)) return;
 
         // Get height from StaticData (no DOM read)
-        const height = StaticData.getOriginalPosition(nodeId).height;
+        const origPos = StaticData.getOriginalPosition(nodeId);
+        if (!origPos) return;
+        const height = origPos.height;
 
         // Track position for viewport calculation
         visiblePositionY.set(nodeId, currentY);
@@ -425,6 +436,7 @@ if (typeof document !== 'undefined') {
       const edges = [];
       for (const arcId of StaticData.getAllArcIds()) {
         const arc = StaticData.getArc(arcId);
+        if (!arc) continue;
         const fromId = arc.from;
         const toId = arc.to;
         edges.push({
@@ -533,6 +545,7 @@ if (typeof document !== 'undefined') {
         );
         const strokeWidth = StaticData.getArcStrokeWidth(arcId);
         const staticArc = StaticData.getArc(arcId);
+        if (!staticArc) return;
         const isCycle = staticArc.cycleIds && staticArc.cycleIds.length > 0;
 
         // Determine CSS classes matching Rust rendering
@@ -681,7 +694,7 @@ if (typeof document !== 'undefined') {
 
       const virtualEdges = VirtualEdgeLogic.aggregateHiddenEdges(
         edgeData,
-        getVisibleAncestor,
+        /** @type {(nodeId: string) => string} */ (getVisibleAncestor),
       );
       const mergedEdges = VirtualEdgeLogic.prepareVirtualEdgeData(
         virtualEdges,
@@ -1004,6 +1017,11 @@ if (typeof document !== 'undefined') {
       toggleArcClassVisibility('#crate-dep-checkbox', C.crateDepArc);
     }
 
+    // Toggle visibility of re-export arcs (default hidden)
+    function toggleReexportVisibility() {
+      toggleArcClassVisibility('#reexport-dep-checkbox', C.reexportArc);
+    }
+
     // Toggle visibility of module-to-module dependency arcs
     function toggleModuleDepVisibility() {
       toggleArcClassVisibility('#module-dep-checkbox', C.moduleDepArc);
@@ -1210,6 +1228,13 @@ if (typeof document !== 'undefined') {
       ?.addEventListener('click', (e) => {
         e.stopPropagation();
         toggleModuleDepVisibility();
+      });
+
+    DomAdapter.querySelector('#reexport-dep-checkbox')
+      ?.closest('label')
+      ?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleReexportVisibility();
       });
 
     DomAdapter.querySelector('#external-dep-checkbox')

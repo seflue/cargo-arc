@@ -83,6 +83,20 @@ impl Edge {
         matches!(self, Edge::ModuleDep { context, .. } if context.kind == DependencyKind::Production)
     }
 
+    /// Whether this is a production `ModuleDep` whose references are ALL
+    /// `pub use` re-exports. Such edges republish names without behavioral
+    /// coupling and are excluded from the logic subgraph (ADR-022).
+    #[must_use]
+    pub fn is_reexport_module_dep(&self) -> bool {
+        matches!(
+            self,
+            Edge::ModuleDep { locations, context }
+                if context.kind == DependencyKind::Production
+                    && !locations.is_empty()
+                    && locations.iter().all(|loc| loc.via_reexport)
+        )
+    }
+
     #[must_use]
     pub fn is_production_crate_dep(&self) -> bool {
         matches!(self, Edge::CrateDep { context } if context.kind == DependencyKind::Production)
@@ -142,6 +156,32 @@ impl ArcGraph {
             |idx, _| Some(idx),
             |_, edge| edge.is_production_module_dep().then_some(()),
         )
+    }
+
+    /// Like [`production_subgraph`](Self::production_subgraph) but with pure
+    /// re-export edges removed. A cycle that survives here is real logic
+    /// coupling; one that vanishes was an idiomatic re-export artifact (ADR-022).
+    #[must_use]
+    pub fn logic_subgraph(&self) -> DiGraph<NodeIndex, ()> {
+        self.filter_map(
+            |idx, _| Some(idx),
+            |_, edge| {
+                (edge.is_production_module_dep() && !edge.is_reexport_module_dep()).then_some(())
+            },
+        )
+    }
+
+    /// Subgraph used for cycle analysis: [`logic_subgraph`](Self::logic_subgraph)
+    /// by default (pure re-export cycles excluded, ADR-022), or
+    /// [`production_subgraph`](Self::production_subgraph) when `include_reexports`
+    /// is set (the `--include-reexports` opt-in that wants every cycle).
+    #[must_use]
+    pub fn cycle_subgraph(&self, include_reexports: bool) -> DiGraph<NodeIndex, ()> {
+        if include_reexports {
+            self.production_subgraph()
+        } else {
+            self.logic_subgraph()
+        }
     }
 
     /// Return the crate node that owns `idx`. For `Node::Module` this is
@@ -523,22 +563,27 @@ fn build_source_locations(target_deps: &[&DependencyRef], target: &str) -> Vec<S
         "" => target.to_owned(),
         path => path.to_owned(),
     };
-    let mut by_line: BTreeMap<(PathBuf, usize), Vec<String>> = BTreeMap::new();
+    // Per (file, line): collect symbols and whether every ref there is a
+    // re-export. `via_reexport` starts true and clears on the first non-re-export
+    // ref, so a location is a pure re-export only if all its refs are.
+    let mut by_line: BTreeMap<(PathBuf, usize), (Vec<String>, bool)> = BTreeMap::new();
     for dep in target_deps {
-        let entry = by_line
+        let (symbols, via_reexport) = by_line
             .entry((dep.source_file.clone(), dep.line))
-            .or_default();
+            .or_insert_with(|| (Vec::new(), true));
         if let Some(item) = &dep.target_item {
-            entry.push(item.clone());
+            symbols.push(item.clone());
         }
+        *via_reexport &= dep.via_reexport;
     }
     by_line
         .into_iter()
-        .map(|((file, line), symbols)| SourceLocation {
+        .map(|((file, line), (symbols, via_reexport))| SourceLocation {
             file,
             line,
             symbols,
             module_path: module_path.clone(),
+            via_reexport,
         })
         .collect()
 }
@@ -596,6 +641,19 @@ mod tests {
             source_file: file.into(),
             line,
             context: EdgeContext::production(),
+            via_reexport: false,
+        }
+    }
+
+    fn reexport_dep(
+        target_crate: &str,
+        target_module: &str,
+        file: &str,
+        line: usize,
+    ) -> DependencyRef {
+        DependencyRef {
+            via_reexport: true,
+            ..dep(target_crate, target_module, file, line)
         }
     }
 
@@ -709,6 +767,39 @@ mod tests {
         assert_eq!(locs.len(), 1);
         assert_eq!(locs[0].file, PathBuf::from("src/beta.rs"));
         assert_eq!(locs[0].line, 1);
+    }
+
+    #[test]
+    fn test_logic_subgraph_excludes_pure_reexport_edges() {
+        // foo re-exports from bar (pub use), bar uses foo (behavioral).
+        // production_subgraph has both edges → cycle; logic_subgraph drops the
+        // pure re-export edge foo→bar → acyclic.
+        let crates = vec![crate_("my_crate")];
+        let modules = vec![tree(ModuleInfo {
+            children: vec![
+                ModuleInfo {
+                    dependencies: vec![reexport_dep("crate", "bar", "src/foo.rs", 1)],
+                    ..module("foo", "crate::foo")
+                },
+                ModuleInfo {
+                    dependencies: vec![dep("crate", "foo", "src/bar.rs", 1)],
+                    ..module("bar", "crate::bar")
+                },
+            ],
+            ..module("my_crate", "crate")
+        })];
+        let graph = ArcGraph::build(&crates, &modules, None);
+
+        let prod = graph.production_subgraph();
+        assert_eq!(prod.edge_count(), 2, "production keeps both edges");
+        assert!(petgraph::algo::is_cyclic_directed(&prod));
+
+        let logic = graph.logic_subgraph();
+        assert_eq!(logic.edge_count(), 1, "logic drops the pure re-export edge");
+        assert!(
+            !petgraph::algo::is_cyclic_directed(&logic),
+            "logic subgraph is acyclic"
+        );
     }
 
     #[test]

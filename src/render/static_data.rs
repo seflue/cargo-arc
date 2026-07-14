@@ -266,6 +266,7 @@ fn generate_static_data(
         ("arcHitarea", CSS.direction.arc_hitarea),
         ("crateDepArc", CSS.direction.crate_dep_arc),
         ("moduleDepArc", CSS.direction.module_dep_arc),
+        ("reexportArc", CSS.direction.reexport_arc),
         ("virtualArc", CSS.direction.virtual_arc),
         ("virtualArrow", CSS.direction.virtual_arrow),
         ("virtualHitarea", CSS.direction.virtual_hitarea),
@@ -385,6 +386,7 @@ mod tests {
             line: 7,
             symbols: vec![],
             module_path: String::new(),
+            via_reexport: false,
         }];
         let groups = format_source_locations_by_symbol(&locs);
         assert_eq!(groups.len(), 1);
@@ -403,6 +405,7 @@ mod tests {
             line: 7,
             symbols: vec!["ModuleInfo".to_string()],
             module_path: String::new(),
+            via_reexport: false,
         }];
         let groups = format_source_locations_by_symbol(&locs);
         assert_eq!(groups.len(), 1);
@@ -423,12 +426,14 @@ mod tests {
                 line: 7,
                 symbols: vec!["ModuleInfo".to_string()],
                 module_path: String::new(),
+                via_reexport: false,
             },
             SourceLocation {
                 file: PathBuf::from("src/render.rs"),
                 line: 12,
                 symbols: vec!["ModuleInfo".to_string()],
                 module_path: String::new(),
+                via_reexport: false,
             },
         ];
         let groups = format_source_locations_by_symbol(&locs);
@@ -452,6 +457,7 @@ mod tests {
             line: 7,
             symbols: vec!["ModuleInfo".to_string(), "analyze_module".to_string()],
             module_path: String::new(),
+            via_reexport: false,
         }];
         let groups = format_source_locations_by_symbol(&locs);
         assert_eq!(groups.len(), 2);
@@ -473,12 +479,14 @@ mod tests {
                 line: 7,
                 symbols: vec!["ModuleInfo".to_string(), "analyze_module".to_string()],
                 module_path: String::new(),
+                via_reexport: false,
             },
             SourceLocation {
                 file: PathBuf::from("src/render.rs"),
                 line: 12,
                 symbols: vec!["ModuleInfo".to_string()],
                 module_path: String::new(),
+                via_reexport: false,
             },
         ];
         let groups = format_source_locations_by_symbol(&locs);
@@ -681,6 +689,7 @@ mod tests {
                     line: 5,
                     symbols: vec!["MyStruct".to_string()],
                     module_path: String::new(),
+                    via_reexport: false,
                 },
             ]),
         );
@@ -822,12 +831,14 @@ mod tests {
                     line: 5,
                     symbols: vec!["Symbol1".to_string()],
                     module_path: String::new(),
+                    via_reexport: false,
                 },
                 SourceLocation {
                     file: PathBuf::from("src/b.rs"),
                     line: 10,
                     symbols: vec!["Symbol1".to_string()],
                     module_path: String::new(),
+                    via_reexport: false,
                 },
             ]),
         );
@@ -955,6 +966,7 @@ mod tests {
                     line: 5,
                     symbols: vec!["Test\"Quote".to_string()],
                     module_path: String::new(),
+                    via_reexport: false,
                 },
             ]),
         );
@@ -1141,24 +1153,28 @@ mod tests {
                 line: 10,
                 symbols: vec!["Symbol1".to_string()],
                 module_path: String::new(),
+                via_reexport: false,
             },
             SourceLocation {
                 file: PathBuf::from("src/lib.rs"),
                 line: 20,
                 symbols: vec!["Symbol1".to_string()],
                 module_path: String::new(),
+                via_reexport: false,
             },
             SourceLocation {
                 file: PathBuf::from("src/util.rs"),
                 line: 30,
                 symbols: vec!["Symbol2".to_string()],
                 module_path: String::new(),
+                via_reexport: false,
             },
             SourceLocation {
                 file: PathBuf::from("src/bare.rs"),
                 line: 40,
                 symbols: vec![], // Bare location
                 module_path: String::new(),
+                via_reexport: false,
             },
         ];
 
@@ -1276,6 +1292,7 @@ mod tests {
                     line: 5,
                     symbols: vec![],
                     module_path: String::new(),
+                    via_reexport: false,
                 },
             ]),
         );

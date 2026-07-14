@@ -12,6 +12,9 @@ pub struct SourceLocation {
     pub line: usize,
     pub symbols: Vec<String>,
     pub module_path: String,
+    /// True when every reference at this location is a `pub use` re-export
+    /// (republish, not behavioral use). Drives the logic-subgraph exclusion.
+    pub via_reexport: bool,
 }
 
 /// Workspace crate names, stored in normalized form (hyphens → underscores).
@@ -185,6 +188,9 @@ pub struct DependencyRef {
     pub source_file: PathBuf,
     pub line: usize,
     pub context: EdgeContext,
+    /// True when this reference stems from a `pub use` re-export (republish),
+    /// not a behavioral use. Stamped in `parse_workspace_dependencies`.
+    pub via_reexport: bool,
 }
 
 impl DependencyRef {
@@ -234,6 +240,8 @@ impl DependencyRef {
         let key = (dep.full_target(), dep.context.kind);
         if let Some(&idx) = seen.get(&key) {
             deps[idx].context.features.extend(dep.context.features);
+            // Re-export only if every merged reference is a re-export.
+            deps[idx].via_reexport &= dep.via_reexport;
         } else {
             seen.insert(key, deps.len());
             deps.push(dep);
@@ -316,6 +324,7 @@ mod tests {
             source_file: PathBuf::from("src/lib.rs"),
             line: 1,
             context: EdgeContext::production(),
+            via_reexport: false,
         };
         assert_eq!(prod_dep.context, EdgeContext::production());
 
@@ -326,6 +335,7 @@ mod tests {
             source_file: PathBuf::from("src/lib.rs"),
             line: 1,
             context: EdgeContext::test(TestKind::Unit),
+            via_reexport: false,
         };
         assert_eq!(test_dep.context, EdgeContext::test(TestKind::Unit));
 
@@ -342,6 +352,7 @@ mod tests {
             source_file: PathBuf::from("src/cli.rs"),
             line: 42,
             context: EdgeContext::production(),
+            via_reexport: false,
         };
         assert_eq!(dep.target_crate, "my_crate");
         assert_eq!(dep.target_module, "graph");
@@ -359,6 +370,7 @@ mod tests {
             source_file: PathBuf::new(),
             line: 1,
             context: EdgeContext::production(),
+            via_reexport: false,
         };
         assert_eq!(dep.full_target(), "crate::graph::build");
     }
@@ -372,6 +384,7 @@ mod tests {
             source_file: PathBuf::new(),
             line: 1,
             context: EdgeContext::production(),
+            via_reexport: false,
         };
         assert_eq!(dep.module_target(), "crate::graph");
     }
@@ -385,6 +398,7 @@ mod tests {
             source_file: PathBuf::new(),
             line: 1,
             context: EdgeContext::production(),
+            via_reexport: false,
         };
         assert_eq!(dep.full_target(), "crate::graph");
     }
@@ -398,6 +412,7 @@ mod tests {
             source_file: PathBuf::new(),
             line: 1,
             context: EdgeContext::production(),
+            via_reexport: false,
         };
         assert_eq!(dep.module_target(), "crate_b");
     }
@@ -411,6 +426,7 @@ mod tests {
             source_file: PathBuf::new(),
             line: 1,
             context: EdgeContext::production(),
+            via_reexport: false,
         };
         assert_eq!(dep.full_target(), "crate_b::Symbol");
     }
@@ -424,6 +440,7 @@ mod tests {
             source_file: PathBuf::new(),
             line: 1,
             context: EdgeContext::production(),
+            via_reexport: false,
         };
         assert_eq!(dep.full_target(), "crate_b");
     }
@@ -479,6 +496,7 @@ mod tests {
                 source_file: PathBuf::from("src/cli.rs"),
                 line: 5,
                 context: EdgeContext::production(),
+                via_reexport: false,
             }],
         };
         assert!(

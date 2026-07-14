@@ -119,6 +119,7 @@ pub(super) const RED: &str = "#d20f39";
 pub(super) const PURPLE: &str = "#8839ef";
 pub(super) const BLUE: &str = "#1e66f5";
 pub(super) const ORANGE: &str = "#fe640b";
+pub(super) const TEAL: &str = "#179299";
 
 pub(super) const BLUE_100: &str = "#dbeafe";
 pub(super) const BLUE_300: &str = "#93c5fd";
@@ -266,6 +267,7 @@ pub(super) struct DirectionClasses {
     pub arc_hitarea: &'static str,
     pub crate_dep_arc: &'static str,
     pub module_dep_arc: &'static str,
+    pub reexport_arc: &'static str,
     pub virtual_arc: &'static str,
     pub virtual_arrow: &'static str,
     pub virtual_hitarea: &'static str,
@@ -413,6 +415,7 @@ pub(super) static CSS: CssClassNames = CssClassNames {
         arc_hitarea: "arc-hitarea",
         crate_dep_arc: "crate-dep-arc",
         module_dep_arc: "module-dep-arc",
+        reexport_arc: "reexport-arc",
         virtual_arc: "virtual-arc",
         virtual_arrow: "virtual-arrow",
         virtual_hitarea: "virtual-hitarea",
@@ -573,6 +576,7 @@ mod tests {
         assert!(!CSS.direction.arc_hitarea.is_empty());
         assert!(!CSS.direction.crate_dep_arc.is_empty());
         assert!(!CSS.direction.module_dep_arc.is_empty());
+        assert!(!CSS.direction.reexport_arc.is_empty());
         assert!(!CSS.direction.virtual_arc.is_empty());
         assert!(!CSS.direction.virtual_arrow.is_empty());
         assert!(!CSS.direction.virtual_hitarea.is_empty());

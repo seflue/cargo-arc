@@ -91,6 +91,10 @@ pub(super) fn render_toolbar(
             "            <span class=\"{} {}\" id=\"module-dep-checkbox\"></span>\n",
             "            Show Module Dependencies\n",
             "          </label>\n",
+            "          <label class=\"{}\">\n",
+            "            <span class=\"{}\" id=\"reexport-dep-checkbox\"></span>\n",
+            "            Show Re-Export Dependencies\n",
+            "          </label>\n",
             "{}",
             "        </div>\n",
             "      </div>\n",
@@ -132,6 +136,8 @@ pub(super) fn render_toolbar(
         ct.toggle,  // label.toolbar-toggle (module dep)
         ct.checkbox,
         ct.checked,              // checkbox span (checked)
+        ct.toggle,               // label.toolbar-toggle (re-export dep)
+        ct.checkbox,             // checkbox span (unchecked → default hidden)
         external_checkbox,       // optional external dep checkbox
         ct.separator_v,          // separator
         ct.search_group,         // .toolbar-search-group
@@ -396,7 +402,9 @@ pub(super) fn render_edges(
                 ),
             };
 
-            // Add crate-dep-arc or module-dep-arc class based on edge type
+            // Add crate-dep-arc, module-dep-arc, or reexport-arc class based on edge type.
+            // Re-export arcs are their own category (default hidden) so their toggle
+            // stays independent of the module-dep toggle.
             let is_crate_dep = matches!(
                 (&from.kind, &to.kind),
                 (
@@ -404,11 +412,20 @@ pub(super) fn render_edges(
                     ItemKind::Crate | ItemKind::ExternalCrate { .. }
                 )
             );
-            let arc_class = if is_crate_dep {
-                format!("{} {}", base_arc_class, cd.crate_dep_arc)
+            let type_class = if edge.reexport {
+                cd.reexport_arc
+            } else if is_crate_dep {
+                cd.crate_dep_arc
             } else {
-                format!("{} {}", base_arc_class, cd.module_dep_arc)
+                cd.module_dep_arc
             };
+            // Re-export arcs start hidden; the toolbar checkbox (unchecked) reveals them.
+            let hidden = if edge.reexport {
+                format!(" {}", CSS.labels.hidden_by_filter)
+            } else {
+                String::new()
+            };
+            let arc_class = format!("{base_arc_class} {type_class}{hidden}");
 
             let edge_id = format!("{}-{}", edge.from, edge.to);
             let cycle_ids_attr = if edge.cycle_ids.is_empty() {
@@ -424,7 +441,7 @@ pub(super) fn render_edges(
 
             // Hit-area path (invisible, 12px wide, receives pointer events) → hitareas layer
             // Note: source-locations are read from STATIC_DATA in JavaScript, not DOM attributes
-            let hitarea = cd.arc_hitarea;
+            let hitarea = format!("{}{hidden}", cd.arc_hitarea);
             let _ = writeln!(
                 hitareas,
                 "    <path class=\"{hitarea}\" data-arc-id=\"{edge_id}\" data-from=\"{}\" data-to=\"{}\" data-direction=\"{direction}\"{cycle_ids_attr} d=\"{path}\"/>",
@@ -437,12 +454,13 @@ pub(super) fn render_edges(
             );
 
             // Arrow head pointing to target → base-arcs layer
-            let arrow = render_arrow(to_x, to_y, arrow_class, &edge_id);
+            let arrow_class = format!("{arrow_class}{hidden}");
+            let arrow = render_arrow(to_x, to_y, &arrow_class, &edge_id);
             base_arcs.push_str(&arrow);
 
             // For DirectCycle, add reverse arrow
             if edge.cycle == Some(CycleKind::Direct) {
-                let reverse_arrow = render_arrow(from_x, from_y, arrow_class, &edge_id);
+                let reverse_arrow = render_arrow(from_x, from_y, &arrow_class, &edge_id);
                 base_arcs.push_str(&reverse_arrow);
             }
         }
@@ -960,6 +978,84 @@ mod tests {
         assert!(
             output.contains("crate-dep-arc"),
             "Crate-to-crate edges should have crate-dep-arc class"
+        );
+    }
+
+    #[test]
+    fn test_reexport_edges_have_teal_class_default_hidden() {
+        let mut ir = LayoutIR::new();
+        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let a = ir.add_item(
+            ItemKind::Module {
+                nesting: 1,
+                parent: c,
+            },
+            "a".into(),
+        );
+        let b = ir.add_item(
+            ItemKind::Module {
+                nesting: 1,
+                parent: c,
+            },
+            "b".into(),
+        );
+        let mut edge = LayoutEdge::new(a, b, EdgeContext::production());
+        edge.reexport = true;
+        ir.edges.push(edge);
+        let config = RenderConfig::default();
+        let box_width = calculate_box_width(&ir);
+        let positioned = calculate_positions(&ir, &config, box_width);
+        let positioned_index: HashMap<_, _> = positioned.iter().map(|p| (p.id, p)).collect();
+
+        let output = render_edges(&positioned_index, &ir, config.row_height, None);
+
+        // Visible arc carries reexport-arc + hidden-by-filter, not module-dep-arc
+        let arc_line = output
+            .lines()
+            .find(|l| l.contains(r#"id="edge-1-2""#))
+            .expect("Should find arc path for edge 1-2");
+        assert!(
+            arc_line.contains("reexport-arc"),
+            "Re-export arc should have reexport-arc class, got: {arc_line}"
+        );
+        assert!(
+            !arc_line.contains("module-dep-arc"),
+            "Re-export arc should NOT have module-dep-arc class, got: {arc_line}"
+        );
+        assert!(
+            arc_line.contains("hidden-by-filter"),
+            "Re-export arc should start hidden, got: {arc_line}"
+        );
+        // Hitarea also default hidden
+        let hitarea_line = output
+            .lines()
+            .find(|l| l.contains("arc-hitarea") && l.contains(r#"data-arc-id="1-2""#))
+            .expect("Should find hitarea for edge 1-2");
+        assert!(
+            hitarea_line.contains("hidden-by-filter"),
+            "Re-export hitarea should start hidden, got: {hitarea_line}"
+        );
+    }
+
+    #[test]
+    fn test_render_toolbar_has_reexport_checkbox_unchecked() {
+        let output = render_toolbar(800.0, false, false, false);
+        assert!(
+            output.contains(r#"id="reexport-dep-checkbox""#),
+            "Should have reexport-dep checkbox"
+        );
+        assert!(
+            output.contains("Show Re-Export Dependencies"),
+            "Should have re-export dependency label"
+        );
+        // Checkbox span must not carry the checked class (default hidden)
+        let cb_line = output
+            .lines()
+            .find(|l| l.contains(r#"id="reexport-dep-checkbox""#))
+            .expect("Should find reexport checkbox span");
+        assert!(
+            !cb_line.contains(CSS.toolbar.checked),
+            "Re-export checkbox should start unchecked, got: {cb_line}"
         );
     }
 

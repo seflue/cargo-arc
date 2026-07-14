@@ -47,14 +47,14 @@ impl CheckResult {
 /// Dispatches each rule to its type-specific checker, collects all violations,
 /// and filters out `Severity::Ignore` rules.
 #[must_use]
-pub fn check_rules(graph: &ArcGraph, config: &ArcConfig) -> CheckResult {
+pub fn check_rules(graph: &ArcGraph, config: &ArcConfig, include_reexports: bool) -> CheckResult {
     let violations = config
         .rules
         .iter()
         .filter(|rule| !matches!(rule_severity(rule), Severity::Ignore))
         .flat_map(|rule| match rule {
             Rule::ForbiddenDependency { .. } => check_forbidden(graph, rule),
-            Rule::NoCycles { .. } => check_cycles(graph, rule),
+            Rule::NoCycles { .. } => check_cycles(graph, rule, include_reexports),
             Rule::Layers { .. } => check_layers(graph, rule),
         })
         .collect();
@@ -114,7 +114,8 @@ fn check_forbidden(graph: &ArcGraph, rule: &Rule) -> Vec<Violation> {
 }
 
 /// Check a `no-cycles` rule: find elementary cycles within the scoped subgraph.
-fn check_cycles(graph: &ArcGraph, rule: &Rule) -> Vec<Violation> {
+/// Pure re-export cycles are excluded unless `include_reexports` is set (ADR-022).
+fn check_cycles(graph: &ArcGraph, rule: &Rule, include_reexports: bool) -> Vec<Violation> {
     let Rule::NoCycles {
         name,
         scope,
@@ -127,9 +128,15 @@ fn check_cycles(graph: &ArcGraph, rule: &Rule) -> Vec<Violation> {
     let scope_set: HashSet<NodeIndex> = resolve_pattern(scope, graph).into_iter().collect();
 
     // Build a subgraph with only production module-dep edges between scope nodes.
+    // Pure re-export edges are excluded by default (ADR-022): idiomatic
+    // republishing is not a real cycle unless --include-reexports asks for it.
     let subgraph = graph.filter_map(
         |idx, _| scope_set.contains(&idx).then_some(idx),
-        |_, edge| edge.is_production_module_dep().then_some(()),
+        |_, edge| {
+            (edge.is_production_module_dep()
+                && (include_reexports || !edge.is_reexport_module_dep()))
+            .then_some(())
+        },
     );
 
     subgraph
@@ -256,6 +263,24 @@ mod tests {
                     line: 1,
                     symbols: vec![],
                     module_path: String::new(),
+                    via_reexport: false,
+                }],
+                context: EdgeContext::production(),
+            },
+        );
+    }
+
+    fn add_reexport_dep(graph: &mut ArcGraph, from: NodeIndex, to: NodeIndex) {
+        graph.add_edge(
+            from,
+            to,
+            Edge::ModuleDep {
+                locations: vec![SourceLocation {
+                    file: PathBuf::from("src/lib.rs"),
+                    line: 1,
+                    symbols: vec![],
+                    module_path: String::new(),
+                    via_reexport: true,
                 }],
                 context: EdgeContext::production(),
             },
@@ -415,9 +440,37 @@ mod tests {
             scope: "test::**".into(),
             severity: Severity::Error,
         };
-        let violations = check_cycles(&graph, &rule);
+        let violations = check_cycles(&graph, &rule, false);
         assert_eq!(violations.len(), 1);
         assert!(violations[0].message.contains("→"));
+    }
+
+    #[test]
+    fn test_pure_reexport_cycle_ignored_by_default() {
+        let (mut graph, crate_idx) = test_crate_graph();
+        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
+        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
+        // a re-exports from b (pub use), b uses a behaviorally. The cycle exists
+        // only through the re-export edge → idiomatic, not real coupling.
+        add_reexport_dep(&mut graph, a, b);
+        add_production_dep(&mut graph, b, a);
+
+        let rule = Rule::NoCycles {
+            name: "no cycles".into(),
+            scope: "test::**".into(),
+            severity: Severity::Error,
+        };
+        // Default: the idiomatic re-export cycle is not reported (ADR-022).
+        assert!(
+            check_cycles(&graph, &rule, false).is_empty(),
+            "pure re-export cycle should be ignored by default"
+        );
+        // --include-reexports opts back into the full graph and surfaces it.
+        assert_eq!(
+            check_cycles(&graph, &rule, true).len(),
+            1,
+            "include_reexports should surface the re-export cycle"
+        );
     }
 
     #[test]
@@ -434,7 +487,7 @@ mod tests {
             scope: "domain::**".into(),
             severity: Severity::Error,
         };
-        let violations = check_cycles(&graph, &rule);
+        let violations = check_cycles(&graph, &rule, false);
         assert!(violations.is_empty());
     }
 
@@ -450,7 +503,7 @@ mod tests {
             scope: "domain::**".into(),
             severity: Severity::Error,
         };
-        let violations = check_cycles(&graph, &rule);
+        let violations = check_cycles(&graph, &rule, false);
         assert!(violations.is_empty());
     }
 
@@ -475,7 +528,7 @@ mod tests {
             scope: "**".into(),
             severity: Severity::Error,
         };
-        let violations = check_cycles(&graph, &rule);
+        let violations = check_cycles(&graph, &rule, false);
         assert_eq!(violations.len(), 2);
     }
 
@@ -580,7 +633,7 @@ mod tests {
                 },
             ],
         };
-        let result = check_rules(&graph, &config);
+        let result = check_rules(&graph, &config, false);
         assert_eq!(result.violations.len(), 2);
         assert!(
             result
@@ -598,7 +651,7 @@ mod tests {
             config: None,
             rules: vec![],
         };
-        let result = check_rules(&graph, &config);
+        let result = check_rules(&graph, &config, false);
         assert!(result.violations.is_empty());
     }
 
@@ -647,7 +700,7 @@ mod tests {
                 severity: Severity::Ignore,
             }],
         };
-        let result = check_rules(&graph, &config);
+        let result = check_rules(&graph, &config, false);
         assert!(result.violations.is_empty());
     }
 }

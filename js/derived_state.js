@@ -79,6 +79,7 @@ const DerivedState = {
   _determineDirection(fromId, toId, parentMap) {
     // Simple heuristic: check if 'to' is an ancestor of 'from' (upward)
     // Otherwise downward
+    /** @type {string | undefined} */
     let current = fromId;
     while (current) {
       if (current === toId) return 'upward';
@@ -119,6 +120,7 @@ const DerivedState = {
     const queue = [nodeId];
     while (queue.length > 0) {
       const current = queue.shift();
+      if (current === undefined) continue;
       const targets = outgoing.get(current);
       if (!targets) continue;
 

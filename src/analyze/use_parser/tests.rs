@@ -87,6 +87,49 @@ fn parse_test_uses(source: &str) -> Vec<(syn::ItemUse, EdgeContext, usize)> {
     collect_all_use_items(&syn::parse_file(source).unwrap(), EdgeContext::production())
 }
 
+mod reexport_visibility_tests {
+    use super::*;
+
+    fn parse_visibility(code: &str) -> syn::Visibility {
+        let file: syn::File = syn::parse_str(code).unwrap();
+        match &file.items[0] {
+            syn::Item::Use(u) => u.vis.clone(),
+            syn::Item::Struct(s) => s.vis.clone(),
+            _ => panic!("expected use or struct item"),
+        }
+    }
+
+    #[test]
+    fn pub_is_reexport() {
+        let vis = parse_visibility("pub use foo::Bar;");
+        assert!(is_reexport_visibility(&vis));
+    }
+
+    #[test]
+    fn pub_crate_is_reexport() {
+        let vis = parse_visibility("pub(crate) use foo::Bar;");
+        assert!(is_reexport_visibility(&vis));
+    }
+
+    #[test]
+    fn pub_super_is_reexport() {
+        let vis = parse_visibility("pub(super) use foo::Bar;");
+        assert!(is_reexport_visibility(&vis));
+    }
+
+    #[test]
+    fn private_is_not_reexport() {
+        let vis = parse_visibility("use foo::Bar;");
+        assert!(!is_reexport_visibility(&vis));
+    }
+
+    #[test]
+    fn pub_in_path_is_not_reexport() {
+        let vis = parse_visibility("pub(in crate::parent) use foo::Bar;");
+        assert!(!is_reexport_visibility(&vis));
+    }
+}
+
 mod normalize_tests {
     use super::*;
 
@@ -604,6 +647,7 @@ mod bare_module_tests {
         assert_eq!(dep.target_crate, "my_crate");
         assert_eq!(dep.target_module, "cli");
         assert_eq!(dep.target_item, Some("Args".to_string()));
+        assert!(!dep.via_reexport);
     }
 
     #[test]
@@ -621,6 +665,7 @@ mod bare_module_tests {
         assert_eq!(dep.target_crate, "my_crate");
         assert_eq!(dep.target_module, "cli");
         assert_eq!(dep.target_item, Some("Args".to_string()));
+        assert!(dep.via_reexport);
     }
 
     #[test]
@@ -2059,6 +2104,7 @@ mod resolve_reexport_tests {
             source_file: PathBuf::from("src/lib.rs"),
             line: 1,
             context: EdgeContext::production(),
+            via_reexport: false,
         }
     }
 

@@ -120,6 +120,11 @@ pub struct CommonArgs {
     #[arg(long)]
     pub include_tests: bool,
 
+    /// Include pure re-export (`pub use`) cycles in cycle analysis. Off by
+    /// default: such cycles are idiomatic republishing, not real coupling.
+    #[arg(long)]
+    pub include_reexports: bool,
+
     /// Enable debug output to stderr (shows filtering decisions)
     #[arg(long)]
     pub debug: bool,
@@ -174,7 +179,9 @@ pub fn run(args: ArcCommand) -> Result<()> {
         args.transitive_deps,
     )?;
     tracing::debug!("phase: cycle detection start");
-    let analysis = graph.production_subgraph().minimal_cycles();
+    let analysis = graph
+        .cycle_subgraph(args.common.include_reexports)
+        .minimal_cycles();
     tracing::debug!(
         "phase: cycle detection done ({} cycles)",
         analysis.cycles.len()
@@ -221,7 +228,7 @@ fn run_check(check_args: &CheckArgs, common: &CommonArgs) -> Result<()> {
         Ok(config) => config,
         Err(ConfigError::FileNotFound(..)) if !explicit => {
             // No arc-rules.toml and not explicitly requested → legacy cycle check
-            return run_legacy_cycle_check(&graph);
+            return run_legacy_cycle_check(&graph, common.include_reexports);
         }
         Err(e) => {
             eprintln!("error: {e}");
@@ -230,7 +237,7 @@ fn run_check(check_args: &CheckArgs, common: &CommonArgs) -> Result<()> {
     };
 
     tracing::debug!("phase: rule check start");
-    let result = check_rules(&graph, &config);
+    let result = check_rules(&graph, &config, common.include_reexports);
     tracing::debug!(
         "phase: rule check done ({} violations)",
         result.violations.len()
@@ -247,9 +254,9 @@ fn run_check(check_args: &CheckArgs, common: &CommonArgs) -> Result<()> {
 }
 
 /// Legacy fallback: global cycle check when no arc-rules.toml exists.
-fn run_legacy_cycle_check(graph: &ArcGraph) -> Result<()> {
+fn run_legacy_cycle_check(graph: &ArcGraph, include_reexports: bool) -> Result<()> {
     tracing::debug!("phase: cycle detection start (--check)");
-    let analysis = graph.production_subgraph().minimal_cycles();
+    let analysis = graph.cycle_subgraph(include_reexports).minimal_cycles();
     tracing::debug!(
         "phase: cycle detection done ({} cycles)",
         analysis.cycles.len()
@@ -257,7 +264,7 @@ fn run_legacy_cycle_check(graph: &ArcGraph) -> Result<()> {
     if analysis.cycles.is_empty() {
         return Ok(());
     }
-    let report = graph.cluster_report(&analysis);
+    let report = graph.cluster_report(&analysis, include_reexports);
     eprint!("{}", format_cluster_report(graph, &analysis, &report));
     anyhow::bail!("dependency cycle(s) detected");
 }
@@ -599,6 +606,7 @@ mod tests {
                 all_features: false,
                 no_default_features: false,
                 include_tests: false,
+                include_reexports: false,
                 debug: false,
             },
             check: false,
