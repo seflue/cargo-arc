@@ -50,44 +50,123 @@ pub fn format_violations(result: &CheckResult) -> String {
     output
 }
 
-/// Format detected cycles as compiler-style error messages (legacy format).
+/// Format a cluster-level cycle report (default verbosity).
 ///
-/// Returns an empty string when `cycles` is empty. Otherwise produces one
-/// `error[cycle]:` line per cycle (using `<->` for direct / `->` chains for
-/// transitive) followed by a summary line.
+/// One block per SCC cluster ordered by cut-set size: a header, then either a
+/// single-cycle body (the ring plus its cheapest cut) or a tangle body (the
+/// ranked cut-set), followed by a summary line. Returns an empty string when
+/// there are no clusters. Module names are shown relative to the cluster's
+/// crate, which the header names.
 #[must_use]
-pub fn format_cycle_errors(
+pub fn format_cluster_report(
     graph: &crate::graph::ArcGraph,
-    cycles: &[crate::layout::Cycle],
+    analysis: &crate::layout::CycleAnalysis,
+    report: &crate::layout::ClusterReport,
 ) -> String {
-    if cycles.is_empty() {
+    use std::collections::HashSet;
+
+    if report.clusters.is_empty() {
         return String::new();
     }
+    let total = report.clusters.len();
+    let mut out = String::new();
 
-    let mut output = String::new();
-    for cycle in cycles {
-        let names: Vec<String> = cycle
-            .path
-            .iter()
-            .map(|&idx| graph.qualified_name(idx))
-            .collect();
-        if names.len() == 2 {
-            let _ = writeln!(output, "error[cycle]: {} <-> {}", names[0], names[1]);
+    for (i, cluster) in report.clusters.iter().enumerate() {
+        if i > 0 {
+            let _ = writeln!(out);
+        }
+        let crate_name = graph[cluster.crate_idx].name().to_string();
+        let _ = writeln!(
+            out,
+            "cluster {}/{}: {} ({}, {}, {} to break)",
+            i + 1,
+            total,
+            crate_name,
+            plural(cluster.nodes.len(), "module"),
+            plural(cluster.cycles.len(), "cycle"),
+            plural(cluster.cuts.len(), "cut"),
+        );
+
+        if cluster.cycles.len() == 1 {
+            let cycle = &analysis.cycles[cluster.cycles[0]];
+            let names: Vec<String> = cycle
+                .path
+                .iter()
+                .map(|&n| rel_name(graph, n, &crate_name))
+                .collect();
+            let _ = writeln!(out, "  cycle: {} -> {}", names.join(" -> "), names[0]);
+            if let Some(cut) = cluster.cuts.first() {
+                let _ = writeln!(
+                    out,
+                    "  fewest references: {} -> {} ({})",
+                    rel_name(graph, cut.from, &crate_name),
+                    rel_name(graph, cut.to, &crate_name),
+                    plural(cut.refs, "ref"),
+                );
+            }
         } else {
-            let _ = writeln!(
-                output,
-                "error[cycle]: {} -> {}",
-                names.join(" -> "),
-                names[0]
-            );
+            let names: Vec<(String, String)> = cluster
+                .cuts
+                .iter()
+                .map(|cut| {
+                    (
+                        rel_name(graph, cut.from, &crate_name),
+                        rel_name(graph, cut.to, &crate_name),
+                    )
+                })
+                .collect();
+            let from_width = names.iter().map(|(from, _)| from.len()).max().unwrap_or(0);
+            let to_width = names.iter().map(|(_, to)| to.len()).max().unwrap_or(0);
+            let breaks_width = cluster
+                .cuts
+                .iter()
+                .map(|cut| cut.breaks.to_string().len())
+                .max()
+                .unwrap_or(0);
+            for (cut, (from, to)) in cluster.cuts.iter().zip(&names) {
+                let cycle_word = if cut.breaks == 1 { "cycle" } else { "cycles" };
+                let breaks = cut.breaks;
+                let refs = plural(cut.refs, "ref");
+                let _ = writeln!(
+                    out,
+                    "    {from:<from_width$} -> {to:<to_width$} (on {breaks:>breaks_width$} {cycle_word}, {refs})"
+                );
+            }
         }
     }
-    let _ = write!(
-        output,
-        "\nerror: found {} cycle(s) in dependency graph\n",
-        cycles.len()
+
+    let total_cycles: usize = report.clusters.iter().map(|c| c.cycles.len()).sum();
+    let total_cuts: usize = report.clusters.iter().map(|c| c.cuts.len()).sum();
+    let crates: HashSet<_> = report.clusters.iter().map(|c| c.crate_idx).collect();
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "Summary: {}, {} across {} - {} break all cycles",
+        plural(total, "cluster"),
+        plural(total_cycles, "cycle"),
+        plural(crates.len(), "crate"),
+        plural(total_cuts, "cut"),
     );
-    output
+    out
+}
+
+/// `"{n} {base}"`, pluralizing `base` with a trailing `s` unless `n == 1`.
+fn plural(n: usize, base: &str) -> String {
+    format!("{n} {base}{}", if n == 1 { "" } else { "s" })
+}
+
+/// Fully-qualified module name with the leading `<crate>::` stripped, since the
+/// cluster header already names the crate.
+fn rel_name(
+    graph: &crate::graph::ArcGraph,
+    idx: petgraph::graph::NodeIndex,
+    crate_name: &str,
+) -> String {
+    let qualified = graph.qualified_name(idx);
+    qualified
+        .strip_prefix(&format!("{crate_name}::"))
+        .map(String::from)
+        .unwrap_or(qualified)
 }
 
 #[cfg(test)]
@@ -186,102 +265,114 @@ mod tests {
         assert!(output.is_empty());
     }
 
-    // ===== format_cycle_errors tests (migrated from cli.rs) =====
-
     use crate::graph::{ArcGraph, Edge, Node};
-    use crate::layout::Cycle;
-    use petgraph::graph::NodeIndex;
 
-    fn test_graph(names: &[&str]) -> (ArcGraph, Vec<NodeIndex>) {
-        let mut graph = ArcGraph::new();
-        let crate_idx = graph.add_node(Node::Crate {
-            name: "test".into(),
-            path: "/test".into(),
+    // ===== format_cluster_report tests =====
+
+    use crate::layout::{ClusterReport, CycleAnalysis, MinimalCycles};
+    use crate::model::EdgeContext;
+
+    /// Single-crate graph "app" with modules by name and production `ModuleDep`
+    /// edges `(from, to, ref_count)`.
+    fn cyc_graph(modules: &[&str], deps: &[(usize, usize, usize)]) -> ArcGraph {
+        let mut g = ArcGraph::new();
+        let crate_idx = g.add_node(Node::Crate {
+            name: "app".into(),
+            path: "/app".into(),
         });
-        let indices: Vec<_> = names
+        let idx: Vec<_> = modules
             .iter()
-            .map(|name| {
-                graph.add_node(Node::Module {
-                    name: (*name).into(),
+            .map(|m| {
+                let n = g.add_node(Node::Module {
+                    name: (*m).into(),
                     crate_idx,
-                })
+                });
+                g.add_edge(crate_idx, n, Edge::Contains);
+                n
             })
             .collect();
-        (graph, indices)
+        for &(from, to, refs) in deps {
+            let locations = (0..refs)
+                .map(|i| SourceLocation {
+                    file: format!("src/{}.rs", modules[from]).into(),
+                    line: i + 1,
+                    symbols: vec![],
+                    module_path: String::new(),
+                })
+                .collect();
+            g.add_edge(
+                idx[from],
+                idx[to],
+                Edge::ModuleDep {
+                    locations,
+                    context: EdgeContext::production(),
+                },
+            );
+        }
+        g
+    }
+
+    fn report_of(g: &ArcGraph) -> (CycleAnalysis, ClusterReport) {
+        let analysis = g.production_subgraph().minimal_cycles();
+        let report = g.cluster_report(&analysis);
+        (analysis, report)
     }
 
     #[test]
-    fn test_format_cycle_errors_transitive() {
-        let (graph, idx) = test_graph(&["A", "B", "C"]);
-        let cycles = vec![Cycle {
-            path: vec![idx[0], idx[1], idx[2]],
-        }];
-        let output = format_cycle_errors(&graph, &cycles);
-        assert!(output.contains("error[cycle]: A -> B -> C -> A"));
-    }
-
-    #[test]
-    fn test_format_cycle_errors_direct() {
-        let (graph, idx) = test_graph(&["A", "B"]);
-        let cycles = vec![Cycle {
-            path: vec![idx[0], idx[1]],
-        }];
-        let output = format_cycle_errors(&graph, &cycles);
-        assert!(output.contains("error[cycle]: A <-> B"));
-    }
-
-    #[test]
-    fn test_format_cycle_errors_qualifies_same_leaf_modules() {
-        let mut graph = ArcGraph::new();
-        let crate_idx = graph.add_node(Node::Crate {
-            name: "my-crate".into(),
-            path: "/my-crate".into(),
-        });
-        let top_store = graph.add_node(Node::Module {
-            name: "store".into(),
-            crate_idx,
-        });
-        graph.add_edge(crate_idx, top_store, Edge::Contains);
-        let core = graph.add_node(Node::Module {
-            name: "core".into(),
-            crate_idx,
-        });
-        graph.add_edge(crate_idx, core, Edge::Contains);
-        let core_store = graph.add_node(Node::Module {
-            name: "store".into(),
-            crate_idx,
-        });
-        graph.add_edge(core, core_store, Edge::Contains);
-
-        let cycles = vec![Cycle {
-            path: vec![top_store, core_store],
-        }];
-        let output = format_cycle_errors(&graph, &cycles);
+    fn cluster_report_single_cycle_block() {
+        let g = cyc_graph(&["a", "b"], &[(0, 1, 1), (1, 0, 3)]);
+        let (analysis, report) = report_of(&g);
+        let out = format_cluster_report(&g, &analysis, &report);
         assert!(
-            output.contains("error[cycle]: my-crate::store <-> my-crate::core::store"),
-            "got: {output}"
+            out.contains("cluster 1/1: app (2 modules, 1 cycle, 1 cut to break)"),
+            "got:\n{out}"
+        );
+        assert!(out.contains("cycle: a -> b -> a"), "got:\n{out}");
+        assert!(
+            out.contains("fewest references: a -> b (1 ref)"),
+            "got:\n{out}"
+        );
+        assert!(
+            out.contains("Summary: 1 cluster, 1 cycle across 1 crate - 1 cut break all cycles"),
+            "got:\n{out}"
         );
     }
 
     #[test]
-    fn test_format_cycle_errors_empty() {
-        let (graph, _) = test_graph(&["A", "B"]);
-        let output = format_cycle_errors(&graph, &[]);
-        assert!(output.is_empty());
+    fn cluster_report_tangle_block() {
+        // a<->b and a<->c share node a: one cluster, two cycles, two cuts.
+        let g = cyc_graph(
+            &["a", "b", "c"],
+            &[(0, 1, 1), (1, 0, 1), (0, 2, 1), (2, 0, 1)],
+        );
+        let (analysis, report) = report_of(&g);
+        let out = format_cluster_report(&g, &analysis, &report);
+        assert!(
+            out.contains("(3 modules, 2 cycles, 2 cuts to break)"),
+            "got:\n{out}"
+        );
+        assert!(out.contains("(on 1 cycle, 1 ref)"), "got:\n{out}");
+        assert!(!out.contains("fewest references:"), "got:\n{out}");
     }
 
     #[test]
-    fn test_format_cycle_errors_summary() {
-        let (graph, idx) = test_graph(&["A", "B", "C", "D"]);
-        let cycles = vec![
-            Cycle {
-                path: vec![idx[0], idx[1]],
-            },
-            Cycle {
-                path: vec![idx[2], idx[3]],
-            },
-        ];
-        let output = format_cycle_errors(&graph, &cycles);
-        assert!(output.contains("error: found 2 cycle(s) in dependency graph"));
+    fn cluster_report_summary_counts_crates_and_cuts() {
+        let g = cyc_graph(
+            &["a", "b", "c", "d"],
+            &[(0, 1, 1), (1, 0, 1), (2, 3, 1), (3, 2, 1)],
+        );
+        let (analysis, report) = report_of(&g);
+        let out = format_cluster_report(&g, &analysis, &report);
+        assert!(
+            out.contains("Summary: 2 clusters, 2 cycles across 1 crate - 2 cuts break all cycles"),
+            "got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn cluster_report_empty_is_blank() {
+        let g = cyc_graph(&["a", "b"], &[(0, 1, 1)]);
+        let (analysis, report) = report_of(&g);
+        assert!(format_cluster_report(&g, &analysis, &report).is_empty());
     }
 }

@@ -15,7 +15,7 @@ use crate::model::{CrateExportMap, ModulePathMap, WorkspaceCrates};
 use crate::render::{RenderConfig, render};
 use crate::rules::config::{ArcConfig, ConfigError};
 use crate::rules::engine::check_rules;
-use crate::rules::format::{format_cycle_errors, format_violations};
+use crate::rules::format::{format_cluster_report, format_violations};
 use crate::volatility::{VolatilityAnalyzer, VolatilityConfig};
 use std::path::Path;
 
@@ -257,7 +257,8 @@ fn run_legacy_cycle_check(graph: &ArcGraph) -> Result<()> {
     if analysis.cycles.is_empty() {
         return Ok(());
     }
-    eprint!("{}", format_cycle_errors(graph, &analysis.cycles));
+    let report = graph.cluster_report(&analysis);
+    eprint!("{}", format_cluster_report(graph, &analysis, &report));
     anyhow::bail!("dependency cycle(s) detected");
 }
 
