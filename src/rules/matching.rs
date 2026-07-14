@@ -7,23 +7,6 @@ use crate::graph::{ArcGraph, Edge};
 use petgraph::graph::NodeIndex;
 use petgraph::visit::EdgeRef;
 
-/// Build the full module path for a node: `"crate_name::parent::child"`.
-///
-/// For crate nodes, returns just the crate name.
-/// For module nodes, traverses Contains edges upward to reconstruct the path.
-#[must_use]
-pub fn module_path(idx: NodeIndex, graph: &ArcGraph) -> String {
-    let parent_map = graph.parent_map();
-    let mut segments = vec![graph[idx].name().to_owned()];
-    let mut current = idx;
-    while let Some(&parent) = parent_map.get(&current) {
-        segments.push(graph[parent].name().to_owned());
-        current = parent;
-    }
-    segments.reverse();
-    segments.join("::")
-}
-
 /// Resolve a module path pattern to matching graph nodes.
 ///
 /// Supported patterns:
@@ -52,7 +35,7 @@ pub fn resolve_pattern(pattern: &str, graph: &ArcGraph) -> Vec<NodeIndex> {
         return resolve_wildcard(base, graph);
     }
 
-    // Build path index: module_path → NodeIndex
+    // Build path index: qualified name → NodeIndex
     let path_index = build_path_index(graph);
 
     // Exact match first (could be a module path like "domain::service")
@@ -71,7 +54,7 @@ fn build_path_index(graph: &ArcGraph) -> std::collections::HashMap<String, NodeI
     graph
         .node_indices()
         .filter(|&idx| !graph[idx].is_external())
-        .map(|idx| (module_path(idx, graph), idx))
+        .map(|idx| (graph.qualified_name(idx), idx))
         .collect()
 }
 
@@ -128,27 +111,6 @@ mod tests {
         });
         graph.add_edge(parent, idx, Edge::Contains);
         idx
-    }
-
-    #[test]
-    fn test_module_path_crate() {
-        let (graph, crate_idx) = test_crate_graph();
-        assert_eq!(module_path(crate_idx, &graph), "test");
-    }
-
-    #[test]
-    fn test_module_path_simple() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let mod_idx = add_module(&mut graph, "service", crate_idx, crate_idx);
-        assert_eq!(module_path(mod_idx, &graph), "test::service");
-    }
-
-    #[test]
-    fn test_module_path_nested() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let parent = add_module(&mut graph, "domain", crate_idx, crate_idx);
-        let child = add_module(&mut graph, "service", crate_idx, parent);
-        assert_eq!(module_path(child, &graph), "test::domain::service");
     }
 
     #[test]

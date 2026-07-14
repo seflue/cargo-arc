@@ -959,6 +959,16 @@ mod tests {
     }
 
     #[test]
+    fn test_qualified_name_crate_returns_bare_name() {
+        let mut graph = ArcGraph::new();
+        let crate_idx = graph.add_node(Node::Crate {
+            name: "my-crate".into(),
+            path: "/my-crate".into(),
+        });
+        assert_eq!(graph.qualified_name(crate_idx), "my-crate");
+    }
+
+    #[test]
     fn test_build_graph_with_externals() {
         use crate::analyze::externals::*;
         use cargo_metadata::DependencyKind as DK;

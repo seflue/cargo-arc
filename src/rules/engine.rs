@@ -6,7 +6,7 @@ use crate::graph::{ArcGraph, Edge};
 use crate::layout::MinimalCycles;
 use crate::model::SourceLocation;
 use crate::rules::config::{ArcConfig, Direction, Rule, Severity};
-use crate::rules::matching::{module_path, resolve_pattern};
+use crate::rules::matching::resolve_pattern;
 use petgraph::graph::NodeIndex;
 use std::collections::HashSet;
 
@@ -96,8 +96,8 @@ fn check_forbidden(graph: &ArcGraph, rule: &Rule) -> Vec<Violation> {
             if !from_set.contains(&source) || !to_set.contains(&target) {
                 return None;
             }
-            let source_path = module_path(source, graph);
-            let target_path = module_path(target, graph);
+            let source_path = graph.qualified_name(source);
+            let target_path = graph.qualified_name(target);
             let locations = match edge {
                 Edge::ModuleDep { locations, .. } => locations.clone(),
                 _ => Vec::new(),
@@ -140,7 +140,7 @@ fn check_cycles(graph: &ArcGraph, rule: &Rule) -> Vec<Violation> {
             let path_names: Vec<String> = cycle
                 .path
                 .iter()
-                .map(|&idx| module_path(idx, graph))
+                .map(|&idx| graph.qualified_name(idx))
                 .collect();
             let message = format!("{} → {}", path_names.join(" → "), path_names[0]);
             Violation {
@@ -197,8 +197,8 @@ fn check_layers(graph: &ArcGraph, rule: &Rule) -> Vec<Violation> {
                 return None;
             }
 
-            let source_path = module_path(source, graph);
-            let target_path = module_path(target, graph);
+            let source_path = graph.qualified_name(source);
+            let target_path = graph.qualified_name(target);
             let locations = match edge {
                 Edge::ModuleDep { locations, .. } => locations.clone(),
                 _ => Vec::new(),
