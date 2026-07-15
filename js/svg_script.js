@@ -48,12 +48,23 @@ function createHoverKeyTracker() {
   };
 }
 
+function deriveRowEmphasis(hoveredArcId, cutArcIds) {
+  const emphasize = [];
+  const dim = [];
+  for (const id of cutArcIds) {
+    if (id === hoveredArcId) emphasize.push(id);
+    else dim.push(id);
+  }
+  return { emphasize, dim };
+}
+
 if (typeof module !== 'undefined') {
   module.exports = {
     createHighlightDebouncer,
     createPinnedSidebarRefresher,
     deriveHoverKey,
     createHoverKeyTracker,
+    deriveRowEmphasis,
   };
 }
 
@@ -1395,6 +1406,47 @@ if (typeof document !== 'undefined') {
           AppState.clearHover(appState);
           highlightTiming.immediate();
           SidebarLogic.hide();
+        }
+      });
+
+      // Cluster sidebar: hovering a cut-set candidate row emphasizes its arc
+      // and dims the other cut arcs, on top of the standing cut-set-arc
+      // markers. Delegated on the sidebar container (not per-row wiring like
+      // _setupCollapseHandlers) so it also covers transient previews.
+      const hoveredCutRow = (e) => {
+        const target = /** @type {Element} */ (e.target);
+        const row = target.closest('.sidebar-cut-row[data-arc-id]');
+        if (!row || row.contains(/** @type {Node} */ (e.relatedTarget))) {
+          return null;
+        }
+        return row;
+      };
+      const cutRowsIn = () =>
+        sidebarEl.querySelectorAll('.sidebar-cut-row[data-arc-id]');
+
+      sidebarEl.addEventListener('mouseover', (e) => {
+        const row = hoveredCutRow(e);
+        if (!row) return;
+        const cutArcIds = Array.from(cutRowsIn()).map((r) =>
+          r.getAttribute('data-arc-id'),
+        );
+        const { emphasize, dim } = deriveRowEmphasis(
+          row.getAttribute('data-arc-id'),
+          cutArcIds,
+        );
+        for (const id of emphasize) {
+          DomAdapter.getVisibleArc(id)?.classList.add(C.cutSetArcEmphasis);
+        }
+        for (const id of dim) {
+          DomAdapter.getVisibleArc(id)?.classList.add(C.cutSetArcDimmed);
+        }
+      });
+
+      sidebarEl.addEventListener('mouseout', (e) => {
+        if (!hoveredCutRow(e)) return;
+        for (const r of cutRowsIn()) {
+          const arc = DomAdapter.getVisibleArc(r.getAttribute('data-arc-id'));
+          arc?.classList.remove(C.cutSetArcEmphasis, C.cutSetArcDimmed);
         }
       });
     }
