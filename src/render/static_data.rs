@@ -16,6 +16,7 @@ struct StaticData {
     arcs: BTreeMap<String, ArcData>,
     cycles: Vec<CycleData>,
     classes: BTreeMap<String, String>,
+    clusters: BTreeMap<String, ClusterData>,
     #[serde(skip_serializing_if = "Option::is_none")]
     expand_level: Option<usize>,
 }
@@ -92,6 +93,25 @@ struct CycleData {
     nodes: Vec<String>,
     arcs: Vec<String>,
     scc_id: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ClusterData {
+    #[serde(rename = "crate")]
+    crate_name: String,
+    module_count: usize,
+    cycle_count: usize,
+    cuts: Vec<CutData>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CutData {
+    from_id: String,
+    to_id: String,
+    breaks: usize,
+    refs: usize,
 }
 
 /// Accumulates a cycle's nodes, arcs, and SCC id while iterating edges.
@@ -339,11 +359,37 @@ fn generate_static_data(
     .map(|(k, v)| (k.to_string(), v.to_string()))
     .collect();
 
+    let clusters: BTreeMap<String, ClusterData> = ir
+        .clusters
+        .iter()
+        .map(|(&scc, c)| {
+            (
+                scc.to_string(),
+                ClusterData {
+                    crate_name: c.crate_name.clone(),
+                    module_count: c.module_count,
+                    cycle_count: c.cycle_count,
+                    cuts: c
+                        .cuts
+                        .iter()
+                        .map(|cut| CutData {
+                            from_id: cut.from_id.to_string(),
+                            to_id: cut.to_id.to_string(),
+                            breaks: cut.breaks,
+                            refs: cut.refs,
+                        })
+                        .collect(),
+                },
+            )
+        })
+        .collect();
+
     let data = StaticData {
         nodes,
         arcs,
         cycles,
         classes,
+        clusters,
         expand_level: config.expand_level,
     };
     format!(
@@ -388,8 +434,9 @@ pub(super) fn render_script(
 mod tests {
     use super::super::positioning::{calculate_box_width, calculate_positions};
     use super::*;
-    use crate::layout::LayoutEdge;
-    use crate::model::EdgeContext;
+    use crate::graph::{ArcGraph, Edge, Node};
+    use crate::layout::{LayoutEdge, MinimalCycles, build_layout};
+    use crate::model::{EdgeContext, SourceLocation};
 
     // === format_source_locations_by_symbol Tests ===
 
@@ -1596,5 +1643,178 @@ mod tests {
         let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
 
         assert_eq!(data["arcs"]["1-2"]["cycleIds"], serde_json::json!([0, 2]));
+    }
+
+    #[test]
+    fn test_static_data_clusters() {
+        let mut ir = LayoutIR::new();
+        let c = ir.add_item(ItemKind::Crate, "app".into());
+        let a = ir.add_item(
+            ItemKind::Module {
+                nesting: 1,
+                parent: c,
+            },
+            "a".into(),
+        );
+        let b = ir.add_item(
+            ItemKind::Module {
+                nesting: 1,
+                parent: c,
+            },
+            "b".into(),
+        );
+        ir.edges
+            .push(LayoutEdge::new(a, b, EdgeContext::production()).with_cycle(
+                crate::layout::CycleKind::Direct,
+                vec![0],
+                0,
+            ));
+        ir.edges
+            .push(LayoutEdge::new(b, a, EdgeContext::production()).with_cycle(
+                crate::layout::CycleKind::Direct,
+                vec![0],
+                0,
+            ));
+        ir.clusters.insert(
+            0,
+            crate::layout::ClusterInfo {
+                crate_name: "app".into(),
+                module_count: 2,
+                cycle_count: 1,
+                cuts: vec![crate::layout::CutInfo {
+                    from_id: a,
+                    to_id: b,
+                    breaks: 1,
+                    refs: 2,
+                }],
+            },
+        );
+
+        let config = RenderConfig::default();
+        let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
+        let parents: HashSet<NodeId> = HashSet::from([0]);
+        let script = render_script(&config, &ir, &positioned, &parents);
+        let json_str = script
+            .split("const STATIC_DATA = ")
+            .nth(1)
+            .unwrap()
+            .split(";\n")
+            .next()
+            .unwrap();
+        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
+
+        let cl = &data["clusters"]["0"];
+        assert_eq!(cl["crate"], "app");
+        assert_eq!(cl["moduleCount"], 2);
+        assert_eq!(cl["cycleCount"], 1);
+        let cut = &cl["cuts"][0];
+        assert_eq!(cut["fromId"], a.to_string());
+        assert_eq!(cut["toId"], b.to_string());
+        assert_eq!(cut["breaks"], 1);
+        assert_eq!(cut["refs"], 2);
+        // Cut arc-id addresses a serialized arc.
+        assert!(data["arcs"][format!("{a}-{b}")].is_object());
+    }
+
+    #[test]
+    fn test_static_data_tangle_cluster_two_cuts_ranked_and_addressable() {
+        // Two 2-cycles sharing module "a" (a<->b, a<->c): one SCC, two cuts.
+        // Both cuts break exactly one cycle each, so ranking (ADR-021: breaks
+        // desc, then refs asc) is decided by refs, not by name — b->a (1 ref)
+        // must rank before c->a (2 refs).
+        let mut graph = ArcGraph::new();
+        let crate_idx = graph.add_node(Node::Crate {
+            name: "app".into(),
+            path: "/app".into(),
+        });
+        let mods: Vec<_> = ["a", "b", "c"]
+            .iter()
+            .map(|&name| {
+                let idx = graph.add_node(Node::Module {
+                    name: name.into(),
+                    crate_idx,
+                });
+                graph.add_edge(crate_idx, idx, Edge::Contains);
+                idx
+            })
+            .collect();
+        let (a, b, c) = (mods[0], mods[1], mods[2]);
+        let locations = |refs: usize| {
+            (0..refs)
+                .map(|i| SourceLocation {
+                    file: "src/lib.rs".into(),
+                    line: i + 1,
+                    symbols: vec![],
+                    module_path: String::new(),
+                    via_reexport: false,
+                })
+                .collect::<Vec<_>>()
+        };
+        for (from, to, refs) in [(a, b, 5), (b, a, 1), (a, c, 3), (c, a, 2)] {
+            graph.add_edge(
+                from,
+                to,
+                Edge::ModuleDep {
+                    locations: locations(refs),
+                    context: EdgeContext::production(),
+                },
+            );
+        }
+
+        let analysis = graph.cycle_subgraph(false).minimal_cycles();
+        let ir = build_layout(&graph, &analysis, false);
+
+        assert_eq!(ir.clusters.len(), 1, "expected exactly one tangle cluster");
+        let cluster = ir.clusters.values().next().unwrap();
+        assert_eq!(cluster.cuts.len(), 2, "tangle SCC needs two cuts");
+
+        let id_of = |name: &str| ir.items.iter().find(|item| item.label == name).unwrap().id;
+        let (a_id, b_id, c_id) = (id_of("a"), id_of("b"), id_of("c"));
+
+        assert_eq!(cluster.cuts[0].from_id, b_id);
+        assert_eq!(cluster.cuts[0].to_id, a_id);
+        assert_eq!(cluster.cuts[0].refs, 1);
+        assert_eq!(cluster.cuts[1].from_id, c_id);
+        assert_eq!(cluster.cuts[1].to_id, a_id);
+        assert_eq!(cluster.cuts[1].refs, 2);
+
+        let config = RenderConfig::default();
+        let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
+        let parents: HashSet<NodeId> = ir
+            .items
+            .iter()
+            .filter_map(|item| match &item.kind {
+                ItemKind::Module { parent, .. } | ItemKind::ExternalCrate { parent, .. } => {
+                    Some(*parent)
+                }
+                ItemKind::Crate | ItemKind::ExternalSection => None,
+            })
+            .collect();
+        let script = render_script(&config, &ir, &positioned, &parents);
+        let json_str = script
+            .split("const STATIC_DATA = ")
+            .nth(1)
+            .unwrap()
+            .split(";\n")
+            .next()
+            .unwrap();
+        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
+
+        let clusters = data["clusters"].as_object().unwrap();
+        assert_eq!(clusters.len(), 1);
+        let cuts = clusters.values().next().unwrap()["cuts"]
+            .as_array()
+            .unwrap();
+        assert_eq!(cuts.len(), 2);
+        assert_eq!(cuts[0]["fromId"], b_id.to_string());
+        assert_eq!(cuts[0]["toId"], a_id.to_string());
+        assert_eq!(cuts[0]["refs"], 1);
+        assert_eq!(cuts[1]["fromId"], c_id.to_string());
+        assert_eq!(cuts[1]["toId"], a_id.to_string());
+        assert_eq!(cuts[1]["refs"], 2);
+
+        // Each cut's fromId-toId addresses a serialized arc.
+        assert!(data["arcs"][format!("{b_id}-{a_id}")].is_object());
+        assert!(data["arcs"][format!("{c_id}-{a_id}")].is_object());
     }
 }

@@ -55,11 +55,24 @@ interface StaticCycleData {
   arcs: string[];
   sccId: number;
 }
+interface StaticCutData {
+  fromId: string;
+  toId: string;
+  breaks: number;
+  refs: number;
+}
+interface StaticClusterData {
+  crate: string;
+  moduleCount: number;
+  cycleCount: number;
+  cuts: StaticCutData[];
+}
 declare const STATIC_DATA: {
   nodes: Record<string, StaticNodeData>;
   arcs: Record<string, StaticArcData>;
   classes: Record<string, string>;
   cycles?: Record<string, StaticCycleData>;
+  clusters?: Record<string, StaticClusterData>;
   expandLevel?: number | null;
 };
 

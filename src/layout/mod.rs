@@ -6,7 +6,8 @@ mod cycles;
 mod toposort;
 
 pub use build::{
-    CycleKind, EdgeDirection, ItemKind, LayoutEdge, LayoutIR, LayoutItem, NodeId, build_layout,
+    ClusterInfo, CutInfo, CycleKind, EdgeDirection, ItemKind, LayoutEdge, LayoutIR, LayoutItem,
+    NodeId, build_layout,
 };
 pub use clusters::{Cluster, ClusterReport, Cut};
 pub use cycles::{Cycle, CycleAnalysis, MinimalCycles};

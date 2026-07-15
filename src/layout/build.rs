@@ -155,10 +155,17 @@ impl LayoutIR {
 }
 
 /// Build `LayoutIR` from graph and cycle information.
-/// Converts graph nodes to `LayoutItems` with proper nesting and edges with cycle markers.
+/// Converts graph nodes to `LayoutItems` with proper nesting and edges with cycle markers,
+/// and attaches each cyclic SCC's cluster (crate name, size, and cut-set).
 /// `CrateDep` edges are skipped when `ModuleDep` edges exist between the same crates.
+/// `include_reexports` controls whether idiomatic re-export edges count toward cycles
+/// and cut-sets, matching the subgraph `analysis` was computed from.
 #[must_use]
-pub fn build_layout(graph: &ArcGraph, analysis: &CycleAnalysis, include_reexports: bool) -> LayoutIR {
+pub fn build_layout(
+    graph: &ArcGraph,
+    analysis: &CycleAnalysis,
+    include_reexports: bool,
+) -> LayoutIR {
     let mut ir = LayoutIR::new();
     let edge_to_cycles = &analysis.edge_cycles;
     let parent_map = graph.parent_map();
@@ -199,8 +206,8 @@ pub fn build_layout(graph: &ArcGraph, analysis: &CycleAnalysis, include_reexport
 }
 
 /// Compute the per-SCC cut-set and attach it keyed by the analysis sccId
-/// (the same id carried by the layout items), mapping cut NodeIndex to layout
-/// arc endpoints via node_map. Cut edges whose endpoints are absent from the
+/// (the same id carried by the layout items), mapping cut `NodeIndex` to layout
+/// arc endpoints via `node_map`. Cut edges whose endpoints are absent from the
 /// layout are skipped.
 fn attach_clusters(
     ir: &mut LayoutIR,
