@@ -235,6 +235,9 @@ if (typeof document !== 'undefined') {
     /** @type {{ _isNodeCollapsed: ((nodeId: any) => boolean) | null }} */ (
       SidebarLogic
     )._isNodeCollapsed = (nodeId) => AppState.isCollapsed(appState, nodeId);
+    /** @type {{ _isClusterMode: (() => boolean) | null }} */ (
+      SidebarLogic
+    )._isClusterMode = () => AppState.isClusterMode(appState);
 
     function handleMouseEnter(type, id) {
       if (AppState.hasPinnedSelection(appState)) return;

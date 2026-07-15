@@ -27,6 +27,8 @@ const SidebarLogic = {
   _onCollapseToggle: null,
   /** @type {((id: string) => boolean) | null} */
   _isNodeCollapsed: null,
+  /** @type {(() => boolean) | null} */
+  _isClusterMode: null,
   /**
    * Merge symbol groups: combine groups with same symbol, deduplicate locations by file+line.
    * @param {Array<{symbol: string, modulePath: string|null, locations: Array<{file: string, line: number}>}>} groups
@@ -56,21 +58,6 @@ const SidebarLogic = {
   },
 
   /**
-   * Format a compact symbol annotation string from usages for cycle sidebar headers.
-   * @param {StaticArcData["usages"]} usages
-   * @returns {string} e.g. "::Symbol", "::{S1, S2}", "::{S1, S2, …}", or ""
-   */
-  formatArcSymbols(usages) {
-    const symbols = [
-      ...new Set((usages || []).map((g) => g.symbol).filter(Boolean)),
-    ];
-    if (symbols.length === 0) return '';
-    if (symbols.length === 1) return `::${symbols[0]}`;
-    if (symbols.length <= 3) return `::{${symbols.join(', ')}}`;
-    return `::{${symbols[0]}, ${symbols[1]}, \u2026}`;
-  },
-
-  /**
    * Build HTML content string for the sidebar.
    * Uses overrideData if provided, otherwise STATIC_DATA.arcs[arcId].
    * Expects structured usages: [{ symbol, modulePath, locations: [{ file, line }] }]
@@ -82,14 +69,17 @@ const SidebarLogic = {
     const arc = overrideData || STATIC_DATA.arcs[arcId];
     if (!arc) return '';
 
-    // Cycle view: show all cycle arcs when clicking a cycle arc
+    // Cluster view: when cluster mode is on and the arc lies in an SCC with a
+    // known cut-set, describe the whole cluster instead of the single edge.
+    const sccId = STATIC_DATA.arcs[arcId]?.sccId;
     if (
       !overrideData &&
-      arc.cycleIds &&
-      arc.cycleIds.length > 0 &&
-      STATIC_DATA.cycles
+      this._isClusterMode?.() &&
+      sccId != null &&
+      STATIC_DATA.clusters &&
+      STATIC_DATA.clusters[sccId]
     ) {
-      return this._buildCycleContent(arcId, arc.cycleIds);
+      return this._buildClusterContent(String(sccId));
     }
     const groups = arc.usages || [];
 
@@ -586,146 +576,38 @@ const SidebarLogic = {
   },
 
   /**
-   * Build HTML for cycle view: all cycle arcs sorted by source-location count.
-   * Single cycle: flat list. Multiple cycles: grouped by cycle with headers.
-   * @param {string} selectedArcId - The clicked arc ID
-   * @param {number[]} cycleIds - Indices into STATIC_DATA.cycles
+   * Build cluster (SCC) sidebar: header + ranked cut-set candidates.
+   * @param {string} sccId - Key into STATIC_DATA.clusters
    * @returns {string}
    */
-  _buildCycleContent(selectedArcId, cycleIds) {
-    if (!STATIC_DATA.cycles) return '';
-
-    // Single cycle: original flat layout
-    if (cycleIds.length === 1) {
-      const cycle = STATIC_DATA.cycles[cycleIds[0]];
-      if (!cycle) return '';
-
-      const arcInfos = this._buildCycleArcInfos(cycle);
-      const crate = arcInfos.length
-        ? StaticData.qualifiedParts(arcInfos[0].arc.from).crate
-        : null;
-
-      let html = `<div class="sidebar-header">`;
-      html += `<span class="sidebar-title">Cycle${crate ? ` · ${crate}` : ''} (${cycle.arcs.length} edges)</span>`;
-      html += `<div class="sidebar-header-actions">`;
-      html += `<button class="sidebar-collapse-all">+</button>`;
-      html += `<button class="sidebar-close">&#x2715;</button>`;
-      html += `</div>`;
-      html += `</div>`;
-
-      html += `<div class="sidebar-content">`;
-      for (const info of arcInfos) {
-        html += this._buildCycleArcRow(info, selectedArcId);
-      }
-      html += `</div>`;
-
-      const totalLocs = arcInfos.reduce((sum, info) => sum + info.count, 0);
-      html += `<div class="sidebar-footer">${totalLocs} references \u00b7 ${cycle.arcs.length} edges</div>`;
-
-      return html;
-    }
-
-    // Multi-cycle: grouped layout with collapsible L1 (cycle groups) and L2 (arcs)
-    let totalEdges = 0;
-    let totalLocs = 0;
-    let contentHtml = '';
-
-    let cycleNum = 0;
-    let crate = null;
-    for (const cid of cycleIds) {
-      const cycle = STATIC_DATA.cycles[cid];
-      if (!cycle) continue;
-      cycleNum++;
-      totalEdges += cycle.arcs.length;
-
-      const arcInfos = this._buildCycleArcInfos(cycle);
-      if (crate === null && arcInfos.length) {
-        crate = StaticData.qualifiedParts(arcInfos[0].arc.from).crate;
-      }
-
-      const cycleLocs = arcInfos.reduce((sum, info) => sum + info.count, 0);
-      totalLocs += cycleLocs;
-
-      // L1: Cycle group as collapsible sidebar-symbol
-      contentHtml += `<div class="sidebar-usage-group">`;
-      contentHtml += `<div class="sidebar-symbol" data-collapsible="" data-collapsed="true">`;
-      contentHtml += `<span class="sidebar-toggle">&#x25B8;</span>`;
-      contentHtml += `<span class="sidebar-symbol-name">Cycle ${cycleNum} (${cycle.arcs.length} edges)</span>`;
-      contentHtml += `<span class="sidebar-ref-count">${cycleLocs}</span>`;
-      contentHtml += `</div>`;
-
-      contentHtml += `<div class="sidebar-locations" style="display:none">`;
-      for (const info of arcInfos) {
-        contentHtml += this._buildCycleArcRow(info, selectedArcId);
-      }
-      contentHtml += `</div>`;
-      contentHtml += `</div>`;
-    }
+  _buildClusterContent(sccId) {
+    const cl = STATIC_DATA.clusters?.[sccId];
+    if (!cl) return '';
 
     let html = `<div class="sidebar-header">`;
-    html += `<span class="sidebar-title">Cycles${crate ? ` · ${crate}` : ''} (${cycleIds.length})</span>`;
-    html += `<div class="sidebar-header-actions">`;
-    html += `<button class="sidebar-collapse-all">+</button>`;
+    html += `<span class="sidebar-title">Cluster \u00b7 ${cl.crate}</span>`;
     html += `<button class="sidebar-close">&#x2715;</button>`;
     html += `</div>`;
-    html += `</div>`;
-    html += `<div class="sidebar-content">${contentHtml}</div>`;
-    html += `<div class="sidebar-footer">${totalLocs} references \u00b7 ${totalEdges} edges</div>`;
 
-    return html;
-  },
+    html += `<div class="sidebar-subheader">${cl.moduleCount} modules \u00b7 ${cl.cycleCount} cycles \u00b7 ${cl.cuts.length} to break</div>`;
 
-  /**
-   * Build sorted arc info objects for a cycle's arcs (ascending by location count).
-   * @param {{ arcs: string[] }} cycle
-   * @returns {Array<{ arcId: string, arc: object, count: number, usages: Array }>}
-   */
-  _buildCycleArcInfos(cycle) {
-    const arcInfos = cycle.arcs.map((arcId) => {
-      const arc = STATIC_DATA.arcs[arcId];
-      const usages = arc?.usages || [];
-      const count = usages.reduce((sum, g) => sum + g.locations.length, 0);
-      return { arcId, arc, count, usages };
-    });
-    arcInfos.sort((a, b) => a.count - b.count);
-    return arcInfos;
-  },
-
-  /**
-   * Build HTML for a single cycle arc row (collapsible header + deduplicated locations).
-   * @param {{ arcId: string, arc: object, count: number, usages: Array }} info
-   * @param {string} selectedArcId - The clicked arc ID (highlighted)
-   * @returns {string}
-   */
-  _buildCycleArcRow(info, selectedArcId) {
-    const isSelected = info.arcId === selectedArcId;
-    const fromName = StaticData.qualifiedParts(info.arc.from).path;
-    const toName = StaticData.qualifiedParts(info.arc.to).path;
-    const symSuffix = this.formatArcSymbols(info.usages);
-
-    let html = `<div class="sidebar-usage-group${isSelected ? ' sidebar-selected-arc' : ''}">`;
-    html += `<div class="sidebar-symbol sidebar-symbol-stacked" data-collapsible="" data-collapsed="true">`;
-    html += `<span class="sidebar-toggle">&#x25B8;</span>`;
-    html += `<div class="sidebar-cycle-edge">`;
-    html += `<span class="sidebar-cycle-node" data-node-id="${info.arc.from}">${fromName}</span>`;
-    html += `<svg class="sidebar-cycle-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path class="sidebar-cycle-arrow-path" d="M6 1.5 V10 M2.75 6.75 L6 10 L9.25 6.75" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-    html += `<span class="sidebar-cycle-node" data-node-id="${info.arc.to}">${toName}${symSuffix}</span>`;
-    html += `</div>`;
-    html += `<span class="sidebar-ref-count">${info.count}</span>`;
-    html += `</div>`;
-
-    html += `<div class="sidebar-locations" style="display:none">`;
-    const seen = new Set();
-    for (const group of info.usages) {
-      for (const loc of group.locations) {
-        const key = `${loc.file}:${loc.line}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        html += `<div class="sidebar-location">${loc.file}<span class="sidebar-line-badge">:${loc.line}</span></div>`;
-      }
+    html += `<div class="sidebar-content">`;
+    for (const cut of cl.cuts) {
+      const arcId = `${cut.fromId}-${cut.toId}`;
+      const fromName = StaticData.qualifiedParts(cut.fromId).path;
+      const toName = StaticData.qualifiedParts(cut.toId).path;
+      const cycleWord = cut.breaks === 1 ? 'cycle' : 'cycles';
+      html += `<div class="sidebar-usage-group sidebar-cut-row" data-arc-id="${arcId}">`;
+      html += `<div class="sidebar-cycle-edge">`;
+      html += `<span class="sidebar-cycle-node" data-node-id="${cut.fromId}">${fromName}</span>`;
+      html += `<span class="sidebar-arrow">&#x2192;</span>`;
+      html += `<span class="sidebar-cycle-node" data-node-id="${cut.toId}">${toName}</span>`;
+      html += `</div>`;
+      html += `<span class="sidebar-cut-meta">on ${cut.breaks} ${cycleWord} \u00b7 ${cut.refs} refs</span>`;
+      html += `</div>`;
     }
     html += `</div>`;
-    html += `</div>`;
+
     return html;
   },
 

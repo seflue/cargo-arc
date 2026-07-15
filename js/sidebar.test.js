@@ -97,6 +97,7 @@ globalThis.STATIC_DATA = {
       usages: [],
     },
   },
+  clusters: {},
 };
 
 // Mock StaticData module (sidebar.js uses StaticData.getNode for name resolution)
@@ -1792,442 +1793,62 @@ describe('SidebarLogic', () => {
     });
   });
 
-  describe('buildContent — cycle view', () => {
-    let savedArcs, savedCycles;
-
+  describe('buildContent — cluster view', () => {
+    let savedClusters;
     beforeEach(() => {
-      savedArcs = globalThis.STATIC_DATA.arcs;
-      savedCycles = globalThis.STATIC_DATA.cycles;
-
-      // Cycle: A → B → C → A (cycleIds=[0])
-      globalThis.STATIC_DATA.arcs = {
-        ...savedArcs,
-        'A-B': {
-          from: 'A',
-          to: 'B',
-          cycleIds: [0],
-          usages: [
-            {
-              symbol: 'sym1',
-              modulePath: null,
-              locations: [{ file: 'a.rs', line: 1 }],
-            },
-          ],
-        },
-        'B-C': {
-          from: 'B',
-          to: 'C',
-          cycleIds: [0],
-          usages: [
-            {
-              symbol: 'sym2',
-              modulePath: null,
-              locations: [
-                { file: 'b.rs', line: 1 },
-                { file: 'b.rs', line: 2 },
-                { file: 'b.rs', line: 3 },
-              ],
-            },
-          ],
-        },
-        'C-A': {
-          from: 'C',
-          to: 'A',
-          cycleIds: [0],
-          usages: [
-            {
-              symbol: 'sym3',
-              modulePath: null,
-              locations: [
-                { file: 'c.rs', line: 1 },
-                { file: 'c.rs', line: 2 },
-              ],
-            },
+      savedClusters = globalThis.STATIC_DATA.clusters;
+      globalThis.STATIC_DATA.clusters = {
+        0: {
+          crate: 'my_crate',
+          moduleCount: 4,
+          cycleCount: 3,
+          cuts: [
+            { fromId: 'x', toId: 'y', breaks: 3, refs: 2 },
+            { fromId: 'y', toId: 'x', breaks: 1, refs: 5 },
           ],
         },
       };
-      globalThis.STATIC_DATA.nodes = {
-        ...globalThis.STATIC_DATA.nodes,
-        A: { type: 'module', name: 'mod_a', parent: null },
-        B: { type: 'module', name: 'mod_b', parent: null },
-        C: { type: 'module', name: 'mod_c', parent: null },
+      globalThis.STATIC_DATA.arcs['x-y'] = {
+        from: 'x',
+        to: 'y',
+        usages: [],
+        sccId: 0,
       };
-      globalThis.STATIC_DATA.cycles = [
-        { nodes: ['A', 'B', 'C'], arcs: ['A-B', 'B-C', 'C-A'] },
-      ];
+      SidebarLogic._isClusterMode = () => true;
     });
-
     afterEach(() => {
-      globalThis.STATIC_DATA.arcs = savedArcs;
-      globalThis.STATIC_DATA.cycles = savedCycles;
+      globalThis.STATIC_DATA.clusters = savedClusters;
+      delete globalThis.STATIC_DATA.arcs['x-y'];
+      SidebarLogic._isClusterMode = null;
     });
 
-    test("cycle-arc: header shows 'Cycle' with edge count", () => {
-      const html = SidebarLogic.buildContent('A-B');
-      expect(html).toContain('Cycle');
-      expect(html).toContain('3 edges');
+    test('cluster-mode on: header names crate and counts', () => {
+      const html = SidebarLogic.buildContent('x-y');
+      expect(html).toContain('my_crate');
+      expect(html).toContain('4 modules');
+      expect(html).toContain('3 cycles');
     });
 
-    test('cycle-arc: all cycle arcs listed', () => {
-      const html = SidebarLogic.buildContent('A-B');
-      expect(html).toContain('mod_a');
-      expect(html).toContain('mod_b');
-      expect(html).toContain('mod_c');
-      // All three arcs should have their source locations
-      expect(html).toContain('a.rs');
-      expect(html).toContain('b.rs');
-      expect(html).toContain('c.rs');
+    test('cluster-mode on: cuts listed best-first with data-arc-id', () => {
+      const html = SidebarLogic.buildContent('x-y');
+      const iX = html.indexOf('data-arc-id="x-y"');
+      const iY = html.indexOf('data-arc-id="y-x"');
+      expect(iX).toBeGreaterThanOrEqual(0);
+      expect(iY).toBeGreaterThan(iX); // best (breaks 3) first, preserves cuts order
     });
 
-    test('cycle-arc: sorted ascending by source-location count (weakest link first)', () => {
-      const html = SidebarLogic.buildContent('A-B');
-      // A→B has 1 loc, C→A has 2 locs, B→C has 3 locs
-      // Ascending order: A→B (1) first, then C→A (2), then B→C (3)
-      const aIdx = html.indexOf('a.rs');
-      const cIdx = html.indexOf('c.rs');
-      const bIdx = html.indexOf('b.rs');
-      expect(aIdx).toBeLessThan(cIdx);
-      expect(cIdx).toBeLessThan(bIdx);
-    });
-
-    test('cycle-arc: clicked arc highlighted', () => {
-      const html = SidebarLogic.buildContent('A-B');
-      expect(html).toContain('sidebar-selected-arc');
-    });
-
-    test('non-cycle arc: normal single-arc layout (regression)', () => {
-      const html = SidebarLogic.buildContent('crate_a-crate_b');
-      expect(html).not.toContain('Cycle (');
+    test('cluster-mode off: normal usage detail (cycles-off fix)', () => {
+      SidebarLogic._isClusterMode = () => false;
+      const html = SidebarLogic.buildContent('x-y');
+      expect(html).not.toContain('data-arc-id="y-x"');
       expect(html).toContain('sidebar-header');
-      expect(html).toContain('crate_a');
-      expect(html).toContain('crate_b');
     });
 
-    // Helper to set up multi-cycle test data (arc B-C in cycles 0 and 1)
-    function setupMultiCycleData() {
-      globalThis.STATIC_DATA.arcs['B-C'] = {
-        from: 'B',
-        to: 'C',
-        cycleIds: [0, 1],
-        usages: [
-          {
-            symbol: 'sym2',
-            modulePath: null,
-            locations: [{ file: 'b.rs', line: 1 }],
-          },
-        ],
-      };
-      globalThis.STATIC_DATA.cycles.push({
-        nodes: ['B', 'C', 'D'],
-        arcs: ['B-C', 'C-D', 'D-B'],
-      });
-      globalThis.STATIC_DATA.arcs['C-D'] = {
-        from: 'C',
-        to: 'D',
-        cycleIds: [1],
-        usages: [
-          {
-            symbol: 'sym_cd',
-            modulePath: null,
-            locations: [{ file: 'c.rs', line: 10 }],
-          },
-        ],
-      };
-      globalThis.STATIC_DATA.arcs['D-B'] = {
-        from: 'D',
-        to: 'B',
-        cycleIds: [1],
-        usages: [
-          {
-            symbol: 'sym_db',
-            modulePath: null,
-            locations: [{ file: 'd.rs', line: 1 }],
-          },
-        ],
-      };
-      globalThis.STATIC_DATA.nodes.D = {
-        type: 'module',
-        name: 'mod_d',
-        parent: null,
-      };
-    }
-
-    test('multi-cycle arc: shows grouped cycles header', () => {
-      setupMultiCycleData();
-      const html = SidebarLogic.buildContent('B-C');
-      // Should show "Cycles (2)" header for multi-cycle
-      expect(html).toContain('Cycles (2)');
-      // Header has actions wrapper and collapse-all
-      expect(html).toContain('sidebar-header-actions');
-      expect(html).toContain('sidebar-collapse-all');
-      // Old cycle-group-header class is gone
-      expect(html).not.toContain('sidebar-cycle-group-header');
-      // Should contain arcs from both cycles
-      expect(html).toContain('a.rs');
-      expect(html).toContain('b.rs');
-      expect(html).toContain('c.rs');
-      expect(html).toContain('d.rs');
-    });
-
-    test('multi-cycle: cycle groups are collapsible L1', () => {
-      setupMultiCycleData();
-      const html = SidebarLogic.buildContent('B-C');
-      // Cycle group headers should contain "Cycle N" text as sidebar-symbol-name
-      expect(html).toContain('Cycle 1');
-      expect(html).toContain('Cycle 2');
-      // All sidebar-symbol divs should be collapsible and collapsed
-      const symbolDivs =
-        html.match(/<div class="sidebar-symbol[^"]*" data-collapsible=""/g) ||
-        [];
-      const collapsedDivs =
-        html.match(
-          /<div class="sidebar-symbol[^"]*" data-collapsible="" data-collapsed="true"/g,
-        ) || [];
-      expect(symbolDivs.length).toBeGreaterThan(0);
-      expect(collapsedDivs.length).toBe(symbolDivs.length);
-    });
-
-    test('multi-cycle: arcs within cycles are collapsible L2', () => {
-      setupMultiCycleData();
-      const html = SidebarLogic.buildContent('B-C');
-      // All sidebar-locations should be hidden
-      const locsDivs = html.match(/<div class="sidebar-locations"/g) || [];
-      const hiddenDivs =
-        html.match(/<div class="sidebar-locations" style="display:none"/g) ||
-        [];
-      expect(locsDivs.length).toBeGreaterThan(0);
-      expect(hiddenDivs.length).toBe(locsDivs.length);
-      // Toggle icon should be ▸ (collapsed) not ▾ (expanded)
-      expect(html).toContain('&#x25B8;');
-      expect(html).not.toContain('&#x25BE;');
-    });
-
-    test('multi-cycle: collapse-all button shows +', () => {
-      setupMultiCycleData();
-      const html = SidebarLogic.buildContent('B-C');
-      expect(html).toContain('>+</button>');
-    });
-
-    test('multi-cycle: cycle group header shows ref count', () => {
-      setupMultiCycleData();
-      const html = SidebarLogic.buildContent('B-C');
-      // Each cycle group header should have a sidebar-ref-count badge
-      expect(html).toContain('sidebar-ref-count');
-    });
-
-    test("single-cycle arc: shows original 'Cycle' header", () => {
-      const html = SidebarLogic.buildContent('A-B');
-      expect(html).toContain('Cycle (');
-      expect(html).toContain('3 edges');
-      expect(html).not.toContain('Cycles (');
-    });
-
-    test('single-cycle: header has collapse-all button and header-actions', () => {
-      const html = SidebarLogic.buildContent('A-B');
-      expect(html).toContain('sidebar-header-actions');
-      expect(html).toContain('sidebar-collapse-all');
-    });
-
-    test('single-cycle: arcs start collapsed', () => {
-      const html = SidebarLogic.buildContent('A-B');
-      // All sidebar-symbol divs should have data-collapsible and data-collapsed="true"
-      const symbolDivs =
-        html.match(/<div class="sidebar-symbol[^"]*" data-collapsible=""/g) ||
-        [];
-      const collapsedDivs =
-        html.match(
-          /<div class="sidebar-symbol[^"]*" data-collapsible="" data-collapsed="true"/g,
-        ) || [];
-      expect(symbolDivs.length).toBeGreaterThan(0);
-      expect(collapsedDivs.length).toBe(symbolDivs.length);
-      // All sidebar-locations should have display:none
-      const locsDivs = html.match(/<div class="sidebar-locations"/g) || [];
-      const hiddenDivs =
-        html.match(/<div class="sidebar-locations" style="display:none"/g) ||
-        [];
-      expect(locsDivs.length).toBeGreaterThan(0);
-      expect(hiddenDivs.length).toBe(locsDivs.length);
-      // Toggle icon should be ▸ (collapsed) not ▾ (expanded)
-      expect(html).toContain('&#x25B8;');
-      expect(html).not.toContain('&#x25BE;');
-    });
-
-    test('single-cycle: collapse-all button shows +', () => {
-      const html = SidebarLogic.buildContent('A-B');
-      expect(html).toContain('>+</button>');
-    });
-
-    test('single-cycle: arc headers show symbol annotation', () => {
-      const html = SidebarLogic.buildContent('A-B');
-      // Symbols are appended to the target node label as plain text
-      expect(html).toContain('::sym1');
-      expect(html).toContain('::sym2');
-      expect(html).toContain('::sym3');
-    });
-
-    test('single-cycle: arc without symbols shows no annotation', () => {
-      // Add a bare arc to the cycle
-      globalThis.STATIC_DATA.arcs['A-B'] = {
-        from: 'A',
-        to: 'B',
-        cycleIds: [0],
-        usages: [
-          {
-            symbol: '',
-            modulePath: null,
-            locations: [{ file: 'a.rs', line: 1 }],
-          },
-        ],
-      };
-      globalThis.STATIC_DATA.cycles[0].arcs = ['A-B', 'B-C', 'C-A'];
-      const html = SidebarLogic.buildContent('A-B');
-      // B→C still has sym2, C→A has sym3; A→B (empty symbol) has none.
-      expect(html).toContain('::sym2');
-      expect(html).toContain('::sym3');
-      // Two annotations, not three (A→B carries no symbol suffix).
-      const symbolSuffixes = html.match(/::sym\d/g) || [];
-      expect(symbolSuffixes).toHaveLength(2);
-    });
-
-    test('multi-cycle: arc headers show symbol annotation', () => {
-      setupMultiCycleData();
-      const html = SidebarLogic.buildContent('B-C');
-      expect(html).toContain('::sym2');
-      expect(html).toContain('::sym_cd');
-      expect(html).toContain('::sym_db');
-    });
-  });
-
-  describe('formatArcSymbols', () => {
-    test('empty usages returns empty string', () => {
-      expect(SidebarLogic.formatArcSymbols([])).toBe('');
-    });
-
-    test('single symbol returns ::Symbol', () => {
-      const usages = [
-        {
-          symbol: 'Package',
-          modulePath: null,
-          locations: [{ file: 'a.rs', line: 1 }],
-        },
-      ];
-      expect(SidebarLogic.formatArcSymbols(usages)).toBe('::Package');
-    });
-
-    test('multiple symbols returns ::{S1, S2}', () => {
-      const usages = [
-        {
-          symbol: 'Alpha',
-          modulePath: null,
-          locations: [{ file: 'a.rs', line: 1 }],
-        },
-        {
-          symbol: 'Beta',
-          modulePath: null,
-          locations: [{ file: 'b.rs', line: 2 }],
-        },
-      ];
-      expect(SidebarLogic.formatArcSymbols(usages)).toBe('::{Alpha, Beta}');
-    });
-
-    test('three symbols returns ::{S1, S2, S3}', () => {
-      const usages = [
-        {
-          symbol: 'A',
-          modulePath: null,
-          locations: [{ file: 'a.rs', line: 1 }],
-        },
-        {
-          symbol: 'B',
-          modulePath: null,
-          locations: [{ file: 'b.rs', line: 1 }],
-        },
-        {
-          symbol: 'C',
-          modulePath: null,
-          locations: [{ file: 'c.rs', line: 1 }],
-        },
-      ];
-      expect(SidebarLogic.formatArcSymbols(usages)).toBe('::{A, B, C}');
-    });
-
-    test('bare usages (symbol="") excluded', () => {
-      const usages = [
-        {
-          symbol: '',
-          modulePath: null,
-          locations: [{ file: 'a.rs', line: 1 }],
-        },
-        {
-          symbol: 'Foo',
-          modulePath: null,
-          locations: [{ file: 'b.rs', line: 1 }],
-        },
-      ];
-      expect(SidebarLogic.formatArcSymbols(usages)).toBe('::Foo');
-    });
-
-    test('all-bare usages returns empty string', () => {
-      const usages = [
-        {
-          symbol: '',
-          modulePath: null,
-          locations: [{ file: 'a.rs', line: 1 }],
-        },
-        {
-          symbol: '',
-          modulePath: null,
-          locations: [{ file: 'b.rs', line: 2 }],
-        },
-      ];
-      expect(SidebarLogic.formatArcSymbols(usages)).toBe('');
-    });
-
-    test('4+ symbols truncated with ellipsis', () => {
-      const usages = [
-        {
-          symbol: 'A',
-          modulePath: null,
-          locations: [{ file: 'a.rs', line: 1 }],
-        },
-        {
-          symbol: 'B',
-          modulePath: null,
-          locations: [{ file: 'b.rs', line: 1 }],
-        },
-        {
-          symbol: 'C',
-          modulePath: null,
-          locations: [{ file: 'c.rs', line: 1 }],
-        },
-        {
-          symbol: 'D',
-          modulePath: null,
-          locations: [{ file: 'd.rs', line: 1 }],
-        },
-      ];
-      expect(SidebarLogic.formatArcSymbols(usages)).toBe('::{A, B, \u2026}');
-    });
-
-    test('deduplicates symbols across groups', () => {
-      const usages = [
-        {
-          symbol: 'Foo',
-          modulePath: null,
-          locations: [{ file: 'a.rs', line: 1 }],
-        },
-        {
-          symbol: 'Foo',
-          modulePath: null,
-          locations: [{ file: 'b.rs', line: 2 }],
-        },
-        {
-          symbol: 'Bar',
-          modulePath: null,
-          locations: [{ file: 'c.rs', line: 3 }],
-        },
-      ];
-      expect(SidebarLogic.formatArcSymbols(usages)).toBe('::{Foo, Bar}');
+    test('missing clusters[sccId]: falls back to usage detail', () => {
+      globalThis.STATIC_DATA.clusters = {};
+      const html = SidebarLogic.buildContent('x-y');
+      expect(html).not.toContain('data-arc-id="y-x"');
+      expect(html).toContain('sidebar-header');
     });
   });
 
@@ -2368,99 +1989,6 @@ describe('SidebarLogic', () => {
       // outgoing: from=crate_a, to=crate_b
       expect(html).toContain('data-node-id="crate_a"');
       expect(html).toContain('data-node-id="crate_b"');
-    });
-
-    test('_buildCycleContent adds data-node-id to arc from/to badges (single cycle)', () => {
-      const savedArcs = globalThis.STATIC_DATA.arcs;
-      const savedCycles = globalThis.STATIC_DATA.cycles;
-      const savedNodes = globalThis.STATIC_DATA.nodes;
-
-      globalThis.STATIC_DATA.arcs = {
-        'A-B': {
-          from: 'A',
-          to: 'B',
-          cycleIds: [0],
-          usages: [
-            {
-              symbol: 'sym1',
-              modulePath: null,
-              locations: [{ file: 'a.rs', line: 1 }],
-            },
-          ],
-        },
-        'B-A': {
-          from: 'B',
-          to: 'A',
-          cycleIds: [0],
-          usages: [],
-        },
-      };
-      globalThis.STATIC_DATA.cycles = [{ arcs: ['A-B', 'B-A'] }];
-      globalThis.STATIC_DATA.nodes = {
-        ...savedNodes,
-        A: { type: 'module', name: 'mod_a', parent: null },
-        B: { type: 'module', name: 'mod_b', parent: null },
-      };
-
-      const html = SidebarLogic.buildContent('A-B');
-      expect(html).toContain('data-node-id="A"');
-      expect(html).toContain('data-node-id="B"');
-
-      globalThis.STATIC_DATA.arcs = savedArcs;
-      globalThis.STATIC_DATA.cycles = savedCycles;
-      globalThis.STATIC_DATA.nodes = savedNodes;
-    });
-
-    test('_buildCycleContent adds data-node-id to arc from/to badges (multi cycle)', () => {
-      const savedArcs = globalThis.STATIC_DATA.arcs;
-      const savedCycles = globalThis.STATIC_DATA.cycles;
-      const savedNodes = globalThis.STATIC_DATA.nodes;
-
-      globalThis.STATIC_DATA.arcs = {
-        'X-Y': {
-          from: 'X',
-          to: 'Y',
-          cycleIds: [0, 1],
-          usages: [],
-        },
-        'Y-X': {
-          from: 'Y',
-          to: 'X',
-          cycleIds: [0],
-          usages: [],
-        },
-        'Y-Z': {
-          from: 'Y',
-          to: 'Z',
-          cycleIds: [1],
-          usages: [],
-        },
-        'Z-X': {
-          from: 'Z',
-          to: 'X',
-          cycleIds: [1],
-          usages: [],
-        },
-      };
-      globalThis.STATIC_DATA.cycles = [
-        { arcs: ['X-Y', 'Y-X'] },
-        { arcs: ['X-Y', 'Y-Z', 'Z-X'] },
-      ];
-      globalThis.STATIC_DATA.nodes = {
-        ...savedNodes,
-        X: { type: 'module', name: 'mod_x', parent: null },
-        Y: { type: 'module', name: 'mod_y', parent: null },
-        Z: { type: 'module', name: 'mod_z', parent: null },
-      };
-
-      const html = SidebarLogic.buildContent('X-Y');
-      expect(html).toContain('data-node-id="X"');
-      expect(html).toContain('data-node-id="Y"');
-      expect(html).toContain('data-node-id="Z"');
-
-      globalThis.STATIC_DATA.arcs = savedArcs;
-      globalThis.STATIC_DATA.cycles = savedCycles;
-      globalThis.STATIC_DATA.nodes = savedNodes;
     });
   });
 
