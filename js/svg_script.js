@@ -28,8 +28,17 @@ function createPinnedSidebarRefresher(getPinned, collectRelations, showNode) {
   };
 }
 
+function deriveHoverKey(type, id, clusterMode, sccId) {
+  if (type === 'arc' && clusterMode && sccId != null) return `scc:${sccId}`;
+  return `${type}:${id}`;
+}
+
 if (typeof module !== 'undefined') {
-  module.exports = { createHighlightDebouncer, createPinnedSidebarRefresher };
+  module.exports = {
+    createHighlightDebouncer,
+    createPinnedSidebarRefresher,
+    deriveHoverKey,
+  };
 }
 
 // IIFE for SVG embedding (DOM-code) - only runs in browser with placeholders replaced
@@ -113,6 +122,10 @@ if (typeof document !== 'undefined') {
     }
 
     const highlightTiming = createHighlightDebouncer(rerenderHighlights, 30);
+
+    let hoverKey = null;
+    let hideGraceTimer = null;
+    const HOVER_HIDE_GRACE = 90; // ms; small fixed value, browser-verified
 
     // Shared toggle core for all clickable elements (edge, node, virtual edge).
     // The showSidebar callback provides the type-specific sidebar display logic.
@@ -239,8 +252,26 @@ if (typeof document !== 'undefined') {
       SidebarLogic
     )._isClusterMode = () => AppState.isClusterMode(appState);
 
+    // Cancels a pending hide and updates hoverKey if the derived identity
+    // changed. Returns false when the hover is a same-cluster/element no-op
+    // (caller should bail without touching AppState/sidebar).
+    function enterHover(type, id, sccId) {
+      clearTimeout(hideGraceTimer);
+      const key = deriveHoverKey(
+        type,
+        id,
+        AppState.isClusterMode(appState),
+        sccId,
+      );
+      if (key === hoverKey) return false;
+      hoverKey = key;
+      return true;
+    }
+
     function handleMouseEnter(type, id) {
       if (AppState.hasPinnedSelection(appState)) return;
+      const sccId = type === 'arc' ? StaticData.getArc(id)?.sccId : null;
+      if (!enterHover(type, id, sccId)) return;
       AppState.setHover(appState, type, id);
       highlightTiming.debounced();
       if (type === 'node') {
@@ -253,13 +284,18 @@ if (typeof document !== 'undefined') {
 
     function handleMouseLeave() {
       if (AppState.hasPinnedSelection(appState)) return;
-      AppState.clearHover(appState);
-      highlightTiming.debounced();
-      SidebarLogic.hideTransient();
+      clearTimeout(hideGraceTimer);
+      hideGraceTimer = setTimeout(() => {
+        AppState.clearHover(appState);
+        hoverKey = null;
+        highlightTiming.debounced();
+        SidebarLogic.hideTransient();
+      }, HOVER_HIDE_GRACE);
     }
 
     function handleVirtualMouseEnter(arcId, fromId, toId) {
       if (AppState.hasPinnedSelection(appState)) return;
+      if (!enterHover('arc', arcId, null)) return;
       AppState.setHover(appState, 'arc', arcId);
       highlightTiming.debounced();
       const usages = virtualArcUsages.get(arcId) || [];
