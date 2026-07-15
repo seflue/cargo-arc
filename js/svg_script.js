@@ -33,11 +33,27 @@ function deriveHoverKey(type, id, clusterMode, sccId) {
   return `${type}:${id}`;
 }
 
+function createHoverKeyTracker() {
+  let hoverKey = null;
+  return {
+    // true = new hover identity (caller should render); false = same as current (no-op).
+    enter(key) {
+      if (key === hoverKey) return false;
+      hoverKey = key;
+      return true;
+    },
+    reset() {
+      hoverKey = null;
+    },
+  };
+}
+
 if (typeof module !== 'undefined') {
   module.exports = {
     createHighlightDebouncer,
     createPinnedSidebarRefresher,
     deriveHoverKey,
+    createHoverKeyTracker,
   };
 }
 
@@ -123,7 +139,7 @@ if (typeof document !== 'undefined') {
 
     const highlightTiming = createHighlightDebouncer(rerenderHighlights, 30);
 
-    let hoverKey = null;
+    const hoverTracker = createHoverKeyTracker();
     let hideGraceTimer = null;
     const HOVER_HIDE_GRACE = 90; // ms; small fixed value, browser-verified
 
@@ -263,9 +279,7 @@ if (typeof document !== 'undefined') {
         AppState.isClusterMode(appState),
         sccId,
       );
-      if (key === hoverKey) return false;
-      hoverKey = key;
-      return true;
+      return hoverTracker.enter(key);
     }
 
     function handleMouseEnter(type, id) {
@@ -287,7 +301,7 @@ if (typeof document !== 'undefined') {
       clearTimeout(hideGraceTimer);
       hideGraceTimer = setTimeout(() => {
         AppState.clearHover(appState);
-        hoverKey = null;
+        hoverTracker.reset();
         highlightTiming.debounced();
         SidebarLogic.hideTransient();
       }, HOVER_HIDE_GRACE);
