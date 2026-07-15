@@ -12,6 +12,7 @@ const HighlightRenderer = {
   _prevNodeIds: new Set(),
   _prevRegularArcIds: new Set(),
   _prevVirtualArcIds: new Set(),
+  _prevCutSetArcIds: new Set(),
 
   /**
    * Apply highlight state to DOM. Resets only previously-styled elements, then applies state.
@@ -28,12 +29,14 @@ const HighlightRenderer = {
       this._prevNodeIds = new Set();
       this._prevRegularArcIds = new Set();
       this._prevVirtualArcIds = new Set();
+      this._prevCutSetArcIds = new Set();
       return;
     }
 
     this._applyNodeClasses(dom, C, state.nodeHighlights);
     this._applyArcHighlights(dom, C, state.arcHighlights);
     this._applyArrowScaling(dom, C, state.arcHighlights);
+    this._applyCutSetArcs(dom, C, state.cutSetArcs);
     this._createShadows(dom, C, state.shadowData);
     this._promoteToHighlightLayers(
       dom,
@@ -54,6 +57,7 @@ const HighlightRenderer = {
         this._prevRegularArcIds.add(key);
       }
     }
+    this._prevCutSetArcIds = new Set(state.cutSetArcs);
   },
 
   /**
@@ -71,6 +75,7 @@ const HighlightRenderer = {
     this._resetNodeClasses(dom, C);
     this._resetArcStyles(dom, C, staticData);
     this._resetVirtualArcStyles(dom, C, virtualArcUsages);
+    this._resetCutSetArcs(dom, C);
   },
 
   /**
@@ -180,6 +185,15 @@ const HighlightRenderer = {
   },
 
   /**
+   * Remove cut-set-arc class from previously-marked arcs (dirty-set).
+   */
+  _resetCutSetArcs(dom, C) {
+    for (const arcId of this._prevCutSetArcIds) {
+      dom.getArc(arcId)?.classList.remove(C.cutSetArc);
+    }
+  },
+
+  /**
    * Set CSS classes on highlighted nodes.
    */
   _applyNodeClasses(dom, C, nodeHighlights) {
@@ -245,6 +259,17 @@ const HighlightRenderer = {
           );
         }
       });
+    }
+  },
+
+  /**
+   * Mark cut-set arcs (the active cluster's break candidates) with the
+   * standing cut-set-arc class, on top of whatever highlight they already carry.
+   */
+  _applyCutSetArcs(dom, C, cutSetArcs) {
+    for (const arcId of cutSetArcs) {
+      const arc = dom.getVisibleArc(arcId);
+      if (arc) arc.classList.add(C.cutSetArc);
     }
   },
 

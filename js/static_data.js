@@ -66,6 +66,15 @@ const StaticData = {
   },
 
   /**
+   * Get cluster data (cut-set etc.) for an SCC by ID.
+   * @param {string|number} sccId
+   * @returns {{ crate: string, moduleCount: number, cycleCount: number, cuts: Array<{fromId: string, toId: string, breaks: number, refs: number}> }|undefined}
+   */
+  getCluster(sccId) {
+    return STATIC_DATA.clusters ? STATIC_DATA.clusters[sccId] : undefined;
+  },
+
+  /**
    * Check if node has children
    * @param {string} nodeId
    * @returns {boolean}

@@ -16,6 +16,9 @@
  *   Shadow glow data per arc. Keys: same convention as arcHighlights.
  * @property {Set<string>} promotedHitareas
  *   Arc IDs (without "v:" prefix) whose hitareas should be promoted to highlight layer.
+ * @property {Set<string>} cutSetArcs
+ *   Arc IDs ("from-to") in the active cluster's cut-set, excluding those hidden by
+ *   filter. Populated only for arc selection with cluster expansion; empty otherwise.
  * @property {boolean} isPinned
  *   Whether the highlight is from a pinned (click) selection.
  */
@@ -223,6 +226,7 @@ const DerivedState = {
       arcHighlights: new Map(),
       shadowData: new Map(),
       promotedHitareas: new Set(),
+      cutSetArcs: new Set(),
       isPinned: selection.mode === 'click',
     };
     const ctx = {
@@ -424,6 +428,14 @@ const DerivedState = {
             isVirtual: false,
             isCycle: true,
           });
+        }
+      }
+
+      const cluster = staticData.getCluster(sccId);
+      if (cluster) {
+        for (const cut of cluster.cuts) {
+          const cutId = `${cut.fromId}-${cut.toId}`;
+          if (!hiddenByFilter.has(cutId)) result.cutSetArcs.add(cutId);
         }
       }
     }

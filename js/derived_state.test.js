@@ -216,6 +216,7 @@ function createMockStaticData(data = TEST_STATIC_DATA) {
       return parentMap;
     },
     getCycle: (cycleId) => data.cycles?.[cycleId] ?? null,
+    getCluster: (sccId) => data.clusters?.[sccId],
   };
 }
 
@@ -1683,6 +1684,57 @@ describe('DerivedState', () => {
       expect(result.nodeHighlights.has('C')).toBe(false);
       // No cycle glow when the cluster layer is off.
       expect(result.shadowData.get('A-B')?.glowClass).not.toBe('glowCycle');
+    });
+
+    test('cluster selection: cut-set arc-ids collected, filtered ones excluded', () => {
+      const data = {
+        ...CYCLE_DATA,
+        clusters: {
+          0: {
+            crate: 'c',
+            moduleCount: 3,
+            cycleCount: 2,
+            cuts: [
+              { fromId: 'A', toId: 'B', breaks: 1, refs: 1 },
+              { fromId: 'C', toId: 'A', breaks: 1, refs: 1 },
+            ],
+          },
+        },
+      };
+      const sd = createMockStaticData(data);
+      const state = AppState.create();
+      AppState.setSelection(state, 'arc', 'A-B');
+
+      const result = DerivedState.deriveHighlightState(
+        state,
+        sd,
+        new Map(),
+        new Set(['C-A']),
+        CYCLE_POSITIONS,
+        ROW_HEIGHT,
+      );
+
+      expect(result).not.toBeNull();
+      // C-A is hiddenByFilter, so it's excluded even though it's a cut edge
+      expect([...result.cutSetArcs].sort()).toEqual(['A-B']);
+    });
+
+    test('node selection: cutSetArcs stays empty', () => {
+      const sd = createMockStaticData(CYCLE_DATA);
+      const state = AppState.create();
+      AppState.setSelection(state, 'node', 'A');
+
+      const result = DerivedState.deriveHighlightState(
+        state,
+        sd,
+        new Map(),
+        new Set(),
+        CYCLE_POSITIONS,
+        ROW_HEIGHT,
+      );
+
+      expect(result).not.toBeNull();
+      expect(result.cutSetArcs.size).toBe(0);
     });
   });
 
