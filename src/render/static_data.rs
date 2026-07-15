@@ -306,6 +306,9 @@ fn generate_static_data(
         ("cycleArc", CSS.direction.cycle_arc),
         ("cycleArrow", CSS.direction.cycle_arrow),
         ("clusterModeOn", CSS.relation.cluster_mode_on),
+        ("cutSetArc", CSS.relation.cut_set_arc),
+        ("cutSetArcEmphasis", CSS.relation.cut_set_arc_emphasis),
+        ("cutSetArcDimmed", CSS.relation.cut_set_arc_dimmed),
         ("arcHitarea", CSS.direction.arc_hitarea),
         ("crateDepArc", CSS.direction.crate_dep_arc),
         ("moduleDepArc", CSS.direction.module_dep_arc),
@@ -1007,6 +1010,35 @@ mod tests {
         // Empty IR should produce empty nodes and arcs
         assert_eq!(data["nodes"], serde_json::json!({}));
         assert_eq!(data["arcs"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn test_static_data_has_cut_set_arc_classes() {
+        let ir = LayoutIR::new();
+        let config = RenderConfig::default();
+        let positioned: Vec<PositionedItem> = vec![];
+        let parents: HashSet<NodeId> = HashSet::new();
+
+        let script = render_script(&config, &ir, &positioned, &parents);
+
+        let json_str = script
+            .split("const STATIC_DATA = ")
+            .nth(1)
+            .unwrap()
+            .split(";\n")
+            .next()
+            .unwrap();
+        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
+
+        assert_eq!(data["classes"]["cutSetArc"], CSS.relation.cut_set_arc);
+        assert_eq!(
+            data["classes"]["cutSetArcEmphasis"],
+            CSS.relation.cut_set_arc_emphasis
+        );
+        assert_eq!(
+            data["classes"]["cutSetArcDimmed"],
+            CSS.relation.cut_set_arc_dimmed
+        );
     }
 
     #[test]

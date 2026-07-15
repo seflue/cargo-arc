@@ -125,6 +125,33 @@ fn build_css_rules() -> Vec<CssRule> {
             ),
             &[("fill", d.cycle)],
         ),
+        // Cut-set arc: standing marker on a cluster's cut-set edges, drawn as a
+        // dashed overlay so break-here candidates read as distinct from normal
+        // cluster arcs. Modifiers (emphasis/dimmed) are driven by row hover in JS.
+        CssRule::class(
+            c.relation.cut_set_arc,
+            &[
+                ("fill", "none"),
+                ("stroke", d.cycle),
+                ("stroke-width", "1.5"),
+                ("stroke-dasharray", "4 2"),
+                ("pointer-events", "none"),
+            ],
+        ),
+        CssRule::new(
+            &format!(
+                ".{}.{}",
+                c.relation.cut_set_arc, c.relation.cut_set_arc_emphasis
+            ),
+            &[("stroke-width", "3")],
+        ),
+        CssRule::new(
+            &format!(
+                ".{}.{}",
+                c.relation.cut_set_arc, c.relation.cut_set_arc_dimmed
+            ),
+            &[("opacity", "0.3")],
+        ),
         // Hit-area
         CssRule::class(
             c.direction.arc_hitarea,
@@ -676,6 +703,12 @@ fn build_css_rules() -> Vec<CssRule> {
                 ("gap", "6px"),
             ],
         ),
+        // Cluster sidebar counts line ("N modules · M cycles · K to break"):
+        // literal class string from sidebar.js, no constants.rs entry (Phase 2).
+        CssRule::class(
+            "sidebar-subheader",
+            &[("color", GRAY_400), ("font-size", "11px")],
+        ),
         CssRule::class(
             c.sidebar.arrow,
             &[
@@ -819,6 +852,12 @@ fn build_css_rules() -> Vec<CssRule> {
             ],
         ),
         CssRule::class(c.sidebar.locations, &[("padding-left", "16px")]),
+        // Per-row cut-set meta ("breaks N cycles · M refs"): literal class string
+        // from sidebar.js, no constants.rs entry (Phase 2).
+        CssRule::class(
+            "sidebar-cut-meta",
+            &[("color", GRAY_400), ("font-size", "10px")],
+        ),
         CssRule::class(
             c.sidebar.line_badge,
             &[
@@ -1164,6 +1203,48 @@ mod tests {
         assert!(
             css.contains(&format!(".{}", CSS.sidebar.header_actions)),
             "CSS should contain .sidebar-header-actions"
+        );
+    }
+
+    #[test]
+    fn test_css_contains_cut_set_arc_rules() {
+        let css = render_styles();
+
+        assert!(
+            css.contains(&format!(".{}", CSS.relation.cut_set_arc)),
+            "CSS should contain .cut-set-arc"
+        );
+        assert!(
+            css.contains(&format!(
+                ".{}.{}",
+                CSS.relation.cut_set_arc, CSS.relation.cut_set_arc_emphasis
+            )),
+            "CSS should contain .cut-set-arc.cut-set-arc-emphasis"
+        );
+        assert!(
+            css.contains(&format!(
+                ".{}.{}",
+                CSS.relation.cut_set_arc, CSS.relation.cut_set_arc_dimmed
+            )),
+            "CSS should contain .cut-set-arc.cut-set-arc-dimmed"
+        );
+        assert!(
+            css.contains("stroke-dasharray"),
+            "cut-set-arc should render as a dashed overlay"
+        );
+    }
+
+    #[test]
+    fn test_css_contains_sidebar_meta_rules() {
+        let css = render_styles();
+
+        assert!(
+            css.contains(".sidebar-subheader"),
+            "CSS should contain .sidebar-subheader"
+        );
+        assert!(
+            css.contains(".sidebar-cut-meta"),
+            "CSS should contain .sidebar-cut-meta"
         );
     }
 

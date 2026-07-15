@@ -301,6 +301,12 @@ pub(super) struct RelationClasses {
     /// render in the cycle color. Absent, they fall back to dependency styling.
     /// Sits with the other root state classes ([`has_highlight`], [`has_pinned`]).
     pub cluster_mode_on: &'static str,
+    /// Standing marker on a cluster's cut-set edges (dashed overlay).
+    pub cut_set_arc: &'static str,
+    /// Modifier on [`cut_set_arc`](Self::cut_set_arc): one cut arc emphasized on row hover.
+    pub cut_set_arc_emphasis: &'static str,
+    /// Modifier on [`cut_set_arc`](Self::cut_set_arc): the other cut arcs de-emphasized.
+    pub cut_set_arc_dimmed: &'static str,
 }
 
 #[allow(dead_code)]
@@ -446,6 +452,9 @@ pub(super) static CSS: CssClassNames = CssClassNames {
         glow_cycle: "glow-cycle",
         has_pinned: "has-pinned",
         cluster_mode_on: "cluster-mode-on",
+        cut_set_arc: "cut-set-arc",
+        cut_set_arc_emphasis: "cut-set-arc-emphasis",
+        cut_set_arc_dimmed: "cut-set-arc-dimmed",
     },
     toolbar: ToolbarClasses {
         view_options: "view-options",
