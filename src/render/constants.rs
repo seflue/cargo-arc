@@ -307,6 +307,8 @@ pub(super) struct RelationClasses {
     pub cut_set_arc_emphasis: &'static str,
     /// Modifier on [`cut_set_arc`](Self::cut_set_arc): the other cut arcs de-emphasized.
     pub cut_set_arc_dimmed: &'static str,
+    /// Scissors glyph (✂) at a cut-set edge's midpoint (JS-positioned from live path geometry).
+    pub cut_set_scissors: &'static str,
 }
 
 #[allow(dead_code)]
@@ -455,6 +457,7 @@ pub(super) static CSS: CssClassNames = CssClassNames {
         cut_set_arc: "cut-set-arc",
         cut_set_arc_emphasis: "cut-set-arc-emphasis",
         cut_set_arc_dimmed: "cut-set-arc-dimmed",
+        cut_set_scissors: "cut-set-scissors",
     },
     toolbar: ToolbarClasses {
         view_options: "view-options",

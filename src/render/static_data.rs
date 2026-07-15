@@ -309,6 +309,7 @@ fn generate_static_data(
         ("cutSetArc", CSS.relation.cut_set_arc),
         ("cutSetArcEmphasis", CSS.relation.cut_set_arc_emphasis),
         ("cutSetArcDimmed", CSS.relation.cut_set_arc_dimmed),
+        ("cutSetScissors", CSS.relation.cut_set_scissors),
         ("arcHitarea", CSS.direction.arc_hitarea),
         ("crateDepArc", CSS.direction.crate_dep_arc),
         ("moduleDepArc", CSS.direction.module_dep_arc),
@@ -1038,6 +1039,10 @@ mod tests {
         assert_eq!(
             data["classes"]["cutSetArcDimmed"],
             CSS.relation.cut_set_arc_dimmed
+        );
+        assert_eq!(
+            data["classes"]["cutSetScissors"],
+            CSS.relation.cut_set_scissors
         );
     }
 

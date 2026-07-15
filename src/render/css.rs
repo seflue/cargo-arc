@@ -152,6 +152,18 @@ fn build_css_rules() -> Vec<CssRule> {
             ),
             &[("opacity", "0.3")],
         ),
+        // Scissors glyph (✂) at a cut-set edge's midpoint, positioned from live
+        // path geometry in JS. Same color token as the cut-set-arc marker.
+        CssRule::class(
+            c.relation.cut_set_scissors,
+            &[
+                ("font-size", "12px"),
+                ("fill", d.cycle),
+                ("text-anchor", "middle"),
+                ("dominant-baseline", "central"),
+                ("pointer-events", "none"),
+            ],
+        ),
         // Hit-area
         CssRule::class(
             c.direction.arc_hitarea,
@@ -1231,6 +1243,10 @@ mod tests {
         assert!(
             css.contains("stroke-dasharray"),
             "cut-set-arc should render as a dashed overlay"
+        );
+        assert!(
+            css.contains(&format!(".{}", CSS.relation.cut_set_scissors)),
+            "CSS should contain .cut-set-scissors"
         );
     }
 

@@ -36,6 +36,7 @@ const LayerManager = {
     HITAREAS: 'hitareas-layer',
     HIGHLIGHT_HITAREAS: 'highlight-hitareas-layer',
     SHADOWS: 'highlight-shadows',
+    CUT_SET_SCISSORS: 'cut-set-scissors-layer',
   },
 
   /**

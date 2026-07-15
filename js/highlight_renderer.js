@@ -37,6 +37,7 @@ const HighlightRenderer = {
     this._applyArcHighlights(dom, C, state.arcHighlights);
     this._applyArrowScaling(dom, C, state.arcHighlights);
     this._applyCutSetArcs(dom, C, state.cutSetArcs);
+    this._applyCutSetScissors(dom, C, state.cutSetArcs);
     this._createShadows(dom, C, state.shadowData);
     this._promoteToHighlightLayers(
       dom,
@@ -76,6 +77,7 @@ const HighlightRenderer = {
     this._resetArcStyles(dom, C, staticData);
     this._resetVirtualArcStyles(dom, C, virtualArcUsages);
     this._resetCutSetArcs(dom, C);
+    this._resetCutSetScissors(dom);
   },
 
   /**
@@ -194,6 +196,14 @@ const HighlightRenderer = {
   },
 
   /**
+   * Empty the scissors overlay group (mirrors _clearShadowLayer: fully
+   * rebuilt each apply, so clearing needs no dirty-set).
+   */
+  _resetCutSetScissors(dom) {
+    LayerManager.clearLayer(LayerManager.LAYERS.CUT_SET_SCISSORS, dom);
+  },
+
+  /**
    * Set CSS classes on highlighted nodes.
    */
   _applyNodeClasses(dom, C, nodeHighlights) {
@@ -270,6 +280,49 @@ const HighlightRenderer = {
     for (const arcId of cutSetArcs) {
       const arc = dom.getVisibleArc(arcId);
       if (arc) arc.classList.add(C.cutSetArc);
+    }
+  },
+
+  /**
+   * Find the scissors overlay group, creating and attaching it into
+   * graph-content on first use so subsequent applies reuse the same group.
+   */
+  _getOrCreateScissorsLayer(dom) {
+    const layerId = LayerManager.LAYERS.CUT_SET_SCISSORS;
+    let layer = dom.getElementById(layerId);
+    if (!layer) {
+      layer = dom.createSvgElement('g');
+      layer.setAttribute('id', layerId);
+      dom.getElementById('graph-content')?.appendChild(layer);
+    }
+    return layer;
+  },
+
+  /**
+   * Draw a ✂ glyph at each cut-set arc's path midpoint, in the same
+   * coordinate space as the arc (live geometry via getPointAtLength).
+   * Skips arcs with no visible path or zero length.
+   */
+  _applyCutSetScissors(dom, C, cutSetArcs) {
+    // Read all midpoints before writing any glyphs — appendChild between
+    // getPointAtLength calls would invalidate layout and force a reflow per arc.
+    const points = [];
+    for (const arcId of cutSetArcs) {
+      const arc = dom.getVisibleArc(arcId);
+      if (!arc || typeof arc.getTotalLength !== 'function') continue;
+      const length = arc.getTotalLength();
+      if (!length) continue;
+      points.push(arc.getPointAtLength(length / 2));
+    }
+
+    const layer = this._getOrCreateScissorsLayer(dom);
+    for (const point of points) {
+      const glyph = dom.createSvgElement('text');
+      glyph.classList.add(C.cutSetScissors);
+      glyph.setAttribute('x', point.x);
+      glyph.setAttribute('y', point.y);
+      glyph.textContent = '✂';
+      layer.appendChild(glyph);
     }
   },
 
