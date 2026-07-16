@@ -7,6 +7,7 @@
 
 use super::cycles::{CycleAnalysis, MinimalCycles};
 use crate::graph::{ArcGraph, Edge};
+use crate::model::SourceLocation;
 use petgraph::algo::tarjan_scc;
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
@@ -19,7 +20,7 @@ pub struct Cut {
     pub to: NodeIndex,
     /// Gross cycles through this edge within the cluster (order-independent).
     pub breaks: usize,
-    /// Reference sites on the edge (secondary effort proxy for ranking).
+    /// Distinct symbols crossing the edge (secondary effort proxy for ranking).
     pub refs: usize,
 }
 
@@ -229,11 +230,17 @@ impl ArcGraph {
         }
     }
 
-    /// Reference sites carried by the module-dependency edge `from -> to`.
+    /// Distinct symbols crossing the module-dependency edge `from -> to`.
+    ///
+    /// Counting locations instead would read an import group or a glob as a
+    /// single reference, no matter how many symbols it carries: one line is one
+    /// location. Unnamed references (an unresolved alias, say) share one slot
+    /// rather than counting zero, so an edge the resolver cannot name never
+    /// reads as free.
     fn edge_refs(&self, from: NodeIndex, to: NodeIndex) -> usize {
         self.find_edge(from, to)
             .and_then(|e| match &self[e] {
-                Edge::ModuleDep { locations, .. } => Some(locations.len()),
+                Edge::ModuleDep { locations, .. } => Some(count_symbols(locations)),
                 _ => None,
             })
             .unwrap_or(0)
@@ -269,6 +276,17 @@ impl ArcGraph {
         }
         CutBias::Neutral
     }
+}
+
+/// Distinct symbols in `locations`, with all unnamed references sharing one
+/// slot. Mirrors the usage grouping the SVG carries.
+fn count_symbols(locations: &[SourceLocation]) -> usize {
+    let named: HashSet<&str> = locations
+        .iter()
+        .flat_map(|l| l.symbols.iter().map(String::as_str))
+        .collect();
+    let unnamed = usize::from(locations.iter().any(|l| l.symbols.is_empty()));
+    named.len() + unnamed
 }
 
 fn cluster_sort_key(c: &Cluster) -> (usize, usize, usize, usize) {
@@ -328,11 +346,13 @@ mod tests {
             })
             .collect();
         for &(from, to, refs) in deps {
+            // One symbol per line, so the edge reads the same whether refs
+            // counts sites or symbols.
             let locations = (0..refs)
                 .map(|i| SourceLocation {
                     file: format!("src/{}.rs", modules[from]).into(),
                     line: i + 1,
-                    symbols: vec![],
+                    symbols: vec![format!("Sym{i}")],
                     module_path: String::new(),
                     via_reexport: false,
                 })
@@ -368,6 +388,83 @@ mod tests {
         );
     }
 
+    /// Locations in `file`, one per line: `symbols_per_line[i]` lists the
+    /// symbols imported on line `i + 1`.
+    fn locations(file: &str, symbols_per_line: &[&[&str]]) -> Vec<SourceLocation> {
+        symbols_per_line
+            .iter()
+            .enumerate()
+            .map(|(i, symbols)| SourceLocation {
+                file: file.into(),
+                line: i + 1,
+                symbols: symbols.iter().map(|s| (*s).to_owned()).collect(),
+                module_path: String::new(),
+                via_reexport: false,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn refs_counts_symbols_not_the_import_sites_carrying_them() {
+        // a <-> b, siblings, so only the ref tie-break decides the cut.
+        // `a -> b` imports three symbols from one `use` group: one line, one
+        // site. `b -> a` imports two symbols, one per line.
+        let mut g = ArcGraph::new();
+        let crate_idx = g.add_node(Node::Crate {
+            name: "app".into(),
+            path: "/app".into(),
+        });
+        let a = g.add_node(Node::Module {
+            name: "a".into(),
+            crate_idx,
+        });
+        let b = g.add_node(Node::Module {
+            name: "b".into(),
+            crate_idx,
+        });
+        g.add_edge(crate_idx, a, Edge::Contains);
+        g.add_edge(crate_idx, b, Edge::Contains);
+        g.add_edge(
+            a,
+            b,
+            Edge::ModuleDep {
+                locations: locations("src/a.rs", &[&["One", "Two", "Three"]]),
+                context: EdgeContext::production(),
+            },
+        );
+        g.add_edge(
+            b,
+            a,
+            Edge::ModuleDep {
+                locations: locations("src/b.rs", &[&["Four"], &["Five"]]),
+                context: EdgeContext::production(),
+            },
+        );
+
+        let r = report(&g);
+        let c = &r.clusters[0];
+        assert_eq!(c.cuts.len(), 1);
+        // The import group counts all three symbols, so the two-symbol edge is
+        // the cheaper one and gets cut.
+        assert_eq!(c.cuts[0].refs, 2);
+        assert_eq!((c.cuts[0].from, c.cuts[0].to), (b, a));
+    }
+
+    #[test]
+    fn unnamed_references_share_one_symbol_slot() {
+        // An edge the resolver could not name must not read as free: two bare
+        // locations count 1, not 0.
+        let (mut g, idx) = graph_with(&["a", "b"], &[(0, 1, 2), (1, 0, 1)]);
+        let edge = g.find_edge(idx[0], idx[1]).unwrap();
+        let Edge::ModuleDep { locations, .. } = &mut g[edge] else {
+            unreachable!("graph_with builds module deps")
+        };
+        for loc in locations.iter_mut() {
+            loc.symbols.clear();
+        }
+        assert_eq!(g.edge_refs(idx[0], idx[1]), 1);
+    }
+
     #[test]
     fn acyclic_graph_yields_no_clusters() {
         let (g, _) = graph_with(&["a", "b", "c"], &[(0, 1, 1), (1, 2, 1)]);
@@ -400,7 +497,7 @@ mod tests {
             .map(|i| SourceLocation {
                 file: "src/a.rs".into(),
                 line: i + 1,
-                symbols: vec![],
+                symbols: vec![format!("Sym{i}")],
                 module_path: String::new(),
                 via_reexport: true,
             })
@@ -418,7 +515,7 @@ mod tests {
             .map(|i| SourceLocation {
                 file: "src/b.rs".into(),
                 line: i + 1,
-                symbols: vec![],
+                symbols: vec![format!("Sym{i}")],
                 module_path: String::new(),
                 via_reexport: false,
             })
@@ -477,7 +574,7 @@ mod tests {
             .map(|i| SourceLocation {
                 file: "src/b.rs".into(),
                 line: i + 1,
-                symbols: vec![],
+                symbols: vec![format!("Sym{i}")],
                 module_path: String::new(),
                 via_reexport: true,
             })
@@ -496,7 +593,7 @@ mod tests {
                 .map(|i| SourceLocation {
                     file: file.into(),
                     line: i + 1,
-                    symbols: vec![],
+                    symbols: vec![format!("Sym{i}")],
                     module_path: String::new(),
                     via_reexport: false,
                 })

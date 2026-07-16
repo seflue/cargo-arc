@@ -98,10 +98,10 @@ pub fn format_cluster_report(
             if let Some(cut) = cluster.cuts.first() {
                 let _ = writeln!(
                     out,
-                    "  fewest references: {} -> {} ({})",
+                    "  fewest symbols: {} -> {} ({})",
                     rel_name(graph, cut.from, &crate_name),
                     rel_name(graph, cut.to, &crate_name),
-                    plural(cut.refs, "ref"),
+                    plural(cut.refs, "symbol"),
                 );
             }
         } else {
@@ -126,7 +126,7 @@ pub fn format_cluster_report(
             for (cut, (from, to)) in cluster.cuts.iter().zip(&names) {
                 let cycle_word = if cut.breaks == 1 { "cycle" } else { "cycles" };
                 let breaks = cut.breaks;
-                let refs = plural(cut.refs, "ref");
+                let refs = plural(cut.refs, "symbol");
                 let _ = writeln!(
                     out,
                     "    {from:<from_width$} -> {to:<to_width$} (on {breaks:>breaks_width$} {cycle_word}, {refs})"
@@ -293,11 +293,13 @@ mod tests {
             })
             .collect();
         for &(from, to, refs) in deps {
+            // One symbol per line, so the edge reads the same whether refs
+            // counts sites or symbols.
             let locations = (0..refs)
                 .map(|i| SourceLocation {
                     file: format!("src/{}.rs", modules[from]).into(),
                     line: i + 1,
-                    symbols: vec![],
+                    symbols: vec![format!("Sym{i}")],
                     module_path: String::new(),
                     via_reexport: false,
                 })
@@ -331,7 +333,7 @@ mod tests {
         );
         assert!(out.contains("cycle: a -> b -> a"), "got:\n{out}");
         assert!(
-            out.contains("fewest references: a -> b (1 ref)"),
+            out.contains("fewest symbols: a -> b (1 symbol)"),
             "got:\n{out}"
         );
         assert!(
@@ -353,8 +355,8 @@ mod tests {
             out.contains("(3 modules, 2 cycles, 2 cuts to break)"),
             "got:\n{out}"
         );
-        assert!(out.contains("(on 1 cycle, 1 ref)"), "got:\n{out}");
-        assert!(!out.contains("fewest references:"), "got:\n{out}");
+        assert!(out.contains("(on 1 cycle, 1 symbol)"), "got:\n{out}");
+        assert!(!out.contains("fewest symbols:"), "got:\n{out}");
     }
 
     #[test]

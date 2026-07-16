@@ -1781,11 +1781,13 @@ mod tests {
             .collect();
         let (a, b, c) = (mods[0], mods[1], mods[2]);
         let locations = |refs: usize| {
+            // One symbol per line, so the edge reads the same whether refs
+            // counts sites or symbols.
             (0..refs)
                 .map(|i| SourceLocation {
                     file: "src/lib.rs".into(),
                     line: i + 1,
-                    symbols: vec![],
+                    symbols: vec![format!("Sym{i}")],
                     module_path: String::new(),
                     via_reexport: false,
                 })
