@@ -667,20 +667,86 @@ pub(crate) fn parse_workspace_dependencies(
     deps
 }
 
+/// Local binding name → absolute path of the module it names.
+/// Absolute means `crate::a::b` for the current crate and `other_crate::b` otherwise,
+/// so a binding stays valid wherever in the file it is used.
+pub(crate) type ModuleAliases = HashMap<String, String>;
+
+/// Build the file-local module alias table from its `use` items.
+///
+/// `use crate::device::{queue, Device}` binds `queue` to the module `device::queue`;
+/// a later `queue::TempResource` is only resolvable against that binding. Only
+/// module imports are recorded — `Device` names an item and is skipped, because
+/// qualified uses of an item are references to the item itself, already resolved.
+pub(crate) fn collect_module_aliases(
+    use_items: &[(syn::ItemUse, EdgeContext, usize)],
+    ctx: &ResolutionContext,
+) -> ModuleAliases {
+    let mut aliases = ModuleAliases::new();
+
+    for (item, context, inline_depth) in use_items {
+        let alias_paths = resolve_use_tree(&item.tree, "", true);
+        let original_paths = resolve_use_tree(&item.tree, "", false);
+
+        for (alias_path, original_path) in alias_paths.iter().zip(original_paths.iter()) {
+            let Some(dep) = resolve_single_path(ctx, original_path, 0, context, *inline_depth)
+            else {
+                continue;
+            };
+            // A module import carries no item; anything else names a symbol.
+            if dep.target_item.is_some() || dep.target_module.is_empty() {
+                continue;
+            }
+            let Some(binding) = alias_path.rsplit("::").next() else {
+                continue;
+            };
+            aliases.insert(binding.to_string(), absolute_module_path(ctx, &dep));
+        }
+    }
+
+    aliases
+}
+
+/// Render a resolved module dependency as a path that `resolve_single_path` can
+/// re-resolve from any position in the file.
+fn absolute_module_path(ctx: &ResolutionContext, dep: &DependencyRef) -> String {
+    if dep.target_crate == normalize_crate_name(ctx.current_crate) {
+        format!("crate::{}", dep.target_module)
+    } else {
+        format!("{}::{}", dep.target_crate, dep.target_module)
+    }
+}
+
+/// Rewrite a path whose first segment is a locally bound module name.
+/// `queue::TempResource` + `queue → crate::device::queue` = `crate::device::queue::TempResource`.
+fn rewrite_through_alias(path: &str, aliases: &ModuleAliases) -> Option<String> {
+    let (first, rest) = path.split_once("::")?;
+    let target = aliases.get(first)?;
+    Some(format!("{target}::{rest}"))
+}
+
 /// Parse path references into workspace-relevant dependencies.
 ///
 /// Takes pre-collected path refs from `collect_all_path_refs()` and resolves
 /// each through the existing resolution chain (`resolve_single_path()`).
+/// Paths starting with a name bound by a `use` in the same file are rewritten
+/// against `aliases` first; that binding is authoritative, so no fallback to the
+/// bare path is attempted.
 /// Deduplicates by `full_target()` — same strategy as `parse_workspace_dependencies()`.
 pub(crate) fn parse_path_ref_dependencies(
     paths: &[(String, usize, EdgeContext, usize)],
     ctx: &ResolutionContext,
+    aliases: &ModuleAliases,
 ) -> Vec<DependencyRef> {
     let mut deps: Vec<DependencyRef> = Vec::new();
     let mut seen_targets: HashMap<(String, DependencyKind), usize> = HashMap::new();
 
     for (path, line_num, context, inline_depth) in paths {
-        if let Some(mut dep) = resolve_single_path(ctx, path, *line_num, context, *inline_depth) {
+        let rewritten = rewrite_through_alias(path, aliases);
+        let effective = rewritten.as_deref().unwrap_or(path);
+        if let Some(mut dep) =
+            resolve_single_path(ctx, effective, *line_num, context, *inline_depth)
+        {
             resolve_reexport(&mut dep, ctx.reexport_map);
             DependencyRef::dedup_push(&mut deps, &mut seen_targets, dep);
         }

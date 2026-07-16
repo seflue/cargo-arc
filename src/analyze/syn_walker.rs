@@ -9,7 +9,7 @@ use super::mod_resolver::{
 };
 use super::use_parser::ReExportMap;
 use super::use_parser::{
-    ResolutionContext, collect_all_path_refs, parse_path_ref_dependencies,
+    ResolutionContext, collect_all_path_refs, collect_module_aliases, parse_path_ref_dependencies,
     parse_workspace_dependencies,
 };
 use crate::model::normalize_crate_name;
@@ -291,7 +291,8 @@ fn walk_module_syn(
 
     // Extract qualified path references (e.g. my_lib::run(), let x: my_lib::Config)
     let path_refs = collect_all_path_refs(&syntax, ctx.base_context.clone());
-    let path_deps = parse_path_ref_dependencies(&path_refs, &res_ctx);
+    let module_aliases = collect_module_aliases(&use_items, &res_ctx);
+    let path_deps = parse_path_ref_dependencies(&path_refs, &res_ctx, &module_aliases);
 
     // Merge: use-dependencies first (have priority), then path-dependencies (dedup by (full_target, kind))
     let mut seen = DependencyRef::build_seen_index(&use_deps);

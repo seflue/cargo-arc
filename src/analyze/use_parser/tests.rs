@@ -1350,7 +1350,7 @@ mod path_ref_resolution_tests {
             .workspace_crates(&ws)
             .module_paths(&mp)
             .build();
-        let deps = parse_path_ref_dependencies(&paths, &ctx);
+        let deps = parse_path_ref_dependencies(&paths, &ctx, &ModuleAliases::new());
         assert_eq!(
             deps.len(),
             1,
@@ -1376,7 +1376,7 @@ mod path_ref_resolution_tests {
         let ctx = ResolutionContextBuilder::new(Path::new("src/main.rs"))
             .module_paths(&mp)
             .build();
-        let deps = parse_path_ref_dependencies(&paths, &ctx);
+        let deps = parse_path_ref_dependencies(&paths, &ctx, &ModuleAliases::new());
         assert_eq!(deps.len(), 1, "should resolve crate-local path: {deps:?}");
         assert_eq!(deps[0].target_crate, "my_crate");
         assert_eq!(deps[0].target_module, "module");
@@ -1392,7 +1392,7 @@ mod path_ref_resolution_tests {
         let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs"))
             .module_paths(&mp)
             .build();
-        let deps = parse_path_ref_dependencies(&paths, &ctx);
+        let deps = parse_path_ref_dependencies(&paths, &ctx, &ModuleAliases::new());
         assert_eq!(deps.len(), 1, "should resolve bare module path: {deps:?}");
         assert_eq!(deps[0].target_crate, "my_crate");
         assert_eq!(deps[0].target_module, "cli");
@@ -1417,7 +1417,7 @@ mod path_ref_resolution_tests {
             ),
         ];
         let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs")).build();
-        let deps = parse_path_ref_dependencies(&paths, &ctx);
+        let deps = parse_path_ref_dependencies(&paths, &ctx, &ModuleAliases::new());
         assert!(deps.is_empty(), "unknown paths should be skipped: {deps:?}");
     }
 
@@ -1440,7 +1440,7 @@ mod path_ref_resolution_tests {
             .workspace_crates(&ws)
             .crate_exports(&exports)
             .build();
-        let deps = parse_path_ref_dependencies(&paths, &ctx);
+        let deps = parse_path_ref_dependencies(&paths, &ctx, &ModuleAliases::new());
         assert_eq!(deps.len(), 1, "should resolve entry-point path: {deps:?}");
         assert_eq!(deps[0].target_crate, "other_crate");
         assert_eq!(deps[0].target_module, "");
@@ -1471,7 +1471,7 @@ mod path_ref_resolution_tests {
             .workspace_crates(&ws)
             .module_paths(&mp)
             .build();
-        let deps = parse_path_ref_dependencies(&paths, &ctx);
+        let deps = parse_path_ref_dependencies(&paths, &ctx, &ModuleAliases::new());
         assert_eq!(deps.len(), 1, "duplicate paths should be deduped: {deps:?}");
     }
 }
@@ -1805,7 +1805,7 @@ mod context_aware_dedup_tests {
             .workspace_crates(&ws)
             .module_paths(&mp)
             .build();
-        let deps = parse_path_ref_dependencies(&paths, &ctx);
+        let deps = parse_path_ref_dependencies(&paths, &ctx, &ModuleAliases::new());
         assert_eq!(
             deps.len(),
             2,
@@ -1843,7 +1843,7 @@ mod context_aware_dedup_tests {
             .workspace_crates(&ws)
             .module_paths(&mp)
             .build();
-        let deps = parse_path_ref_dependencies(&paths, &ctx);
+        let deps = parse_path_ref_dependencies(&paths, &ctx, &ModuleAliases::new());
         assert_eq!(
             deps.len(),
             1,
@@ -1882,7 +1882,7 @@ mod context_aware_dedup_tests {
             .workspace_crates(&ws)
             .module_paths(&mp)
             .build();
-        let deps = parse_path_ref_dependencies(&paths, &ctx);
+        let deps = parse_path_ref_dependencies(&paths, &ctx, &ModuleAliases::new());
         assert_eq!(
             deps.len(),
             1,
@@ -2088,7 +2088,7 @@ mod reexport_resolution_tests {
             .module_paths(&mp)
             .reexport_map(&map)
             .build();
-        let deps = parse_path_ref_dependencies(&paths, &ctx);
+        let deps = parse_path_ref_dependencies(&paths, &ctx, &ModuleAliases::new());
         assert_eq!(deps.len(), 1);
         assert_eq!(
             deps[0].target_module, "parent::child",
@@ -2434,6 +2434,150 @@ mod external_crate_tests {
     }
 }
 
+/// `use crate::parent::child` binds `child` locally; later `child::Item` paths
+/// must resolve to `parent::child`, not to a top-level `child`.
+mod module_alias_tests {
+    use super::*;
+
+    fn nested_module_paths() -> ModulePathMap {
+        [(
+            "my_crate".to_string(),
+            HashSet::from(["parent".into(), "parent::child".into()]),
+        )]
+        .into_iter()
+        .collect()
+    }
+
+    #[test]
+    fn test_alias_map_binds_imported_module() {
+        let mp = nested_module_paths();
+        let ctx = ResolutionContextBuilder::new(Path::new("src/consumer.rs"))
+            .module_paths(&mp)
+            .build();
+        let uses = parse_test_uses("use crate::parent::child;");
+        let aliases = collect_module_aliases(&uses, &ctx);
+        assert_eq!(
+            aliases.get("child").map(String::as_str),
+            Some("crate::parent::child"),
+            "leaf name should bind to the full module path: {aliases:?}"
+        );
+    }
+
+    #[test]
+    fn test_alias_map_binds_group_member() {
+        let mp = nested_module_paths();
+        let ctx = ResolutionContextBuilder::new(Path::new("src/consumer.rs"))
+            .module_paths(&mp)
+            .build();
+        let uses = parse_test_uses("use crate::parent::{child, Other};");
+        let aliases = collect_module_aliases(&uses, &ctx);
+        assert_eq!(
+            aliases.get("child").map(String::as_str),
+            Some("crate::parent::child")
+        );
+        assert!(
+            !aliases.contains_key("Other"),
+            "non-module items must not enter the alias map: {aliases:?}"
+        );
+    }
+
+    #[test]
+    fn test_alias_map_uses_rename_as_key() {
+        let mp = nested_module_paths();
+        let ctx = ResolutionContextBuilder::new(Path::new("src/consumer.rs"))
+            .module_paths(&mp)
+            .build();
+        let uses = parse_test_uses("use crate::parent::child as kid;");
+        let aliases = collect_module_aliases(&uses, &ctx);
+        assert_eq!(
+            aliases.get("kid").map(String::as_str),
+            Some("crate::parent::child"),
+            "rename binds the alias name to the original module: {aliases:?}"
+        );
+    }
+
+    #[test]
+    fn test_alias_map_binds_workspace_module() {
+        let ws: WorkspaceCrates = ["other_crate".to_string()].into_iter().collect();
+        let mp: ModulePathMap = [("other_crate".to_string(), HashSet::from(["module".into()]))]
+            .into_iter()
+            .collect();
+        let ctx = ResolutionContextBuilder::new(Path::new("src/consumer.rs"))
+            .workspace_crates(&ws)
+            .module_paths(&mp)
+            .build();
+        let uses = parse_test_uses("use other_crate::module;");
+        let aliases = collect_module_aliases(&uses, &ctx);
+        assert_eq!(
+            aliases.get("module").map(String::as_str),
+            Some("other_crate::module"),
+            "workspace module alias keeps the code-side crate name: {aliases:?}"
+        );
+    }
+
+    #[test]
+    fn test_qualified_use_through_alias_resolves() {
+        let mp = nested_module_paths();
+        let ctx = ResolutionContextBuilder::new(Path::new("src/consumer.rs"))
+            .module_paths(&mp)
+            .build();
+        let uses = parse_test_uses("use crate::parent::child;");
+        let aliases = collect_module_aliases(&uses, &ctx);
+        let paths = vec![("child::Item".to_string(), 20, EdgeContext::production(), 0)];
+        let deps = parse_path_ref_dependencies(&paths, &ctx, &aliases);
+        assert_eq!(deps.len(), 1, "alias-qualified path must resolve: {deps:?}");
+        assert_eq!(deps[0].target_module, "parent::child");
+        assert_eq!(deps[0].target_item, Some("Item".to_string()));
+    }
+
+    #[test]
+    fn test_qualified_use_through_alias_keeps_deeper_segments() {
+        let mp: ModulePathMap = [(
+            "my_crate".to_string(),
+            HashSet::from([
+                "parent".into(),
+                "parent::child".into(),
+                "parent::child::inner".into(),
+            ]),
+        )]
+        .into_iter()
+        .collect();
+        let ctx = ResolutionContextBuilder::new(Path::new("src/consumer.rs"))
+            .module_paths(&mp)
+            .build();
+        let uses = parse_test_uses("use crate::parent::child;");
+        let aliases = collect_module_aliases(&uses, &ctx);
+        let paths = vec![(
+            "child::inner::Item".to_string(),
+            20,
+            EdgeContext::production(),
+            0,
+        )];
+        let deps = parse_path_ref_dependencies(&paths, &ctx, &aliases);
+        assert_eq!(deps.len(), 1, "should resolve through alias: {deps:?}");
+        assert_eq!(deps[0].target_module, "parent::child::inner");
+        assert_eq!(deps[0].target_item, Some("Item".to_string()));
+    }
+
+    #[test]
+    fn test_alias_does_not_shadow_real_module() {
+        let mp: ModulePathMap = [(
+            "my_crate".to_string(),
+            HashSet::from(["parent".into(), "parent::child".into(), "child".into()]),
+        )]
+        .into_iter()
+        .collect();
+        let ctx = ResolutionContextBuilder::new(Path::new("src/consumer.rs"))
+            .module_paths(&mp)
+            .build();
+        let aliases = HashMap::new();
+        let paths = vec![("child::Item".to_string(), 20, EdgeContext::production(), 0)];
+        let deps = parse_path_ref_dependencies(&paths, &ctx, &aliases);
+        assert_eq!(deps.len(), 1, "top-level module still resolves: {deps:?}");
+        assert_eq!(deps[0].target_module, "child");
+    }
+}
+
 /// `use path::{self, ...}` imports the module itself — the `self` segment is
 /// not an item name.
 mod use_self_tests {
@@ -2497,5 +2641,25 @@ mod use_self_tests {
         assert_eq!(deps.len(), 1, "should resolve to the module: {deps:?}");
         assert_eq!(deps[0].target_module, "auxil");
         assert_eq!(deps[0].target_item, None);
+    }
+
+    #[test]
+    fn test_self_module_alias_binds_module() {
+        let mp: ModulePathMap = [(
+            "my_crate".to_string(),
+            HashSet::from(["auxil".into(), "auxil::dxgi".into()]),
+        )]
+        .into_iter()
+        .collect();
+        let ctx = ResolutionContextBuilder::new(Path::new("src/dx12/mod.rs"))
+            .module_paths(&mp)
+            .build();
+        let uses = parse_test_uses("use crate::auxil::{self, dxgi::Factory};");
+        let aliases = collect_module_aliases(&uses, &ctx);
+        assert_eq!(
+            aliases.get("auxil").map(String::as_str),
+            Some("crate::auxil"),
+            "`self` binds the module name locally: {aliases:?}"
+        );
     }
 }
