@@ -40,6 +40,20 @@ pub struct ClusterReport {
     pub clusters: Vec<Cluster>,
 }
 
+/// How willing the cut tie-break is to cut an edge, given the direction it runs
+/// through the module tree. Ordered worst-to-best cut candidate.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum CutBias {
+    /// Parent → child (`mod x;`, `pub use x::Y`). Spelling out the module tree
+    /// is not a dependency anyone can remove.
+    Structural,
+    /// Neither module is the other's direct parent.
+    Neutral,
+    /// Child → parent (`use super::Thing`), no re-export. The direction a
+    /// developer can plausibly break.
+    Preferred,
+}
+
 impl ArcGraph {
     /// Aggregate `analysis` into SCC clusters, each with a proven cut-set.
     ///
@@ -176,8 +190,8 @@ impl ArcGraph {
     }
 
     /// Repeatedly remove the edge covering the most still-open cycles until none
-    /// remain, appending each pick to `chosen`. Ties break on fewer refs, then
-    /// smaller name, so the choice is deterministic.
+    /// remain, appending each pick to `chosen`. Ties break on [`CutBias`], then
+    /// fewer refs, then smaller name, so the choice is deterministic.
     fn greedy_cover(
         &self,
         edge_cycles: &HashMap<(NodeIndex, NodeIndex), HashSet<usize>>,
@@ -192,6 +206,8 @@ impl ArcGraph {
                 .max_by(|(ea, ca), (eb, cb)| {
                     ca.len()
                         .cmp(&cb.len())
+                        // module-tree direction outranks ref count
+                        .then_with(|| self.cut_bias(**ea).cmp(&self.cut_bias(**eb)))
                         // fewer refs is better, so the lower-ref edge ranks greater
                         .then_with(|| self.edge_refs(eb.0, eb.1).cmp(&self.edge_refs(ea.0, ea.1)))
                         // lexicographically smaller name is better
@@ -225,6 +241,33 @@ impl ArcGraph {
 
     fn name_key(&self, edge: (NodeIndex, NodeIndex)) -> (String, String) {
         (self.qualified_name(edge.0), self.qualified_name(edge.1))
+    }
+
+    /// Which way the edge runs through the module tree, as the cut tie-break
+    /// sees it.
+    ///
+    /// A child→parent edge that is itself a pure re-export (the prelude
+    /// pattern, `pub use super::*;`) ranks [`Structural`](CutBias::Structural)
+    /// rather than [`Preferred`](CutBias::Preferred): under the default graph
+    /// this edge doesn't exist at all (ADR-022 drops it as non-coupling), so
+    /// it only shows up as a cut candidate under `--include-reexports`, where
+    /// it's still just a facade, not a layer to break.
+    fn cut_bias(&self, edge: (NodeIndex, NodeIndex)) -> CutBias {
+        let (from, to) = edge;
+        if self.contains_child(from, to) {
+            return CutBias::Structural;
+        }
+        if self.contains_child(to, from) {
+            return if self
+                .find_edge(from, to)
+                .is_some_and(|e| self[e].is_reexport_module_dep())
+            {
+                CutBias::Structural
+            } else {
+                CutBias::Preferred
+            };
+        }
+        CutBias::Neutral
     }
 }
 
@@ -332,8 +375,166 @@ mod tests {
     }
 
     #[test]
-    fn single_two_cycle_has_one_cut_on_fewer_refs() {
-        // a <-> b, a->b carries 2 refs, b->a carries 5.
+    fn child_to_parent_edge_is_cut_even_with_more_refs() {
+        // `a` is the parent module, `b` is nested inside it. `a -> b` is a
+        // re-export (`pub use b::X`, 2 refs), `b -> a` is a plain import
+        // (`use super::Y`, 5 refs). The module-tree prior must still pick
+        // the child->parent edge, even though it carries more refs.
+        let mut g = ArcGraph::new();
+        let crate_idx = g.add_node(Node::Crate {
+            name: "app".into(),
+            path: "/app".into(),
+        });
+        let a = g.add_node(Node::Module {
+            name: "a".into(),
+            crate_idx,
+        });
+        let b = g.add_node(Node::Module {
+            name: "b".into(),
+            crate_idx,
+        });
+        g.add_edge(crate_idx, a, Edge::Contains);
+        g.add_edge(a, b, Edge::Contains);
+
+        let reexport_locations = (0..2)
+            .map(|i| SourceLocation {
+                file: "src/a.rs".into(),
+                line: i + 1,
+                symbols: vec![],
+                module_path: String::new(),
+                via_reexport: true,
+            })
+            .collect();
+        g.add_edge(
+            a,
+            b,
+            Edge::ModuleDep {
+                locations: reexport_locations,
+                context: EdgeContext::production(),
+            },
+        );
+
+        let plain_locations = (0..5)
+            .map(|i| SourceLocation {
+                file: "src/b.rs".into(),
+                line: i + 1,
+                symbols: vec![],
+                module_path: String::new(),
+                via_reexport: false,
+            })
+            .collect();
+        g.add_edge(
+            b,
+            a,
+            Edge::ModuleDep {
+                locations: plain_locations,
+                context: EdgeContext::production(),
+            },
+        );
+
+        let r = report(&g);
+        assert_eq!(r.clusters.len(), 1);
+        let c = &r.clusters[0];
+        assert_eq!(c.cycles.len(), 1);
+        assert_eq!(c.cuts.len(), 1);
+        let cut = &c.cuts[0];
+        assert_eq!((cut.from, cut.to), (b, a));
+        assert_eq!(cut.refs, 5);
+        assert_acyclic_after_cuts(&g, &c.nodes, &c.cuts);
+    }
+
+    #[test]
+    fn reexport_child_to_parent_edge_is_not_preferentially_cut() {
+        // `a` is the parent module, `b` is nested inside it and re-exports
+        // `a`'s items (`pub use super::*;`, the prelude pattern) via `b -> a`,
+        // 1 ref. `c` is an unrelated module, forming the cycle a->c->b->a
+        // with plain, non-reexport edges a->c (3 refs) and c->b (5 refs).
+        // Even though `b -> a` carries the fewest refs, the module-tree prior
+        // must not treat it as a preferred cut: it's structural, same as any
+        // other re-export.
+        let mut g = ArcGraph::new();
+        let crate_idx = g.add_node(Node::Crate {
+            name: "app".into(),
+            path: "/app".into(),
+        });
+        let a = g.add_node(Node::Module {
+            name: "a".into(),
+            crate_idx,
+        });
+        let b = g.add_node(Node::Module {
+            name: "b".into(),
+            crate_idx,
+        });
+        let c = g.add_node(Node::Module {
+            name: "c".into(),
+            crate_idx,
+        });
+        g.add_edge(crate_idx, a, Edge::Contains);
+        g.add_edge(a, b, Edge::Contains);
+        g.add_edge(crate_idx, c, Edge::Contains);
+
+        let reexport_locations = (0..1)
+            .map(|i| SourceLocation {
+                file: "src/b.rs".into(),
+                line: i + 1,
+                symbols: vec![],
+                module_path: String::new(),
+                via_reexport: true,
+            })
+            .collect();
+        g.add_edge(
+            b,
+            a,
+            Edge::ModuleDep {
+                locations: reexport_locations,
+                context: EdgeContext::production(),
+            },
+        );
+
+        let make_locations = |file: &str, count: usize| {
+            (0..count)
+                .map(|i| SourceLocation {
+                    file: file.into(),
+                    line: i + 1,
+                    symbols: vec![],
+                    module_path: String::new(),
+                    via_reexport: false,
+                })
+                .collect()
+        };
+        g.add_edge(
+            a,
+            c,
+            Edge::ModuleDep {
+                locations: make_locations("src/a.rs", 3),
+                context: EdgeContext::production(),
+            },
+        );
+        g.add_edge(
+            c,
+            b,
+            Edge::ModuleDep {
+                locations: make_locations("src/c.rs", 5),
+                context: EdgeContext::production(),
+            },
+        );
+
+        let r = report(&g);
+        assert_eq!(r.clusters.len(), 1);
+        let clu = &r.clusters[0];
+        assert_eq!(clu.cycles.len(), 1);
+        assert_eq!(clu.cuts.len(), 1);
+        let cut = &clu.cuts[0];
+        assert_eq!((cut.from, cut.to), (a, c));
+        assert_eq!(cut.refs, 3);
+        assert_acyclic_after_cuts(&g, &clu.nodes, &clu.cuts);
+    }
+
+    #[test]
+    fn fewer_refs_wins_without_a_parent_child_relation() {
+        // a <-> b, siblings under the crate (no Contains edge between them).
+        // With no module-tree prior to apply, the ref-count tie-break still
+        // decides: a->b carries 2 refs, b->a carries 5.
         let (g, idx) = graph_with(&["a", "b"], &[(0, 1, 2), (1, 0, 5)]);
         let r = report(&g);
         assert_eq!(r.clusters.len(), 1);
