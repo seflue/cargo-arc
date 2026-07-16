@@ -2433,3 +2433,69 @@ mod external_crate_tests {
         assert!(dep.is_none(), "unknown crate should not resolve");
     }
 }
+
+/// `use path::{self, ...}` imports the module itself — the `self` segment is
+/// not an item name.
+mod use_self_tests {
+    use super::*;
+
+    #[test]
+    fn test_group_self_imports_module_without_item() {
+        let mp: ModulePathMap = [(
+            "my_crate".to_string(),
+            HashSet::from(["auxil".into(), "auxil::dxgi".into()]),
+        )]
+        .into_iter()
+        .collect();
+        let ctx = ResolutionContextBuilder::new(Path::new("src/dx12/mod.rs"))
+            .module_paths(&mp)
+            .build();
+        let uses = parse_test_uses("use crate::auxil::{self, dxgi::Factory};");
+        let deps = parse_workspace_dependencies(&uses, &ctx);
+
+        let auxil = deps
+            .iter()
+            .find(|d| d.target_module == "auxil")
+            .expect("auxil dep should exist");
+        assert_eq!(
+            auxil.target_item, None,
+            "`self` names the module, not an item: {deps:?}"
+        );
+
+        let dxgi = deps
+            .iter()
+            .find(|d| d.target_module == "auxil::dxgi")
+            .expect("dxgi dep should exist");
+        assert_eq!(dxgi.target_item, Some("Factory".to_string()));
+    }
+
+    #[test]
+    fn test_plain_self_import_has_no_item() {
+        let mp: ModulePathMap = [("my_crate".to_string(), HashSet::from(["auxil".into()]))]
+            .into_iter()
+            .collect();
+        let ctx = ResolutionContextBuilder::new(Path::new("src/dx12/mod.rs"))
+            .module_paths(&mp)
+            .build();
+        let uses = parse_test_uses("use crate::auxil::self;");
+        let deps = parse_workspace_dependencies(&uses, &ctx);
+        assert_eq!(deps.len(), 1, "should resolve to the module: {deps:?}");
+        assert_eq!(deps[0].target_module, "auxil");
+        assert_eq!(deps[0].target_item, None);
+    }
+
+    #[test]
+    fn test_self_rename_keeps_module_as_source() {
+        let mp: ModulePathMap = [("my_crate".to_string(), HashSet::from(["auxil".into()]))]
+            .into_iter()
+            .collect();
+        let ctx = ResolutionContextBuilder::new(Path::new("src/dx12/mod.rs"))
+            .module_paths(&mp)
+            .build();
+        let uses = parse_test_uses("use crate::auxil::{self as aux};");
+        let deps = parse_workspace_dependencies(&uses, &ctx);
+        assert_eq!(deps.len(), 1, "should resolve to the module: {deps:?}");
+        assert_eq!(deps[0].target_module, "auxil");
+        assert_eq!(deps[0].target_item, None);
+    }
+}

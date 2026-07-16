@@ -306,12 +306,23 @@ fn append_to_path(prefix: &str, segment: &str) -> String {
     }
 }
 
+/// Whether a use-tree leaf is the `self` that names its parent module.
+/// A `self` without a prefix (`use self;`) does not name a module and is left alone.
+fn is_self_segment(ident: &syn::Ident, prefix: &str) -> bool {
+    ident == "self" && !prefix.is_empty()
+}
+
 /// Recursively resolve a `syn::UseTree` into fully-qualified path strings.
 ///
 /// Example: `use cli::{Args, Cargo, run}` → `["cli::Args", "cli::Cargo", "cli::run"]`
 ///
 /// When `use_alias` is true, renames return the alias (`as X` → `X`).
 /// When false, renames return the original name (source dependency tracking).
+///
+/// A trailing `self` (`use foo::{self, ..}`) names the module `foo` itself, so it
+/// resolves to the prefix rather than to an item called `self`. Under `use_alias`
+/// that keeps the local binding name as the last segment (`foo`), which is what an
+/// unrenamed `self` binds.
 pub(crate) fn resolve_use_tree(tree: &UseTree, prefix: &str, use_alias: bool) -> Vec<String> {
     match tree {
         UseTree::Path(p) => resolve_use_tree(
@@ -319,7 +330,12 @@ pub(crate) fn resolve_use_tree(tree: &UseTree, prefix: &str, use_alias: bool) ->
             &append_to_path(prefix, &p.ident.to_string()),
             use_alias,
         ),
+        UseTree::Name(n) if is_self_segment(&n.ident, prefix) => vec![prefix.to_string()],
         UseTree::Name(n) => vec![append_to_path(prefix, &n.ident.to_string())],
+        // `use foo::{self as bar}`: the alias side binds `bar`, the source side is `foo`.
+        UseTree::Rename(r) if !use_alias && is_self_segment(&r.ident, prefix) => {
+            vec![prefix.to_string()]
+        }
         UseTree::Rename(r) => {
             let name = if use_alias { &r.rename } else { &r.ident };
             vec![append_to_path(prefix, &name.to_string())]
