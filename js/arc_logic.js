@@ -185,6 +185,22 @@ const ArcLogic = {
   },
 
   /**
+   * Scissor glyph font-size from a cut edge's width, so a fat cut carries
+   * visibly bigger scissors than a thin one. Linear in the cut width
+   * returned by calculateCutWidth, clamped to that range.
+   * @param {number} cutWidth - Stroke width from calculateCutWidth (1.5 to 4.0)
+   * @returns {number} Font size in pixels (12 to 22)
+   */
+  scissorFontSize(cutWidth) {
+    const SIZE_MIN = 12,
+      SIZE_MAX = 22,
+      W_MIN = 1.5,
+      W_MAX = 4.0;
+    const w = Math.max(W_MIN, Math.min(cutWidth, W_MAX));
+    return SIZE_MIN + ((SIZE_MAX - SIZE_MIN) * (w - W_MIN)) / (W_MAX - W_MIN);
+  },
+
+  /**
    * Estimate path length from SVG path string (no DOM read).
    * Parses S-curve path format: M fromX,fromY Q ctrlX,fromY ctrlX,midY Q ctrlX,toY toX,toY
    * Uses quadratic bezier approximation for each segment.

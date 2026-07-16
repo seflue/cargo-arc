@@ -328,33 +328,38 @@ const HighlightRenderer = {
    */
   _applyCutSetScissors(dom, C, cutSetArcs, cutSetArcData) {
     // One ✂ per ref (cost), laid out adjacently along the edge and centered on
-    // the midpoint. Capped to what fits without overlap — the exact ref count is
-    // always in the sidebar. Read all points before writing any glyph:
-    // appendChild between getPointAtLength calls forces a reflow per arc.
-    const GLYPH_STEP = 14; // arc-length px between adjacent scissors
+    // the midpoint. Glyph size tracks the edge's cut width (bigger scissors on
+    // fatter cuts); spacing follows the size so they never overlap. Capped to
+    // what fits — the exact ref count is always in the sidebar. Read all points
+    // before writing any glyph: appendChild between getPointAtLength calls forces
+    // a reflow per arc.
     const placements = [];
     for (const arcId of cutSetArcs) {
       const arc = dom.getVisibleArc(arcId);
       if (!arc || typeof arc.getTotalLength !== 'function') continue;
       const length = arc.getTotalLength();
       if (!length) continue;
-      const refs = cutSetArcData?.get(arcId)?.refs ?? 1;
-      const maxFit = Math.max(1, Math.floor(length / GLYPH_STEP));
+      const data = cutSetArcData?.get(arcId);
+      const refs = data?.refs ?? 1;
+      const size = ArcLogic.scissorFontSize(data?.width ?? 1.5);
+      const step = size; // ✂ advance ≈ font-size, so this keeps them adjacent
+      const maxFit = Math.max(1, Math.floor(length / step));
       const count = Math.max(1, Math.min(refs, maxFit));
-      const start = length / 2 - ((count - 1) * GLYPH_STEP) / 2;
+      const start = length / 2 - ((count - 1) * step) / 2;
       for (let i = 0; i < count; i++) {
-        const point = arc.getPointAtLength(start + i * GLYPH_STEP);
-        placements.push({ x: point.x, y: point.y, arcId });
+        const point = arc.getPointAtLength(start + i * step);
+        placements.push({ x: point.x, y: point.y, arcId, size });
       }
     }
 
     const layer = this._getOrCreateScissorsLayer(dom);
-    for (const { x, y, arcId } of placements) {
+    for (const { x, y, arcId, size } of placements) {
       const glyph = dom.createSvgElement('text');
       glyph.classList.add(C.cutSetScissors);
       glyph.setAttribute('x', x);
       glyph.setAttribute('y', y);
       glyph.setAttribute('data-arc-id', arcId);
+      glyph.style.fontSize = `${size}px`;
       glyph.textContent = '✂';
       layer.appendChild(glyph);
     }

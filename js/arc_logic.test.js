@@ -74,6 +74,27 @@ describe('ArcLogic (Arrow functions)', () => {
     });
   });
 
+  describe('scissorFontSize', () => {
+    test('minimum cut width gives the smallest scissors', () => {
+      expect(ArcLogic.scissorFontSize(1.5)).toBeCloseTo(12, 5);
+    });
+
+    test('maximum cut width gives the largest scissors', () => {
+      expect(ArcLogic.scissorFontSize(4.0)).toBeCloseTo(22, 5);
+    });
+
+    test('a fatter (higher-gain) cut gives bigger scissors', () => {
+      expect(ArcLogic.scissorFontSize(3.0)).toBeGreaterThan(
+        ArcLogic.scissorFontSize(2.0),
+      );
+    });
+
+    test('clamps out-of-range widths to the size bounds', () => {
+      expect(ArcLogic.scissorFontSize(0)).toBeCloseTo(12, 5);
+      expect(ArcLogic.scissorFontSize(99)).toBeCloseTo(22, 5);
+    });
+  });
+
   describe('constants', () => {
     test('exports ARROW_LENGTH', () => {
       expect(ArcLogic.ARROW_LENGTH).toBe(8);

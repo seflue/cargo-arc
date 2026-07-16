@@ -160,6 +160,12 @@ fn build_css_rules() -> Vec<CssRule> {
             &[
                 ("font-size", "12px"),
                 ("fill", d.cut),
+                // White halo so the glyph reads on top of its edge and the line
+                // tangle behind it — same white token as the arc-count labels.
+                ("paint-order", "stroke"),
+                ("stroke", d.count_bg),
+                ("stroke-width", "3px"),
+                ("stroke-linejoin", "round"),
                 ("text-anchor", "middle"),
                 ("dominant-baseline", "central"),
                 ("pointer-events", "none"),
@@ -855,13 +861,11 @@ fn build_css_rules() -> Vec<CssRule> {
             c.sidebar.cycle_edge,
             &[
                 ("display", "flex"),
-                ("flex-direction", "column"),
-                ("align-items", "flex-start"),
+                ("align-items", "baseline"),
                 ("flex", "1"),
                 ("min-width", "0"),
-                ("white-space", "normal"),
-                ("overflow-wrap", "anywhere"),
-                ("line-height", "1.35"),
+                ("gap", "4px"),
+                ("white-space", "nowrap"),
             ],
         ),
         CssRule::class(
@@ -872,7 +876,15 @@ fn build_css_rules() -> Vec<CssRule> {
             &format!(".{} path", c.sidebar.cycle_arrow),
             &[("stroke", GRAY_600)],
         ),
-        CssRule::class(c.sidebar.cycle_node, &[("overflow-wrap", "anywhere")]),
+        CssRule::class(
+            c.sidebar.cycle_node,
+            &[
+                ("flex", "0 1 auto"),
+                ("min-width", "0"),
+                ("overflow", "hidden"),
+                ("text-overflow", "ellipsis"),
+            ],
+        ),
         CssRule::new(
             &format!(".{}.{}", c.sidebar.symbol, c.sidebar.symbol_stacked),
             &[("align-items", "flex-start")],
@@ -910,8 +922,21 @@ fn build_css_rules() -> Vec<CssRule> {
         // Per-row cut-set meta ("breaks N cycles · M refs"): literal class string
         // from sidebar.js, no constants.rs entry (Phase 2).
         CssRule::class(
+            "sidebar-cut-row",
+            &[
+                ("display", "flex"),
+                ("align-items", "baseline"),
+                ("gap", "6px"),
+            ],
+        ),
+        CssRule::class(
             "sidebar-cut-meta",
-            &[("color", GRAY_400), ("font-size", "10px")],
+            &[
+                ("color", GRAY_400),
+                ("font-size", "10px"),
+                ("flex-shrink", "0"),
+                ("white-space", "nowrap"),
+            ],
         ),
         CssRule::class(
             c.sidebar.line_badge,

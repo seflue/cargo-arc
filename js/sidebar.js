@@ -599,9 +599,9 @@ const SidebarLogic = {
       const cycleWord = cut.breaks === 1 ? 'cycle' : 'cycles';
       html += `<div class="sidebar-usage-group sidebar-cut-row" data-arc-id="${arcId}">`;
       html += `<div class="sidebar-cycle-edge">`;
-      html += `<span class="sidebar-cycle-node" data-node-id="${cut.fromId}">${fromName}</span>`;
+      html += `<span class="sidebar-cycle-node" data-node-id="${cut.fromId}" title="${fromName}">${fromName}</span>`;
       html += `<span class="sidebar-arrow">&#x2192;</span>`;
-      html += `<span class="sidebar-cycle-node" data-node-id="${cut.toId}">${toName}</span>`;
+      html += `<span class="sidebar-cycle-node" data-node-id="${cut.toId}" title="${toName}">${toName}</span>`;
       html += `</div>`;
       html += `<span class="sidebar-cut-meta">on ${cut.breaks} ${cycleWord} \u00b7 ${cut.refs} refs</span>`;
       html += `</div>`;

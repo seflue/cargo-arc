@@ -115,7 +115,10 @@ pub(super) static LAYOUT: LayoutConstants = LayoutConstants {
 
 pub(super) const GREEN: &str = "#40a02b";
 pub(super) const YELLOW: &str = "#df8e1d";
-pub(super) const RED: &str = "#d20f39";
+/// Cluster / cycle mass. A muted rose (Catppuccin Latte Flamingo), not a vivid
+/// red: it paints the whole strongly-connected cluster, so it must recede into
+/// context. The cut edges (`CUT`) carry the one saturated accent.
+pub(super) const RED: &str = "#dd7878";
 pub(super) const PURPLE: &str = "#8839ef";
 pub(super) const BLUE: &str = "#1e66f5";
 pub(super) const ORANGE: &str = "#fe640b";
@@ -133,9 +136,9 @@ pub(super) const GRAY_200: &str = "#e0e0e0";
 pub(super) const GRAY_100: &str = "#f5f5f5";
 pub(super) const GRAY_50: &str = "#fafafa";
 const WHITE: &str = "#ffffff";
-/// Cut-set edges: a distinct accent (not the cycle red) so break candidates read
-/// against the dense red cycle mass.
-const CUT: &str = "#2563eb";
+/// Cut-set edges: a saturated accent (Tailwind indigo-600) so break candidates
+/// pop against the muted-rose cluster mass and the light background.
+const CUT: &str = "#4f46e5";
 
 pub(super) struct NodeColors {
     pub crate_fill: &'static str,
