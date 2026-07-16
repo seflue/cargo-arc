@@ -1507,10 +1507,17 @@ describe('DerivedState', () => {
       );
 
       expect(result).not.toBeNull();
-      // Primary arc endpoints keep their roles
-      expect(result.nodeHighlights.get('A').role).toBe('dependent');
-      expect(result.nodeHighlights.get('B').role).toBe('dependency');
-      // Other cycle node gets cycle-member
+      // In cluster mode the whole SCC is uniform: every cycle node, including
+      // the clicked edge's endpoints, gets cycle-member (not dependent/dependency
+      // — that endpoint role is only for single-edge selection / cycles-off).
+      expect(result.nodeHighlights.get('A')).toEqual({
+        role: 'cycle-member',
+        cssClass: 'cycleMember',
+      });
+      expect(result.nodeHighlights.get('B')).toEqual({
+        role: 'cycle-member',
+        cssClass: 'cycleMember',
+      });
       expect(result.nodeHighlights.get('C')).toEqual({
         role: 'cycle-member',
         cssClass: 'cycleMember',
@@ -1717,6 +1724,45 @@ describe('DerivedState', () => {
       expect(result).not.toBeNull();
       // C-A is hiddenByFilter, so it's excluded even though it's a cut edge
       expect([...result.cutSetArcs].sort()).toEqual(['A-B']);
+    });
+
+    test('cluster selection: cutSetArcData sizes by breaks (gain), carries refs', () => {
+      const data = {
+        ...CYCLE_DATA,
+        clusters: {
+          0: {
+            crate: 'c',
+            moduleCount: 3,
+            cycleCount: 4,
+            cuts: [
+              { fromId: 'A', toId: 'B', breaks: 4, refs: 2 },
+              { fromId: 'C', toId: 'A', breaks: 1, refs: 5 },
+            ],
+          },
+        },
+      };
+      const sd = createMockStaticData(data);
+      const state = AppState.create();
+      AppState.setSelection(state, 'arc', 'A-B');
+
+      const result = DerivedState.deriveHighlightState(
+        state,
+        sd,
+        new Map(),
+        new Set(),
+        CYCLE_POSITIONS,
+        ROW_HEIGHT,
+      );
+
+      const ab = result.cutSetArcData.get('A-B');
+      const ca = result.cutSetArcData.get('C-A');
+      // Higher breaks (gain) => wider edge; width comes from breaks, not traffic.
+      expect(ab.width).toBe(ArcLogic.calculateCutWidth(4));
+      expect(ab.width).toBeGreaterThan(ca.width);
+      expect(ab.arrowScale).toBe(ArcLogic.scaleFromStrokeWidth(ab.width));
+      // refs (cost) is passed through for the scissors count.
+      expect(ab.refs).toBe(2);
+      expect(ca.refs).toBe(5);
     });
 
     test('node selection: cutSetArcs stays empty', () => {

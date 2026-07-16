@@ -468,12 +468,13 @@ pub(super) fn render_edges(
 
             // Arrow head pointing to target → base-arcs layer
             let arrow_class = format!("{dir_arrow_class}{arrow_cycle_marker}{hidden}");
-            let arrow = render_arrow(to_x, to_y, &arrow_class, &edge_id);
+            let arrow = render_arrow(to_x, to_y, &arrow_class, &edge_id, false);
             base_arcs.push_str(&arrow);
 
-            // For DirectCycle, add reverse arrow
+            // For DirectCycle, add reverse arrow (marked so JS can tell it from
+            // the forward head — cut-set emphasis lights only the cut direction).
             if edge.cycle == Some(CycleKind::Direct) {
-                let reverse_arrow = render_arrow(from_x, from_y, &arrow_class, &edge_id);
+                let reverse_arrow = render_arrow(from_x, from_y, &arrow_class, &edge_id, true);
                 base_arcs.push_str(&reverse_arrow);
             }
         }
@@ -500,7 +501,7 @@ pub(super) fn render_edges(
     )
 }
 
-fn render_arrow(x: f32, y: f32, class: &str, edge_id: &str) -> String {
+fn render_arrow(x: f32, y: f32, class: &str, edge_id: &str, reverse: bool) -> String {
     // Arrow pointing left (toward the node at x)
     // Tip at x, base at x+8
     let p1 = format!(
@@ -514,7 +515,14 @@ fn render_arrow(x: f32, y: f32, class: &str, edge_id: &str) -> String {
         x + LAYOUT.arrow_length,
         y + LAYOUT.arrow_length / 2.0
     ); // bottom-right
-    format!("    <polygon class=\"{class}\" data-edge=\"{edge_id}\" points=\"{p1} {p2} {p3}\"/>\n")
+    let reverse_attr = if reverse {
+        " data-arrow-reverse=\"true\""
+    } else {
+        ""
+    };
+    format!(
+        "    <polygon class=\"{class}\" data-edge=\"{edge_id}\"{reverse_attr} points=\"{p1} {p2} {p3}\"/>\n"
+    )
 }
 
 fn escape_xml(s: &str) -> String {

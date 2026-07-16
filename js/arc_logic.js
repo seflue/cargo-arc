@@ -168,6 +168,23 @@ const ArcLogic = {
   },
 
   /**
+   * Cut-edge width from the number of cycles the cut edge lies on.
+   * In cluster mode the cut view weights by that cycle count, not traffic, so
+   * cut edges are sized here instead of via calculateStrokeWidth. Log-scaled:
+   * the widest cut lies on the most cycles.
+   * @param {number} breaks - Number of cycles this edge lies on
+   * @returns {number} Stroke width in pixels (1.5 to 4.0)
+   */
+  calculateCutWidth(breaks) {
+    const MIN = 1.5,
+      MAX = 4.0,
+      CAP = 20;
+    if (breaks <= 1) return MIN;
+    const count = Math.min(breaks, CAP);
+    return MIN + ((MAX - MIN) * Math.log(count)) / Math.log(CAP);
+  },
+
+  /**
    * Estimate path length from SVG path string (no DOM read).
    * Parses S-curve path format: M fromX,fromY Q ctrlX,fromY ctrlX,midY Q ctrlX,toY toX,toY
    * Uses quadratic bezier approximation for each segment.

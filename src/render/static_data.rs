@@ -308,8 +308,10 @@ fn generate_static_data(
         ("clusterModeOn", CSS.relation.cluster_mode_on),
         ("cutSetArc", CSS.relation.cut_set_arc),
         ("cutSetArcEmphasis", CSS.relation.cut_set_arc_emphasis),
-        ("cutSetArcDimmed", CSS.relation.cut_set_arc_dimmed),
+        ("cutSetArrow", CSS.relation.cut_set_arrow),
+        ("cutSetArrowEmphasis", CSS.relation.cut_set_arrow_emphasis),
         ("cutSetScissors", CSS.relation.cut_set_scissors),
+        ("cutFocus", CSS.relation.cut_focus),
         ("arcHitarea", CSS.direction.arc_hitarea),
         ("crateDepArc", CSS.direction.crate_dep_arc),
         ("moduleDepArc", CSS.direction.module_dep_arc),
@@ -1036,14 +1038,16 @@ mod tests {
             data["classes"]["cutSetArcEmphasis"],
             CSS.relation.cut_set_arc_emphasis
         );
+        assert_eq!(data["classes"]["cutSetArrow"], CSS.relation.cut_set_arrow);
         assert_eq!(
-            data["classes"]["cutSetArcDimmed"],
-            CSS.relation.cut_set_arc_dimmed
+            data["classes"]["cutSetArrowEmphasis"],
+            CSS.relation.cut_set_arrow_emphasis
         );
         assert_eq!(
             data["classes"]["cutSetScissors"],
             CSS.relation.cut_set_scissors
         );
+        assert_eq!(data["classes"]["cutFocus"], CSS.relation.cut_focus);
     }
 
     #[test]

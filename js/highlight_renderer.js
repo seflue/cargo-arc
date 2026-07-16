@@ -36,8 +36,8 @@ const HighlightRenderer = {
     this._applyNodeClasses(dom, C, state.nodeHighlights);
     this._applyArcHighlights(dom, C, state.arcHighlights);
     this._applyArrowScaling(dom, C, state.arcHighlights);
-    this._applyCutSetArcs(dom, C, state.cutSetArcs);
-    this._applyCutSetScissors(dom, C, state.cutSetArcs);
+    this._applyCutSetArcs(dom, C, state.cutSetArcs, state.cutSetArcData);
+    this._applyCutSetScissors(dom, C, state.cutSetArcs, state.cutSetArcData);
     this._createShadows(dom, C, state.shadowData);
     this._promoteToHighlightLayers(
       dom,
@@ -76,7 +76,7 @@ const HighlightRenderer = {
     this._resetNodeClasses(dom, C);
     this._resetArcStyles(dom, C, staticData);
     this._resetVirtualArcStyles(dom, C, virtualArcUsages);
-    this._resetCutSetArcs(dom, C);
+    this._resetCutSetArcs(dom, C, staticData);
     this._resetCutSetScissors(dom);
   },
 
@@ -187,11 +187,21 @@ const HighlightRenderer = {
   },
 
   /**
-   * Remove cut-set-arc class from previously-marked arcs (dirty-set).
+   * Remove cut-set-arc class from previously-marked arcs (dirty-set), plus
+   * cut-set-arrow from their arrows.
    */
-  _resetCutSetArcs(dom, C) {
+  _resetCutSetArcs(dom, C, staticData) {
     for (const arcId of this._prevCutSetArcIds) {
-      dom.getArc(arcId)?.classList.remove(C.cutSetArc);
+      const arc = dom.getArc(arcId);
+      arc?.classList.remove(C.cutSetArc);
+      // Restore line + arrowheads from the cut-set width back to the base
+      // (traffic) width, so deselecting a cluster returns cut edges to normal.
+      const originalWidth = staticData.getArcStrokeWidth(arcId);
+      if (arc) arc.style.strokeWidth = `${originalWidth}px`;
+      ArcLogic.scaleArrow(dom, arcId, originalWidth);
+      dom.getArrows(arcId).forEach((arrow) => {
+        arrow.classList.remove(C.cutSetArrow);
+      });
     }
   },
 
@@ -274,12 +284,25 @@ const HighlightRenderer = {
 
   /**
    * Mark cut-set arcs (the active cluster's break candidates) with the
-   * standing cut-set-arc class, on top of whatever highlight they already carry.
+   * standing cut-set-arc class, on top of whatever highlight they already carry,
+   * plus cut-set-arrow on their arrowheads.
    */
-  _applyCutSetArcs(dom, C, cutSetArcs) {
+  _applyCutSetArcs(dom, C, cutSetArcs, cutSetArcData) {
     for (const arcId of cutSetArcs) {
       const arc = dom.getVisibleArc(arcId);
-      if (arc) arc.classList.add(C.cutSetArc);
+      if (!arc) continue;
+      arc.classList.add(C.cutSetArc);
+      // Size line + arrowheads by breaks (cycles this edge lies on), overriding
+      // the traffic width that arcHighlights set — cluster mode weights cuts
+      // by cycle count, not traffic.
+      const data = cutSetArcData?.get(arcId);
+      if (data) {
+        arc.style.strokeWidth = `${data.width}px`;
+        ArcLogic.scaleArrow(dom, arcId, data.width);
+      }
+      dom.getArrows(arcId).forEach((arrow) => {
+        arrow.classList.add(C.cutSetArrow);
+      });
     }
   },
 
@@ -303,24 +326,35 @@ const HighlightRenderer = {
    * coordinate space as the arc (live geometry via getPointAtLength).
    * Skips arcs with no visible path or zero length.
    */
-  _applyCutSetScissors(dom, C, cutSetArcs) {
-    // Read all midpoints before writing any glyphs — appendChild between
-    // getPointAtLength calls would invalidate layout and force a reflow per arc.
-    const points = [];
+  _applyCutSetScissors(dom, C, cutSetArcs, cutSetArcData) {
+    // One ✂ per ref (cost), laid out adjacently along the edge and centered on
+    // the midpoint. Capped to what fits without overlap — the exact ref count is
+    // always in the sidebar. Read all points before writing any glyph:
+    // appendChild between getPointAtLength calls forces a reflow per arc.
+    const GLYPH_STEP = 14; // arc-length px between adjacent scissors
+    const placements = [];
     for (const arcId of cutSetArcs) {
       const arc = dom.getVisibleArc(arcId);
       if (!arc || typeof arc.getTotalLength !== 'function') continue;
       const length = arc.getTotalLength();
       if (!length) continue;
-      points.push(arc.getPointAtLength(length / 2));
+      const refs = cutSetArcData?.get(arcId)?.refs ?? 1;
+      const maxFit = Math.max(1, Math.floor(length / GLYPH_STEP));
+      const count = Math.max(1, Math.min(refs, maxFit));
+      const start = length / 2 - ((count - 1) * GLYPH_STEP) / 2;
+      for (let i = 0; i < count; i++) {
+        const point = arc.getPointAtLength(start + i * GLYPH_STEP);
+        placements.push({ x: point.x, y: point.y, arcId });
+      }
     }
 
     const layer = this._getOrCreateScissorsLayer(dom);
-    for (const point of points) {
+    for (const { x, y, arcId } of placements) {
       const glyph = dom.createSvgElement('text');
       glyph.classList.add(C.cutSetScissors);
-      glyph.setAttribute('x', point.x);
-      glyph.setAttribute('y', point.y);
+      glyph.setAttribute('x', x);
+      glyph.setAttribute('y', y);
+      glyph.setAttribute('data-arc-id', arcId);
       glyph.textContent = '✂';
       layer.appendChild(glyph);
     }

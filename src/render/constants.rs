@@ -133,6 +133,9 @@ pub(super) const GRAY_200: &str = "#e0e0e0";
 pub(super) const GRAY_100: &str = "#f5f5f5";
 pub(super) const GRAY_50: &str = "#fafafa";
 const WHITE: &str = "#ffffff";
+/// Cut-set edges: a distinct accent (not the cycle red) so break candidates read
+/// against the dense red cycle mass.
+const CUT: &str = "#2563eb";
 
 pub(super) struct NodeColors {
     pub crate_fill: &'static str,
@@ -155,6 +158,7 @@ pub(super) struct DirectionColors {
     pub downward: &'static str,
     pub upward: &'static str,
     pub cycle: &'static str,
+    pub cut: &'static str,
     pub count_bg: &'static str,
 }
 
@@ -214,6 +218,7 @@ pub(super) static COLORS: ColorPalette = ColorPalette {
         downward: GREEN,
         upward: YELLOW,
         cycle: RED,
+        cut: CUT,
         count_bg: WHITE,
     },
     node_selection: NodeSelectionColors {
@@ -305,10 +310,18 @@ pub(super) struct RelationClasses {
     pub cut_set_arc: &'static str,
     /// Modifier on [`cut_set_arc`](Self::cut_set_arc): one cut arc emphasized on row hover.
     pub cut_set_arc_emphasis: &'static str,
-    /// Modifier on [`cut_set_arc`](Self::cut_set_arc): the other cut arcs de-emphasized.
-    pub cut_set_arc_dimmed: &'static str,
+    /// Arrowhead of a cut-set edge (a `cycle-arrow` element): cut color instead of
+    /// the cluster-mode cycle red.
+    pub cut_set_arrow: &'static str,
+    /// Modifier on [`cut_set_arrow`](Self::cut_set_arrow): the emphasized cut edge's
+    /// arrowhead, restored to full opacity and enlarged under [`cut_focus`](Self::cut_focus)
+    /// so the direction stays legible on short arcs.
+    pub cut_set_arrow_emphasis: &'static str,
     /// Scissors glyph (✂) at a cut-set edge's midpoint (JS-positioned from live path geometry).
     pub cut_set_scissors: &'static str,
+    /// Root state class: a cut-set candidate row is being hovered. Fades the
+    /// whole cluster so the one emphasized cut edge stands out.
+    pub cut_focus: &'static str,
 }
 
 #[allow(dead_code)]
@@ -456,8 +469,10 @@ pub(super) static CSS: CssClassNames = CssClassNames {
         cluster_mode_on: "cluster-mode-on",
         cut_set_arc: "cut-set-arc",
         cut_set_arc_emphasis: "cut-set-arc-emphasis",
-        cut_set_arc_dimmed: "cut-set-arc-dimmed",
+        cut_set_arrow: "cut-set-arrow",
+        cut_set_arrow_emphasis: "cut-set-arrow-emphasis",
         cut_set_scissors: "cut-set-scissors",
+        cut_focus: "cut-focus",
     },
     toolbar: ToolbarClasses {
         view_options: "view-options",

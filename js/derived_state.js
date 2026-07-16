@@ -19,6 +19,10 @@
  * @property {Set<string>} cutSetArcs
  *   Arc IDs ("from-to") in the active cluster's cut-set, excluding those hidden by
  *   filter. Populated only for arc selection with cluster expansion; empty otherwise.
+ * @property {Map<string, {width: number, arrowScale: number, refs: number, breaks: number}>} cutSetArcData
+ *   Per-cut visual data keyed by arc ID: line width + arrow scale derived from
+ *   the gross cycle count (`breaks`), and refs (cost → scissors count). Same
+ *   membership as cutSetArcs.
  * @property {boolean} isPinned
  *   Whether the highlight is from a pinned (click) selection.
  */
@@ -227,6 +231,7 @@ const DerivedState = {
       shadowData: new Map(),
       promotedHitareas: new Set(),
       cutSetArcs: new Set(),
+      cutSetArcData: new Map(),
       isPinned: selection.mode === 'click',
     };
     const ctx = {
@@ -363,18 +368,23 @@ const DerivedState = {
     const arcId = selection.id;
     const [fromId, toId] = arcId.split('-');
 
-    result.nodeHighlights.set(fromId, {
-      role: 'dependent',
-      cssClass: 'dependentNode',
-    });
-    result.nodeHighlights.set(toId, {
-      role: 'dependency',
-      cssClass: 'depNode',
-    });
-
     const arc = staticData.getArc(arcId);
     const sccId = arc?.sccId;
     const expandCluster = AppState.isClusterMode(appState) && sccId != null;
+
+    // Single-edge selection marks the two endpoints as dependent/dependency.
+    // In cluster mode the whole SCC is highlighted uniformly (cycle-member,
+    // below), so singling out the clicked edge's endpoints would look arbitrary.
+    if (!expandCluster) {
+      result.nodeHighlights.set(fromId, {
+        role: 'dependent',
+        cssClass: 'dependentNode',
+      });
+      result.nodeHighlights.set(toId, {
+        role: 'dependency',
+        cssClass: 'depNode',
+      });
+    }
 
     const descs = [];
     if (arc && !hiddenByFilter.has(arcId)) {
@@ -435,7 +445,15 @@ const DerivedState = {
       if (cluster) {
         for (const cut of cluster.cuts) {
           const cutId = `${cut.fromId}-${cut.toId}`;
-          if (!hiddenByFilter.has(cutId)) result.cutSetArcs.add(cutId);
+          if (hiddenByFilter.has(cutId)) continue;
+          result.cutSetArcs.add(cutId);
+          const width = ArcLogic.calculateCutWidth(cut.breaks);
+          result.cutSetArcData.set(cutId, {
+            width,
+            arrowScale: ArcLogic.scaleFromStrokeWidth(width),
+            refs: cut.refs,
+            breaks: cut.breaks,
+          });
         }
       }
     }

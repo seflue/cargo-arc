@@ -48,23 +48,12 @@ function createHoverKeyTracker() {
   };
 }
 
-function deriveRowEmphasis(hoveredArcId, cutArcIds) {
-  const emphasize = [];
-  const dim = [];
-  for (const id of cutArcIds) {
-    if (id === hoveredArcId) emphasize.push(id);
-    else dim.push(id);
-  }
-  return { emphasize, dim };
-}
-
 if (typeof module !== 'undefined') {
   module.exports = {
     createHighlightDebouncer,
     createPinnedSidebarRefresher,
     deriveHoverKey,
     createHoverKeyTracker,
-    deriveRowEmphasis,
   };
 }
 
@@ -293,8 +282,65 @@ if (typeof document !== 'undefined') {
       return hoverTracker.enter(key);
     }
 
+    // Cut-set spotlight: highlights one cut edge (glow via cut-focus/emphasis
+    // classes, plus its two endpoint nodes by direction color) on top of
+    // whatever HighlightRenderer has already drawn for the pinned cluster.
+    // Shared by the sidebar row hover and, while a cluster is pinned, diagram
+    // hover over one of its cut edges.
+    function spotlightCutEdge(arcId) {
+      DomAdapter.getSvgRoot()?.classList.add(C.cutFocus);
+      DomAdapter.getVisibleArc(arcId)?.classList.add(C.cutSetArcEmphasis);
+      // Only the cut direction's head: forward arrows (reverse arrows carry
+      // data-arrow-reverse). A mutual-dep cut then shows one directed head.
+      DomAdapter.getArrows(arcId).forEach((arrow) => {
+        if (arrow.getAttribute('data-arrow-reverse') !== 'true') {
+          arrow.classList.add(C.cutSetArrowEmphasis);
+        }
+      });
+      // Keep this edge's scissors (its cost) visible while the rest fade.
+      DomAdapter.querySelectorAll(
+        `.${C.cutSetScissors}[data-arc-id="${arcId}"]`,
+      ).forEach((glyph) => {
+        glyph.style.opacity = '1';
+      });
+      const [fromId, toId] = arcId.split('-');
+      DomAdapter.getNode(fromId)?.classList.add(C.dependentNode);
+      DomAdapter.getNode(toId)?.classList.add(C.depNode);
+    }
+
+    // Removes ONLY what spotlightCutEdge added. Must not touch the pinned
+    // derived-state classes (cycleMember, cut-set-arc, cluster-mode-on) —
+    // those are owned and reset by HighlightRenderer.
+    function clearCutSpotlight() {
+      DomAdapter.getSvgRoot()?.classList.remove(C.cutFocus);
+      DomAdapter.querySelectorAll(`.${C.cutSetArc}`).forEach((arc) => {
+        arc.classList.remove(C.cutSetArcEmphasis);
+      });
+      DomAdapter.querySelectorAll(`.${C.cutSetArrowEmphasis}`).forEach(
+        (arrow) => {
+          arrow.classList.remove(C.cutSetArrowEmphasis);
+        },
+      );
+      DomAdapter.querySelectorAll(`.${C.cutSetScissors}`).forEach((glyph) => {
+        glyph.style.opacity = '';
+      });
+      DomAdapter.querySelectorAll(`.${C.dependentNode}, .${C.depNode}`).forEach(
+        (node) => {
+          node.classList.remove(C.dependentNode, C.depNode);
+        },
+      );
+    }
+
     function handleMouseEnter(type, id) {
-      if (AppState.hasPinnedSelection(appState)) return;
+      if (AppState.hasPinnedSelection(appState)) {
+        if (
+          type === 'arc' &&
+          DomAdapter.getVisibleArc(id)?.classList.contains(C.cutSetArc)
+        ) {
+          spotlightCutEdge(id);
+        }
+        return;
+      }
       const sccId = type === 'arc' ? StaticData.getArc(id)?.sccId : null;
       if (!enterHover(type, id, sccId)) return;
       AppState.setHover(appState, type, id);
@@ -308,7 +354,10 @@ if (typeof document !== 'undefined') {
     }
 
     function handleMouseLeave() {
-      if (AppState.hasPinnedSelection(appState)) return;
+      if (AppState.hasPinnedSelection(appState)) {
+        clearCutSpotlight();
+        return;
+      }
       clearTimeout(hideGraceTimer);
       hideGraceTimer = setTimeout(() => {
         AppState.clearHover(appState);
@@ -1409,10 +1458,11 @@ if (typeof document !== 'undefined') {
         }
       });
 
-      // Cluster sidebar: hovering a cut-set candidate row emphasizes its arc
-      // and dims the other cut arcs, on top of the standing cut-set-arc
-      // markers. Delegated on the sidebar container (not per-row wiring like
-      // _setupCollapseHandlers) so it also covers transient previews.
+      // Cluster sidebar: hovering a cut-set candidate row spotlights its arc
+      // and endpoint nodes (shared with diagram hover on a pinned cluster's
+      // cut edges, see handleMouseEnter/handleMouseLeave). Delegated on the
+      // sidebar container (not per-row wiring like _setupCollapseHandlers) so
+      // it also covers transient previews.
       const hoveredCutRow = (e) => {
         const target = /** @type {Element} */ (e.target);
         const row = target.closest('.sidebar-cut-row[data-arc-id]');
@@ -1421,33 +1471,16 @@ if (typeof document !== 'undefined') {
         }
         return row;
       };
-      const cutRowsIn = () =>
-        sidebarEl.querySelectorAll('.sidebar-cut-row[data-arc-id]');
 
       sidebarEl.addEventListener('mouseover', (e) => {
         const row = hoveredCutRow(e);
         if (!row) return;
-        const cutArcIds = Array.from(cutRowsIn()).map((r) =>
-          r.getAttribute('data-arc-id'),
-        );
-        const { emphasize, dim } = deriveRowEmphasis(
-          row.getAttribute('data-arc-id'),
-          cutArcIds,
-        );
-        for (const id of emphasize) {
-          DomAdapter.getVisibleArc(id)?.classList.add(C.cutSetArcEmphasis);
-        }
-        for (const id of dim) {
-          DomAdapter.getVisibleArc(id)?.classList.add(C.cutSetArcDimmed);
-        }
+        spotlightCutEdge(row.getAttribute('data-arc-id'));
       });
 
       sidebarEl.addEventListener('mouseout', (e) => {
         if (!hoveredCutRow(e)) return;
-        for (const r of cutRowsIn()) {
-          const arc = DomAdapter.getVisibleArc(r.getAttribute('data-arc-id'));
-          arc?.classList.remove(C.cutSetArcEmphasis, C.cutSetArcDimmed);
-        }
+        clearCutSpotlight();
       });
     }
 
