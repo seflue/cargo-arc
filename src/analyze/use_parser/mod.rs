@@ -1,7 +1,7 @@
 //! Syn-based use statement parsing for workspace dependency extraction.
 
 use crate::model::{
-    CrateExportMap, DependencyKind, DependencyRef, EdgeContext, ModulePathMap, TestKind,
+    CrateExportMap, DefKind, DependencyKind, DependencyRef, EdgeContext, ModulePathMap, TestKind,
     WorkspaceCrates, normalize_crate_name,
 };
 use std::collections::{HashMap, HashSet};
@@ -40,8 +40,8 @@ pub(crate) struct ReExportTarget {
 /// Export and re-export information for a single module.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct ModuleExportInfo {
-    /// Own public definitions (pub fn, pub struct, etc.)
-    pub(crate) definitions: HashSet<String>,
+    /// Own public definitions: name → item kind at the definition site
+    pub(crate) definitions: HashMap<String, DefKind>,
     /// Explicit re-exports: alias/name → source target
     pub(crate) explicit_reexports: HashMap<String, ReExportTarget>,
     /// Glob re-export sources (module paths from `pub use *`)
@@ -99,7 +99,7 @@ pub(crate) fn resolve_reexport(dep: &mut DependencyRef, reexport_map: &ReExportM
             break;
         };
 
-        if module_info.definitions.contains(item) {
+        if module_info.definitions.contains_key(item) {
             break;
         }
 
@@ -155,7 +155,7 @@ fn module_exports_symbol(
     let Some(info) = crate_exports.get(module_path) else {
         return false;
     };
-    if info.definitions.contains(symbol) {
+    if info.definitions.contains_key(symbol) {
         return true;
     }
     if info.explicit_reexports.contains_key(symbol) {

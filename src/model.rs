@@ -17,6 +17,20 @@ pub struct SourceLocation {
     pub via_reexport: bool,
 }
 
+/// The item kind at a symbol's definition site.
+///
+/// Named apart from `layout::ItemKind`, which classifies graph nodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DefKind {
+    Fn,
+    Struct,
+    Enum,
+    Trait,
+    Const,
+    Static,
+    Type,
+}
+
 /// Workspace crate names, stored in normalized form (hyphens → underscores).
 ///
 /// All insertion paths normalize names, and `contains()` normalizes its input,

@@ -7,7 +7,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::model::{
-    CrateExportMap, CrateInfo, EdgeContext, ModulePathMap, WorkspaceCrates, normalize_crate_name,
+    CrateExportMap, CrateInfo, DefKind, EdgeContext, ModulePathMap, WorkspaceCrates,
+    normalize_crate_name,
 };
 
 use super::mod_resolver::{
@@ -69,25 +70,28 @@ fn collect_module_info(
                 collect_use_reexports(ctx, use_item, source_file, module_path, &mut info);
             }
             syn::Item::Fn(i) if is_reexport_visibility(&i.vis) => {
-                info.definitions.insert(i.sig.ident.to_string());
+                info.definitions
+                    .insert(i.sig.ident.to_string(), DefKind::Fn);
             }
             syn::Item::Struct(i) if is_reexport_visibility(&i.vis) => {
-                info.definitions.insert(i.ident.to_string());
+                info.definitions
+                    .insert(i.ident.to_string(), DefKind::Struct);
             }
             syn::Item::Enum(i) if is_reexport_visibility(&i.vis) => {
-                info.definitions.insert(i.ident.to_string());
+                info.definitions.insert(i.ident.to_string(), DefKind::Enum);
             }
             syn::Item::Trait(i) if is_reexport_visibility(&i.vis) => {
-                info.definitions.insert(i.ident.to_string());
+                info.definitions.insert(i.ident.to_string(), DefKind::Trait);
             }
             syn::Item::Const(i) if is_reexport_visibility(&i.vis) => {
-                info.definitions.insert(i.ident.to_string());
+                info.definitions.insert(i.ident.to_string(), DefKind::Const);
             }
             syn::Item::Static(i) if is_reexport_visibility(&i.vis) => {
-                info.definitions.insert(i.ident.to_string());
+                info.definitions
+                    .insert(i.ident.to_string(), DefKind::Static);
             }
             syn::Item::Type(i) if is_reexport_visibility(&i.vis) => {
-                info.definitions.insert(i.ident.to_string());
+                info.definitions.insert(i.ident.to_string(), DefKind::Type);
             }
             _ => {}
         }
@@ -476,12 +480,112 @@ mod tests {
 
         let module_info = result.get("module").expect("module should have exports");
         assert!(
-            module_info.definitions.contains("Foo"),
+            module_info.definitions.contains_key("Foo"),
             "should contain Foo"
         );
         assert!(
-            module_info.definitions.contains("helper"),
+            module_info.definitions.contains_key("helper"),
             "should contain helper"
+        );
+    }
+
+    /// Characterization: which item kinds reach `definitions`, and with which
+    /// visibilities. Pins the pre-`DefKind` behaviour.
+    #[test]
+    fn definitions_cover_all_matched_item_kinds() {
+        let tmp = test_crate(&[
+            ("src/lib.rs", "pub mod module;"),
+            (
+                "src/module.rs",
+                r"
+pub fn a_fn() {}
+pub struct AStruct;
+pub enum AnEnum { V }
+pub trait ATrait {}
+pub const A_CONST: u8 = 1;
+pub static A_STATIC: u8 = 1;
+pub type AnAlias = u8;
+pub union AUnion { f: u8 }
+fn private_fn() {}
+struct PrivateStruct;
+pub(crate) struct CrateStruct;
+pub(super) struct SuperStruct;
+pub(in crate::module) struct InPathStruct;
+impl AStruct { pub fn method(&self) {} }
+",
+            ),
+        ]);
+        let crate_info = make_crate_info(&tmp, "test_crate");
+        let mp: ModulePathMap = [("test_crate".to_string(), HashSet::from(["module".into()]))]
+            .into_iter()
+            .collect();
+
+        let result = collect_crate_reexports(
+            &crate_info,
+            &mp,
+            &WorkspaceCrates::default(),
+            &CrateExportMap::default(),
+        );
+
+        let defs = &result.get("module").expect("module info").definitions;
+        for (name, kind) in [
+            ("a_fn", DefKind::Fn),
+            ("AStruct", DefKind::Struct),
+            ("AnEnum", DefKind::Enum),
+            ("ATrait", DefKind::Trait),
+            ("A_CONST", DefKind::Const),
+            ("A_STATIC", DefKind::Static),
+            ("AnAlias", DefKind::Type),
+            ("CrateStruct", DefKind::Struct),
+            ("SuperStruct", DefKind::Struct),
+        ] {
+            assert_eq!(defs.get(name), Some(&kind), "wrong kind for {name}");
+        }
+        for name in [
+            "AUnion",
+            "private_fn",
+            "PrivateStruct",
+            "InPathStruct",
+            "method",
+            "V",
+        ] {
+            assert!(!defs.contains_key(name), "unexpected {name} in {defs:?}");
+        }
+    }
+
+    /// Characterization: `definitions` is top-level only — items inside an
+    /// inline `mod { … }` body are not collected for any module path.
+    #[test]
+    fn definitions_skip_inline_mod_bodies() {
+        let tmp = test_crate(&[
+            ("src/lib.rs", "pub mod module;"),
+            (
+                "src/module.rs",
+                "pub struct Outer;\npub mod inner { pub struct Inner; }",
+            ),
+        ]);
+        let crate_info = make_crate_info(&tmp, "test_crate");
+        let mp: ModulePathMap = [(
+            "test_crate".to_string(),
+            HashSet::from(["module".into(), "module::inner".into()]),
+        )]
+        .into_iter()
+        .collect();
+
+        let result = collect_crate_reexports(
+            &crate_info,
+            &mp,
+            &WorkspaceCrates::default(),
+            &CrateExportMap::default(),
+        );
+
+        let module_info = result.get("module").expect("module info");
+        assert!(module_info.definitions.contains_key("Outer"));
+        assert!(!module_info.definitions.contains_key("Inner"));
+        assert!(
+            !result.contains_key("module::inner"),
+            "inline mod produces no entry, found: {:?}",
+            result.get("module::inner")
         );
     }
 
