@@ -658,13 +658,65 @@ pub(crate) fn parse_workspace_dependencies(
             if let Some(mut dep) = resolve_single_path(ctx, &path, line_num, context, *inline_depth)
             {
                 dep.via_reexport = via_reexport;
-                resolve_reexport(&mut dep, ctx.reexport_map);
-                DependencyRef::dedup_push(&mut deps, &mut seen_targets, dep);
+                for mut dep in expand_glob(dep, ctx.reexport_map) {
+                    resolve_reexport(&mut dep, ctx.reexport_map);
+                    DependencyRef::dedup_push(&mut deps, &mut seen_targets, dep);
+                }
             }
         }
     }
 
     deps
+}
+
+/// The names `use <module>::*` brings into scope: the module's own definitions
+/// plus what it republishes under a name.
+///
+/// `None` when the module is absent from the map or exports nothing under a name
+/// it can see. Sorted, because the map iterates in arbitrary order and the names
+/// reach the rendered output.
+fn glob_payload(dep: &DependencyRef, reexport_map: &ReExportMap) -> Option<Vec<String>> {
+    let module_info = reexport_map
+        .get(&dep.target_crate)?
+        .get(&dep.target_module)?;
+    let mut names: Vec<String> = module_info
+        .definitions
+        .keys()
+        .chain(module_info.explicit_reexports.keys())
+        .cloned()
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+    names.sort_unstable();
+    names.dedup();
+    Some(names)
+}
+
+/// Split a glob into one dependency per name it imports, so an edge weighs what
+/// crosses it rather than the one line that spells it.
+///
+/// Non-globs pass through. So does a glob whose payload is unknown: it keeps the
+/// `*`, which scores as a single unnamed symbol — an understatement, but a
+/// smaller one than dropping the edge to zero.
+///
+/// The `*` marker itself must survive upstream of this: `collect_use_reexports`
+/// reads it out of its own `resolve_use_tree` pass to build `glob_sources`,
+/// which is what `resolve_reexport` resolves glob chains against.
+fn expand_glob(dep: DependencyRef, reexport_map: &ReExportMap) -> Vec<DependencyRef> {
+    if dep.target_item.as_deref() != Some("*") {
+        return vec![dep];
+    }
+    let Some(names) = glob_payload(&dep, reexport_map) else {
+        return vec![dep];
+    };
+    names
+        .into_iter()
+        .map(|name| DependencyRef {
+            target_item: Some(name),
+            ..dep.clone()
+        })
+        .collect()
 }
 
 /// Local binding name → absolute path of the module it names.

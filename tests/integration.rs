@@ -125,6 +125,28 @@ fn resolve_arc_names(
         .collect()
 }
 
+/// The symbols an arc carries, keyed by (`from_name`, `to_name`) and sorted.
+fn extract_arc_symbols(svg: &str) -> std::collections::HashMap<(String, String), Vec<String>> {
+    let nodes = extract_node_names(svg);
+    let data = parse_static_data(svg);
+    data["arcs"]
+        .as_object()
+        .expect("arcs is object")
+        .values()
+        .filter_map(|a| {
+            let from = nodes.get(a["from"].as_str()?)?.clone();
+            let to = nodes.get(a["to"].as_str()?)?.clone();
+            let mut symbols: Vec<String> = a["usages"]
+                .as_array()?
+                .iter()
+                .filter_map(|u| Some(u["symbol"].as_str()?.to_string()))
+                .collect();
+            symbols.sort();
+            Some(((from, to), symbols))
+        })
+        .collect()
+}
+
 #[test]
 fn test_multi_crate_fixture() {
     let (temp, cmd) = fixture_args("multi_crate", false);
@@ -328,6 +350,27 @@ fn test_reexport_resolution() {
     assert!(
         !has_child_to_parent,
         "child -> parent arc should NOT exist (re-export should be resolved to sibling), found arcs: {named_arcs:?}"
+    );
+}
+
+/// A glob edge must carry the names it imports, not the `*` that spells them.
+/// Covers the full pipeline: only a populated re-export map can name the payload,
+/// so a map that never reaches the resolver would leave the `*` in place here.
+#[test]
+fn test_glob_import_carries_payload() {
+    let (temp, cmd) = fixture_args("reexport_workspace", false);
+
+    let result = run(cmd);
+    assert!(result.is_ok(), "run() should succeed: {result:?}");
+
+    let svg = std::fs::read_to_string(temp.path()).unwrap();
+    let symbols = extract_arc_symbols(&svg);
+
+    let key = ("glob_user".to_string(), "sibling".to_string());
+    assert_eq!(
+        symbols.get(&key).map(Vec::as_slice),
+        Some(["Extra".to_string(), "Widget".to_string()].as_slice()),
+        "glob_user -> sibling should carry sibling's exports, found: {symbols:?}"
     );
 }
 

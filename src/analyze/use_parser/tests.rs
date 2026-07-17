@@ -483,6 +483,88 @@ use crate::graph;
         assert_eq!(deps[0].target_item, Some("*".to_string()));
         assert_eq!(deps[0].target_module, "analyze");
     }
+
+    #[test]
+    fn test_process_use_glob_expands_to_payload() {
+        let mut analyze_info = ModuleExportInfo::default();
+        analyze_info
+            .definitions
+            .insert("Walker".to_string(), DefKind::Struct);
+        analyze_info
+            .definitions
+            .insert("analyze_module".to_string(), DefKind::Fn);
+        let map: ReExportMap = [(
+            "my_crate".to_string(),
+            [("analyze".to_string(), analyze_info)]
+                .into_iter()
+                .collect(),
+        )]
+        .into_iter()
+        .collect();
+
+        let uses = parse_test_uses("use crate::analyze::*;");
+        let ctx = ResolutionContextBuilder::new(Path::new("src/cli.rs"))
+            .reexport_map(&map)
+            .build();
+        let deps = parse_workspace_dependencies(&uses, &ctx);
+
+        let items: Vec<_> = deps
+            .iter()
+            .filter_map(|d| d.target_item.as_deref())
+            .collect();
+        assert_eq!(items, ["Walker", "analyze_module"], "deps: {deps:?}");
+        assert!(deps.iter().all(|d| d.target_module == "analyze"));
+    }
+
+    /// A glob re-export republishes the names it pulls in, so each expanded name
+    /// resolves on to the module that defines it — same as a named `pub use`.
+    #[test]
+    fn test_process_use_glob_expands_through_reexport() {
+        let mut facade_info = ModuleExportInfo::default();
+        facade_info.explicit_reexports.insert(
+            "Widget".to_string(),
+            ReExportTarget {
+                module: "origin".to_string(),
+                original_name: "Widget".to_string(),
+            },
+        );
+        let mut origin_info = ModuleExportInfo::default();
+        origin_info
+            .definitions
+            .insert("Widget".to_string(), DefKind::Struct);
+        let map: ReExportMap = [(
+            "my_crate".to_string(),
+            [
+                ("facade".to_string(), facade_info),
+                ("origin".to_string(), origin_info),
+            ]
+            .into_iter()
+            .collect(),
+        )]
+        .into_iter()
+        .collect();
+
+        let uses = parse_test_uses("use crate::facade::*;");
+        let ctx = ResolutionContextBuilder::new(Path::new("src/cli.rs"))
+            .reexport_map(&map)
+            .build();
+        let deps = parse_workspace_dependencies(&uses, &ctx);
+
+        assert_eq!(deps.len(), 1, "deps: {deps:?}");
+        assert_eq!(deps[0].target_item, Some("Widget".to_string()));
+        assert_eq!(deps[0].target_module, "origin");
+    }
+
+    /// An unknown payload keeps the `*`: one unnamed symbol, not zero.
+    #[test]
+    fn test_process_use_glob_unknown_payload_keeps_marker() {
+        let uses = parse_test_uses("use crate::analyze::*;");
+        let ctx = ResolutionContextBuilder::new(Path::new("src/cli.rs")).build();
+        let deps = parse_workspace_dependencies(&uses, &ctx);
+
+        assert_eq!(deps.len(), 1, "deps: {deps:?}");
+        assert_eq!(deps[0].target_item, Some("*".to_string()));
+    }
 }
 
 mod integration_tests {
