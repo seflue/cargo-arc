@@ -60,8 +60,8 @@ pub fn format_violations(result: &CheckResult) -> String {
 #[must_use]
 pub fn format_cluster_report(
     graph: &crate::graph::ArcGraph,
-    analysis: &crate::layout::CycleAnalysis,
-    report: &crate::layout::ClusterReport,
+    analysis: &crate::diagnose::CycleAnalysis,
+    report: &crate::diagnose::ClusterReport,
 ) -> String {
     use std::collections::HashSet;
 
@@ -270,7 +270,7 @@ mod tests {
 
     // ===== format_cluster_report tests =====
 
-    use crate::layout::{ClusterReport, CycleAnalysis, MinimalCycles};
+    use crate::diagnose::{ClusterReport, CycleAnalysis, MinimalCycles};
     use crate::model::EdgeContext;
 
     /// Single-crate graph "app" with modules by name and production `ModuleDep`

@@ -1,7 +1,7 @@
 //! Build layout IR from graph and cycle information.
 
-use super::cycles::CycleAnalysis;
 use super::toposort::stable_toposort;
+use crate::diagnose::CycleAnalysis;
 use crate::graph::{ArcGraph, Edge, Node};
 use crate::model::{EdgeContext, SourceLocation};
 use crate::volatility::Volatility;
@@ -624,8 +624,8 @@ impl ArcGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diagnose::MinimalCycles;
     use crate::graph::{ArcGraph, Edge, Node};
-    use crate::layout::cycles::MinimalCycles;
     use crate::model::{DependencyKind, EdgeContext, SourceLocation, TestKind};
     use assert2::check;
     use petgraph::graph::NodeIndex;

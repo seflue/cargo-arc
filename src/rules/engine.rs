@@ -2,8 +2,8 @@
 //!
 //! Checks architecture rules against the dependency graph and collects violations.
 
+use crate::diagnose::MinimalCycles;
 use crate::graph::{ArcGraph, Edge};
-use crate::layout::MinimalCycles;
 use crate::model::SourceLocation;
 use crate::rules::config::{ArcConfig, Direction, Rule, Severity};
 use crate::rules::matching::resolve_pattern;

@@ -9,8 +9,9 @@ use crate::analyze::{
     AnalysisBackend, FeatureConfig, ReExportMap, analyze_workspace, collect_crate_exports,
     collect_crate_reexports, externals::analyze_externals, normalize_crate_name,
 };
+use crate::diagnose::MinimalCycles;
 use crate::graph::ArcGraph;
-use crate::layout::{LayoutIR, MinimalCycles, build_layout};
+use crate::layout::{LayoutIR, build_layout};
 use crate::model::{CrateExportMap, ModulePathMap, WorkspaceCrates};
 use crate::render::{RenderConfig, render};
 use crate::rules::config::{ArcConfig, ConfigError};

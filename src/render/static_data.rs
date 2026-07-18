@@ -440,8 +440,9 @@ pub(super) fn render_script(
 mod tests {
     use super::super::positioning::{calculate_box_width, calculate_positions};
     use super::*;
+    use crate::diagnose::MinimalCycles;
     use crate::graph::{ArcGraph, Edge, Node};
-    use crate::layout::{LayoutEdge, MinimalCycles, build_layout};
+    use crate::layout::{LayoutEdge, build_layout};
     use crate::model::{EdgeContext, SourceLocation};
 
     // === format_source_locations_by_symbol Tests ===
