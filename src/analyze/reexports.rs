@@ -67,7 +67,10 @@ fn collect_module_info(
     for item in &syntax.items {
         match item {
             syn::Item::Use(use_item) if is_reexport_visibility(&use_item.vis) => {
-                collect_use_reexports(ctx, use_item, source_file, module_path, &mut info);
+                collect_use_reexports(ctx, use_item, source_file, module_path, &mut info, false);
+            }
+            syn::Item::Use(use_item) if matches!(use_item.vis, syn::Visibility::Inherited) => {
+                collect_use_reexports(ctx, use_item, source_file, module_path, &mut info, true);
             }
             syn::Item::Fn(i) if is_reexport_visibility(&i.vis) => {
                 info.definitions
@@ -100,13 +103,19 @@ fn collect_module_info(
     info
 }
 
-/// Resolve a single `pub use` item into re-export entries.
+/// Resolve a single `use` item into re-export entries.
+///
+/// `private` selects where named targets land: a `pub`/`pub(crate)`/`pub(super)`
+/// re-export fills `explicit_reexports`, a private `use` fills `private_uses`
+/// (a binding descendants can still name through this module). Glob sources are
+/// only recorded for the re-export case; a private glob republishes nothing.
 fn collect_use_reexports(
     ctx: &CollectContext,
     use_item: &syn::ItemUse,
     source_file: &Path,
     module_path: &str,
     info: &mut ModuleExportInfo,
+    private: bool,
 ) {
     let alias_paths = resolve_use_tree(&use_item.tree, "", true);
     let original_paths = resolve_use_tree(&use_item.tree, "", false);
@@ -132,16 +141,21 @@ fn collect_use_reexports(
         };
 
         if dep.target_item.as_deref() == Some("*") {
-            info.glob_sources.push(dep.target_module.clone());
+            if !private {
+                info.glob_sources.push(dep.target_module.clone());
+            }
         } else if let Some(original_name) = &dep.target_item {
             let alias_name = alias_path.rsplit("::").next().unwrap_or(alias_path);
-            info.explicit_reexports.insert(
-                alias_name.to_string(),
-                ReExportTarget {
-                    module: dep.target_module.clone(),
-                    original_name: original_name.clone(),
-                },
-            );
+            let target = ReExportTarget {
+                module: dep.target_module.clone(),
+                original_name: original_name.clone(),
+            };
+            if private {
+                info.private_uses.insert(alias_name.to_string(), target);
+            } else {
+                info.explicit_reexports
+                    .insert(alias_name.to_string(), target);
+            }
         }
     }
 }
@@ -456,6 +470,45 @@ mod tests {
         assert!(
             !parent_info.explicit_reexports.contains_key("Private"),
             "private use should NOT be captured"
+        );
+    }
+
+    // ca-0365: private use is captured in private_uses (descendant-visible)
+    #[test]
+    fn private_use_captured_in_private_uses() {
+        let tmp = test_crate(&[
+            ("src/lib.rs", "pub mod parent;"),
+            (
+                "src/parent/mod.rs",
+                "pub mod sibling;\nuse sibling::Private;",
+            ),
+            ("src/parent/sibling.rs", "pub struct Private;"),
+        ]);
+        let crate_info = make_crate_info(&tmp, "test_crate");
+        let mp: ModulePathMap = [(
+            "test_crate".to_string(),
+            HashSet::from(["parent".into(), "parent::sibling".into()]),
+        )]
+        .into_iter()
+        .collect();
+
+        let result = collect_crate_reexports(
+            &crate_info,
+            &mp,
+            &WorkspaceCrates::default(),
+            &CrateExportMap::default(),
+        );
+
+        let parent_info = result.get("parent").expect("parent should have exports");
+        let target = parent_info
+            .private_uses
+            .get("Private")
+            .expect("private use should be captured in private_uses");
+        assert_eq!(target.module, "parent::sibling");
+        assert_eq!(target.original_name, "Private");
+        assert!(
+            !parent_info.explicit_reexports.contains_key("Private"),
+            "private use must not leak into explicit_reexports"
         );
     }
 

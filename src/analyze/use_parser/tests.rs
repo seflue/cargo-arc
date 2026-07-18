@@ -2203,7 +2203,7 @@ mod resolve_reexport_tests {
     fn resolve_noop_without_target_item() {
         let map = ReExportMap::default();
         let mut dep = test_dep("my_crate", "render", None);
-        resolve_reexport(&mut dep, &map);
+        resolve_reexport(&mut dep, &map, "");
         assert_eq!(dep.target_module, "render");
     }
 
@@ -2213,7 +2213,7 @@ mod resolve_reexport_tests {
     fn resolve_noop_when_crate_not_in_map() {
         let map = ReExportMap::default();
         let mut dep = test_dep("my_crate", "render", Some("Widget"));
-        resolve_reexport(&mut dep, &map);
+        resolve_reexport(&mut dep, &map, "");
         assert_eq!(dep.target_module, "render");
     }
 
@@ -2232,7 +2232,7 @@ mod resolve_reexport_tests {
             .collect();
 
         let mut dep = test_dep("my_crate", "render", Some("Widget"));
-        resolve_reexport(&mut dep, &map);
+        resolve_reexport(&mut dep, &map, "");
         assert_eq!(dep.target_module, "render");
     }
 
@@ -2261,7 +2261,7 @@ mod resolve_reexport_tests {
             .collect();
 
         let mut dep = test_dep("my_crate", "render", Some("Widget"));
-        resolve_reexport(&mut dep, &map);
+        resolve_reexport(&mut dep, &map, "");
         assert_eq!(dep.target_module, "render::elements");
     }
 
@@ -2299,7 +2299,7 @@ mod resolve_reexport_tests {
             .collect();
 
         let mut dep = test_dep("my_crate", "root", Some("Widget"));
-        resolve_reexport(&mut dep, &map);
+        resolve_reexport(&mut dep, &map, "");
         assert_eq!(dep.target_module, "origin");
     }
 
@@ -2328,7 +2328,7 @@ mod resolve_reexport_tests {
             .collect();
 
         let mut dep = test_dep("my_crate", "facade", Some("Alias"));
-        resolve_reexport(&mut dep, &map);
+        resolve_reexport(&mut dep, &map, "");
         assert_eq!(dep.target_module, "origin");
     }
 
@@ -2351,7 +2351,7 @@ mod resolve_reexport_tests {
             .collect();
 
         let mut dep = test_dep("my_crate", "render", Some("Widget"));
-        resolve_reexport(&mut dep, &map);
+        resolve_reexport(&mut dep, &map, "");
         assert_eq!(dep.target_module, "elements");
     }
 
@@ -2383,7 +2383,7 @@ mod resolve_reexport_tests {
             .collect();
 
         let mut dep = test_dep("my_crate", "facade", Some("Widget"));
-        resolve_reexport(&mut dep, &map);
+        resolve_reexport(&mut dep, &map, "");
         assert_eq!(dep.target_module, "origin");
     }
 
@@ -2416,7 +2416,7 @@ mod resolve_reexport_tests {
             .collect();
 
         let mut dep = test_dep("my_crate", "a", Some("Widget"));
-        resolve_reexport(&mut dep, &map);
+        resolve_reexport(&mut dep, &map, "");
         // Terminates without infinite loop; ends back at "a"
         assert_eq!(dep.target_module, "a");
     }
@@ -2446,8 +2446,66 @@ mod resolve_reexport_tests {
             .collect();
 
         let mut dep = test_dep("other_crate", "", Some("Config"));
-        resolve_reexport(&mut dep, &map);
+        resolve_reexport(&mut dep, &map, "");
         assert_eq!(dep.target_module, "settings");
+    }
+
+    // --- resolve_reexport: ca-0365 — private use, descendant visibility ---
+
+    #[test]
+    fn resolve_private_use_for_descendant() {
+        // front::wgsl holds a private `use ...::error::Error`; a descendant
+        // module names it through the ancestor. The edge belongs to the definer.
+        let mut wgsl_info = ModuleExportInfo::default();
+        wgsl_info.private_uses.insert(
+            "Error".to_string(),
+            ReExportTarget {
+                module: "front::wgsl::error".to_string(),
+                original_name: "Error".to_string(),
+            },
+        );
+        let mut error_info = ModuleExportInfo::default();
+        error_info
+            .definitions
+            .insert("Error".to_string(), DefKind::Enum);
+
+        let mut crate_exports = HashMap::new();
+        crate_exports.insert("front::wgsl".to_string(), wgsl_info);
+        crate_exports.insert("front::wgsl::error".to_string(), error_info);
+        let map: ReExportMap = [("my_crate".to_string(), crate_exports)]
+            .into_iter()
+            .collect();
+
+        let mut dep = test_dep("my_crate", "front::wgsl", Some("Error"));
+        resolve_reexport(
+            &mut dep,
+            &map,
+            "front::wgsl::parse::directive::enable_extension",
+        );
+        assert_eq!(dep.target_module, "front::wgsl::error");
+    }
+
+    #[test]
+    fn resolve_private_use_not_for_non_descendant() {
+        // A module outside front::wgsl cannot see its private `use`; without a
+        // visible binding the edge stays on the ancestor.
+        let mut wgsl_info = ModuleExportInfo::default();
+        wgsl_info.private_uses.insert(
+            "Error".to_string(),
+            ReExportTarget {
+                module: "front::wgsl::error".to_string(),
+                original_name: "Error".to_string(),
+            },
+        );
+        let mut crate_exports = HashMap::new();
+        crate_exports.insert("front::wgsl".to_string(), wgsl_info);
+        let map: ReExportMap = [("my_crate".to_string(), crate_exports)]
+            .into_iter()
+            .collect();
+
+        let mut dep = test_dep("my_crate", "front::wgsl", Some("Error"));
+        resolve_reexport(&mut dep, &map, "back::spv");
+        assert_eq!(dep.target_module, "front::wgsl");
     }
 
     // --- ModuleExportInfo default ---

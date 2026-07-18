@@ -44,6 +44,11 @@ pub(crate) struct ModuleExportInfo {
     pub(crate) definitions: HashMap<String, DefKind>,
     /// Explicit re-exports: alias/name → source target
     pub(crate) explicit_reexports: HashMap<String, ReExportTarget>,
+    /// Private `use` bindings this module holds. Rust makes them visible to
+    /// descendant modules, which may then name the symbol through this module
+    /// even though it defines nothing. Resolving through them attributes the
+    /// edge to the definer, not to this ancestor. Name → source target.
+    pub(crate) private_uses: HashMap<String, ReExportTarget>,
     /// Glob re-export sources (module paths from `pub use *`)
     pub(crate) glob_sources: Vec<String>,
 }
@@ -53,6 +58,7 @@ impl ModuleExportInfo {
     pub(crate) fn is_empty(&self) -> bool {
         self.definitions.is_empty()
             && self.explicit_reexports.is_empty()
+            && self.private_uses.is_empty()
             && self.glob_sources.is_empty()
     }
 }
@@ -81,7 +87,11 @@ impl FromIterator<(String, HashMap<String, ModuleExportInfo>)> for ReExportMap {
 /// Resolve re-exports in a [`DependencyRef`]: follow the re-export chain
 /// until the original definition module is found.
 /// Modifies `dep.target_module` in place. No-op if no re-export applies.
-pub(crate) fn resolve_reexport(dep: &mut DependencyRef, reexport_map: &ReExportMap) {
+pub(crate) fn resolve_reexport(
+    dep: &mut DependencyRef,
+    reexport_map: &ReExportMap,
+    importer_module: &str,
+) {
     let Some(crate_exports) = reexport_map.get(&dep.target_crate) else {
         return;
     };
@@ -113,6 +123,17 @@ pub(crate) fn resolve_reexport(dep: &mut DependencyRef, reexport_map: &ReExportM
                 dep.target_module,
                 original_target
             );
+            lookup_name = Some(target.original_name.clone());
+            continue;
+        }
+
+        // Tier 1b: Private `use` binding, visible only to descendants of the
+        // module that holds it. A descendant naming the symbol through this
+        // ancestor really depends on the definer.
+        if is_descendant(importer_module, &dep.target_module)
+            && let Some(target) = module_info.private_uses.get(item)
+        {
+            dep.target_module = target.module.clone();
             lookup_name = Some(target.original_name.clone());
             continue;
         }
@@ -167,6 +188,12 @@ fn module_exports_symbol(
         }
     }
     false
+}
+
+/// Whether `module` is `ancestor` itself or nested below it. The crate root
+/// (`""`) is an ancestor of every module.
+fn is_descendant(module: &str, ancestor: &str) -> bool {
+    ancestor.is_empty() || module == ancestor || module.starts_with(&format!("{ancestor}::"))
 }
 
 /// Invariant context for dependency resolution within a single source file.
@@ -659,7 +686,7 @@ pub(crate) fn parse_workspace_dependencies(
             {
                 dep.via_reexport = via_reexport;
                 for mut dep in expand_glob(dep, ctx.reexport_map) {
-                    resolve_reexport(&mut dep, ctx.reexport_map);
+                    resolve_reexport(&mut dep, ctx.reexport_map, ctx.current_module_path);
                     DependencyRef::dedup_push(&mut deps, &mut seen_targets, dep);
                 }
             }
@@ -799,7 +826,7 @@ pub(crate) fn parse_path_ref_dependencies(
         if let Some(mut dep) =
             resolve_single_path(ctx, effective, *line_num, context, *inline_depth)
         {
-            resolve_reexport(&mut dep, ctx.reexport_map);
+            resolve_reexport(&mut dep, ctx.reexport_map, ctx.current_module_path);
             DependencyRef::dedup_push(&mut deps, &mut seen_targets, dep);
         }
     }
