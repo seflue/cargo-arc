@@ -5,5 +5,5 @@ mod toposort;
 
 pub use build::{
     ClusterInfo, CutInfo, CycleKind, EdgeDirection, ItemKind, LayoutEdge, LayoutIR, LayoutItem,
-    NodeId, build_layout,
+    MoveTier, NodeId, SymbolHint, build_layout,
 };

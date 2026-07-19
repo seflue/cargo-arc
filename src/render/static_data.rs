@@ -1,6 +1,6 @@
 use super::constants::{CSS, LAYOUT, RenderConfig};
 use super::positioning::PositionedItem;
-use crate::layout::{ItemKind, LayoutIR, NodeId};
+use crate::layout::{ItemKind, LayoutIR, MoveTier, NodeId};
 use crate::model::SourceLocation;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -17,6 +17,7 @@ struct StaticData {
     cycles: Vec<CycleData>,
     classes: BTreeMap<String, String>,
     clusters: BTreeMap<String, ClusterData>,
+    symbol_hints: BTreeMap<String, BTreeMap<String, SymbolHintData>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     expand_level: Option<usize>,
 }
@@ -112,6 +113,16 @@ struct CutData {
     to_id: String,
     breaks: usize,
     refs: usize,
+}
+
+/// Structural move hint for one symbol of a provider.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SymbolHintData {
+    tier: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target: Option<String>,
+    consumers: Vec<String>,
 }
 
 /// Accumulates a cycle's nodes, arcs, and SCC id while iterating edges.
@@ -390,12 +401,38 @@ fn generate_static_data(
         })
         .collect();
 
+    let symbol_hints: BTreeMap<String, BTreeMap<String, SymbolHintData>> = ir
+        .symbol_hints
+        .iter()
+        .map(|(&provider, hints)| {
+            let per_symbol = hints
+                .iter()
+                .map(|(symbol, hint)| {
+                    (
+                        symbol.clone(),
+                        SymbolHintData {
+                            tier: match hint.tier {
+                                MoveTier::Exclusive => "exclusive",
+                                MoveTier::Movable => "movable",
+                                MoveTier::Core => "core",
+                            },
+                            target: hint.target.map(|t| t.to_string()),
+                            consumers: hint.consumers.iter().map(ToString::to_string).collect(),
+                        },
+                    )
+                })
+                .collect();
+            (provider.to_string(), per_symbol)
+        })
+        .collect();
+
     let data = StaticData {
         nodes,
         arcs,
         cycles,
         classes,
         clusters,
+        symbol_hints,
         expand_level: config.expand_level,
     };
     format!(
@@ -1860,5 +1897,191 @@ mod tests {
         // Each cut's fromId-toId addresses a serialized arc.
         assert!(data["arcs"][format!("{b_id}-{a_id}")].is_object());
         assert!(data["arcs"][format!("{c_id}-{a_id}")].is_object());
+    }
+
+    /// Render `ir` and parse the embedded STATIC_DATA JSON.
+    fn static_data_json(ir: &LayoutIR) -> serde_json::Value {
+        let config = RenderConfig::default();
+        let positioned = calculate_positions(ir, &config, calculate_box_width(ir));
+        let parents: HashSet<NodeId> = ir
+            .items
+            .iter()
+            .filter_map(|item| match &item.kind {
+                ItemKind::Module { parent, .. } | ItemKind::ExternalCrate { parent, .. } => {
+                    Some(*parent)
+                }
+                ItemKind::Crate | ItemKind::ExternalSection => None,
+            })
+            .collect();
+        let script = render_script(&config, ir, &positioned, &parents);
+        let json_str = script
+            .split("const STATIC_DATA = ")
+            .nth(1)
+            .unwrap()
+            .split(";\n")
+            .next()
+            .unwrap();
+        serde_json::from_str(json_str).expect("valid JSON")
+    }
+
+    /// Build a flat `app` crate with the given child modules; returns the graph.
+    fn crate_with(modules: &[&str]) -> ArcGraph {
+        let mut graph = ArcGraph::new();
+        let crate_idx = graph.add_node(Node::Crate {
+            name: "app".into(),
+            path: "/app".into(),
+        });
+        for &name in modules {
+            let idx = graph.add_node(Node::Module {
+                name: name.into(),
+                crate_idx,
+            });
+            graph.add_edge(crate_idx, idx, Edge::Contains);
+        }
+        graph
+    }
+
+    /// Find a module's `NodeIndex` by name.
+    fn module_idx(graph: &ArcGraph, name: &str) -> petgraph::graph::NodeIndex {
+        graph
+            .node_indices()
+            .find(|&i| matches!(&graph[i], Node::Module { name: n, .. } if n == name))
+            .unwrap()
+    }
+
+    /// Add a production `ModuleDep` `from -> to` carrying `symbols` at one site.
+    fn prod_dep_syms(graph: &mut ArcGraph, from: &str, to: &str, symbols: &[&str]) {
+        let (src, dst) = (module_idx(graph, from), module_idx(graph, to));
+        graph.add_edge(
+            src,
+            dst,
+            Edge::ModuleDep {
+                locations: vec![SourceLocation {
+                    file: format!("src/{from}.rs").into(),
+                    line: 1,
+                    symbols: symbols.iter().map(|s| (*s).to_owned()).collect(),
+                    module_path: String::new(),
+                    via_reexport: false,
+                }],
+                context: EdgeContext::production(),
+            },
+        );
+    }
+
+    #[test]
+    fn test_static_data_symbol_hint_exclusive() {
+        // model provides Foo only to user: exclusive, home = user.
+        let mut graph = crate_with(&["model", "user"]);
+        prod_dep_syms(&mut graph, "user", "model", &["Foo"]);
+
+        let analysis = graph.cycle_subgraph(false).minimal_cycles();
+        let ir = build_layout(&graph, &analysis, false);
+        let id_of = |name: &str| ir.items.iter().find(|it| it.label == name).unwrap().id;
+        let (model_id, user_id) = (id_of("model"), id_of("user"));
+
+        let data = static_data_json(&ir);
+        let hint = &data["symbolHints"][model_id.to_string()]["Foo"];
+        assert_eq!(hint["tier"], "exclusive");
+        assert_eq!(hint["target"], user_id.to_string());
+        assert_eq!(hint["consumers"], serde_json::json!([user_id.to_string()]));
+    }
+
+    /// Add a child module `child` under existing module/crate `parent`.
+    fn add_module(graph: &mut ArcGraph, parent: &str, child: &str) {
+        let parent_idx = module_idx(graph, parent);
+        let crate_idx = match &graph[parent_idx] {
+            Node::Module { crate_idx, .. } => *crate_idx,
+            _ => parent_idx,
+        };
+        let child_idx = graph.add_node(Node::Module {
+            name: child.into(),
+            crate_idx,
+        });
+        graph.add_edge(parent_idx, child_idx, Edge::Contains);
+    }
+
+    fn symbol_ids(value: &serde_json::Value) -> BTreeSet<String> {
+        value
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn test_static_data_symbol_hint_movable() {
+        // parser & reexport (both under analyze) import Foo from model:
+        // common ancestor analyze, provider outside -> movable, home = analyze.
+        let mut graph = crate_with(&["model", "analyze"]);
+        add_module(&mut graph, "analyze", "parser");
+        add_module(&mut graph, "analyze", "reexport");
+        prod_dep_syms(&mut graph, "parser", "model", &["Foo"]);
+        prod_dep_syms(&mut graph, "reexport", "model", &["Foo"]);
+
+        let analysis = graph.cycle_subgraph(false).minimal_cycles();
+        let ir = build_layout(&graph, &analysis, false);
+        let id_of = |name: &str| ir.items.iter().find(|it| it.label == name).unwrap().id;
+        let model_id = id_of("model");
+
+        let data = static_data_json(&ir);
+        let hint = &data["symbolHints"][model_id.to_string()]["Foo"];
+        assert_eq!(hint["tier"], "movable");
+        assert_eq!(hint["target"], id_of("analyze").to_string());
+        assert_eq!(
+            symbol_ids(&hint["consumers"]),
+            [id_of("parser").to_string(), id_of("reexport").to_string()]
+                .into_iter()
+                .collect()
+        );
+    }
+
+    #[test]
+    fn test_static_data_symbol_hint_core() {
+        // Two top-level consumers, no shared module ancestor -> core, no home.
+        let mut graph = crate_with(&["model", "user", "admin"]);
+        prod_dep_syms(&mut graph, "user", "model", &["Foo"]);
+        prod_dep_syms(&mut graph, "admin", "model", &["Foo"]);
+
+        let analysis = graph.cycle_subgraph(false).minimal_cycles();
+        let ir = build_layout(&graph, &analysis, false);
+        let id_of = |name: &str| ir.items.iter().find(|it| it.label == name).unwrap().id;
+
+        let data = static_data_json(&ir);
+        let hint = &data["symbolHints"][id_of("model").to_string()]["Foo"];
+        assert_eq!(hint["tier"], "core");
+        assert!(hint.get("target").is_none(), "core has no home");
+        assert_eq!(
+            symbol_ids(&hint["consumers"]),
+            [id_of("user").to_string(), id_of("admin").to_string()]
+                .into_iter()
+                .collect()
+        );
+    }
+
+    #[test]
+    fn test_static_data_symbol_hint_reexport_only_absent() {
+        // A pure re-export edge is republication, not use: no hint entry.
+        let mut graph = crate_with(&["model", "user"]);
+        let (user, model) = (module_idx(&graph, "user"), module_idx(&graph, "model"));
+        graph.add_edge(
+            user,
+            model,
+            Edge::ModuleDep {
+                locations: vec![SourceLocation {
+                    file: "src/user.rs".into(),
+                    line: 1,
+                    symbols: vec!["Foo".to_owned()],
+                    module_path: String::new(),
+                    via_reexport: true,
+                }],
+                context: EdgeContext::production(),
+            },
+        );
+
+        let analysis = graph.cycle_subgraph(false).minimal_cycles();
+        let ir = build_layout(&graph, &analysis, false);
+        let data = static_data_json(&ir);
+        assert!(data["symbolHints"].as_object().unwrap().is_empty());
     }
 }

@@ -1,7 +1,7 @@
 //! Build layout IR from graph and cycle information.
 
 use super::toposort::stable_toposort;
-use crate::diagnose::CycleAnalysis;
+use crate::diagnose::{CycleAnalysis, MoveHint};
 use crate::graph::{ArcGraph, Edge, Node};
 use crate::model::{EdgeContext, SourceLocation};
 use crate::volatility::Volatility;
@@ -134,11 +134,36 @@ pub struct ClusterInfo {
     pub cuts: Vec<CutInfo>,
 }
 
+/// Structural move classification of a symbol (from `importer_partition`),
+/// translated into layout `NodeId` space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MoveTier {
+    /// Exactly one consumer.
+    Exclusive,
+    /// A common module ancestor of all consumers, provider outside it.
+    Movable,
+    /// Broadly used, stays with the provider.
+    Core,
+}
+
+/// Where one symbol of a provider would live with least coupling.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SymbolHint {
+    pub tier: MoveTier,
+    /// Home module: sole consumer (Exclusive) or common ancestor (Movable);
+    /// `None` for `Core`.
+    pub target: Option<NodeId>,
+    pub consumers: Vec<NodeId>,
+}
+
 #[derive(Debug, Default)]
 pub struct LayoutIR {
     pub items: Vec<LayoutItem>,
     pub edges: Vec<LayoutEdge>,
     pub clusters: BTreeMap<usize, ClusterInfo>,
+    /// Provider `NodeId` → symbol → structural move hint. Providers with only
+    /// re-export/test usage carry no entry.
+    pub symbol_hints: BTreeMap<NodeId, BTreeMap<String, SymbolHint>>,
 }
 
 impl LayoutIR {
@@ -202,7 +227,45 @@ pub fn build_layout(
     );
 
     attach_clusters(&mut ir, graph, analysis, &node_map, include_reexports);
+    attach_move_hints(&mut ir, graph, &node_map);
     ir
+}
+
+/// Translate `importer_partition` into layout `NodeId` space and attach it as a
+/// per-symbol side table. Mirrors `attach_clusters`: provider/target/consumer
+/// `NodeIndex` map through `node_map`; endpoints absent from the layout are
+/// skipped. Each symbol of a cluster gets the cluster's hint, so lookup is by
+/// `(provider, symbol)`.
+fn attach_move_hints(ir: &mut LayoutIR, graph: &ArcGraph, node_map: &HashMap<NodeIndex, NodeId>) {
+    for provider in graph.importer_partition().providers {
+        let Some(&provider_id) = node_map.get(&provider.module) else {
+            continue;
+        };
+        let mut symbols: BTreeMap<String, SymbolHint> = BTreeMap::new();
+        for cluster in provider.clusters {
+            let (tier, target) = match cluster.hint {
+                MoveHint::Exclusive(n) => (MoveTier::Exclusive, node_map.get(&n).copied()),
+                MoveHint::Subtree(m) => (MoveTier::Movable, node_map.get(&m).copied()),
+                MoveHint::Shared => (MoveTier::Core, None),
+            };
+            let consumers: Vec<NodeId> = cluster
+                .consumers
+                .iter()
+                .filter_map(|c| node_map.get(c).copied())
+                .collect();
+            for symbol in cluster.symbols {
+                symbols.insert(
+                    symbol,
+                    SymbolHint {
+                        tier,
+                        target,
+                        consumers: consumers.clone(),
+                    },
+                );
+            }
+        }
+        ir.symbol_hints.insert(provider_id, symbols);
+    }
 }
 
 /// Compute the per-SCC cut-set and attach it keyed by the analysis sccId
