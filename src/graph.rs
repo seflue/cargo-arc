@@ -40,6 +40,11 @@ impl Node {
     }
 
     #[must_use]
+    pub fn is_module(&self) -> bool {
+        matches!(self, Node::Module { .. })
+    }
+
+    #[must_use]
     pub fn name(&self) -> &str {
         match self {
             Node::Crate { name, .. }
@@ -327,6 +332,37 @@ impl ArcGraph {
                 (child, parent)
             })
             .collect()
+    }
+
+    /// Deepest module that contains every node in `nodes` via `Contains` edges,
+    /// or `None` when they share only the crate root (or span several crates).
+    /// The crate root itself is never returned: it is not an actionable home.
+    #[must_use]
+    pub fn deepest_common_module(&self, nodes: &[NodeIndex]) -> Option<NodeIndex> {
+        // Module ancestors of `start`, deepest first, stopping below the crate.
+        let chain = |start: NodeIndex| -> Vec<NodeIndex> {
+            let mut out = Vec::new();
+            let mut node = start;
+            while self[node].is_module() {
+                out.push(node);
+                match self
+                    .edges_directed(node, petgraph::Direction::Incoming)
+                    .find(|edge| matches!(edge.weight(), Edge::Contains))
+                {
+                    Some(edge) => node = edge.source(),
+                    None => break,
+                }
+            }
+            out
+        };
+        let (first, rest) = nodes.split_first()?;
+        let others: Vec<HashSet<NodeIndex>> = rest
+            .iter()
+            .map(|&n| chain(n).into_iter().collect())
+            .collect();
+        chain(*first)
+            .into_iter()
+            .find(|node| others.iter().all(|set| set.contains(node)))
     }
 
     /// Build a unified graph from crate and module analysis data.
