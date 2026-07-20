@@ -45,6 +45,7 @@ interface StaticArcData {
   usages: {
     symbol: string;
     modulePath?: string | null;
+    viaReexport?: boolean;
     locations: { file: string; line: number }[];
   }[];
   cycleIds?: number[];
@@ -67,12 +68,18 @@ interface StaticClusterData {
   cycleCount: number;
   cuts: StaticCutData[];
 }
+interface StaticSymbolScope {
+  scope: 'singleConsumer' | 'commonAncestor' | 'crateWide';
+  module?: string;
+  consumers: string[];
+}
 declare const STATIC_DATA: {
   nodes: Record<string, StaticNodeData>;
   arcs: Record<string, StaticArcData>;
   classes: Record<string, string>;
   cycles?: Record<string, StaticCycleData>;
   clusters?: Record<string, StaticClusterData>;
+  symbolScopes?: Record<string, Record<string, StaticSymbolScope>>;
   expandLevel?: number | null;
 };
 

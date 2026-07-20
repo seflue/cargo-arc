@@ -6,4 +6,4 @@ mod importers;
 
 pub use clusters::{Cluster, ClusterReport, Cut};
 pub use cycles::{Cycle, CycleAnalysis, MinimalCycles};
-pub use importers::{ImporterPartition, MoveHint, ProviderPartition, SymbolCluster};
+pub use importers::{ConsumerScope, ImporterPartition, ProviderPartition, SymbolCluster};

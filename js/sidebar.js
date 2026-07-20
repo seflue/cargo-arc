@@ -119,6 +119,7 @@ const SidebarLogic = {
             html += `<span class="sidebar-ns">${group.modulePath}::</span>`;
           }
           html += `<span class="sidebar-symbol-name">${group.symbol}</span>`;
+          html += this._renderScopeTag(arc.to, group.symbol);
           html += `<span class="sidebar-ref-count">${group.locations.length}</span>`;
           html += `</div>`;
         }
@@ -414,6 +415,34 @@ const SidebarLogic = {
   },
 
   /**
+   * Consumer-scope tag for one symbol of a provider. Empty unless
+   * STATIC_DATA.symbolScopes carries a scope for (providerId, symbol). The tag
+   * states a descriptive fact about where the symbol is consumed, not a verdict
+   * on whether to move it.
+   * @param {string} providerId - The provider node id (the arc's `to`).
+   * @param {string} symbol
+   * @returns {string}
+   */
+  _renderScopeTag(providerId, symbol) {
+    const sc =
+      typeof STATIC_DATA !== 'undefined' &&
+      STATIC_DATA.symbolScopes?.[providerId]?.[symbol];
+    if (!sc) return '';
+    const nameOf = (id) => StaticData.getNode(id)?.name ?? id;
+    let label;
+    if (sc.scope === 'singleConsumer') {
+      label = `only used by ${nameOf(sc.module)}`;
+    } else if (sc.scope === 'commonAncestor') {
+      label = `used under ${nameOf(sc.module)}`;
+    } else if (sc.scope === 'crateWide') {
+      label = `widely used (${sc.consumers?.length ?? 0} modules)`;
+    } else {
+      return '';
+    }
+    return `<span class="sidebar-scope sidebar-scope-${sc.scope}">${label}</span>`;
+  },
+
+  /**
    * Get the foreignObject element for the sidebar.
    * @returns {HTMLElement|null}
    */
@@ -593,21 +622,66 @@ const SidebarLogic = {
 
     html += `<div class="sidebar-content">`;
     for (const cut of cl.cuts) {
-      const arcId = `${cut.fromId}-${cut.toId}`;
-      const fromName = StaticData.qualifiedParts(cut.fromId).path;
-      const toName = StaticData.qualifiedParts(cut.toId).path;
-      const cycleWord = cut.breaks === 1 ? 'cycle' : 'cycles';
-      html += `<div class="sidebar-usage-group sidebar-cut-row" data-arc-id="${arcId}">`;
-      html += `<div class="sidebar-cycle-edge">`;
-      html += `<span class="sidebar-cycle-node" data-node-id="${cut.fromId}" title="${fromName}">${fromName}</span>`;
-      html += `<span class="sidebar-arrow">&#x2192;</span>`;
-      html += `<span class="sidebar-cycle-node" data-node-id="${cut.toId}" title="${toName}">${toName}</span>`;
-      html += `</div>`;
-      html += `<span class="sidebar-cut-meta">on ${cut.breaks} ${cycleWord} \u00b7 ${cut.refs} symbols</span>`;
-      html += `</div>`;
+      html += this._buildCutRow(cut);
     }
     html += `</div>`;
 
+    return html;
+  },
+
+  /**
+   * One cut-set candidate row: the edge (dependent \u2192 dependency, colour-framed
+   * like the node view) plus its cycle/symbol meta. When the edge's crossing
+   * symbols are known, the row expands to list them with their scope tags.
+   * @param {StaticCutData} cut
+   * @returns {string}
+   */
+  _buildCutRow(cut) {
+    const arcId = `${cut.fromId}-${cut.toId}`;
+    const fromName = StaticData.qualifiedParts(cut.fromId).path;
+    const toName = StaticData.qualifiedParts(cut.toId).path;
+    const fromType = StaticData.getNode(cut.fromId)?.type;
+    const toType = StaticData.getNode(cut.toId)?.type;
+    const fromClass = `sidebar-cycle-node ${fromType ? `sidebar-node-${fromType} ` : ''}sidebar-node-from`;
+    const toClass = `sidebar-cycle-node ${toType ? `sidebar-node-${toType} ` : ''}sidebar-node-to`;
+    const cycleWord = cut.breaks === 1 ? 'cycle' : 'cycles';
+    // Only real imports are the coupling the cut breaks; `pub use` re-exports
+    // ride the same edge but are not part of the cycle (ADR-022), so drop them.
+    const symbols = (
+      (typeof STATIC_DATA !== 'undefined' &&
+        STATIC_DATA.arcs?.[arcId]?.usages) ||
+      []
+    ).filter((u) => u.symbol && !u.viaReexport);
+    const expandable = symbols.length > 0;
+
+    let html = `<div class="sidebar-usage-group sidebar-cut-row" data-arc-id="${arcId}">`;
+    const headAttrs = expandable
+      ? ' data-collapsible="" data-collapsed="true"'
+      : ' style="cursor:default"';
+    html += `<div class="sidebar-symbol sidebar-cut-head"${headAttrs}>`;
+    html += `<span class="sidebar-toggle">${expandable ? '\u25b8' : ''}</span>`;
+    html += `<div class="sidebar-cycle-edge">`;
+    html += `<span class="${fromClass}" data-node-id="${cut.fromId}" title="${fromName}">${fromName}</span>`;
+    html += `<span class="sidebar-arrow">&#x2192;</span>`;
+    html += `<span class="${toClass}" data-node-id="${cut.toId}" title="${toName}">${toName}</span>`;
+    html += `</div>`;
+    html += `<span class="sidebar-cut-meta">on ${cut.breaks} ${cycleWord} \u00b7 ${symbols.length} symbols</span>`;
+    html += `</div>`;
+
+    if (expandable) {
+      html += `<div class="sidebar-locations" style="display:none">`;
+      for (const u of symbols) {
+        html += `<div class="sidebar-cut-symbol">`;
+        if (u.modulePath) {
+          html += `<span class="sidebar-ns">${u.modulePath}::</span>`;
+        }
+        html += `<span class="sidebar-symbol-name">${u.symbol}</span>`;
+        html += this._renderScopeTag(cut.toId, u.symbol);
+        html += `</div>`;
+      }
+      html += `</div>`;
+    }
+    html += `</div>`;
     return html;
   },
 

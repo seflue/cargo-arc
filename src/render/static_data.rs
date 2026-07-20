@@ -1,6 +1,7 @@
 use super::constants::{CSS, LAYOUT, RenderConfig};
 use super::positioning::PositionedItem;
-use crate::layout::{ItemKind, LayoutIR, MoveTier, NodeId};
+use crate::diagnose::ConsumerScope;
+use crate::layout::{ItemKind, LayoutIR, NodeId};
 use crate::model::SourceLocation;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -17,7 +18,7 @@ struct StaticData {
     cycles: Vec<CycleData>,
     classes: BTreeMap<String, String>,
     clusters: BTreeMap<String, ClusterData>,
-    symbol_hints: BTreeMap<String, BTreeMap<String, SymbolHintData>>,
+    symbol_scopes: BTreeMap<String, BTreeMap<String, SymbolScopeData>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     expand_level: Option<usize>,
 }
@@ -78,7 +79,17 @@ impl From<&crate::model::EdgeContext> for ArcContext {
 struct SymbolUsageGroup {
     symbol: String,
     module_path: Option<String>,
+    /// True when every location carrying this symbol is a `pub use` re-export.
+    /// The cut-set view drops these: a re-exported name is not logic coupling,
+    /// so it is not part of the cycle the cut breaks (ADR-022).
+    #[serde(skip_serializing_if = "is_false")]
+    via_reexport: bool,
     locations: Vec<UsageLocation>,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde skip_serializing_if signature
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// A single usage location (file + line number)
@@ -115,13 +126,15 @@ struct CutData {
     refs: usize,
 }
 
-/// Structural move hint for one symbol of a provider.
+/// Consumer scope of one symbol of a provider. `module` names the common home
+/// (the scope node) for `singleConsumer`/`commonAncestor`; absent for
+/// `crateWide`.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct SymbolHintData {
-    tier: &'static str,
+struct SymbolScopeData {
+    scope: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    target: Option<String>,
+    module: Option<String>,
     consumers: Vec<String>,
 }
 
@@ -160,6 +173,10 @@ fn format_source_locations_by_symbol(locs: &[SourceLocation]) -> Vec<SymbolUsage
     // Invert: Symbol -> Vec<(file, line)>
     let mut by_symbol: BTreeMap<String, Vec<(String, usize)>> = BTreeMap::new();
     let mut bare_locations: Vec<(String, usize)> = Vec::new();
+    // A symbol counts as re-exported only when every location carrying it is a
+    // `pub use`; a single real import makes it coupling. Mirrors the edge-level
+    // `all(via_reexport)` rule (graph.rs `is_reexport_module_dep`).
+    let mut reexport_by_symbol: BTreeMap<String, bool> = BTreeMap::new();
 
     for loc in locs {
         let file_str = loc.file.display().to_string();
@@ -172,6 +189,8 @@ fn format_source_locations_by_symbol(locs: &[SourceLocation]) -> Vec<SymbolUsage
                     .entry(symbol.clone())
                     .or_default()
                     .push((file_str.clone(), loc.line));
+                let flag = reexport_by_symbol.entry(symbol.clone()).or_insert(true);
+                *flag &= loc.via_reexport;
             }
         }
     }
@@ -189,6 +208,7 @@ fn format_source_locations_by_symbol(locs: &[SourceLocation]) -> Vec<SymbolUsage
         groups.push(SymbolUsageGroup {
             symbol: String::new(),
             module_path: module_path_opt.clone(),
+            via_reexport: false,
             locations: bare_locations
                 .into_iter()
                 .map(|(file, line)| UsageLocation { file, line })
@@ -198,9 +218,11 @@ fn format_source_locations_by_symbol(locs: &[SourceLocation]) -> Vec<SymbolUsage
 
     // Then: symbol-grouped locations in alphabetical order
     for (symbol, locations) in by_symbol {
+        let via_reexport = reexport_by_symbol.get(&symbol).copied().unwrap_or(false);
         groups.push(SymbolUsageGroup {
             symbol,
             module_path: module_path_opt.clone(),
+            via_reexport,
             locations: locations
                 .into_iter()
                 .map(|(file, line)| UsageLocation { file, line })
@@ -401,23 +423,24 @@ fn generate_static_data(
         })
         .collect();
 
-    let symbol_hints: BTreeMap<String, BTreeMap<String, SymbolHintData>> = ir
-        .symbol_hints
+    let symbol_scopes: BTreeMap<String, BTreeMap<String, SymbolScopeData>> = ir
+        .symbol_scopes
         .iter()
-        .map(|(&provider, hints)| {
-            let per_symbol = hints
+        .map(|(&provider, scopes)| {
+            let per_symbol = scopes
                 .iter()
-                .map(|(symbol, hint)| {
+                .map(|(symbol, sc)| {
+                    let (scope, module) = match sc.scope {
+                        ConsumerScope::SingleConsumer(n) => ("singleConsumer", Some(n.to_string())),
+                        ConsumerScope::CommonAncestor(m) => ("commonAncestor", Some(m.to_string())),
+                        ConsumerScope::CrateWide => ("crateWide", None),
+                    };
                     (
                         symbol.clone(),
-                        SymbolHintData {
-                            tier: match hint.tier {
-                                MoveTier::Exclusive => "exclusive",
-                                MoveTier::Movable => "movable",
-                                MoveTier::Core => "core",
-                            },
-                            target: hint.target.map(|t| t.to_string()),
-                            consumers: hint.consumers.iter().map(ToString::to_string).collect(),
+                        SymbolScopeData {
+                            scope,
+                            module,
+                            consumers: sc.consumers.iter().map(ToString::to_string).collect(),
                         },
                     )
                 })
@@ -432,7 +455,7 @@ fn generate_static_data(
         cycles,
         classes,
         clusters,
-        symbol_hints,
+        symbol_scopes,
         expand_level: config.expand_level,
     };
     format!(
@@ -580,6 +603,116 @@ mod tests {
         assert_eq!(groups[0].locations.len(), 1);
         assert_eq!(groups[1].symbol, "analyze_module");
         assert_eq!(groups[1].locations.len(), 1);
+    }
+
+    #[test]
+    fn test_format_marks_symbol_reexport_only_when_all_locations_reexport() {
+        use std::path::PathBuf;
+
+        let locs = vec![
+            // Foo: every location is a re-export -> flagged
+            SourceLocation {
+                file: PathBuf::from("src/a.rs"),
+                line: 1,
+                symbols: vec!["Foo".to_string()],
+                module_path: String::new(),
+                via_reexport: true,
+            },
+            SourceLocation {
+                file: PathBuf::from("src/b.rs"),
+                line: 2,
+                symbols: vec!["Foo".to_string()],
+                module_path: String::new(),
+                via_reexport: true,
+            },
+            // Bar: one re-export, one real import -> coupling, not flagged
+            SourceLocation {
+                file: PathBuf::from("src/c.rs"),
+                line: 3,
+                symbols: vec!["Bar".to_string()],
+                module_path: String::new(),
+                via_reexport: true,
+            },
+            SourceLocation {
+                file: PathBuf::from("src/d.rs"),
+                line: 4,
+                symbols: vec!["Bar".to_string()],
+                module_path: String::new(),
+                via_reexport: false,
+            },
+        ];
+        let groups = format_source_locations_by_symbol(&locs);
+        let group = |name: &str| groups.iter().find(|g| g.symbol == name).unwrap();
+        assert!(group("Foo").via_reexport, "all-reexport symbol is flagged");
+        assert!(
+            !group("Bar").via_reexport,
+            "a single real import clears the flag"
+        );
+    }
+
+    #[test]
+    fn test_static_data_usage_via_reexport_in_json() {
+        use std::path::PathBuf;
+
+        let mut ir = LayoutIR::new();
+        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let a = ir.add_item(
+            ItemKind::Module {
+                nesting: 1,
+                parent: c,
+            },
+            "a".into(),
+        );
+        let b = ir.add_item(
+            ItemKind::Module {
+                nesting: 1,
+                parent: c,
+            },
+            "b".into(),
+        );
+        ir.edges.push(
+            LayoutEdge::new(a, b, EdgeContext::production()).with_source_locations(vec![
+                SourceLocation {
+                    file: PathBuf::from("src/a.rs"),
+                    line: 5,
+                    symbols: vec!["Reexported".to_string()],
+                    module_path: String::new(),
+                    via_reexport: true,
+                },
+                SourceLocation {
+                    file: PathBuf::from("src/a.rs"),
+                    line: 6,
+                    symbols: vec!["Coupled".to_string()],
+                    module_path: String::new(),
+                    via_reexport: false,
+                },
+            ]),
+        );
+
+        let config = RenderConfig::default();
+        let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
+        let parents: HashSet<NodeId> = HashSet::from([0]);
+        let script = render_script(&config, &ir, &positioned, &parents);
+
+        let json_str = script
+            .split("const STATIC_DATA = ")
+            .nth(1)
+            .unwrap()
+            .split(";\n")
+            .next()
+            .unwrap();
+        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
+
+        let usages = data["arcs"]["1-2"]["usages"].as_array().unwrap();
+        let find = |name: &str| {
+            usages
+                .iter()
+                .find(|u| u["symbol"] == name)
+                .unwrap_or_else(|| panic!("symbol {name} missing"))
+        };
+        // true is serialized; false is skipped (absent), so JS reads it as falsy.
+        assert_eq!(find("Reexported")["viaReexport"], true);
+        assert!(find("Coupled")["viaReexport"].is_null());
     }
 
     #[test]
@@ -1266,6 +1399,7 @@ mod tests {
         let group = SymbolUsageGroup {
             symbol: "TestSymbol".to_string(),
             module_path: None,
+            via_reexport: false,
             locations: vec![],
         };
         assert_eq!(group.symbol, "TestSymbol");
@@ -1275,6 +1409,7 @@ mod tests {
         let group_with_locs = SymbolUsageGroup {
             symbol: "AnotherSymbol".to_string(),
             module_path: None,
+            via_reexport: false,
             locations: vec![
                 UsageLocation {
                     file: "src/main.rs".to_string(),
@@ -1969,8 +2104,8 @@ mod tests {
     }
 
     #[test]
-    fn test_static_data_symbol_hint_exclusive() {
-        // model provides Foo only to user: exclusive, home = user.
+    fn test_static_data_symbol_scope_single_consumer() {
+        // model provides Foo only to user: single consumer, home = user.
         let mut graph = crate_with(&["model", "user"]);
         prod_dep_syms(&mut graph, "user", "model", &["Foo"]);
 
@@ -1980,10 +2115,10 @@ mod tests {
         let (model_id, user_id) = (id_of("model"), id_of("user"));
 
         let data = static_data_json(&ir);
-        let hint = &data["symbolHints"][model_id.to_string()]["Foo"];
-        assert_eq!(hint["tier"], "exclusive");
-        assert_eq!(hint["target"], user_id.to_string());
-        assert_eq!(hint["consumers"], serde_json::json!([user_id.to_string()]));
+        let sc = &data["symbolScopes"][model_id.to_string()]["Foo"];
+        assert_eq!(sc["scope"], "singleConsumer");
+        assert_eq!(sc["module"], user_id.to_string());
+        assert_eq!(sc["consumers"], serde_json::json!([user_id.to_string()]));
     }
 
     /// Add a child module `child` under existing module/crate `parent`.
@@ -2010,9 +2145,9 @@ mod tests {
     }
 
     #[test]
-    fn test_static_data_symbol_hint_movable() {
+    fn test_static_data_symbol_scope_common_ancestor() {
         // parser & reexport (both under analyze) import Foo from model:
-        // common ancestor analyze, provider outside -> movable, home = analyze.
+        // common ancestor analyze, provider outside -> home = analyze.
         let mut graph = crate_with(&["model", "analyze"]);
         add_module(&mut graph, "analyze", "parser");
         add_module(&mut graph, "analyze", "reexport");
@@ -2025,11 +2160,11 @@ mod tests {
         let model_id = id_of("model");
 
         let data = static_data_json(&ir);
-        let hint = &data["symbolHints"][model_id.to_string()]["Foo"];
-        assert_eq!(hint["tier"], "movable");
-        assert_eq!(hint["target"], id_of("analyze").to_string());
+        let sc = &data["symbolScopes"][model_id.to_string()]["Foo"];
+        assert_eq!(sc["scope"], "commonAncestor");
+        assert_eq!(sc["module"], id_of("analyze").to_string());
         assert_eq!(
-            symbol_ids(&hint["consumers"]),
+            symbol_ids(&sc["consumers"]),
             [id_of("parser").to_string(), id_of("reexport").to_string()]
                 .into_iter()
                 .collect()
@@ -2037,8 +2172,8 @@ mod tests {
     }
 
     #[test]
-    fn test_static_data_symbol_hint_core() {
-        // Two top-level consumers, no shared module ancestor -> core, no home.
+    fn test_static_data_symbol_scope_crate_wide() {
+        // Two top-level consumers, no shared module ancestor -> crate-wide, no home.
         let mut graph = crate_with(&["model", "user", "admin"]);
         prod_dep_syms(&mut graph, "user", "model", &["Foo"]);
         prod_dep_syms(&mut graph, "admin", "model", &["Foo"]);
@@ -2048,11 +2183,11 @@ mod tests {
         let id_of = |name: &str| ir.items.iter().find(|it| it.label == name).unwrap().id;
 
         let data = static_data_json(&ir);
-        let hint = &data["symbolHints"][id_of("model").to_string()]["Foo"];
-        assert_eq!(hint["tier"], "core");
-        assert!(hint.get("target").is_none(), "core has no home");
+        let sc = &data["symbolScopes"][id_of("model").to_string()]["Foo"];
+        assert_eq!(sc["scope"], "crateWide");
+        assert!(sc.get("module").is_none(), "crate-wide has no home");
         assert_eq!(
-            symbol_ids(&hint["consumers"]),
+            symbol_ids(&sc["consumers"]),
             [id_of("user").to_string(), id_of("admin").to_string()]
                 .into_iter()
                 .collect()
@@ -2060,8 +2195,8 @@ mod tests {
     }
 
     #[test]
-    fn test_static_data_symbol_hint_reexport_only_absent() {
-        // A pure re-export edge is republication, not use: no hint entry.
+    fn test_static_data_symbol_scope_reexport_only_absent() {
+        // A pure re-export edge is republication, not use: no scope entry.
         let mut graph = crate_with(&["model", "user"]);
         let (user, model) = (module_idx(&graph, "user"), module_idx(&graph, "model"));
         graph.add_edge(
@@ -2082,6 +2217,6 @@ mod tests {
         let analysis = graph.cycle_subgraph(false).minimal_cycles();
         let ir = build_layout(&graph, &analysis, false);
         let data = static_data_json(&ir);
-        assert!(data["symbolHints"].as_object().unwrap().is_empty());
+        assert!(data["symbolScopes"].as_object().unwrap().is_empty());
     }
 }

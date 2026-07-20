@@ -900,6 +900,23 @@ fn build_css_rules() -> Vec<CssRule> {
                 ("-webkit-user-select", "none"),
             ],
         ),
+        // Consumer-scope tag (single-consumer / common-home / crate-wide fact):
+        // literal class string from sidebar.js, no constants.rs entry. Neutral
+        // pill; the words carry the meaning, scope-specific colour is deferred.
+        CssRule::class(
+            "sidebar-scope",
+            &[
+                ("color", GRAY_400),
+                ("font-size", "9px"),
+                ("margin-left", "6px"),
+                ("padding", "0 4px"),
+                ("border", &format!("1px solid {GRAY_300}")),
+                ("border-radius", "3px"),
+                ("flex-shrink", "0"),
+                ("user-select", "none"),
+                ("-webkit-user-select", "none"),
+            ],
+        ),
         CssRule::class(
             c.sidebar.ext_info,
             &[
@@ -919,15 +936,12 @@ fn build_css_rules() -> Vec<CssRule> {
             ],
         ),
         CssRule::class(c.sidebar.locations, &[("padding-left", "16px")]),
-        // Per-row cut-set meta ("breaks N cycles · M refs"): literal class string
-        // from sidebar.js, no constants.rs entry (Phase 2).
+        // Cut-set candidate row: stacks a one-line edge header over its
+        // (hidden until expanded) crossing-symbol list. Literal class strings
+        // from sidebar.js, no constants.rs entry.
         CssRule::class(
             "sidebar-cut-row",
-            &[
-                ("display", "flex"),
-                ("align-items", "baseline"),
-                ("gap", "6px"),
-            ],
+            &[("display", "flex"), ("flex-direction", "column")],
         ),
         CssRule::class(
             "sidebar-cut-meta",
@@ -935,6 +949,18 @@ fn build_css_rules() -> Vec<CssRule> {
                 ("color", GRAY_400),
                 ("font-size", "10px"),
                 ("flex-shrink", "0"),
+                ("white-space", "nowrap"),
+            ],
+        ),
+        // One crossing symbol under an expanded cut row: name + scope tag,
+        // indented by the enclosing .sidebar-locations.
+        CssRule::class(
+            "sidebar-cut-symbol",
+            &[
+                ("display", "flex"),
+                ("align-items", "center"),
+                ("gap", "4px"),
+                ("margin-bottom", "2px"),
                 ("white-space", "nowrap"),
             ],
         ),

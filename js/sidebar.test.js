@@ -408,6 +408,75 @@ describe('SidebarLogic', () => {
     });
   });
 
+  describe('buildContent — consumer-scope tags', () => {
+    afterEach(() => {
+      delete globalThis.STATIC_DATA.symbolScopes;
+    });
+
+    const overrideWith = (usages) => ({ from: 'x', to: 'y', usages });
+
+    test('single-consumer scope names the sole consumer as a fact', () => {
+      globalThis.STATIC_DATA.symbolScopes = {
+        y: { Foo: { scope: 'singleConsumer', module: 'x', consumers: ['x'] } },
+      };
+      const html = SidebarLogic.buildContent(
+        'any',
+        overrideWith([
+          {
+            symbol: 'Foo',
+            modulePath: null,
+            locations: [{ file: 'a.rs', line: 1 }],
+          },
+        ]),
+      );
+      expect(html).toContain('sidebar-scope-singleConsumer');
+      expect(html).toContain('only used by x');
+    });
+
+    test('common-ancestor states the home, crate-wide states the breadth', () => {
+      globalThis.STATIC_DATA.symbolScopes = {
+        y: {
+          Anc: { scope: 'commonAncestor', module: 'x', consumers: ['x', 'z'] },
+          Wide: { scope: 'crateWide', consumers: ['x', 'z'] },
+        },
+      };
+      const html = SidebarLogic.buildContent(
+        'any',
+        overrideWith([
+          {
+            symbol: 'Anc',
+            modulePath: null,
+            locations: [{ file: 'a.rs', line: 1 }],
+          },
+          {
+            symbol: 'Wide',
+            modulePath: null,
+            locations: [{ file: 'a.rs', line: 2 }],
+          },
+        ]),
+      );
+      expect(html).toContain('sidebar-scope-commonAncestor');
+      expect(html).toContain('used under x');
+      expect(html).toContain('sidebar-scope-crateWide');
+      expect(html).toContain('widely used (2 modules)');
+    });
+
+    test('renders no tag for a symbol without a scope', () => {
+      globalThis.STATIC_DATA.symbolScopes = { y: {} };
+      const html = SidebarLogic.buildContent(
+        'any',
+        overrideWith([
+          {
+            symbol: 'Bare',
+            modulePath: null,
+            locations: [{ file: 'a.rs', line: 1 }],
+          },
+        ]),
+      );
+      expect(html).not.toContain('sidebar-scope');
+    });
+  });
+
   describe('collapse defaults in buildContent', () => {
     test('all groups start expanded', () => {
       const override = {
@@ -1819,6 +1888,7 @@ describe('SidebarLogic', () => {
     afterEach(() => {
       globalThis.STATIC_DATA.clusters = savedClusters;
       delete globalThis.STATIC_DATA.arcs['x-y'];
+      delete globalThis.STATIC_DATA.symbolScopes;
       SidebarLogic._isClusterMode = null;
     });
 
@@ -1849,6 +1919,79 @@ describe('SidebarLogic', () => {
       const html = SidebarLogic.buildContent('x-y');
       expect(html).not.toContain('data-arc-id="y-x"');
       expect(html).toContain('sidebar-header');
+    });
+
+    test('cut endpoints carry dependent/dependency color classes', () => {
+      // from = dependent (purple frame), to = dependency (green frame)
+      const html = SidebarLogic.buildContent('x-y');
+      expect(html).toContain('sidebar-node-from');
+      expect(html).toContain('sidebar-node-to');
+    });
+
+    test('cut row expands to crossing symbols with scope tags', () => {
+      globalThis.STATIC_DATA.arcs['x-y'].usages = [
+        {
+          symbol: 'Foo',
+          modulePath: null,
+          locations: [{ file: 'a.rs', line: 1 }],
+        },
+      ];
+      globalThis.STATIC_DATA.symbolScopes = {
+        y: { Foo: { scope: 'singleConsumer', module: 'x', consumers: ['x'] } },
+      };
+      const html = SidebarLogic.buildContent('x-y');
+      expect(html).toContain('data-collapsible');
+      expect(html).toContain('sidebar-cut-symbol');
+      expect(html).toContain('<span class="sidebar-symbol-name">Foo</span>');
+      expect(html).toContain('sidebar-scope-singleConsumer');
+      expect(html).toContain('only used by x');
+    });
+
+    test('cut row drops re-export-only symbols, counts coupling only', () => {
+      globalThis.STATIC_DATA.arcs['x-y'].usages = [
+        {
+          symbol: 'Coupled',
+          modulePath: null,
+          locations: [{ file: 'a.rs', line: 1 }],
+        },
+        {
+          symbol: 'Reexported',
+          modulePath: null,
+          viaReexport: true,
+          locations: [{ file: 'b.rs', line: 2 }],
+        },
+      ];
+      const html = SidebarLogic.buildContent('x-y');
+      expect(html).toContain(
+        '<span class="sidebar-symbol-name">Coupled</span>',
+      );
+      expect(html).not.toContain('Reexported');
+      // meta counts the filtered coupling symbols, not cut.refs
+      expect(html).toContain('1 symbols');
+    });
+
+    test('cut row of only re-exports is not collapsible', () => {
+      globalThis.STATIC_DATA.arcs['x-y'].usages = [
+        {
+          symbol: 'Reexported',
+          modulePath: null,
+          viaReexport: true,
+          locations: [{ file: 'b.rs', line: 2 }],
+        },
+      ];
+      const html = SidebarLogic.buildContent('x-y');
+      const xyIdx = html.indexOf('data-arc-id="x-y"');
+      const xyRow = html.slice(xyIdx, xyIdx + 600);
+      expect(xyRow).not.toContain('data-collapsible');
+      expect(xyRow).toContain('0 symbols');
+    });
+
+    test('cut row without crossing symbols is not collapsible', () => {
+      // arcs['y-x'] is absent -> no usages -> plain, non-expandable row.
+      const html = SidebarLogic.buildContent('x-y');
+      const yxIdx = html.indexOf('data-arc-id="y-x"');
+      const yxRow = html.slice(yxIdx, yxIdx + 200);
+      expect(yxRow).not.toContain('data-collapsible');
     });
   });
 

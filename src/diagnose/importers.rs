@@ -2,7 +2,7 @@
 //!
 //! Inverts production `ModuleDep` edges into a per-provider reverse index and
 //! groups a provider's symbols by their shared consumer set. Each group carries
-//! a [`MoveHint`] suggesting where the symbols would live with least coupling.
+//! a [`ConsumerScope`] describing where its consumers sit in the module tree.
 
 use crate::graph::{ArcGraph, Edge};
 use petgraph::graph::NodeIndex;
@@ -28,18 +28,19 @@ pub struct SymbolCluster {
     pub consumers: Vec<NodeIndex>,
     /// Symbols with exactly this consumer set, sorted lexically.
     pub symbols: Vec<String>,
-    pub hint: MoveHint,
+    pub scope: ConsumerScope<NodeIndex>,
 }
 
-/// Where a symbol cluster would live with least coupling.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MoveHint {
-    /// Exactly one consumer: the sharpest move candidate.
-    Exclusive(NodeIndex),
-    /// A common module ancestor of all consumers, provider outside it.
-    Subtree(NodeIndex),
-    /// Broadly used, stays with the provider.
-    Shared,
+/// How a symbol's consumers sit in the module tree. The node in each variant is
+/// the deepest module still enclosing all consumers (their common home).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsumerScope<N> {
+    /// Exactly one consumer; the node is that consumer.
+    SingleConsumer(N),
+    /// All consumers share a common module ancestor (the node), provider outside it.
+    CommonAncestor(N),
+    /// Spread across the crate, no common module below the crate root.
+    CrateWide,
 }
 
 impl ArcGraph {
@@ -87,7 +88,7 @@ impl ArcGraph {
     }
 
     /// Bundle a provider's symbols that share an identical consumer set, one
-    /// [`SymbolCluster`] per set, each tagged with its [`MoveHint`].
+    /// [`SymbolCluster`] per set, each tagged with its [`ConsumerScope`].
     fn clusters_of(
         &self,
         module: NodeIndex,
@@ -104,27 +105,31 @@ impl ArcGraph {
             .into_iter()
             .map(|(consumers, mut symbols)| {
                 symbols.sort();
-                let hint = self.move_hint(module, &consumers);
+                let scope = self.consumer_scope(module, &consumers);
                 SymbolCluster {
                     consumers,
                     symbols,
-                    hint,
+                    scope,
                 }
             })
             .collect()
     }
 
-    /// Suggest where a symbol cluster would live with least coupling.
-    fn move_hint(&self, provider: NodeIndex, consumers: &[NodeIndex]) -> MoveHint {
+    /// Classify where a symbol cluster's consumers sit in the module tree.
+    fn consumer_scope(
+        &self,
+        provider: NodeIndex,
+        consumers: &[NodeIndex],
+    ) -> ConsumerScope<NodeIndex> {
         if let [only] = consumers {
-            return MoveHint::Exclusive(*only);
+            return ConsumerScope::SingleConsumer(*only);
         }
         match self.deepest_common_module(consumers) {
-            // A common ancestor that already holds the provider is no move.
+            // A common ancestor that already holds the provider is no proper home.
             Some(ancestor) if !self.containment_subtree(ancestor).contains(&provider) => {
-                MoveHint::Subtree(ancestor)
+                ConsumerScope::CommonAncestor(ancestor)
             }
-            _ => MoveHint::Shared,
+            _ => ConsumerScope::CrateWide,
         }
     }
 }
@@ -199,7 +204,7 @@ mod tests {
     }
 
     #[test]
-    fn single_consumer_is_exclusive() {
+    fn single_consumer_scope() {
         // user -> model [Foo]
         let (g, idx) = graph_with(&["model", "user"], &[(1, 0, &["Foo"])]);
         let part = g.importer_partition();
@@ -211,7 +216,7 @@ mod tests {
             vec![SymbolCluster {
                 consumers: vec![idx[1]],
                 symbols: vec!["Foo".to_owned()],
-                hint: MoveHint::Exclusive(idx[1]),
+                scope: ConsumerScope::SingleConsumer(idx[1]),
             }]
         );
     }
@@ -230,12 +235,12 @@ mod tests {
                 SymbolCluster {
                     consumers: vec![idx[1]],
                     symbols: vec!["Bar".to_owned(), "Foo".to_owned()],
-                    hint: MoveHint::Exclusive(idx[1]),
+                    scope: ConsumerScope::SingleConsumer(idx[1]),
                 },
                 SymbolCluster {
                     consumers: vec![idx[2]],
                     symbols: vec!["Baz".to_owned()],
-                    hint: MoveHint::Exclusive(idx[2]),
+                    scope: ConsumerScope::SingleConsumer(idx[2]),
                 },
             ]
         );
@@ -311,7 +316,7 @@ mod tests {
     }
 
     #[test]
-    fn common_ancestor_outside_provider_is_subtree() {
+    fn common_ancestor_outside_provider_scope() {
         // model provider; analyze has children parser & reexport, both import Foo.
         let (g, idx) = nested(
             &["model", "analyze", "parser", "reexport"],
@@ -324,13 +329,13 @@ mod tests {
             vec![SymbolCluster {
                 consumers: vec![idx[2], idx[3]],
                 symbols: vec!["Foo".to_owned()],
-                hint: MoveHint::Subtree(idx[1]),
+                scope: ConsumerScope::CommonAncestor(idx[1]),
             }]
         );
     }
 
     #[test]
-    fn no_common_module_ancestor_is_shared() {
+    fn no_common_module_ancestor_is_crate_wide() {
         // Two top-level consumers share only the crate root.
         let (g, _idx) = nested(
             &["model", "user", "admin"],
@@ -338,11 +343,11 @@ mod tests {
             &[(1, 0, &["Foo"]), (2, 0, &["Foo"])],
         );
         let provider = &g.importer_partition().providers[0];
-        assert_eq!(provider.clusters[0].hint, MoveHint::Shared);
+        assert_eq!(provider.clusters[0].scope, ConsumerScope::CrateWide);
     }
 
     #[test]
-    fn ancestor_containing_provider_is_shared() {
+    fn ancestor_containing_provider_is_crate_wide() {
         // core provider; its own children a & b are the consumers.
         let (g, _idx) = nested(
             &["core", "a", "b"],
@@ -350,6 +355,6 @@ mod tests {
             &[(1, 0, &["Foo"]), (2, 0, &["Foo"])],
         );
         let provider = &g.importer_partition().providers[0];
-        assert_eq!(provider.clusters[0].hint, MoveHint::Shared);
+        assert_eq!(provider.clusters[0].scope, ConsumerScope::CrateWide);
     }
 }

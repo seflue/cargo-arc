@@ -1,7 +1,7 @@
 //! Build layout IR from graph and cycle information.
 
 use super::toposort::stable_toposort;
-use crate::diagnose::{CycleAnalysis, MoveHint};
+use crate::diagnose::{ConsumerScope, CycleAnalysis};
 use crate::graph::{ArcGraph, Edge, Node};
 use crate::model::{EdgeContext, SourceLocation};
 use crate::volatility::Volatility;
@@ -134,25 +134,11 @@ pub struct ClusterInfo {
     pub cuts: Vec<CutInfo>,
 }
 
-/// Structural move classification of a symbol (from `importer_partition`),
-/// translated into layout `NodeId` space.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MoveTier {
-    /// Exactly one consumer.
-    Exclusive,
-    /// A common module ancestor of all consumers, provider outside it.
-    Movable,
-    /// Broadly used, stays with the provider.
-    Core,
-}
-
-/// Where one symbol of a provider would live with least coupling.
+/// One symbol of a provider: how its consumers are scoped in the module tree,
+/// plus the full consumer list, in layout `NodeId` space.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SymbolHint {
-    pub tier: MoveTier,
-    /// Home module: sole consumer (Exclusive) or common ancestor (Movable);
-    /// `None` for `Core`.
-    pub target: Option<NodeId>,
+pub struct SymbolScope {
+    pub scope: ConsumerScope<NodeId>,
     pub consumers: Vec<NodeId>,
 }
 
@@ -161,9 +147,9 @@ pub struct LayoutIR {
     pub items: Vec<LayoutItem>,
     pub edges: Vec<LayoutEdge>,
     pub clusters: BTreeMap<usize, ClusterInfo>,
-    /// Provider `NodeId` → symbol → structural move hint. Providers with only
+    /// Provider `NodeId` → symbol → consumer scope. Providers with only
     /// re-export/test usage carry no entry.
-    pub symbol_hints: BTreeMap<NodeId, BTreeMap<String, SymbolHint>>,
+    pub symbol_scopes: BTreeMap<NodeId, BTreeMap<String, SymbolScope>>,
 }
 
 impl LayoutIR {
@@ -227,7 +213,7 @@ pub fn build_layout(
     );
 
     attach_clusters(&mut ir, graph, analysis, &node_map, include_reexports);
-    attach_move_hints(&mut ir, graph, &node_map);
+    attach_symbol_scopes(&mut ir, graph, &node_map);
     ir
 }
 
@@ -236,18 +222,29 @@ pub fn build_layout(
 /// `NodeIndex` map through `node_map`; endpoints absent from the layout are
 /// skipped. Each symbol of a cluster gets the cluster's hint, so lookup is by
 /// `(provider, symbol)`.
-fn attach_move_hints(ir: &mut LayoutIR, graph: &ArcGraph, node_map: &HashMap<NodeIndex, NodeId>) {
+fn attach_symbol_scopes(
+    ir: &mut LayoutIR,
+    graph: &ArcGraph,
+    node_map: &HashMap<NodeIndex, NodeId>,
+) {
     for provider in graph.importer_partition().providers {
         let Some(&provider_id) = node_map.get(&provider.module) else {
             continue;
         };
-        let mut symbols: BTreeMap<String, SymbolHint> = BTreeMap::new();
+        let mut symbols: BTreeMap<String, SymbolScope> = BTreeMap::new();
         for cluster in provider.clusters {
-            let (tier, target) = match cluster.hint {
-                MoveHint::Exclusive(n) => (MoveTier::Exclusive, node_map.get(&n).copied()),
-                MoveHint::Subtree(m) => (MoveTier::Movable, node_map.get(&m).copied()),
-                MoveHint::Shared => (MoveTier::Core, None),
-            };
+            // Translate the scope node into layout space; a node absent from the
+            // layout degrades to `CrateWide` rather than dropping the symbol.
+            let scope = match cluster.scope {
+                ConsumerScope::SingleConsumer(n) => {
+                    node_map.get(&n).copied().map(ConsumerScope::SingleConsumer)
+                }
+                ConsumerScope::CommonAncestor(m) => {
+                    node_map.get(&m).copied().map(ConsumerScope::CommonAncestor)
+                }
+                ConsumerScope::CrateWide => Some(ConsumerScope::CrateWide),
+            }
+            .unwrap_or(ConsumerScope::CrateWide);
             let consumers: Vec<NodeId> = cluster
                 .consumers
                 .iter()
@@ -256,15 +253,14 @@ fn attach_move_hints(ir: &mut LayoutIR, graph: &ArcGraph, node_map: &HashMap<Nod
             for symbol in cluster.symbols {
                 symbols.insert(
                     symbol,
-                    SymbolHint {
-                        tier,
-                        target,
+                    SymbolScope {
+                        scope,
                         consumers: consumers.clone(),
                     },
                 );
             }
         }
-        ir.symbol_hints.insert(provider_id, symbols);
+        ir.symbol_scopes.insert(provider_id, symbols);
     }
 }
 
