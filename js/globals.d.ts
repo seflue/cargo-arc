@@ -66,7 +66,8 @@ interface StaticClusterData {
   crate: string;
   moduleCount: number;
   cycleCount: number;
-  cuts: StaticCutData[];
+  edges: StaticCutData[];
+  toBreak: number;
 }
 interface StaticSymbolScope {
   scope: 'singleConsumer' | 'commonAncestor' | 'crateWide';

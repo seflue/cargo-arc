@@ -1,7 +1,7 @@
 //! Build layout IR from graph and cycle information.
 
 use super::toposort::stable_toposort;
-use crate::diagnose::{ConsumerScope, CycleAnalysis};
+use crate::diagnose::{ConsumerScope, Cut, CycleAnalysis};
 use crate::graph::{ArcGraph, Edge, Node};
 use crate::model::{EdgeContext, SourceLocation};
 use crate::volatility::Volatility;
@@ -132,6 +132,10 @@ pub struct ClusterInfo {
     pub module_count: usize,
     pub cycle_count: usize,
     pub cuts: Vec<CutInfo>,
+    /// Every SCC-internal edge, ranked like `cuts`.
+    pub edges: Vec<CutInfo>,
+    /// Cut-set size (`cuts.len()`) before endpoint filtering.
+    pub to_break: usize,
 }
 
 /// One symbol of a provider: how its consumers are scoped in the module tree,
@@ -280,18 +284,17 @@ fn attach_clusters(
         let Some(&scc_id) = cluster.nodes.first().and_then(|n| analysis.node_scc.get(n)) else {
             continue;
         };
-        let cuts = cluster
-            .cuts
-            .iter()
-            .filter_map(|cut| {
-                Some(CutInfo {
-                    from_id: *node_map.get(&cut.from)?,
-                    to_id: *node_map.get(&cut.to)?,
-                    breaks: cut.breaks,
-                    refs: cut.refs,
-                })
+        let to_cut_info = |cut: &Cut| {
+            Some(CutInfo {
+                from_id: *node_map.get(&cut.from)?,
+                to_id: *node_map.get(&cut.to)?,
+                breaks: cut.breaks,
+                refs: cut.refs,
             })
-            .collect();
+        };
+        let to_break = cluster.cuts.len();
+        let cuts = cluster.cuts.iter().filter_map(to_cut_info).collect();
+        let edges = cluster.edges.iter().filter_map(to_cut_info).collect();
         ir.clusters.insert(
             scc_id,
             ClusterInfo {
@@ -299,6 +302,8 @@ fn attach_clusters(
                 module_count: cluster.nodes.len(),
                 cycle_count: cluster.cycles.len(),
                 cuts,
+                edges,
+                to_break,
             },
         );
     }

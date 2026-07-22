@@ -29,14 +29,6 @@ impl CssRule {
 fn build_css_rules() -> Vec<CssRule> {
     let n = &COLORS.nodes;
     let d = &COLORS.direction;
-    // !important so the cut color wins over `.cluster-mode-on .cycle-arc` (a
-    // higher-specificity descendant rule) — cut edges carry both classes.
-    let cut_stroke = format!("{} !important", d.cut);
-    // Same reasoning as `cut_stroke`, for cut edges' arrowheads: beats
-    // `.cluster-mode-on .cycle-arrow { fill: red }`.
-    let cut_arrow_fill = format!("{} !important", d.cut);
-    // Hover glow for the emphasized cut edge, in place of heavy thickening.
-    let cut_glow = format!("drop-shadow(0 0 4px {})", d.cut);
     let ns = &COLORS.node_selection;
     let r = &COLORS.relation;
     let c = &CSS;
@@ -132,86 +124,6 @@ fn build_css_rules() -> Vec<CssRule> {
                 c.relation.cluster_mode_on, c.direction.cycle_arrow
             ),
             &[("fill", d.cycle)],
-        ),
-        // Cut-set arc: standing marker on a cluster's cut-set edges, drawn as a
-        // dashed overlay so break-here candidates read as distinct from normal
-        // cluster arcs. Emphasis (row/diagram hover spotlight) is driven from JS.
-        CssRule::class(
-            c.relation.cut_set_arc,
-            &[
-                ("fill", "none"),
-                ("stroke", cut_stroke.as_str()),
-                // Line width is set inline per-cut from breaks (gain) in JS, not
-                // here — cluster mode weights by cut impact, not traffic.
-                ("stroke-dasharray", "4 2"),
-                ("pointer-events", "none"),
-            ],
-        ),
-        // Cut edges' arrowheads (cycle-arrow elements): cut color instead of the
-        // cluster-mode cycle red.
-        CssRule::class(
-            c.relation.cut_set_arrow,
-            &[("fill", cut_arrow_fill.as_str())],
-        ),
-        // Scissors glyph (✂) at a cut-set edge's midpoint, positioned from live
-        // path geometry in JS. Same color token as the cut-set-arc marker.
-        CssRule::class(
-            c.relation.cut_set_scissors,
-            &[
-                ("font-size", "12px"),
-                ("fill", d.cut),
-                // White halo so the glyph reads on top of its edge and the line
-                // tangle behind it — same white token as the arc-count labels.
-                ("paint-order", "stroke"),
-                ("stroke", d.count_bg),
-                ("stroke-width", "3px"),
-                ("stroke-linejoin", "round"),
-                ("text-anchor", "middle"),
-                ("dominant-baseline", "central"),
-                ("pointer-events", "none"),
-            ],
-        ),
-        // Cut-focus: while a cut-set candidate row is hovered, push the whole
-        // cluster back — thin AND fade every cycle arc (cut arcs are cycle arcs
-        // too), plus arrows and scissors — so the one emphasized cut edge is the
-        // only thing that reads. The emphasized cut arc/arrow are excluded via
-        // :not() so their inline (breaks-driven) width and size survive; the
-        // emphasized edge's scissors are kept visible inline from JS.
-        CssRule::new(
-            &format!(
-                ".{} .{}:not(.{})",
-                c.relation.cut_focus, c.direction.cycle_arc, c.relation.cut_set_arc_emphasis
-            ),
-            &[("opacity", "0.08"), ("stroke-width", "0.6 !important")],
-        ),
-        CssRule::new(
-            &format!(
-                ".{} .{}:not(.{})",
-                c.relation.cut_focus, c.direction.cycle_arrow, c.relation.cut_set_arrow_emphasis
-            ),
-            &[("opacity", "0.08")],
-        ),
-        CssRule::new(
-            &format!(".{} .{}", c.relation.cut_focus, c.relation.cut_set_scissors),
-            &[("opacity", "0.08")],
-        ),
-        // Emphasized cut arc: restore full opacity and add the glow. Width comes
-        // from its inline breaks value (the fade rule above excludes it).
-        CssRule::new(
-            &format!(
-                ".{} .{}.{}",
-                c.relation.cut_focus, c.relation.cut_set_arc, c.relation.cut_set_arc_emphasis
-            ),
-            &[("opacity", "1"), ("filter", cut_glow.as_str())],
-        ),
-        // Emphasized cut edge's arrowhead (cut direction only): restore full
-        // opacity. Its size already reflects gain (breaks) from JS geometry.
-        CssRule::new(
-            &format!(
-                ".{} .{}.{}",
-                c.relation.cut_focus, c.relation.cut_set_arrow, c.relation.cut_set_arrow_emphasis
-            ),
-            &[("opacity", "1")],
         ),
         // Hit-area
         CssRule::class(
@@ -943,6 +855,18 @@ fn build_css_rules() -> Vec<CssRule> {
             "sidebar-cut-row",
             &[("display", "flex"), ("flex-direction", "column")],
         ),
+        // Focus row inside an SCC cluster view: marks the edge the graph
+        // interaction state machine currently resolves as focus (pin or
+        // hover). Literal class string from sidebar.js, no constants.rs entry.
+        CssRule::class(
+            "sidebar-cut-row-focus",
+            &[
+                ("background", GRAY_100),
+                ("border-left", &format!("2px solid {}", d.cycle)),
+                ("margin-left", "-2px"),
+                ("padding-left", "2px"),
+            ],
+        ),
         CssRule::class(
             "sidebar-cut-meta",
             &[
@@ -1313,53 +1237,18 @@ mod tests {
     }
 
     #[test]
-    fn test_css_contains_cut_set_arc_rules() {
+    fn test_css_contains_focus_cycle_glow_rule() {
         let css = render_styles();
 
-        assert!(
-            css.contains(&format!(".{}", CSS.relation.cut_set_arc)),
-            "CSS should contain .cut-set-arc"
-        );
-        assert!(
-            css.contains(&format!(
-                ".{}.{}",
-                CSS.relation.cut_set_arc, CSS.relation.cut_set_arc_emphasis
-            )),
-            "CSS should contain .cut-set-arc.cut-set-arc-emphasis"
-        );
+        // The focused cycle edge (marked highlighted-arc + glow-cycle by
+        // DerivedState) gets a backing glow in the cycle color, same style as
+        // glow-incoming/glow-outgoing.
         assert!(
             css.contains(&format!(
-                ".{}.{}",
-                CSS.relation.cut_set_arrow, CSS.relation.cut_set_arrow_emphasis
+                ".{} {{ stroke: {};",
+                CSS.relation.glow_cycle, COLORS.direction.cycle
             )),
-            "CSS should contain .cut-set-arrow.cut-set-arrow-emphasis"
-        );
-        assert!(
-            css.contains("stroke-dasharray"),
-            "cut-set-arc should render as a dashed overlay"
-        );
-        assert!(
-            css.contains(&format!(".{}", CSS.relation.cut_set_arrow)),
-            "CSS should contain .cut-set-arrow"
-        );
-        assert!(
-            css.contains(&format!(".{}", CSS.relation.cut_set_scissors)),
-            "CSS should contain .cut-set-scissors"
-        );
-        assert!(
-            css.contains(&format!(
-                ".{} .{}",
-                CSS.relation.cut_focus, CSS.relation.cut_set_arc
-            )),
-            "CSS should contain cut-focus fade rules"
-        );
-        assert!(
-            css.contains("stroke-width: 0.6 !important"),
-            "cut-focus must thin the non-emphasized cluster mass to spotlight the cut"
-        );
-        assert!(
-            css.contains("drop-shadow"),
-            "emphasized cut edge should get a glow instead of heavy thickening"
+            "CSS should contain .glow-cycle styled in the cycle color"
         );
     }
 

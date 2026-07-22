@@ -17,7 +17,8 @@ const AppState = {
    *   clickSelection: { type: 'node'|'arc'|null, id: string|null },
    *   hoverSelection: { type: 'node'|'arc'|null, id: string|null },
    *   hiddenArcIds: Set<string>,
-   *   clusterMode: boolean
+   *   clusterMode: boolean,
+   *   selectedScc: number|null
    * }}
    */
   create() {
@@ -27,6 +28,7 @@ const AppState = {
       hoverSelection: { type: null, id: null },
       hiddenArcIds: new Set(),
       clusterMode: true,
+      selectedScc: null,
     };
   },
 
@@ -160,6 +162,90 @@ const AppState = {
     }
     this.setSelection(state, type, id);
     return true;
+  },
+
+  // === Cycle-Mode Selection (Ebene 1: SCC) ===
+  //
+  // selectedScc adds an outer selection layer on top of the click/hover slots
+  // above, which continue to track the inner (focused) edge unchanged. Hover
+  // only takes effect once an SCC is selected (no preview before selection);
+  // that gate belongs to the derivation in derived_state.js (it already reads
+  // selectedScc + sccId there), not here, since hoverSelection is a generic
+  // slot shared with non-cycle hovers.
+
+  /**
+   * Get the currently selected SCC (Ebene 1).
+   * @param {Object} state
+   * @returns {number|null}
+   */
+  getSelectedScc(state) {
+    return state.selectedScc;
+  },
+
+  /**
+   * Transition function for a click on an arc, cycle or not.
+   * @param {Object} state
+   * @param {string} arcId
+   * @param {number|null|undefined} sccId - SCC of the clicked arc, if any
+   */
+  clickEdge(state, arcId, sccId) {
+    if (sccId == null) {
+      // Non-cycle edge: leaves cluster selection, falls back to the
+      // pre-existing single-edge toggle behavior.
+      state.selectedScc = null;
+      this.toggleSelection(state, 'arc', arcId);
+      return;
+    }
+    if (state.selectedScc == null) {
+      // First click selects the SCC only: the cluster reads as one unit. Drop
+      // the hover the preceding mouseenter set on this very edge, so the
+      // overview shows before any inner edge is focused.
+      state.selectedScc = sccId;
+      this.clearHover(state);
+      return;
+    }
+    if (state.selectedScc === sccId) {
+      const pinned = this.toggleSelection(state, 'arc', arcId);
+      // Unpin returns to the cluster overview: drop the lingering hover so no
+      // inner edge stays focused.
+      if (!pinned) this.clearHover(state);
+      return;
+    }
+    // Switching SCCs opens a fresh overview: drop pin and hover.
+    state.selectedScc = sccId;
+    this.clearSelection(state);
+    this.clearHover(state);
+  },
+
+  /**
+   * Transition for a click on a sidebar cluster row. Expansion and pin move
+   * together: a click drives the row toward expanded+pinned, except when it is
+   * already expanded+pinned, where it collapses+unpins. A row left collapsed
+   * while pinned (via collapse-all) just re-expands, keeping the pin.
+   * @param {Object} state
+   * @param {string} arcId
+   * @param {number|null|undefined} sccId - SCC of the row's edge (open cluster)
+   * @param {boolean} expandable - Row has crossing symbols to show
+   * @param {boolean} expanded - Row is currently expanded
+   * @returns {boolean} whether the row ends expanded (mirrors the new pin state)
+   */
+  clickClusterRow(state, arcId, sccId, expandable, expanded) {
+    if (expandable && !expanded && this.isSelected(state, 'arc', arcId)) {
+      // Collapsed but pinned: re-expand only, pin and graph stay put.
+      return true;
+    }
+    this.clickEdge(state, arcId, sccId);
+    return this.isSelected(state, 'arc', arcId);
+  },
+
+  /**
+   * Click into empty space: reset SCC selection, pin and hover.
+   * @param {Object} state
+   */
+  clickEmpty(state) {
+    state.selectedScc = null;
+    this.clearSelection(state);
+    this.clearHover(state);
   },
 
   // === Arc Filter Operations ===

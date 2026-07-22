@@ -55,46 +55,6 @@ describe('ArcLogic (Arrow functions)', () => {
     });
   });
 
-  describe('calculateCutWidth', () => {
-    test('breaks <= 1 gives the minimum width', () => {
-      expect(ArcLogic.calculateCutWidth(1)).toBe(1.5);
-      expect(ArcLogic.calculateCutWidth(0)).toBe(1.5);
-    });
-
-    test('more breaks (gain) gives a wider edge', () => {
-      expect(ArcLogic.calculateCutWidth(5)).toBeGreaterThan(
-        ArcLogic.calculateCutWidth(2),
-      );
-    });
-
-    test('caps at the maximum width', () => {
-      expect(ArcLogic.calculateCutWidth(20)).toBeCloseTo(4.0, 5);
-      // Beyond the cap it stays clamped, not unbounded.
-      expect(ArcLogic.calculateCutWidth(1000)).toBeCloseTo(4.0, 5);
-    });
-  });
-
-  describe('scissorFontSize', () => {
-    test('minimum cut width gives the smallest scissors', () => {
-      expect(ArcLogic.scissorFontSize(1.5)).toBeCloseTo(12, 5);
-    });
-
-    test('maximum cut width gives the largest scissors', () => {
-      expect(ArcLogic.scissorFontSize(4.0)).toBeCloseTo(22, 5);
-    });
-
-    test('a fatter (higher-gain) cut gives bigger scissors', () => {
-      expect(ArcLogic.scissorFontSize(3.0)).toBeGreaterThan(
-        ArcLogic.scissorFontSize(2.0),
-      );
-    });
-
-    test('clamps out-of-range widths to the size bounds', () => {
-      expect(ArcLogic.scissorFontSize(0)).toBeCloseTo(12, 5);
-      expect(ArcLogic.scissorFontSize(99)).toBeCloseTo(22, 5);
-    });
-  });
-
   describe('constants', () => {
     test('exports ARROW_LENGTH', () => {
       expect(ArcLogic.ARROW_LENGTH).toBe(8);

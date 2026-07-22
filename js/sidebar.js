@@ -29,6 +29,14 @@ const SidebarLogic = {
   _isNodeCollapsed: null,
   /** @type {(() => boolean) | null} */
   _isClusterMode: null,
+  /** @type {(() => (string | null)) | null} */
+  _resolvedFocusArc: null,
+  /** @type {((arcId: string | undefined) => void) | null} */
+  _onEdgeHover: null,
+  /** @type {(() => void) | null} */
+  _onEdgeHoverEnd: null,
+  /** @type {((arcId: string, expandable: boolean, expanded: boolean) => boolean) | null} */
+  _onEdgeClick: null,
   /**
    * Merge symbol groups: combine groups with same symbol, deduplicate locations by file+line.
    * @param {Array<{symbol: string, modulePath: string|null, locations: Array<{file: string, line: number}>}>} groups
@@ -79,7 +87,10 @@ const SidebarLogic = {
       STATIC_DATA.clusters &&
       STATIC_DATA.clusters[sccId]
     ) {
-      return this._buildClusterContent(String(sccId));
+      return this._buildClusterContent(
+        String(sccId),
+        this._resolvedFocusArc?.() ?? undefined,
+      );
     }
     const groups = arc.usages || [];
 
@@ -574,6 +585,16 @@ const SidebarLogic = {
   },
 
   /**
+   * Re-mark the focused cluster row in place (no rebuild). Used while an SCC is
+   * selected: the cluster sidebar stays open and hover only moves the focus.
+   */
+  refreshClusterFocus() {
+    const el = this._getElement();
+    const content = el?.querySelector('.sidebar-content');
+    if (content) this._refreshCutRowFocus(/** @type {HTMLElement} */ (content));
+  },
+
+  /**
    * Shared pinned-show logic: inject HTML, remove transient state, wire handlers, position.
    * @param {string} html - Pre-built sidebar HTML content
    */
@@ -605,24 +626,40 @@ const SidebarLogic = {
   },
 
   /**
-   * Build cluster (SCC) sidebar: header + ranked cut-set candidates.
+   * Build cluster (SCC) sidebar: header + all SCC-internal edges, cut
+   * candidates first.
    * @param {string} sccId - Key into STATIC_DATA.clusters
+   * @param {string} [focusArcId] - Arc whose row should render as focused
+   *   (the edge that triggered this view \u2014 the resolved click/hover focus).
    * @returns {string}
    */
-  _buildClusterContent(sccId) {
+  _buildClusterContent(sccId, focusArcId) {
     const cl = STATIC_DATA.clusters?.[sccId];
     if (!cl) return '';
 
+    const rows = cl.edges.map((edge) => ({
+      edge,
+      symbols: this._cutSymbols(edge),
+    }));
+    const hasCollapsible = rows.some((r) => r.symbols.length > 0);
+
     let html = `<div class="sidebar-header">`;
     html += `<span class="sidebar-title">Cluster \u00b7 ${cl.crate}</span>`;
-    html += `<button class="sidebar-close">&#x2715;</button>`;
+    if (hasCollapsible) {
+      html += `<div class="sidebar-header-actions">`;
+      html += `<button class="sidebar-collapse-all">+</button>`;
+      html += `<button class="sidebar-close">&#x2715;</button>`;
+      html += `</div>`;
+    } else {
+      html += `<button class="sidebar-close">&#x2715;</button>`;
+    }
     html += `</div>`;
 
-    html += `<div class="sidebar-subheader">${cl.moduleCount} modules \u00b7 ${cl.cycleCount} cycles \u00b7 ${cl.cuts.length} to break</div>`;
+    html += `<div class="sidebar-subheader">${cl.moduleCount} modules \u00b7 ${cl.cycleCount} cycles \u00b7 ${cl.toBreak} to break</div>`;
 
     html += `<div class="sidebar-content">`;
-    for (const cut of cl.cuts) {
-      html += this._buildCutRow(cut);
+    for (const { edge, symbols } of rows) {
+      html += this._buildCutRow(edge, symbols, focusArcId);
     }
     html += `</div>`;
 
@@ -630,13 +667,30 @@ const SidebarLogic = {
   },
 
   /**
-   * One cut-set candidate row: the edge (dependent \u2192 dependency, colour-framed
+   * Crossing symbols for a cluster edge, real imports only. `pub use`
+   * re-exports ride the same edge but are not part of the cycle (ADR-022).
+   * @param {StaticCutData} cut
+   * @returns {Array}
+   */
+  _cutSymbols(cut) {
+    const arcId = `${cut.fromId}-${cut.toId}`;
+    return (
+      (typeof STATIC_DATA !== 'undefined' &&
+        STATIC_DATA.arcs?.[arcId]?.usages) ||
+      []
+    ).filter((u) => u.symbol && !u.viaReexport);
+  },
+
+  /**
+   * One cluster-edge row: the edge (dependent \u2192 dependency, colour-framed
    * like the node view) plus its cycle/symbol meta. When the edge's crossing
    * symbols are known, the row expands to list them with their scope tags.
    * @param {StaticCutData} cut
+   * @param {Array} symbols - Pre-computed crossing symbols for this edge.
+   * @param {string} [focusArcId] - Arc whose row should render as focused.
    * @returns {string}
    */
-  _buildCutRow(cut) {
+  _buildCutRow(cut, symbols, focusArcId) {
     const arcId = `${cut.fromId}-${cut.toId}`;
     const fromName = StaticData.qualifiedParts(cut.fromId).path;
     const toName = StaticData.qualifiedParts(cut.toId).path;
@@ -645,16 +699,10 @@ const SidebarLogic = {
     const fromClass = `sidebar-cycle-node ${fromType ? `sidebar-node-${fromType} ` : ''}sidebar-node-from`;
     const toClass = `sidebar-cycle-node ${toType ? `sidebar-node-${toType} ` : ''}sidebar-node-to`;
     const cycleWord = cut.breaks === 1 ? 'cycle' : 'cycles';
-    // Only real imports are the coupling the cut breaks; `pub use` re-exports
-    // ride the same edge but are not part of the cycle (ADR-022), so drop them.
-    const symbols = (
-      (typeof STATIC_DATA !== 'undefined' &&
-        STATIC_DATA.arcs?.[arcId]?.usages) ||
-      []
-    ).filter((u) => u.symbol && !u.viaReexport);
     const expandable = symbols.length > 0;
+    const focusClass = arcId === focusArcId ? ' sidebar-cut-row-focus' : '';
 
-    let html = `<div class="sidebar-usage-group sidebar-cut-row" data-arc-id="${arcId}">`;
+    let html = `<div class="sidebar-usage-group sidebar-cut-row${focusClass}" data-arc-id="${arcId}">`;
     const headAttrs = expandable
       ? ' data-collapsible="" data-collapsed="true"'
       : ' style="cursor:default"';
@@ -685,11 +733,96 @@ const SidebarLogic = {
     return html;
   },
 
+  /**
+   * A cluster row was clicked: let the state machine couple pin and expansion
+   * (AppState.clickClusterRow via _onEdgeClick), then sync the row's DOM, focus
+   * marker and the collapse-all button in place (no sidebar rebuild).
+   * @param {HTMLElement} row
+   * @param {HTMLElement} root
+   * @param {HTMLElement} content
+   */
+  _handleCutRowClick(row, root, content) {
+    const arcId = row.dataset.arcId;
+    if (!arcId) return;
+    const head = row.querySelector('.sidebar-cut-head');
+    const expandable = !!head && head.hasAttribute('data-collapsible');
+    const expanded =
+      expandable && head.getAttribute('data-collapsed') !== 'true';
+    const endExpanded = this._onEdgeClick
+      ? this._onEdgeClick(arcId, expandable, expanded)
+      : false;
+    if (head && expandable) this._setCutRowExpanded(head, endExpanded);
+    this._refreshCutRowFocus(content);
+    this._syncCollapseAllButton(root, content);
+    this.updatePosition();
+  },
+
+  /**
+   * Show or hide a cluster row's crossing-symbol list in place.
+   * @param {Element} head - The row's `.sidebar-cut-head`
+   * @param {boolean} expanded
+   */
+  _setCutRowExpanded(head, expanded) {
+    const locsEl = /** @type {HTMLElement|null} */ (head.nextElementSibling);
+    const toggle = head.querySelector('.sidebar-toggle');
+    if (expanded) {
+      head.removeAttribute('data-collapsed');
+      if (locsEl) locsEl.style.display = '';
+      if (toggle) toggle.innerHTML = '▾';
+    } else {
+      head.setAttribute('data-collapsed', 'true');
+      if (locsEl) locsEl.style.display = 'none';
+      if (toggle) toggle.innerHTML = '▸';
+    }
+  },
+
+  /**
+   * Mark the row of the resolved focus edge, clearing the others. Keeps the
+   * sidebar in sync with the graph without a rebuild.
+   * @param {HTMLElement} content
+   */
+  _refreshCutRowFocus(content) {
+    if (!content.querySelectorAll) return;
+    const focusArc = this._resolvedFocusArc ? this._resolvedFocusArc() : null;
+    for (const el of content.querySelectorAll('.sidebar-cut-row')) {
+      const row = /** @type {HTMLElement} */ (el);
+      row.classList?.toggle(
+        'sidebar-cut-row-focus',
+        row.dataset.arcId === focusArc,
+      );
+    }
+  },
+
+  /**
+   * Refresh the collapse-all button glyph from the rows' collapsed state.
+   * @param {HTMLElement} root
+   * @param {HTMLElement} content
+   */
+  _syncCollapseAllButton(root, content) {
+    const allBtn = root.querySelector?.('.sidebar-collapse-all');
+    if (!allBtn || !content.querySelectorAll) return;
+    const heads = Array.from(
+      content.querySelectorAll(
+        ':scope > .sidebar-usage-group > .sidebar-symbol[data-collapsible]',
+      ),
+    );
+    const allCollapsed = heads.every(
+      (s) => s.getAttribute('data-collapsed') === 'true',
+    );
+    allBtn.innerHTML = allCollapsed ? '+' : '−';
+  },
+
   _setupCollapseHandlers(root) {
     if (!root || !root.querySelector) return;
     const content = root.querySelector('.sidebar-content');
     if (!content) return;
     content.addEventListener('click', (e) => {
+      // Cluster rows couple pin and expansion; the state machine decides.
+      const cutRow = e.target.closest?.('.sidebar-cut-row');
+      if (cutRow) {
+        SidebarLogic._handleCutRowClick(cutRow, root, content);
+        return;
+      }
       const symbolEl = e.target.closest('.sidebar-symbol');
       if (!symbolEl) return;
       if (!symbolEl.hasAttribute('data-collapsible')) return;
@@ -706,15 +839,7 @@ const SidebarLogic = {
         const toggle = symbolEl.querySelector('.sidebar-toggle');
         if (toggle) toggle.innerHTML = '\u25B8';
       }
-      const allBtn = root.querySelector('.sidebar-collapse-all');
-      if (allBtn) {
-        const allCollapsed = Array.from(
-          content.querySelectorAll(
-            ':scope > .sidebar-usage-group > .sidebar-symbol[data-collapsible]',
-          ),
-        ).every((s) => s.getAttribute('data-collapsed') === 'true');
-        allBtn.innerHTML = allCollapsed ? '+' : '\u2212';
-      }
+      SidebarLogic._syncCollapseAllButton(root, content);
       SidebarLogic.updatePosition();
     });
     if (root.querySelectorAll) {
@@ -733,6 +858,21 @@ const SidebarLogic = {
           e.stopPropagation();
           if (SidebarLogic._onBadgeClick) {
             SidebarLogic._onBadgeClick(badge.dataset.nodeId);
+          }
+        });
+      }
+      // Row hover transiently focuses the graph edge; the row click (wired
+      // above) pins it and drives expansion. Hover changes neither.
+      const cutRows = root.querySelectorAll('.sidebar-cut-row');
+      for (const row of cutRows) {
+        row.addEventListener('mouseenter', () => {
+          if (SidebarLogic._onEdgeHover) {
+            SidebarLogic._onEdgeHover(row.dataset.arcId);
+          }
+        });
+        row.addEventListener('mouseleave', () => {
+          if (SidebarLogic._onEdgeHoverEnd) {
+            SidebarLogic._onEdgeHoverEnd();
           }
         });
       }

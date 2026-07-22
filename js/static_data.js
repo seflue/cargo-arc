@@ -68,7 +68,7 @@ const StaticData = {
   /**
    * Get cluster data (cut-set etc.) for an SCC by ID.
    * @param {string|number} sccId
-   * @returns {{ crate: string, moduleCount: number, cycleCount: number, cuts: Array<{fromId: string, toId: string, breaks: number, refs: number}> }|undefined}
+   * @returns {{ crate: string, moduleCount: number, cycleCount: number, edges: Array<{fromId: string, toId: string, breaks: number, refs: number}>, toBreak: number }|undefined}
    */
   getCluster(sccId) {
     return STATIC_DATA.clusters ? STATIC_DATA.clusters[sccId] : undefined;

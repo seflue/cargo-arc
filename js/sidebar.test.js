@@ -1871,7 +1871,8 @@ describe('SidebarLogic', () => {
           crate: 'my_crate',
           moduleCount: 4,
           cycleCount: 3,
-          cuts: [
+          toBreak: 2,
+          edges: [
             { fromId: 'x', toId: 'y', breaks: 3, refs: 2 },
             { fromId: 'y', toId: 'x', breaks: 1, refs: 5 },
           ],
@@ -1992,6 +1993,234 @@ describe('SidebarLogic', () => {
       const yxIdx = html.indexOf('data-arc-id="y-x"');
       const yxRow = html.slice(yxIdx, yxIdx + 200);
       expect(yxRow).not.toContain('data-collapsible');
+    });
+
+    test('subheader "to break" count comes from toBreak, not edges.length', () => {
+      globalThis.STATIC_DATA.clusters[0].edges.push({
+        fromId: 'x',
+        toId: 'z',
+        breaks: 0,
+        refs: 1,
+      });
+      const html = SidebarLogic.buildContent('x-y');
+      expect(html).toContain('2 to break');
+    });
+
+    test('lists all SCC edges, not only cuts', () => {
+      globalThis.STATIC_DATA.clusters[0].edges.push({
+        fromId: 'x',
+        toId: 'z',
+        breaks: 0,
+        refs: 1,
+      });
+      const html = SidebarLogic.buildContent('x-y');
+      expect(html).toContain('data-arc-id="x-z"');
+    });
+
+    test('no expand-all button when no row is collapsible', () => {
+      const html = SidebarLogic.buildContent('x-y');
+      expect(html).not.toContain('sidebar-collapse-all');
+      expect(html).not.toContain('sidebar-header-actions');
+    });
+
+    test('expand-all button appears when at least one row is collapsible', () => {
+      globalThis.STATIC_DATA.arcs['x-y'].usages = [
+        {
+          symbol: 'Foo',
+          modulePath: null,
+          locations: [{ file: 'a.rs', line: 1 }],
+        },
+      ];
+      const html = SidebarLogic.buildContent('x-y');
+      expect(html).toContain('sidebar-collapse-all');
+      expect(html).toContain('sidebar-header-actions');
+    });
+
+    test('cluster view focuses the resolved edge, not the triggering arc', () => {
+      // No resolved focus -> cluster overview, no row focused.
+      const overview = SidebarLogic.buildContent('x-y');
+      expect(overview).not.toContain('sidebar-cut-row-focus');
+
+      // Resolved focus on y-x -> that row is focused, regardless of which
+      // arc opened the cluster view.
+      SidebarLogic._resolvedFocusArc = () => 'y-x';
+      const html = SidebarLogic.buildContent('x-y');
+      const yxIdx = html.indexOf('data-arc-id="y-x"');
+      const yxRow = html.slice(Math.max(0, yxIdx - 60), yxIdx + 60);
+      expect(yxRow).toContain('sidebar-cut-row-focus');
+      const xyIdx = html.indexOf('data-arc-id="x-y"');
+      const xyRow = html.slice(Math.max(0, xyIdx - 60), xyIdx + 60);
+      expect(xyRow).not.toContain('sidebar-cut-row-focus');
+      SidebarLogic._resolvedFocusArc = null;
+    });
+  });
+
+  describe('cluster row hover wiring', () => {
+    function makeRow(arcId) {
+      const listeners = {};
+      return {
+        dataset: { arcId },
+        addEventListener(evt, fn) {
+          listeners[evt] = fn;
+        },
+        _fire(evt) {
+          listeners[evt]();
+        },
+      };
+    }
+
+    test('row mouseenter calls _onEdgeHover with the row arc id', () => {
+      const row = makeRow('x-y');
+      const content = {
+        addEventListener() {},
+        querySelectorAll(sel) {
+          if (sel === '.sidebar-cut-row') return [row];
+          return [];
+        },
+      };
+      const root = {
+        querySelector(sel) {
+          if (sel === '.sidebar-content') return content;
+          return null;
+        },
+        querySelectorAll: content.querySelectorAll,
+      };
+      let hovered;
+      SidebarLogic._onEdgeHover = (id) => {
+        hovered = id;
+      };
+      SidebarLogic._onEdgeHoverEnd = null;
+      SidebarLogic._setupCollapseHandlers(root);
+      row._fire('mouseenter');
+      expect(hovered).toBe('x-y');
+      SidebarLogic._onEdgeHover = null;
+    });
+
+    test('row mouseleave calls _onEdgeHoverEnd', () => {
+      const row = makeRow('x-y');
+      const content = {
+        addEventListener() {},
+        querySelectorAll(sel) {
+          if (sel === '.sidebar-cut-row') return [row];
+          return [];
+        },
+      };
+      const root = {
+        querySelector(sel) {
+          if (sel === '.sidebar-content') return content;
+          return null;
+        },
+        querySelectorAll: content.querySelectorAll,
+      };
+      let ended = false;
+      SidebarLogic._onEdgeHoverEnd = () => {
+        ended = true;
+      };
+      SidebarLogic._setupCollapseHandlers(root);
+      row._fire('mouseleave');
+      expect(ended).toBe(true);
+      SidebarLogic._onEdgeHoverEnd = null;
+    });
+  });
+
+  describe('cluster row click wiring', () => {
+    function makeHead() {
+      const attrs = { 'data-collapsible': '', 'data-collapsed': 'true' };
+      const toggle = { innerHTML: '▸' };
+      return {
+        nextElementSibling: { style: { display: 'none' } },
+        hasAttribute: (a) => a in attrs,
+        getAttribute: (a) => attrs[a] ?? null,
+        setAttribute: (a, v) => {
+          attrs[a] = v;
+        },
+        removeAttribute: (a) => {
+          delete attrs[a];
+        },
+        querySelector: (sel) => (sel === '.sidebar-toggle' ? toggle : null),
+        _attrs: attrs,
+        _toggle: toggle,
+      };
+    }
+
+    function harness(row) {
+      let clickHandler;
+      const content = {
+        addEventListener: (evt, fn) => {
+          if (evt === 'click') clickHandler = fn;
+        },
+        querySelectorAll: (sel) => (sel === '.sidebar-cut-row' ? [row] : []),
+      };
+      const root = {
+        querySelector: (sel) => (sel === '.sidebar-content' ? content : null),
+        querySelectorAll: () => [],
+      };
+      const origUP = SidebarLogic.updatePosition;
+      SidebarLogic.updatePosition = () => {};
+      SidebarLogic._setupCollapseHandlers(root);
+      return {
+        fireClick: () =>
+          clickHandler({
+            target: {
+              closest: (sel) => (sel === '.sidebar-cut-row' ? row : null),
+            },
+          }),
+        restore: () => {
+          SidebarLogic.updatePosition = origUP;
+        },
+      };
+    }
+
+    test('row click routes to _onEdgeClick and applies the returned expand state', () => {
+      const head = makeHead();
+      const row = {
+        dataset: { arcId: 'x-y' },
+        classList: { toggle() {} },
+        querySelector: (sel) => (sel === '.sidebar-cut-head' ? head : null),
+        addEventListener() {},
+      };
+      let calledWith = null;
+      SidebarLogic._onEdgeClick = (arcId, expandable, expanded) => {
+        calledWith = { arcId, expandable, expanded };
+        return true; // pinned -> ends expanded
+      };
+      SidebarLogic._resolvedFocusArc = () => 'x-y';
+      const h = harness(row);
+      h.fireClick();
+      expect(calledWith).toEqual({
+        arcId: 'x-y',
+        expandable: true,
+        expanded: false,
+      });
+      expect(head.hasAttribute('data-collapsed')).toBe(false); // expanded in place
+      expect(head._toggle.innerHTML).toBe('▾');
+      h.restore();
+      SidebarLogic._onEdgeClick = null;
+      SidebarLogic._resolvedFocusArc = null;
+    });
+
+    test('row click marks only the resolved focus row', () => {
+      const head = makeHead();
+      let focusedOn = null;
+      const row = {
+        dataset: { arcId: 'x-y' },
+        classList: {
+          toggle(_cls, on) {
+            focusedOn = on;
+          },
+        },
+        querySelector: (sel) => (sel === '.sidebar-cut-head' ? head : null),
+        addEventListener() {},
+      };
+      SidebarLogic._onEdgeClick = () => false; // unpinned -> collapses
+      SidebarLogic._resolvedFocusArc = () => null; // overview, no focus
+      const h = harness(row);
+      h.fireClick();
+      expect(focusedOn).toBe(false); // row not focused when nothing resolved
+      expect(head.hasAttribute('data-collapsed')).toBe(true); // collapsed
+      h.restore();
+      SidebarLogic._onEdgeClick = null;
+      SidebarLogic._resolvedFocusArc = null;
     });
   });
 

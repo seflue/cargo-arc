@@ -155,9 +155,29 @@ if (typeof document !== 'undefined') {
       showSidebar();
     }
 
+    // Cycle-aware click handling for edges (real or virtual), routed through
+    // the SCC state machine (AppState.clickEdge). Non-cycle edges keep the
+    // old pin-shows/unpin-hides contract; cycle edges are governed by
+    // selectedScc + inner-edge pin, so we just re-render and show whichever
+    // edge/cluster the state now resolves to.
+    function handleEdgeClick(edgeId, showPinnedSidebar) {
+      const sccId = StaticData.getArc(edgeId)?.sccId;
+      AppState.clickEdge(appState, edgeId, sccId);
+      highlightTiming.immediate();
+      if (sccId == null) {
+        if (AppState.isSelected(appState, 'arc', edgeId)) {
+          showPinnedSidebar();
+        } else {
+          SidebarLogic.hide();
+        }
+        return;
+      }
+      SidebarLogic.show(edgeId);
+    }
+
     function highlightEdge(from, to) {
       const edgeId = `${from}-${to}`;
-      toggleHighlight('arc', edgeId, () => SidebarLogic.show(edgeId));
+      handleEdgeClick(edgeId, () => SidebarLogic.show(edgeId));
     }
 
     function highlightNode(nodeId) {
@@ -267,6 +287,61 @@ if (typeof document !== 'undefined') {
     /** @type {{ _isClusterMode: (() => boolean) | null }} */ (
       SidebarLogic
     )._isClusterMode = () => AppState.isClusterMode(appState);
+    // Resolved inner-edge focus (pin-or-hover, restricted to the selected SCC),
+    // matching derived_state's isFocusArc. The sidebar marks a row focused from
+    // this, not from whichever edge opened the cluster view.
+    /** @type {{ _resolvedFocusArc: (() => string | null) | null }} */ (
+      SidebarLogic
+    )._resolvedFocusArc = () => {
+      const sel = AppState.getSelection(appState);
+      const scc = AppState.getSelectedScc(appState);
+      if (
+        sel.type !== 'arc' ||
+        sel.id == null ||
+        !AppState.isClusterMode(appState) ||
+        scc == null
+      ) {
+        return null;
+      }
+      return StaticData.getArc(sel.id)?.sccId === scc ? sel.id : null;
+    };
+    // Sidebar cluster row hover focuses the corresponding graph edge (mirror
+    // of handleMouseEnter/handleMouseLeave's pin-beats-hover gate).
+    /** @type {{ _onEdgeHover: ((arcId: any) => void) | null }} */ (
+      SidebarLogic
+    )._onEdgeHover = (arcId) => {
+      if (AppState.hasPinnedSelection(appState)) return;
+      AppState.setHover(appState, 'arc', arcId);
+      highlightTiming.debounced();
+    };
+    /** @type {{ _onEdgeHoverEnd: (() => void) | null }} */ (
+      SidebarLogic
+    )._onEdgeHoverEnd = () => {
+      if (AppState.hasPinnedSelection(appState)) return;
+      AppState.clearHover(appState);
+      highlightTiming.debounced();
+    };
+    // Sidebar cluster row click: pin couples to expansion (AppState.clickCluster-
+    // Row decides). Returns the new expand state so the sidebar syncs the row.
+    /** @type {{ _onEdgeClick: ((arcId: string, expandable: boolean, expanded: boolean) => boolean) | null }} */ (
+      SidebarLogic
+    )._onEdgeClick = (arcId, expandable, expanded) => {
+      const before = AppState.isSelected(appState, 'arc', arcId);
+      const sccId = StaticData.getArc(arcId)?.sccId;
+      const endExpanded = AppState.clickClusterRow(
+        appState,
+        arcId,
+        sccId,
+        expandable,
+        expanded,
+      );
+      // Pure re-expand (collapsed+pinned) leaves the selection untouched; only
+      // re-render the graph when the pin actually changed.
+      if (AppState.isSelected(appState, 'arc', arcId) !== before) {
+        highlightTiming.immediate();
+      }
+      return endExpanded;
+    };
 
     // Cancels a pending hide and updates hoverKey if the derived identity
     // changed. Returns false when the hover is a same-cluster/element no-op
@@ -282,70 +357,27 @@ if (typeof document !== 'undefined') {
       return hoverTracker.enter(key);
     }
 
-    // Cut-set spotlight: highlights one cut edge (glow via cut-focus/emphasis
-    // classes, plus its two endpoint nodes by direction color) on top of
-    // whatever HighlightRenderer has already drawn for the pinned cluster.
-    // Shared by the sidebar row hover and, while a cluster is pinned, diagram
-    // hover over one of its cut edges.
-    function spotlightCutEdge(arcId) {
-      DomAdapter.getSvgRoot()?.classList.add(C.cutFocus);
-      DomAdapter.getVisibleArc(arcId)?.classList.add(C.cutSetArcEmphasis);
-      // Only the cut direction's head: forward arrows (reverse arrows carry
-      // data-arrow-reverse). A mutual-dep cut then shows one directed head.
-      DomAdapter.getArrows(arcId).forEach((arrow) => {
-        if (arrow.getAttribute('data-arrow-reverse') !== 'true') {
-          arrow.classList.add(C.cutSetArrowEmphasis);
-        }
-      });
-      // Keep this edge's scissors (its cost) visible while the rest fade.
-      DomAdapter.querySelectorAll(
-        `.${C.cutSetScissors}[data-arc-id="${arcId}"]`,
-      ).forEach((glyph) => {
-        glyph.style.opacity = '1';
-      });
-      const [fromId, toId] = arcId.split('-');
-      DomAdapter.getNode(fromId)?.classList.add(C.dependentNode);
-      DomAdapter.getNode(toId)?.classList.add(C.depNode);
-    }
-
-    // Removes ONLY what spotlightCutEdge added. Must not touch the pinned
-    // derived-state classes (cycleMember, cut-set-arc, cluster-mode-on) —
-    // those are owned and reset by HighlightRenderer.
-    function clearCutSpotlight() {
-      DomAdapter.getSvgRoot()?.classList.remove(C.cutFocus);
-      DomAdapter.querySelectorAll(`.${C.cutSetArc}`).forEach((arc) => {
-        arc.classList.remove(C.cutSetArcEmphasis);
-      });
-      DomAdapter.querySelectorAll(`.${C.cutSetArrowEmphasis}`).forEach(
-        (arrow) => {
-          arrow.classList.remove(C.cutSetArrowEmphasis);
-        },
-      );
-      DomAdapter.querySelectorAll(`.${C.cutSetScissors}`).forEach((glyph) => {
-        glyph.style.opacity = '';
-      });
-      DomAdapter.querySelectorAll(`.${C.dependentNode}, .${C.depNode}`).forEach(
-        (node) => {
-          node.classList.remove(C.dependentNode, C.depNode);
-        },
+    // A selected SCC keeps the cluster sidebar pinned open even without an
+    // inner-edge pin: hover then only moves the focused row, it neither shows a
+    // transient sidebar nor hides it on leave.
+    function clusterActive() {
+      return (
+        AppState.isClusterMode(appState) &&
+        AppState.getSelectedScc(appState) != null
       );
     }
 
     function handleMouseEnter(type, id) {
       if (AppState.hasPinnedSelection(appState)) {
-        if (
-          type === 'arc' &&
-          DomAdapter.getVisibleArc(id)?.classList.contains(C.cutSetArc)
-        ) {
-          spotlightCutEdge(id);
-        }
         return;
       }
       const sccId = type === 'arc' ? StaticData.getArc(id)?.sccId : null;
       if (!enterHover(type, id, sccId)) return;
       AppState.setHover(appState, type, id);
       highlightTiming.debounced();
-      if (type === 'node') {
+      if (clusterActive()) {
+        SidebarLogic.refreshClusterFocus();
+      } else if (type === 'node') {
         const relations = collectNodeRelations(id);
         SidebarLogic.showTransientNode(id, relations);
       } else if (type === 'arc') {
@@ -355,7 +387,6 @@ if (typeof document !== 'undefined') {
 
     function handleMouseLeave() {
       if (AppState.hasPinnedSelection(appState)) {
-        clearCutSpotlight();
         return;
       }
       clearTimeout(hideGraceTimer);
@@ -363,7 +394,11 @@ if (typeof document !== 'undefined') {
         AppState.clearHover(appState);
         hoverTracker.reset();
         highlightTiming.debounced();
-        SidebarLogic.hideTransient();
+        if (clusterActive()) {
+          SidebarLogic.refreshClusterFocus();
+        } else {
+          SidebarLogic.hideTransient();
+        }
       }, HOVER_HIDE_GRACE);
     }
 
@@ -372,6 +407,10 @@ if (typeof document !== 'undefined') {
       if (!enterHover('arc', arcId, null)) return;
       AppState.setHover(appState, 'arc', arcId);
       highlightTiming.debounced();
+      if (clusterActive()) {
+        SidebarLogic.refreshClusterFocus();
+        return;
+      }
       const usages = virtualArcUsages.get(arcId) || [];
       const originalArcs = virtualArcOriginals.get(arcId) || [];
       const mergedUsages = SidebarLogic.mergeSymbolGroups(usages);
@@ -945,7 +984,7 @@ if (typeof document !== 'undefined') {
 
     function highlightVirtualEdge(fromId, toId) {
       const edgeId = `${fromId}-${toId}`;
-      toggleHighlight('arc', edgeId, () => {
+      handleEdgeClick(edgeId, () => {
         const usages = virtualArcUsages.get(edgeId) || [];
         const originalArcs = virtualArcOriginals.get(edgeId) || [];
         const mergedUsages = SidebarLogic.mergeSymbolGroups(usages);
@@ -1434,8 +1473,7 @@ if (typeof document !== 'undefined') {
     });
 
     DomAdapter.getSvgRoot().addEventListener('click', () => {
-      AppState.clearSelection(appState);
-      AppState.clearHover(appState);
+      AppState.clickEmpty(appState);
       highlightTiming.immediate();
       SidebarLogic.hide();
       if (dropdownPanel) {
@@ -1451,36 +1489,10 @@ if (typeof document !== 'undefined') {
         e.stopPropagation(); // Prevent SVG background click
         const target = /** @type {Element} */ (e.target);
         if (target.classList.contains('sidebar-close')) {
-          AppState.clearSelection(appState);
-          AppState.clearHover(appState);
+          AppState.clickEmpty(appState);
           highlightTiming.immediate();
           SidebarLogic.hide();
         }
-      });
-
-      // Cluster sidebar: hovering a cut-set candidate row spotlights its arc
-      // and endpoint nodes (shared with diagram hover on a pinned cluster's
-      // cut edges, see handleMouseEnter/handleMouseLeave). Delegated on the
-      // sidebar container (not per-row wiring like _setupCollapseHandlers) so
-      // it also covers transient previews.
-      const hoveredCutRow = (e) => {
-        const target = /** @type {Element} */ (e.target);
-        const row = target.closest('.sidebar-cut-row[data-arc-id]');
-        if (!row || row.contains(/** @type {Node} */ (e.relatedTarget))) {
-          return null;
-        }
-        return row;
-      };
-
-      sidebarEl.addEventListener('mouseover', (e) => {
-        const row = hoveredCutRow(e);
-        if (!row) return;
-        spotlightCutEdge(row.getAttribute('data-arc-id'));
-      });
-
-      sidebarEl.addEventListener('mouseout', (e) => {
-        if (!hoveredCutRow(e)) return;
-        clearCutSpotlight();
       });
     }
 

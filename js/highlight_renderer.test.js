@@ -34,7 +34,6 @@ Object.assign(globalThis.STATIC_DATA.classes, {
   upward: 'upward',
   groupMember: 'group-member',
   cycleMember: 'cycle-member',
-  cutSetArc: 'cut-set-arc',
 });
 
 import { ArcLogic } from './arc_logic.js';
@@ -118,7 +117,6 @@ describe('HighlightRenderer', () => {
         arcHighlights: new Map(),
         shadowData: new Map(),
         promotedHitareas: new Set(),
-        cutSetArcs: new Set(),
       });
       expect(nodeEl.classList.contains(C.selectedCrate)).toBe(true);
 
@@ -157,7 +155,6 @@ describe('HighlightRenderer', () => {
         ]),
         shadowData: new Map(),
         promotedHitareas: new Set(),
-        cutSetArcs: new Set(),
       });
       expect(arcEl.classList.contains(C.highlightedArc)).toBe(true);
 
@@ -222,7 +219,6 @@ describe('HighlightRenderer', () => {
         ]),
         shadowData: new Map(),
         promotedHitareas: new Set(),
-        cutSetArcs: new Set(),
       });
       expect(vArcEl.classList.contains(C.highlightedArc)).toBe(true);
 
@@ -242,7 +238,6 @@ describe('HighlightRenderer', () => {
         arcHighlights: new Map(),
         shadowData: new Map(),
         promotedHitareas: new Set(),
-        cutSetArcs: new Set(),
       };
 
       HighlightRenderer.apply(dom, staticData, new Map(), state);
@@ -262,7 +257,6 @@ describe('HighlightRenderer', () => {
         arcHighlights: new Map(),
         shadowData: new Map(),
         promotedHitareas: new Set(),
-        cutSetArcs: new Set(),
       };
 
       HighlightRenderer.apply(dom, staticData, new Map(), state);
@@ -298,7 +292,6 @@ describe('HighlightRenderer', () => {
         ]),
         shadowData: new Map(),
         promotedHitareas: new Set(),
-        cutSetArcs: new Set(),
       };
 
       HighlightRenderer.apply(dom, staticData, new Map(), state);
@@ -339,7 +332,6 @@ describe('HighlightRenderer', () => {
         ]),
         shadowData: new Map(),
         promotedHitareas: new Set(),
-        cutSetArcs: new Set(),
       };
 
       HighlightRenderer.apply(dom, staticData, new Map(), state);
@@ -391,7 +383,6 @@ describe('HighlightRenderer', () => {
           ],
         ]),
         promotedHitareas: new Set(),
-        cutSetArcs: new Set(),
       };
 
       const staticData = createRendererStaticData([], {});
@@ -419,7 +410,6 @@ describe('HighlightRenderer', () => {
         arcHighlights: new Map(),
         shadowData: new Map(),
         promotedHitareas: new Set(),
-        cutSetArcs: new Set(),
       };
 
       HighlightRenderer.apply(dom, staticData, new Map(), state);
@@ -440,7 +430,6 @@ describe('HighlightRenderer', () => {
         arcHighlights: new Map(),
         shadowData: new Map(),
         promotedHitareas: new Set(),
-        cutSetArcs: new Set(),
       };
 
       HighlightRenderer.apply(dom, staticData, new Map(), state);
@@ -461,7 +450,6 @@ describe('HighlightRenderer', () => {
         arcHighlights: new Map(),
         shadowData: new Map(),
         promotedHitareas: new Set(),
-        cutSetArcs: new Set(),
       });
       expect(nodeEl.classList.contains(C.cycleMember)).toBe(true);
 
@@ -485,7 +473,6 @@ describe('HighlightRenderer', () => {
         arcHighlights: new Map(),
         shadowData: new Map(),
         promotedHitareas: new Set(),
-        cutSetArcs: new Set(),
       };
 
       HighlightRenderer.apply(dom, staticData, new Map(), state);
@@ -501,7 +488,6 @@ describe('HighlightRenderer', () => {
         arcHighlights: new Map(),
         shadowData: new Map(),
         promotedHitareas: new Set(),
-        cutSetArcs: new Set(),
         isPinned: true,
       };
 
@@ -518,7 +504,6 @@ describe('HighlightRenderer', () => {
         arcHighlights: new Map(),
         shadowData: new Map(),
         promotedHitareas: new Set(),
-        cutSetArcs: new Set(),
         isPinned: false,
       };
 
@@ -535,41 +520,6 @@ describe('HighlightRenderer', () => {
       HighlightRenderer.apply(dom, staticData, new Map(), null);
 
       expect(svg.classList.contains(C.hasPinned)).toBe(false);
-    });
-  });
-
-  describe('cut-set arcs', () => {
-    test('applies cut-set-arc to all cut arcs; clears it on reset', () => {
-      const arcAB = createFakeElement('path');
-      dom._registerSelector(Selectors.baseArc('a-b'), arcAB);
-      const arcCD = createFakeElement('path');
-      dom._registerSelector(Selectors.baseArc('c-d'), arcCD);
-
-      const staticData = createRendererStaticData([], {});
-      const state = {
-        nodeHighlights: new Map(),
-        arcHighlights: new Map(),
-        shadowData: new Map(),
-        promotedHitareas: new Set(),
-        cutSetArcs: new Set(['a-b', 'c-d']),
-      };
-
-      HighlightRenderer.apply(dom, staticData, new Map(), state);
-
-      expect(arcAB.classList.contains(C.cutSetArc)).toBe(true);
-      expect(arcCD.classList.contains(C.cutSetArc)).toBe(true);
-
-      // Next apply no longer carries these arcs — the class must clear (no stale markers).
-      HighlightRenderer.apply(dom, staticData, new Map(), {
-        nodeHighlights: new Map(),
-        arcHighlights: new Map(),
-        shadowData: new Map(),
-        promotedHitareas: new Set(),
-        cutSetArcs: new Set(),
-      });
-
-      expect(arcAB.classList.contains(C.cutSetArc)).toBe(false);
-      expect(arcCD.classList.contains(C.cutSetArc)).toBe(false);
     });
   });
 });

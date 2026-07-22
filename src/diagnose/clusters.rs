@@ -34,6 +34,8 @@ pub struct Cluster {
     pub cycles: Vec<usize>,
     /// Cut-set whose removal breaks every cycle, ranked best-first.
     pub cuts: Vec<Cut>,
+    /// Every SCC-internal edge, ranked like `cuts` (breaks desc, refs asc, name asc).
+    pub edges: Vec<Cut>,
 }
 
 /// Report over all cyclic clusters, ordered by cut-set size ascending.
@@ -98,13 +100,14 @@ impl ArcGraph {
             if cycles.is_empty() {
                 continue;
             }
-            let cuts = self.cluster_cut_set(&sub, &nodes, &cycles, analysis);
+            let (cuts, edges) = self.cluster_cut_set(&sub, &nodes, &cycles, analysis);
             let crate_idx = self.owning_crate(nodes[0]);
             clusters.push(Cluster {
                 crate_idx,
                 nodes,
                 cycles,
                 cuts,
+                edges,
             });
         }
 
@@ -113,14 +116,15 @@ impl ArcGraph {
         ClusterReport { clusters }
     }
 
-    /// Greedy set-cover cut-set for one cluster, verified acyclic.
+    /// Greedy set-cover cut-set for one cluster, verified acyclic, plus every
+    /// SCC-internal edge (cut-set is a subset of it).
     fn cluster_cut_set(
         &self,
         sub: &DiGraph<NodeIndex, ()>,
         nodes: &[NodeIndex],
         cycle_idxs: &[usize],
         analysis: &CycleAnalysis,
-    ) -> Vec<Cut> {
+    ) -> (Vec<Cut>, Vec<Cut>) {
         let node_set: HashSet<NodeIndex> = nodes.iter().copied().collect();
         let in_cluster: HashSet<usize> = cycle_idxs.iter().copied().collect();
 
@@ -176,7 +180,28 @@ impl ArcGraph {
                 refs: self.edge_refs(from, to),
             })
             .collect();
-        // Rank: traffic desc, refs asc, name asc.
+        self.rank(&mut cuts);
+
+        let mut edges: Vec<Cut> = sub
+            .edge_references()
+            .filter(|e| node_set.contains(&sub[e.source()]) && node_set.contains(&sub[e.target()]))
+            .map(|e| {
+                let (from, to) = (sub[e.source()], sub[e.target()]);
+                Cut {
+                    from,
+                    to,
+                    breaks: gross.get(&(from, to)).copied().unwrap_or(0),
+                    refs: self.edge_refs(from, to),
+                }
+            })
+            .collect();
+        self.rank(&mut edges);
+
+        (cuts, edges)
+    }
+
+    /// Rank a cut/edge list: traffic desc, refs asc, name asc.
+    fn rank(&self, cuts: &mut [Cut]) {
         cuts.sort_by(|a, b| {
             Reverse(a.breaks)
                 .cmp(&Reverse(b.breaks))
@@ -187,7 +212,6 @@ impl ArcGraph {
                 })
                 .then_with(|| self.qualified_name(a.to).cmp(&self.qualified_name(b.to)))
         });
-        cuts
     }
 
     /// Repeatedly remove the edge covering the most still-open cycles until none
@@ -713,6 +737,49 @@ mod tests {
         assert_eq!(r.clusters.len(), 2);
         assert_eq!(r.clusters[0].cuts.len(), 1);
         assert_eq!(r.clusters[1].cuts.len(), 2);
+    }
+
+    #[test]
+    fn edges_lists_every_scc_internal_edge_cuts_only_lists_the_chosen_ones() {
+        // Two triangles sharing directed edge 0->1: 5 SCC-internal edges total,
+        // but only one is needed to break both cycles.
+        let (g, _) = graph_with(
+            &["m0", "m1", "m2", "m3"],
+            &[(0, 1, 1), (1, 2, 1), (2, 0, 1), (1, 3, 1), (3, 0, 1)],
+        );
+        let r = report(&g);
+        let c = &r.clusters[0];
+        assert_eq!(c.cuts.len(), 1);
+        assert_eq!(c.edges.len(), 5);
+    }
+
+    #[test]
+    fn edges_are_ranked_like_cuts_and_cuts_stay_the_chosen_subset() {
+        // a<->b (5, 1 refs) and a<->c (3, 2 refs): one SCC of three nodes, two
+        // disjoint 2-cycles through a. Every edge participates in exactly one
+        // cycle (breaks=1), so refs decides order across all four edges.
+        let (g, idx) = graph_with(
+            &["a", "b", "c"],
+            &[(0, 1, 5), (1, 0, 1), (0, 2, 3), (2, 0, 2)],
+        );
+        let r = report(&g);
+        let c = &r.clusters[0];
+
+        assert_eq!(c.cuts.len(), 2);
+        let cuts: Vec<_> = c.cuts.iter().map(|cut| (cut.from, cut.to)).collect();
+        assert_eq!(cuts, vec![(idx[1], idx[0]), (idx[2], idx[0])]);
+
+        assert_eq!(c.edges.len(), 4);
+        let edges: Vec<_> = c.edges.iter().map(|cut| (cut.from, cut.to)).collect();
+        assert_eq!(
+            edges,
+            vec![
+                (idx[1], idx[0]), // b->a, 1 ref
+                (idx[2], idx[0]), // c->a, 2 refs
+                (idx[0], idx[2]), // a->c, 3 refs
+                (idx[0], idx[1]), // a->b, 5 refs
+            ]
+        );
     }
 
     #[test]

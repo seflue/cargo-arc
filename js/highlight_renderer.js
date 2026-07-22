@@ -12,7 +12,6 @@ const HighlightRenderer = {
   _prevNodeIds: new Set(),
   _prevRegularArcIds: new Set(),
   _prevVirtualArcIds: new Set(),
-  _prevCutSetArcIds: new Set(),
 
   /**
    * Apply highlight state to DOM. Resets only previously-styled elements, then applies state.
@@ -29,15 +28,12 @@ const HighlightRenderer = {
       this._prevNodeIds = new Set();
       this._prevRegularArcIds = new Set();
       this._prevVirtualArcIds = new Set();
-      this._prevCutSetArcIds = new Set();
       return;
     }
 
     this._applyNodeClasses(dom, C, state.nodeHighlights);
     this._applyArcHighlights(dom, C, state.arcHighlights);
     this._applyArrowScaling(dom, C, state.arcHighlights);
-    this._applyCutSetArcs(dom, C, state.cutSetArcs, state.cutSetArcData);
-    this._applyCutSetScissors(dom, C, state.cutSetArcs, state.cutSetArcData);
     this._createShadows(dom, C, state.shadowData);
     this._promoteToHighlightLayers(
       dom,
@@ -58,7 +54,6 @@ const HighlightRenderer = {
         this._prevRegularArcIds.add(key);
       }
     }
-    this._prevCutSetArcIds = new Set(state.cutSetArcs);
   },
 
   /**
@@ -76,8 +71,6 @@ const HighlightRenderer = {
     this._resetNodeClasses(dom, C);
     this._resetArcStyles(dom, C, staticData);
     this._resetVirtualArcStyles(dom, C, virtualArcUsages);
-    this._resetCutSetArcs(dom, C, staticData);
-    this._resetCutSetScissors(dom);
   },
 
   /**
@@ -187,33 +180,6 @@ const HighlightRenderer = {
   },
 
   /**
-   * Remove cut-set-arc class from previously-marked arcs (dirty-set), plus
-   * cut-set-arrow from their arrows.
-   */
-  _resetCutSetArcs(dom, C, staticData) {
-    for (const arcId of this._prevCutSetArcIds) {
-      const arc = dom.getArc(arcId);
-      arc?.classList.remove(C.cutSetArc);
-      // Restore line + arrowheads from the cut-set width back to the base
-      // (traffic) width, so deselecting a cluster returns cut edges to normal.
-      const originalWidth = staticData.getArcStrokeWidth(arcId);
-      if (arc) arc.style.strokeWidth = `${originalWidth}px`;
-      ArcLogic.scaleArrow(dom, arcId, originalWidth);
-      dom.getArrows(arcId).forEach((arrow) => {
-        arrow.classList.remove(C.cutSetArrow);
-      });
-    }
-  },
-
-  /**
-   * Empty the scissors overlay group (mirrors _clearShadowLayer: fully
-   * rebuilt each apply, so clearing needs no dirty-set).
-   */
-  _resetCutSetScissors(dom) {
-    LayerManager.clearLayer(LayerManager.LAYERS.CUT_SET_SCISSORS, dom);
-  },
-
-  /**
    * Set CSS classes on highlighted nodes.
    */
   _applyNodeClasses(dom, C, nodeHighlights) {
@@ -279,89 +245,6 @@ const HighlightRenderer = {
           );
         }
       });
-    }
-  },
-
-  /**
-   * Mark cut-set arcs (the active cluster's break candidates) with the
-   * standing cut-set-arc class, on top of whatever highlight they already carry,
-   * plus cut-set-arrow on their arrowheads.
-   */
-  _applyCutSetArcs(dom, C, cutSetArcs, cutSetArcData) {
-    for (const arcId of cutSetArcs) {
-      const arc = dom.getVisibleArc(arcId);
-      if (!arc) continue;
-      arc.classList.add(C.cutSetArc);
-      // Size line + arrowheads by breaks (cycles this edge lies on), overriding
-      // the traffic width that arcHighlights set — cluster mode weights cuts
-      // by cycle count, not traffic.
-      const data = cutSetArcData?.get(arcId);
-      if (data) {
-        arc.style.strokeWidth = `${data.width}px`;
-        ArcLogic.scaleArrow(dom, arcId, data.width);
-      }
-      dom.getArrows(arcId).forEach((arrow) => {
-        arrow.classList.add(C.cutSetArrow);
-      });
-    }
-  },
-
-  /**
-   * Find the scissors overlay group, creating and attaching it into
-   * graph-content on first use so subsequent applies reuse the same group.
-   */
-  _getOrCreateScissorsLayer(dom) {
-    const layerId = LayerManager.LAYERS.CUT_SET_SCISSORS;
-    let layer = dom.getElementById(layerId);
-    if (!layer) {
-      layer = dom.createSvgElement('g');
-      layer.setAttribute('id', layerId);
-      dom.getElementById('graph-content')?.appendChild(layer);
-    }
-    return layer;
-  },
-
-  /**
-   * Draw a ✂ glyph at each cut-set arc's path midpoint, in the same
-   * coordinate space as the arc (live geometry via getPointAtLength).
-   * Skips arcs with no visible path or zero length.
-   */
-  _applyCutSetScissors(dom, C, cutSetArcs, cutSetArcData) {
-    // One ✂ per ref (cost), laid out adjacently along the edge and centered on
-    // the midpoint. Glyph size tracks the edge's cut width (bigger scissors on
-    // fatter cuts); spacing follows the size so they never overlap. Capped to
-    // what fits — the exact ref count is always in the sidebar. Read all points
-    // before writing any glyph: appendChild between getPointAtLength calls forces
-    // a reflow per arc.
-    const placements = [];
-    for (const arcId of cutSetArcs) {
-      const arc = dom.getVisibleArc(arcId);
-      if (!arc || typeof arc.getTotalLength !== 'function') continue;
-      const length = arc.getTotalLength();
-      if (!length) continue;
-      const data = cutSetArcData?.get(arcId);
-      const refs = data?.refs ?? 1;
-      const size = ArcLogic.scissorFontSize(data?.width ?? 1.5);
-      const step = size; // ✂ advance ≈ font-size, so this keeps them adjacent
-      const maxFit = Math.max(1, Math.floor(length / step));
-      const count = Math.max(1, Math.min(refs, maxFit));
-      const start = length / 2 - ((count - 1) * step) / 2;
-      for (let i = 0; i < count; i++) {
-        const point = arc.getPointAtLength(start + i * step);
-        placements.push({ x: point.x, y: point.y, arcId, size });
-      }
-    }
-
-    const layer = this._getOrCreateScissorsLayer(dom);
-    for (const { x, y, arcId, size } of placements) {
-      const glyph = dom.createSvgElement('text');
-      glyph.classList.add(C.cutSetScissors);
-      glyph.setAttribute('x', x);
-      glyph.setAttribute('y', y);
-      glyph.setAttribute('data-arc-id', arcId);
-      glyph.style.fontSize = `${size}px`;
-      glyph.textContent = '✂';
-      layer.appendChild(glyph);
     }
   },
 

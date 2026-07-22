@@ -16,13 +16,6 @@
  *   Shadow glow data per arc. Keys: same convention as arcHighlights.
  * @property {Set<string>} promotedHitareas
  *   Arc IDs (without "v:" prefix) whose hitareas should be promoted to highlight layer.
- * @property {Set<string>} cutSetArcs
- *   Arc IDs ("from-to") in the active cluster's cut-set, excluding those hidden by
- *   filter. Populated only for arc selection with cluster expansion; empty otherwise.
- * @property {Map<string, {width: number, arrowScale: number, refs: number, breaks: number}>} cutSetArcData
- *   Per-cut visual data keyed by arc ID: line width + arrow scale derived from
- *   the gross cycle count (`breaks`), and refs (cost → scissors count). Same
- *   membership as cutSetArcs.
  * @property {boolean} isPinned
  *   Whether the highlight is from a pinned (click) selection.
  */
@@ -223,15 +216,16 @@ const DerivedState = {
     rowHeight,
   ) {
     const selection = AppState.getSelection(appState);
-    if (selection.mode === 'none') return null;
+    const selectedScc = AppState.getSelectedScc(appState);
+    const clusterActive =
+      AppState.isClusterMode(appState) && selectedScc != null;
+    if (selection.mode === 'none' && !clusterActive) return null;
 
     const result = {
       nodeHighlights: new Map(),
       arcHighlights: new Map(),
       shadowData: new Map(),
       promotedHitareas: new Set(),
-      cutSetArcs: new Set(),
-      cutSetArcData: new Map(),
       isPinned: selection.mode === 'click',
     };
     const ctx = {
@@ -254,9 +248,19 @@ const DerivedState = {
     } else if (selection.type === 'arc') {
       this._deriveForArcSelection(
         selection,
-        appState,
+        selectedScc,
+        clusterActive,
         staticData,
         virtualArcUsages,
+        hiddenByFilter,
+        positions,
+        ctx,
+        result,
+      );
+    } else if (clusterActive) {
+      this._deriveForClusterWide(
+        selectedScc,
+        staticData,
         hiddenByFilter,
         positions,
         ctx,
@@ -352,12 +356,16 @@ const DerivedState = {
     }
   },
 
-  /** @private Arc-selection: specific arc + its virtual variant. When cluster
-   *  mode is on and the arc lies in an SCC, the whole SCC is highlighted so the
-   *  cluster reads as one unit regardless of which arc in it was picked. */
+  /** @private Arc-selection: specific arc + its virtual variant. Two-level
+   *  cycle-mode interaction: when an SCC is selected (selectedScc) and the
+   *  resolved edge (click-pin or hover) belongs to it, only that edge is the
+   *  focus and gets highlighted — the rest of the SCC dims. An edge outside
+   *  the selected SCC (or no SCC selected at all) is ignored as a focus and
+   *  falls back to the whole-SCC highlight / plain single-edge pick. */
   _deriveForArcSelection(
     selection,
-    appState,
+    selectedScc,
+    clusterActive,
     staticData,
     virtualArcUsages,
     hiddenByFilter,
@@ -369,22 +377,28 @@ const DerivedState = {
     const [fromId, toId] = arcId.split('-');
 
     const arc = staticData.getArc(arcId);
-    const sccId = arc?.sccId;
-    const expandCluster = AppState.isClusterMode(appState) && sccId != null;
+    const isFocusArc = clusterActive && arc?.sccId === selectedScc;
 
-    // Single-edge selection marks the two endpoints as dependent/dependency.
-    // In cluster mode the whole SCC is highlighted uniformly (cycle-member,
-    // below), so singling out the clicked edge's endpoints would look arbitrary.
-    if (!expandCluster) {
-      result.nodeHighlights.set(fromId, {
-        role: 'dependent',
-        cssClass: 'dependentNode',
-      });
-      result.nodeHighlights.set(toId, {
-        role: 'dependency',
-        cssClass: 'depNode',
-      });
+    if (clusterActive && !isFocusArc) {
+      this._deriveForClusterWide(
+        selectedScc,
+        staticData,
+        hiddenByFilter,
+        positions,
+        ctx,
+        result,
+      );
+      return;
     }
+
+    result.nodeHighlights.set(fromId, {
+      role: 'dependent',
+      cssClass: 'dependentNode',
+    });
+    result.nodeHighlights.set(toId, {
+      role: 'dependency',
+      cssClass: 'depNode',
+    });
 
     const descs = [];
     if (arc && !hiddenByFilter.has(arcId)) {
@@ -396,7 +410,7 @@ const DerivedState = {
         toInSet: true,
         originalWidth: staticData.getArcStrokeWidth(arcId),
         isVirtual: false,
-        isCycle: expandCluster,
+        isCycle: isFocusArc,
       });
     }
     if (virtualArcUsages.has(arcId)) {
@@ -413,48 +427,44 @@ const DerivedState = {
       });
     }
 
-    // Cluster expansion: highlight every node and arc sharing the SCC.
-    if (expandCluster) {
-      for (const nodeId of staticData.getAllNodeIds()) {
-        if (result.nodeHighlights.has(nodeId)) continue;
-        if (staticData.getNode(nodeId)?.sccId === sccId) {
-          result.nodeHighlights.set(nodeId, {
-            role: 'cycle-member',
-            cssClass: 'cycleMember',
-          });
-        }
-      }
-      for (const otherArcId of staticData.getAllArcIds()) {
-        if (otherArcId === arcId) continue;
-        const other = staticData.getArc(otherArcId);
-        if (other?.sccId === sccId && !hiddenByFilter.has(otherArcId)) {
-          descs.push({
-            key: otherArcId,
-            fromId: other.from,
-            toId: other.to,
-            fromInSet: true,
-            toInSet: true,
-            originalWidth: staticData.getArcStrokeWidth(otherArcId),
-            isVirtual: false,
-            isCycle: true,
-          });
-        }
-      }
+    this._processArcDescriptors(descs, positions, ctx, result);
+  },
 
-      const cluster = staticData.getCluster(sccId);
-      if (cluster) {
-        for (const cut of cluster.cuts) {
-          const cutId = `${cut.fromId}-${cut.toId}`;
-          if (hiddenByFilter.has(cutId)) continue;
-          result.cutSetArcs.add(cutId);
-          const width = ArcLogic.calculateCutWidth(cut.breaks);
-          result.cutSetArcData.set(cutId, {
-            width,
-            arrowScale: ArcLogic.scaleFromStrokeWidth(width),
-            refs: cut.refs,
-            breaks: cut.breaks,
-          });
-        }
+  /** @private Whole-SCC highlight: every member node/edge of `selectedScc` is
+   *  marked so the cluster reads as one unit. Used when no inner edge is
+   *  focused, and as the fallback when the focused edge lies outside the
+   *  selected SCC. */
+  _deriveForClusterWide(
+    selectedScc,
+    staticData,
+    hiddenByFilter,
+    positions,
+    ctx,
+    result,
+  ) {
+    for (const nodeId of staticData.getAllNodeIds()) {
+      if (staticData.getNode(nodeId)?.sccId === selectedScc) {
+        result.nodeHighlights.set(nodeId, {
+          role: 'cycle-member',
+          cssClass: 'cycleMember',
+        });
+      }
+    }
+
+    const descs = [];
+    for (const arcId of staticData.getAllArcIds()) {
+      const arc = staticData.getArc(arcId);
+      if (arc?.sccId === selectedScc && !hiddenByFilter.has(arcId)) {
+        descs.push({
+          key: arcId,
+          fromId: arc.from,
+          toId: arc.to,
+          fromInSet: true,
+          toInSet: true,
+          originalWidth: staticData.getArcStrokeWidth(arcId),
+          isVirtual: false,
+          isCycle: true,
+        });
       }
     }
 

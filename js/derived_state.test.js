@@ -1472,10 +1472,10 @@ describe('DerivedState', () => {
       ['D', { x: 20, y: 150, width: 100, height: 20 }],
     ]);
 
-    test('cycle-arc selection: all cycle arcs in arcHighlights', () => {
+    test('SCC selected, no focus: all cycle arcs in arcHighlights', () => {
       const sd = createMockStaticData(CYCLE_DATA);
       const state = AppState.create();
-      AppState.setSelection(state, 'arc', 'A-B');
+      AppState.clickEdge(state, 'A-B', 0);
 
       const result = DerivedState.deriveHighlightState(
         state,
@@ -1492,10 +1492,10 @@ describe('DerivedState', () => {
       expect(result.arcHighlights.has('C-A')).toBe(true);
     });
 
-    test('cycle-arc selection: cycle nodes get cycle-member role', () => {
+    test('SCC selected, no focus: cycle nodes get cycle-member role', () => {
       const sd = createMockStaticData(CYCLE_DATA);
       const state = AppState.create();
-      AppState.setSelection(state, 'arc', 'A-B');
+      AppState.clickEdge(state, 'A-B', 0);
 
       const result = DerivedState.deriveHighlightState(
         state,
@@ -1507,9 +1507,9 @@ describe('DerivedState', () => {
       );
 
       expect(result).not.toBeNull();
-      // In cluster mode the whole SCC is uniform: every cycle node, including
-      // the clicked edge's endpoints, gets cycle-member (not dependent/dependency
-      // — that endpoint role is only for single-edge selection / cycles-off).
+      // Without a focus edge the whole SCC is uniform: every cycle node gets
+      // cycle-member (not dependent/dependency — that role is reserved for a
+      // focused edge's endpoints or a plain single-edge pick).
       expect(result.nodeHighlights.get('A')).toEqual({
         role: 'cycle-member',
         cssClass: 'cycleMember',
@@ -1546,10 +1546,10 @@ describe('DerivedState', () => {
       expect(result.nodeHighlights.has('C')).toBe(false);
     });
 
-    test('cycle-arc selection: shadow uses glowCycle class', () => {
+    test('SCC selected, no focus: shadow uses glowCycle class', () => {
       const sd = createMockStaticData(CYCLE_DATA);
       const state = AppState.create();
-      AppState.setSelection(state, 'arc', 'A-B');
+      AppState.clickEdge(state, 'A-B', 0);
 
       const result = DerivedState.deriveHighlightState(
         state,
@@ -1616,7 +1616,7 @@ describe('DerivedState', () => {
 
       const sd = createMockStaticData(MULTI_CYCLE_DATA);
       const state = AppState.create();
-      AppState.setSelection(state, 'arc', 'B-C');
+      AppState.clickEdge(state, 'B-C', 0);
 
       const result = DerivedState.deriveHighlightState(
         state,
@@ -1654,7 +1654,7 @@ describe('DerivedState', () => {
 
       const highlightsFor = (arcId) => {
         const state = AppState.create();
-        AppState.setSelection(state, 'arc', arcId);
+        AppState.clickEdge(state, arcId, 0);
         const result = DerivedState.deriveHighlightState(
           state,
           sd,
@@ -1674,6 +1674,7 @@ describe('DerivedState', () => {
       const sd = createMockStaticData(CYCLE_DATA);
       const state = AppState.create();
       AppState.setClusterMode(state, false);
+      state.selectedScc = 0;
       AppState.setSelection(state, 'arc', 'A-B');
 
       const result = DerivedState.deriveHighlightState(
@@ -1692,57 +1693,89 @@ describe('DerivedState', () => {
       // No cycle glow when the cluster layer is off.
       expect(result.shadowData.get('A-B')?.glowClass).not.toBe('glowCycle');
     });
+  });
 
-    test('cluster selection: cut-set arc-ids collected, filtered ones excluded', () => {
-      const data = {
-        ...CYCLE_DATA,
-        clusters: {
-          0: {
-            crate: 'c',
-            moduleCount: 3,
-            cycleCount: 2,
-            cuts: [
-              { fromId: 'A', toId: 'B', breaks: 1, refs: 1 },
-              { fromId: 'C', toId: 'A', breaks: 1, refs: 1 },
-            ],
-          },
+  describe('cycle-mode two-level interaction (selectedScc + focus edge)', () => {
+    const ROW_HEIGHT = 30;
+
+    const mkNode = (y, sccId) => ({
+      type: 'module',
+      parent: null,
+      x: 20,
+      y,
+      width: 100,
+      height: 20,
+      hasChildren: false,
+      ...(sccId !== undefined ? { sccId } : {}),
+    });
+    const mkArc = (from, to, sccId) => ({
+      from,
+      to,
+      context: { kind: 'production', subKind: null, features: [] },
+      usages: [
+        {
+          symbol: 's',
+          modulePath: null,
+          locations: [{ file: 'x.rs', line: 1 }],
         },
-      };
-      const sd = createMockStaticData(data);
+      ],
+      ...(sccId !== undefined ? { sccId } : {}),
+    });
+
+    // SCC {A,B,C} via arcs A→B→C→A (sccId=0), plus non-cycle A→D.
+    const FOCUS_DATA = {
+      nodes: {
+        A: mkNode(60, 0),
+        B: mkNode(90, 0),
+        C: mkNode(120, 0),
+        D: mkNode(150),
+      },
+      arcs: {
+        'A-B': mkArc('A', 'B', 0),
+        'B-C': mkArc('B', 'C', 0),
+        'C-A': mkArc('C', 'A', 0),
+        'A-D': mkArc('A', 'D'),
+      },
+    };
+    const FOCUS_POSITIONS = new Map([
+      ['A', { x: 20, y: 60, width: 100, height: 20 }],
+      ['B', { x: 20, y: 90, width: 100, height: 20 }],
+      ['C', { x: 20, y: 120, width: 100, height: 20 }],
+      ['D', { x: 20, y: 150, width: 100, height: 20 }],
+    ]);
+
+    test('SCC selected, no focus: all SCC edges highlighted', () => {
+      const sd = createMockStaticData(FOCUS_DATA);
       const state = AppState.create();
-      AppState.setSelection(state, 'arc', 'A-B');
+      state.selectedScc = 0;
 
       const result = DerivedState.deriveHighlightState(
         state,
         sd,
         new Map(),
-        new Set(['C-A']),
-        CYCLE_POSITIONS,
+        new Set(),
+        FOCUS_POSITIONS,
         ROW_HEIGHT,
       );
 
       expect(result).not.toBeNull();
-      // C-A is hiddenByFilter, so it's excluded even though it's a cut edge
-      expect([...result.cutSetArcs].sort()).toEqual(['A-B']);
+      expect(result.arcHighlights.has('A-B')).toBe(true);
+      expect(result.arcHighlights.has('B-C')).toBe(true);
+      expect(result.arcHighlights.has('C-A')).toBe(true);
+      expect(result.nodeHighlights.get('A')).toEqual({
+        role: 'cycle-member',
+        cssClass: 'cycleMember',
+      });
+      expect(result.nodeHighlights.get('C')).toEqual({
+        role: 'cycle-member',
+        cssClass: 'cycleMember',
+      });
     });
 
-    test('cluster selection: cutSetArcData sizes by breaks (gain), carries refs', () => {
-      const data = {
-        ...CYCLE_DATA,
-        clusters: {
-          0: {
-            crate: 'c',
-            moduleCount: 3,
-            cycleCount: 4,
-            cuts: [
-              { fromId: 'A', toId: 'B', breaks: 4, refs: 2 },
-              { fromId: 'C', toId: 'A', breaks: 1, refs: 5 },
-            ],
-          },
-        },
-      };
-      const sd = createMockStaticData(data);
+    test('focus on pinned edge in SCC: only that edge highlighted, rest dims', () => {
+      const sd = createMockStaticData(FOCUS_DATA);
       const state = AppState.create();
+      state.selectedScc = 0;
       AppState.setSelection(state, 'arc', 'A-B');
 
       const result = DerivedState.deriveHighlightState(
@@ -1750,37 +1783,63 @@ describe('DerivedState', () => {
         sd,
         new Map(),
         new Set(),
-        CYCLE_POSITIONS,
+        FOCUS_POSITIONS,
         ROW_HEIGHT,
       );
 
-      const ab = result.cutSetArcData.get('A-B');
-      const ca = result.cutSetArcData.get('C-A');
-      // Higher breaks (gain) => wider edge; width comes from breaks, not traffic.
-      expect(ab.width).toBe(ArcLogic.calculateCutWidth(4));
-      expect(ab.width).toBeGreaterThan(ca.width);
-      expect(ab.arrowScale).toBe(ArcLogic.scaleFromStrokeWidth(ab.width));
-      // refs (cost) is passed through for the scissors count.
-      expect(ab.refs).toBe(2);
-      expect(ca.refs).toBe(5);
+      expect(result).not.toBeNull();
+      // Only the focus edge is highlighted
+      expect(result.arcHighlights.has('A-B')).toBe(true);
+      expect(result.arcHighlights.has('B-C')).toBe(false);
+      expect(result.arcHighlights.has('C-A')).toBe(false);
+      // Focus edge carries the established cycle-glow backing class
+      expect(result.shadowData.get('A-B').glowClass).toBe('glowCycle');
+      // SCC rest is not marked highlighted → falls to generic dimming
+      expect(result.nodeHighlights.has('C')).toBe(false);
     });
 
-    test('node selection: cutSetArcs stays empty', () => {
-      const sd = createMockStaticData(CYCLE_DATA);
+    test('focus resolved via hover behaves like a pin', () => {
+      const sd = createMockStaticData(FOCUS_DATA);
       const state = AppState.create();
-      AppState.setSelection(state, 'node', 'A');
+      state.selectedScc = 0;
+      AppState.setHover(state, 'arc', 'B-C');
 
       const result = DerivedState.deriveHighlightState(
         state,
         sd,
         new Map(),
         new Set(),
-        CYCLE_POSITIONS,
+        FOCUS_POSITIONS,
         ROW_HEIGHT,
       );
 
       expect(result).not.toBeNull();
-      expect(result.cutSetArcs.size).toBe(0);
+      expect(result.arcHighlights.has('B-C')).toBe(true);
+      expect(result.arcHighlights.has('A-B')).toBe(false);
+      expect(result.arcHighlights.has('C-A')).toBe(false);
+    });
+
+    test('focus edge outside the selected SCC is ignored: behaves like no focus', () => {
+      const sd = createMockStaticData(FOCUS_DATA);
+      const state = AppState.create();
+      state.selectedScc = 0;
+      AppState.setSelection(state, 'arc', 'A-D');
+
+      const result = DerivedState.deriveHighlightState(
+        state,
+        sd,
+        new Map(),
+        new Set(),
+        FOCUS_POSITIONS,
+        ROW_HEIGHT,
+      );
+
+      expect(result).not.toBeNull();
+      // Same as the no-focus case: whole SCC highlighted, A-D not singled out
+      expect(result.arcHighlights.has('A-B')).toBe(true);
+      expect(result.arcHighlights.has('B-C')).toBe(true);
+      expect(result.arcHighlights.has('C-A')).toBe(true);
+      expect(result.arcHighlights.has('A-D')).toBe(false);
     });
   });
 

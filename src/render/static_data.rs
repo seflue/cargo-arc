@@ -1,7 +1,7 @@
 use super::constants::{CSS, LAYOUT, RenderConfig};
 use super::positioning::PositionedItem;
 use crate::diagnose::ConsumerScope;
-use crate::layout::{ItemKind, LayoutIR, NodeId};
+use crate::layout::{CutInfo, ItemKind, LayoutIR, NodeId};
 use crate::model::SourceLocation;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -114,7 +114,8 @@ struct ClusterData {
     crate_name: String,
     module_count: usize,
     cycle_count: usize,
-    cuts: Vec<CutData>,
+    edges: Vec<CutData>,
+    to_break: usize,
 }
 
 #[derive(Serialize)]
@@ -124,6 +125,15 @@ struct CutData {
     to_id: String,
     breaks: usize,
     refs: usize,
+}
+
+fn cut_data(cut: &CutInfo) -> CutData {
+    CutData {
+        from_id: cut.from_id.to_string(),
+        to_id: cut.to_id.to_string(),
+        breaks: cut.breaks,
+        refs: cut.refs,
+    }
 }
 
 /// Consumer scope of one symbol of a provider. `module` names the common home
@@ -339,12 +349,6 @@ fn generate_static_data(
         ("cycleArc", CSS.direction.cycle_arc),
         ("cycleArrow", CSS.direction.cycle_arrow),
         ("clusterModeOn", CSS.relation.cluster_mode_on),
-        ("cutSetArc", CSS.relation.cut_set_arc),
-        ("cutSetArcEmphasis", CSS.relation.cut_set_arc_emphasis),
-        ("cutSetArrow", CSS.relation.cut_set_arrow),
-        ("cutSetArrowEmphasis", CSS.relation.cut_set_arrow_emphasis),
-        ("cutSetScissors", CSS.relation.cut_set_scissors),
-        ("cutFocus", CSS.relation.cut_focus),
         ("arcHitarea", CSS.direction.arc_hitarea),
         ("crateDepArc", CSS.direction.crate_dep_arc),
         ("moduleDepArc", CSS.direction.module_dep_arc),
@@ -408,16 +412,8 @@ fn generate_static_data(
                     crate_name: c.crate_name.clone(),
                     module_count: c.module_count,
                     cycle_count: c.cycle_count,
-                    cuts: c
-                        .cuts
-                        .iter()
-                        .map(|cut| CutData {
-                            from_id: cut.from_id.to_string(),
-                            to_id: cut.to_id.to_string(),
-                            breaks: cut.breaks,
-                            refs: cut.refs,
-                        })
-                        .collect(),
+                    edges: c.edges.iter().map(cut_data).collect(),
+                    to_break: c.to_break,
                 },
             )
         })
@@ -1187,41 +1183,6 @@ mod tests {
     }
 
     #[test]
-    fn test_static_data_has_cut_set_arc_classes() {
-        let ir = LayoutIR::new();
-        let config = RenderConfig::default();
-        let positioned: Vec<PositionedItem> = vec![];
-        let parents: HashSet<NodeId> = HashSet::new();
-
-        let script = render_script(&config, &ir, &positioned, &parents);
-
-        let json_str = script
-            .split("const STATIC_DATA = ")
-            .nth(1)
-            .unwrap()
-            .split(";\n")
-            .next()
-            .unwrap();
-        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
-
-        assert_eq!(data["classes"]["cutSetArc"], CSS.relation.cut_set_arc);
-        assert_eq!(
-            data["classes"]["cutSetArcEmphasis"],
-            CSS.relation.cut_set_arc_emphasis
-        );
-        assert_eq!(data["classes"]["cutSetArrow"], CSS.relation.cut_set_arrow);
-        assert_eq!(
-            data["classes"]["cutSetArrowEmphasis"],
-            CSS.relation.cut_set_arrow_emphasis
-        );
-        assert_eq!(
-            data["classes"]["cutSetScissors"],
-            CSS.relation.cut_set_scissors
-        );
-        assert_eq!(data["classes"]["cutFocus"], CSS.relation.cut_focus);
-    }
-
-    #[test]
     fn test_static_data_escapes_quotes() {
         use std::path::PathBuf;
 
@@ -1901,6 +1862,21 @@ mod tests {
                     breaks: 1,
                     refs: 2,
                 }],
+                edges: vec![
+                    crate::layout::CutInfo {
+                        from_id: a,
+                        to_id: b,
+                        breaks: 1,
+                        refs: 2,
+                    },
+                    crate::layout::CutInfo {
+                        from_id: b,
+                        to_id: a,
+                        breaks: 1,
+                        refs: 1,
+                    },
+                ],
+                to_break: 1,
             },
         );
 
@@ -1921,11 +1897,15 @@ mod tests {
         assert_eq!(cl["crate"], "app");
         assert_eq!(cl["moduleCount"], 2);
         assert_eq!(cl["cycleCount"], 1);
-        let cut = &cl["cuts"][0];
-        assert_eq!(cut["fromId"], a.to_string());
-        assert_eq!(cut["toId"], b.to_string());
-        assert_eq!(cut["breaks"], 1);
-        assert_eq!(cut["refs"], 2);
+        assert_eq!(cl["toBreak"], 1);
+        let edges = cl["edges"].as_array().unwrap();
+        assert_eq!(edges.len(), 2);
+        assert_eq!(edges[0]["fromId"], a.to_string());
+        assert_eq!(edges[0]["toId"], b.to_string());
+        assert_eq!(edges[0]["breaks"], 1);
+        assert_eq!(edges[0]["refs"], 2);
+        assert_eq!(edges[1]["fromId"], b.to_string());
+        assert_eq!(edges[1]["toId"], a.to_string());
         // Cut arc-id addresses a serialized arc.
         assert!(data["arcs"][format!("{a}-{b}")].is_object());
     }
@@ -2018,16 +1998,26 @@ mod tests {
 
         let clusters = data["clusters"].as_object().unwrap();
         assert_eq!(clusters.len(), 1);
-        let cuts = clusters.values().next().unwrap()["cuts"]
-            .as_array()
-            .unwrap();
-        assert_eq!(cuts.len(), 2);
-        assert_eq!(cuts[0]["fromId"], b_id.to_string());
-        assert_eq!(cuts[0]["toId"], a_id.to_string());
-        assert_eq!(cuts[0]["refs"], 1);
-        assert_eq!(cuts[1]["fromId"], c_id.to_string());
-        assert_eq!(cuts[1]["toId"], a_id.to_string());
-        assert_eq!(cuts[1]["refs"], 2);
+
+        let cluster = clusters.values().next().unwrap();
+        assert_eq!(cluster["toBreak"], 2);
+        let edges = cluster["edges"].as_array().unwrap();
+        assert_eq!(
+            edges.len(),
+            4,
+            "all four SCC-internal edges, not just the cuts"
+        );
+        // The chosen cut-set (b->a, c->a) ranks first: breaks desc, refs asc.
+        assert_eq!(edges[0]["fromId"], b_id.to_string());
+        assert_eq!(edges[0]["toId"], a_id.to_string());
+        assert_eq!(edges[0]["refs"], 1);
+        assert_eq!(edges[1]["fromId"], c_id.to_string());
+        assert_eq!(edges[1]["toId"], a_id.to_string());
+        assert_eq!(edges[1]["refs"], 2);
+        assert_eq!(edges[2]["fromId"], a_id.to_string());
+        assert_eq!(edges[2]["toId"], c_id.to_string());
+        assert_eq!(edges[3]["fromId"], a_id.to_string());
+        assert_eq!(edges[3]["toId"], b_id.to_string());
 
         // Each cut's fromId-toId addresses a serialized arc.
         assert!(data["arcs"][format!("{b_id}-{a_id}")].is_object());
