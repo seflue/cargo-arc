@@ -59,15 +59,13 @@ interface StaticCycleData {
 interface StaticCutData {
   fromId: string;
   toId: string;
-  breaks: number;
   refs: number;
 }
 interface StaticClusterData {
   crate: string;
   moduleCount: number;
   cycleCount: number;
-  edges: StaticCutData[];
-  toBreak: number;
+  cycles: StaticCutData[][];
 }
 interface StaticSymbolScope {
   scope: 'singleConsumer' | 'commonAncestor' | 'crateWide';

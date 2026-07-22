@@ -876,6 +876,96 @@ fn build_css_rules() -> Vec<CssRule> {
                 ("white-space", "nowrap"),
             ],
         ),
+        // Cycle blocks (ca-0372): one collapsible <details> per elementary
+        // cycle in a cluster's sidebar section. Literal class strings from
+        // sidebar.js, no constants.rs entries (same precedent as the
+        // sidebar-cut-row family above).
+        CssRule::class("cycle-block", &[("margin-bottom", "8px")]),
+        CssRule::class(
+            "block-head",
+            &[
+                ("list-style", "none"),
+                ("cursor", "pointer"),
+                ("display", "flex"),
+                ("align-items", "center"),
+                ("gap", "6px"),
+                ("padding", "2px 0"),
+                ("white-space", "nowrap"),
+            ],
+        ),
+        CssRule::new(
+            ".block-head::-webkit-details-marker",
+            &[("display", "none")],
+        ),
+        CssRule::class(
+            "block-chevron",
+            &[
+                ("display", "inline-block"),
+                ("flex-shrink", "0"),
+                ("width", "12px"),
+                ("font-size", "10px"),
+                ("color", GRAY_400),
+            ],
+        ),
+        // Rotates open; transition lives in the reduced-motion media query below.
+        CssRule::new(
+            ".cycle-block[open] .block-chevron",
+            &[("transform", "rotate(90deg)")],
+        ),
+        CssRule::class(
+            "block-ordinal",
+            &[
+                ("flex-shrink", "0"),
+                ("background", GRAY_200),
+                ("color", GRAY_600),
+                ("font-size", "10px"),
+                ("padding", "0 4px"),
+                ("border-radius", "3px"),
+            ],
+        ),
+        CssRule::class(
+            "block-path",
+            &[
+                ("flex", "1 1 auto"),
+                ("min-width", "0"),
+                ("overflow", "hidden"),
+                ("text-overflow", "ellipsis"),
+                ("white-space", "nowrap"),
+            ],
+        ),
+        CssRule::class(
+            "block-module-count",
+            &[
+                ("flex-shrink", "0"),
+                ("color", GRAY_400),
+                ("font-size", "10px"),
+            ],
+        ),
+        CssRule::class(
+            "cycle-block-body",
+            &[("padding-left", "14px"), ("margin-top", "2px")],
+        ),
+        // Repeated arc: dampened so it visually recedes behind its first
+        // occurrence. Closing rule below re-asserts full opacity so a row
+        // that were ever both classes at once (JS keeps this from happening)
+        // still renders as closing, not repeat.
+        CssRule::new(".sidebar-cut-row.cut-repeat", &[("opacity", "0.55")]),
+        CssRule::new(".sidebar-cut-row.cut-closing", &[("opacity", "1")]),
+        // Closing edge: reuses the existing cycle color (d.cycle, same red as
+        // the focus border and glow-cycle) for the arrow plus a leading
+        // loop-closer marker, no new color introduced.
+        CssRule::new(
+            ".sidebar-cut-row.cut-closing .sidebar-arrow",
+            &[("color", d.cycle), ("font-weight", "bold")],
+        ),
+        CssRule::new(
+            ".sidebar-cut-closing-marker",
+            &[
+                ("color", d.cycle),
+                ("font-weight", "bold"),
+                ("margin-right", "4px"),
+            ],
+        ),
         // One crossing symbol under an expanded cut row: name + scope tag,
         // indented by the enclosing .sidebar-locations.
         CssRule::class(
@@ -1073,6 +1163,12 @@ pub(super) fn render_styles() -> String {
             css.push_str(" }\n");
         }
     }
+    // Chevron rotation transition, gated behind prefers-reduced-motion so the
+    // rotate-on-open (see .cycle-block[open] .block-chevron above) doesn't
+    // animate for users who asked to avoid motion.
+    css.push_str("    @media (prefers-reduced-motion: no-preference) {\n");
+    css.push_str("      .block-chevron { transition: transform 0.15s ease; }\n");
+    css.push_str("    }\n");
     css.push_str("  </style>\n");
     css
 }
@@ -1618,6 +1714,40 @@ mod tests {
         assert!(
             content_section.contains("min-height: 0"),
             ".sidebar-content should have min-height: 0, got: {content_section}"
+        );
+    }
+
+    #[test]
+    fn test_css_contains_cycle_block_rules() {
+        let css = render_styles();
+        for selector in [
+            ".cycle-block",
+            ".block-head",
+            ".block-head::-webkit-details-marker",
+            ".block-chevron",
+            ".cycle-block[open] .block-chevron",
+            ".block-ordinal",
+            ".block-path",
+            ".block-module-count",
+            ".cycle-block-body",
+            ".sidebar-cut-row.cut-repeat",
+            ".sidebar-cut-row.cut-closing",
+            ".sidebar-cut-closing-marker",
+        ] {
+            assert!(css.contains(selector), "CSS should contain {selector}");
+        }
+        // Closing row reuses the existing cycle color, no new red introduced.
+        assert!(
+            css.contains(&format!(
+                ".sidebar-cut-row.cut-closing .sidebar-arrow {{ color: {};",
+                COLORS.direction.cycle
+            )),
+            "cut-closing arrow should reuse the existing cycle color"
+        );
+        // Chevron rotation transition is gated behind reduced-motion opt-in.
+        assert!(
+            css.contains("@media (prefers-reduced-motion: no-preference)"),
+            "chevron transition should be gated behind prefers-reduced-motion"
         );
     }
 

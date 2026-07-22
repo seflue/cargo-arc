@@ -1223,11 +1223,7 @@ describe('SidebarLogic', () => {
       const content = {
         querySelectorAll(sel) {
           if (sel === '.sidebar-symbol') return symbolEls;
-          if (
-            sel === ':scope > .sidebar-usage-group > .sidebar-symbol' ||
-            sel ===
-              ':scope > .sidebar-usage-group > .sidebar-symbol[data-collapsible]'
-          )
+          if (sel === ':scope .sidebar-symbol[data-collapsible]')
             return symbolEls;
           return [];
         },
@@ -1311,12 +1307,7 @@ describe('SidebarLogic', () => {
       const content = {
         querySelectorAll(sel) {
           if (sel === '.sidebar-symbol') return allEls;
-          if (
-            sel === ':scope > .sidebar-usage-group > .sidebar-symbol' ||
-            sel ===
-              ':scope > .sidebar-usage-group > .sidebar-symbol[data-collapsible]'
-          )
-            return l1Els;
+          if (sel === ':scope .sidebar-symbol[data-collapsible]') return l1Els;
           return [];
         },
         addEventListener(_evt, fn) {
@@ -1456,10 +1447,7 @@ describe('SidebarLogic', () => {
         querySelectorAll(sel) {
           if (sel === ':scope > .sidebar-usage-group > .sidebar-symbol')
             return l1Els;
-          if (
-            sel ===
-            ':scope > .sidebar-usage-group > .sidebar-symbol[data-collapsible]'
-          )
+          if (sel === ':scope .sidebar-symbol[data-collapsible]')
             return collapsibleEls;
           return [];
         },
@@ -1871,10 +1859,11 @@ describe('SidebarLogic', () => {
           crate: 'my_crate',
           moduleCount: 4,
           cycleCount: 3,
-          toBreak: 2,
-          edges: [
-            { fromId: 'x', toId: 'y', breaks: 3, refs: 2 },
-            { fromId: 'y', toId: 'x', breaks: 1, refs: 5 },
+          cycles: [
+            [
+              { fromId: 'x', toId: 'y', refs: 2 },
+              { fromId: 'y', toId: 'x', refs: 5 },
+            ],
           ],
         },
       };
@@ -1900,12 +1889,12 @@ describe('SidebarLogic', () => {
       expect(html).toContain('3 cycles');
     });
 
-    test('cluster-mode on: cuts listed best-first with data-arc-id', () => {
+    test('cluster-mode on: rows appear in cycle path order', () => {
       const html = SidebarLogic.buildContent('x-y');
       const iX = html.indexOf('data-arc-id="x-y"');
       const iY = html.indexOf('data-arc-id="y-x"');
       expect(iX).toBeGreaterThanOrEqual(0);
-      expect(iY).toBeGreaterThan(iX); // best (breaks 3) first, preserves cuts order
+      expect(iY).toBeGreaterThan(iX); // path order: x-y then the closing y-x
     });
 
     test('cluster-mode off: normal usage detail (cycles-off fix)', () => {
@@ -1995,28 +1984,6 @@ describe('SidebarLogic', () => {
       expect(yxRow).not.toContain('data-collapsible');
     });
 
-    test('subheader "to break" count comes from toBreak, not edges.length', () => {
-      globalThis.STATIC_DATA.clusters[0].edges.push({
-        fromId: 'x',
-        toId: 'z',
-        breaks: 0,
-        refs: 1,
-      });
-      const html = SidebarLogic.buildContent('x-y');
-      expect(html).toContain('2 to break');
-    });
-
-    test('lists all SCC edges, not only cuts', () => {
-      globalThis.STATIC_DATA.clusters[0].edges.push({
-        fromId: 'x',
-        toId: 'z',
-        breaks: 0,
-        refs: 1,
-      });
-      const html = SidebarLogic.buildContent('x-y');
-      expect(html).toContain('data-arc-id="x-z"');
-    });
-
     test('no expand-all button when no row is collapsible', () => {
       const html = SidebarLogic.buildContent('x-y');
       expect(html).not.toContain('sidebar-collapse-all');
@@ -2052,6 +2019,282 @@ describe('SidebarLogic', () => {
       const xyRow = html.slice(Math.max(0, xyIdx - 60), xyIdx + 60);
       expect(xyRow).not.toContain('sidebar-cut-row-focus');
       SidebarLogic._resolvedFocusArc = null;
+    });
+  });
+
+  describe('buildContent — cluster view — cycle blocks', () => {
+    let savedClusters;
+    let savedNodes;
+
+    // Mirrors the design's own ordering example: three cycles sharing a
+    // start node and a first edge (a-b), lengths 3, 3, 4.
+    const cycleAbc = [
+      { fromId: 'a', toId: 'b', refs: 1 },
+      { fromId: 'b', toId: 'c', refs: 1 },
+      { fromId: 'c', toId: 'a', refs: 1 },
+    ];
+    const cycleAbd = [
+      { fromId: 'a', toId: 'b', refs: 1 },
+      { fromId: 'b', toId: 'd', refs: 1 },
+      { fromId: 'd', toId: 'a', refs: 1 },
+    ];
+    const cycleAbcd = [
+      { fromId: 'a', toId: 'b', refs: 1 },
+      { fromId: 'b', toId: 'c', refs: 1 },
+      { fromId: 'c', toId: 'd', refs: 1 },
+      { fromId: 'd', toId: 'a', refs: 1 },
+    ];
+
+    beforeEach(() => {
+      savedClusters = globalThis.STATIC_DATA.clusters;
+      savedNodes = globalThis.STATIC_DATA.nodes;
+      globalThis.STATIC_DATA.nodes = { ...savedNodes };
+      for (const name of ['a', 'b', 'c', 'd']) {
+        globalThis.STATIC_DATA.nodes[name] = {
+          type: 'module',
+          name,
+          parent: 'crate_a',
+          x: 0,
+          y: 0,
+          width: 100,
+          height: 30,
+          hasChildren: false,
+        };
+      }
+      globalThis.STATIC_DATA.clusters = {
+        0: {
+          crate: 'my_crate',
+          moduleCount: 4,
+          cycleCount: 3,
+          cycles: [cycleAbc, cycleAbd, cycleAbcd],
+        },
+      };
+      SidebarLogic._isClusterMode = () => true;
+    });
+
+    afterEach(() => {
+      globalThis.STATIC_DATA.clusters = savedClusters;
+      globalThis.STATIC_DATA.nodes = savedNodes;
+      SidebarLogic._isClusterMode = null;
+    });
+
+    // Splits rendered cluster HTML into one chunk per cycle block. Each
+    // `<details>` block never nests another, so slicing on the closing tag
+    // isolates block i's markup (header + rows) from the others.
+    function blockChunks(html) {
+      return html.split('</details>').slice(0, -1);
+    }
+
+    function rowClassLists(chunk) {
+      return [
+        ...chunk.matchAll(/<div class="([^"]*sidebar-cut-row[^"]*)"/g),
+      ].map((m) => m[1]);
+    }
+
+    test('one block per cycle, block i has cycles[i].length rows', () => {
+      const html = SidebarLogic._buildClusterContent('0');
+      const chunks = blockChunks(html);
+      expect(chunks.length).toBe(3);
+      expect(rowClassLists(chunks[0]).length).toBe(cycleAbc.length);
+      expect(rowClassLists(chunks[1]).length).toBe(cycleAbd.length);
+      expect(rowClassLists(chunks[2]).length).toBe(cycleAbcd.length);
+      expect(html.match(/<details class="cycle-block">/g).length).toBe(3);
+    });
+
+    test('closing edge: only the last row of each block is marked', () => {
+      const html = SidebarLogic._buildClusterContent('0');
+      const chunks = blockChunks(html);
+      for (const chunk of chunks) {
+        const rows = rowClassLists(chunk);
+        rows.forEach((classes, i) => {
+          if (i === rows.length - 1) {
+            expect(classes).toContain('cut-closing');
+          } else {
+            expect(classes).not.toContain('cut-closing');
+          }
+        });
+      }
+    });
+
+    test('repeat: a shared arc dims from its second occurrence, first stays full', () => {
+      const html = SidebarLogic._buildClusterContent('0');
+      const chunks = blockChunks(html);
+      // a-b is the first (non-closing) edge of all three cycles.
+      const abClasses = chunks.map(
+        (chunk) => rowClassLists(chunk)[0], // a-b is always row 0 here
+      );
+      expect(abClasses[0]).not.toContain('cut-repeat'); // first occurrence
+      expect(abClasses[1]).toContain('cut-repeat'); // repeated
+      expect(abClasses[2]).toContain('cut-repeat'); // repeated
+    });
+
+    test('repeat exception: a closing edge stays full even if seen before', () => {
+      // Block 0: a→b→a (closing b-a). Block 1: b→c→a→b (closing a-b, which
+      // reuses block 0's non-closing a-b arc id).
+      globalThis.STATIC_DATA.clusters[0].cycles = [
+        [
+          { fromId: 'a', toId: 'b', refs: 1 },
+          { fromId: 'b', toId: 'a', refs: 1 },
+        ],
+        [
+          { fromId: 'b', toId: 'c', refs: 1 },
+          { fromId: 'c', toId: 'a', refs: 1 },
+          { fromId: 'a', toId: 'b', refs: 1 },
+        ],
+      ];
+      const html = SidebarLogic._buildClusterContent('0');
+      const chunks = blockChunks(html);
+      const block1Rows = rowClassLists(chunks[1]);
+      const closingRow = block1Rows[block1Rows.length - 1];
+      expect(closingRow).toContain('cut-closing');
+      expect(closingRow).not.toContain('cut-repeat');
+    });
+
+    test('closing edge renders a leading loop-closer marker, plain rows do not', () => {
+      const closing = SidebarLogic._buildCutRow(
+        { fromId: 'a', toId: 'b', refs: 1 },
+        [],
+        undefined,
+        ['cut-closing'],
+      );
+      expect(closing).toContain('sidebar-cut-closing-marker');
+      expect(closing).toContain('&#x21ba;');
+      const plain = SidebarLogic._buildCutRow(
+        { fromId: 'a', toId: 'b', refs: 1 },
+        [],
+        undefined,
+        [],
+      );
+      expect(plain).not.toContain('sidebar-cut-closing-marker');
+    });
+
+    test('rows reuse _buildCutRow: symbol expand and data-arc-id present', () => {
+      globalThis.STATIC_DATA.arcs['a-b'] = {
+        from: 'a',
+        to: 'b',
+        usages: [
+          {
+            symbol: 'Foo',
+            modulePath: null,
+            locations: [{ file: 'a.rs', line: 1 }],
+          },
+        ],
+        sccId: 0,
+      };
+      const html = SidebarLogic._buildClusterContent('0');
+      expect(html).toContain('data-arc-id="a-b"');
+      expect(html).toContain('data-collapsible');
+      expect(html).toContain('<span class="sidebar-symbol-name">Foo</span>');
+      delete globalThis.STATIC_DATA.arcs['a-b'];
+    });
+
+    test('header: summary carries ordinal, leaf path and module count', () => {
+      const html = SidebarLogic._buildClusterContent('0');
+      const chunks = blockChunks(html);
+      const firstSummary = chunks[0].match(
+        /<summary class="block-head">([\s\S]*?)<\/summary>/,
+      )[1];
+      expect(firstSummary).toContain('>1<'); // ordinal
+      expect(firstSummary).toContain('a → b → c → a'); // leaf path, closes the loop
+      expect(firstSummary).toContain('3 Module'); // node count
+    });
+
+    test('header of a long cycle (k > 4) elides the middle', () => {
+      globalThis.STATIC_DATA.nodes.e = {
+        type: 'module',
+        name: 'e',
+        parent: 'crate_a',
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 30,
+        hasChildren: false,
+      };
+      globalThis.STATIC_DATA.clusters[0].cycles = [
+        [
+          { fromId: 'a', toId: 'b', refs: 1 },
+          { fromId: 'b', toId: 'c', refs: 1 },
+          { fromId: 'c', toId: 'd', refs: 1 },
+          { fromId: 'd', toId: 'e', refs: 1 },
+          { fromId: 'e', toId: 'a', refs: 1 },
+        ],
+      ];
+      const html = SidebarLogic._buildClusterContent('0');
+      const chunks = blockChunks(html);
+      const summary = chunks[0].match(
+        /<summary class="block-head">([\s\S]*?)<\/summary>/,
+      )[1];
+      expect(summary).toContain('>1<'); // ordinal
+      expect(summary).toContain('…'); // ellipsis
+      expect(summary).toContain('a'); // head
+      expect(summary).toContain('e → a'); // tail + closing edge
+      expect(summary).toContain('5 Module');
+    });
+  });
+
+  describe('shortLabel', () => {
+    let savedNodes;
+
+    beforeEach(() => {
+      savedNodes = globalThis.STATIC_DATA.nodes;
+      globalThis.STATIC_DATA.nodes = { ...savedNodes };
+    });
+
+    afterEach(() => {
+      globalThis.STATIC_DATA.nodes = savedNodes;
+    });
+
+    function addNode(id, name, parent) {
+      globalThis.STATIC_DATA.nodes[id] = {
+        type: 'module',
+        name,
+        parent,
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 30,
+        hasChildren: false,
+      };
+    }
+
+    test('unique leaf name resolves to the leaf', () => {
+      addNode('token', 'token', 'crate_a');
+      const html = SidebarLogic.shortLabel('token', ['token']);
+      expect(html).toBe('token');
+    });
+
+    test('leaf collision grows to the shortest unique suffix, no crate prefix', () => {
+      addNode('mod_a', 'a', 'crate_a');
+      addNode('mod_a_util', 'util', 'mod_a');
+      addNode('mod_b', 'b', 'crate_a');
+      addNode('mod_b_util', 'util', 'mod_b');
+      const sccNodeIds = ['mod_a_util', 'mod_b_util'];
+      expect(SidebarLogic.shortLabel('mod_a_util', sccNodeIds)).toBe('a::util');
+      expect(SidebarLogic.shortLabel('mod_b_util', sccNodeIds)).toBe('b::util');
+    });
+  });
+
+  describe('elideCyclePath', () => {
+    test('length <= n shows the full closed path', () => {
+      const label = SidebarLogic.elideCyclePath(['a', 'b', 'c'], 4);
+      expect(label).toBe('a → b → c → a');
+    });
+
+    test('length > n keeps head, second node and closing edge, elides rest', () => {
+      const label = SidebarLogic.elideCyclePath(['a', 'b', 'c', 'd', 'e'], 4);
+      expect(label).toBe('a → b → … → e → a');
+      expect(label).not.toContain('c');
+      expect(label).not.toContain('d');
+    });
+
+    test('over the char budget drops the second node too', () => {
+      const label = SidebarLogic.elideCyclePath(
+        ['a', 'b', 'c', 'd', 'e'],
+        4,
+        5,
+      );
+      expect(label).toBe('a → … → e → a');
+      expect(label).not.toContain('b');
     });
   });
 
@@ -2224,6 +2467,381 @@ describe('SidebarLogic', () => {
     });
   });
 
+  // Minimal real DOM built from the actual HTML strings the sidebar renders
+  // (no jsdom in this project). Supports exactly what production selectors
+  // use: descendant `.class`/`[attr]` lookups and `:scope > a > b` child
+  // chains, plus classList/attr/dataset/closest. This is what lets a test
+  // exercise the real CSS selector strings in sidebar.js instead of a
+  // hand-rolled querySelectorAll mock that echoes back canned answers
+  // regardless of the selector text (which is why the ca-0372 nesting
+  // regression slipped past the pre-existing collapse-all tests).
+  function parseCompound(compound) {
+    const attrs = [];
+    let rest = compound.replace(/\[([^\]]+)\]/g, (_, a) => {
+      attrs.push(a.split('=')[0].trim());
+      return '';
+    });
+    const classes = [];
+    rest = rest.replace(/\.([-a-zA-Z0-9_]+)/g, (_, c) => {
+      classes.push(c);
+      return '';
+    });
+    const tag = rest.trim() || null;
+    return { tag, classes, attrs };
+  }
+
+  function matchesCompound(node, compound) {
+    const { tag, classes, attrs } = parseCompound(compound);
+    if (tag && node.tagName.toLowerCase() !== tag.toLowerCase()) return false;
+    for (const c of classes) if (!node.classList.contains(c)) return false;
+    for (const a of attrs) if (!node.hasAttribute(a)) return false;
+    return true;
+  }
+
+  function descendants(node) {
+    const out = [];
+    const stack = [...node.children];
+    while (stack.length) {
+      const n = stack.pop();
+      out.push(n);
+      stack.push(...n.children);
+    }
+    return out;
+  }
+
+  function queryAll(root, selector) {
+    const parts = selector.split('>').map((s) => s.trim());
+    let level;
+    if (parts[0] === ':scope') {
+      level = [root];
+      for (const compound of parts.slice(1)) {
+        level = level.flatMap((n) =>
+          n.children.filter((c) => matchesCompound(c, compound)),
+        );
+      }
+    } else if (selector.startsWith(':scope ')) {
+      // `:scope <compound>` (descendant combinator, no `>`): any descendant.
+      const compound = selector.slice(':scope '.length).trim();
+      level = descendants(root).filter((n) => matchesCompound(n, compound));
+    } else {
+      level = descendants(root).filter((n) => matchesCompound(n, parts[0]));
+      for (const compound of parts.slice(1)) {
+        level = level.flatMap((n) =>
+          n.children.filter((c) => matchesCompound(c, compound)),
+        );
+      }
+    }
+    return level;
+  }
+
+  function makeNode(tag, attrs) {
+    const classSet = new Set((attrs.class || '').split(/\s+/).filter(Boolean));
+    const listeners = {};
+    const style = {};
+    for (const decl of (attrs.style || '').split(';')) {
+      const [k, v] = decl.split(':');
+      if (k && v) style[k.trim()] = v.trim();
+    }
+    const node = {
+      tagName: tag,
+      children: [],
+      parentNode: null,
+      innerHTML: '',
+      style,
+      get dataset() {
+        const ds = {};
+        for (const k of Object.keys(attrs)) {
+          if (k.startsWith('data-')) {
+            const camel = k
+              .slice(5)
+              .replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+            ds[camel] = attrs[k];
+          }
+        }
+        return ds;
+      },
+      get nextElementSibling() {
+        if (!node.parentNode) return null;
+        const idx = node.parentNode.children.indexOf(node);
+        return node.parentNode.children[idx + 1] ?? null;
+      },
+      getAttribute: (name) => (Object.hasOwn(attrs, name) ? attrs[name] : null),
+      hasAttribute: (name) => Object.hasOwn(attrs, name),
+      setAttribute: (name, v) => {
+        attrs[name] = String(v);
+      },
+      removeAttribute: (name) => {
+        delete attrs[name];
+      },
+      classList: {
+        contains: (c) => classSet.has(c),
+        add: (c) => classSet.add(c),
+        remove: (c) => classSet.delete(c),
+        toggle: (c, on) => {
+          if (on) classSet.add(c);
+          else classSet.delete(c);
+        },
+      },
+      addEventListener(evt, fn) {
+        if (!listeners[evt]) listeners[evt] = [];
+        listeners[evt].push(fn);
+      },
+      _fire(evt, ev) {
+        for (const fn of listeners[evt] || []) fn(ev);
+      },
+      querySelector(sel) {
+        return queryAll(node, sel)[0] ?? null;
+      },
+      querySelectorAll(sel) {
+        return queryAll(node, sel);
+      },
+      closest(sel) {
+        let n = node;
+        while (n) {
+          if (matchesCompound(n, sel)) return n;
+          n = n.parentNode;
+        }
+        return null;
+      },
+    };
+    return node;
+  }
+
+  // Parses the sidebar's own generated HTML (div/details/summary/span/button,
+  // always balanced, double-quoted attrs) into the node tree above.
+  function parseFragment(html) {
+    const root = makeNode('ROOT', {});
+    const stack = [root];
+    const tagRe = /<(\/)?([a-zA-Z][a-zA-Z0-9-]*)([^<>]*)>/g;
+    let m = tagRe.exec(html);
+    while (m) {
+      const [, closing, tag, rawAttrs] = m;
+      if (closing) {
+        stack.pop();
+      } else {
+        const attrs = {};
+        const attrRe = /([a-zA-Z_:][-a-zA-Z0-9_:.]*)(?:\s*=\s*"([^"]*)")?/g;
+        let am = attrRe.exec(rawAttrs);
+        while (am) {
+          attrs[am[1]] = am[2] ?? '';
+          am = attrRe.exec(rawAttrs);
+        }
+        const node = makeNode(tag.toUpperCase(), attrs);
+        const parent = stack[stack.length - 1];
+        parent.children.push(node);
+        node.parentNode = parent;
+        stack.push(node);
+      }
+      m = tagRe.exec(html);
+    }
+    return root;
+  }
+
+  describe('collapse-all controls cycle blocks (ca-0372)', () => {
+    let savedClusters;
+    let savedNodes;
+    let savedArcs;
+
+    beforeEach(() => {
+      savedClusters = globalThis.STATIC_DATA.clusters;
+      savedNodes = globalThis.STATIC_DATA.nodes;
+      savedArcs = globalThis.STATIC_DATA.arcs;
+      globalThis.STATIC_DATA.nodes = { ...savedNodes };
+      for (const name of ['a', 'b']) {
+        globalThis.STATIC_DATA.nodes[name] = {
+          type: 'module',
+          name,
+          parent: 'crate_a',
+          x: 0,
+          y: 0,
+          width: 100,
+          height: 30,
+          hasChildren: false,
+        };
+      }
+      globalThis.STATIC_DATA.arcs = {
+        ...savedArcs,
+        'a-b': {
+          from: 'a',
+          to: 'b',
+          usages: [
+            {
+              symbol: 'Foo',
+              modulePath: null,
+              locations: [{ file: 'a.rs', line: 1 }],
+            },
+          ],
+        },
+        'b-a': {
+          from: 'b',
+          to: 'a',
+          usages: [
+            {
+              symbol: 'Bar',
+              modulePath: null,
+              locations: [{ file: 'b.rs', line: 2 }],
+            },
+          ],
+        },
+      };
+      globalThis.STATIC_DATA.clusters = {
+        0: {
+          crate: 'my_crate',
+          moduleCount: 2,
+          cycleCount: 1,
+          cycles: [
+            [
+              { fromId: 'a', toId: 'b', refs: 1 },
+              { fromId: 'b', toId: 'a', refs: 1 },
+            ],
+          ],
+        },
+      };
+      SidebarLogic._isClusterMode = () => true;
+    });
+
+    afterEach(() => {
+      globalThis.STATIC_DATA.clusters = savedClusters;
+      globalThis.STATIC_DATA.nodes = savedNodes;
+      globalThis.STATIC_DATA.arcs = savedArcs;
+      SidebarLogic._isClusterMode = null;
+    });
+
+    test('clicking collapse-all opens then closes every cycle block', () => {
+      const html = SidebarLogic._buildClusterContent('0');
+      const root = parseFragment(`<div class="sidebar-root">${html}</div>`);
+      const blocks = root.querySelectorAll('.cycle-block');
+      expect(blocks.length).toBeGreaterThan(0); // sanity: blocks exist
+      expect(blocks.every((b) => b.hasAttribute('open'))).toBe(false); // start closed
+
+      SidebarLogic._setupCollapseHandlers(root);
+      const btn = root.querySelector('.sidebar-collapse-all');
+
+      btn._fire('click'); // any closed → open all
+      expect(blocks.every((b) => b.hasAttribute('open'))).toBe(true);
+      expect(btn.innerHTML).toBe('−');
+
+      btn._fire('click'); // all open → close all
+      expect(blocks.some((b) => b.hasAttribute('open'))).toBe(false);
+      expect(btn.innerHTML).toBe('+');
+    });
+
+    test('button glyph syncs when a block is opened manually', () => {
+      const html = SidebarLogic._buildClusterContent('0');
+      const root = parseFragment(`<div class="sidebar-root">${html}</div>`);
+      SidebarLogic._setupCollapseHandlers(root);
+      const content = root.querySelector('.sidebar-content');
+      const btn = root.querySelector('.sidebar-collapse-all');
+      const block = root.querySelectorAll('.cycle-block')[0];
+
+      block.setAttribute('open', ''); // the only block is now open
+      SidebarLogic._syncCollapseAllButton(root, content);
+      expect(btn.innerHTML).toBe('−'); // all blocks open
+    });
+  });
+
+  describe('cluster row interaction across duplicate arc ids (ca-0372 Phase 6)', () => {
+    let savedClusters;
+    let savedNodes;
+
+    beforeEach(() => {
+      savedClusters = globalThis.STATIC_DATA.clusters;
+      savedNodes = globalThis.STATIC_DATA.nodes;
+      globalThis.STATIC_DATA.nodes = { ...savedNodes };
+      for (const name of ['a', 'b', 'c']) {
+        globalThis.STATIC_DATA.nodes[name] = {
+          type: 'module',
+          name,
+          parent: 'crate_a',
+          x: 0,
+          y: 0,
+          width: 100,
+          height: 30,
+          hasChildren: false,
+        };
+      }
+      // 'a-b' is a non-closing edge in both blocks.
+      globalThis.STATIC_DATA.clusters = {
+        0: {
+          crate: 'my_crate',
+          moduleCount: 3,
+          cycleCount: 2,
+          cycles: [
+            [
+              { fromId: 'a', toId: 'b', refs: 1 },
+              { fromId: 'b', toId: 'a', refs: 1 },
+            ],
+            [
+              { fromId: 'a', toId: 'b', refs: 1 },
+              { fromId: 'b', toId: 'c', refs: 1 },
+              { fromId: 'c', toId: 'a', refs: 1 },
+            ],
+          ],
+        },
+      };
+      SidebarLogic._isClusterMode = () => true;
+    });
+
+    afterEach(() => {
+      globalThis.STATIC_DATA.clusters = savedClusters;
+      globalThis.STATIC_DATA.nodes = savedNodes;
+      SidebarLogic._isClusterMode = null;
+    });
+
+    test('clicking one occurrence of a shared arc id focus-marks every occurrence', () => {
+      const html = SidebarLogic._buildClusterContent('0');
+      const root = parseFragment(`<div class="sidebar-root">${html}</div>`);
+      const content = root.querySelector('.sidebar-content');
+      const origUP = SidebarLogic.updatePosition;
+      SidebarLogic.updatePosition = () => {};
+      SidebarLogic._onEdgeClick = () => true; // pinned
+      SidebarLogic._resolvedFocusArc = () => 'a-b';
+      SidebarLogic._setupCollapseHandlers(root);
+
+      const abRows = content
+        .querySelectorAll('.sidebar-cut-row')
+        .filter((r) => r.dataset.arcId === 'a-b');
+      expect(abRows.length).toBe(2); // sanity: the shared edge renders twice
+
+      content._fire('click', {
+        target: {
+          closest: (sel) => (sel === '.sidebar-cut-row' ? abRows[0] : null),
+        },
+      });
+
+      expect(
+        abRows.every((r) => r.classList.contains('sidebar-cut-row-focus')),
+      ).toBe(true);
+
+      SidebarLogic.updatePosition = origUP;
+      SidebarLogic._onEdgeClick = null;
+      SidebarLogic._resolvedFocusArc = null;
+    });
+
+    test('a summary click is not intercepted by the row/symbol click handler', () => {
+      const html = SidebarLogic._buildClusterContent('0');
+      const root = parseFragment(`<div class="sidebar-root">${html}</div>`);
+      const content = root.querySelector('.sidebar-content');
+      const origUP = SidebarLogic.updatePosition;
+      SidebarLogic.updatePosition = () => {};
+      let called = false;
+      SidebarLogic._onEdgeClick = () => {
+        called = true;
+        return false;
+      };
+      SidebarLogic._setupCollapseHandlers(root);
+
+      const summary = content.querySelector('.block-head');
+      expect(summary).not.toBeNull();
+      content._fire('click', { target: summary });
+
+      expect(called).toBe(false); // native <details> toggle handles it, not our handler
+
+      SidebarLogic.updatePosition = origUP;
+      SidebarLogic._onEdgeClick = null;
+    });
+  });
+
   describe('_formatNodeName', () => {
     test('returns fallback when node is null', () => {
       expect(SidebarLogic._formatNodeName(null, 'fallback-id')).toBe(
@@ -2383,12 +3001,7 @@ describe('SidebarLogic', () => {
       const contentListeners = new Map();
       const content = {
         querySelectorAll(sel) {
-          if (
-            sel === ':scope > .sidebar-usage-group > .sidebar-symbol' ||
-            sel ===
-              ':scope > .sidebar-usage-group > .sidebar-symbol[data-collapsible]'
-          )
-            return [];
+          if (sel === ':scope .sidebar-symbol[data-collapsible]') return [];
           if (sel === '.sidebar-symbol') return [];
           return [];
         },
@@ -2628,12 +3241,7 @@ describe('SidebarLogic', () => {
       const contentListeners = new Map();
       const content = {
         querySelectorAll(sel) {
-          if (
-            sel === ':scope > .sidebar-usage-group > .sidebar-symbol' ||
-            sel ===
-              ':scope > .sidebar-usage-group > .sidebar-symbol[data-collapsible]'
-          )
-            return [];
+          if (sel === ':scope .sidebar-symbol[data-collapsible]') return [];
           return [];
         },
         addEventListener(evt, fn) {

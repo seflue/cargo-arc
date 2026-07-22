@@ -114,8 +114,7 @@ struct ClusterData {
     crate_name: String,
     module_count: usize,
     cycle_count: usize,
-    edges: Vec<CutData>,
-    to_break: usize,
+    cycles: Vec<Vec<CutData>>,
 }
 
 #[derive(Serialize)]
@@ -123,7 +122,6 @@ struct ClusterData {
 struct CutData {
     from_id: String,
     to_id: String,
-    breaks: usize,
     refs: usize,
 }
 
@@ -131,7 +129,6 @@ fn cut_data(cut: &CutInfo) -> CutData {
     CutData {
         from_id: cut.from_id.to_string(),
         to_id: cut.to_id.to_string(),
-        breaks: cut.breaks,
         refs: cut.refs,
     }
 }
@@ -412,8 +409,11 @@ fn generate_static_data(
                     crate_name: c.crate_name.clone(),
                     module_count: c.module_count,
                     cycle_count: c.cycle_count,
-                    edges: c.edges.iter().map(cut_data).collect(),
-                    to_break: c.to_break,
+                    cycles: c
+                        .cycles
+                        .iter()
+                        .map(|block| block.iter().map(cut_data).collect())
+                        .collect(),
                 },
             )
         })
@@ -1856,27 +1856,18 @@ mod tests {
                 crate_name: "app".into(),
                 module_count: 2,
                 cycle_count: 1,
-                cuts: vec![crate::layout::CutInfo {
-                    from_id: a,
-                    to_id: b,
-                    breaks: 1,
-                    refs: 2,
-                }],
-                edges: vec![
+                cycles: vec![vec![
                     crate::layout::CutInfo {
                         from_id: a,
                         to_id: b,
-                        breaks: 1,
                         refs: 2,
                     },
                     crate::layout::CutInfo {
                         from_id: b,
                         to_id: a,
-                        breaks: 1,
                         refs: 1,
                     },
-                ],
-                to_break: 1,
+                ]],
             },
         );
 
@@ -1897,15 +1888,18 @@ mod tests {
         assert_eq!(cl["crate"], "app");
         assert_eq!(cl["moduleCount"], 2);
         assert_eq!(cl["cycleCount"], 1);
-        assert_eq!(cl["toBreak"], 1);
-        let edges = cl["edges"].as_array().unwrap();
-        assert_eq!(edges.len(), 2);
-        assert_eq!(edges[0]["fromId"], a.to_string());
-        assert_eq!(edges[0]["toId"], b.to_string());
-        assert_eq!(edges[0]["breaks"], 1);
-        assert_eq!(edges[0]["refs"], 2);
-        assert_eq!(edges[1]["fromId"], b.to_string());
-        assert_eq!(edges[1]["toId"], a.to_string());
+        let cycles = cl["cycles"].as_array().unwrap();
+        assert_eq!(cycles.len(), 1, "one block for the one cycle");
+        let block = cycles[0].as_array().unwrap();
+        assert_eq!(block.len(), 2, "closing edge included");
+        assert_eq!(block[0]["fromId"], a.to_string());
+        assert_eq!(block[0]["toId"], b.to_string());
+        assert_eq!(block[0]["refs"], 2);
+        assert_eq!(block[1]["fromId"], b.to_string());
+        assert_eq!(block[1]["toId"], a.to_string());
+        assert_eq!(block[1]["refs"], 1);
+        assert!(cl.get("edges").is_none());
+        assert!(cl.get("toBreak").is_none());
         // Cut arc-id addresses a serialized arc.
         assert!(data["arcs"][format!("{a}-{b}")].is_object());
     }
@@ -1961,18 +1955,9 @@ mod tests {
         let ir = build_layout(&graph, &analysis, false);
 
         assert_eq!(ir.clusters.len(), 1, "expected exactly one tangle cluster");
-        let cluster = ir.clusters.values().next().unwrap();
-        assert_eq!(cluster.cuts.len(), 2, "tangle SCC needs two cuts");
 
         let id_of = |name: &str| ir.items.iter().find(|item| item.label == name).unwrap().id;
         let (a_id, b_id, c_id) = (id_of("a"), id_of("b"), id_of("c"));
-
-        assert_eq!(cluster.cuts[0].from_id, b_id);
-        assert_eq!(cluster.cuts[0].to_id, a_id);
-        assert_eq!(cluster.cuts[0].refs, 1);
-        assert_eq!(cluster.cuts[1].from_id, c_id);
-        assert_eq!(cluster.cuts[1].to_id, a_id);
-        assert_eq!(cluster.cuts[1].refs, 2);
 
         let config = RenderConfig::default();
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
@@ -2000,28 +1985,40 @@ mod tests {
         assert_eq!(clusters.len(), 1);
 
         let cluster = clusters.values().next().unwrap();
-        assert_eq!(cluster["toBreak"], 2);
-        let edges = cluster["edges"].as_array().unwrap();
-        assert_eq!(
-            edges.len(),
-            4,
-            "all four SCC-internal edges, not just the cuts"
-        );
-        // The chosen cut-set (b->a, c->a) ranks first: breaks desc, refs asc.
-        assert_eq!(edges[0]["fromId"], b_id.to_string());
-        assert_eq!(edges[0]["toId"], a_id.to_string());
-        assert_eq!(edges[0]["refs"], 1);
-        assert_eq!(edges[1]["fromId"], c_id.to_string());
-        assert_eq!(edges[1]["toId"], a_id.to_string());
-        assert_eq!(edges[1]["refs"], 2);
-        assert_eq!(edges[2]["fromId"], a_id.to_string());
-        assert_eq!(edges[2]["toId"], c_id.to_string());
-        assert_eq!(edges[3]["fromId"], a_id.to_string());
-        assert_eq!(edges[3]["toId"], b_id.to_string());
+        assert!(cluster.get("edges").is_none());
+        assert!(cluster.get("toBreak").is_none());
+        let cycles = cluster["cycles"].as_array().unwrap();
+        assert_eq!(cycles.len(), 2, "one block per elementary cycle");
 
-        // Each cut's fromId-toId addresses a serialized arc.
-        assert!(data["arcs"][format!("{b_id}-{a_id}")].is_object());
-        assert!(data["arcs"][format!("{c_id}-{a_id}")].is_object());
+        // Both cycles start at "a" (shared node); tie-break by rest-sequence
+        // rank puts a<->b before a<->c since b's layout rank precedes c's.
+        let block0 = cycles[0].as_array().unwrap();
+        assert_eq!(block0.len(), 2, "closing edge included");
+        assert_eq!(block0[0]["fromId"], a_id.to_string());
+        assert_eq!(block0[0]["toId"], b_id.to_string());
+        assert_eq!(block0[0]["refs"], 5);
+        assert_eq!(block0[1]["fromId"], b_id.to_string());
+        assert_eq!(block0[1]["toId"], a_id.to_string());
+        assert_eq!(block0[1]["refs"], 1);
+
+        let block1 = cycles[1].as_array().unwrap();
+        assert_eq!(block1.len(), 2, "closing edge included");
+        assert_eq!(block1[0]["fromId"], a_id.to_string());
+        assert_eq!(block1[0]["toId"], c_id.to_string());
+        assert_eq!(block1[0]["refs"], 3);
+        assert_eq!(block1[1]["fromId"], c_id.to_string());
+        assert_eq!(block1[1]["toId"], a_id.to_string());
+        assert_eq!(block1[1]["refs"], 2);
+
+        // Every block edge's fromId-toId addresses a serialized arc.
+        for edge in block0.iter().chain(block1.iter()) {
+            let arc_id = format!(
+                "{}-{}",
+                edge["fromId"].as_str().unwrap(),
+                edge["toId"].as_str().unwrap()
+            );
+            assert!(data["arcs"][&arc_id].is_object(), "arc {arc_id} missing");
+        }
     }
 
     /// Render `ir` and parse the embedded STATIC_DATA JSON.

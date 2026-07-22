@@ -1,7 +1,7 @@
 //! Build layout IR from graph and cycle information.
 
 use super::toposort::stable_toposort;
-use crate::diagnose::{ConsumerScope, Cut, CycleAnalysis};
+use crate::diagnose::{Cluster, ConsumerScope, Cut, Cycle, CycleAnalysis, order_cycle_blocks};
 use crate::graph::{ArcGraph, Edge, Node};
 use crate::model::{EdgeContext, SourceLocation};
 use crate::volatility::Volatility;
@@ -122,7 +122,6 @@ impl LayoutEdge {
 pub struct CutInfo {
     pub from_id: NodeId,
     pub to_id: NodeId,
-    pub breaks: usize,
     pub refs: usize,
 }
 
@@ -131,11 +130,11 @@ pub struct ClusterInfo {
     pub crate_name: String,
     pub module_count: usize,
     pub cycle_count: usize,
-    pub cuts: Vec<CutInfo>,
-    /// Every SCC-internal edge, ranked like `cuts`.
-    pub edges: Vec<CutInfo>,
-    /// Cut-set size (`cuts.len()`) before endpoint filtering.
-    pub to_break: usize,
+    /// Elementary cycles as ordered edge blocks: `cycles[i]` is one cycle's
+    /// path edges in path order, closing edge last. Blocks are sorted for
+    /// top-to-bottom sidebar reading (start node's layout rank, then length,
+    /// then rest-sequence rank).
+    pub cycles: Vec<Vec<CutInfo>>,
 }
 
 /// One symbol of a provider: how its consumers are scoped in the module tree,
@@ -268,10 +267,8 @@ fn attach_symbol_scopes(
     }
 }
 
-/// Compute the per-SCC cut-set and attach it keyed by the analysis sccId
-/// (the same id carried by the layout items), mapping cut `NodeIndex` to layout
-/// arc endpoints via `node_map`. Cut edges whose endpoints are absent from the
-/// layout are skipped.
+/// Compute each cluster's elementary-cycle blocks and attach them keyed by the
+/// analysis sccId (the same id carried by the layout items).
 fn attach_clusters(
     ir: &mut LayoutIR,
     graph: &ArcGraph,
@@ -284,29 +281,57 @@ fn attach_clusters(
         let Some(&scc_id) = cluster.nodes.first().and_then(|n| analysis.node_scc.get(n)) else {
             continue;
         };
-        let to_cut_info = |cut: &Cut| {
-            Some(CutInfo {
-                from_id: *node_map.get(&cut.from)?,
-                to_id: *node_map.get(&cut.to)?,
-                breaks: cut.breaks,
-                refs: cut.refs,
-            })
-        };
-        let to_break = cluster.cuts.len();
-        let cuts = cluster.cuts.iter().filter_map(to_cut_info).collect();
-        let edges = cluster.edges.iter().filter_map(to_cut_info).collect();
+        let cycles = cycle_blocks(&cluster, analysis, node_map);
         ir.clusters.insert(
             scc_id,
             ClusterInfo {
                 crate_name: graph[cluster.crate_idx].name().to_string(),
                 module_count: cluster.nodes.len(),
                 cycle_count: cluster.cycles.len(),
-                cuts,
-                edges,
-                to_break,
+                cycles,
             },
         );
     }
+}
+
+/// Translate a cluster's elementary cycles into ordered edge blocks for the
+/// sidebar: each block is one cycle's path, rotated to start at the node with
+/// the smallest layout `NodeId` (the vertical order nodes are drawn in),
+/// closing edge last; blocks are sorted the same way so the sidebar reads
+/// top to bottom with as few jumps as possible. Per-edge `refs` is
+/// looked up from `cluster.edges`, which already covers every SCC-internal
+/// edge, so a cycle-path edge is always found there.
+fn cycle_blocks(
+    cluster: &Cluster,
+    analysis: &CycleAnalysis,
+    node_map: &HashMap<NodeIndex, NodeId>,
+) -> Vec<Vec<CutInfo>> {
+    let edge_info: HashMap<(NodeIndex, NodeIndex), &Cut> =
+        cluster.edges.iter().map(|c| ((c.from, c.to), c)).collect();
+    let raw_paths: Vec<Vec<NodeIndex>> = cluster
+        .cycles
+        .iter()
+        .filter_map(|&idx| analysis.cycles.get(idx))
+        .map(|cycle| cycle.path.clone())
+        .collect();
+    let rank_of = |n: NodeIndex| node_map.get(&n).copied().unwrap_or(usize::MAX);
+
+    order_cycle_blocks(&raw_paths, rank_of)
+        .into_iter()
+        .map(|path| {
+            Cycle { path }
+                .edges()
+                .filter_map(|(from, to)| {
+                    let cut = edge_info.get(&(from, to))?;
+                    Some(CutInfo {
+                        from_id: *node_map.get(&from)?,
+                        to_id: *node_map.get(&to)?,
+                        refs: cut.refs,
+                    })
+                })
+                .collect()
+        })
+        .collect()
 }
 
 /// Convert graph nodes to `LayoutItems`, returning the `NodeIndex` → `NodeId` map.
@@ -1507,65 +1532,49 @@ mod tests {
         la.assert_order("serde", "proc-macro2");
     }
 
-    fn mod_dep(refs: usize) -> Edge {
-        let locations = (0..refs)
-            .map(|i| SourceLocation {
-                file: format!("src/m{i}.rs").into(),
-                line: i + 1,
-                symbols: vec![],
-                module_path: String::new(),
-                via_reexport: false,
-            })
-            .collect();
-        Edge::ModuleDep {
-            locations,
-            context: EdgeContext::production(),
-        }
-    }
-
     #[test]
-    fn build_layout_attaches_cluster_cut_set() {
-        // a <-> b: one SCC, one cut. b->a carries more refs so a->b is the cut.
-        let mut graph = ArcGraph::new();
-        let app = graph.add_node(Node::Crate {
-            name: "app".into(),
-            path: "/app".into(),
-        });
-        let a = graph.add_node(Node::Module {
-            name: "a".into(),
-            crate_idx: app,
-        });
-        let b = graph.add_node(Node::Module {
-            name: "b".into(),
-            crate_idx: app,
-        });
-        graph.add_edge(app, a, Edge::Contains);
-        graph.add_edge(app, b, Edge::Contains);
-        graph.add_edge(a, b, mod_dep(1));
-        graph.add_edge(b, a, mod_dep(3));
-
+    fn build_layout_orders_cycle_blocks_by_layout_rank() {
+        // Two triangles sharing directed edge m0->m1: two 3-node cycles
+        // through m0. The fully-cyclic sibling set's minimum-upward-edges
+        // order places m1 first and m0 last (cutting only m0->m1 suffices
+        // to make the group acyclic), so cycle blocks rotate to start at
+        // m1, not m0.
+        let mut b = TestGraphBuilder::new();
+        b.crate_with_modules("app", &["m0", "m1", "m2", "m3"])
+            .prod_dep("m0", "m1")
+            .prod_dep("m1", "m2")
+            .prod_dep("m2", "m0")
+            .prod_dep("m1", "m3")
+            .prod_dep("m3", "m0");
+        let (graph, _) = b.build();
         let analysis = graph.cycle_subgraph(false).minimal_cycles();
         let ir = build_layout(&graph, &analysis, false);
 
         assert_eq!(ir.clusters.len(), 1, "one cyclic cluster expected");
-        let (&scc_id, cluster) = ir.clusters.iter().next().unwrap();
-        assert_eq!(cluster.crate_name, "app");
-        assert_eq!(cluster.module_count, 2);
-        assert_eq!(cluster.cycle_count, 1);
-        assert_eq!(cluster.cuts.len(), 1);
+        let cluster = ir.clusters.values().next().unwrap();
+        assert_eq!(cluster.cycles.len(), 2, "two triangles through m0");
 
-        // Cut arc-id addresses a rendered edge (from_id-to_id ∈ ir.edges).
-        let cut = &cluster.cuts[0];
-        let arc_id = format!("{}-{}", cut.from_id, cut.to_id);
+        let id_of = |name: &str| ir.items.iter().find(|i| i.label == name).unwrap().id;
+        let (m0, m1, m2, m3) = (id_of("m0"), id_of("m1"), id_of("m2"), id_of("m3"));
         assert!(
-            ir.edges
-                .iter()
-                .any(|e| format!("{}-{}", e.from, e.to) == arc_id),
-            "cut arc-id {arc_id} must match a rendered edge"
+            m1 < m2 && m2 < m3 && m3 < m0,
+            "expected layout rank m1 < m2 < m3 < m0"
         );
-        // Cluster is keyed by the same sccId the layout items carry.
-        let a_item = ir.edges.iter().find(|e| e.scc_id.is_some()).unwrap();
-        assert_eq!(a_item.scc_id, Some(scc_id));
+
+        // Block 0: m1->m2->m0->m1, closing edge last. Rest-sequence rank
+        // (m2 before m3) puts this block first.
+        let block0 = &cluster.cycles[0];
+        assert_eq!(block0.len(), 3);
+        assert_eq!((block0[0].from_id, block0[0].to_id), (m1, m2));
+        assert_eq!((block0[1].from_id, block0[1].to_id), (m2, m0));
+        assert_eq!((block0[2].from_id, block0[2].to_id), (m0, m1));
+
+        // Block 1: m1->m3->m0->m1, closing edge last.
+        let block1 = &cluster.cycles[1];
+        assert_eq!(block1.len(), 3);
+        assert_eq!((block1[0].from_id, block1[0].to_id), (m1, m3));
+        assert_eq!((block1[1].from_id, block1[1].to_id), (m3, m0));
+        assert_eq!((block1[2].from_id, block1[2].to_id), (m0, m1));
     }
 
     #[test]

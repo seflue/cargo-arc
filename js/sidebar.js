@@ -16,6 +16,14 @@ const SIDEBAR_GAP_TOP = 20;
 const SIDEBAR_SHADOW_PAD =
   typeof __SIDEBAR_SHADOW_PAD__ !== 'undefined' ? __SIDEBAR_SHADOW_PAD__ : 12;
 const SIDEBAR_MIN_WIDTH = 280;
+// Generous character budget for a cycle-block header path. The panel auto-widens
+// to the content up to half the viewport, so a header only fails to fit for very
+// long labels; below this budget the second node stays, above it the header drops
+// to head + closing edge so the CSS net never has to cut the closing edge itself.
+const CYCLE_HEADER_MAX_CHARS = 48;
+// data-collapsible only ever appears on .sidebar-symbol, which never nests,
+// so a plain descendant lookup covers both flat groups and cycle-block rows.
+const COLLAPSIBLE_SYMBOL_SELECTOR = ':scope .sidebar-symbol[data-collapsible]';
 
 const SidebarLogic = {
   _isTransient: false,
@@ -626,8 +634,8 @@ const SidebarLogic = {
   },
 
   /**
-   * Build cluster (SCC) sidebar: header + all SCC-internal edges, cut
-   * candidates first.
+   * Build cluster (SCC) sidebar: header + one collapsible block per
+   * elementary cycle, edges in path order.
    * @param {string} sccId - Key into STATIC_DATA.clusters
    * @param {string} [focusArcId] - Arc whose row should render as focused
    *   (the edge that triggered this view \u2014 the resolved click/hover focus).
@@ -637,11 +645,20 @@ const SidebarLogic = {
     const cl = STATIC_DATA.clusters?.[sccId];
     if (!cl) return '';
 
-    const rows = cl.edges.map((edge) => ({
-      edge,
-      symbols: this._cutSymbols(edge),
-    }));
-    const hasCollapsible = rows.some((r) => r.symbols.length > 0);
+    // Cache each edge's crossing symbols once; the hasCollapsible scan and
+    // the row builder would otherwise both call _cutSymbols per edge.
+    const symbolsByArcId = new Map();
+    for (const cycle of cl.cycles) {
+      for (const edge of cycle) {
+        const arcId = `${edge.fromId}-${edge.toId}`;
+        if (!symbolsByArcId.has(arcId)) {
+          symbolsByArcId.set(arcId, this._cutSymbols(edge));
+        }
+      }
+    }
+    const hasCollapsible = [...symbolsByArcId.values()].some(
+      (symbols) => symbols.length > 0,
+    );
 
     let html = `<div class="sidebar-header">`;
     html += `<span class="sidebar-title">Cluster \u00b7 ${cl.crate}</span>`;
@@ -655,15 +672,176 @@ const SidebarLogic = {
     }
     html += `</div>`;
 
-    html += `<div class="sidebar-subheader">${cl.moduleCount} modules \u00b7 ${cl.cycleCount} cycles \u00b7 ${cl.toBreak} to break</div>`;
+    html += `<div class="sidebar-subheader">${cl.moduleCount} modules \u00b7 ${cl.cycleCount} cycles</div>`;
 
     html += `<div class="sidebar-content">`;
-    for (const { edge, symbols } of rows) {
-      html += this._buildCutRow(edge, symbols, focusArcId);
-    }
+    const sccNodeIds = new Set();
+    cl.cycles.forEach((cycle) => {
+      cycle.forEach((edge) => {
+        sccNodeIds.add(edge.fromId);
+        sccNodeIds.add(edge.toId);
+      });
+    });
+    // Path segments and shortLabel results are the same for a node no
+    // matter which cycle-block it appears in; compute each once and reuse
+    // across blocks instead of re-splitting/re-resolving per occurrence.
+    const segmentsById = new Map(
+      [...sccNodeIds].map((id) => [
+        id,
+        StaticData.qualifiedParts(id).path.split('::'),
+      ]),
+    );
+    const labelCache = new Map();
+    const seenArcIds = new Set();
+    cl.cycles.forEach((cycle, index) => {
+      html += this._buildCycleBlock(
+        cycle,
+        index,
+        focusArcId,
+        seenArcIds,
+        sccNodeIds,
+        symbolsByArcId,
+        segmentsById,
+        labelCache,
+      );
+    });
     html += `</div>`;
 
     return html;
+  },
+
+  /**
+   * One elementary-cycle block: collapsible header (ordinal, leaf-name path,
+   * module count) plus one `_buildCutRow` per edge in path order. The last
+   * edge (the closing back-edge) gets the closing class; an edge whose arc
+   * id already appeared in an earlier block gets the repeat class \u2014 except
+   * the closing edge, which always renders full.
+   * @param {StaticCutData[]} cycle - Edges in path order, closing edge last.
+   * @param {number} index - 0-based cycle index (rendered as 1-based ordinal).
+   * @param {string|undefined} focusArcId
+   * @param {Set<string>} seenArcIds - Arc ids rendered in earlier blocks
+   *   (mutated in place as this block's edges are rendered).
+   * @param {Set<string>} sccNodeIds - All node ids in the SCC, for shortLabel.
+   * @param {Map<string, Array>} symbolsByArcId - Precomputed _cutSymbols per arc id.
+   * @param {Map<string, string[]>} [segmentsById] - Precomputed shortLabel path
+   *   segments per node id.
+   * @param {Map<string, string>} [labelCache] - Memoized shortLabel results per
+   *   node id, shared across cycle blocks.
+   * @returns {string}
+   */
+  _buildCycleBlock(
+    cycle,
+    index,
+    focusArcId,
+    seenArcIds,
+    sccNodeIds,
+    symbolsByArcId,
+    segmentsById,
+    labelCache,
+  ) {
+    let html = `<details class="cycle-block">`;
+    html += `<summary class="block-head">`;
+    html += `<span class="block-chevron">\u25b8</span>`;
+    html += `<span class="block-ordinal">${index + 1}</span>`;
+    html += `<span class="block-path">${this._cyclePathLabel(cycle, sccNodeIds, segmentsById, labelCache)}</span>`;
+    html += `<span class="block-module-count">${cycle.length} Module</span>`;
+    html += `</summary>`;
+    html += `<div class="cycle-block-body">`;
+    cycle.forEach((edge, i) => {
+      const arcId = `${edge.fromId}-${edge.toId}`;
+      const isClosing = i === cycle.length - 1;
+      const extraClasses = [];
+      if (isClosing) {
+        extraClasses.push('cut-closing');
+      } else if (seenArcIds.has(arcId)) {
+        extraClasses.push('cut-repeat');
+      }
+      html += this._buildCutRow(
+        edge,
+        symbolsByArcId.get(arcId) ?? [],
+        focusArcId,
+        extraClasses,
+      );
+      seenArcIds.add(arcId);
+    });
+    html += `</div>`;
+    html += `</details>`;
+    return html;
+  },
+
+  /**
+   * Path label for a cycle block header: each node's shortest unique suffix
+   * within the SCC (D6), in path order, elided via `elideCyclePath`.
+   * @param {StaticCutData[]} cycle
+   * @param {Set<string>} sccNodeIds
+   * @param {Map<string, string[]>} [segmentsById]
+   * @param {Map<string, string>} [labelCache] - Memoized per node id (mutated
+   *   in place); a node repeated across cycle blocks resolves its label once.
+   * @returns {string}
+   */
+  _cyclePathLabel(cycle, sccNodeIds, segmentsById, labelCache) {
+    const labels = cycle.map((edge) => {
+      const cached = labelCache?.get(edge.fromId);
+      if (cached !== undefined) return cached;
+      const label = this.shortLabel(edge.fromId, sccNodeIds, segmentsById);
+      labelCache?.set(edge.fromId, label);
+      return label;
+    });
+    return this.elideCyclePath(labels);
+  },
+
+  /**
+   * Shortest unique suffix of a node's crate-relative module path, computed
+   * against every other node in the same SCC. Starts at the leaf and grows
+   * left segment by segment until no other node in `sccNodeIds` shares the
+   * same suffix. Never includes the crate prefix.
+   * @param {string} nodeId
+   * @param {Iterable<string>} sccNodeIds - All node ids in the SCC.
+   * @param {Map<string, string[]>} [segmentsById] - Precomputed path segments
+   *   per node id, to skip re-splitting on repeated calls.
+   * @returns {string}
+   */
+  shortLabel(nodeId, sccNodeIds, segmentsById) {
+    const pathSegments = (id) =>
+      segmentsById?.get(id) ?? StaticData.qualifiedParts(id).path.split('::');
+    const segments = pathSegments(nodeId);
+    const otherSegments = [...sccNodeIds]
+      .filter((id) => id !== nodeId)
+      .map((id) => pathSegments(id));
+    for (let len = 1; len <= segments.length; len++) {
+      const suffix = segments.slice(-len).join('::');
+      const collides = otherSegments.some(
+        (other) => other.slice(-len).join('::') === suffix,
+      );
+      if (!collides) return suffix;
+    }
+    return segments.join('::');
+  },
+
+  /**
+   * Header path label for a cycle: `labels` are the k distinct node labels
+   * in path order (labels[0] is the start/sort anchor), closed back to
+   * labels[0]. Shows the full closed path when k <= n; otherwise elides the
+   * middle. The head, the second node, and the closing edge are kept, so the
+   * shape follows the sequence and the loop-closer both stay visible; the
+   * second node is dropped only when the label would exceed `maxChars`, a
+   * degenerate width where keeping it would push the closing edge under the
+   * CSS clip.
+   * @param {string[]} labels
+   * @param {number} [n]
+   * @param {number} [maxChars]
+   * @returns {string}
+   */
+  elideCyclePath(labels, n = 4, maxChars = CYCLE_HEADER_MAX_CHARS) {
+    const head = labels[0];
+    if (labels.length <= n) {
+      return `${labels.join(' \u2192 ')} \u2192 ${head}`;
+    }
+    const arrow = ' \u2192 ';
+    const tail = labels[labels.length - 1];
+    const withSecond = `${head}${arrow}${labels[1]}${arrow}\u2026${arrow}${tail}${arrow}${head}`;
+    if (withSecond.length <= maxChars) return withSecond;
+    return `${head}${arrow}\u2026${arrow}${tail}${arrow}${head}`;
   },
 
   /**
@@ -687,10 +865,11 @@ const SidebarLogic = {
    * symbols are known, the row expands to list them with their scope tags.
    * @param {StaticCutData} cut
    * @param {Array} symbols - Pre-computed crossing symbols for this edge.
-   * @param {string} [focusArcId] - Arc whose row should render as focused.
+   * @param {string|undefined} focusArcId - Arc whose row should render as focused.
+   * @param {string[]} [extraClasses] - Extra row classes (e.g. cut-closing, cut-repeat).
    * @returns {string}
    */
-  _buildCutRow(cut, symbols, focusArcId) {
+  _buildCutRow(cut, symbols, focusArcId, extraClasses = []) {
     const arcId = `${cut.fromId}-${cut.toId}`;
     const fromName = StaticData.qualifiedParts(cut.fromId).path;
     const toName = StaticData.qualifiedParts(cut.toId).path;
@@ -698,22 +877,26 @@ const SidebarLogic = {
     const toType = StaticData.getNode(cut.toId)?.type;
     const fromClass = `sidebar-cycle-node ${fromType ? `sidebar-node-${fromType} ` : ''}sidebar-node-from`;
     const toClass = `sidebar-cycle-node ${toType ? `sidebar-node-${toType} ` : ''}sidebar-node-to`;
-    const cycleWord = cut.breaks === 1 ? 'cycle' : 'cycles';
     const expandable = symbols.length > 0;
     const focusClass = arcId === focusArcId ? ' sidebar-cut-row-focus' : '';
+    const extraClass = extraClasses.length ? ` ${extraClasses.join(' ')}` : '';
+    const isClosing = extraClasses.includes('cut-closing');
 
-    let html = `<div class="sidebar-usage-group sidebar-cut-row${focusClass}" data-arc-id="${arcId}">`;
+    let html = `<div class="sidebar-usage-group sidebar-cut-row${extraClass}${focusClass}" data-arc-id="${arcId}">`;
     const headAttrs = expandable
       ? ' data-collapsible="" data-collapsed="true"'
       : ' style="cursor:default"';
     html += `<div class="sidebar-symbol sidebar-cut-head"${headAttrs}>`;
     html += `<span class="sidebar-toggle">${expandable ? '\u25b8' : ''}</span>`;
     html += `<div class="sidebar-cycle-edge">`;
+    if (isClosing) {
+      html += `<span class="sidebar-cut-closing-marker" title="closes the cycle">&#x21ba;</span>`;
+    }
     html += `<span class="${fromClass}" data-node-id="${cut.fromId}" title="${fromName}">${fromName}</span>`;
     html += `<span class="sidebar-arrow">&#x2192;</span>`;
     html += `<span class="${toClass}" data-node-id="${cut.toId}" title="${toName}">${toName}</span>`;
     html += `</div>`;
-    html += `<span class="sidebar-cut-meta">on ${cut.breaks} ${cycleWord} \u00b7 ${symbols.length} symbols</span>`;
+    html += `<span class="sidebar-cut-meta">${symbols.length} symbols</span>`;
     html += `</div>`;
 
     if (expandable) {
@@ -801,11 +984,15 @@ const SidebarLogic = {
   _syncCollapseAllButton(root, content) {
     const allBtn = root.querySelector?.('.sidebar-collapse-all');
     if (!allBtn || !content.querySelectorAll) return;
-    const heads = Array.from(
-      content.querySelectorAll(
-        ':scope > .sidebar-usage-group > .sidebar-symbol[data-collapsible]',
-      ),
-    );
+    // In cluster view the collapse unit is the cycle block; the button opens or
+    // closes them all. Symbol lists nested in rows keep their own per-row toggle.
+    const blocks = [...content.querySelectorAll('.cycle-block')];
+    if (blocks.length) {
+      const allOpen = blocks.every((b) => b.hasAttribute('open'));
+      allBtn.innerHTML = allOpen ? '−' : '+';
+      return;
+    }
+    const heads = [...content.querySelectorAll(COLLAPSIBLE_SYMBOL_SELECTOR)];
     const allCollapsed = heads.every(
       (s) => s.getAttribute('data-collapsed') === 'true',
     );
@@ -876,15 +1063,32 @@ const SidebarLogic = {
           }
         });
       }
+      // A cycle block's native toggle changes how many blocks are open, so keep
+      // the collapse-all glyph in sync with a manual open/close.
+      for (const block of root.querySelectorAll('.cycle-block')) {
+        block.addEventListener('toggle', () => {
+          SidebarLogic._syncCollapseAllButton(root, content);
+          SidebarLogic.updatePosition();
+        });
+      }
     }
     const collapseAllBtn = root.querySelector('.sidebar-collapse-all');
     if (!collapseAllBtn) return;
     collapseAllBtn.addEventListener('click', () => {
-      const symbols = Array.from(
-        content.querySelectorAll(
-          ':scope > .sidebar-usage-group > .sidebar-symbol[data-collapsible]',
-        ),
-      );
+      const blocks = [...content.querySelectorAll('.cycle-block')];
+      if (blocks.length) {
+        const anyClosed = blocks.some((b) => !b.hasAttribute('open'));
+        for (const b of blocks) {
+          if (anyClosed) b.setAttribute('open', '');
+          else b.removeAttribute('open');
+        }
+        SidebarLogic._syncCollapseAllButton(root, content);
+        SidebarLogic.updatePosition();
+        return;
+      }
+      const symbols = [
+        ...content.querySelectorAll(COLLAPSIBLE_SYMBOL_SELECTOR),
+      ];
       if (!symbols.length) return;
       const anyExpanded = symbols.some(
         (s) => s.getAttribute('data-collapsed') !== 'true',
