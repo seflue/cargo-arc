@@ -7,12 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-28
+
+### Added
+
+- Add `arc check` command, which validates a workspace against architecture
+  rules defined in `arc-rules.toml`.
+- Add cycle view to diagram. Allows selecting a cluster and listing its cycles
+  in the sidebar.
+
+### Changed
+
+- Import resolution now handles re-exports, glob imports and self-imports
+  correctly. It also fixes the performance problem stemming from too many
+  elementary cycles.
+
+### Fixed
+
+- Removed toolbar and sidebar from static SVG.
+
+## [0.2.2] - 2026-03-19
+
+### Fixed
+
+- Cycle detection hanging on large graphs (now capped)
+
 ## [0.2.1] - 2026-03-13
 
 ### Added
+
 - Single-file crates rendered in workspace diagrams
 
 ### Changed
+
 - Node and arc filter toggling unified
 - Shared show logic extracted in sidebar
 - Shared arc-row logic extracted in cycle sidebar
@@ -22,11 +49,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `classList.toggle` used instead of manual class manipulation
 
 ### Fixed
+
 - Single-file crates invisible in workspace diagrams (anchor detection required Contains-edges)
 
 ## [0.2.0] - 2026-03-01
 
 ### Added
+
 - `--expand-level` flag to start with deeper modules pre-collapsed
 - External dependency visualization with `--externals` flag
 - `--transitive-deps` flag to include transitive external dependencies
@@ -39,12 +68,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Toolbar toggle for transitive dependency filtering
 
 ### Changed
+
 - Sidebar entries sorted by tree position
 - Sidebar styling aligned with tree nodes (font-weight, badge widths)
 - Sidebar hides during navigation scroll
 - Toolbar checkboxes moved into dropdown menu
 
 ### Fixed
+
 - SVG viewport clipping after expand/collapse
 - Missing arcs after expanding all initially collapsed nodes
 - Sidebar collapse broken with external dependencies present
@@ -60,6 +91,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Sidebar not filling available viewport height
 
 ### Performance
+
 - DOM element cache for O(1) hover lookups
 - Debounced hover highlights to reduce render churn
 - Cached filter-hidden node set per toggle cycle
@@ -70,6 +102,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Initial public release.
 
 ### Added
+
 - Interactive workspace dependency visualization as arc diagram
 - Collapsible crates and parent modules
 - Highlight relationships on hover and click
@@ -80,7 +113,9 @@ Initial public release.
 - Search with dimming of non-matching nodes
 - HTML report generation (single self-contained file)
 
-[Unreleased]: https://github.com/seflue/cargo-arc/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/seflue/cargo-arc/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/seflue/cargo-arc/compare/v0.2.2...v0.3.0
+[0.2.2]: https://github.com/seflue/cargo-arc/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/seflue/cargo-arc/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/seflue/cargo-arc/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/seflue/cargo-arc/releases/tag/v0.1.0
