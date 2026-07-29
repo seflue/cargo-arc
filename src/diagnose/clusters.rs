@@ -1,9 +1,10 @@
-//! Cluster-level cycle aggregation with guaranteed cut-sets.
+//! Cluster-level cycle aggregation with guaranteed feedback edge sets.
 //!
 //! Aggregates the per-edge minimal cycles ([`CycleAnalysis`]) into
-//! strongly-connected clusters and, per cluster, computes a cut-set whose
-//! removal is proven to break every cycle: greedy set-cover over the minimal
-//! cycles, then a single `tarjan_scc` verification with a residual re-cover loop
+//! strongly-connected clusters and, per cluster, computes a feedback arc set
+//! (an edge set whose removal makes the cluster acyclic): greedy set-cover over
+//! the minimal cycles, then a single `tarjan_scc` verification with a residual
+//! re-cover loop
 
 use super::cycles::{CycleAnalysis, MinimalCycles};
 use crate::graph::{ArcGraph, Edge};
@@ -14,12 +15,12 @@ use petgraph::visit::EdgeRef;
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 
-/// One edge in a cluster's cut-set.
-pub struct Cut {
+/// One SCC-internal edge, measured against the cluster's cycles.
+pub struct CycleEdge {
     pub from: NodeIndex,
     pub to: NodeIndex,
     /// Gross cycles through this edge within the cluster (order-independent).
-    pub breaks: usize,
+    pub cycles: usize,
     /// Distinct symbols crossing the edge (secondary effort proxy for ranking).
     pub refs: usize,
 }
@@ -32,21 +33,22 @@ pub struct Cluster {
     pub nodes: Vec<NodeIndex>,
     /// Indices into [`CycleAnalysis::cycles`] contained in this cluster.
     pub cycles: Vec<usize>,
-    /// Cut-set whose removal breaks every cycle, ranked best-first.
-    pub cuts: Vec<Cut>,
-    /// Every SCC-internal edge, ranked like `cuts` (breaks desc, refs asc, name asc).
-    pub edges: Vec<Cut>,
+    /// Edge set whose removal breaks every cycle, ranked best-first.
+    pub feedback_edges: Vec<CycleEdge>,
+    /// Every SCC-internal edge, ranked like `feedback_edges` (cycles desc, refs
+    /// asc, name asc).
+    pub edges: Vec<CycleEdge>,
 }
 
-/// Report over all cyclic clusters, ordered by cut-set size ascending.
+/// Report over all cyclic clusters, ordered by feedback edge count ascending.
 pub struct ClusterReport {
     pub clusters: Vec<Cluster>,
 }
 
-/// How willing the cut tie-break is to cut an edge, given the direction it runs
-/// through the module tree. Ordered worst-to-best cut candidate.
+/// How willing the tie-break is to put an edge in the feedback set, given the
+/// direction it runs through the module tree. Ordered worst-to-best candidate.
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
-enum CutBias {
+enum RemovalBias {
     /// Parent → child (`mod x;`, `pub use x::Y`). Spelling out the module tree
     /// is not a dependency anyone can remove.
     Structural,
@@ -58,11 +60,11 @@ enum CutBias {
 }
 
 impl ArcGraph {
-    /// Aggregate `analysis` into SCC clusters, each with a proven cut-set.
+    /// Aggregate `analysis` into SCC clusters, each with a proven feedback set.
     ///
     /// `analysis` must come from `self.cycle_subgraph(include_reexports).minimal_cycles()`
-    /// so that its `NodeIndex` values address nodes in `self` and the cut-sets are
-    /// computed over the same subgraph.
+    /// so that its `NodeIndex` values address nodes in `self` and the feedback
+    /// sets are computed over the same subgraph.
     #[must_use]
     pub fn cluster_report(
         &self,
@@ -100,35 +102,36 @@ impl ArcGraph {
             if cycles.is_empty() {
                 continue;
             }
-            let (cuts, edges) = self.cluster_cut_set(&sub, &nodes, &cycles, analysis);
+            let (feedback_edges, edges) = self.feedback_edges(&sub, &nodes, &cycles, analysis);
             let crate_idx = self.owning_crate(nodes[0]);
             clusters.push(Cluster {
                 crate_idx,
                 nodes,
                 cycles,
-                cuts,
+                feedback_edges,
                 edges,
             });
         }
 
-        // Default ordering: fewest cuts first, then deterministic tiebreaks.
+        // Default ordering: smallest feedback set first, then deterministic
+        // tiebreaks.
         clusters.sort_by_key(cluster_sort_key);
         ClusterReport { clusters }
     }
 
-    /// Greedy set-cover cut-set for one cluster, verified acyclic, plus every
-    /// SCC-internal edge (cut-set is a subset of it).
-    fn cluster_cut_set(
+    /// Greedy set-cover feedback arc set for one cluster, verified acyclic, plus
+    /// every SCC-internal edge (the feedback set is a subset of it).
+    fn feedback_edges(
         &self,
         sub: &DiGraph<NodeIndex, ()>,
         nodes: &[NodeIndex],
         cycle_idxs: &[usize],
         analysis: &CycleAnalysis,
-    ) -> (Vec<Cut>, Vec<Cut>) {
+    ) -> (Vec<CycleEdge>, Vec<CycleEdge>) {
         let node_set: HashSet<NodeIndex> = nodes.iter().copied().collect();
         let in_cluster: HashSet<usize> = cycle_idxs.iter().copied().collect();
 
-        // Edge -> gross cycles through it within this cluster (the "breaks" count).
+        // Edge -> gross cycles through it within this cluster.
         let mut gross: HashMap<(NodeIndex, NodeIndex), usize> = HashMap::new();
         let mut edge_cycles: HashMap<(NodeIndex, NodeIndex), HashSet<usize>> = HashMap::new();
         for (&edge, cyc_list) in &analysis.edge_cycles {
@@ -148,7 +151,7 @@ impl ArcGraph {
         let mut open = in_cluster;
         self.greedy_cover(&edge_cycles, &mut open, &mut chosen);
 
-        // Prove the cut-set acyclic with a single tarjan_scc pass; only when a
+        // Prove the feedback set acyclic with a single tarjan_scc pass; only when a
         // residual SCC survives (rare) enumerate its cycles and re-cover it. The
         // minimal-cycle cover alone does not guarantee acyclicity.
         let mut removed: HashSet<(NodeIndex, NodeIndex)> = chosen.iter().copied().collect();
@@ -171,40 +174,40 @@ impl ArcGraph {
             }
         }
 
-        let mut cuts: Vec<Cut> = chosen
+        let mut feedback: Vec<CycleEdge> = chosen
             .into_iter()
-            .map(|(from, to)| Cut {
+            .map(|(from, to)| CycleEdge {
                 from,
                 to,
-                breaks: gross.get(&(from, to)).copied().unwrap_or(0),
+                cycles: gross.get(&(from, to)).copied().unwrap_or(0),
                 refs: self.edge_refs(from, to),
             })
             .collect();
-        self.rank(&mut cuts);
+        self.rank(&mut feedback);
 
-        let mut edges: Vec<Cut> = sub
+        let mut edges: Vec<CycleEdge> = sub
             .edge_references()
             .filter(|e| node_set.contains(&sub[e.source()]) && node_set.contains(&sub[e.target()]))
             .map(|e| {
                 let (from, to) = (sub[e.source()], sub[e.target()]);
-                Cut {
+                CycleEdge {
                     from,
                     to,
-                    breaks: gross.get(&(from, to)).copied().unwrap_or(0),
+                    cycles: gross.get(&(from, to)).copied().unwrap_or(0),
                     refs: self.edge_refs(from, to),
                 }
             })
             .collect();
         self.rank(&mut edges);
 
-        (cuts, edges)
+        (feedback, edges)
     }
 
-    /// Rank a cut/edge list: traffic desc, refs asc, name asc.
-    fn rank(&self, cuts: &mut [Cut]) {
-        cuts.sort_by(|a, b| {
-            Reverse(a.breaks)
-                .cmp(&Reverse(b.breaks))
+    /// Rank an edge list: traffic desc, refs asc, name asc.
+    fn rank(&self, edges: &mut [CycleEdge]) {
+        edges.sort_by(|a, b| {
+            Reverse(a.cycles)
+                .cmp(&Reverse(b.cycles))
                 .then(a.refs.cmp(&b.refs))
                 .then_with(|| {
                     self.qualified_name(a.from)
@@ -215,8 +218,8 @@ impl ArcGraph {
     }
 
     /// Repeatedly remove the edge covering the most still-open cycles until none
-    /// remain, appending each pick to `chosen`. Ties break on [`CutBias`], then
-    /// fewer refs, then smaller name, so the choice is deterministic.
+    /// remain, appending each pick to `chosen`. Ties break on [`RemovalBias`],
+    /// then fewer refs, then smaller name, so the choice is deterministic.
     fn greedy_cover(
         &self,
         edge_cycles: &HashMap<(NodeIndex, NodeIndex), HashSet<usize>>,
@@ -232,7 +235,7 @@ impl ArcGraph {
                     ca.len()
                         .cmp(&cb.len())
                         // module-tree direction outranks ref count
-                        .then_with(|| self.cut_bias(**ea).cmp(&self.cut_bias(**eb)))
+                        .then_with(|| self.removal_bias(**ea).cmp(&self.removal_bias(**eb)))
                         // fewer refs is better, so the lower-ref edge ranks greater
                         .then_with(|| self.edge_refs(eb.0, eb.1).cmp(&self.edge_refs(ea.0, ea.1)))
                         // lexicographically smaller name is better
@@ -274,31 +277,32 @@ impl ArcGraph {
         (self.qualified_name(edge.0), self.qualified_name(edge.1))
     }
 
-    /// Which way the edge runs through the module tree, as the cut tie-break
-    /// sees it.
+    /// Which way the edge runs through the module tree, as the tie-break sees
+    /// it.
     ///
     /// A child→parent edge that is itself a pure re-export (the prelude
-    /// pattern, `pub use super::*;`) ranks [`Structural`](CutBias::Structural)
-    /// rather than [`Preferred`](CutBias::Preferred): under the default graph
-    /// this edge doesn't exist at all (ADR-022 drops it as non-coupling), so
-    /// it only shows up as a cut candidate under `--include-reexports`, where
-    /// it's still just a facade, not a layer to break.
-    fn cut_bias(&self, edge: (NodeIndex, NodeIndex)) -> CutBias {
+    /// pattern, `pub use super::*;`) ranks
+    /// [`Structural`](RemovalBias::Structural) rather than
+    /// [`Preferred`](RemovalBias::Preferred): under the default graph this edge
+    /// doesn't exist at all (ADR-022 drops it as non-coupling), so it only
+    /// shows up as a candidate under `--include-reexports`, where it's still
+    /// just a facade, not a layer to break.
+    fn removal_bias(&self, edge: (NodeIndex, NodeIndex)) -> RemovalBias {
         let (from, to) = edge;
         if self.contains_child(from, to) {
-            return CutBias::Structural;
+            return RemovalBias::Structural;
         }
         if self.contains_child(to, from) {
             return if self
                 .find_edge(from, to)
                 .is_some_and(|e| self[e].is_reexport_module_dep())
             {
-                CutBias::Structural
+                RemovalBias::Structural
             } else {
-                CutBias::Preferred
+                RemovalBias::Preferred
             };
         }
-        CutBias::Neutral
+        RemovalBias::Neutral
     }
 }
 
@@ -315,7 +319,12 @@ fn count_symbols(locations: &[SourceLocation]) -> usize {
 
 fn cluster_sort_key(c: &Cluster) -> (usize, usize, usize, usize) {
     let min_node = c.nodes.iter().map(|n| n.index()).min().unwrap_or(0);
-    (c.cuts.len(), c.cycles.len(), c.nodes.len(), min_node)
+    (
+        c.feedback_edges.len(),
+        c.cycles.len(),
+        c.nodes.len(),
+        min_node,
+    )
 }
 
 /// Copy of `sub` restricted to `node_set`, with `removed` edges dropped. Node
@@ -398,16 +407,16 @@ mod tests {
         g.cluster_report(&analysis, true)
     }
 
-    /// Assert that removing `cuts` leaves the cluster `nodes` acyclic.
-    fn assert_acyclic_after_cuts(g: &ArcGraph, nodes: &[NodeIndex], cuts: &[Cut]) {
+    /// Assert that removing `feedback` leaves the cluster `nodes` acyclic.
+    fn assert_acyclic_after_removal(g: &ArcGraph, nodes: &[NodeIndex], feedback: &[CycleEdge]) {
         let sub = g.production_subgraph();
         let node_set: HashSet<NodeIndex> = nodes.iter().copied().collect();
         let removed: HashSet<(NodeIndex, NodeIndex)> =
-            cuts.iter().map(|c| (c.from, c.to)).collect();
+            feedback.iter().map(|e| (e.from, e.to)).collect();
         let left = restricted_subgraph(&sub, &node_set, &removed).minimal_cycles();
         assert!(
             left.cycles.is_empty(),
-            "cut-set did not break all cycles: {} remain",
+            "feedback set did not break all cycles: {} remain",
             left.cycles.len()
         );
     }
@@ -430,7 +439,7 @@ mod tests {
 
     #[test]
     fn refs_counts_symbols_not_the_import_sites_carrying_them() {
-        // a <-> b, siblings, so only the ref tie-break decides the cut.
+        // a <-> b, siblings, so only the ref tie-break decides the pick.
         // `a -> b` imports three symbols from one `use` group: one line, one
         // site. `b -> a` imports two symbols, one per line.
         let mut g = ArcGraph::new();
@@ -467,11 +476,11 @@ mod tests {
 
         let r = report(&g);
         let c = &r.clusters[0];
-        assert_eq!(c.cuts.len(), 1);
+        assert_eq!(c.feedback_edges.len(), 1);
         // The import group counts all three symbols, so the two-symbol edge is
-        // the cheaper one and gets cut.
-        assert_eq!(c.cuts[0].refs, 2);
-        assert_eq!((c.cuts[0].from, c.cuts[0].to), (b, a));
+        // the cheaper one and gets picked.
+        assert_eq!(c.feedback_edges[0].refs, 2);
+        assert_eq!((c.feedback_edges[0].from, c.feedback_edges[0].to), (b, a));
     }
 
     #[test]
@@ -496,7 +505,7 @@ mod tests {
     }
 
     #[test]
-    fn child_to_parent_edge_is_cut_even_with_more_refs() {
+    fn child_to_parent_edge_is_preferred_even_with_more_refs() {
         // `a` is the parent module, `b` is nested inside it. `a -> b` is a
         // re-export (`pub use b::X`, 2 refs), `b -> a` is a plain import
         // (`use super::Y`, 5 refs). The module-tree prior must still pick
@@ -557,22 +566,22 @@ mod tests {
         assert_eq!(r.clusters.len(), 1);
         let c = &r.clusters[0];
         assert_eq!(c.cycles.len(), 1);
-        assert_eq!(c.cuts.len(), 1);
-        let cut = &c.cuts[0];
-        assert_eq!((cut.from, cut.to), (b, a));
-        assert_eq!(cut.refs, 5);
-        assert_acyclic_after_cuts(&g, &c.nodes, &c.cuts);
+        assert_eq!(c.feedback_edges.len(), 1);
+        let picked = &c.feedback_edges[0];
+        assert_eq!((picked.from, picked.to), (b, a));
+        assert_eq!(picked.refs, 5);
+        assert_acyclic_after_removal(&g, &c.nodes, &c.feedback_edges);
     }
 
     #[test]
-    fn reexport_child_to_parent_edge_is_not_preferentially_cut() {
+    fn reexport_child_to_parent_edge_is_not_preferred() {
         // `a` is the parent module, `b` is nested inside it and re-exports
         // `a`'s items (`pub use super::*;`, the prelude pattern) via `b -> a`,
         // 1 ref. `c` is an unrelated module, forming the cycle a->c->b->a
         // with plain, non-reexport edges a->c (3 refs) and c->b (5 refs).
         // Even though `b -> a` carries the fewest refs, the module-tree prior
-        // must not treat it as a preferred cut: it's structural, same as any
-        // other re-export.
+        // must not treat it as a preferred candidate: it's structural, same as
+        // any other re-export.
         let mut g = ArcGraph::new();
         let crate_idx = g.add_node(Node::Crate {
             name: "app".into(),
@@ -644,11 +653,11 @@ mod tests {
         assert_eq!(r.clusters.len(), 1);
         let clu = &r.clusters[0];
         assert_eq!(clu.cycles.len(), 1);
-        assert_eq!(clu.cuts.len(), 1);
-        let cut = &clu.cuts[0];
-        assert_eq!((cut.from, cut.to), (a, c));
-        assert_eq!(cut.refs, 3);
-        assert_acyclic_after_cuts(&g, &clu.nodes, &clu.cuts);
+        assert_eq!(clu.feedback_edges.len(), 1);
+        let picked = &clu.feedback_edges[0];
+        assert_eq!((picked.from, picked.to), (a, c));
+        assert_eq!(picked.refs, 3);
+        assert_acyclic_after_removal(&g, &clu.nodes, &clu.feedback_edges);
     }
 
     #[test]
@@ -661,12 +670,12 @@ mod tests {
         assert_eq!(r.clusters.len(), 1);
         let c = &r.clusters[0];
         assert_eq!(c.cycles.len(), 1);
-        assert_eq!(c.cuts.len(), 1);
-        let cut = &c.cuts[0];
-        assert_eq!((cut.from, cut.to), (idx[0], idx[1]));
-        assert_eq!(cut.refs, 2);
-        assert_eq!(cut.breaks, 1);
-        assert_acyclic_after_cuts(&g, &c.nodes, &c.cuts);
+        assert_eq!(c.feedback_edges.len(), 1);
+        let picked = &c.feedback_edges[0];
+        assert_eq!((picked.from, picked.to), (idx[0], idx[1]));
+        assert_eq!(picked.refs, 2);
+        assert_eq!(picked.cycles, 1);
+        assert_acyclic_after_removal(&g, &c.nodes, &c.feedback_edges);
     }
 
     #[test]
@@ -681,15 +690,15 @@ mod tests {
         assert_eq!(r.clusters.len(), 1);
         let c = &r.clusters[0];
         assert_eq!(c.cycles.len(), 2);
-        assert_eq!(c.cuts.len(), 1);
-        let cut = &c.cuts[0];
-        assert_eq!((cut.from, cut.to), (idx[0], idx[1]));
-        assert_eq!(cut.breaks, 2);
-        assert_acyclic_after_cuts(&g, &c.nodes, &c.cuts);
+        assert_eq!(c.feedback_edges.len(), 1);
+        let picked = &c.feedback_edges[0];
+        assert_eq!((picked.from, picked.to), (idx[0], idx[1]));
+        assert_eq!(picked.cycles, 2);
+        assert_acyclic_after_removal(&g, &c.nodes, &c.feedback_edges);
     }
 
     #[test]
-    fn two_disjoint_cycles_in_one_scc_need_two_cuts() {
+    fn two_disjoint_cycles_in_one_scc_need_two_feedback_edges() {
         // 0<->1 and 0<->2: one SCC (shared node 0), two edge-disjoint cycles.
         let (g, _) = graph_with(
             &["a", "b", "c"],
@@ -700,8 +709,8 @@ mod tests {
         let c = &r.clusters[0];
         assert_eq!(c.nodes.len(), 3);
         assert_eq!(c.cycles.len(), 2);
-        assert_eq!(c.cuts.len(), 2);
-        assert_acyclic_after_cuts(&g, &c.nodes, &c.cuts);
+        assert_eq!(c.feedback_edges.len(), 2);
+        assert_acyclic_after_removal(&g, &c.nodes, &c.feedback_edges);
     }
 
     #[test]
@@ -714,14 +723,14 @@ mod tests {
         let r = report(&g);
         assert_eq!(r.clusters.len(), 2);
         for c in &r.clusters {
-            assert_eq!(c.cuts.len(), 1);
-            assert_acyclic_after_cuts(&g, &c.nodes, &c.cuts);
+            assert_eq!(c.feedback_edges.len(), 1);
+            assert_acyclic_after_removal(&g, &c.nodes, &c.feedback_edges);
         }
     }
 
     #[test]
-    fn clusters_sorted_by_cut_count_ascending() {
-        // SCC {0,1}: 1 cut. SCC {2,3,4}: 2 cuts (0<->1 style pair on node 2).
+    fn clusters_sorted_by_feedback_edge_count_ascending() {
+        // SCC {0,1}: 1 feedback edge. SCC {2,3,4}: 2 (0<->1 style pair on node 2).
         let (g, _) = graph_with(
             &["a", "b", "c", "d", "e"],
             &[
@@ -735,12 +744,12 @@ mod tests {
         );
         let r = report(&g);
         assert_eq!(r.clusters.len(), 2);
-        assert_eq!(r.clusters[0].cuts.len(), 1);
-        assert_eq!(r.clusters[1].cuts.len(), 2);
+        assert_eq!(r.clusters[0].feedback_edges.len(), 1);
+        assert_eq!(r.clusters[1].feedback_edges.len(), 2);
     }
 
     #[test]
-    fn edges_lists_every_scc_internal_edge_cuts_only_lists_the_chosen_ones() {
+    fn edges_lists_every_scc_internal_edge_feedback_only_the_chosen_ones() {
         // Two triangles sharing directed edge 0->1: 5 SCC-internal edges total,
         // but only one is needed to break both cycles.
         let (g, _) = graph_with(
@@ -749,15 +758,15 @@ mod tests {
         );
         let r = report(&g);
         let c = &r.clusters[0];
-        assert_eq!(c.cuts.len(), 1);
+        assert_eq!(c.feedback_edges.len(), 1);
         assert_eq!(c.edges.len(), 5);
     }
 
     #[test]
-    fn edges_are_ranked_like_cuts_and_cuts_stay_the_chosen_subset() {
+    fn edges_are_ranked_like_the_feedback_set_which_stays_a_subset() {
         // a<->b (5, 1 refs) and a<->c (3, 2 refs): one SCC of three nodes, two
         // disjoint 2-cycles through a. Every edge participates in exactly one
-        // cycle (breaks=1), so refs decides order across all four edges.
+        // cycle, so refs decides order across all four edges.
         let (g, idx) = graph_with(
             &["a", "b", "c"],
             &[(0, 1, 5), (1, 0, 1), (0, 2, 3), (2, 0, 2)],
@@ -765,12 +774,12 @@ mod tests {
         let r = report(&g);
         let c = &r.clusters[0];
 
-        assert_eq!(c.cuts.len(), 2);
-        let cuts: Vec<_> = c.cuts.iter().map(|cut| (cut.from, cut.to)).collect();
-        assert_eq!(cuts, vec![(idx[1], idx[0]), (idx[2], idx[0])]);
+        assert_eq!(c.feedback_edges.len(), 2);
+        let feedback: Vec<_> = c.feedback_edges.iter().map(|e| (e.from, e.to)).collect();
+        assert_eq!(feedback, vec![(idx[1], idx[0]), (idx[2], idx[0])]);
 
         assert_eq!(c.edges.len(), 4);
-        let edges: Vec<_> = c.edges.iter().map(|cut| (cut.from, cut.to)).collect();
+        let edges: Vec<_> = c.edges.iter().map(|e| (e.from, e.to)).collect();
         assert_eq!(
             edges,
             vec![
@@ -792,14 +801,14 @@ mod tests {
         assert_eq!(a.clusters.len(), b.clusters.len());
         for (ca, cb) in a.clusters.iter().zip(&b.clusters) {
             let ka: Vec<_> = ca
-                .cuts
+                .feedback_edges
                 .iter()
-                .map(|c| (c.from, c.to, c.breaks, c.refs))
+                .map(|e| (e.from, e.to, e.cycles, e.refs))
                 .collect();
             let kb: Vec<_> = cb
-                .cuts
+                .feedback_edges
                 .iter()
-                .map(|c| (c.from, c.to, c.breaks, c.refs))
+                .map(|e| (e.from, e.to, e.cycles, e.refs))
                 .collect();
             assert_eq!(ka, kb);
         }

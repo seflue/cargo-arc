@@ -1,7 +1,9 @@
 //! Build layout IR from graph and cycle information.
 
 use super::toposort::stable_toposort;
-use crate::diagnose::{Cluster, ConsumerScope, Cut, Cycle, CycleAnalysis, order_cycle_blocks};
+use crate::diagnose::{
+    Cluster, ConsumerScope, Cycle, CycleAnalysis, CycleEdge, order_cycle_blocks,
+};
 use crate::graph::{ArcGraph, Edge, Node};
 use crate::model::{EdgeContext, SourceLocation};
 use crate::volatility::Volatility;
@@ -119,7 +121,7 @@ impl LayoutEdge {
 }
 
 #[derive(Debug)]
-pub struct CutInfo {
+pub struct CycleEdgeInfo {
     pub from_id: NodeId,
     pub to_id: NodeId,
     pub refs: usize,
@@ -134,7 +136,7 @@ pub struct ClusterInfo {
     /// path edges in path order, closing edge last. Blocks are sorted for
     /// top-to-bottom sidebar reading (start node's layout rank, then length,
     /// then rest-sequence rank).
-    pub cycles: Vec<Vec<CutInfo>>,
+    pub cycles: Vec<Vec<CycleEdgeInfo>>,
 }
 
 /// One symbol of a provider: how its consumers are scoped in the module tree,
@@ -170,10 +172,10 @@ impl LayoutIR {
 
 /// Build `LayoutIR` from graph and cycle information.
 /// Converts graph nodes to `LayoutItems` with proper nesting and edges with cycle markers,
-/// and attaches each cyclic SCC's cluster (crate name, size, and cut-set).
+/// and attaches each cyclic SCC's cluster (crate name, size, and cycles).
 /// `CrateDep` edges are skipped when `ModuleDep` edges exist between the same crates.
-/// `include_reexports` controls whether idiomatic re-export edges count toward cycles
-/// and cut-sets, matching the subgraph `analysis` was computed from.
+/// `include_reexports` controls whether idiomatic re-export edges count toward cycles,
+/// matching the subgraph `analysis` was computed from.
 #[must_use]
 pub fn build_layout(
     graph: &ArcGraph,
@@ -305,9 +307,9 @@ fn cycle_blocks(
     cluster: &Cluster,
     analysis: &CycleAnalysis,
     node_map: &HashMap<NodeIndex, NodeId>,
-) -> Vec<Vec<CutInfo>> {
-    let edge_info: HashMap<(NodeIndex, NodeIndex), &Cut> =
-        cluster.edges.iter().map(|c| ((c.from, c.to), c)).collect();
+) -> Vec<Vec<CycleEdgeInfo>> {
+    let edge_info: HashMap<(NodeIndex, NodeIndex), &CycleEdge> =
+        cluster.edges.iter().map(|e| ((e.from, e.to), e)).collect();
     let raw_paths: Vec<Vec<NodeIndex>> = cluster
         .cycles
         .iter()
@@ -322,11 +324,11 @@ fn cycle_blocks(
             Cycle { path }
                 .edges()
                 .filter_map(|(from, to)| {
-                    let cut = edge_info.get(&(from, to))?;
-                    Some(CutInfo {
+                    let edge = edge_info.get(&(from, to))?;
+                    Some(CycleEdgeInfo {
                         from_id: *node_map.get(&from)?,
                         to_id: *node_map.get(&to)?,
-                        refs: cut.refs,
+                        refs: edge.refs,
                     })
                 })
                 .collect()

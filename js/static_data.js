@@ -66,7 +66,7 @@ const StaticData = {
   },
 
   /**
-   * Get cluster data (cut-set etc.) for an SCC by ID.
+   * Get cluster data (cycle blocks etc.) for an SCC by ID.
    * @param {string|number} sccId
    * @returns {{ crate: string, moduleCount: number, cycleCount: number, cycles: Array<Array<{fromId: string, toId: string, refs: number}>> }|undefined}
    */

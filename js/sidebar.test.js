@@ -1911,14 +1911,14 @@ describe('SidebarLogic', () => {
       expect(html).toContain('sidebar-header');
     });
 
-    test('cut endpoints carry dependent/dependency color classes', () => {
+    test('edge endpoints carry dependent/dependency color classes', () => {
       // from = dependent (purple frame), to = dependency (green frame)
       const html = SidebarLogic.buildContent('x-y');
       expect(html).toContain('sidebar-node-from');
       expect(html).toContain('sidebar-node-to');
     });
 
-    test('cut row expands to crossing symbols with scope tags', () => {
+    test('edge row expands to crossing symbols with scope tags', () => {
       globalThis.STATIC_DATA.arcs['x-y'].usages = [
         {
           symbol: 'Foo',
@@ -1931,13 +1931,13 @@ describe('SidebarLogic', () => {
       };
       const html = SidebarLogic.buildContent('x-y');
       expect(html).toContain('data-collapsible');
-      expect(html).toContain('sidebar-cut-symbol');
+      expect(html).toContain('sidebar-edge-symbol');
       expect(html).toContain('<span class="sidebar-symbol-name">Foo</span>');
       expect(html).toContain('sidebar-scope-singleConsumer');
       expect(html).toContain('only used by x');
     });
 
-    test('cut row drops re-export-only symbols, counts coupling only', () => {
+    test('edge row drops re-export-only symbols, counts coupling only', () => {
       globalThis.STATIC_DATA.arcs['x-y'].usages = [
         {
           symbol: 'Coupled',
@@ -1956,11 +1956,11 @@ describe('SidebarLogic', () => {
         '<span class="sidebar-symbol-name">Coupled</span>',
       );
       expect(html).not.toContain('Reexported');
-      // meta counts the filtered coupling symbols, not cut.refs
+      // meta counts the filtered coupling symbols, not edge.refs
       expect(html).toContain('1 symbols');
     });
 
-    test('cut row of only re-exports is not collapsible', () => {
+    test('edge row of only re-exports is not collapsible', () => {
       globalThis.STATIC_DATA.arcs['x-y'].usages = [
         {
           symbol: 'Reexported',
@@ -1976,7 +1976,7 @@ describe('SidebarLogic', () => {
       expect(xyRow).toContain('0 symbols');
     });
 
-    test('cut row without crossing symbols is not collapsible', () => {
+    test('edge row without crossing symbols is not collapsible', () => {
       // arcs['y-x'] is absent -> no usages -> plain, non-expandable row.
       const html = SidebarLogic.buildContent('x-y');
       const yxIdx = html.indexOf('data-arc-id="y-x"');
@@ -2006,7 +2006,7 @@ describe('SidebarLogic', () => {
     test('cluster view focuses the resolved edge, not the triggering arc', () => {
       // No resolved focus -> cluster overview, no row focused.
       const overview = SidebarLogic.buildContent('x-y');
-      expect(overview).not.toContain('sidebar-cut-row-focus');
+      expect(overview).not.toContain('sidebar-edge-row-focus');
 
       // Resolved focus on y-x -> that row is focused, regardless of which
       // arc opened the cluster view.
@@ -2014,10 +2014,10 @@ describe('SidebarLogic', () => {
       const html = SidebarLogic.buildContent('x-y');
       const yxIdx = html.indexOf('data-arc-id="y-x"');
       const yxRow = html.slice(Math.max(0, yxIdx - 60), yxIdx + 60);
-      expect(yxRow).toContain('sidebar-cut-row-focus');
+      expect(yxRow).toContain('sidebar-edge-row-focus');
       const xyIdx = html.indexOf('data-arc-id="x-y"');
       const xyRow = html.slice(Math.max(0, xyIdx - 60), xyIdx + 60);
-      expect(xyRow).not.toContain('sidebar-cut-row-focus');
+      expect(xyRow).not.toContain('sidebar-edge-row-focus');
       SidebarLogic._resolvedFocusArc = null;
     });
   });
@@ -2087,7 +2087,7 @@ describe('SidebarLogic', () => {
 
     function rowClassLists(chunk) {
       return [
-        ...chunk.matchAll(/<div class="([^"]*sidebar-cut-row[^"]*)"/g),
+        ...chunk.matchAll(/<div class="([^"]*sidebar-edge-row[^"]*)"/g),
       ].map((m) => m[1]);
     }
 
@@ -2108,9 +2108,9 @@ describe('SidebarLogic', () => {
         const rows = rowClassLists(chunk);
         rows.forEach((classes, i) => {
           if (i === rows.length - 1) {
-            expect(classes).toContain('cut-closing');
+            expect(classes).toContain('edge-closing');
           } else {
-            expect(classes).not.toContain('cut-closing');
+            expect(classes).not.toContain('edge-closing');
           }
         });
       }
@@ -2123,9 +2123,9 @@ describe('SidebarLogic', () => {
       const abClasses = chunks.map(
         (chunk) => rowClassLists(chunk)[0], // a-b is always row 0 here
       );
-      expect(abClasses[0]).not.toContain('cut-repeat'); // first occurrence
-      expect(abClasses[1]).toContain('cut-repeat'); // repeated
-      expect(abClasses[2]).toContain('cut-repeat'); // repeated
+      expect(abClasses[0]).not.toContain('edge-repeat'); // first occurrence
+      expect(abClasses[1]).toContain('edge-repeat'); // repeated
+      expect(abClasses[2]).toContain('edge-repeat'); // repeated
     });
 
     test('repeat exception: a closing edge stays full even if seen before', () => {
@@ -2146,29 +2146,29 @@ describe('SidebarLogic', () => {
       const chunks = blockChunks(html);
       const block1Rows = rowClassLists(chunks[1]);
       const closingRow = block1Rows[block1Rows.length - 1];
-      expect(closingRow).toContain('cut-closing');
-      expect(closingRow).not.toContain('cut-repeat');
+      expect(closingRow).toContain('edge-closing');
+      expect(closingRow).not.toContain('edge-repeat');
     });
 
     test('closing edge renders a leading loop-closer marker, plain rows do not', () => {
-      const closing = SidebarLogic._buildCutRow(
+      const closing = SidebarLogic._buildEdgeRow(
         { fromId: 'a', toId: 'b', refs: 1 },
         [],
         undefined,
-        ['cut-closing'],
+        ['edge-closing'],
       );
-      expect(closing).toContain('sidebar-cut-closing-marker');
+      expect(closing).toContain('sidebar-edge-closing-marker');
       expect(closing).toContain('&#x21ba;');
-      const plain = SidebarLogic._buildCutRow(
+      const plain = SidebarLogic._buildEdgeRow(
         { fromId: 'a', toId: 'b', refs: 1 },
         [],
         undefined,
         [],
       );
-      expect(plain).not.toContain('sidebar-cut-closing-marker');
+      expect(plain).not.toContain('sidebar-edge-closing-marker');
     });
 
-    test('rows reuse _buildCutRow: symbol expand and data-arc-id present', () => {
+    test('rows reuse _buildEdgeRow: symbol expand and data-arc-id present', () => {
       globalThis.STATIC_DATA.arcs['a-b'] = {
         from: 'a',
         to: 'b',
@@ -2317,7 +2317,7 @@ describe('SidebarLogic', () => {
       const content = {
         addEventListener() {},
         querySelectorAll(sel) {
-          if (sel === '.sidebar-cut-row') return [row];
+          if (sel === '.sidebar-edge-row') return [row];
           return [];
         },
       };
@@ -2344,7 +2344,7 @@ describe('SidebarLogic', () => {
       const content = {
         addEventListener() {},
         querySelectorAll(sel) {
-          if (sel === '.sidebar-cut-row') return [row];
+          if (sel === '.sidebar-edge-row') return [row];
           return [];
         },
       };
@@ -2392,7 +2392,7 @@ describe('SidebarLogic', () => {
         addEventListener: (evt, fn) => {
           if (evt === 'click') clickHandler = fn;
         },
-        querySelectorAll: (sel) => (sel === '.sidebar-cut-row' ? [row] : []),
+        querySelectorAll: (sel) => (sel === '.sidebar-edge-row' ? [row] : []),
       };
       const root = {
         querySelector: (sel) => (sel === '.sidebar-content' ? content : null),
@@ -2405,7 +2405,7 @@ describe('SidebarLogic', () => {
         fireClick: () =>
           clickHandler({
             target: {
-              closest: (sel) => (sel === '.sidebar-cut-row' ? row : null),
+              closest: (sel) => (sel === '.sidebar-edge-row' ? row : null),
             },
           }),
         restore: () => {
@@ -2419,7 +2419,7 @@ describe('SidebarLogic', () => {
       const row = {
         dataset: { arcId: 'x-y' },
         classList: { toggle() {} },
-        querySelector: (sel) => (sel === '.sidebar-cut-head' ? head : null),
+        querySelector: (sel) => (sel === '.sidebar-edge-head' ? head : null),
         addEventListener() {},
       };
       let calledWith = null;
@@ -2452,7 +2452,7 @@ describe('SidebarLogic', () => {
             focusedOn = on;
           },
         },
-        querySelector: (sel) => (sel === '.sidebar-cut-head' ? head : null),
+        querySelector: (sel) => (sel === '.sidebar-edge-head' ? head : null),
         addEventListener() {},
       };
       SidebarLogic._onEdgeClick = () => false; // unpinned -> collapses
@@ -2799,18 +2799,18 @@ describe('SidebarLogic', () => {
       SidebarLogic._setupCollapseHandlers(root);
 
       const abRows = content
-        .querySelectorAll('.sidebar-cut-row')
+        .querySelectorAll('.sidebar-edge-row')
         .filter((r) => r.dataset.arcId === 'a-b');
       expect(abRows.length).toBe(2); // sanity: the shared edge renders twice
 
       content._fire('click', {
         target: {
-          closest: (sel) => (sel === '.sidebar-cut-row' ? abRows[0] : null),
+          closest: (sel) => (sel === '.sidebar-edge-row' ? abRows[0] : null),
         },
       });
 
       expect(
-        abRows.every((r) => r.classList.contains('sidebar-cut-row-focus')),
+        abRows.every((r) => r.classList.contains('sidebar-edge-row-focus')),
       ).toBe(true);
 
       SidebarLogic.updatePosition = origUP;

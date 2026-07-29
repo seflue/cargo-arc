@@ -85,8 +85,8 @@ const SidebarLogic = {
     const arc = overrideData || STATIC_DATA.arcs[arcId];
     if (!arc) return '';
 
-    // Cluster view: when cluster mode is on and the arc lies in an SCC with a
-    // known cut-set, describe the whole cluster instead of the single edge.
+    // Cluster view: when cluster mode is on and the arc lies in an SCC with
+    // known cycles, describe the whole cluster instead of the single edge.
     const sccId = STATIC_DATA.arcs[arcId]?.sccId;
     if (
       !overrideData &&
@@ -599,7 +599,8 @@ const SidebarLogic = {
   refreshClusterFocus() {
     const el = this._getElement();
     const content = el?.querySelector('.sidebar-content');
-    if (content) this._refreshCutRowFocus(/** @type {HTMLElement} */ (content));
+    if (content)
+      this._refreshEdgeRowFocus(/** @type {HTMLElement} */ (content));
   },
 
   /**
@@ -646,13 +647,13 @@ const SidebarLogic = {
     if (!cl) return '';
 
     // Cache each edge's crossing symbols once; the hasCollapsible scan and
-    // the row builder would otherwise both call _cutSymbols per edge.
+    // the row builder would otherwise both call _edgeSymbols per edge.
     const symbolsByArcId = new Map();
     for (const cycle of cl.cycles) {
       for (const edge of cycle) {
         const arcId = `${edge.fromId}-${edge.toId}`;
         if (!symbolsByArcId.has(arcId)) {
-          symbolsByArcId.set(arcId, this._cutSymbols(edge));
+          symbolsByArcId.set(arcId, this._edgeSymbols(edge));
         }
       }
     }
@@ -712,17 +713,17 @@ const SidebarLogic = {
 
   /**
    * One elementary-cycle block: collapsible header (ordinal, leaf-name path,
-   * module count) plus one `_buildCutRow` per edge in path order. The last
+   * module count) plus one `_buildEdgeRow` per edge in path order. The last
    * edge (the closing back-edge) gets the closing class; an edge whose arc
    * id already appeared in an earlier block gets the repeat class \u2014 except
    * the closing edge, which always renders full.
-   * @param {StaticCutData[]} cycle - Edges in path order, closing edge last.
+   * @param {StaticCycleArcData[]} cycle - Edges in path order, closing edge last.
    * @param {number} index - 0-based cycle index (rendered as 1-based ordinal).
    * @param {string|undefined} focusArcId
    * @param {Set<string>} seenArcIds - Arc ids rendered in earlier blocks
    *   (mutated in place as this block's edges are rendered).
    * @param {Set<string>} sccNodeIds - All node ids in the SCC, for shortLabel.
-   * @param {Map<string, Array>} symbolsByArcId - Precomputed _cutSymbols per arc id.
+   * @param {Map<string, Array>} symbolsByArcId - Precomputed _edgeSymbols per arc id.
    * @param {Map<string, string[]>} [segmentsById] - Precomputed shortLabel path
    *   segments per node id.
    * @param {Map<string, string>} [labelCache] - Memoized shortLabel results per
@@ -752,11 +753,11 @@ const SidebarLogic = {
       const isClosing = i === cycle.length - 1;
       const extraClasses = [];
       if (isClosing) {
-        extraClasses.push('cut-closing');
+        extraClasses.push('edge-closing');
       } else if (seenArcIds.has(arcId)) {
-        extraClasses.push('cut-repeat');
+        extraClasses.push('edge-repeat');
       }
-      html += this._buildCutRow(
+      html += this._buildEdgeRow(
         edge,
         symbolsByArcId.get(arcId) ?? [],
         focusArcId,
@@ -772,7 +773,7 @@ const SidebarLogic = {
   /**
    * Path label for a cycle block header: each node's shortest unique suffix
    * within the SCC (D6), in path order, elided via `elideCyclePath`.
-   * @param {StaticCutData[]} cycle
+   * @param {StaticCycleArcData[]} cycle
    * @param {Set<string>} sccNodeIds
    * @param {Map<string, string[]>} [segmentsById]
    * @param {Map<string, string>} [labelCache] - Memoized per node id (mutated
@@ -847,11 +848,11 @@ const SidebarLogic = {
   /**
    * Crossing symbols for a cluster edge, real imports only. `pub use`
    * re-exports ride the same edge but are not part of the cycle (ADR-022).
-   * @param {StaticCutData} cut
+   * @param {StaticCycleArcData} edge
    * @returns {Array}
    */
-  _cutSymbols(cut) {
-    const arcId = `${cut.fromId}-${cut.toId}`;
+  _edgeSymbols(edge) {
+    const arcId = `${edge.fromId}-${edge.toId}`;
     return (
       (typeof STATIC_DATA !== 'undefined' &&
         STATIC_DATA.arcs?.[arcId]?.usages) ||
@@ -863,51 +864,51 @@ const SidebarLogic = {
    * One cluster-edge row: the edge (dependent \u2192 dependency, colour-framed
    * like the node view) plus its cycle/symbol meta. When the edge's crossing
    * symbols are known, the row expands to list them with their scope tags.
-   * @param {StaticCutData} cut
+   * @param {StaticCycleArcData} edge
    * @param {Array} symbols - Pre-computed crossing symbols for this edge.
    * @param {string|undefined} focusArcId - Arc whose row should render as focused.
-   * @param {string[]} [extraClasses] - Extra row classes (e.g. cut-closing, cut-repeat).
+   * @param {string[]} [extraClasses] - Extra row classes (e.g. edge-closing, edge-repeat).
    * @returns {string}
    */
-  _buildCutRow(cut, symbols, focusArcId, extraClasses = []) {
-    const arcId = `${cut.fromId}-${cut.toId}`;
-    const fromName = StaticData.qualifiedParts(cut.fromId).path;
-    const toName = StaticData.qualifiedParts(cut.toId).path;
-    const fromType = StaticData.getNode(cut.fromId)?.type;
-    const toType = StaticData.getNode(cut.toId)?.type;
+  _buildEdgeRow(edge, symbols, focusArcId, extraClasses = []) {
+    const arcId = `${edge.fromId}-${edge.toId}`;
+    const fromName = StaticData.qualifiedParts(edge.fromId).path;
+    const toName = StaticData.qualifiedParts(edge.toId).path;
+    const fromType = StaticData.getNode(edge.fromId)?.type;
+    const toType = StaticData.getNode(edge.toId)?.type;
     const fromClass = `sidebar-cycle-node ${fromType ? `sidebar-node-${fromType} ` : ''}sidebar-node-from`;
     const toClass = `sidebar-cycle-node ${toType ? `sidebar-node-${toType} ` : ''}sidebar-node-to`;
     const expandable = symbols.length > 0;
-    const focusClass = arcId === focusArcId ? ' sidebar-cut-row-focus' : '';
+    const focusClass = arcId === focusArcId ? ' sidebar-edge-row-focus' : '';
     const extraClass = extraClasses.length ? ` ${extraClasses.join(' ')}` : '';
-    const isClosing = extraClasses.includes('cut-closing');
+    const isClosing = extraClasses.includes('edge-closing');
 
-    let html = `<div class="sidebar-usage-group sidebar-cut-row${extraClass}${focusClass}" data-arc-id="${arcId}">`;
+    let html = `<div class="sidebar-usage-group sidebar-edge-row${extraClass}${focusClass}" data-arc-id="${arcId}">`;
     const headAttrs = expandable
       ? ' data-collapsible="" data-collapsed="true"'
       : ' style="cursor:default"';
-    html += `<div class="sidebar-symbol sidebar-cut-head"${headAttrs}>`;
+    html += `<div class="sidebar-symbol sidebar-edge-head"${headAttrs}>`;
     html += `<span class="sidebar-toggle">${expandable ? '\u25b8' : ''}</span>`;
     html += `<div class="sidebar-cycle-edge">`;
     if (isClosing) {
-      html += `<span class="sidebar-cut-closing-marker" title="closes the cycle">&#x21ba;</span>`;
+      html += `<span class="sidebar-edge-closing-marker" title="closes the cycle">&#x21ba;</span>`;
     }
-    html += `<span class="${fromClass}" data-node-id="${cut.fromId}" title="${fromName}">${fromName}</span>`;
+    html += `<span class="${fromClass}" data-node-id="${edge.fromId}" title="${fromName}">${fromName}</span>`;
     html += `<span class="sidebar-arrow">&#x2192;</span>`;
-    html += `<span class="${toClass}" data-node-id="${cut.toId}" title="${toName}">${toName}</span>`;
+    html += `<span class="${toClass}" data-node-id="${edge.toId}" title="${toName}">${toName}</span>`;
     html += `</div>`;
-    html += `<span class="sidebar-cut-meta">${symbols.length} symbols</span>`;
+    html += `<span class="sidebar-edge-meta">${symbols.length} symbols</span>`;
     html += `</div>`;
 
     if (expandable) {
       html += `<div class="sidebar-locations" style="display:none">`;
       for (const u of symbols) {
-        html += `<div class="sidebar-cut-symbol">`;
+        html += `<div class="sidebar-edge-symbol">`;
         if (u.modulePath) {
           html += `<span class="sidebar-ns">${u.modulePath}::</span>`;
         }
         html += `<span class="sidebar-symbol-name">${u.symbol}</span>`;
-        html += this._renderScopeTag(cut.toId, u.symbol);
+        html += this._renderScopeTag(edge.toId, u.symbol);
         html += `</div>`;
       }
       html += `</div>`;
@@ -924,28 +925,28 @@ const SidebarLogic = {
    * @param {HTMLElement} root
    * @param {HTMLElement} content
    */
-  _handleCutRowClick(row, root, content) {
+  _handleEdgeRowClick(row, root, content) {
     const arcId = row.dataset.arcId;
     if (!arcId) return;
-    const head = row.querySelector('.sidebar-cut-head');
+    const head = row.querySelector('.sidebar-edge-head');
     const expandable = !!head && head.hasAttribute('data-collapsible');
     const expanded =
       expandable && head.getAttribute('data-collapsed') !== 'true';
     const endExpanded = this._onEdgeClick
       ? this._onEdgeClick(arcId, expandable, expanded)
       : false;
-    if (head && expandable) this._setCutRowExpanded(head, endExpanded);
-    this._refreshCutRowFocus(content);
+    if (head && expandable) this._setEdgeRowExpanded(head, endExpanded);
+    this._refreshEdgeRowFocus(content);
     this._syncCollapseAllButton(root, content);
     this.updatePosition();
   },
 
   /**
    * Show or hide a cluster row's crossing-symbol list in place.
-   * @param {Element} head - The row's `.sidebar-cut-head`
+   * @param {Element} head - The row's `.sidebar-edge-head`
    * @param {boolean} expanded
    */
-  _setCutRowExpanded(head, expanded) {
+  _setEdgeRowExpanded(head, expanded) {
     const locsEl = /** @type {HTMLElement|null} */ (head.nextElementSibling);
     const toggle = head.querySelector('.sidebar-toggle');
     if (expanded) {
@@ -964,13 +965,13 @@ const SidebarLogic = {
    * sidebar in sync with the graph without a rebuild.
    * @param {HTMLElement} content
    */
-  _refreshCutRowFocus(content) {
+  _refreshEdgeRowFocus(content) {
     if (!content.querySelectorAll) return;
     const focusArc = this._resolvedFocusArc ? this._resolvedFocusArc() : null;
-    for (const el of content.querySelectorAll('.sidebar-cut-row')) {
+    for (const el of content.querySelectorAll('.sidebar-edge-row')) {
       const row = /** @type {HTMLElement} */ (el);
       row.classList?.toggle(
-        'sidebar-cut-row-focus',
+        'sidebar-edge-row-focus',
         row.dataset.arcId === focusArc,
       );
     }
@@ -1005,9 +1006,9 @@ const SidebarLogic = {
     if (!content) return;
     content.addEventListener('click', (e) => {
       // Cluster rows couple pin and expansion; the state machine decides.
-      const cutRow = e.target.closest?.('.sidebar-cut-row');
-      if (cutRow) {
-        SidebarLogic._handleCutRowClick(cutRow, root, content);
+      const edgeRow = e.target.closest?.('.sidebar-edge-row');
+      if (edgeRow) {
+        SidebarLogic._handleEdgeRowClick(edgeRow, root, content);
         return;
       }
       const symbolEl = e.target.closest('.sidebar-symbol');
@@ -1050,8 +1051,8 @@ const SidebarLogic = {
       }
       // Row hover transiently focuses the graph edge; the row click (wired
       // above) pins it and drives expansion. Hover changes neither.
-      const cutRows = root.querySelectorAll('.sidebar-cut-row');
-      for (const row of cutRows) {
+      const edgeRows = root.querySelectorAll('.sidebar-edge-row');
+      for (const row of edgeRows) {
         row.addEventListener('mouseenter', () => {
           if (SidebarLogic._onEdgeHover) {
             SidebarLogic._onEdgeHover(row.dataset.arcId);

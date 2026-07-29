@@ -4,6 +4,6 @@ mod build;
 mod toposort;
 
 pub use build::{
-    ClusterInfo, CutInfo, CycleKind, EdgeDirection, ItemKind, LayoutEdge, LayoutIR, LayoutItem,
-    NodeId, SymbolScope, build_layout,
+    ClusterInfo, CycleEdgeInfo, CycleKind, EdgeDirection, ItemKind, LayoutEdge, LayoutIR,
+    LayoutItem, NodeId, SymbolScope, build_layout,
 };

@@ -1,7 +1,7 @@
 use super::constants::{CSS, LAYOUT, RenderConfig};
 use super::positioning::PositionedItem;
 use crate::diagnose::ConsumerScope;
-use crate::layout::{CutInfo, ItemKind, LayoutIR, NodeId};
+use crate::layout::{CycleEdgeInfo, ItemKind, LayoutIR, NodeId};
 use crate::model::SourceLocation;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -80,8 +80,8 @@ struct SymbolUsageGroup {
     symbol: String,
     module_path: Option<String>,
     /// True when every location carrying this symbol is a `pub use` re-export.
-    /// The cut-set view drops these: a re-exported name is not logic coupling,
-    /// so it is not part of the cycle the cut breaks (ADR-022).
+    /// The cycle view drops these: a re-exported name is not logic coupling,
+    /// so it is not part of the cycle (ADR-022).
     #[serde(skip_serializing_if = "is_false")]
     via_reexport: bool,
     locations: Vec<UsageLocation>,
@@ -114,22 +114,22 @@ struct ClusterData {
     crate_name: String,
     module_count: usize,
     cycle_count: usize,
-    cycles: Vec<Vec<CutData>>,
+    cycles: Vec<Vec<CycleArcData>>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct CutData {
+struct CycleArcData {
     from_id: String,
     to_id: String,
     refs: usize,
 }
 
-fn cut_data(cut: &CutInfo) -> CutData {
-    CutData {
-        from_id: cut.from_id.to_string(),
-        to_id: cut.to_id.to_string(),
-        refs: cut.refs,
+fn cycle_arc_data(edge: &CycleEdgeInfo) -> CycleArcData {
+    CycleArcData {
+        from_id: edge.from_id.to_string(),
+        to_id: edge.to_id.to_string(),
+        refs: edge.refs,
     }
 }
 
@@ -412,7 +412,7 @@ fn generate_static_data(
                     cycles: c
                         .cycles
                         .iter()
-                        .map(|block| block.iter().map(cut_data).collect())
+                        .map(|block| block.iter().map(cycle_arc_data).collect())
                         .collect(),
                 },
             )
@@ -1857,12 +1857,12 @@ mod tests {
                 module_count: 2,
                 cycle_count: 1,
                 cycles: vec![vec![
-                    crate::layout::CutInfo {
+                    crate::layout::CycleEdgeInfo {
                         from_id: a,
                         to_id: b,
                         refs: 2,
                     },
-                    crate::layout::CutInfo {
+                    crate::layout::CycleEdgeInfo {
                         from_id: b,
                         to_id: a,
                         refs: 1,
@@ -1900,14 +1900,14 @@ mod tests {
         assert_eq!(block[1]["refs"], 1);
         assert!(cl.get("edges").is_none());
         assert!(cl.get("toBreak").is_none());
-        // Cut arc-id addresses a serialized arc.
+        // The edge's arc-id addresses a serialized arc.
         assert!(data["arcs"][format!("{a}-{b}")].is_object());
     }
 
     #[test]
-    fn test_static_data_tangle_cluster_two_cuts_ranked_and_addressable() {
-        // Two 2-cycles sharing module "a" (a<->b, a<->c): one SCC, two cuts.
-        // Both cuts break exactly one cycle each, so ranking (ADR-021: breaks
+    fn test_static_data_tangle_cluster_two_edges_ranked_and_addressable() {
+        // Two 2-cycles sharing module "a" (a<->b, a<->c): one SCC, two feedback
+        // edges. Each lies on exactly one cycle, so ranking (ADR-021: cycles
         // desc, then refs asc) is decided by refs, not by name — b->a (1 ref)
         // must rank before c->a (2 refs).
         let mut graph = ArcGraph::new();

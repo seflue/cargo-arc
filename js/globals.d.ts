@@ -56,7 +56,7 @@ interface StaticCycleData {
   arcs: string[];
   sccId: number;
 }
-interface StaticCutData {
+interface StaticCycleArcData {
   fromId: string;
   toId: string;
   refs: number;
@@ -65,7 +65,7 @@ interface StaticClusterData {
   crate: string;
   moduleCount: number;
   cycleCount: number;
-  cycles: StaticCutData[][];
+  cycles: StaticCycleArcData[][];
 }
 interface StaticSymbolScope {
   scope: 'singleConsumer' | 'commonAncestor' | 'crateWide';

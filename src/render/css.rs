@@ -848,18 +848,18 @@ fn build_css_rules() -> Vec<CssRule> {
             ],
         ),
         CssRule::class(c.sidebar.locations, &[("padding-left", "16px")]),
-        // Cut-set candidate row: stacks a one-line edge header over its
-        // (hidden until expanded) crossing-symbol list. Literal class strings
-        // from sidebar.js, no constants.rs entry.
+        // Cycle-edge row: stacks a one-line edge header over its (hidden until
+        // expanded) crossing-symbol list. Literal class strings from
+        // sidebar.js, no constants.rs entry.
         CssRule::class(
-            "sidebar-cut-row",
+            "sidebar-edge-row",
             &[("display", "flex"), ("flex-direction", "column")],
         ),
         // Focus row inside an SCC cluster view: marks the edge the graph
         // interaction state machine currently resolves as focus (pin or
         // hover). Literal class string from sidebar.js, no constants.rs entry.
         CssRule::class(
-            "sidebar-cut-row-focus",
+            "sidebar-edge-row-focus",
             &[
                 ("background", GRAY_100),
                 ("border-left", &format!("2px solid {}", d.cycle)),
@@ -868,7 +868,7 @@ fn build_css_rules() -> Vec<CssRule> {
             ],
         ),
         CssRule::class(
-            "sidebar-cut-meta",
+            "sidebar-edge-meta",
             &[
                 ("color", GRAY_400),
                 ("font-size", "10px"),
@@ -879,7 +879,7 @@ fn build_css_rules() -> Vec<CssRule> {
         // Cycle blocks (ca-0372): one collapsible <details> per elementary
         // cycle in a cluster's sidebar section. Literal class strings from
         // sidebar.js, no constants.rs entries (same precedent as the
-        // sidebar-cut-row family above).
+        // sidebar-edge-row family above).
         CssRule::class("cycle-block", &[("margin-bottom", "8px")]),
         CssRule::class(
             "block-head",
@@ -949,27 +949,27 @@ fn build_css_rules() -> Vec<CssRule> {
         // occurrence. Closing rule below re-asserts full opacity so a row
         // that were ever both classes at once (JS keeps this from happening)
         // still renders as closing, not repeat.
-        CssRule::new(".sidebar-cut-row.cut-repeat", &[("opacity", "0.55")]),
-        CssRule::new(".sidebar-cut-row.cut-closing", &[("opacity", "1")]),
+        CssRule::new(".sidebar-edge-row.edge-repeat", &[("opacity", "0.55")]),
+        CssRule::new(".sidebar-edge-row.edge-closing", &[("opacity", "1")]),
         // Closing edge: reuses the existing cycle color (d.cycle, same red as
         // the focus border and glow-cycle) for the arrow plus a leading
         // loop-closer marker, no new color introduced.
         CssRule::new(
-            ".sidebar-cut-row.cut-closing .sidebar-arrow",
+            ".sidebar-edge-row.edge-closing .sidebar-arrow",
             &[("color", d.cycle), ("font-weight", "bold")],
         ),
         CssRule::new(
-            ".sidebar-cut-closing-marker",
+            ".sidebar-edge-closing-marker",
             &[
                 ("color", d.cycle),
                 ("font-weight", "bold"),
                 ("margin-right", "4px"),
             ],
         ),
-        // One crossing symbol under an expanded cut row: name + scope tag,
+        // One crossing symbol under an expanded edge row: name + scope tag,
         // indented by the enclosing .sidebar-locations.
         CssRule::class(
-            "sidebar-cut-symbol",
+            "sidebar-edge-symbol",
             &[
                 ("display", "flex"),
                 ("align-items", "center"),
@@ -1357,8 +1357,8 @@ mod tests {
             "CSS should contain .sidebar-subheader"
         );
         assert!(
-            css.contains(".sidebar-cut-meta"),
-            "CSS should contain .sidebar-cut-meta"
+            css.contains(".sidebar-edge-meta"),
+            "CSS should contain .sidebar-edge-meta"
         );
     }
 
@@ -1730,19 +1730,19 @@ mod tests {
             ".block-path",
             ".block-module-count",
             ".cycle-block-body",
-            ".sidebar-cut-row.cut-repeat",
-            ".sidebar-cut-row.cut-closing",
-            ".sidebar-cut-closing-marker",
+            ".sidebar-edge-row.edge-repeat",
+            ".sidebar-edge-row.edge-closing",
+            ".sidebar-edge-closing-marker",
         ] {
             assert!(css.contains(selector), "CSS should contain {selector}");
         }
         // Closing row reuses the existing cycle color, no new red introduced.
         assert!(
             css.contains(&format!(
-                ".sidebar-cut-row.cut-closing .sidebar-arrow {{ color: {};",
+                ".sidebar-edge-row.edge-closing .sidebar-arrow {{ color: {};",
                 COLORS.direction.cycle
             )),
-            "cut-closing arrow should reuse the existing cycle color"
+            "edge-closing arrow should reuse the existing cycle color"
         );
         // Chevron rotation transition is gated behind reduced-motion opt-in.
         assert!(

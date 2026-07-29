@@ -84,7 +84,7 @@ pub fn format_cluster_report(
             crate_name,
             plural(cluster.nodes.len(), "module"),
             plural(cluster.cycles.len(), "cycle"),
-            plural(cluster.cuts.len(), "cut"),
+            plural(cluster.feedback_edges.len(), "cut"),
         );
 
         if cluster.cycles.len() == 1 {
@@ -95,48 +95,48 @@ pub fn format_cluster_report(
                 .map(|&n| rel_name(graph, n, &crate_name))
                 .collect();
             let _ = writeln!(out, "  cycle: {} -> {}", names.join(" -> "), names[0]);
-            if let Some(cut) = cluster.cuts.first() {
+            if let Some(edge) = cluster.feedback_edges.first() {
                 let _ = writeln!(
                     out,
                     "  fewest symbols: {} -> {} ({})",
-                    rel_name(graph, cut.from, &crate_name),
-                    rel_name(graph, cut.to, &crate_name),
-                    plural(cut.refs, "symbol"),
+                    rel_name(graph, edge.from, &crate_name),
+                    rel_name(graph, edge.to, &crate_name),
+                    plural(edge.refs, "symbol"),
                 );
             }
         } else {
             let names: Vec<(String, String)> = cluster
-                .cuts
+                .feedback_edges
                 .iter()
-                .map(|cut| {
+                .map(|edge| {
                     (
-                        rel_name(graph, cut.from, &crate_name),
-                        rel_name(graph, cut.to, &crate_name),
+                        rel_name(graph, edge.from, &crate_name),
+                        rel_name(graph, edge.to, &crate_name),
                     )
                 })
                 .collect();
             let from_width = names.iter().map(|(from, _)| from.len()).max().unwrap_or(0);
             let to_width = names.iter().map(|(_, to)| to.len()).max().unwrap_or(0);
-            let breaks_width = cluster
-                .cuts
+            let cycles_width = cluster
+                .feedback_edges
                 .iter()
-                .map(|cut| cut.breaks.to_string().len())
+                .map(|edge| edge.cycles.to_string().len())
                 .max()
                 .unwrap_or(0);
-            for (cut, (from, to)) in cluster.cuts.iter().zip(&names) {
-                let cycle_word = if cut.breaks == 1 { "cycle" } else { "cycles" };
-                let breaks = cut.breaks;
-                let refs = plural(cut.refs, "symbol");
+            for (edge, (from, to)) in cluster.feedback_edges.iter().zip(&names) {
+                let cycle_word = if edge.cycles == 1 { "cycle" } else { "cycles" };
+                let cycles = edge.cycles;
+                let refs = plural(edge.refs, "symbol");
                 let _ = writeln!(
                     out,
-                    "    {from:<from_width$} -> {to:<to_width$} (on {breaks:>breaks_width$} {cycle_word}, {refs})"
+                    "    {from:<from_width$} -> {to:<to_width$} (on {cycles:>cycles_width$} {cycle_word}, {refs})"
                 );
             }
         }
     }
 
     let total_cycles: usize = report.clusters.iter().map(|c| c.cycles.len()).sum();
-    let total_cuts: usize = report.clusters.iter().map(|c| c.cuts.len()).sum();
+    let total_cuts: usize = report.clusters.iter().map(|c| c.feedback_edges.len()).sum();
     let crates: HashSet<_> = report.clusters.iter().map(|c| c.crate_idx).collect();
     let _ = writeln!(out);
     let _ = writeln!(
