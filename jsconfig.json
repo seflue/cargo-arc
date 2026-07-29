@@ -5,7 +5,8 @@
     "lib": ["esnext", "dom", "dom.iterable"],
     "checkJs": true,
     "noEmit": true,
-    "noImplicitAny": false
+    "noImplicitAny": false,
+    "typeRoots": []
   },
   "include": ["js/**/*.js", "js/globals.d.ts"],
   "exclude": ["js/**/*.test.js"]
