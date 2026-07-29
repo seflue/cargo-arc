@@ -52,11 +52,11 @@ pub fn format_violations(result: &CheckResult) -> String {
 
 /// Format a cluster-level cycle report (default verbosity).
 ///
-/// One block per SCC cluster ordered by cut-set size: a header, then either a
-/// single-cycle body (the ring plus its cheapest cut) or a tangle body (the
-/// ranked cut-set), followed by a summary line. Returns an empty string when
-/// there are no clusters. Module names are shown relative to the cluster's
-/// crate, which the header names.
+/// One block per SCC cluster ordered by feedback edge count: a header, then
+/// either a single-cycle body (the ring plus its thinnest edge) or a tangle
+/// body (the ranked feedback edges), followed by a summary line. Returns an
+/// empty string when there are no clusters. Module names are shown relative to
+/// the cluster's crate, which the header names.
 #[must_use]
 pub fn format_cluster_report(
     graph: &crate::graph::ArcGraph,
@@ -78,13 +78,12 @@ pub fn format_cluster_report(
         let crate_name = graph[cluster.crate_idx].name().to_string();
         let _ = writeln!(
             out,
-            "cluster {}/{}: {} ({}, {}, {} to break)",
+            "cluster {}/{}: {} ({}, {})",
             i + 1,
             total,
             crate_name,
             plural(cluster.nodes.len(), "module"),
             plural(cluster.cycles.len(), "cycle"),
-            plural(cluster.feedback_edges.len(), "cut"),
         );
 
         if cluster.cycles.len() == 1 {
@@ -123,6 +122,14 @@ pub fn format_cluster_report(
                 .map(|edge| edge.cycles.to_string().len())
                 .max()
                 .unwrap_or(0);
+            // Only claim an order when the cycle counts actually differ.
+            let counts = || cluster.feedback_edges.iter().map(|edge| edge.cycles);
+            let heading = if counts().min() == counts().max() {
+                "edges:"
+            } else {
+                "edges, most cycles first:"
+            };
+            let _ = writeln!(out, "  {heading}");
             for (edge, (from, to)) in cluster.feedback_edges.iter().zip(&names) {
                 let cycle_word = if edge.cycles == 1 { "cycle" } else { "cycles" };
                 let cycles = edge.cycles;
@@ -132,20 +139,37 @@ pub fn format_cluster_report(
                     "    {from:<from_width$} -> {to:<to_width$} (on {cycles:>cycles_width$} {cycle_word}, {refs})"
                 );
             }
+            // Closes with a property of the cycles (the listed edges are a
+            // hitting set), not with an instruction to remove them. Dropped
+            // when edges and cycles pair off one to one: there the sentence
+            // only restates the counts already in the list.
+            let count = cluster.feedback_edges.len();
+            let paired_off = count == cluster.cycles.len() && counts().all(|c| c == 1);
+            if !paired_off {
+                let _ = if count == 1 {
+                    writeln!(out, "  every cycle contains this edge")
+                } else {
+                    writeln!(
+                        out,
+                        "  every cycle contains at least one of these {count} edges"
+                    )
+                };
+            }
         }
     }
 
     let total_cycles: usize = report.clusters.iter().map(|c| c.cycles.len()).sum();
-    let total_cuts: usize = report.clusters.iter().map(|c| c.feedback_edges.len()).sum();
     let crates: HashSet<_> = report.clusters.iter().map(|c| c.crate_idx).collect();
     let _ = writeln!(out);
+    // No total over the feedback sets: different clusters' sets have nothing to
+    // do with each other, so their sum reads as a to-do list without measuring
+    // anything.
     let _ = writeln!(
         out,
-        "Summary: {}, {} across {} - {} break all cycles",
+        "Summary: {}, {} across {}",
         plural(total, "cluster"),
         plural(total_cycles, "cycle"),
         plural(crates.len(), "crate"),
-        plural(total_cuts, "cut"),
     );
     out
 }
@@ -328,7 +352,7 @@ mod tests {
         let (analysis, report) = report_of(&g);
         let out = format_cluster_report(&g, &analysis, &report);
         assert!(
-            out.contains("cluster 1/1: app (2 modules, 1 cycle, 1 cut to break)"),
+            out.contains("cluster 1/1: app (2 modules, 1 cycle)"),
             "got:\n{out}"
         );
         assert!(out.contains("cycle: a -> b -> a"), "got:\n{out}");
@@ -337,30 +361,72 @@ mod tests {
             "got:\n{out}"
         );
         assert!(
-            out.contains("Summary: 1 cluster, 1 cycle across 1 crate - 1 cut break all cycles"),
+            out.contains("Summary: 1 cluster, 1 cycle across 1 crate"),
             "got:\n{out}"
         );
     }
 
     #[test]
     fn cluster_report_tangle_block() {
-        // a<->b and a<->c share node a: one cluster, two cycles, two cuts.
+        // Two triangles share a->b, plus a separate a<->e ring on the same
+        // node: three cycles, two feedback edges carrying two and one cycle.
+        let g = cyc_graph(
+            &["a", "b", "c", "d", "e"],
+            &[
+                (0, 1, 1),
+                (1, 2, 1),
+                (2, 0, 1),
+                (1, 3, 1),
+                (3, 0, 1),
+                (0, 4, 1),
+                (4, 0, 2),
+            ],
+        );
+        let (analysis, report) = report_of(&g);
+        let out = format_cluster_report(&g, &analysis, &report);
+        assert!(out.contains("(5 modules, 3 cycles)"), "got:\n{out}");
+        assert!(out.contains("edges, most cycles first:"), "got:\n{out}");
+        assert!(out.contains("(on 2 cycles, 1 symbol)"), "got:\n{out}");
+        assert!(
+            out.contains("every cycle contains at least one of these 2 edges"),
+            "got:\n{out}"
+        );
+        assert!(!out.contains("fewest symbols:"), "got:\n{out}");
+    }
+
+    #[test]
+    fn cluster_report_drops_order_and_closing_line_when_cycles_pair_off() {
+        // a<->b and a<->c share only node a: two cycles, one feedback edge
+        // each. Nothing to order, and the closing line would just repeat the
+        // counts already on the rows.
         let g = cyc_graph(
             &["a", "b", "c"],
             &[(0, 1, 1), (1, 0, 1), (0, 2, 1), (2, 0, 1)],
         );
         let (analysis, report) = report_of(&g);
         let out = format_cluster_report(&g, &analysis, &report);
-        assert!(
-            out.contains("(3 modules, 2 cycles, 2 cuts to break)"),
-            "got:\n{out}"
-        );
-        assert!(out.contains("(on 1 cycle, 1 symbol)"), "got:\n{out}");
-        assert!(!out.contains("fewest symbols:"), "got:\n{out}");
+        assert!(out.contains("  edges:"), "got:\n{out}");
+        assert!(!out.contains("most cycles first"), "got:\n{out}");
+        assert!(!out.contains("every cycle contains"), "got:\n{out}");
     }
 
     #[test]
-    fn cluster_report_summary_counts_crates_and_cuts() {
+    fn cluster_report_closing_line_is_singular_for_a_lone_edge() {
+        // Two triangles sharing edge a->b: two cycles, but one edge hits both.
+        let g = cyc_graph(
+            &["a", "b", "c", "d"],
+            &[(0, 1, 1), (1, 2, 1), (2, 0, 1), (1, 3, 1), (3, 0, 1)],
+        );
+        let (analysis, report) = report_of(&g);
+        let out = format_cluster_report(&g, &analysis, &report);
+        assert!(
+            out.contains("every cycle contains this edge"),
+            "got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn cluster_report_summary_counts_clusters_cycles_and_crates() {
         let g = cyc_graph(
             &["a", "b", "c", "d"],
             &[(0, 1, 1), (1, 0, 1), (2, 3, 1), (3, 2, 1)],
@@ -368,7 +434,7 @@ mod tests {
         let (analysis, report) = report_of(&g);
         let out = format_cluster_report(&g, &analysis, &report);
         assert!(
-            out.contains("Summary: 2 clusters, 2 cycles across 1 crate - 2 cuts break all cycles"),
+            out.contains("Summary: 2 clusters, 2 cycles across 1 crate"),
             "got:\n{out}"
         );
     }
