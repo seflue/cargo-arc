@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `arc check` no longer reports how many edges must be removed to break the
+  cycles. The ranked edge list instead names its sort order and states which
+  cycles the listed edges cover.
+
+### Fixed
+
+- Crates whose root file declares no submodules stayed out of the diagram in
+  workspaces that use hyphenated package names or renamed dependencies.
+- Modules were missing for crates whose library or binary target sets a `path`
+  other than `src/lib.rs` or `src/main.rs`.
+- A workspace entry point that nothing depends on, such as a thin binary, was
+  pruned from the diagram along with the test-only crates.
+
 ## [0.3.0] - 2026-07-28
 
 ### Added
