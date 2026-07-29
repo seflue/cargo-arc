@@ -39,9 +39,13 @@ diagram:
 install:
     cargo install --path .
 
-# idempotent release: bump version + changelog first, then run this
-release:
-    ./scripts/release.sh
+# show what a release would change, without touching anything
+release-dry version:
+    cargo release {{version}}
+
+# release: collect changelog bullets under Unreleased first, then run this
+release version:
+    ./scripts/release.sh {{version}}
 
 clean:
     cargo clean
