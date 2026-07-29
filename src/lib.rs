@@ -12,3 +12,5 @@ pub use cli::{ArcCommand, Cargo, run};
 
 #[cfg(test)]
 mod js_registry;
+#[cfg(test)]
+mod test_support;

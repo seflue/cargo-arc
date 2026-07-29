@@ -11,9 +11,7 @@ use crate::model::{
     normalize_crate_name,
 };
 
-use super::mod_resolver::{
-    child_resolve_dir, extract_mod_declarations, find_crate_root_files, resolve_mod_path,
-};
+use super::mod_resolver::{child_resolve_dir, extract_mod_declarations, resolve_mod_path};
 use super::use_parser::{
     ModuleExportInfo, ReExportMap, ReExportTarget, ResolutionContext, is_reexport_visibility,
     resolve_single_path, resolve_use_tree,
@@ -35,9 +33,6 @@ pub(crate) fn collect_crate_reexports(
     workspace_crates: &WorkspaceCrates,
     crate_exports: &CrateExportMap,
 ) -> HashMap<String, ModuleExportInfo> {
-    let Ok(root_files) = find_crate_root_files(&crate_info.path) else {
-        return HashMap::new();
-    };
     let crate_name = normalize_crate_name(&crate_info.name);
     let ctx = CollectContext {
         crate_name: &crate_name,
@@ -48,8 +43,8 @@ pub(crate) fn collect_crate_reexports(
     };
     let mut result = HashMap::new();
 
-    for root_file in root_files {
-        walk_collect_reexports(&ctx, &root_file, "", &mut result);
+    for root_file in crate_info.root_files() {
+        walk_collect_reexports(&ctx, root_file, "", &mut result);
     }
 
     result
@@ -192,7 +187,7 @@ fn walk_collect_reexports(
 
     // Recurse into child modules
     let decls = extract_mod_declarations(&syntax, false);
-    let resolve_dir = child_resolve_dir(file_path);
+    let resolve_dir = child_resolve_dir(file_path, module_path.is_empty());
 
     for decl in decls {
         let child_file = if let Some(ref explicit) = decl.explicit_path {
@@ -218,6 +213,7 @@ fn walk_collect_reexports(
 mod tests {
     use super::*;
     use crate::model::CrateInfo;
+    use crate::test_support::conventional_crate;
     use std::collections::HashSet;
     use tempfile::TempDir;
 
@@ -234,12 +230,7 @@ mod tests {
     }
 
     fn make_crate_info(tmp: &TempDir, name: &str) -> CrateInfo {
-        CrateInfo {
-            name: name.to_string(),
-            path: tmp.path().to_path_buf(),
-            dependencies: vec![],
-            dev_dependencies: vec![],
-        }
+        conventional_crate(name, tmp.path())
     }
 
     // --- Cycles 5-12: collect_crate_reexports ---

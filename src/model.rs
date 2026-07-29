@@ -4,7 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct SourceLocation {
@@ -190,8 +190,23 @@ pub enum TestKind {
 pub struct CrateInfo {
     pub name: String,
     pub path: PathBuf,
+    /// `None` for binary-only crates. Cargo lets `[lib] path` point anywhere,
+    /// so this is not always `src/lib.rs`.
+    pub lib_root: Option<PathBuf>,
+    /// Likewise not always `src/main.rs`.
+    pub bin_roots: Vec<PathBuf>,
     pub dependencies: Vec<String>,
     pub dev_dependencies: Vec<String>,
+}
+
+impl CrateInfo {
+    /// Entry points for module walking, library target first.
+    pub fn root_files(&self) -> impl Iterator<Item = &Path> {
+        self.lib_root
+            .iter()
+            .chain(&self.bin_roots)
+            .map(PathBuf::as_path)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

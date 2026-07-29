@@ -333,7 +333,7 @@ fn build_dependency_graph(
         .iter()
         .map(|krate| {
             let name = normalize_crate_name(&krate.name);
-            let exports = collect_crate_exports(&krate.path);
+            let exports = collect_crate_exports(krate);
             (name, exports)
         })
         .collect();

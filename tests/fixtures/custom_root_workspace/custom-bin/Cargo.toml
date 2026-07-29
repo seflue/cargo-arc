@@ -1,0 +1,12 @@
+[package]
+name = "custom-bin"
+version = "0.1.0"
+edition = "2021"
+
+# Binary-only crate whose entry point is not src/main.rs
+[[bin]]
+name = "tool"
+path = "src/tool.rs"
+
+[dependencies]
+renamed-lib = { workspace = true }

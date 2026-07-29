@@ -1,0 +1,9 @@
+[package]
+name = "decoy-main"
+version = "0.1.0"
+edition = "2021"
+
+# A conventional src/main.rs sits beside a lib target that is not src/lib.rs.
+# Discovery by file name finds the binary and misses every module.
+[lib]
+path = "src/core.rs"

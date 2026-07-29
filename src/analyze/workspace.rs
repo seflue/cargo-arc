@@ -136,6 +136,15 @@ fn should_include_crate(
     include
 }
 
+/// Proc-macros count: they are libraries with a module tree like any other.
+fn is_lib_target(target: &cargo_metadata::Target) -> bool {
+    use cargo_metadata::TargetKind::{CDyLib, DyLib, Lib, ProcMacro, RLib, StaticLib};
+    target
+        .kind
+        .iter()
+        .any(|k| matches!(k, Lib | RLib | DyLib | CDyLib | StaticLib | ProcMacro))
+}
+
 /// Builds a `CrateInfo` from a package and its resolved dependencies.
 fn build_crate_info(
     pkg: &cargo_metadata::Package,
@@ -146,9 +155,25 @@ fn build_crate_info(
     let dependencies = prod_deps.get(&normalized_name).cloned().unwrap_or_default();
     let dev_dependencies = dev_deps.get(&normalized_name).cloned().unwrap_or_default();
 
+    // Cargo resolves `[lib] path` / `[[bin]] path` for us; test, bench,
+    // example and build-script targets are not module tree roots.
+    let lib_root = pkg
+        .targets
+        .iter()
+        .find(|t| is_lib_target(t))
+        .map(|t| t.src_path.clone().into());
+    let bin_roots = pkg
+        .targets
+        .iter()
+        .filter(|t| t.is_bin())
+        .map(|t| t.src_path.clone().into())
+        .collect();
+
     CrateInfo {
         name: pkg.name.to_string(),
         path: pkg.manifest_path.parent().unwrap().into(),
+        lib_root,
+        bin_roots,
         dependencies,
         dev_dependencies,
     }
@@ -290,6 +315,57 @@ mod tests {
 
             let cargo_arc = crates.iter().find(|c| c.name == "cargo-arc").unwrap();
             assert!(cargo_arc.path.exists(), "path should exist");
+        }
+    }
+
+    mod custom_target_paths {
+        use super::*;
+
+        fn crates() -> Vec<CrateInfo> {
+            let manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/custom_root_workspace/Cargo.toml");
+            analyze_workspace(&manifest, &FeatureConfig::default()).expect("should analyze")
+        }
+
+        fn root_names(krate: &CrateInfo) -> Vec<String> {
+            krate
+                .root_files()
+                .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+                .collect()
+        }
+
+        #[test]
+        fn test_lib_root_follows_lib_path_attribute() {
+            let crates = crates();
+            let krate = crates.iter().find(|c| c.name == "renamed-lib").unwrap();
+            assert_eq!(root_names(krate), vec!["entry.rs"]);
+        }
+
+        #[test]
+        fn test_lib_root_outside_src_directory() {
+            let crates = crates();
+            let krate = crates.iter().find(|c| c.name == "outside-src").unwrap();
+            let lib_root = krate.lib_root.as_ref().expect("should have a lib target");
+            assert!(
+                lib_root.ends_with("bindings/lib.rs"),
+                "got: {}",
+                lib_root.display()
+            );
+        }
+
+        #[test]
+        fn test_conventional_main_does_not_shadow_custom_lib_root() {
+            let crates = crates();
+            let krate = crates.iter().find(|c| c.name == "decoy-main").unwrap();
+            assert_eq!(root_names(krate), vec!["core.rs", "main.rs"]);
+        }
+
+        #[test]
+        fn test_bin_root_follows_bin_path_attribute() {
+            let crates = crates();
+            let krate = crates.iter().find(|c| c.name == "custom-bin").unwrap();
+            assert!(krate.lib_root.is_none(), "binary-only crate has no lib");
+            assert_eq!(root_names(krate), vec!["tool.rs"]);
         }
     }
 

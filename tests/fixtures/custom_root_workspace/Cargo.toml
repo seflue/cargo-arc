@@ -1,0 +1,6 @@
+[workspace]
+members = ["renamed-lib", "outside-src", "custom-bin", "decoy-main"]
+resolver = "2"
+
+[workspace.dependencies]
+renamed-lib = { path = "renamed-lib" }

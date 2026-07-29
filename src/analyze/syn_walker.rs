@@ -4,9 +4,7 @@ use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use super::mod_resolver::{
-    ModDecl, child_resolve_dir, extract_mod_declarations, find_crate_root_files, resolve_mod_path,
-};
+use super::mod_resolver::{ModDecl, child_resolve_dir, extract_mod_declarations, resolve_mod_path};
 use super::use_parser::ReExportMap;
 use super::use_parser::{
     ResolutionContext, collect_all_path_refs, collect_module_aliases, parse_path_ref_dependencies,
@@ -70,7 +68,7 @@ fn walk_modules_for_paths(
         }
     };
 
-    let resolve_dir = child_resolve_dir(file_path);
+    let resolve_dir = child_resolve_dir(file_path, parent_path.is_empty());
 
     for decl in decls {
         let child_path = if let Some(ref explicit) = decl.explicit_path {
@@ -93,24 +91,15 @@ fn walk_modules_for_paths(
     }
 }
 
-/// Collect all module paths reachable from `crate_root` via filesystem walk.
+/// Collect all module paths reachable from the crate's targets via filesystem walk.
 /// Returns relative paths without crate prefix, e.g. `{"analyze", "analyze::hir"}`.
 pub(crate) fn collect_syn_module_paths(
-    crate_root: &Path,
-    crate_name: &str,
+    crate_info: &CrateInfo,
     include_tests: bool,
 ) -> HashSet<String> {
-    let _ = crate_name; // unused; kept for API parity with collect_hir_module_paths
-    let root_files = match find_crate_root_files(crate_root) {
-        Ok(f) => f,
-        Err(e) => {
-            tracing::warn!("collect_syn_module_paths: {e:#}");
-            return HashSet::new();
-        }
-    };
     let mut paths = HashSet::new();
-    for root_file in root_files {
-        walk_modules_for_paths(&root_file, "", &mut paths, include_tests);
+    for root_file in crate_info.root_files() {
+        walk_modules_for_paths(root_file, "", &mut paths, include_tests);
     }
     paths
 }
@@ -144,23 +133,17 @@ fn is_pub(vis: &syn::Visibility) -> bool {
     matches!(vis, syn::Visibility::Public(_))
 }
 
-/// Collect publicly exported symbol names from a crate's entry point (lib.rs/main.rs).
+/// Collect publicly exported symbol names from a crate's library target.
 ///
 /// Includes:
 /// - `pub fn`, `pub struct`, `pub enum`, `pub trait`, `pub const`, `pub static`, `pub type`
 /// - `pub use` re-exports (simple, aliased, grouped — NOT glob)
 ///
 /// Ignores `pub mod` declarations (module structure, not exports).
-/// Returns an empty set on any error (no entry file, parse failure).
-pub(crate) fn collect_crate_exports(crate_root: &Path) -> HashSet<String> {
-    let Ok(root_files) = find_crate_root_files(crate_root) else {
-        return HashSet::new();
-    };
-    // Only lib.rs exports — binary targets export nothing
-    let Some(root_file) = root_files
-        .iter()
-        .find(|p| p.file_name().is_some_and(|n| n == "lib.rs"))
-    else {
+/// Returns an empty set on any error (no library target, parse failure).
+pub(crate) fn collect_crate_exports(crate_info: &CrateInfo) -> HashSet<String> {
+    // Binary targets export nothing.
+    let Some(root_file) = crate_info.lib_root.as_ref() else {
         return HashSet::new();
     };
 
@@ -308,13 +291,7 @@ fn walk_module_syn(
     // Extract mod declarations from the same AST (no second file read)
     let decls = extract_mod_declarations(&syntax, ctx.include_tests);
 
-    // Integration test files (tests/smoke.rs) are crate roots: resolve modules
-    // from their parent directory (tests/), not from a stem-based subdirectory.
-    let resolve_dir = if is_crate_root {
-        file_path.parent().unwrap_or(Path::new(".")).to_path_buf()
-    } else {
-        child_resolve_dir(file_path)
-    };
+    let resolve_dir = child_resolve_dir(file_path, is_crate_root);
 
     let children: Vec<ModuleInfo> = decls
         .into_iter()
@@ -348,8 +325,7 @@ pub(crate) fn analyze_modules_syn(
     reexport_map: &ReExportMap,
     external_crate_names: &std::collections::HashMap<String, String>,
     include_tests: bool,
-) -> Result<ModuleTree> {
-    let root_files = find_crate_root_files(&crate_info.path)?;
+) -> ModuleTree {
     let normalized = normalize_crate_name(&crate_info.name);
 
     let ctx = WalkContext {
@@ -365,13 +341,13 @@ pub(crate) fn analyze_modules_syn(
     };
 
     let mut root: Option<ModuleInfo> = None;
-    for root_file in &root_files {
+    for root_file in crate_info.root_files() {
         let tree = walk_module_syn(
             &ctx,
             root_file,
             &normalized,
             &normalized, // parent_path == name for root → triggers identity check
-            false,
+            true,
         );
         match &mut root {
             None => root = Some(tree),
@@ -427,12 +403,13 @@ pub(crate) fn analyze_modules_syn(
     }
 
     let root = root.unwrap();
-    Ok(ModuleTree { root })
+    ModuleTree { root }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::conventional_crate;
     use tempfile::TempDir;
 
     struct TestProject {
@@ -536,7 +513,7 @@ mod tests {
                 .file("src/foo/bar.rs", "")
                 .build();
 
-            let paths = collect_syn_module_paths(tmp.path(), "synth", false);
+            let paths = collect_syn_module_paths(&conventional_crate("synth", tmp.path()), false);
             assert!(
                 paths.contains("foo"),
                 "should contain 'foo', found: {paths:?}"
@@ -551,7 +528,8 @@ mod tests {
         #[test]
         fn test_collect_paths_own_crate() {
             let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-            let paths = collect_syn_module_paths(crate_root, "cargo_arc", false);
+            let paths =
+                collect_syn_module_paths(&conventional_crate("cargo_arc", crate_root), false);
 
             for expected in [
                 "analyze",
@@ -579,7 +557,7 @@ mod tests {
                 .file("src/lib.rs", "// empty crate")
                 .build();
 
-            let paths = collect_syn_module_paths(tmp.path(), "empty", false);
+            let paths = collect_syn_module_paths(&conventional_crate("empty", tmp.path()), false);
             assert!(paths.is_empty(), "expected empty set, found: {paths:?}");
         }
 
@@ -592,7 +570,7 @@ mod tests {
                 .file("src/b.rs", "")
                 .build();
 
-            let paths = collect_syn_module_paths(tmp.path(), "mixed", false);
+            let paths = collect_syn_module_paths(&conventional_crate("mixed", tmp.path()), false);
             assert!(paths.contains("a"), "should contain 'a', found: {paths:?}");
             assert!(paths.contains("b"), "should contain 'b', found: {paths:?}");
             assert_eq!(paths.len(), 2);
@@ -619,7 +597,7 @@ mod tests {
                 )
                 .build();
 
-            let exports = collect_crate_exports(tmp.path());
+            let exports = collect_crate_exports(&conventional_crate("fixture", tmp.path()));
             for name in [
                 "helper", "MyStruct", "MyEnum", "MyTrait", "MAX", "GLOBAL", "Alias",
             ] {
@@ -637,7 +615,7 @@ mod tests {
                 .file("src/lib.rs", "pub use some_crate::Widget;\n")
                 .build();
 
-            let exports = collect_crate_exports(tmp.path());
+            let exports = collect_crate_exports(&conventional_crate("fixture", tmp.path()));
             assert!(exports.contains("Widget"), "found: {exports:?}");
             assert_eq!(exports.len(), 1);
         }
@@ -648,7 +626,7 @@ mod tests {
                 .file("src/lib.rs", "pub use some_crate::Original as Alias;\n")
                 .build();
 
-            let exports = collect_crate_exports(tmp.path());
+            let exports = collect_crate_exports(&conventional_crate("fixture", tmp.path()));
             assert!(exports.contains("Alias"), "found: {exports:?}");
             assert!(!exports.contains("Original"), "should not contain Original");
             assert_eq!(exports.len(), 1);
@@ -660,7 +638,7 @@ mod tests {
                 .file("src/lib.rs", "pub use some_crate::{Alpha, Beta};\n")
                 .build();
 
-            let exports = collect_crate_exports(tmp.path());
+            let exports = collect_crate_exports(&conventional_crate("fixture", tmp.path()));
             assert!(exports.contains("Alpha"), "found: {exports:?}");
             assert!(exports.contains("Beta"), "found: {exports:?}");
             assert_eq!(exports.len(), 2);
@@ -680,7 +658,7 @@ mod tests {
                 )
                 .build();
 
-            let exports = collect_crate_exports(tmp.path());
+            let exports = collect_crate_exports(&conventional_crate("fixture", tmp.path()));
             assert!(exports.contains("public_fn"), "found: {exports:?}");
             assert!(!exports.contains("private_fn"));
             assert!(!exports.contains("PrivateStruct"));
@@ -694,7 +672,7 @@ mod tests {
                 .file("src/lib.rs", "pub mod foo;\npub fn real_export() {}\n")
                 .build();
 
-            let exports = collect_crate_exports(tmp.path());
+            let exports = collect_crate_exports(&conventional_crate("fixture", tmp.path()));
             assert!(exports.contains("real_export"), "found: {exports:?}");
             assert!(!exports.contains("foo"), "pub mod should not be an export");
             assert_eq!(exports.len(), 1);
@@ -704,7 +682,7 @@ mod tests {
         fn test_collect_exports_no_entry_file() {
             let tmp = TestProject::new().build();
 
-            let exports = collect_crate_exports(tmp.path());
+            let exports = collect_crate_exports(&conventional_crate("fixture", tmp.path()));
             assert!(exports.is_empty(), "found: {exports:?}");
         }
 
@@ -715,7 +693,7 @@ mod tests {
                 .file("src/main.rs", "pub fn from_main() {}")
                 .build();
 
-            let exports = collect_crate_exports(tmp.path());
+            let exports = collect_crate_exports(&conventional_crate("fixture", tmp.path()));
             assert!(
                 exports.contains("from_lib"),
                 "should contain 'from_lib', found: {exports:?}"
@@ -734,12 +712,7 @@ mod tests {
         #[test]
         fn test_analyze_modules_syn_structure() {
             let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-            let crate_info = CrateInfo {
-                name: "cargo-arc".to_string(),
-                path: crate_root.to_path_buf(),
-                dependencies: vec![],
-                dev_dependencies: vec![],
-            };
+            let crate_info = conventional_crate("cargo-arc", crate_root);
             let workspace_crates: WorkspaceCrates = ["cargo-arc"]
                 .iter()
                 .map(std::string::ToString::to_string)
@@ -753,8 +726,7 @@ mod tests {
                 &ReExportMap::default(),
                 &std::collections::HashMap::new(),
                 false,
-            )
-            .expect("should analyze");
+            );
 
             assert_eq!(tree.root.name, "cargo_arc");
             assert_eq!(tree.root.full_path, "cargo_arc");
@@ -795,19 +767,15 @@ mod tests {
         #[test]
         fn test_analyze_modules_syn_dependencies() {
             let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-            let crate_info = CrateInfo {
-                name: "cargo-arc".to_string(),
-                path: crate_root.to_path_buf(),
-                dependencies: vec![],
-                dev_dependencies: vec![],
-            };
+            let crate_info = conventional_crate("cargo-arc", crate_root);
             let workspace_crates: WorkspaceCrates = ["cargo-arc"]
                 .iter()
                 .map(std::string::ToString::to_string)
                 .collect();
 
             // Collect module paths for accurate dependency resolution
-            let paths = collect_syn_module_paths(crate_root, "cargo_arc", false);
+            let paths =
+                collect_syn_module_paths(&conventional_crate("cargo_arc", crate_root), false);
             let all_module_paths: ModulePathMap =
                 [("cargo_arc".to_string(), paths)].into_iter().collect();
 
@@ -819,8 +787,7 @@ mod tests {
                 &ReExportMap::default(),
                 &std::collections::HashMap::new(),
                 false,
-            )
-            .expect("should analyze");
+            );
 
             let graph_mod = tree
                 .root
@@ -846,26 +813,21 @@ mod tests {
                 .build();
 
             // collect_syn_module_paths finds "cli"
-            let paths = collect_syn_module_paths(tmp.path(), "binonly", false);
+            let paths = collect_syn_module_paths(&conventional_crate("binonly", tmp.path()), false);
             assert!(
                 paths.contains("cli"),
                 "should contain 'cli', found: {paths:?}"
             );
 
             // collect_crate_exports returns empty (no lib.rs)
-            let exports = collect_crate_exports(tmp.path());
+            let exports = collect_crate_exports(&conventional_crate("fixture", tmp.path()));
             assert!(
                 exports.is_empty(),
                 "binary-only should have no exports, found: {exports:?}"
             );
 
             // analyze_modules_syn builds tree with "cli" child
-            let crate_info = CrateInfo {
-                name: "binonly".to_string(),
-                path: tmp.path().to_path_buf(),
-                dependencies: vec![],
-                dev_dependencies: vec![],
-            };
+            let crate_info = conventional_crate("binonly", tmp.path());
             let tree = analyze_modules_syn(
                 &crate_info,
                 &WorkspaceCrates::default(),
@@ -874,8 +836,7 @@ mod tests {
                 &ReExportMap::default(),
                 &std::collections::HashMap::new(),
                 false,
-            )
-            .expect("should analyze binary-only crate");
+            );
 
             let child_names: Vec<&str> =
                 tree.root.children.iter().map(|m| m.name.as_str()).collect();
@@ -903,12 +864,7 @@ fn main() {
             let mp: ModulePathMap = [("other_crate".to_string(), HashSet::from(["module".into()]))]
                 .into_iter()
                 .collect();
-            let crate_info = CrateInfo {
-                name: "app".to_string(),
-                path: tmp.path().to_path_buf(),
-                dependencies: vec![],
-                dev_dependencies: vec![],
-            };
+            let crate_info = conventional_crate("app", tmp.path());
             let tree = analyze_modules_syn(
                 &crate_info,
                 &ws,
@@ -917,8 +873,7 @@ fn main() {
                 &ReExportMap::default(),
                 &std::collections::HashMap::new(),
                 false,
-            )
-            .expect("should analyze");
+            );
 
             // Path expressions should be detected as dependencies
             assert!(
@@ -949,12 +904,7 @@ fn main() {
             let mp: ModulePathMap = [("other_crate".to_string(), HashSet::from(["module".into()]))]
                 .into_iter()
                 .collect();
-            let crate_info = CrateInfo {
-                name: "app".to_string(),
-                path: tmp.path().to_path_buf(),
-                dependencies: vec![],
-                dev_dependencies: vec![],
-            };
+            let crate_info = conventional_crate("app", tmp.path());
             let tree = analyze_modules_syn(
                 &crate_info,
                 &ws,
@@ -963,8 +913,7 @@ fn main() {
                 &ReExportMap::default(),
                 &std::collections::HashMap::new(),
                 false,
-            )
-            .expect("should analyze");
+            );
 
             // Should have exactly 1 dep for other_crate::module::Item (deduped)
             let item_deps: Vec<_> = tree
@@ -998,12 +947,7 @@ fn main() {
             )]
             .into_iter()
             .collect();
-            let crate_info = CrateInfo {
-                name: "my_crate".to_string(),
-                path: tmp.path().to_path_buf(),
-                dependencies: vec![],
-                dev_dependencies: vec![],
-            };
+            let crate_info = conventional_crate("my_crate", tmp.path());
             let tree = analyze_modules_syn(
                 &crate_info,
                 &WorkspaceCrates::default(),
@@ -1012,8 +956,7 @@ fn main() {
                 &ReExportMap::default(),
                 &std::collections::HashMap::new(),
                 false,
-            )
-            .expect("should analyze");
+            );
 
             let parent = tree
                 .root
@@ -1045,12 +988,7 @@ fn main() {
             )]
             .into_iter()
             .collect();
-            let crate_info = CrateInfo {
-                name: "my_crate".to_string(),
-                path: tmp.path().to_path_buf(),
-                dependencies: vec![],
-                dev_dependencies: vec![],
-            };
+            let crate_info = conventional_crate("my_crate", tmp.path());
             let tree = analyze_modules_syn(
                 &crate_info,
                 &WorkspaceCrates::default(),
@@ -1059,8 +997,7 @@ fn main() {
                 &ReExportMap::default(),
                 &std::collections::HashMap::new(),
                 false,
-            )
-            .expect("should analyze");
+            );
 
             let parent = tree
                 .root
@@ -1088,12 +1025,7 @@ fn main() {
                 .file("src/b.rs", "")
                 .build();
 
-            let crate_info = CrateInfo {
-                name: "mixed".to_string(),
-                path: tmp.path().to_path_buf(),
-                dependencies: vec![],
-                dev_dependencies: vec![],
-            };
+            let crate_info = conventional_crate("mixed", tmp.path());
             let tree = analyze_modules_syn(
                 &crate_info,
                 &WorkspaceCrates::default(),
@@ -1102,8 +1034,7 @@ fn main() {
                 &ReExportMap::default(),
                 &std::collections::HashMap::new(),
                 false,
-            )
-            .expect("should analyze mixed crate");
+            );
 
             let child_names: Vec<&str> =
                 tree.root.children.iter().map(|m| m.name.as_str()).collect();
@@ -1125,17 +1056,13 @@ fn main() {
         fn test_child_module_bare_use_resolved() {
             // cargo-arc analyzes itself: render module must have deps on render::css and render::elements
             let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-            let crate_info = CrateInfo {
-                name: "cargo-arc".to_string(),
-                path: crate_root.to_path_buf(),
-                dependencies: vec![],
-                dev_dependencies: vec![],
-            };
+            let crate_info = conventional_crate("cargo-arc", crate_root);
             let workspace_crates: WorkspaceCrates = ["cargo-arc"]
                 .iter()
                 .map(std::string::ToString::to_string)
                 .collect();
-            let paths = collect_syn_module_paths(crate_root, "cargo_arc", false);
+            let paths =
+                collect_syn_module_paths(&conventional_crate("cargo_arc", crate_root), false);
             let all_module_paths: ModulePathMap =
                 [("cargo_arc".to_string(), paths)].into_iter().collect();
 
@@ -1147,8 +1074,7 @@ fn main() {
                 &ReExportMap::default(),
                 &std::collections::HashMap::new(),
                 false,
-            )
-            .expect("should analyze");
+            );
 
             let render_mod = tree
                 .root
@@ -1207,24 +1133,6 @@ fn main() {
             let files = find_integration_test_files(tmp.path());
             assert!(files.is_empty());
         }
-
-        #[test]
-        fn test_find_crate_root_test_only_crate() {
-            let tmp = TestProject::new().file("tests/check.rs", "").build();
-
-            let roots = find_crate_root_files(tmp.path()).unwrap();
-            assert!(
-                roots.is_empty(),
-                "test-only crate should return empty roots"
-            );
-        }
-
-        #[test]
-        fn test_find_crate_root_no_src_no_tests_errors() {
-            let tmp = TestProject::new().build();
-            let result = find_crate_root_files(tmp.path());
-            assert!(result.is_err());
-        }
     }
 
     mod integration_test_analysis {
@@ -1236,10 +1144,8 @@ fn main() {
             let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("tests/fixtures/integration_test_crate/crate_with_tests");
             let crate_info = CrateInfo {
-                name: "crate_with_tests".to_string(),
-                path: fixture,
                 dependencies: vec!["crate_lib".to_string()],
-                dev_dependencies: vec![],
+                ..conventional_crate("crate_with_tests", fixture)
             };
             let ws: WorkspaceCrates = ["crate_with_tests", "crate_lib"]
                 .iter()
@@ -1254,8 +1160,7 @@ fn main() {
                 &ReExportMap::default(),
                 &std::collections::HashMap::new(),
                 true,
-            )
-            .expect("should analyze");
+            );
 
             let child_names: Vec<&str> =
                 tree.root.children.iter().map(|m| m.name.as_str()).collect();
@@ -1283,12 +1188,7 @@ fn main() {
         fn test_analyze_crate_without_include_tests_flag() {
             let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("tests/fixtures/integration_test_crate/crate_with_tests");
-            let crate_info = CrateInfo {
-                name: "crate_with_tests".to_string(),
-                path: fixture,
-                dependencies: vec![],
-                dev_dependencies: vec![],
-            };
+            let crate_info = conventional_crate("crate_with_tests", fixture);
 
             let tree = analyze_modules_syn(
                 &crate_info,
@@ -1298,8 +1198,7 @@ fn main() {
                 &ReExportMap::default(),
                 &std::collections::HashMap::new(),
                 false,
-            )
-            .expect("should analyze");
+            );
 
             let child_names: Vec<&str> =
                 tree.root.children.iter().map(|m| m.name.as_str()).collect();
@@ -1314,10 +1213,8 @@ fn main() {
             let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("tests/fixtures/integration_test_crate/test_only_crate");
             let crate_info = CrateInfo {
-                name: "test_only_crate".to_string(),
-                path: fixture,
                 dependencies: vec!["crate_lib".to_string()],
-                dev_dependencies: vec![],
+                ..conventional_crate("test_only_crate", fixture)
             };
             let ws: WorkspaceCrates = ["test_only_crate", "crate_lib"]
                 .iter()
@@ -1332,8 +1229,7 @@ fn main() {
                 &ReExportMap::default(),
                 &std::collections::HashMap::new(),
                 true,
-            )
-            .expect("should analyze test-only crate");
+            );
 
             assert_eq!(tree.root.name, "test_only_crate");
             let child_names: Vec<&str> =
@@ -1345,15 +1241,10 @@ fn main() {
         }
 
         #[test]
-        fn test_test_only_crate_errors_without_flag() {
+        fn test_test_only_crate_is_empty_without_flag() {
             let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("tests/fixtures/integration_test_crate/test_only_crate");
-            let crate_info = CrateInfo {
-                name: "test_only_crate".to_string(),
-                path: fixture,
-                dependencies: vec![],
-                dev_dependencies: vec![],
-            };
+            let crate_info = conventional_crate("test_only_crate", fixture);
 
             let tree = analyze_modules_syn(
                 &crate_info,
@@ -1363,8 +1254,7 @@ fn main() {
                 &ReExportMap::default(),
                 &std::collections::HashMap::new(),
                 false,
-            )
-            .expect("should not error for test-only crate");
+            );
             assert!(tree.root.children.is_empty());
         }
 
@@ -1393,12 +1283,7 @@ mod tests {
             )]
             .into_iter()
             .collect();
-            let crate_info = CrateInfo {
-                name: "my_crate".to_string(),
-                path: tmp.path().to_path_buf(),
-                dependencies: vec![],
-                dev_dependencies: vec![],
-            };
+            let crate_info = conventional_crate("my_crate", tmp.path());
 
             let tree = analyze_modules_syn(
                 &crate_info,
@@ -1408,8 +1293,7 @@ mod tests {
                 &ReExportMap::default(),
                 &std::collections::HashMap::new(),
                 false,
-            )
-            .expect("should analyze");
+            );
 
             let alpha = tree
                 .root

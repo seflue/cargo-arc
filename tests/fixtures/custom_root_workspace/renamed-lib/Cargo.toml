@@ -1,0 +1,8 @@
+[package]
+name = "renamed-lib"
+version = "0.1.0"
+edition = "2021"
+
+# Crate root is not src/lib.rs — child modules still resolve in src/
+[lib]
+path = "src/entry.rs"

@@ -170,6 +170,45 @@ fn test_multi_crate_fixture() {
 }
 
 #[test]
+fn test_custom_target_paths_fixture() {
+    let (temp, cmd) = fixture_args("custom_root_workspace", false);
+
+    let result = run(cmd);
+    assert!(result.is_ok(), "run() should succeed: {result:?}");
+
+    let svg = std::fs::read_to_string(temp.path()).unwrap();
+    let names: Vec<String> = extract_node_names(&svg).into_values().collect();
+
+    for expected in [
+        "renamed-lib",
+        "outside-src",
+        "custom-bin",
+        // Children of `[lib] path = "src/entry.rs"` — resolved in src/, not src/entry/
+        "alpha",
+        "beta",
+        // Child of a lib root outside src/
+        "util",
+        // Child of `[[bin]] path = "src/tool.rs"`
+        "runner",
+        // Child of a lib root that has a conventional src/main.rs beside it —
+        // picking the root by file name would find the binary and miss this.
+        "gamma",
+    ] {
+        assert!(
+            names.iter().any(|n| n == expected),
+            "should show '{expected}', found: {names:?}"
+        );
+    }
+
+    let arcs = resolve_arc_names(&extract_arcs(&svg), &extract_node_names(&svg));
+    assert!(
+        arcs.iter()
+            .any(|(from, to, _)| from == "runner" && to == "alpha"),
+        "runner should depend on renamed_lib::alpha, found: {arcs:?}"
+    );
+}
+
+#[test]
 fn test_self_analysis() {
     let (temp, cmd) = self_args();
 

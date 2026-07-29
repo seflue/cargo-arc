@@ -3,7 +3,6 @@
 //! Resolves `mod` declarations to file paths, discovers crate root files,
 //! and extracts module structure from the filesystem.
 
-use anyhow::{Result, bail};
 use std::path::{Path, PathBuf};
 
 /// A declared `mod` item (external, not inline).
@@ -79,31 +78,6 @@ pub(crate) fn extract_mod_declarations(syntax: &syn::File, include_tests: bool) 
     decls
 }
 
-/// Find root source files (lib.rs and/or main.rs) for a crate.
-/// Returns all existing root files, lib.rs first.
-/// Returns empty Vec (not error) when src/ is missing but tests/ exists (test-only crate).
-pub(crate) fn find_crate_root_files(crate_path: &Path) -> Result<Vec<PathBuf>> {
-    let src = crate_path.join("src");
-    let mut roots = Vec::new();
-    let lib_rs = src.join("lib.rs");
-    if lib_rs.exists() {
-        roots.push(lib_rs);
-    }
-    let main_rs = src.join("main.rs");
-    if main_rs.exists() {
-        roots.push(main_rs);
-    }
-    if roots.is_empty() {
-        // Test-only crates (no src/ but have tests/) are valid
-        let tests_dir = crate_path.join("tests");
-        if tests_dir.is_dir() {
-            return Ok(roots);
-        }
-        bail!("no lib.rs or main.rs found in {}", src.display());
-    }
-    Ok(roots)
-}
-
 /// Resolve a module name to its file path.
 /// Checks `foo.rs` first, then `foo/mod.rs` (Rust 2018 convention).
 pub(crate) fn resolve_mod_path(parent_dir: &Path, mod_name: &str) -> Option<PathBuf> {
@@ -121,10 +95,13 @@ pub(crate) fn resolve_mod_path(parent_dir: &Path, mod_name: &str) -> Option<Path
 /// Determine the directory where child modules are resolved.
 /// dir-style files (lib.rs, main.rs, mod.rs): same directory.
 /// file-style files (foo.rs): subdirectory foo/.
-pub(crate) fn child_resolve_dir(file_path: &Path) -> PathBuf {
+///
+/// A crate root is always dir-style regardless of its file name: `[lib] path`
+/// may name it anything, and its children still live beside it.
+pub(crate) fn child_resolve_dir(file_path: &Path, is_crate_root: bool) -> PathBuf {
     let dir = file_path.parent().unwrap_or(Path::new("."));
     let file_name = file_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    if file_name == "mod.rs" || file_name == "lib.rs" || file_name == "main.rs" {
+    if is_crate_root || file_name == "mod.rs" || file_name == "lib.rs" || file_name == "main.rs" {
         dir.to_path_buf()
     } else {
         let stem = file_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
@@ -164,44 +141,30 @@ mod tests {
         }
     }
 
-    mod find_crate_root {
+    mod resolve_dir {
         use super::*;
 
         #[test]
-        fn test_find_crate_root_lib() {
-            let tmp = TestProject::new().file("src/lib.rs", "").build();
-            let result = find_crate_root_files(tmp.path()).unwrap();
-            assert_eq!(result, vec![tmp.path().join("src/lib.rs")]);
+        fn test_dir_style_files_resolve_in_place() {
+            for name in ["lib.rs", "main.rs", "mod.rs"] {
+                let path = PathBuf::from("/w/src").join(name);
+                assert_eq!(child_resolve_dir(&path, false), PathBuf::from("/w/src"));
+            }
         }
 
         #[test]
-        fn test_find_crate_root_main() {
-            let tmp = TestProject::new().file("src/main.rs", "").build();
-            let result = find_crate_root_files(tmp.path()).unwrap();
-            assert_eq!(result, vec![tmp.path().join("src/main.rs")]);
-        }
-
-        #[test]
-        fn test_find_crate_root_both_returns_vec() {
-            let tmp = TestProject::new()
-                .file("src/lib.rs", "")
-                .file("src/main.rs", "")
-                .build();
-            let result = find_crate_root_files(tmp.path()).unwrap();
+        fn test_file_style_resolves_into_subdir() {
+            let path = PathBuf::from("/w/src/entry.rs");
             assert_eq!(
-                result,
-                vec![
-                    tmp.path().join("src/lib.rs"),
-                    tmp.path().join("src/main.rs")
-                ]
+                child_resolve_dir(&path, false),
+                PathBuf::from("/w/src/entry")
             );
         }
 
         #[test]
-        fn test_find_crate_root_missing() {
-            let tmp = TestProject::new().build();
-            let result = find_crate_root_files(tmp.path());
-            assert!(result.is_err());
+        fn test_crate_root_resolves_in_place_despite_name() {
+            let path = PathBuf::from("/w/src/entry.rs");
+            assert_eq!(child_resolve_dir(&path, true), PathBuf::from("/w/src"));
         }
     }
 

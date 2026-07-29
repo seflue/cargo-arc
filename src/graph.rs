@@ -640,17 +640,13 @@ fn aggregate_context(deps: &[&DependencyRef]) -> EdgeContext {
 mod tests {
     use super::*;
     use crate::model::{CrateInfo, DependencyRef, ModuleInfo, ModuleTree};
+    use crate::test_support::conventional_crate;
     use std::path::PathBuf;
 
     // -- Construction helpers --
 
     fn crate_(name: &str) -> CrateInfo {
-        CrateInfo {
-            name: name.into(),
-            path: format!("/path/to/{name}").into(),
-            dependencies: vec![],
-            dev_dependencies: vec![],
-        }
+        conventional_crate(name, format!("/path/to/{name}"))
     }
 
     fn crate_with_deps(name: &str, deps: &[&str]) -> CrateInfo {

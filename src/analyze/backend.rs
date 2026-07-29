@@ -54,9 +54,7 @@ impl AnalysisBackend {
     #[must_use]
     pub fn collect_module_paths(&self, crate_info: &CrateInfo) -> HashSet<String> {
         match self {
-            Self::Syn { include_tests } => {
-                collect_syn_module_paths(&crate_info.path, &crate_info.name, *include_tests)
-            }
+            Self::Syn { include_tests } => collect_syn_module_paths(crate_info, *include_tests),
             #[cfg(feature = "hir")]
             Self::Hir { host, vfs } => {
                 let Ok(krate) = find_crate_in_workspace(crate_info, host, vfs) else {
@@ -71,6 +69,8 @@ impl AnalysisBackend {
 
     /// Full module analysis with dependency extraction.
     #[allow(clippy::missing_errors_doc)]
+    // Only the HIR arm is fallible, so without that feature nothing can fail.
+    #[cfg_attr(not(feature = "hir"), allow(clippy::unnecessary_wraps))]
     pub(crate) fn analyze_modules(
         &self,
         crate_info: &CrateInfo,
@@ -81,7 +81,7 @@ impl AnalysisBackend {
         external_crate_names: &HashMap<String, String>,
     ) -> Result<ModuleTree> {
         match self {
-            Self::Syn { include_tests } => analyze_modules_syn(
+            Self::Syn { include_tests } => Ok(analyze_modules_syn(
                 crate_info,
                 workspace_crates,
                 all_module_paths,
@@ -89,7 +89,7 @@ impl AnalysisBackend {
                 reexport_map,
                 external_crate_names,
                 *include_tests,
-            ),
+            )),
             #[cfg(feature = "hir")]
             Self::Hir { host, vfs } => {
                 let _ = reexport_map;

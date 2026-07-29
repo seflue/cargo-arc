@@ -1,0 +1,8 @@
+[package]
+name = "outside-src"
+version = "0.1.0"
+edition = "2021"
+
+# Crate root lives outside src/ entirely
+[lib]
+path = "bindings/lib.rs"
