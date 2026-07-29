@@ -95,12 +95,17 @@ fn build_resolved_deps(
         let mut dev: Vec<String> = Vec::new();
 
         for dep in &node.deps {
-            let info = DepInfo::from_node_dep(dep, &ctx.workspace_member_names);
+            let dep_pkg_name = ctx
+                .pkg_id_to_name
+                .get(dep.pkg.repr.as_str())
+                .copied()
+                .unwrap_or(dep.name.as_str());
+            let info = DepInfo::from_node_dep(dep, dep_pkg_name, &ctx.workspace_member_names);
             debug!(name = info.name, kind = ?info.kind, scope = ?info.scope);
             if info.is_included() {
-                prod.push(info.name.to_string());
+                prod.push(normalize_crate_name(info.name));
             } else if info.is_dev_workspace() {
-                dev.push(info.name.to_string());
+                dev.push(normalize_crate_name(info.name));
             }
         }
 

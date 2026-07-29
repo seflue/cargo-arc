@@ -3,7 +3,7 @@
 use crate::analyze::externals::ExternalsResult;
 use crate::model::{
     CrateInfo, DependencyKind, DependencyRef, EdgeContext, ModuleInfo, ModuleTree, SourceLocation,
-    TestKind,
+    TestKind, normalize_crate_name,
 };
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
@@ -386,6 +386,7 @@ impl ArcGraph {
 
 struct GraphBuilder {
     graph: ArcGraph,
+    /// Keyed by `normalize_crate_name`; dependency names arrive underscored.
     crate_map: HashMap<String, NodeIndex>,
     module_map: HashMap<String, NodeIndex>,
     external_map: HashMap<String, NodeIndex>,
@@ -411,7 +412,7 @@ impl GraphBuilder {
                     name: crate_.name.clone(),
                     path: crate_.path.clone(),
                 });
-                (crate_.name.clone(), idx)
+                (normalize_crate_name(&crate_.name), idx)
             })
             .collect();
     }
@@ -458,7 +459,8 @@ impl GraphBuilder {
 
     fn add_crate_deps(&mut self, crates: &[CrateInfo]) {
         for crate_info in crates {
-            let Some(&from_idx) = self.crate_map.get(&crate_info.name) else {
+            let Some(&from_idx) = self.crate_map.get(&normalize_crate_name(&crate_info.name))
+            else {
                 continue;
             };
             let prod = crate_info
@@ -470,7 +472,9 @@ impl GraphBuilder {
                 .iter()
                 .map(|dep| (dep, EdgeContext::test(TestKind::Unit)));
             prod.chain(dev)
-                .filter_map(|(name, ctx)| Some((self.crate_map.get(name)?, ctx)))
+                .filter_map(|(name, ctx)| {
+                    Some((self.crate_map.get(&normalize_crate_name(name))?, ctx))
+                })
                 .for_each(|(&to_idx, context)| {
                     self.graph
                         .add_edge(from_idx, to_idx, Edge::CrateDep { context });
@@ -556,14 +560,10 @@ impl GraphBuilder {
                 continue;
             };
             let context = edge_context_from_dep_kinds(&dep.dep_kinds);
-            let Some(&ws_idx) = self.crate_map.get(&dep.workspace_crate) else {
-                // Try with hyphen variant
-                let hyphen_name = dep.workspace_crate.replace('_', "-");
-                let Some(&ws_idx) = self.crate_map.get(&hyphen_name) else {
-                    continue;
-                };
-                self.graph
-                    .add_edge(ws_idx, ext_idx, Edge::CrateDep { context });
+            let Some(&ws_idx) = self
+                .crate_map
+                .get(&normalize_crate_name(&dep.workspace_crate))
+            else {
                 continue;
             };
             self.graph
@@ -585,8 +585,7 @@ impl GraphBuilder {
     fn resolve_node(&self, name: &str) -> Option<NodeIndex> {
         self.module_map
             .get(name)
-            .or_else(|| self.crate_map.get(name))
-            .or_else(|| self.crate_map.get(&name.replace('_', "-")))
+            .or_else(|| self.crate_map.get(&normalize_crate_name(name)))
             .or_else(|| self.external_map.get(name))
             .or_else(|| self.external_map.get(&name.replace('_', "-")))
             .copied()
@@ -751,6 +750,14 @@ mod tests {
         let crates = vec![crate_with_deps("crate_a", &["crate_b"]), crate_("crate_b")];
         let graph = ArcGraph::build(&crates, &[], None);
         assert_eq!(graph.node_count(), 2);
+        let (cd, _, _) = count_edges(&graph);
+        assert_eq!(cd, 1);
+    }
+
+    #[test]
+    fn test_build_graph_crate_deps_hyphenated_package_name() {
+        let crates = vec![crate_with_deps("crate-a", &["crate_b"]), crate_("crate-b")];
+        let graph = ArcGraph::build(&crates, &[], None);
         let (cd, _, _) = count_edges(&graph);
         assert_eq!(cd, 1);
     }

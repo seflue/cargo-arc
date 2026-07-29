@@ -208,6 +208,36 @@ fn test_custom_target_paths_fixture() {
     );
 }
 
+/// Crates whose root file declares no submodules carry no `Contains` edge and
+/// therefore reach the layout only through a production crate dependency.
+#[test]
+fn test_single_file_crates_stay_in_layout() {
+    let (temp, cmd) = fixture_args("single_file_crates", false);
+
+    let result = run(cmd);
+    assert!(result.is_ok(), "run() should succeed: {result:?}");
+
+    let svg = std::fs::read_to_string(temp.path()).unwrap();
+    let nodes = extract_node_names(&svg);
+    let crates = extract_crate_names(&svg);
+
+    for expected in ["app-core", "app-leaf", "app-tool"] {
+        assert!(
+            crates.iter().any(|c| c == expected),
+            "should show '{expected}', found: {crates:?}"
+        );
+    }
+
+    let arcs = resolve_arc_names(&extract_arcs(&svg), &nodes);
+    for target in ["app-leaf", "app-tool"] {
+        assert!(
+            arcs.iter()
+                .any(|(from, to, _)| from == "app-core" && to == target),
+            "app-core should depend on {target}, found: {arcs:?}"
+        );
+    }
+}
+
 #[test]
 fn test_self_analysis() {
     let (temp, cmd) = self_args();

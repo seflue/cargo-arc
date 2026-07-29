@@ -1,0 +1,10 @@
+[package]
+name = "app-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Hyphenated package name — cargo metadata reports the library name `app_leaf`
+app-leaf = { path = "../app-leaf" }
+# Renamed dependency — cargo metadata reports the rename, not the package name
+tool = { path = "../app-tool", package = "app-tool" }

@@ -40,10 +40,15 @@ pub(crate) struct DepInfo<'a> {
 }
 
 impl<'a> DepInfo<'a> {
-    /// Extract dependency info from a cargo metadata `NodeDep`
-    pub(super) fn from_node_dep(dep: &'a NodeDep, workspace_members: &WorkspaceCrates) -> Self {
-        let name = dep.name.as_str();
-
+    /// Extract dependency info from a cargo metadata `NodeDep`.
+    /// `name` is the dependency's package name, resolved via `dep.pkg`.
+    /// `dep.name` is the library target name, which diverges from it on
+    /// hyphenated packages and on renamed dependencies.
+    pub(super) fn from_node_dep(
+        dep: &'a NodeDep,
+        name: &'a str,
+        workspace_members: &WorkspaceCrates,
+    ) -> Self {
         let kind = if dep
             .dep_kinds
             .iter()
