@@ -64,6 +64,10 @@ pub enum Edge {
         context: EdgeContext,
     },
     Contains,
+    /// A workspace dev-dependency the current view does not show (no
+    /// `--include-tests`). Nothing renders it; reachability needs it to tell
+    /// test infrastructure from a crate that nobody depends on.
+    DevDep,
 }
 
 impl Edge {
@@ -72,8 +76,14 @@ impl Edge {
     pub fn context(&self) -> Option<&EdgeContext> {
         match self {
             Edge::CrateDep { context } | Edge::ModuleDep { context, .. } => Some(context),
-            Edge::Contains => None,
+            Edge::Contains | Edge::DevDep => None,
         }
+    }
+
+    /// Whether this edge is a crate-level dependency, shown or not.
+    #[must_use]
+    pub fn is_crate_dep(&self) -> bool {
+        matches!(self, Edge::CrateDep { .. } | Edge::DevDep)
     }
 
     /// Whether this edge represents a production dependency.
@@ -234,11 +244,15 @@ impl ArcGraph {
     /// Compute the set of production-reachable crate nodes.
     ///
     /// A crate is reachable if:
-    /// 1. It is an "anchor" — has Contains edges (= has modules to visualize), OR
+    /// 1. It is an "anchor" — has Contains edges (= has modules to visualize),
+    ///    or nobody depends on it while it depends on production code itself
+    ///    (a workspace entry point, typically a thin binary), OR
     /// 2. It is transitively reachable from an anchor via production `CrateDep` edges.
     ///
     /// Crates not in this set are test infrastructure (dev-dep crates and their
     /// transitive production dependencies) and should be pruned from the layout.
+    /// An incoming [`Edge::DevDep`] is what separates a test helper from an entry
+    /// point: both are depended upon by nothing that ships.
     ///
     /// When test `CrateDep` edges exist (--include-tests), all crates are reachable.
     #[must_use]
@@ -273,6 +287,7 @@ impl ArcGraph {
                 .filter(|&node| {
                     self.edges(node)
                         .any(|edge| matches!(edge.weight(), Edge::Contains))
+                        || self.is_entry_point(node)
                 })
                 .collect()
         } else {
@@ -295,6 +310,19 @@ impl ArcGraph {
             }
         }
         reachable
+    }
+
+    /// Whether `node` is a workspace entry point: no crate depends on it, and it
+    /// depends on production code itself. A crate that only tests depend on fails
+    /// the first condition, a crate that only tests use fails the second.
+    fn is_entry_point(&self, node: NodeIndex) -> bool {
+        let depended_upon = self
+            .edges_directed(node, petgraph::Direction::Incoming)
+            .any(|edge| edge.weight().is_crate_dep());
+        let uses_production = self
+            .edges(node)
+            .any(|edge| edge.weight().is_production_crate_dep() && self[edge.target()].is_crate());
+        !depended_upon && uses_production
     }
 
     /// Collect all descendants of a node (including itself) via Contains edges.
@@ -366,16 +394,19 @@ impl ArcGraph {
     }
 
     /// Build a unified graph from crate and module analysis data.
+    /// `include_tests` decides whether dev-dependencies become shown test edges
+    /// or the invisible [`Edge::DevDep`].
     #[must_use]
     pub(crate) fn build(
         crates: &[CrateInfo],
         modules: &[ModuleTree],
         externals: Option<&ExternalsResult>,
+        include_tests: bool,
     ) -> Self {
         let mut builder = GraphBuilder::new();
         builder.add_crates(crates);
         builder.add_modules(modules);
-        builder.add_crate_deps(crates);
+        builder.add_crate_deps(crates, include_tests);
         builder.add_module_deps();
         if let Some(ext) = externals {
             builder.add_externals(ext);
@@ -457,27 +488,36 @@ impl GraphBuilder {
         }
     }
 
-    fn add_crate_deps(&mut self, crates: &[CrateInfo]) {
+    fn add_crate_deps(&mut self, crates: &[CrateInfo], include_tests: bool) {
         for crate_info in crates {
             let Some(&from_idx) = self.crate_map.get(&normalize_crate_name(&crate_info.name))
             else {
                 continue;
             };
-            let prod = crate_info
-                .dependencies
-                .iter()
-                .map(|dep| (dep, EdgeContext::production()));
-            let dev = crate_info
-                .dev_dependencies
-                .iter()
-                .map(|dep| (dep, EdgeContext::test(TestKind::Unit)));
+            let prod = crate_info.dependencies.iter().map(|dep| {
+                (
+                    dep,
+                    Edge::CrateDep {
+                        context: EdgeContext::production(),
+                    },
+                )
+            });
+            let dev = crate_info.dev_dependencies.iter().map(|dep| {
+                let edge = if include_tests {
+                    Edge::CrateDep {
+                        context: EdgeContext::test(TestKind::Unit),
+                    }
+                } else {
+                    Edge::DevDep
+                };
+                (dep, edge)
+            });
             prod.chain(dev)
-                .filter_map(|(name, ctx)| {
-                    Some((self.crate_map.get(&normalize_crate_name(name))?, ctx))
+                .filter_map(|(name, edge)| {
+                    Some((self.crate_map.get(&normalize_crate_name(name))?, edge))
                 })
-                .for_each(|(&to_idx, context)| {
-                    self.graph
-                        .add_edge(from_idx, to_idx, Edge::CrateDep { context });
+                .for_each(|(&to_idx, edge)| {
+                    self.graph.add_edge(from_idx, to_idx, edge);
                 });
         }
     }
@@ -701,6 +741,8 @@ mod tests {
                 Edge::CrateDep { .. } => (crate_dep_count + 1, module_dep_count, contains_count),
                 Edge::ModuleDep { .. } => (crate_dep_count, module_dep_count + 1, contains_count),
                 Edge::Contains => (crate_dep_count, module_dep_count, contains_count + 1),
+                // Not a shown dependency; tests that care query it directly.
+                Edge::DevDep => (crate_dep_count, module_dep_count, contains_count),
             },
         )
     }
@@ -727,7 +769,7 @@ mod tests {
 
     #[test]
     fn test_build_graph_single_crate() {
-        let graph = ArcGraph::build(&[crate_("my_crate")], &[], None);
+        let graph = ArcGraph::build(&[crate_("my_crate")], &[], None, false);
         assert_eq!(graph.node_count(), 1);
         assert_eq!(graph.edge_count(), 0);
     }
@@ -739,7 +781,7 @@ mod tests {
             children: vec![module("foo", "crate::foo"), module("bar", "crate::bar")],
             ..module("my_crate", "crate")
         })];
-        let graph = ArcGraph::build(&crates, &modules, None);
+        let graph = ArcGraph::build(&crates, &modules, None, false);
         assert_eq!(graph.node_count(), 3);
         let (cd, md, c) = count_edges(&graph);
         assert_eq!((cd, md, c), (0, 0, 2));
@@ -748,7 +790,7 @@ mod tests {
     #[test]
     fn test_build_graph_crate_deps() {
         let crates = vec![crate_with_deps("crate_a", &["crate_b"]), crate_("crate_b")];
-        let graph = ArcGraph::build(&crates, &[], None);
+        let graph = ArcGraph::build(&crates, &[], None, false);
         assert_eq!(graph.node_count(), 2);
         let (cd, _, _) = count_edges(&graph);
         assert_eq!(cd, 1);
@@ -757,7 +799,7 @@ mod tests {
     #[test]
     fn test_build_graph_crate_deps_hyphenated_package_name() {
         let crates = vec![crate_with_deps("crate-a", &["crate_b"]), crate_("crate-b")];
-        let graph = ArcGraph::build(&crates, &[], None);
+        let graph = ArcGraph::build(&crates, &[], None, false);
         let (cd, _, _) = count_edges(&graph);
         assert_eq!(cd, 1);
     }
@@ -775,7 +817,7 @@ mod tests {
             ],
             ..module("my_crate", "crate")
         })];
-        let graph = ArcGraph::build(&crates, &modules, None);
+        let graph = ArcGraph::build(&crates, &modules, None, false);
         assert_eq!(graph.node_count(), 3);
         let (cd, md, c) = count_edges(&graph);
         assert_eq!((cd, md, c), (0, 1, 2));
@@ -797,7 +839,7 @@ mod tests {
                 ..module("crate_b", "crate_b")
             }),
         ];
-        let graph = ArcGraph::build(&crates, &modules, None);
+        let graph = ArcGraph::build(&crates, &modules, None, false);
         assert_eq!(graph.node_count(), 4);
         let (cd, md, c) = count_edges(&graph);
         assert_eq!((cd, md, c), (1, 1, 2));
@@ -827,7 +869,7 @@ mod tests {
             ],
             ..module("my_crate", "crate")
         })];
-        let graph = ArcGraph::build(&crates, &modules, None);
+        let graph = ArcGraph::build(&crates, &modules, None, false);
 
         let prod = graph.production_subgraph();
         assert_eq!(prod.edge_count(), 2, "production keeps both edges");
@@ -849,7 +891,7 @@ mod tests {
             dependencies: vec![dep("crate_a", "gamma", "src/lib.rs", 5)],
             ..module("crate_a", "crate_a")
         })];
-        let graph = ArcGraph::build(&crates, &modules, None);
+        let graph = ArcGraph::build(&crates, &modules, None, false);
         let (_, locs) =
             find_module_dep(&graph, "crate_a", "gamma").expect("expected ModuleDep root→gamma");
         assert_eq!(locs[0].file, PathBuf::from("src/lib.rs"));
@@ -871,7 +913,7 @@ mod tests {
             }),
             tree(module("crate_b", "crate_b")),
         ];
-        let graph = ArcGraph::build(&crates, &modules, None);
+        let graph = ArcGraph::build(&crates, &modules, None, false);
         let (_, locs) = find_module_dep(&graph, "beta", "crate_b")
             .expect("expected ModuleDep from beta to crate_b");
         assert_eq!(locs[0].module_path, "crate_b");
@@ -891,7 +933,7 @@ mod tests {
                 ..module("crate_b", "crate_b")
             }),
         ];
-        let graph = ArcGraph::build(&crates, &modules, None);
+        let graph = ArcGraph::build(&crates, &modules, None, false);
         let (_, locs) =
             find_module_dep(&graph, "crate_a", "gamma").expect("expected ModuleDep root→gamma");
         assert_eq!(locs[0].file, PathBuf::from("src/lib.rs"));
@@ -910,7 +952,7 @@ mod tests {
             }),
             tree(module("crate_b", "crate_b")),
         ];
-        let graph = ArcGraph::build(&crates, &modules, None);
+        let graph = ArcGraph::build(&crates, &modules, None, false);
         let (_, locs) = find_module_dep(&graph, "crate_a", "crate_b")
             .expect("expected ModuleDep crate_a→crate_b");
         assert_eq!(locs[0].module_path, "crate_b");
@@ -934,7 +976,7 @@ mod tests {
             ],
             ..module("my_crate", "crate")
         })];
-        let graph = ArcGraph::build(&crates, &modules, None);
+        let graph = ArcGraph::build(&crates, &modules, None, false);
         let (ctx, _) = find_module_dep(&graph, "bar", "foo").expect("expected ModuleDep bar→foo");
         assert_eq!(*ctx, EdgeContext::test(TestKind::Unit));
     }
@@ -962,7 +1004,7 @@ mod tests {
             ],
             ..module("my_crate", "crate")
         })];
-        let graph = ArcGraph::build(&crates, &modules, None);
+        let graph = ArcGraph::build(&crates, &modules, None, false);
         let (ctx, locs) =
             find_module_dep(&graph, "bar", "foo").expect("expected ModuleDep bar→foo");
         assert_eq!(*ctx, EdgeContext::production());
@@ -1037,6 +1079,60 @@ mod tests {
         let reachable = graph.production_reachable();
         assert!(reachable.contains(&a), "alpha should be reachable");
         assert!(reachable.contains(&b), "beta should be reachable");
+    }
+
+    /// Crate with modules, a leaf binary depending on it, and a test helper the
+    /// binary only pulls in for tests. The helper depends on production code
+    /// itself, so only the incoming edges tell the two module-less crates apart.
+    fn mixed_graph_with_leaf_and_helper() -> (ArcGraph, NodeIndex, NodeIndex) {
+        let mut graph = ArcGraph::new();
+        let lib = graph.add_node(Node::Crate {
+            name: "lib".into(),
+            path: "/path".into(),
+        });
+        let module = graph.add_node(Node::Module {
+            name: "engine".into(),
+            crate_idx: lib,
+        });
+        graph.add_edge(lib, module, Edge::Contains);
+
+        let binary = graph.add_node(Node::Crate {
+            name: "binary".into(),
+            path: "/path".into(),
+        });
+        let helper = graph.add_node(Node::Crate {
+            name: "helper".into(),
+            path: "/path".into(),
+        });
+        for source in [binary, helper] {
+            graph.add_edge(
+                source,
+                lib,
+                Edge::CrateDep {
+                    context: EdgeContext::production(),
+                },
+            );
+        }
+        graph.add_edge(binary, helper, Edge::DevDep);
+        (graph, binary, helper)
+    }
+
+    #[test]
+    fn test_production_reachable_keeps_leaf_binary() {
+        let (graph, binary, _) = mixed_graph_with_leaf_and_helper();
+        assert!(
+            graph.production_reachable().contains(&binary),
+            "a binary nobody depends on is the workspace entry point, not test infrastructure"
+        );
+    }
+
+    #[test]
+    fn test_production_reachable_drops_dev_only_crate() {
+        let (graph, _, helper) = mixed_graph_with_leaf_and_helper();
+        assert!(
+            !graph.production_reachable().contains(&helper),
+            "a crate only reached through a dev-dependency is test infrastructure"
+        );
     }
 
     #[test]
@@ -1129,7 +1225,7 @@ mod tests {
             }],
             crate_name_map: std::collections::HashMap::new(),
         };
-        let graph = ArcGraph::build(&crates, &[], Some(&externals));
+        let graph = ArcGraph::build(&crates, &[], Some(&externals), false);
         // 1 workspace + 2 external = 3 nodes
         assert_eq!(graph.node_count(), 3);
         // 1 workspace->serde + 1 serde->tokio = 2 CrateDep edges
@@ -1168,7 +1264,7 @@ mod tests {
             }],
             crate_name_map: std::collections::HashMap::new(),
         };
-        let graph = ArcGraph::build(&crates, &[], Some(&externals));
+        let graph = ArcGraph::build(&crates, &[], Some(&externals), false);
 
         // serde is a direct workspace dependency
         let serde = graph
@@ -1206,7 +1302,7 @@ mod tests {
     #[test]
     fn test_build_graph_externals_none() {
         let crates = vec![crate_with_deps("a", &["b"]), crate_("b")];
-        let graph = ArcGraph::build(&crates, &[], None);
+        let graph = ArcGraph::build(&crates, &[], None, false);
         assert_eq!(graph.node_count(), 2);
         let (cd, _, _) = count_edges(&graph);
         assert_eq!(cd, 1);
@@ -1227,7 +1323,7 @@ mod tests {
             external_deps: vec![],
             crate_name_map: std::collections::HashMap::new(),
         };
-        let graph = ArcGraph::build(&crates, &[], Some(&externals));
+        let graph = ArcGraph::build(&crates, &[], Some(&externals), false);
         // Verify the external node exists
         let ext_node = graph
             .node_indices()

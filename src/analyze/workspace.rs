@@ -209,20 +209,11 @@ fn build_filtered_crates(
         "final crate filtering"
     );
 
-    // Without --include-tests, dev-dependencies should not produce graph edges.
-    // Pass an empty map so CrateInfo.dev_dependencies stays empty.
-    let empty_dev_deps = DepsMap::new();
-    let effective_dev_deps = if feature_config.include_tests {
-        dev_deps
-    } else {
-        &empty_dev_deps
-    };
-
     let crates: Vec<CrateInfo> = metadata
         .workspace_packages()
         .into_iter()
         .filter(|pkg| should_include_crate(pkg, &reachable, feature_config))
-        .map(|pkg| build_crate_info(pkg, prod_deps, effective_dev_deps))
+        .map(|pkg| build_crate_info(pkg, prod_deps, dev_deps))
         .collect();
 
     debug!(crate_count = crates.len(), "final result");

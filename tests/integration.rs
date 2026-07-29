@@ -238,6 +238,32 @@ fn test_single_file_crates_stay_in_layout() {
     }
 }
 
+/// A binary at the top of a workspace: no submodules, nobody depends on it.
+/// Without the dev edges in the graph it is indistinguishable from a test
+/// helper, and pruning takes the workspace's entry point with it.
+#[test]
+fn test_leaf_binary_stays_in_layout() {
+    let (temp, cmd) = fixture_args("consumer_crate", false);
+
+    let result = run(cmd);
+    assert!(result.is_ok(), "run() should succeed: {result:?}");
+
+    let svg = std::fs::read_to_string(temp.path()).unwrap();
+    let crates = extract_crate_names(&svg);
+    assert!(
+        crates.iter().any(|c| c == "zebra-app"),
+        "should show 'zebra-app', found: {crates:?}"
+    );
+
+    // The crate-level arcs are suppressed by the module-level ones they duplicate.
+    let arcs = resolve_arc_names(&extract_arcs(&svg), &extract_node_names(&svg));
+    assert!(
+        arcs.iter()
+            .any(|(from, to, _)| from == "zebra-app" && to == "models"),
+        "zebra-app should depend on alpha-core::models, found: {arcs:?}"
+    );
+}
+
 #[test]
 fn test_self_analysis() {
     let (temp, cmd) = self_args();

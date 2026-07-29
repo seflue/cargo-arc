@@ -469,7 +469,7 @@ fn populate_edges(
                 (vec![], context.clone(), false)
             }
             Edge::ModuleDep { locations, context } => (locations.clone(), context.clone(), true),
-            Edge::Contains => continue,
+            Edge::Contains | Edge::DevDep => continue,
         };
 
         if let (Some(&from), Some(&to)) = (node_map.get(&src), node_map.get(&dst)) {

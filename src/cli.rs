@@ -392,7 +392,12 @@ fn build_dependency_graph(
         .collect();
     tracing::debug!("phase: all crates analyzed");
 
-    let graph = ArcGraph::build(&crates, &modules, ext_result.as_ref());
+    let graph = ArcGraph::build(
+        &crates,
+        &modules,
+        ext_result.as_ref(),
+        feature_config.include_tests,
+    );
     tracing::debug!(
         "phase: graph built ({} nodes, {} edges)",
         graph.node_count(),

@@ -196,6 +196,8 @@ pub struct CrateInfo {
     /// Likewise not always `src/main.rs`.
     pub bin_roots: Vec<PathBuf>,
     pub dependencies: Vec<String>,
+    /// Populated regardless of `--include-tests`. Reachability needs to know
+    /// who is pulled in by tests even when the view does not show it.
     pub dev_dependencies: Vec<String>,
 }
 
