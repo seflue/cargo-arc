@@ -3,10 +3,6 @@
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-fn default_severity() -> Severity {
-    Severity::Error
-}
-
 #[derive(Debug, Deserialize)]
 pub struct ArcConfig {
     pub config: Option<ConfigMeta>,
@@ -17,13 +13,14 @@ pub struct ArcConfig {
 #[derive(Debug, Deserialize)]
 pub struct ConfigMeta {
     pub version: u32,
-    #[serde(default = "default_severity")]
+    #[serde(default)]
     pub default_severity: Severity,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
+    #[default]
     Error,
     Warn,
     Ignore,
@@ -96,7 +93,7 @@ impl Rule {
 
     #[must_use]
     pub fn severity(&self) -> Severity {
-        self.declared_severity.unwrap_or(Severity::Error)
+        self.declared_severity.unwrap_or_default()
     }
 }
 
@@ -147,7 +144,8 @@ impl ArcConfig {
         let default = self
             .config
             .as_ref()
-            .map_or(Severity::Error, |c| c.default_severity);
+            .map(|c| c.default_severity)
+            .unwrap_or_default();
         for rule in &mut self.rules {
             rule.declared_severity.get_or_insert(default);
         }
@@ -214,6 +212,11 @@ mod tests {
     }
 
     #[test]
+    fn test_severity_defaults_to_error() {
+        assert_eq!(Severity::default(), Severity::Error);
+    }
+
+    #[test]
     fn test_parse_severity_default() {
         let toml = r#"
             [[rules]]
@@ -240,6 +243,22 @@ mod tests {
         let mut config: ArcConfig = toml::from_str(toml).unwrap();
         config.apply_defaults();
         assert_eq!(config.rules[0].severity(), Severity::Warn);
+    }
+
+    #[test]
+    fn test_config_meta_without_default_severity_falls_back_to_error() {
+        let toml = r#"
+            [config]
+            version = 1
+
+            [[rules]]
+            type = "no-cycles"
+            name = "test"
+            scope = "**"
+        "#;
+        let mut config: ArcConfig = toml::from_str(toml).unwrap();
+        config.apply_defaults();
+        assert_eq!(config.rules[0].severity(), Severity::Error);
     }
 
     #[test]
