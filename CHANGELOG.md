@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is removed before the search, so rings built through it never form.
 - `arc check --show-suppressed` lists the findings that an `except` entry
   allows. Without it a run only counts them.
+- `arc check --generate-baseline` writes `arc-baseline.toml` next to
+  `arc-rules.toml`, freezing the findings a project already has so that only
+  new ones are reported. A normal run never writes the file. Entries carry the
+  rule name; a cycle is keyed by its ring, so a new cycle is reported even when
+  it runs through a frozen one's edges. Generation is refused while an `except`
+  pattern matches no module, and `--show-suppressed` lists frozen findings
+  alongside allowed ones.
 - Rule names must now be unique across all rule types; `arc-rules.toml` is
   rejected when two rules share a name.
 

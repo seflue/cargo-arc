@@ -10,12 +10,13 @@ use std::fmt::Write;
 /// Format all violations as compiler-style diagnostics.
 ///
 /// Returns an empty string when there are no violations and nothing was
-/// suppressed. Otherwise produces one diagnostic block per violation,
-/// followed by either the suppressed findings (when `show_suppressed`) or a
-/// one-line count of them, then a summary line over the reported findings.
+/// suppressed or baselined. Otherwise produces one diagnostic block per
+/// violation, followed by either the suppressed/baselined findings (when
+/// `show_suppressed`) or a one-line count of them, then a summary line over
+/// the reported findings.
 #[must_use]
 pub fn format_violations(result: &CheckResult, show_suppressed: bool) -> String {
-    if result.violations.is_empty() && result.suppressed.is_empty() {
+    if result.violations.is_empty() && result.suppressed.is_empty() && result.baselined.is_empty() {
         return String::new();
     }
 
@@ -33,12 +34,35 @@ pub fn format_violations(result: &CheckResult, show_suppressed: bool) -> String 
         for violation in &result.suppressed {
             violation_block(&mut output, violation, "except");
         }
-    } else if !result.suppressed.is_empty() {
-        let _ = writeln!(
-            output,
-            "{} allowed by except, not counted",
-            plural(result.suppressed.len(), "finding")
-        );
+        for violation in &result.baselined {
+            violation_block(&mut output, violation, "baseline");
+        }
+    } else if !result.suppressed.is_empty() || !result.baselined.is_empty() {
+        let except_count = result.suppressed.len();
+        let baseline_count = result.baselined.len();
+        match (except_count, baseline_count) {
+            (n, 0) => {
+                let _ = writeln!(
+                    output,
+                    "{} allowed by except, not counted",
+                    plural(n, "finding")
+                );
+            }
+            (0, n) => {
+                let _ = writeln!(
+                    output,
+                    "{} frozen in the baseline, not counted",
+                    plural(n, "finding")
+                );
+            }
+            (a, b) => {
+                let _ = writeln!(
+                    output,
+                    "{} hidden ({a} allowed by except, {b} frozen in the baseline)",
+                    plural(a + b, "finding"),
+                );
+            }
+        }
         let _ = writeln!(output, "  arc check --show-suppressed lists them");
     }
 
@@ -62,9 +86,9 @@ pub fn format_violations(result: &CheckResult, show_suppressed: bool) -> String 
 }
 
 /// Render one diagnostic block: `{level}[rule-type]: rule-name`, its source
-/// locations, and its edge/cluster detail. `level` is `error`/`warning` for
-/// reported violations, `except` for suppressed ones: the word names the
-/// mechanism that let them through.
+/// locations, and its edge/cluster/ring detail. `level` is `error`/`warning`
+/// for reported violations, `except` for suppressed ones, `baseline` for
+/// baselined ones: the word names the mechanism that let them through.
 fn violation_block(out: &mut String, violation: &Violation, level: &str) {
     let _ = writeln!(
         out,
@@ -80,6 +104,9 @@ fn violation_block(out: &mut String, violation: &Violation, level: &str) {
         }
         ViolationDetail::Cluster(cluster) => {
             out.push_str(&cluster_block(cluster, "  "));
+        }
+        ViolationDetail::Ring { modules } => {
+            let _ = writeln!(out, "  = {} -> {}", modules.join(" -> "), modules[0]);
         }
     }
     let _ = writeln!(out);
@@ -212,7 +239,7 @@ fn cluster_block(cluster: &CycleCluster, indent: &str) -> String {
 }
 
 /// `"{n} {base}"`, pluralizing `base` with a trailing `s` unless `n == 1`.
-fn plural(n: usize, base: &str) -> String {
+pub(crate) fn plural(n: usize, base: &str) -> String {
     format!("{n} {base}{}", if n == 1 { "" } else { "s" })
 }
 
@@ -419,6 +446,80 @@ mod tests {
         assert!(
             !without_flag.contains("not counted"),
             "got:\n{without_flag}"
+        );
+    }
+
+    fn baselined_ring_violation() -> Violation {
+        Violation {
+            rule_name: "no cycles in domain".into(),
+            rule_type: "no-cycles".into(),
+            severity: Severity::Error,
+            detail: ViolationDetail::Ring {
+                modules: vec!["a".into(), "b".into()],
+            },
+            locations: vec![],
+        }
+    }
+
+    #[test]
+    fn test_format_baselined_hidden_by_default_but_counted() {
+        let result = CheckResult {
+            baselined: vec![baselined_ring_violation()],
+            ..Default::default()
+        };
+        let output = format_violations(&result, false);
+        assert!(!output.contains("baseline[no-cycles]"), "got:\n{output}");
+        assert!(
+            output.contains("1 finding frozen in the baseline, not counted"),
+            "got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_format_baselined_shown_with_flag() {
+        let result = CheckResult {
+            suppressed: vec![suppressed_edge_violation()],
+            baselined: vec![baselined_ring_violation()],
+            ..Default::default()
+        };
+        let output = format_violations(&result, true);
+        assert!(
+            output.contains("except[forbidden-dependency]: no infra in domain"),
+            "got:\n{output}"
+        );
+        assert!(
+            output.contains("baseline[no-cycles]: no cycles in domain"),
+            "got:\n{output}"
+        );
+        assert!(output.contains("= a -> b -> a"), "got:\n{output}");
+        assert!(!output.contains("not counted"), "got:\n{output}");
+    }
+
+    #[test]
+    fn test_format_both_hidden_counts_combined() {
+        let result = CheckResult {
+            suppressed: vec![suppressed_edge_violation()],
+            baselined: vec![baselined_ring_violation()],
+            ..Default::default()
+        };
+        let output = format_violations(&result, false);
+        assert!(
+            output.contains("2 findings hidden (1 allowed by except, 1 frozen in the baseline)"),
+            "got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_format_only_baselined_no_reported_violations() {
+        let result = CheckResult {
+            baselined: vec![baselined_ring_violation()],
+            ..Default::default()
+        };
+        let output = format_violations(&result, false);
+        assert!(!output.is_empty());
+        assert!(
+            !output.contains("error:"),
+            "a green run must not print an error line, got:\n{output}"
         );
     }
 

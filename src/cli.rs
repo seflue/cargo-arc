@@ -14,9 +14,10 @@ use crate::graph::ArcGraph;
 use crate::layout::{LayoutIR, build_layout};
 use crate::model::{CrateExportMap, ModulePathMap, WorkspaceCrates};
 use crate::render::{RenderConfig, render};
+use crate::rules::baseline::Baseline;
 use crate::rules::config::{ArcConfig, ConfigError};
-use crate::rules::engine::{CycleCluster, check_rules};
-use crate::rules::format::{format_cluster_report, format_violations};
+use crate::rules::engine::{CycleCluster, check_rules, dead_excepts};
+use crate::rules::format::{format_cluster_report, format_violations, plural};
 use crate::volatility::{VolatilityAnalyzer, VolatilityConfig};
 use std::path::Path;
 
@@ -99,6 +100,10 @@ pub struct CheckArgs {
     /// List findings that an `except` entry allows, instead of only counting them
     #[arg(long)]
     pub show_suppressed: bool,
+
+    /// Rewrite `arc-baseline.toml` from the current findings instead of checking
+    #[arg(long)]
+    pub generate_baseline: bool,
 }
 
 /// Shared flags for analysis configuration, used by both diagram and check modes.
@@ -230,7 +235,7 @@ fn run_check(check_args: &CheckArgs, common: &CommonArgs) -> Result<()> {
 
     let config = match ArcConfig::load(rules_path) {
         Ok(config) => config,
-        Err(ConfigError::FileNotFound(..)) if !explicit => {
+        Err(ConfigError::FileNotFound(..)) if !explicit && !check_args.generate_baseline => {
             // No arc-rules.toml and not explicitly requested → legacy cycle check
             return run_legacy_cycle_check(&graph, common.include_reexports);
         }
@@ -240,8 +245,23 @@ fn run_check(check_args: &CheckArgs, common: &CommonArgs) -> Result<()> {
         }
     };
 
+    let baseline_path = resolve_repo_path(rules_path).join("arc-baseline.toml");
+
+    if check_args.generate_baseline {
+        run_generate_baseline(&graph, &config, &baseline_path, common.include_reexports);
+        return Ok(());
+    }
+
+    let baseline = match Baseline::load(&baseline_path) {
+        Ok(baseline) => baseline,
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(2);
+        }
+    };
+
     tracing::debug!("phase: rule check start");
-    let result = check_rules(&graph, &config, common.include_reexports);
+    let result = check_rules(&graph, &config, &baseline, common.include_reexports);
     tracing::debug!(
         "phase: rule check done ({} violations)",
         result.violations.len()
@@ -253,6 +273,40 @@ fn run_check(check_args: &CheckArgs, common: &CommonArgs) -> Result<()> {
         std::process::exit(code);
     }
     Ok(())
+}
+
+/// `--generate-baseline`: refuse to write when an `except` pattern matches no
+/// module (it would silently freeze findings that pattern should instead be
+/// suppressing), otherwise rewrite `baseline_path` from the current findings.
+fn run_generate_baseline(
+    graph: &ArcGraph,
+    config: &ArcConfig,
+    baseline_path: &Path,
+    include_reexports: bool,
+) {
+    let dead = dead_excepts(graph, config);
+    if !dead.is_empty() {
+        eprintln!("error: cannot write a baseline while an except matches nothing");
+        for d in &dead {
+            eprintln!(
+                "  rule {:?}: pattern {:?} matches no module",
+                d.rule, d.pattern
+            );
+        }
+        eprintln!("  fix the pattern or delete the entry, then run again");
+        std::process::exit(2);
+    }
+
+    let result = check_rules(graph, config, &Baseline::empty(), include_reexports);
+    if let Err(e) = Baseline::write(baseline_path, &result.baseline_entries) {
+        eprintln!("error: {e}");
+        std::process::exit(2);
+    }
+    eprintln!(
+        "wrote {} to {}",
+        plural(result.baseline_entries.len(), "finding"),
+        baseline_path.display()
+    );
 }
 
 /// Legacy fallback: global cycle check when no arc-rules.toml exists.
@@ -450,6 +504,24 @@ mod tests {
     fn test_parse_check_subcommand() {
         let cmd = parse_args(&["cargo", "arc", "check"]);
         assert!(matches!(cmd.command, Some(Command::Check(ref args)) if args.rules.is_none()));
+    }
+
+    #[test]
+    fn test_parse_generate_baseline_flag() {
+        let cmd = parse_args(&["cargo", "arc", "check", "--generate-baseline"]);
+        match cmd.command {
+            Some(Command::Check(ref args)) => assert!(args.generate_baseline),
+            _ => panic!("expected Command::Check"),
+        }
+    }
+
+    #[test]
+    fn test_parse_generate_baseline_flag_default() {
+        let cmd = parse_args(&["cargo", "arc", "check"]);
+        match cmd.command {
+            Some(Command::Check(ref args)) => assert!(!args.generate_baseline),
+            _ => panic!("expected Command::Check"),
+        }
     }
 
     #[test]

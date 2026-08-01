@@ -562,6 +562,17 @@ fn test_dev_dep_crate_visible_with_include_tests() {
 
 // ===== Phase 4: check subcommand integration tests =====
 
+/// Copies `<fixture>/arc-rules.toml` into a fresh tempdir so a `--generate-baseline`
+/// run writes `arc-baseline.toml` there instead of into the checked-in fixture.
+fn isolated_rules_copy(fixture: &str) -> (tempfile::TempDir, PathBuf) {
+    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join(format!("tests/fixtures/{fixture}/arc-rules.toml"));
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("arc-rules.toml");
+    std::fs::copy(&src, &dest).unwrap();
+    (dir, dest)
+}
+
 /// Run `cargo-arc arc --manifest-path <fixture>/Cargo.toml check [check_args...]` as subprocess.
 /// Returns (exit_code, stderr).
 fn cargo_arc_check(fixture: &str, check_args: &[&str]) -> (i32, String) {
@@ -744,6 +755,114 @@ fn test_check_invalid_config() {
     assert!(
         stderr.contains("invalid config file"),
         "should report config parse error, stderr: {stderr}"
+    );
+}
+
+// ===== Phase 5: baseline integration tests =====
+
+#[test]
+fn test_generate_baseline_then_check_reports_nothing() {
+    let (dir, rules_path) = isolated_rules_copy("arch_violation_workspace");
+    let rules_arg = format!("--rules={}", rules_path.display());
+    let baseline_path = dir.path().join("arc-baseline.toml");
+
+    let (code, stderr) = cargo_arc_check(
+        "arch_violation_workspace",
+        &[&rules_arg, "--generate-baseline"],
+    );
+    assert_eq!(code, 0, "generate should exit 0, stderr: {stderr}");
+    assert!(baseline_path.exists(), "baseline file should be written");
+    let baseline_before = std::fs::read_to_string(&baseline_path).unwrap();
+
+    let (code, stderr) = cargo_arc_check("arch_violation_workspace", &[&rules_arg]);
+    assert_eq!(
+        code, 0,
+        "check right after generate should report nothing, stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("error["),
+        "all findings should be frozen by the baseline, stderr: {stderr}"
+    );
+
+    let baseline_after = std::fs::read_to_string(&baseline_path).unwrap();
+    assert_eq!(
+        baseline_before, baseline_after,
+        "a normal check run must not rewrite the baseline"
+    );
+}
+
+#[test]
+fn test_generate_baseline_refuses_dead_except() {
+    let dir = tempfile::tempdir().unwrap();
+    let rules_path = dir.path().join("arc-rules.toml");
+    std::fs::write(
+        &rules_path,
+        r#"
+[config]
+version = 1
+
+[[rules]]
+type = "forbidden-dependency"
+name = "no infra in domain"
+from = "domain::**"
+to = "infra::**"
+except = [
+  { from = "domain::lgacy", to = "infra::db" },
+]
+"#,
+    )
+    .unwrap();
+    let rules_arg = format!("--rules={}", rules_path.display());
+    let baseline_path = dir.path().join("arc-baseline.toml");
+
+    let (code, stderr) = cargo_arc_check(
+        "arch_violation_workspace",
+        &[&rules_arg, "--generate-baseline"],
+    );
+    assert_eq!(
+        code, 2,
+        "a dead except should refuse baseline generation, stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("domain::lgacy"),
+        "stderr should name the dead pattern, stderr: {stderr}"
+    );
+    assert!(
+        !baseline_path.exists(),
+        "no baseline file should be written when generation is refused"
+    );
+}
+
+#[test]
+fn test_check_duplicate_rule_names_exits_2() {
+    let dir = tempfile::tempdir().unwrap();
+    let rules_path = dir.path().join("arc-rules.toml");
+    std::fs::write(
+        &rules_path,
+        r#"
+[[rules]]
+type = "forbidden-dependency"
+name = "shared name"
+from = "domain::**"
+to = "infra::**"
+
+[[rules]]
+type = "no-cycles"
+name = "shared name"
+scope = "domain::**"
+"#,
+    )
+    .unwrap();
+    let rules_arg = format!("--rules={}", rules_path.display());
+
+    let (code, stderr) = cargo_arc_check("arch_violation_workspace", &[&rules_arg]);
+    assert_eq!(
+        code, 2,
+        "duplicate rule name should exit 2 at load, stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("shared name"),
+        "stderr should name the duplicate rule, stderr: {stderr}"
     );
 }
 

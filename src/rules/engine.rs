@@ -5,6 +5,7 @@
 use crate::diagnose::{Cluster, CycleAnalysis, MinimalCycles};
 use crate::graph::{ArcGraph, Edge};
 use crate::model::SourceLocation;
+use crate::rules::baseline::{Baseline, BaselineEntry, FindingKey};
 use crate::rules::config::{
     ArcConfig, Direction, Except, ForbiddenDependencyRule, LayersRule, NoCyclesRule, Rule,
     RuleKind, Severity,
@@ -34,6 +35,11 @@ pub enum ViolationDetail {
         to: String,
     },
     Cluster(CycleCluster),
+    /// A single ring the baseline keeps out of `violations`; carries the
+    /// ring's members since a cluster is not a stable object to key on.
+    Ring {
+        modules: Vec<String>,
+    },
 }
 
 /// One cyclic cluster, resolved to names and counts for rendering.
@@ -143,6 +149,12 @@ pub struct CheckResult {
     /// `has_errors`/`exit_code`, and are only printed under
     /// `--show-suppressed`.
     pub suppressed: Vec<Violation>,
+    /// Findings an `arc-baseline.toml` entry covers: like `suppressed`, they
+    /// never affect `has_errors`/`exit_code`.
+    pub baselined: Vec<Violation>,
+    /// The key of every finding actually reported in `violations`, i.e. what
+    /// `--generate-baseline` writes out.
+    pub baseline_entries: Vec<BaselineEntry>,
 }
 
 impl CheckResult {
@@ -166,6 +178,8 @@ impl FromIterator<CheckResult> for CheckResult {
         iter.into_iter().fold(Self::default(), |mut acc, result| {
             acc.violations.extend(result.violations);
             acc.suppressed.extend(result.suppressed);
+            acc.baselined.extend(result.baselined);
+            acc.baseline_entries.extend(result.baseline_entries);
             acc
         })
     }
@@ -177,14 +191,16 @@ impl FromIterator<CheckResult> for CheckResult {
 struct CheckRun<'graph> {
     graph: &'graph ArcGraph,
     path_index: PathIndex,
+    baseline: &'graph Baseline,
     include_reexports: bool,
 }
 
 impl<'graph> CheckRun<'graph> {
-    fn new(graph: &'graph ArcGraph, include_reexports: bool) -> Self {
+    fn new(graph: &'graph ArcGraph, baseline: &'graph Baseline, include_reexports: bool) -> Self {
         Self {
             graph,
             path_index: PathIndex::build(graph),
+            baseline,
             include_reexports,
         }
     }
@@ -269,9 +285,39 @@ impl<'graph> CheckRun<'graph> {
             })
             .collect();
 
-        let analysis = subgraph.minimal_cycles();
+        let mut analysis = subgraph.minimal_cycles();
+        // The baseline keys on the ring, not the cluster: a cluster merges or
+        // splits as edges are added, so it has no identity to freeze against.
+        let mut baselined = Vec::new();
+        let mut baseline_entries = Vec::new();
+        analysis.retain_cycles(|cycle| {
+            let modules: Vec<String> = cycle
+                .path
+                .iter()
+                .map(|&idx| graph.qualified_name(idx))
+                .collect();
+            let key = FindingKey::ring(modules.clone());
+            if self.baseline.covers(&rule.name, &key) {
+                baselined.push(Violation {
+                    rule_name: rule.name.clone(),
+                    rule_type: rule.rule_type().into(),
+                    severity: rule.severity(),
+                    detail: ViolationDetail::Ring { modules },
+                    locations: Vec::new(),
+                });
+                false
+            } else {
+                baseline_entries.push(BaselineEntry {
+                    rule: rule.name.clone(),
+                    key,
+                });
+                true
+            }
+        });
+
         // The cluster report is computed per rule, over that rule's own scoped
         // subgraph: two no-cycles rules with different scopes see different views.
+        // Clusters left without a surviving ring drop out here on their own.
         let report = graph.cluster_report(&subgraph, &analysis);
         let total = report.clusters.len();
 
@@ -297,6 +343,8 @@ impl<'graph> CheckRun<'graph> {
         CheckResult {
             violations,
             suppressed,
+            baselined,
+            baseline_entries,
         }
     }
 
@@ -330,7 +378,8 @@ impl<'graph> CheckRun<'graph> {
     /// Shared by all edge-predicate rule checks (forbidden-dependency, layers);
     /// only the predicate and the rule-type label differ between them. An edge
     /// covered by `except` still produces a `Violation`, but lands in the
-    /// suppressed side.
+    /// suppressed side. A baseline check runs only after that: `except` is a
+    /// permanent allowance, the baseline a frozen one.
     fn check_edge_violations(
         &self,
         rule: &Rule,
@@ -340,6 +389,8 @@ impl<'graph> CheckRun<'graph> {
         let graph = self.graph;
         let mut violations = Vec::new();
         let mut suppressed = Vec::new();
+        let mut baselined = Vec::new();
+        let mut baseline_entries = Vec::new();
         for edge_idx in graph.edge_indices() {
             let edge = &graph[edge_idx];
             if !edge.is_production() {
@@ -353,25 +404,38 @@ impl<'graph> CheckRun<'graph> {
                 Edge::ModuleDep { locations, .. } => locations.clone(),
                 _ => Vec::new(),
             };
+            let from = graph.qualified_name(source);
+            let to = graph.qualified_name(target);
             let violation = Violation {
                 rule_name: rule.name.clone(),
                 rule_type: rule.rule_type().into(),
                 severity: rule.severity(),
                 detail: ViolationDetail::Edge {
-                    from: graph.qualified_name(source),
-                    to: graph.qualified_name(target),
+                    from: from.clone(),
+                    to: to.clone(),
                 },
                 locations,
             };
             if except.covers(source, target) {
                 suppressed.push(violation);
+                continue;
+            }
+            let key = FindingKey::edge(from, to);
+            if self.baseline.covers(&rule.name, &key) {
+                baselined.push(violation);
             } else {
+                baseline_entries.push(BaselineEntry {
+                    rule: rule.name.clone(),
+                    key,
+                });
                 violations.push(violation);
             }
         }
         CheckResult {
             violations,
             suppressed,
+            baselined,
+            baseline_entries,
         }
     }
 }
@@ -381,14 +445,57 @@ impl<'graph> CheckRun<'graph> {
 /// Dispatches each rule to its type-specific checker, collects all violations,
 /// and filters out `Severity::Ignore` rules.
 #[must_use]
-pub fn check_rules(graph: &ArcGraph, config: &ArcConfig, include_reexports: bool) -> CheckResult {
-    let run = CheckRun::new(graph, include_reexports);
+pub fn check_rules(
+    graph: &ArcGraph,
+    config: &ArcConfig,
+    baseline: &Baseline,
+    include_reexports: bool,
+) -> CheckResult {
+    let run = CheckRun::new(graph, baseline, include_reexports);
     config
         .rules
         .iter()
         .filter(|rule| rule.severity() != Severity::Ignore)
         .map(|rule| run.check_rule(rule))
         .collect()
+}
+
+/// An `except` pattern that matches no module: a typo or a rename, and it
+/// silently allows nothing.
+pub struct DeadExcept {
+    pub rule: String,
+    pub pattern: String,
+}
+
+/// `except` patterns across `config` whose `from` or `to` side resolves to no
+/// node. An `except` on a currently nonexistent *edge* is not dead — that's a
+/// forward-looking allowance, not a typo — so only the pattern side is
+/// checked, never whether the edge itself exists.
+#[must_use]
+pub fn dead_excepts(graph: &ArcGraph, config: &ArcConfig) -> Vec<DeadExcept> {
+    let path_index = PathIndex::build(graph);
+    let mut dead = Vec::new();
+    for rule in config
+        .rules
+        .iter()
+        .filter(|rule| rule.severity() != Severity::Ignore)
+    {
+        for exception in &rule.except {
+            if resolve_pattern(&exception.from, graph, &path_index).is_empty() {
+                dead.push(DeadExcept {
+                    rule: rule.name.clone(),
+                    pattern: exception.from.clone(),
+                });
+            }
+            if resolve_pattern(&exception.to, graph, &path_index).is_empty() {
+                dead.push(DeadExcept {
+                    rule: rule.name.clone(),
+                    pattern: exception.to.clone(),
+                });
+            }
+        }
+    }
+    dead
 }
 
 /// `except` entries of a rule, resolved once to node sets so a per-edge check
@@ -489,7 +596,25 @@ mod tests {
     // -- Test graph helpers --
 
     fn check_rule(graph: &ArcGraph, rule: &Rule, include_reexports: bool) -> CheckResult {
-        CheckRun::new(graph, include_reexports).check_rule(rule)
+        check_rule_with_baseline(graph, rule, include_reexports, &Baseline::empty())
+    }
+
+    fn check_rule_with_baseline(
+        graph: &ArcGraph,
+        rule: &Rule,
+        include_reexports: bool,
+        baseline: &Baseline,
+    ) -> CheckResult {
+        CheckRun::new(graph, baseline, include_reexports).check_rule(rule)
+    }
+
+    /// Writes `entries` to a throwaway `arc-baseline.toml` and loads it back,
+    /// the only way to get a populated [`Baseline`] (its fields are private).
+    fn baseline_of(entries: Vec<BaselineEntry>) -> Baseline {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("arc-baseline.toml");
+        Baseline::write(&path, &entries).unwrap();
+        Baseline::load(&path).unwrap()
     }
 
     fn test_crate_graph() -> (ArcGraph, NodeIndex) {
@@ -727,6 +852,7 @@ mod tests {
         let CheckResult {
             violations,
             suppressed,
+            ..
         } = check_rule(&service_to_db_graph(), &rule, false);
         assert!(violations.is_empty());
         assert_eq!(suppressed.len(), 1);
@@ -743,6 +869,7 @@ mod tests {
         let CheckResult {
             violations,
             suppressed,
+            ..
         } = check_rule(&service_to_db_graph(), &rule, false);
         assert_eq!(violations.len(), 1);
         assert!(suppressed.is_empty());
@@ -754,6 +881,7 @@ mod tests {
         let CheckResult {
             violations,
             suppressed,
+            ..
         } = check_rule(&service_to_db_graph(), &rule, false);
         assert!(violations.is_empty());
         assert_eq!(suppressed.len(), 1);
@@ -892,6 +1020,7 @@ mod tests {
         let CheckResult {
             violations,
             suppressed,
+            ..
         } = check_rule(&graph, &rule, false);
         assert!(
             violations.is_empty(),
@@ -926,6 +1055,7 @@ mod tests {
         let CheckResult {
             violations,
             suppressed,
+            ..
         } = check_rule(&graph, &rule, false);
         assert!(violations.is_empty());
         assert!(
@@ -1025,6 +1155,7 @@ mod tests {
         let CheckResult {
             violations,
             suppressed,
+            ..
         } = check_rule(&graph, &rule, false);
         assert!(violations.is_empty());
         assert_eq!(suppressed.len(), 1);
@@ -1056,7 +1187,7 @@ mod tests {
                 },
             ],
         };
-        let result = check_rules(&graph, &config, false);
+        let result = check_rules(&graph, &config, &Baseline::empty(), false);
         assert_eq!(result.violations.len(), 2);
         assert!(
             result
@@ -1074,7 +1205,7 @@ mod tests {
             config: None,
             rules: vec![],
         };
-        let result = check_rules(&graph, &config, false);
+        let result = check_rules(&graph, &config, &Baseline::empty(), false);
         assert!(result.violations.is_empty());
     }
 
@@ -1153,7 +1284,204 @@ mod tests {
                 }),
             }],
         };
-        let result = check_rules(&graph, &config, false);
+        let result = check_rules(&graph, &config, &Baseline::empty(), false);
         assert!(result.violations.is_empty());
+    }
+
+    // ===== Baseline tests =====
+
+    #[test]
+    fn test_baselined_edge_is_not_a_violation() {
+        let rule = no_infra_in_domain(vec![]);
+        let baseline = baseline_of(vec![BaselineEntry {
+            rule: rule.name.clone(),
+            key: FindingKey::edge("domain::service", "infra::db"),
+        }]);
+        let result = check_rule_with_baseline(&service_to_db_graph(), &rule, false, &baseline);
+        assert!(result.violations.is_empty());
+        assert_eq!(result.baselined.len(), 1);
+        assert_eq!(result.exit_code(), 0);
+    }
+
+    #[test]
+    fn test_baseline_entry_scoped_to_rule_name_does_not_cover_other_rule() {
+        let rule = no_infra_in_domain(vec![]);
+        let baseline = baseline_of(vec![BaselineEntry {
+            rule: "some other rule".into(),
+            key: FindingKey::edge("domain::service", "infra::db"),
+        }]);
+        let result = check_rule_with_baseline(&service_to_db_graph(), &rule, false, &baseline);
+        assert_eq!(result.violations.len(), 1);
+        assert!(result.baselined.is_empty());
+    }
+
+    #[test]
+    fn test_baselining_every_ring_of_a_cluster_removes_the_cluster() {
+        let (mut graph, crate_idx) = test_crate_graph();
+        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
+        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
+        let c = add_module(&mut graph, "c", crate_idx, crate_idx);
+        let d = add_module(&mut graph, "d", crate_idx, crate_idx);
+        // Two triangles sharing edge a -> b: one cluster, two rings.
+        add_production_dep(&mut graph, a, b);
+        add_production_dep(&mut graph, b, c);
+        add_production_dep(&mut graph, c, a);
+        add_production_dep(&mut graph, b, d);
+        add_production_dep(&mut graph, d, a);
+
+        let rule = no_cycles_rule("no cycles in test", "test::**", vec![]);
+        let baseline = baseline_of(vec![
+            BaselineEntry {
+                rule: rule.name.clone(),
+                key: FindingKey::ring(vec![
+                    "test::a".to_string(),
+                    "test::b".to_string(),
+                    "test::c".to_string(),
+                ]),
+            },
+            BaselineEntry {
+                rule: rule.name.clone(),
+                key: FindingKey::ring(vec![
+                    "test::a".to_string(),
+                    "test::b".to_string(),
+                    "test::d".to_string(),
+                ]),
+            },
+        ]);
+        let result = check_rule_with_baseline(&graph, &rule, false, &baseline);
+        assert!(result.violations.is_empty());
+        assert_eq!(result.baselined.len(), 2);
+    }
+
+    #[test]
+    fn test_ring_sharing_an_edge_with_a_baselined_ring_is_still_reported() {
+        let (mut graph, crate_idx) = test_crate_graph();
+        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
+        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
+        let c = add_module(&mut graph, "c", crate_idx, crate_idx);
+        let d = add_module(&mut graph, "d", crate_idx, crate_idx);
+        // a -> b -> c -> a and a -> b -> d -> a share edge a -> b.
+        add_production_dep(&mut graph, a, b);
+        add_production_dep(&mut graph, b, c);
+        add_production_dep(&mut graph, c, a);
+        add_production_dep(&mut graph, b, d);
+        add_production_dep(&mut graph, d, a);
+
+        let rule = no_cycles_rule("no cycles in test", "test::**", vec![]);
+        // Only the a-b-c ring is baselined.
+        let baseline = baseline_of(vec![BaselineEntry {
+            rule: rule.name.clone(),
+            key: FindingKey::ring(vec![
+                "test::a".to_string(),
+                "test::b".to_string(),
+                "test::c".to_string(),
+            ]),
+        }]);
+        let result = check_rule_with_baseline(&graph, &rule, false, &baseline);
+        assert_eq!(result.baselined.len(), 1);
+        assert_eq!(
+            result.violations.len(),
+            1,
+            "the a-b-d ring shares edge a->b with the baselined ring, but is a distinct \
+             finding and must still be reported"
+        );
+        let ViolationDetail::Cluster(cluster) = &result.violations[0].detail else {
+            panic!("expected a cluster detail");
+        };
+        assert_eq!(cluster.cycles, 1);
+        let ring = cluster.ring.as_ref().expect("single remaining ring");
+        assert!(ring.iter().any(|m| m == "d"), "got: {ring:?}");
+        assert!(!ring.iter().any(|m| m == "c"), "got: {ring:?}");
+    }
+
+    #[test]
+    fn test_rotated_baseline_entry_covers_the_same_ring() {
+        let (mut graph, crate_idx) = test_crate_graph();
+        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
+        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
+        let c = add_module(&mut graph, "c", crate_idx, crate_idx);
+        add_production_dep(&mut graph, a, b);
+        add_production_dep(&mut graph, b, c);
+        add_production_dep(&mut graph, c, a);
+
+        let rule = no_cycles_rule("no cycles in test", "test::**", vec![]);
+        // Rotated relative to the traversal order (which starts at "test::a").
+        let baseline = baseline_of(vec![BaselineEntry {
+            rule: rule.name.clone(),
+            key: FindingKey::ring(vec![
+                "test::c".to_string(),
+                "test::a".to_string(),
+                "test::b".to_string(),
+            ]),
+        }]);
+        let result = check_rule_with_baseline(&graph, &rule, false, &baseline);
+        assert!(result.violations.is_empty());
+        assert_eq!(result.baselined.len(), 1);
+    }
+
+    #[test]
+    fn test_baseline_generated_from_a_run_covers_the_next_run() {
+        let (mut graph, _domain, service, _model, _infra, db, api, _app, _handler) =
+            multi_crate_graph();
+        add_production_dep(&mut graph, service, db);
+        add_production_dep(&mut graph, db, api);
+        add_production_dep(&mut graph, api, db);
+
+        let config = ArcConfig {
+            config: None,
+            rules: vec![
+                no_infra_in_domain(vec![]),
+                no_cycles_rule("no cycles in infra", "infra::**", vec![]),
+            ],
+        };
+
+        let first = check_rules(&graph, &config, &Baseline::empty(), false);
+        assert!(!first.violations.is_empty(), "sanity: findings exist");
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("arc-baseline.toml");
+        Baseline::write(&path, &first.baseline_entries).unwrap();
+        let baseline = Baseline::load(&path).unwrap();
+
+        let second = check_rules(&graph, &config, &baseline, false);
+        assert!(second.violations.is_empty(), "got: {:?}", second.violations);
+        assert!(!second.baselined.is_empty());
+    }
+
+    // ===== dead_excepts tests =====
+
+    #[test]
+    fn test_dead_except_reports_pattern_matching_no_module() {
+        let (mut graph, _domain, service, _model, _infra, db, _api, _app, _handler) =
+            multi_crate_graph();
+        add_production_dep(&mut graph, service, db);
+
+        let config = ArcConfig {
+            config: None,
+            rules: vec![no_infra_in_domain(vec![except_edge(
+                "domain::typo",
+                "infra::db",
+            )])],
+        };
+        let dead = dead_excepts(&graph, &config);
+        assert_eq!(dead.len(), 1);
+        assert_eq!(dead[0].rule, "no infra in domain");
+        assert_eq!(dead[0].pattern, "domain::typo");
+    }
+
+    #[test]
+    fn test_dead_except_empty_when_all_patterns_resolve() {
+        let (mut graph, _domain, service, _model, _infra, db, _api, _app, _handler) =
+            multi_crate_graph();
+        add_production_dep(&mut graph, service, db);
+
+        let config = ArcConfig {
+            config: None,
+            rules: vec![no_infra_in_domain(vec![except_edge(
+                "domain::service",
+                "infra::db",
+            )])],
+        };
+        assert!(dead_excepts(&graph, &config).is_empty());
     }
 }
