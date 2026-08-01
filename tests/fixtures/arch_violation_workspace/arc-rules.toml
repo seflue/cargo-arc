@@ -11,7 +11,7 @@ severity = "error"
 [[rules]]
 type = "layers"
 name = "architecture layers"
-layers = ["domain", "application", "infra"]
+layers = ["infra", "application", "domain"]
 direction = "top-down"
 severity = "error"
 

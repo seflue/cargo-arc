@@ -650,6 +650,20 @@ fn test_pure_reexport_cycle_excluded_by_default() {
     );
 }
 
+/// Reads the `stderr` layout of `format::violation_block`: diagnostic blocks
+/// separated by a blank line, each carrying its edge on a `  = ` line.
+fn layers_violation_edges(stderr: &str) -> Vec<String> {
+    stderr
+        .split("\n\n")
+        .filter(|block| block.starts_with("error[layers]"))
+        .flat_map(|block| {
+            block
+                .lines()
+                .filter_map(|line| line.strip_prefix("  = ").map(str::to_string))
+        })
+        .collect()
+}
+
 #[test]
 fn test_check_with_violations() {
     let (code, stderr) = cargo_arc_check("arch_violation_workspace", &[]);
@@ -665,6 +679,20 @@ fn test_check_with_violations() {
     assert!(
         stderr.contains("error[no-cycles]"),
         "should report no-cycles violation, stderr: {stderr}"
+    );
+
+    // The fixture orders its layers outside-in, so only an edge pointing back
+    // out is a violation. Checked per edge because `forbidden-dependency`
+    // reports the same pair and a plain substring search would not tell them
+    // apart.
+    let layers_edges = layers_violation_edges(&stderr);
+    assert!(
+        layers_edges.contains(&"domain::service → infra::db".to_string()),
+        "layers rule should flag domain::service → infra::db, got: {layers_edges:?}"
+    );
+    assert!(
+        !layers_edges.contains(&"application::handler → domain::service".to_string()),
+        "layers rule should not flag application::handler → domain::service, got: {layers_edges:?}"
     );
 }
 
