@@ -51,8 +51,8 @@ pub struct Except {
 #[derive(Debug, Deserialize)]
 pub struct Rule {
     pub name: String,
-    #[serde(default = "default_severity")]
-    pub severity: Severity,
+    #[serde(default, rename = "severity")]
+    pub declared_severity: Option<Severity>,
     #[serde(default)]
     pub except: Vec<Except>,
     #[serde(flatten)]
@@ -92,6 +92,11 @@ impl Rule {
             RuleKind::NoCycles(_) => "no-cycles",
             RuleKind::Layers(_) => "layers",
         }
+    }
+
+    #[must_use]
+    pub fn severity(&self) -> Severity {
+        self.declared_severity.unwrap_or(Severity::Error)
     }
 }
 
@@ -137,22 +142,14 @@ impl ArcConfig {
         Ok(config)
     }
 
-    /// Replace serde-default severity values with `config.default_severity`
-    /// when the rule's severity was not explicitly set.
-    ///
-    /// Since serde defaults fire at parse time, we use a post-deserialization
-    /// pass: if severity == Error (the serde default) and `config.default_severity`
-    /// differs, override it. Rules with explicit `severity = "error"` are
-    /// indistinguishable but get the same value anyway.
+    /// Fill in `config.default_severity` for rules that left `severity` unset.
     pub fn apply_defaults(&mut self) {
         let default = self
             .config
             .as_ref()
             .map_or(Severity::Error, |c| c.default_severity);
         for rule in &mut self.rules {
-            if rule.severity == Severity::Error && default != Severity::Error {
-                rule.severity = default;
-            }
+            rule.declared_severity.get_or_insert(default);
         }
     }
 }
@@ -225,7 +222,7 @@ mod tests {
             scope = "**"
         "#;
         let config: ArcConfig = toml::from_str(toml).unwrap();
-        assert_eq!(config.rules[0].severity, Severity::Error);
+        assert_eq!(config.rules[0].severity(), Severity::Error);
     }
 
     #[test]
@@ -242,7 +239,25 @@ mod tests {
         "#;
         let mut config: ArcConfig = toml::from_str(toml).unwrap();
         config.apply_defaults();
-        assert_eq!(config.rules[0].severity, Severity::Warn);
+        assert_eq!(config.rules[0].severity(), Severity::Warn);
+    }
+
+    #[test]
+    fn test_config_default_severity_does_not_override_explicit_severity() {
+        let toml = r#"
+            [config]
+            version = 1
+            default_severity = "warn"
+
+            [[rules]]
+            type = "no-cycles"
+            name = "test"
+            scope = "**"
+            severity = "error"
+        "#;
+        let mut config: ArcConfig = toml::from_str(toml).unwrap();
+        config.apply_defaults();
+        assert_eq!(config.rules[0].severity(), Severity::Error);
     }
 
     #[test]

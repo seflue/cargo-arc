@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `arc-rules.toml`. Each block is headed by the location the cluster sits in,
   the shared module prefix of its members.
 
+### Fixed
+
+- A rule with `severity = "error"` was downgraded whenever `[config]` set
+  `default_severity` to something else, which made an error rule impossible to
+  write under `default_severity = "warn"`.
+
 ## [0.3.1] - 2026-07-30
 
 ### Changed

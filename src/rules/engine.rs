@@ -181,7 +181,7 @@ pub fn check_rules(graph: &ArcGraph, config: &ArcConfig, include_reexports: bool
     config
         .rules
         .iter()
-        .filter(|rule| rule.severity != Severity::Ignore)
+        .filter(|rule| rule.severity() != Severity::Ignore)
         .map(|rule| check_rule(graph, rule, include_reexports, &path_index))
         .collect()
 }
@@ -273,7 +273,7 @@ fn check_edge_violations(
         let violation = Violation {
             rule_name: rule.name.clone(),
             rule_type: rule.rule_type().into(),
-            severity: rule.severity,
+            severity: rule.severity(),
             detail: ViolationDetail::Edge {
                 from: graph.qualified_name(source),
                 to: graph.qualified_name(target),
@@ -355,7 +355,7 @@ fn check_cycles(
         .map(|(source, target)| Violation {
             rule_name: rule.name.clone(),
             rule_type: rule.rule_type().into(),
-            severity: rule.severity,
+            severity: rule.severity(),
             detail: ViolationDetail::Edge {
                 from: graph.qualified_name(source),
                 to: graph.qualified_name(target),
@@ -377,7 +377,7 @@ fn check_cycles(
         .map(|(i, cluster)| Violation {
             rule_name: rule.name.clone(),
             rule_type: rule.rule_type().into(),
-            severity: rule.severity,
+            severity: rule.severity(),
             detail: ViolationDetail::Cluster(CycleCluster::from_cluster(
                 graph,
                 &analysis,
@@ -690,7 +690,7 @@ mod tests {
     fn no_infra_in_domain(except: Vec<Except>) -> Rule {
         Rule {
             name: "no infra in domain".into(),
-            severity: Severity::Error,
+            declared_severity: Some(Severity::Error),
             except,
             kind: RuleKind::ForbiddenDependency(ForbiddenDependencyRule {
                 from: "domain::**".into(),
@@ -703,7 +703,7 @@ mod tests {
     fn no_cycles_rule(name: &str, scope: &str, except: Vec<Except>) -> Rule {
         Rule {
             name: name.into(),
-            severity: Severity::Error,
+            declared_severity: Some(Severity::Error),
             except,
             kind: RuleKind::NoCycles(NoCyclesRule {
                 scope: scope.into(),
@@ -715,7 +715,7 @@ mod tests {
     fn layers_rule(layers: &[&str], except: Vec<Except>) -> Rule {
         Rule {
             name: "architecture layers".into(),
-            severity: Severity::Error,
+            declared_severity: Some(Severity::Error),
             except,
             kind: RuleKind::Layers(LayersRule {
                 layers: layers.iter().map(|&layer| layer.into()).collect(),
@@ -1063,7 +1063,7 @@ mod tests {
                 no_infra_in_domain(vec![]),
                 Rule {
                     name: "no cycles in infra".into(),
-                    severity: Severity::Warn,
+                    declared_severity: Some(Severity::Warn),
                     except: vec![],
                     kind: RuleKind::NoCycles(NoCyclesRule {
                         scope: "infra::**".into(),
@@ -1160,7 +1160,7 @@ mod tests {
             config: None,
             rules: vec![Rule {
                 name: "ignored rule".into(),
-                severity: Severity::Ignore,
+                declared_severity: Some(Severity::Ignore),
                 except: vec![],
                 kind: RuleKind::ForbiddenDependency(ForbiddenDependencyRule {
                     from: "domain::**".into(),
