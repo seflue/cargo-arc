@@ -33,8 +33,8 @@ pub fn format_violations(result: &CheckResult) -> String {
             let _ = writeln!(output, "  --> {}:{}", loc.file.display(), loc.line);
         }
         match &violation.detail {
-            ViolationDetail::Message(text) => {
-                let _ = writeln!(output, "  = {text}");
+            ViolationDetail::Edge { from, to } => {
+                let _ = writeln!(output, "  = {from} → {to}");
             }
             ViolationDetail::Cluster(cluster) => {
                 output.push_str(&cluster_block(cluster, "  "));
@@ -195,6 +195,26 @@ mod tests {
     use crate::rules::engine::{CycleClusterEdge, Violation};
     use std::path::PathBuf;
 
+    /// Single-cycle, single-edge `CycleCluster` fixture for tests that only
+    /// care about a `no-cycles` violation being present, not its cluster detail.
+    fn cluster_fixture(from: &str, to: &str) -> CycleCluster {
+        CycleCluster {
+            position: 1,
+            total: 1,
+            crate_name: "app".into(),
+            place: "app".into(),
+            modules: 2,
+            cycles: 1,
+            ring: Some(vec![from.into(), to.into()]),
+            feedback_edges: vec![CycleClusterEdge {
+                from: from.into(),
+                to: to.into(),
+                cycles: 1,
+                refs: 1,
+            }],
+        }
+    }
+
     #[test]
     fn test_format_single_error() {
         let result = CheckResult {
@@ -202,7 +222,10 @@ mod tests {
                 rule_name: "no infra in domain".into(),
                 rule_type: "forbidden-dependency".into(),
                 severity: Severity::Error,
-                detail: ViolationDetail::Message("domain::service → infra::db".into()),
+                detail: ViolationDetail::Edge {
+                    from: "domain::service".into(),
+                    to: "infra::db".into(),
+                },
                 locations: vec![],
             }],
         };
@@ -218,7 +241,7 @@ mod tests {
                 rule_name: "no cycles in domain".into(),
                 rule_type: "no-cycles".into(),
                 severity: Severity::Warn,
-                detail: ViolationDetail::Message("a → b → a".into()),
+                detail: ViolationDetail::Cluster(cluster_fixture("a", "b")),
                 locations: vec![],
             }],
         };
@@ -233,7 +256,10 @@ mod tests {
                 rule_name: "test".into(),
                 rule_type: "forbidden-dependency".into(),
                 severity: Severity::Error,
-                detail: ViolationDetail::Message("a → b".into()),
+                detail: ViolationDetail::Edge {
+                    from: "a".into(),
+                    to: "b".into(),
+                },
                 locations: vec![SourceLocation {
                     file: PathBuf::from("src/domain/service.rs"),
                     line: 42,
@@ -255,21 +281,27 @@ mod tests {
                     rule_name: "rule1".into(),
                     rule_type: "forbidden-dependency".into(),
                     severity: Severity::Error,
-                    detail: ViolationDetail::Message("a → b".into()),
+                    detail: ViolationDetail::Edge {
+                        from: "a".into(),
+                        to: "b".into(),
+                    },
                     locations: vec![],
                 },
                 Violation {
                     rule_name: "rule2".into(),
                     rule_type: "no-cycles".into(),
                     severity: Severity::Warn,
-                    detail: ViolationDetail::Message("cycle".into()),
+                    detail: ViolationDetail::Cluster(cluster_fixture("c", "d")),
                     locations: vec![],
                 },
                 Violation {
                     rule_name: "rule3".into(),
                     rule_type: "layers".into(),
                     severity: Severity::Error,
-                    detail: ViolationDetail::Message("x → y".into()),
+                    detail: ViolationDetail::Edge {
+                        from: "x".into(),
+                        to: "y".into(),
+                    },
                     locations: vec![],
                 },
             ],

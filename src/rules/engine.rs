@@ -20,13 +20,15 @@ pub struct Violation {
     pub locations: Vec<SourceLocation>,
 }
 
-/// Violation payload: either a rendered message, or structured data the
-/// renderer branches on.
+/// Violation payload: structured data the renderer branches on.
 #[derive(Debug)]
 pub enum ViolationDetail {
-    /// Rendered text. forbidden-dependency and layers still build their message
-    /// in the checker; splitting those into fields is a separate change.
-    Message(String),
+    /// A single forbidden edge, source and target as fully qualified names.
+    /// forbidden-dependency and layers both report this shape.
+    Edge {
+        from: String,
+        to: String,
+    },
     Cluster(CycleCluster),
 }
 
@@ -215,7 +217,10 @@ fn check_forbidden(graph: &ArcGraph, rule: &Rule) -> Vec<Violation> {
                 rule_name: name.clone(),
                 rule_type: "forbidden-dependency".into(),
                 severity: *severity,
-                detail: ViolationDetail::Message(format!("{source_path} → {target_path}")),
+                detail: ViolationDetail::Edge {
+                    from: source_path,
+                    to: target_path,
+                },
                 locations,
             })
         })
@@ -327,7 +332,10 @@ fn check_layers(graph: &ArcGraph, rule: &Rule) -> Vec<Violation> {
                 rule_name: name.clone(),
                 rule_type: "layers".into(),
                 severity: *severity,
-                detail: ViolationDetail::Message(format!("{source_path} → {target_path}")),
+                detail: ViolationDetail::Edge {
+                    from: source_path,
+                    to: target_path,
+                },
                 locations,
             })
         })
@@ -481,11 +489,11 @@ mod tests {
         assert_eq!(violations.len(), 1);
         assert_eq!(violations[0].rule_name, "no infra in domain");
         assert_eq!(violations[0].rule_type, "forbidden-dependency");
-        let ViolationDetail::Message(msg) = &violations[0].detail else {
-            panic!("expected a message detail");
+        let ViolationDetail::Edge { from, to } = &violations[0].detail else {
+            panic!("expected an edge detail");
         };
-        assert!(msg.contains("service"));
-        assert!(msg.contains("db"));
+        assert!(from.contains("service"));
+        assert!(to.contains("db"));
     }
 
     #[test]
@@ -735,11 +743,11 @@ mod tests {
         };
         let violations = check_layers(&graph, &rule);
         assert_eq!(violations.len(), 1);
-        let ViolationDetail::Message(msg) = &violations[0].detail else {
-            panic!("expected a message detail");
+        let ViolationDetail::Edge { from, to } = &violations[0].detail else {
+            panic!("expected an edge detail");
         };
-        assert!(msg.contains("db"));
-        assert!(msg.contains("service"));
+        assert!(from.contains("db"));
+        assert!(to.contains("service"));
     }
 
     #[test]
@@ -834,7 +842,10 @@ mod tests {
                 rule_name: "test".into(),
                 rule_type: "forbidden-dependency".into(),
                 severity: Severity::Error,
-                detail: ViolationDetail::Message("a → b".into()),
+                detail: ViolationDetail::Edge {
+                    from: "a".into(),
+                    to: "b".into(),
+                },
                 locations: vec![],
             }],
         };
@@ -849,7 +860,10 @@ mod tests {
                 rule_name: "test".into(),
                 rule_type: "no-cycles".into(),
                 severity: Severity::Warn,
-                detail: ViolationDetail::Message("cycle".into()),
+                detail: ViolationDetail::Edge {
+                    from: "a".into(),
+                    to: "b".into(),
+                },
                 locations: vec![],
             }],
         };
