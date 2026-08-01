@@ -16,7 +16,11 @@ use petgraph::visit::EdgeRef;
 /// - `"domain::**"` — all transitive descendants of `domain`
 /// - `"crate::domain"` — `crate::` prefix is stripped
 #[must_use]
-pub fn resolve_pattern(pattern: &str, graph: &ArcGraph, path_index: &PathIndex) -> Vec<NodeIndex> {
+pub(super) fn resolve_pattern(
+    pattern: &str,
+    graph: &ArcGraph,
+    path_index: &PathIndex,
+) -> Vec<NodeIndex> {
     let pattern = pattern.strip_prefix("crate::").unwrap_or(pattern);
 
     // Bare `**` matches all non-external nodes
@@ -55,7 +59,7 @@ pub struct PathIndex(std::collections::HashMap<String, NodeIndex>);
 
 impl PathIndex {
     #[must_use]
-    pub fn build(graph: &ArcGraph) -> Self {
+    pub(super) fn build(graph: &ArcGraph) -> Self {
         Self(
             non_external_indices(graph)
                 .map(|idx| (graph.qualified_name(idx), idx))

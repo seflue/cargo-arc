@@ -171,44 +171,223 @@ impl FromIterator<CheckResult> for CheckResult {
     }
 }
 
+/// The pattern index is built from `graph` and only valid for it, so bundling
+/// the two under one type keeps that pairing from drifting apart across the
+/// checker calls that need both.
+struct CheckRun<'graph> {
+    graph: &'graph ArcGraph,
+    path_index: PathIndex,
+    include_reexports: bool,
+}
+
+impl<'graph> CheckRun<'graph> {
+    fn new(graph: &'graph ArcGraph, include_reexports: bool) -> Self {
+        Self {
+            graph,
+            path_index: PathIndex::build(graph),
+            include_reexports,
+        }
+    }
+
+    fn resolve(&self, pattern: &str) -> Vec<NodeIndex> {
+        resolve_pattern(pattern, self.graph, &self.path_index)
+    }
+
+    fn resolve_set(&self, pattern: &str) -> HashSet<NodeIndex> {
+        self.resolve(pattern).into_iter().collect()
+    }
+
+    /// Dispatch one rule to the checker for its kind, ignoring its severity.
+    fn check_rule(&self, rule: &Rule) -> CheckResult {
+        match &rule.kind {
+            RuleKind::ForbiddenDependency(params) => self.check_forbidden(rule, params),
+            RuleKind::NoCycles(params) => self.check_cycles(rule, params),
+            RuleKind::Layers(params) => self.check_layers(rule, params),
+        }
+    }
+
+    /// Check a `forbidden-dependency` rule: any production edge from `from`
+    /// nodes to `to` nodes is a violation.
+    fn check_forbidden(&self, rule: &Rule, params: &ForbiddenDependencyRule) -> CheckResult {
+        let from_set = self.resolve_set(&params.from);
+        let to_set = self.resolve_set(&params.to);
+        let except = ResolvedExceptions::resolve(&rule.except, self);
+
+        self.check_edge_violations(rule, &except, |source, target| {
+            from_set.contains(&source) && to_set.contains(&target)
+        })
+    }
+
+    /// Check a `no-cycles` rule: find elementary cycles within the scoped
+    /// subgraph. Pure re-export cycles are excluded unless `include_reexports`
+    /// is set (ADR-022). An edge covered by `except` is removed before the
+    /// search, so a ring built through it never forms; if it lay on one, it is
+    /// reported as suppressed instead. The suppressed side holds removed
+    /// edges, not rings: the two sides can have different SCC decompositions,
+    /// so there is no shared cluster to report against.
+    fn check_cycles(&self, rule: &Rule, params: &NoCyclesRule) -> CheckResult {
+        let graph = self.graph;
+        let scope_set = self.resolve_set(&params.scope);
+        let except = ResolvedExceptions::resolve(&rule.except, self);
+        let mut excepted: Vec<(NodeIndex, NodeIndex)> = Vec::new();
+
+        // Build a subgraph with only production module-dep edges between scope nodes.
+        // Pure re-export edges are excluded by default (ADR-022): idiomatic
+        // republishing is not a real cycle unless --include-reexports asks for it.
+        // Excepted edges are still in at this point, so the components below see
+        // the graph each of them actually sits in.
+        let mut subgraph = graph.filter_map(
+            |idx, _| scope_set.contains(&idx).then_some(idx),
+            |edge_idx, edge| {
+                if !edge.is_production_module_dep()
+                    || (!self.include_reexports && edge.is_reexport_module_dep())
+                {
+                    return None;
+                }
+                if !except.is_empty() {
+                    let (source, target) =
+                        graph.edge_endpoints(edge_idx).expect("edge should exist");
+                    if except.covers(source, target) {
+                        excepted.push((source, target));
+                    }
+                }
+                Some(())
+            },
+        );
+
+        let suppressed = drop_excepted_edges(&mut subgraph, excepted)
+            .into_iter()
+            .map(|(source, target)| Violation {
+                rule_name: rule.name.clone(),
+                rule_type: rule.rule_type().into(),
+                severity: rule.severity(),
+                detail: ViolationDetail::Edge {
+                    from: graph.qualified_name(source),
+                    to: graph.qualified_name(target),
+                },
+                locations: module_dep_locations(graph, source, target),
+            })
+            .collect();
+
+        let analysis = subgraph.minimal_cycles();
+        // The cluster report is computed per rule, over that rule's own scoped
+        // subgraph: two no-cycles rules with different scopes see different views.
+        let report = graph.cluster_report(&subgraph, &analysis);
+        let total = report.clusters.len();
+
+        let violations = report
+            .clusters
+            .iter()
+            .enumerate()
+            .map(|(i, cluster)| Violation {
+                rule_name: rule.name.clone(),
+                rule_type: rule.rule_type().into(),
+                severity: rule.severity(),
+                detail: ViolationDetail::Cluster(CycleCluster::from_cluster(
+                    graph,
+                    &analysis,
+                    cluster,
+                    i + 1,
+                    total,
+                )),
+                locations: Vec::new(),
+            })
+            .collect();
+
+        CheckResult {
+            violations,
+            suppressed,
+        }
+    }
+
+    /// Check a `layers` rule: edges must respect layer ordering.
+    fn check_layers(&self, rule: &Rule, params: &LayersRule) -> CheckResult {
+        // Build layer index: NodeIndex → layer position
+        let mut layer_index: std::collections::HashMap<NodeIndex, usize> =
+            std::collections::HashMap::new();
+        for (pos, layer_pattern) in params.layers.iter().enumerate() {
+            for idx in self.resolve(layer_pattern) {
+                layer_index.insert(idx, pos);
+            }
+        }
+        let except = ResolvedExceptions::resolve(&rule.except, self);
+
+        self.check_edge_violations(rule, &except, |source, target| {
+            let (Some(&source_layer), Some(&target_layer)) =
+                (layer_index.get(&source), layer_index.get(&target))
+            else {
+                return false;
+            };
+            match params.direction {
+                // top-down: higher layers (lower index) may depend on lower layers (higher index)
+                Direction::TopDown => source_layer > target_layer,
+                // bottom-up: lower layers may depend on higher layers
+                Direction::BottomUp => source_layer < target_layer,
+            }
+        })
+    }
+
+    /// Shared by all edge-predicate rule checks (forbidden-dependency, layers);
+    /// only the predicate and the rule-type label differ between them. An edge
+    /// covered by `except` still produces a `Violation`, but lands in the
+    /// suppressed side.
+    fn check_edge_violations(
+        &self,
+        rule: &Rule,
+        except: &ResolvedExceptions,
+        is_violation: impl Fn(NodeIndex, NodeIndex) -> bool,
+    ) -> CheckResult {
+        let graph = self.graph;
+        let mut violations = Vec::new();
+        let mut suppressed = Vec::new();
+        for edge_idx in graph.edge_indices() {
+            let edge = &graph[edge_idx];
+            if !edge.is_production() {
+                continue;
+            }
+            let (source, target) = graph.edge_endpoints(edge_idx).expect("edge should exist");
+            if !is_violation(source, target) {
+                continue;
+            }
+            let locations = match edge {
+                Edge::ModuleDep { locations, .. } => locations.clone(),
+                _ => Vec::new(),
+            };
+            let violation = Violation {
+                rule_name: rule.name.clone(),
+                rule_type: rule.rule_type().into(),
+                severity: rule.severity(),
+                detail: ViolationDetail::Edge {
+                    from: graph.qualified_name(source),
+                    to: graph.qualified_name(target),
+                },
+                locations,
+            };
+            if except.covers(source, target) {
+                suppressed.push(violation);
+            } else {
+                violations.push(violation);
+            }
+        }
+        CheckResult {
+            violations,
+            suppressed,
+        }
+    }
+}
+
 /// Check all rules in the config against the graph.
 ///
 /// Dispatches each rule to its type-specific checker, collects all violations,
 /// and filters out `Severity::Ignore` rules.
 #[must_use]
 pub fn check_rules(graph: &ArcGraph, config: &ArcConfig, include_reexports: bool) -> CheckResult {
-    let path_index = PathIndex::build(graph);
+    let run = CheckRun::new(graph, include_reexports);
     config
         .rules
         .iter()
         .filter(|rule| rule.severity() != Severity::Ignore)
-        .map(|rule| check_rule(graph, rule, include_reexports, &path_index))
-        .collect()
-}
-
-/// Dispatch one rule to the checker for its kind, ignoring its severity.
-fn check_rule(
-    graph: &ArcGraph,
-    rule: &Rule,
-    include_reexports: bool,
-    path_index: &PathIndex,
-) -> CheckResult {
-    match &rule.kind {
-        RuleKind::ForbiddenDependency(params) => check_forbidden(graph, rule, params, path_index),
-        RuleKind::NoCycles(params) => {
-            check_cycles(graph, rule, params, include_reexports, path_index)
-        }
-        RuleKind::Layers(params) => check_layers(graph, rule, params, path_index),
-    }
-}
-
-fn resolve_pattern_set(
-    pattern: &str,
-    graph: &ArcGraph,
-    path_index: &PathIndex,
-) -> HashSet<NodeIndex> {
-    resolve_pattern(pattern, graph, path_index)
-        .into_iter()
+        .map(|rule| run.check_rule(rule))
         .collect()
 }
 
@@ -217,14 +396,14 @@ fn resolve_pattern_set(
 struct ResolvedExceptions(Vec<(HashSet<NodeIndex>, HashSet<NodeIndex>)>);
 
 impl ResolvedExceptions {
-    fn resolve(exceptions: &[Except], graph: &ArcGraph, path_index: &PathIndex) -> Self {
+    fn resolve(exceptions: &[Except], run: &CheckRun) -> Self {
         Self(
             exceptions
                 .iter()
                 .map(|exception| {
                     (
-                        resolve_pattern_set(&exception.from, graph, path_index),
-                        resolve_pattern_set(&exception.to, graph, path_index),
+                        run.resolve_set(&exception.from),
+                        run.resolve_set(&exception.to),
                     )
                 })
                 .collect(),
@@ -242,156 +421,6 @@ impl ResolvedExceptions {
         self.0
             .iter()
             .any(|(from_set, to_set)| from_set.contains(&source) && to_set.contains(&target))
-    }
-}
-
-/// Shared by all edge-predicate rule checks (forbidden-dependency, layers);
-/// only the predicate and the rule-type label differ between them. An edge
-/// covered by `except` still produces a `Violation`, but lands in the
-/// suppressed side.
-fn check_edge_violations(
-    graph: &ArcGraph,
-    rule: &Rule,
-    except: &ResolvedExceptions,
-    is_violation: impl Fn(NodeIndex, NodeIndex) -> bool,
-) -> CheckResult {
-    let mut violations = Vec::new();
-    let mut suppressed = Vec::new();
-    for edge_idx in graph.edge_indices() {
-        let edge = &graph[edge_idx];
-        if !edge.is_production() {
-            continue;
-        }
-        let (source, target) = graph.edge_endpoints(edge_idx).expect("edge should exist");
-        if !is_violation(source, target) {
-            continue;
-        }
-        let locations = match edge {
-            Edge::ModuleDep { locations, .. } => locations.clone(),
-            _ => Vec::new(),
-        };
-        let violation = Violation {
-            rule_name: rule.name.clone(),
-            rule_type: rule.rule_type().into(),
-            severity: rule.severity(),
-            detail: ViolationDetail::Edge {
-                from: graph.qualified_name(source),
-                to: graph.qualified_name(target),
-            },
-            locations,
-        };
-        if except.covers(source, target) {
-            suppressed.push(violation);
-        } else {
-            violations.push(violation);
-        }
-    }
-    CheckResult {
-        violations,
-        suppressed,
-    }
-}
-
-/// Check a `forbidden-dependency` rule: any production edge from `from` nodes
-/// to `to` nodes is a violation.
-fn check_forbidden(
-    graph: &ArcGraph,
-    rule: &Rule,
-    params: &ForbiddenDependencyRule,
-    path_index: &PathIndex,
-) -> CheckResult {
-    let from_set = resolve_pattern_set(&params.from, graph, path_index);
-    let to_set = resolve_pattern_set(&params.to, graph, path_index);
-    let except = ResolvedExceptions::resolve(&rule.except, graph, path_index);
-
-    check_edge_violations(graph, rule, &except, |source, target| {
-        from_set.contains(&source) && to_set.contains(&target)
-    })
-}
-
-/// Check a `no-cycles` rule: find elementary cycles within the scoped subgraph.
-/// Pure re-export cycles are excluded unless `include_reexports` is set (ADR-022).
-/// An edge covered by `except` is removed before the search, so a ring built
-/// through it never forms; if it lay on one, it is reported as suppressed
-/// instead. The suppressed side holds removed edges, not rings: the two sides
-/// can have different SCC decompositions, so there is no shared cluster to
-/// report against.
-fn check_cycles(
-    graph: &ArcGraph,
-    rule: &Rule,
-    params: &NoCyclesRule,
-    include_reexports: bool,
-    path_index: &PathIndex,
-) -> CheckResult {
-    let scope_set = resolve_pattern_set(&params.scope, graph, path_index);
-    let except = ResolvedExceptions::resolve(&rule.except, graph, path_index);
-    let mut excepted: Vec<(NodeIndex, NodeIndex)> = Vec::new();
-
-    // Build a subgraph with only production module-dep edges between scope nodes.
-    // Pure re-export edges are excluded by default (ADR-022): idiomatic
-    // republishing is not a real cycle unless --include-reexports asks for it.
-    // Excepted edges are still in at this point, so the components below see
-    // the graph each of them actually sits in.
-    let mut subgraph = graph.filter_map(
-        |idx, _| scope_set.contains(&idx).then_some(idx),
-        |edge_idx, edge| {
-            if !edge.is_production_module_dep()
-                || (!include_reexports && edge.is_reexport_module_dep())
-            {
-                return None;
-            }
-            if !except.is_empty() {
-                let (source, target) = graph.edge_endpoints(edge_idx).expect("edge should exist");
-                if except.covers(source, target) {
-                    excepted.push((source, target));
-                }
-            }
-            Some(())
-        },
-    );
-
-    let suppressed = drop_excepted_edges(&mut subgraph, excepted)
-        .into_iter()
-        .map(|(source, target)| Violation {
-            rule_name: rule.name.clone(),
-            rule_type: rule.rule_type().into(),
-            severity: rule.severity(),
-            detail: ViolationDetail::Edge {
-                from: graph.qualified_name(source),
-                to: graph.qualified_name(target),
-            },
-            locations: module_dep_locations(graph, source, target),
-        })
-        .collect();
-
-    let analysis = subgraph.minimal_cycles();
-    // The cluster report is computed per rule, over that rule's own scoped
-    // subgraph: two no-cycles rules with different scopes see different views.
-    let report = graph.cluster_report(&subgraph, &analysis);
-    let total = report.clusters.len();
-
-    let violations = report
-        .clusters
-        .iter()
-        .enumerate()
-        .map(|(i, cluster)| Violation {
-            rule_name: rule.name.clone(),
-            rule_type: rule.rule_type().into(),
-            severity: rule.severity(),
-            detail: ViolationDetail::Cluster(CycleCluster::from_cluster(
-                graph,
-                &analysis,
-                cluster,
-                i + 1,
-                total,
-            )),
-            locations: Vec::new(),
-        })
-        .collect();
-
-    CheckResult {
-        violations,
-        suppressed,
     }
 }
 
@@ -450,38 +479,6 @@ fn module_dep_locations(
         .unwrap_or_default()
 }
 
-/// Check a `layers` rule: edges must respect layer ordering.
-fn check_layers(
-    graph: &ArcGraph,
-    rule: &Rule,
-    params: &LayersRule,
-    path_index: &PathIndex,
-) -> CheckResult {
-    // Build layer index: NodeIndex → layer position
-    let mut layer_index: std::collections::HashMap<NodeIndex, usize> =
-        std::collections::HashMap::new();
-    for (pos, layer_pattern) in params.layers.iter().enumerate() {
-        for idx in resolve_pattern(layer_pattern, graph, path_index) {
-            layer_index.insert(idx, pos);
-        }
-    }
-    let except = ResolvedExceptions::resolve(&rule.except, graph, path_index);
-
-    check_edge_violations(graph, rule, &except, |source, target| {
-        let (Some(&source_layer), Some(&target_layer)) =
-            (layer_index.get(&source), layer_index.get(&target))
-        else {
-            return false;
-        };
-        match params.direction {
-            // top-down: higher layers (lower index) may depend on lower layers (higher index)
-            Direction::TopDown => source_layer > target_layer,
-            // bottom-up: lower layers may depend on higher layers
-            Direction::BottomUp => source_layer < target_layer,
-        }
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -491,12 +488,8 @@ mod tests {
 
     // -- Test graph helpers --
 
-    fn check_rule_with_fresh_index(
-        graph: &ArcGraph,
-        rule: &Rule,
-        include_reexports: bool,
-    ) -> CheckResult {
-        check_rule(graph, rule, include_reexports, &PathIndex::build(graph))
+    fn check_rule(graph: &ArcGraph, rule: &Rule, include_reexports: bool) -> CheckResult {
+        CheckRun::new(graph, include_reexports).check_rule(rule)
     }
 
     fn test_crate_graph() -> (ArcGraph, NodeIndex) {
@@ -627,8 +620,7 @@ mod tests {
         // domain::service → infra::db (forbidden)
         add_production_dep(&mut graph, service, db);
 
-        let violations =
-            check_rule_with_fresh_index(&graph, &no_infra_in_domain(vec![]), false).violations;
+        let violations = check_rule(&graph, &no_infra_in_domain(vec![]), false).violations;
         assert_eq!(violations.len(), 1);
         assert_eq!(violations[0].rule_name, "no infra in domain");
         assert_eq!(violations[0].rule_type, "forbidden-dependency");
@@ -646,8 +638,7 @@ mod tests {
         // domain::service → application::handler (allowed, rule forbids domain→infra)
         add_production_dep(&mut graph, service, handler);
 
-        let violations =
-            check_rule_with_fresh_index(&graph, &no_infra_in_domain(vec![]), false).violations;
+        let violations = check_rule(&graph, &no_infra_in_domain(vec![]), false).violations;
         assert!(violations.is_empty());
     }
 
@@ -659,8 +650,7 @@ mod tests {
         add_production_dep(&mut graph, service, db);
         add_production_dep(&mut graph, model, api);
 
-        let violations =
-            check_rule_with_fresh_index(&graph, &no_infra_in_domain(vec![]), false).violations;
+        let violations = check_rule(&graph, &no_infra_in_domain(vec![]), false).violations;
         assert_eq!(violations.len(), 2);
     }
 
@@ -671,8 +661,7 @@ mod tests {
         // Test-only edge: should not trigger violation
         add_test_dep(&mut graph, service, db);
 
-        let violations =
-            check_rule_with_fresh_index(&graph, &no_infra_in_domain(vec![]), false).violations;
+        let violations = check_rule(&graph, &no_infra_in_domain(vec![]), false).violations;
         assert!(violations.is_empty());
     }
 
@@ -738,7 +727,7 @@ mod tests {
         let CheckResult {
             violations,
             suppressed,
-        } = check_rule_with_fresh_index(&service_to_db_graph(), &rule, false);
+        } = check_rule(&service_to_db_graph(), &rule, false);
         assert!(violations.is_empty());
         assert_eq!(suppressed.len(), 1);
         let ViolationDetail::Edge { from, to } = &suppressed[0].detail else {
@@ -754,7 +743,7 @@ mod tests {
         let CheckResult {
             violations,
             suppressed,
-        } = check_rule_with_fresh_index(&service_to_db_graph(), &rule, false);
+        } = check_rule(&service_to_db_graph(), &rule, false);
         assert_eq!(violations.len(), 1);
         assert!(suppressed.is_empty());
     }
@@ -765,7 +754,7 @@ mod tests {
         let CheckResult {
             violations,
             suppressed,
-        } = check_rule_with_fresh_index(&service_to_db_graph(), &rule, false);
+        } = check_rule(&service_to_db_graph(), &rule, false);
         assert!(violations.is_empty());
         assert_eq!(suppressed.len(), 1);
     }
@@ -782,7 +771,7 @@ mod tests {
         add_production_dep(&mut graph, b, a);
 
         let rule = no_cycles_rule("no cycles in test", "test::**", vec![]);
-        let violations = check_rule_with_fresh_index(&graph, &rule, false).violations;
+        let violations = check_rule(&graph, &rule, false).violations;
         assert_eq!(violations.len(), 1);
         let ViolationDetail::Cluster(cluster) = &violations[0].detail else {
             panic!("expected a cluster detail");
@@ -804,16 +793,12 @@ mod tests {
         let rule = no_cycles_rule("no cycles", "test::**", vec![]);
         // Default: the idiomatic re-export cycle is not reported (ADR-022).
         assert!(
-            check_rule_with_fresh_index(&graph, &rule, false)
-                .violations
-                .is_empty(),
+            check_rule(&graph, &rule, false).violations.is_empty(),
             "pure re-export cycle should be ignored by default"
         );
         // --include-reexports opts back into the full graph and surfaces it.
         assert_eq!(
-            check_rule_with_fresh_index(&graph, &rule, true)
-                .violations
-                .len(),
+            check_rule(&graph, &rule, true).violations.len(),
             1,
             "include_reexports should surface the re-export cycle"
         );
@@ -829,7 +814,7 @@ mod tests {
 
         // Rule scoped to domain only — should not find infra cycle
         let rule = no_cycles_rule("no cycles in domain", "domain::**", vec![]);
-        let violations = check_rule_with_fresh_index(&graph, &rule, false).violations;
+        let violations = check_rule(&graph, &rule, false).violations;
         assert!(violations.is_empty());
     }
 
@@ -841,7 +826,7 @@ mod tests {
         add_production_dep(&mut graph, service, model);
 
         let rule = no_cycles_rule("no cycles in domain", "domain::**", vec![]);
-        let violations = check_rule_with_fresh_index(&graph, &rule, false).violations;
+        let violations = check_rule(&graph, &rule, false).violations;
         assert!(violations.is_empty());
     }
 
@@ -862,7 +847,7 @@ mod tests {
         add_production_dep(&mut graph, api, db);
 
         let rule = no_cycles_rule("global no-cycles", "**", vec![]);
-        let violations = check_rule_with_fresh_index(&graph, &rule, false).violations;
+        let violations = check_rule(&graph, &rule, false).violations;
         assert_eq!(violations.len(), 2);
     }
 
@@ -881,7 +866,7 @@ mod tests {
         add_production_dep(&mut graph, d, a);
 
         let rule = no_cycles_rule("no cycles in test", "test::**", vec![]);
-        let violations = check_rule_with_fresh_index(&graph, &rule, false).violations;
+        let violations = check_rule(&graph, &rule, false).violations;
         assert_eq!(violations.len(), 1);
         let ViolationDetail::Cluster(cluster) = &violations[0].detail else {
             panic!("expected a cluster detail");
@@ -907,7 +892,7 @@ mod tests {
         let CheckResult {
             violations,
             suppressed,
-        } = check_rule_with_fresh_index(&graph, &rule, false);
+        } = check_rule(&graph, &rule, false);
         assert!(
             violations.is_empty(),
             "except should remove the edge before the ring can form"
@@ -941,7 +926,7 @@ mod tests {
         let CheckResult {
             violations,
             suppressed,
-        } = check_rule_with_fresh_index(&graph, &rule, false);
+        } = check_rule(&graph, &rule, false);
         assert!(violations.is_empty());
         assert!(
             suppressed.is_empty(),
@@ -980,7 +965,7 @@ mod tests {
         add_production_dep(&mut graph, service, db);
 
         let rule = layers_rule(&["domain", "application", "infra"], vec![]);
-        let violations = check_rule_with_fresh_index(&graph, &rule, false).violations;
+        let violations = check_rule(&graph, &rule, false).violations;
         assert!(violations.is_empty());
     }
 
@@ -992,7 +977,7 @@ mod tests {
         add_production_dep(&mut graph, db, service);
 
         let rule = layers_rule(&["domain", "application", "infra"], vec![]);
-        let violations = check_rule_with_fresh_index(&graph, &rule, false).violations;
+        let violations = check_rule(&graph, &rule, false).violations;
         assert_eq!(violations.len(), 1);
         let ViolationDetail::Edge { from, to } = &violations[0].detail else {
             panic!("expected an edge detail");
@@ -1009,7 +994,7 @@ mod tests {
         add_production_dep(&mut graph, service, db);
 
         let rule = layers_rule(&["domain", "application", "infra"], vec![]);
-        let violations = check_rule_with_fresh_index(&graph, &rule, false).violations;
+        let violations = check_rule(&graph, &rule, false).violations;
         assert!(violations.is_empty());
     }
 
@@ -1022,7 +1007,7 @@ mod tests {
         add_production_dep(&mut graph, a, b);
 
         let rule = layers_rule(&["domain", "infra"], vec![]);
-        let violations = check_rule_with_fresh_index(&graph, &rule, false).violations;
+        let violations = check_rule(&graph, &rule, false).violations;
         assert!(violations.is_empty());
     }
 
@@ -1040,7 +1025,7 @@ mod tests {
         let CheckResult {
             violations,
             suppressed,
-        } = check_rule_with_fresh_index(&graph, &rule, false);
+        } = check_rule(&graph, &rule, false);
         assert!(violations.is_empty());
         assert_eq!(suppressed.len(), 1);
     }
