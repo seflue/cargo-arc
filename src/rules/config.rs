@@ -4,6 +4,7 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ArcConfig {
     pub config: Option<ConfigMeta>,
     #[serde(default)]
@@ -13,6 +14,7 @@ pub struct ArcConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConfigMeta {
     pub version: u32,
     #[serde(default)]
@@ -55,24 +57,48 @@ pub struct UnlayeredCrate {
 
 impl<'de> Deserialize<'de> for UnlayeredCrate {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Spelling {
-            Level(DiagnosticLevel),
-            Table {
-                #[serde(default)]
-                level: DiagnosticLevel,
-                #[serde(default)]
-                except: Vec<String>,
-            },
+        // `#[serde(untagged)]` would only report "data did not match any
+        // variant". Deserializing the table arm as its own
+        // `deny_unknown_fields` struct names the offending key instead.
+        struct UnlayeredCrateVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for UnlayeredCrateVisitor {
+            type Value = UnlayeredCrate;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a diagnostic level string, or a table with level/except")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                let level =
+                    DiagnosticLevel::deserialize(serde::de::value::StrDeserializer::new(v))?;
+                Ok(UnlayeredCrate {
+                    level,
+                    except: Vec::new(),
+                })
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> Result<Self::Value, A::Error> {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Table {
+                    #[serde(default)]
+                    level: DiagnosticLevel,
+                    #[serde(default)]
+                    except: Vec<String>,
+                }
+                let table = Table::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                Ok(UnlayeredCrate {
+                    level: table.level,
+                    except: table.except,
+                })
+            }
         }
-        Ok(match Spelling::deserialize(deserializer)? {
-            Spelling::Level(level) => Self {
-                level,
-                except: Vec::new(),
-            },
-            Spelling::Table { level, except } => Self { level, except },
-        })
+
+        deserializer.deserialize_any(UnlayeredCrateVisitor)
     }
 }
 
@@ -101,6 +127,7 @@ pub enum Direction {
 /// Scoped to its rule rather than a shared section: the exception lives and
 /// dies with the rule it applies to.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Except {
     pub from: String,
     pub to: String,
@@ -108,6 +135,8 @@ pub struct Except {
     pub reason: Option<String>,
 }
 
+/// `flatten` hands every key this struct does not declare — `type` and the
+/// rule parameters — to `RuleKind`, whose variants reject the unknown ones.
 #[derive(Debug, Deserialize)]
 pub struct Rule {
     pub name: String,
@@ -120,17 +149,20 @@ pub struct Rule {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ForbiddenDependencyRule {
     pub from: String,
     pub to: String,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NoCyclesRule {
     pub scope: String,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LayersRule {
     pub layers: Vec<String>,
     pub direction: Direction,
@@ -680,6 +712,80 @@ mod tests {
         "#;
         let result: Result<ArcConfig, _> = toml::from_str(toml);
         assert!(result.is_err(), "an unknown level is a config error");
+    }
+
+    /// Asserts that loading `toml` fails and that the error names `key`. An
+    /// error without the key leaves the reader as stuck as the silent load did.
+    fn assert_rejects_key(toml: &str, key: &str) {
+        let error = toml::from_str::<ArcConfig>(toml).unwrap_err().to_string();
+        assert!(
+            error.contains(key),
+            "expected {key} to be named, got: {error}"
+        );
+    }
+
+    #[test]
+    fn test_reject_unknown_top_level_section() {
+        assert_rejects_key(
+            r#"
+            [diagnostic]
+            unlayered-crate = "deny"
+        "#,
+            "diagnostic",
+        );
+    }
+
+    #[test]
+    fn test_reject_unknown_rule_key() {
+        assert_rejects_key(
+            r#"
+            [[rules]]
+            type = "no-cycles"
+            name = "domain acyclic"
+            scope = "domain::**"
+            scpoe = "domain::**"
+        "#,
+            "scpoe",
+        );
+    }
+
+    #[test]
+    fn test_reject_unknown_config_meta_key() {
+        assert_rejects_key(
+            r#"
+            [config]
+            version = 1
+            defualt_severity = "warn"
+        "#,
+            "defualt_severity",
+        );
+    }
+
+    #[test]
+    fn test_reject_unknown_except_key() {
+        assert_rejects_key(
+            r#"
+            [[rules]]
+            type = "no-cycles"
+            name = "app acyclic"
+            scope = "app::**"
+            except = [
+              { from = "app::router", to = "app::screens::**", resaon = "router mediates" },
+            ]
+        "#,
+            "resaon",
+        );
+    }
+
+    #[test]
+    fn test_reject_unknown_key_in_unlayered_crate_table() {
+        assert_rejects_key(
+            r#"
+            [diagnostics]
+            unlayered-crate = { level = "deny", excpet = ["xtask"] }
+        "#,
+            "excpet",
+        );
     }
 
     #[test]

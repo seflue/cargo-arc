@@ -41,6 +41,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per elementary cycle, using the same block form as a run without
   `arc-rules.toml`. Each block is headed by the location the cluster sits in,
   the shared module prefix of its members.
+- A key that is not part of the format is now an error, and the message names
+  the key. Before, such a key was ignored: `[diagnostic]` for `[diagnostics]`,
+  `scpoe` for `scope`, or `excpet` inside `unlayered-crate` all loaded fine and
+  switched nothing on.
 
 ### Fixed
 
