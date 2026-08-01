@@ -47,6 +47,33 @@ pub trait MinimalCycles {
     fn minimal_cycles(&self) -> CycleAnalysis;
 }
 
+impl CycleAnalysis {
+    /// Keep only the cycles `keep` accepts, remapping the indices in
+    /// `edge_cycles` to the new positions.
+    pub fn retain_cycles(&mut self, mut keep: impl FnMut(&Cycle) -> bool) {
+        let mut remap: HashMap<usize, usize> = HashMap::new();
+        let mut kept: Vec<Cycle> = Vec::new();
+        for (old_idx, cycle) in self.cycles.drain(..).enumerate() {
+            if keep(&cycle) {
+                remap.insert(old_idx, kept.len());
+                kept.push(cycle);
+            }
+        }
+        self.cycles = kept;
+
+        self.edge_cycles.retain(|_, idxs| {
+            idxs.retain_mut(|i| match remap.get(i) {
+                Some(&new_idx) => {
+                    *i = new_idx;
+                    true
+                }
+                None => false,
+            });
+            !idxs.is_empty()
+        });
+    }
+}
+
 impl MinimalCycles for petgraph::graph::DiGraph<NodeIndex, ()> {
     fn minimal_cycles(&self) -> CycleAnalysis {
         let mut raw: Vec<Cycle> = Vec::new();
@@ -280,6 +307,72 @@ mod tests {
         for e in [(node(0), node(1)), (node(1), node(2)), (node(2), node(0))] {
             assert!(a.edge_cycles.contains_key(&e), "edge {e:?} not covered");
         }
+    }
+
+    #[test]
+    fn retain_cycles_keeping_all_leaves_analysis_unchanged() {
+        let graph = digraph(4, &[(0, 1), (1, 2), (2, 0), (1, 3), (3, 0)]);
+        let mut a = graph.minimal_cycles();
+        let before_cycles = a.cycles.clone();
+        let before_edge_cycles = a.edge_cycles.clone();
+        let before_node_scc = a.node_scc.clone();
+
+        a.retain_cycles(|_| true);
+
+        assert_eq!(a.cycles, before_cycles);
+        assert_eq!(a.edge_cycles, before_edge_cycles);
+        assert_eq!(a.node_scc, before_node_scc);
+    }
+
+    #[test]
+    fn retain_cycles_drops_filtered_cycle_and_remaps_survivors() {
+        // Two disjoint 2-cycles sharing node 0: keep only the one through node 3.
+        let graph = digraph(4, &[(0, 1), (1, 0), (0, 3), (3, 0)]);
+        let mut a = graph.minimal_cycles();
+        assert_eq!(a.cycles.len(), 2);
+        let kept_path = a
+            .cycles
+            .iter()
+            .find(|c| c.path.contains(&node(3)))
+            .unwrap()
+            .path
+            .clone();
+
+        a.retain_cycles(|c| c.path.contains(&node(3)));
+
+        assert_eq!(a.cycles.len(), 1);
+        assert_eq!(a.cycles[0].path, kept_path);
+        for idxs in a.edge_cycles.values() {
+            for &i in idxs {
+                assert!(i < a.cycles.len(), "index {i} out of bounds");
+                assert_eq!(a.cycles[i].path, kept_path);
+            }
+        }
+    }
+
+    #[test]
+    fn retain_cycles_drops_edge_that_only_carried_the_filtered_cycle() {
+        let graph = digraph(4, &[(0, 1), (1, 0), (0, 3), (3, 0)]);
+        let mut a = graph.minimal_cycles();
+        assert!(a.edge_cycles.contains_key(&(node(0), node(1))));
+
+        a.retain_cycles(|c| c.path.contains(&node(3)));
+
+        assert!(!a.edge_cycles.contains_key(&(node(0), node(1))));
+        assert!(!a.edge_cycles.contains_key(&(node(1), node(0))));
+    }
+
+    #[test]
+    fn retain_cycles_dropping_all_clears_cycles_and_edge_cycles_but_keeps_node_scc() {
+        let graph = digraph(2, &[(0, 1), (1, 0)]);
+        let mut a = graph.minimal_cycles();
+        let before_node_scc = a.node_scc.clone();
+
+        a.retain_cycles(|_| false);
+
+        assert!(a.cycles.is_empty());
+        assert!(a.edge_cycles.is_empty());
+        assert_eq!(a.node_scc, before_node_scc);
     }
 
     #[test]
