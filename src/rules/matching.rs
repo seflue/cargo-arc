@@ -16,30 +16,24 @@ use petgraph::visit::EdgeRef;
 /// - `"domain::**"` — all transitive descendants of `domain`
 /// - `"crate::domain"` — `crate::` prefix is stripped
 #[must_use]
-pub fn resolve_pattern(pattern: &str, graph: &ArcGraph) -> Vec<NodeIndex> {
+pub fn resolve_pattern(pattern: &str, graph: &ArcGraph, path_index: &PathIndex) -> Vec<NodeIndex> {
     let pattern = pattern.strip_prefix("crate::").unwrap_or(pattern);
 
     // Bare `**` matches all non-external nodes
     if pattern == "**" {
-        return graph
-            .node_indices()
-            .filter(|&idx| !graph[idx].is_external())
-            .collect();
+        return non_external_indices(graph).collect();
     }
 
     // Check for wildcard suffix
     if let Some(base) = pattern.strip_suffix("::**") {
-        return resolve_glob(base, graph);
+        return resolve_glob(base, graph, path_index);
     }
     if let Some(base) = pattern.strip_suffix("::*") {
-        return resolve_wildcard(base, graph);
+        return resolve_wildcard(base, graph, path_index);
     }
 
-    // Build path index: qualified name → NodeIndex
-    let path_index = build_path_index(graph);
-
     // Exact match first (could be a module path like "domain::service")
-    if let Some(&idx) = path_index.get(pattern) {
+    if let Some(idx) = path_index.get(pattern) {
         // If it's a crate node, return crate + all descendants
         if graph[idx].is_crate() {
             return graph.containment_subtree(idx).into_iter().collect();
@@ -50,18 +44,37 @@ pub fn resolve_pattern(pattern: &str, graph: &ArcGraph) -> Vec<NodeIndex> {
     Vec::new()
 }
 
-fn build_path_index(graph: &ArcGraph) -> std::collections::HashMap<String, NodeIndex> {
+fn non_external_indices(graph: &ArcGraph) -> impl Iterator<Item = NodeIndex> + '_ {
     graph
         .node_indices()
         .filter(|&idx| !graph[idx].is_external())
-        .map(|idx| (graph.qualified_name(idx), idx))
-        .collect()
+}
+
+/// Qualified name → `NodeIndex` lookup.
+pub struct PathIndex(std::collections::HashMap<String, NodeIndex>);
+
+impl PathIndex {
+    #[must_use]
+    pub fn build(graph: &ArcGraph) -> Self {
+        Self(
+            non_external_indices(graph)
+                .map(|idx| (graph.qualified_name(idx), idx))
+                .collect(),
+        )
+    }
+
+    fn get(&self, pattern: &str) -> Option<NodeIndex> {
+        self.0.get(pattern).copied()
+    }
 }
 
 /// `domain::*` — direct children only (via Contains edges).
-fn resolve_wildcard(base_pattern: &str, graph: &ArcGraph) -> Vec<NodeIndex> {
-    let path_index = build_path_index(graph);
-    let Some(&base_idx) = path_index.get(base_pattern) else {
+fn resolve_wildcard(
+    base_pattern: &str,
+    graph: &ArcGraph,
+    path_index: &PathIndex,
+) -> Vec<NodeIndex> {
+    let Some(base_idx) = path_index.get(base_pattern) else {
         return Vec::new();
     };
     graph
@@ -72,9 +85,8 @@ fn resolve_wildcard(base_pattern: &str, graph: &ArcGraph) -> Vec<NodeIndex> {
 }
 
 /// `domain::**` — all transitive descendants (excluding the root itself).
-fn resolve_glob(base_pattern: &str, graph: &ArcGraph) -> Vec<NodeIndex> {
-    let path_index = build_path_index(graph);
-    let Some(&base_idx) = path_index.get(base_pattern) else {
+fn resolve_glob(base_pattern: &str, graph: &ArcGraph, path_index: &PathIndex) -> Vec<NodeIndex> {
+    let Some(base_idx) = path_index.get(base_pattern) else {
         return Vec::new();
     };
     let mut subtree = graph.containment_subtree(base_idx);
@@ -117,7 +129,8 @@ mod tests {
     fn test_resolve_exact_module() {
         let (mut graph, crate_idx) = test_crate_graph();
         let service = add_module(&mut graph, "service", crate_idx, crate_idx);
-        let result = resolve_pattern("test::service", &graph);
+        let path_index = PathIndex::build(&graph);
+        let result = resolve_pattern("test::service", &graph, &path_index);
         assert_eq!(result, vec![service]);
     }
 
@@ -126,7 +139,8 @@ mod tests {
         let (mut graph, crate_idx) = test_crate_graph();
         let mod_a = add_module(&mut graph, "a", crate_idx, crate_idx);
         let mod_b = add_module(&mut graph, "b", crate_idx, crate_idx);
-        let mut result = resolve_pattern("test", &graph);
+        let path_index = PathIndex::build(&graph);
+        let mut result = resolve_pattern("test", &graph, &path_index);
         result.sort_unstable();
         let mut expected = vec![crate_idx, mod_a, mod_b];
         expected.sort_unstable();
@@ -140,7 +154,8 @@ mod tests {
         let mod_b = add_module(&mut graph, "b", crate_idx, crate_idx);
         // Grandchild should NOT be included with *
         let _grandchild = add_module(&mut graph, "deep", crate_idx, mod_a);
-        let mut result = resolve_pattern("test::*", &graph);
+        let path_index = PathIndex::build(&graph);
+        let mut result = resolve_pattern("test::*", &graph, &path_index);
         result.sort_unstable();
         let mut expected = vec![mod_a, mod_b];
         expected.sort_unstable();
@@ -153,7 +168,8 @@ mod tests {
         let mod_a = add_module(&mut graph, "a", crate_idx, crate_idx);
         let mod_b = add_module(&mut graph, "b", crate_idx, crate_idx);
         let grandchild = add_module(&mut graph, "deep", crate_idx, mod_a);
-        let mut result = resolve_pattern("test::**", &graph);
+        let path_index = PathIndex::build(&graph);
+        let mut result = resolve_pattern("test::**", &graph, &path_index);
         result.sort_unstable();
         let mut expected = vec![mod_a, mod_b, grandchild];
         expected.sort_unstable();
@@ -163,7 +179,8 @@ mod tests {
     #[test]
     fn test_resolve_nonexistent() {
         let (graph, _) = test_crate_graph();
-        let result = resolve_pattern("nonexistent", &graph);
+        let path_index = PathIndex::build(&graph);
+        let result = resolve_pattern("nonexistent", &graph, &path_index);
         assert!(result.is_empty());
     }
 
@@ -173,7 +190,8 @@ mod tests {
         let mod_a = add_module(&mut graph, "a", crate_idx, crate_idx);
         let mod_b = add_module(&mut graph, "b", crate_idx, crate_idx);
         // "crate::test" should resolve the same as "test"
-        let mut result = resolve_pattern("crate::test", &graph);
+        let path_index = PathIndex::build(&graph);
+        let mut result = resolve_pattern("crate::test", &graph, &path_index);
         result.sort_unstable();
         let mut expected = vec![crate_idx, mod_a, mod_b];
         expected.sort_unstable();
