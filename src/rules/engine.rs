@@ -2,7 +2,7 @@
 //!
 //! Checks architecture rules against the dependency graph and collects violations.
 
-use crate::diagnose::MinimalCycles;
+use crate::diagnose::{Cluster, CycleAnalysis, MinimalCycles};
 use crate::graph::{ArcGraph, Edge};
 use crate::model::SourceLocation;
 use crate::rules::config::{ArcConfig, Direction, Rule, Severity};
@@ -16,8 +16,117 @@ pub struct Violation {
     pub rule_name: String,
     pub rule_type: String,
     pub severity: Severity,
-    pub message: String,
+    pub detail: ViolationDetail,
     pub locations: Vec<SourceLocation>,
+}
+
+/// Violation payload: either a rendered message, or structured data the
+/// renderer branches on.
+#[derive(Debug)]
+pub enum ViolationDetail {
+    /// Rendered text. forbidden-dependency and layers still build their message
+    /// in the checker; splitting those into fields is a separate change.
+    Message(String),
+    Cluster(CycleCluster),
+}
+
+/// One cyclic cluster, resolved to names and counts for rendering.
+#[derive(Debug)]
+pub struct CycleCluster {
+    /// 1-based position among the clusters of the same rule.
+    pub position: usize,
+    pub total: usize,
+    pub crate_name: String,
+    /// Common module prefix of all members, or the crate alone when they share
+    /// none. A cluster is not a stable object (one new edge can merge two of
+    /// them), so a name would promise an identity it doesn't have; the cluster
+    /// is never the argument of a command, only a location for one.
+    pub place: String,
+    pub modules: usize,
+    pub cycles: usize,
+    /// Crate-relative ring names, set when the cluster holds exactly one cycle.
+    pub ring: Option<Vec<String>>,
+    /// Feedback edges, crate-relative names, ranked as `Cluster::feedback_edges`.
+    pub feedback_edges: Vec<CycleClusterEdge>,
+}
+
+/// One feedback edge of a [`CycleCluster`], names already resolved.
+#[derive(Debug)]
+pub struct CycleClusterEdge {
+    pub from: String,
+    pub to: String,
+    pub cycles: usize,
+    pub refs: usize,
+}
+
+impl CycleCluster {
+    /// Resolve `cluster` to names and counts. `analysis` must be the one
+    /// `cluster` was produced from, so its cycle indices resolve correctly.
+    pub(crate) fn from_cluster(
+        graph: &ArcGraph,
+        analysis: &CycleAnalysis,
+        cluster: &Cluster,
+        position: usize,
+        total: usize,
+    ) -> Self {
+        let crate_name = graph[cluster.crate_idx].name().to_string();
+        let place = common_place(graph, &cluster.nodes);
+        let ring = (cluster.cycles.len() == 1).then(|| {
+            analysis.cycles[cluster.cycles[0]]
+                .path
+                .iter()
+                .map(|&idx| rel_name(graph, idx, &crate_name))
+                .collect()
+        });
+        let feedback_edges = cluster
+            .feedback_edges
+            .iter()
+            .map(|edge| CycleClusterEdge {
+                from: rel_name(graph, edge.from, &crate_name),
+                to: rel_name(graph, edge.to, &crate_name),
+                cycles: edge.cycles,
+                refs: edge.refs,
+            })
+            .collect();
+        Self {
+            position,
+            total,
+            crate_name,
+            place,
+            modules: cluster.nodes.len(),
+            cycles: cluster.cycles.len(),
+            ring,
+            feedback_edges,
+        }
+    }
+}
+
+/// Common `::`-prefix over the crate-qualified names of `nodes`, segment-wise.
+/// Module cycles are intra-crate, so at least the crate segment is always
+/// shared.
+fn common_place(graph: &ArcGraph, nodes: &[NodeIndex]) -> String {
+    let mut paths = nodes.iter().map(|&n| {
+        graph
+            .qualified_name(n)
+            .split("::")
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    });
+    let mut prefix = paths.next().unwrap_or_default();
+    for path in paths {
+        let common = prefix.iter().zip(&path).take_while(|(a, b)| a == b).count();
+        prefix.truncate(common);
+    }
+    prefix.join("::")
+}
+
+/// Fully-qualified module name with the leading `<crate_name>::` stripped.
+fn rel_name(graph: &ArcGraph, idx: NodeIndex, crate_name: &str) -> String {
+    let qualified = graph.qualified_name(idx);
+    qualified
+        .strip_prefix(&format!("{crate_name}::"))
+        .map(String::from)
+        .unwrap_or(qualified)
 }
 
 /// Aggregated result of checking all rules.
@@ -106,7 +215,7 @@ fn check_forbidden(graph: &ArcGraph, rule: &Rule) -> Vec<Violation> {
                 rule_name: name.clone(),
                 rule_type: "forbidden-dependency".into(),
                 severity: *severity,
-                message: format!("{source_path} → {target_path}"),
+                detail: ViolationDetail::Message(format!("{source_path} → {target_path}")),
                 locations,
             })
         })
@@ -139,24 +248,28 @@ fn check_cycles(graph: &ArcGraph, rule: &Rule, include_reexports: bool) -> Vec<V
         },
     );
 
-    subgraph
-        .minimal_cycles()
-        .cycles
-        .into_iter()
-        .map(|cycle| {
-            let path_names: Vec<String> = cycle
-                .path
-                .iter()
-                .map(|&idx| graph.qualified_name(idx))
-                .collect();
-            let message = format!("{} → {}", path_names.join(" → "), path_names[0]);
-            Violation {
-                rule_name: name.clone(),
-                rule_type: "no-cycles".into(),
-                severity: *severity,
-                message,
-                locations: Vec::new(),
-            }
+    let analysis = subgraph.minimal_cycles();
+    // The cluster report is computed per rule, over that rule's own scoped
+    // subgraph: two no-cycles rules with different scopes see different views.
+    let report = graph.cluster_report(&subgraph, &analysis);
+    let total = report.clusters.len();
+
+    report
+        .clusters
+        .iter()
+        .enumerate()
+        .map(|(i, cluster)| Violation {
+            rule_name: name.clone(),
+            rule_type: "no-cycles".into(),
+            severity: *severity,
+            detail: ViolationDetail::Cluster(CycleCluster::from_cluster(
+                graph,
+                &analysis,
+                cluster,
+                i + 1,
+                total,
+            )),
+            locations: Vec::new(),
         })
         .collect()
 }
@@ -214,7 +327,7 @@ fn check_layers(graph: &ArcGraph, rule: &Rule) -> Vec<Violation> {
                 rule_name: name.clone(),
                 rule_type: "layers".into(),
                 severity: *severity,
-                message: format!("{source_path} → {target_path}"),
+                detail: ViolationDetail::Message(format!("{source_path} → {target_path}")),
                 locations,
             })
         })
@@ -368,8 +481,11 @@ mod tests {
         assert_eq!(violations.len(), 1);
         assert_eq!(violations[0].rule_name, "no infra in domain");
         assert_eq!(violations[0].rule_type, "forbidden-dependency");
-        assert!(violations[0].message.contains("service"));
-        assert!(violations[0].message.contains("db"));
+        let ViolationDetail::Message(msg) = &violations[0].detail else {
+            panic!("expected a message detail");
+        };
+        assert!(msg.contains("service"));
+        assert!(msg.contains("db"));
     }
 
     #[test]
@@ -442,7 +558,11 @@ mod tests {
         };
         let violations = check_cycles(&graph, &rule, false);
         assert_eq!(violations.len(), 1);
-        assert!(violations[0].message.contains("→"));
+        let ViolationDetail::Cluster(cluster) = &violations[0].detail else {
+            panic!("expected a cluster detail");
+        };
+        assert_eq!(cluster.cycles, 1);
+        assert!(cluster.ring.is_some());
     }
 
     #[test]
@@ -532,6 +652,55 @@ mod tests {
         assert_eq!(violations.len(), 2);
     }
 
+    #[test]
+    fn test_cycles_one_violation_per_cluster() {
+        let (mut graph, crate_idx) = test_crate_graph();
+        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
+        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
+        let c = add_module(&mut graph, "c", crate_idx, crate_idx);
+        let d = add_module(&mut graph, "d", crate_idx, crate_idx);
+        // Two triangles sharing edge a -> b: one SCC, two cycles.
+        add_production_dep(&mut graph, a, b);
+        add_production_dep(&mut graph, b, c);
+        add_production_dep(&mut graph, c, a);
+        add_production_dep(&mut graph, b, d);
+        add_production_dep(&mut graph, d, a);
+
+        let rule = Rule::NoCycles {
+            name: "no cycles in test".into(),
+            scope: "test::**".into(),
+            severity: Severity::Error,
+        };
+        let violations = check_cycles(&graph, &rule, false);
+        assert_eq!(violations.len(), 1);
+        let ViolationDetail::Cluster(cluster) = &violations[0].detail else {
+            panic!("expected a cluster detail");
+        };
+        assert_eq!(cluster.cycles, 2);
+        assert!(cluster.ring.is_none());
+    }
+
+    #[test]
+    fn test_common_place_nested_modules_share_prefix() {
+        let (mut graph, crate_idx) = test_crate_graph();
+        let back = add_module(&mut graph, "back", crate_idx, crate_idx);
+        let hlsl = add_module(&mut graph, "hlsl", crate_idx, back);
+        let writer = add_module(&mut graph, "writer", crate_idx, hlsl);
+        let keywords = add_module(&mut graph, "keywords", crate_idx, hlsl);
+        assert_eq!(
+            common_place(&graph, &[writer, keywords]),
+            "test::back::hlsl"
+        );
+    }
+
+    #[test]
+    fn test_common_place_flat_modules_share_only_the_crate() {
+        let (mut graph, crate_idx) = test_crate_graph();
+        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
+        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
+        assert_eq!(common_place(&graph, &[a, b]), "test");
+    }
+
     // ===== Task 2.3: layers tests =====
 
     #[test]
@@ -566,8 +735,11 @@ mod tests {
         };
         let violations = check_layers(&graph, &rule);
         assert_eq!(violations.len(), 1);
-        assert!(violations[0].message.contains("db"));
-        assert!(violations[0].message.contains("service"));
+        let ViolationDetail::Message(msg) = &violations[0].detail else {
+            panic!("expected a message detail");
+        };
+        assert!(msg.contains("db"));
+        assert!(msg.contains("service"));
     }
 
     #[test]
@@ -662,7 +834,7 @@ mod tests {
                 rule_name: "test".into(),
                 rule_type: "forbidden-dependency".into(),
                 severity: Severity::Error,
-                message: "a → b".into(),
+                detail: ViolationDetail::Message("a → b".into()),
                 locations: vec![],
             }],
         };
@@ -677,7 +849,7 @@ mod tests {
                 rule_name: "test".into(),
                 rule_type: "no-cycles".into(),
                 severity: Severity::Warn,
-                message: "cycle".into(),
+                detail: ViolationDetail::Message("cycle".into()),
                 locations: vec![],
             }],
         };

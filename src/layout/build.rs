@@ -278,7 +278,8 @@ fn attach_clusters(
     node_map: &HashMap<NodeIndex, NodeId>,
     include_reexports: bool,
 ) {
-    let report = graph.cluster_report(analysis, include_reexports);
+    let sub = graph.cycle_subgraph(include_reexports);
+    let report = graph.cluster_report(&sub, analysis);
     for cluster in report.clusters {
         let Some(&scc_id) = cluster.nodes.first().and_then(|n| analysis.node_scc.get(n)) else {
             continue;

@@ -15,7 +15,7 @@ use crate::layout::{LayoutIR, build_layout};
 use crate::model::{CrateExportMap, ModulePathMap, WorkspaceCrates};
 use crate::render::{RenderConfig, render};
 use crate::rules::config::{ArcConfig, ConfigError};
-use crate::rules::engine::check_rules;
+use crate::rules::engine::{CycleCluster, check_rules};
 use crate::rules::format::{format_cluster_report, format_violations};
 use crate::volatility::{VolatilityAnalyzer, VolatilityConfig};
 use std::path::Path;
@@ -257,7 +257,8 @@ fn run_check(check_args: &CheckArgs, common: &CommonArgs) -> Result<()> {
 /// Legacy fallback: global cycle check when no arc-rules.toml exists.
 fn run_legacy_cycle_check(graph: &ArcGraph, include_reexports: bool) -> Result<()> {
     tracing::debug!("phase: cycle detection start (--check)");
-    let analysis = graph.cycle_subgraph(include_reexports).minimal_cycles();
+    let sub = graph.cycle_subgraph(include_reexports);
+    let analysis = sub.minimal_cycles();
     tracing::debug!(
         "phase: cycle detection done ({} cycles)",
         analysis.cycles.len()
@@ -265,8 +266,15 @@ fn run_legacy_cycle_check(graph: &ArcGraph, include_reexports: bool) -> Result<(
     if analysis.cycles.is_empty() {
         return Ok(());
     }
-    let report = graph.cluster_report(&analysis, include_reexports);
-    eprint!("{}", format_cluster_report(graph, &analysis, &report));
+    let report = graph.cluster_report(&sub, &analysis);
+    let total = report.clusters.len();
+    let clusters: Vec<CycleCluster> = report
+        .clusters
+        .iter()
+        .enumerate()
+        .map(|(i, cluster)| CycleCluster::from_cluster(graph, &analysis, cluster, i + 1, total))
+        .collect();
+    eprint!("{}", format_cluster_report(&clusters));
     anyhow::bail!("dependency cycle(s) detected");
 }
 

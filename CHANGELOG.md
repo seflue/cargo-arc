@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- A `no-cycles` rule now reports one finding per cyclic cluster instead of one
+  per elementary cycle, using the same block form as a run without
+  `arc-rules.toml`. Each block is headed by the location the cluster sits in,
+  the shared module prefix of its members.
+
 ## [0.3.1] - 2026-07-30
 
 ### Changed

@@ -62,21 +62,19 @@ enum RemovalBias {
 impl ArcGraph {
     /// Aggregate `analysis` into SCC clusters, each with a proven feedback set.
     ///
-    /// `analysis` must come from `self.cycle_subgraph(include_reexports).minimal_cycles()`
-    /// so that its `NodeIndex` values address nodes in `self` and the feedback
-    /// sets are computed over the same subgraph.
+    /// `sub` and `analysis` must come from the same subgraph (`analysis` from
+    /// `sub.minimal_cycles()`) so that `NodeIndex` values line up and the
+    /// feedback sets are computed over the same subgraph.
     #[must_use]
     pub fn cluster_report(
         &self,
+        sub: &DiGraph<NodeIndex, ()>,
         analysis: &CycleAnalysis,
-        include_reexports: bool,
     ) -> ClusterReport {
-        let sub = self.cycle_subgraph(include_reexports);
-
         // Map each node of a non-trivial SCC to its cluster id.
         let mut node_scc: HashMap<NodeIndex, usize> = HashMap::new();
         let mut scc_members: Vec<Vec<NodeIndex>> = Vec::new();
-        for comp in tarjan_scc(&sub) {
+        for comp in tarjan_scc(sub) {
             if comp.len() <= 1 {
                 continue;
             }
@@ -102,7 +100,7 @@ impl ArcGraph {
             if cycles.is_empty() {
                 continue;
             }
-            let (feedback_edges, edges) = self.feedback_edges(&sub, &nodes, &cycles, analysis);
+            let (feedback_edges, edges) = self.feedback_edges(sub, &nodes, &cycles, analysis);
             let crate_idx = self.owning_crate(nodes[0]);
             clusters.push(Cluster {
                 crate_idx,
@@ -403,8 +401,9 @@ mod tests {
     }
 
     fn report(g: &ArcGraph) -> ClusterReport {
-        let analysis = g.production_subgraph().minimal_cycles();
-        g.cluster_report(&analysis, true)
+        let sub = g.production_subgraph();
+        let analysis = sub.minimal_cycles();
+        g.cluster_report(&sub, &analysis)
     }
 
     /// Assert that removing `feedback` leaves the cluster `nodes` acyclic.
