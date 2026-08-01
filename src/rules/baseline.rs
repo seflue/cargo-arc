@@ -36,7 +36,7 @@ impl FindingKey {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BaselineEntry {
     pub rule: String,
     pub key: FindingKey,
@@ -85,6 +85,29 @@ impl Baseline {
         self.entries
             .get(rule)
             .is_some_and(|keys| keys.contains(key))
+    }
+
+    /// Entries that no finding in `hits` matched, sorted so a report over them
+    /// reads the same on every run. Whether such an entry is worth reporting is
+    /// the caller's call: the baseline does not know which rules a run skipped.
+    #[must_use]
+    pub fn unmatched(&self, hits: &[BaselineEntry]) -> Vec<BaselineEntry> {
+        let hit: HashSet<(&str, &FindingKey)> = hits
+            .iter()
+            .map(|entry| (entry.rule.as_str(), &entry.key))
+            .collect();
+        let mut left: Vec<BaselineEntry> = self
+            .entries
+            .iter()
+            .flat_map(|(rule, keys)| keys.iter().map(move |key| (rule, key)))
+            .filter(|(rule, key)| !hit.contains(&(rule.as_str(), *key)))
+            .map(|(rule, key)| BaselineEntry {
+                rule: rule.clone(),
+                key: key.clone(),
+            })
+            .collect();
+        left.sort_by(|a, b| (&a.rule, &a.key).cmp(&(&b.rule, &b.key)));
+        left
     }
 
     /// Number of frozen findings across all rules.
@@ -329,6 +352,95 @@ mod tests {
 
         let result = Baseline::load(&path);
         assert!(matches!(result, Err(BaselineError::Malformed(_, _))));
+    }
+
+    fn entry(rule: &str, key: FindingKey) -> BaselineEntry {
+        BaselineEntry {
+            rule: rule.to_string(),
+            key,
+        }
+    }
+
+    /// Round-trips `entries` through a throwaway file, the only way to get a
+    /// populated [`Baseline`] (its fields are private).
+    fn baseline_of(entries: &[BaselineEntry]) -> (TempDir, Baseline) {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("arc-baseline.toml");
+        Baseline::write(&path, entries).unwrap();
+        let baseline = Baseline::load(&path).unwrap();
+        (tmp, baseline)
+    }
+
+    #[test]
+    fn hit_entry_is_absent_from_unmatched() {
+        let stored = entry(
+            "no infra in domain",
+            FindingKey::edge("domain::legacy", "infra::db"),
+        );
+        let (_tmp, baseline) = baseline_of(std::slice::from_ref(&stored));
+        assert!(baseline.unmatched(&[stored]).is_empty());
+    }
+
+    #[test]
+    fn entry_no_run_hit_is_reported() {
+        let hit = entry(
+            "no infra in domain",
+            FindingKey::edge("domain::legacy", "infra::db"),
+        );
+        let fixed = entry(
+            "no infra in domain",
+            FindingKey::edge("domain::service", "infra::db"),
+        );
+        let (_tmp, baseline) = baseline_of(&[hit.clone(), fixed.clone()]);
+        assert_eq!(baseline.unmatched(&[hit]), vec![fixed]);
+    }
+
+    #[test]
+    fn hit_under_another_rule_name_does_not_cover_the_entry() {
+        let stored = entry(
+            "no infra in domain",
+            FindingKey::edge("domain::legacy", "infra::db"),
+        );
+        let (_tmp, baseline) = baseline_of(std::slice::from_ref(&stored));
+        let elsewhere = entry(
+            "some other rule",
+            FindingKey::edge("domain::legacy", "infra::db"),
+        );
+        assert_eq!(baseline.unmatched(&[elsewhere]), vec![stored]);
+    }
+
+    #[test]
+    fn hit_in_another_rotation_covers_the_ring_entry() {
+        let stored = entry(
+            "domain acyclic",
+            FindingKey::ring(vec![
+                "domain::a".to_string(),
+                "domain::b".to_string(),
+                "domain::c".to_string(),
+            ]),
+        );
+        let (_tmp, baseline) = baseline_of(&[stored]);
+        let rotated = entry(
+            "domain acyclic",
+            FindingKey::ring(vec![
+                "domain::c".to_string(),
+                "domain::a".to_string(),
+                "domain::b".to_string(),
+            ]),
+        );
+        assert!(baseline.unmatched(&[rotated]).is_empty());
+    }
+
+    #[test]
+    fn unmatched_order_is_independent_of_storage_order() {
+        let a = entry("a rule", FindingKey::edge("x", "y"));
+        let b = entry(
+            "b rule",
+            FindingKey::ring(vec!["m::a".to_string(), "m::b".to_string()]),
+        );
+        let (_tmp_1, one_way) = baseline_of(&[a.clone(), b.clone()]);
+        let (_tmp_2, other_way) = baseline_of(&[b, a]);
+        assert_eq!(one_way.unmatched(&[]), other_way.unmatched(&[]));
     }
 
     #[test]

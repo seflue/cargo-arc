@@ -7,9 +7,10 @@ use crate::graph::{ArcGraph, Edge};
 use crate::model::SourceLocation;
 use crate::rules::baseline::{Baseline, BaselineEntry, FindingKey};
 use crate::rules::config::{
-    ArcConfig, Direction, Except, ForbiddenDependencyRule, LayersRule, NoCyclesRule, Rule,
-    RuleKind, Severity,
+    ArcConfig, DiagnosticLevel, Direction, Except, ForbiddenDependencyRule, LayersRule,
+    NoCyclesRule, Rule, RuleKind, Severity,
 };
+use crate::rules::diagnostics::{self, Diagnostic};
 use crate::rules::matching::{PathIndex, resolve_pattern};
 use petgraph::algo::tarjan_scc;
 use petgraph::graph::{DiGraph, NodeIndex};
@@ -155,6 +156,11 @@ pub struct CheckResult {
     /// The key of every finding actually reported in `violations`, i.e. what
     /// `--generate-baseline` writes out.
     pub baseline_entries: Vec<BaselineEntry>,
+    /// The baseline entries this run matched. What is left of the baseline
+    /// beyond them no longer suppresses anything.
+    pub baseline_hits: Vec<BaselineEntry>,
+    /// Gaps in the configuration, unrelated to any single rule.
+    pub diagnostics: Vec<Diagnostic>,
 }
 
 impl CheckResult {
@@ -166,10 +172,15 @@ impl CheckResult {
             .any(|v| v.severity == Severity::Error)
     }
 
-    /// Exit code: 1 if errors exist, 0 otherwise.
+    /// Exit code: 1 if a rule was violated at error level or a diagnostic is
+    /// set to `deny`, 0 otherwise.
     #[must_use]
     pub fn exit_code(&self) -> i32 {
-        i32::from(self.has_errors())
+        let denied = self
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.level == DiagnosticLevel::Deny);
+        i32::from(self.has_errors() || denied)
     }
 }
 
@@ -180,6 +191,8 @@ impl FromIterator<CheckResult> for CheckResult {
             acc.suppressed.extend(result.suppressed);
             acc.baselined.extend(result.baselined);
             acc.baseline_entries.extend(result.baseline_entries);
+            acc.baseline_hits.extend(result.baseline_hits);
+            acc.diagnostics.extend(result.diagnostics);
             acc
         })
     }
@@ -290,6 +303,7 @@ impl<'graph> CheckRun<'graph> {
         // splits as edges are added, so it has no identity to freeze against.
         let mut baselined = Vec::new();
         let mut baseline_entries = Vec::new();
+        let mut baseline_hits = Vec::new();
         analysis.retain_cycles(|cycle| {
             let modules: Vec<String> = cycle
                 .path
@@ -298,6 +312,10 @@ impl<'graph> CheckRun<'graph> {
                 .collect();
             let key = FindingKey::ring(modules.clone());
             if self.baseline.covers(&rule.name, &key) {
+                baseline_hits.push(BaselineEntry {
+                    rule: rule.name.clone(),
+                    key,
+                });
                 baselined.push(Violation {
                     rule_name: rule.name.clone(),
                     rule_type: rule.rule_type().into(),
@@ -345,6 +363,8 @@ impl<'graph> CheckRun<'graph> {
             suppressed,
             baselined,
             baseline_entries,
+            baseline_hits,
+            diagnostics: Vec::new(),
         }
     }
 
@@ -391,6 +411,7 @@ impl<'graph> CheckRun<'graph> {
         let mut suppressed = Vec::new();
         let mut baselined = Vec::new();
         let mut baseline_entries = Vec::new();
+        let mut baseline_hits = Vec::new();
         for edge_idx in graph.edge_indices() {
             let edge = &graph[edge_idx];
             if !edge.is_production() {
@@ -422,6 +443,10 @@ impl<'graph> CheckRun<'graph> {
             }
             let key = FindingKey::edge(from, to);
             if self.baseline.covers(&rule.name, &key) {
+                baseline_hits.push(BaselineEntry {
+                    rule: rule.name.clone(),
+                    key,
+                });
                 baselined.push(violation);
             } else {
                 baseline_entries.push(BaselineEntry {
@@ -436,6 +461,8 @@ impl<'graph> CheckRun<'graph> {
             suppressed,
             baselined,
             baseline_entries,
+            baseline_hits,
+            diagnostics: Vec::new(),
         }
     }
 }
@@ -443,7 +470,9 @@ impl<'graph> CheckRun<'graph> {
 /// Check all rules in the config against the graph.
 ///
 /// Dispatches each rule to its type-specific checker, collects all violations,
-/// and filters out `Severity::Ignore` rules.
+/// and filters out `Severity::Ignore` rules. Diagnostics are raised afterwards:
+/// a stale baseline entry is only recognizable once every rule has had its
+/// chance to match it.
 #[must_use]
 pub fn check_rules(
     graph: &ArcGraph,
@@ -452,50 +481,14 @@ pub fn check_rules(
     include_reexports: bool,
 ) -> CheckResult {
     let run = CheckRun::new(graph, baseline, include_reexports);
-    config
+    let mut result: CheckResult = config
         .rules
         .iter()
         .filter(|rule| rule.severity() != Severity::Ignore)
         .map(|rule| run.check_rule(rule))
-        .collect()
-}
-
-/// An `except` pattern that matches no module: a typo or a rename, and it
-/// silently allows nothing.
-pub struct DeadExcept {
-    pub rule: String,
-    pub pattern: String,
-}
-
-/// `except` patterns across `config` whose `from` or `to` side resolves to no
-/// node. An `except` on a currently nonexistent *edge* is not dead — that's a
-/// forward-looking allowance, not a typo — so only the pattern side is
-/// checked, never whether the edge itself exists.
-#[must_use]
-pub fn dead_excepts(graph: &ArcGraph, config: &ArcConfig) -> Vec<DeadExcept> {
-    let path_index = PathIndex::build(graph);
-    let mut dead = Vec::new();
-    for rule in config
-        .rules
-        .iter()
-        .filter(|rule| rule.severity() != Severity::Ignore)
-    {
-        for exception in &rule.except {
-            if resolve_pattern(&exception.from, graph, &path_index).is_empty() {
-                dead.push(DeadExcept {
-                    rule: rule.name.clone(),
-                    pattern: exception.from.clone(),
-                });
-            }
-            if resolve_pattern(&exception.to, graph, &path_index).is_empty() {
-                dead.push(DeadExcept {
-                    rule: rule.name.clone(),
-                    pattern: exception.to.clone(),
-                });
-            }
-        }
-    }
-    dead
+        .collect();
+    result.diagnostics = diagnostics::collect(graph, config, baseline, &result.baseline_hits);
+    result
 }
 
 /// `except` entries of a rule, resolved once to node sets so a per-edge check
@@ -591,6 +584,8 @@ mod tests {
     use super::*;
     use crate::graph::Node;
     use crate::model::EdgeContext;
+    use crate::rules::config::Diagnostics;
+    use crate::rules::diagnostics::DiagnosticKind;
     use std::path::PathBuf;
 
     // -- Test graph helpers --
@@ -835,6 +830,16 @@ mod tests {
                 layers: layers.iter().map(|&layer| layer.into()).collect(),
                 direction: Direction::TopDown,
             }),
+        }
+    }
+
+    /// `ArcConfig` over `rules`, without a `[config]` block and with the
+    /// default diagnostic levels.
+    fn config_of(rules: Vec<Rule>) -> ArcConfig {
+        ArcConfig {
+            config: None,
+            rules,
+            diagnostics: Diagnostics::default(),
         }
     }
 
@@ -1173,20 +1178,17 @@ mod tests {
         add_production_dep(&mut graph, db, api);
         add_production_dep(&mut graph, api, db);
 
-        let config = ArcConfig {
-            config: None,
-            rules: vec![
-                no_infra_in_domain(vec![]),
-                Rule {
-                    name: "no cycles in infra".into(),
-                    declared_severity: Some(Severity::Warn),
-                    except: vec![],
-                    kind: RuleKind::NoCycles(NoCyclesRule {
-                        scope: "infra::**".into(),
-                    }),
-                },
-            ],
-        };
+        let config = config_of(vec![
+            no_infra_in_domain(vec![]),
+            Rule {
+                name: "no cycles in infra".into(),
+                declared_severity: Some(Severity::Warn),
+                except: vec![],
+                kind: RuleKind::NoCycles(NoCyclesRule {
+                    scope: "infra::**".into(),
+                }),
+            },
+        ]);
         let result = check_rules(&graph, &config, &Baseline::empty(), false);
         assert_eq!(result.violations.len(), 2);
         assert!(
@@ -1201,10 +1203,7 @@ mod tests {
     #[test]
     fn test_check_rules_empty() {
         let (graph, _) = test_crate_graph();
-        let config = ArcConfig {
-            config: None,
-            rules: vec![],
-        };
+        let config = config_of(vec![]);
         let result = check_rules(&graph, &config, &Baseline::empty(), false);
         assert!(result.violations.is_empty());
     }
@@ -1267,23 +1266,102 @@ mod tests {
     }
 
     #[test]
+    fn test_check_rules_reports_a_crate_outside_every_layer() {
+        let (mut graph, _domain, service, _model, _infra, db, _api, _app, _handler) =
+            multi_crate_graph();
+        add_production_dep(&mut graph, service, db);
+
+        // The layers rule names two of the three crates.
+        let config = config_of(vec![layers_rule(&["infra", "domain"], vec![])]);
+        let result = check_rules(&graph, &config, &Baseline::empty(), false);
+        let unlayered: Vec<&str> = result
+            .diagnostics
+            .iter()
+            .filter_map(|diagnostic| match &diagnostic.kind {
+                DiagnosticKind::UnlayeredCrate { krate } => Some(krate.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(unlayered, ["application"]);
+    }
+
+    #[test]
+    fn test_a_baselined_finding_counts_as_a_baseline_hit() {
+        let rule = no_infra_in_domain(vec![]);
+        let entry = BaselineEntry {
+            rule: rule.name.clone(),
+            key: FindingKey::edge("domain::service", "infra::db"),
+        };
+        let baseline = baseline_of(vec![entry.clone()]);
+        let result = check_rule_with_baseline(&service_to_db_graph(), &rule, false, &baseline);
+        assert_eq!(result.baseline_hits.len(), 1);
+        assert_eq!(result.baseline_hits[0].rule, entry.rule);
+        assert_eq!(result.baseline_hits[0].key, entry.key);
+    }
+
+    #[test]
+    fn test_a_baselined_ring_counts_as_a_baseline_hit() {
+        let (mut graph, crate_idx) = test_crate_graph();
+        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
+        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
+        add_production_dep(&mut graph, a, b);
+        add_production_dep(&mut graph, b, a);
+
+        let rule = no_cycles_rule("no cycles in test", "test::**", vec![]);
+        let key = FindingKey::ring(vec!["test::a".to_string(), "test::b".to_string()]);
+        let baseline = baseline_of(vec![BaselineEntry {
+            rule: rule.name.clone(),
+            key: key.clone(),
+        }]);
+        let result = check_rule_with_baseline(&graph, &rule, false, &baseline);
+        assert_eq!(result.baseline_hits.len(), 1);
+        assert_eq!(result.baseline_hits[0].key, key);
+    }
+
+    #[test]
+    fn test_a_denied_diagnostic_fails_the_run() {
+        let result = CheckResult {
+            diagnostics: vec![Diagnostic {
+                level: DiagnosticLevel::Deny,
+                kind: DiagnosticKind::UnlayeredCrate {
+                    krate: "xtask".into(),
+                },
+            }],
+            ..Default::default()
+        };
+        assert!(!result.has_errors(), "no rule was violated");
+        assert_eq!(result.exit_code(), 1);
+    }
+
+    #[test]
+    fn test_a_warned_diagnostic_leaves_the_run_green() {
+        let result = CheckResult {
+            diagnostics: vec![Diagnostic {
+                level: DiagnosticLevel::Warn,
+                kind: DiagnosticKind::UnlayeredCrate {
+                    krate: "xtask".into(),
+                },
+            }],
+            ..Default::default()
+        };
+        assert_eq!(result.exit_code(), 0);
+    }
+
+    #[test]
     fn test_severity_ignore_filtered() {
         let (mut graph, _domain, service, _model, _infra, db, _api, _app, _handler) =
             multi_crate_graph();
         add_production_dep(&mut graph, service, db);
 
-        let config = ArcConfig {
-            config: None,
-            rules: vec![Rule {
-                name: "ignored rule".into(),
-                declared_severity: Some(Severity::Ignore),
-                except: vec![],
-                kind: RuleKind::ForbiddenDependency(ForbiddenDependencyRule {
-                    from: "domain::**".into(),
-                    to: "infra::**".into(),
-                }),
-            }],
-        };
+        let config = config_of(vec![Rule {
+            name: "ignored rule".into(),
+            declared_severity: Some(Severity::Ignore),
+            except: vec![],
+            kind: RuleKind::ForbiddenDependency(ForbiddenDependencyRule {
+                from: "domain::**".into(),
+                to: "infra::**".into(),
+            }),
+        }]);
         let result = check_rules(&graph, &config, &Baseline::empty(), false);
         assert!(result.violations.is_empty());
     }
@@ -1427,13 +1505,10 @@ mod tests {
         add_production_dep(&mut graph, db, api);
         add_production_dep(&mut graph, api, db);
 
-        let config = ArcConfig {
-            config: None,
-            rules: vec![
-                no_infra_in_domain(vec![]),
-                no_cycles_rule("no cycles in infra", "infra::**", vec![]),
-            ],
-        };
+        let config = config_of(vec![
+            no_infra_in_domain(vec![]),
+            no_cycles_rule("no cycles in infra", "infra::**", vec![]),
+        ]);
 
         let first = check_rules(&graph, &config, &Baseline::empty(), false);
         assert!(!first.violations.is_empty(), "sanity: findings exist");
@@ -1446,42 +1521,5 @@ mod tests {
         let second = check_rules(&graph, &config, &baseline, false);
         assert!(second.violations.is_empty(), "got: {:?}", second.violations);
         assert!(!second.baselined.is_empty());
-    }
-
-    // ===== dead_excepts tests =====
-
-    #[test]
-    fn test_dead_except_reports_pattern_matching_no_module() {
-        let (mut graph, _domain, service, _model, _infra, db, _api, _app, _handler) =
-            multi_crate_graph();
-        add_production_dep(&mut graph, service, db);
-
-        let config = ArcConfig {
-            config: None,
-            rules: vec![no_infra_in_domain(vec![except_edge(
-                "domain::typo",
-                "infra::db",
-            )])],
-        };
-        let dead = dead_excepts(&graph, &config);
-        assert_eq!(dead.len(), 1);
-        assert_eq!(dead[0].rule, "no infra in domain");
-        assert_eq!(dead[0].pattern, "domain::typo");
-    }
-
-    #[test]
-    fn test_dead_except_empty_when_all_patterns_resolve() {
-        let (mut graph, _domain, service, _model, _infra, db, _api, _app, _handler) =
-            multi_crate_graph();
-        add_production_dep(&mut graph, service, db);
-
-        let config = ArcConfig {
-            config: None,
-            rules: vec![no_infra_in_domain(vec![except_edge(
-                "domain::service",
-                "infra::db",
-            )])],
-        };
-        assert!(dead_excepts(&graph, &config).is_empty());
     }
 }

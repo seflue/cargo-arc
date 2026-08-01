@@ -8,6 +8,8 @@ pub struct ArcConfig {
     pub config: Option<ConfigMeta>,
     #[serde(default)]
     pub rules: Vec<Rule>,
+    #[serde(default)]
+    pub diagnostics: Diagnostics,
 }
 
 #[derive(Debug, Deserialize)]
@@ -24,6 +26,67 @@ pub enum Severity {
     Error,
     Warn,
     Ignore,
+}
+
+/// Separate from `Severity` because the two qualify different objects: a rule
+/// name is an intent, and `severity` says how bad breaking it is; a diagnostic
+/// name is a state, and this says whether that state is allowed.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DiagnosticLevel {
+    Allow,
+    #[default]
+    Warn,
+    Deny,
+}
+
+/// The `unlayered-crate` diagnostic: its level plus the crates that are
+/// deliberately outside the architecture (build tooling, examples). The list
+/// is the only way to tell *forgotten* from *deliberately outside*; `except`
+/// on a rule does not reach diagnostics.
+///
+/// Written either as a bare level (`"warn"`) or as a table
+/// (`{ level = "warn", except = ["xtask"] }`).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct UnlayeredCrate {
+    pub level: DiagnosticLevel,
+    pub except: Vec<String>,
+}
+
+impl<'de> Deserialize<'de> for UnlayeredCrate {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Spelling {
+            Level(DiagnosticLevel),
+            Table {
+                #[serde(default)]
+                level: DiagnosticLevel,
+                #[serde(default)]
+                except: Vec<String>,
+            },
+        }
+        Ok(match Spelling::deserialize(deserializer)? {
+            Spelling::Level(level) => Self {
+                level,
+                except: Vec::new(),
+            },
+            Spelling::Table { level, except } => Self { level, except },
+        })
+    }
+}
+
+/// A mistyped name is rejected rather than ignored: a diagnostic that silently
+/// stays off is the state this section exists to end.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct Diagnostics {
+    #[serde(default)]
+    pub unlayered_crate: UnlayeredCrate,
+    #[serde(default)]
+    pub unmatched_baseline_entry: DiagnosticLevel,
+    #[serde(default)]
+    pub unmatched_except: DiagnosticLevel,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -535,6 +598,88 @@ mod tests {
 
         let config = ArcConfig::load(&path).unwrap();
         assert_eq!(config.rules.len(), 3);
+    }
+
+    #[test]
+    fn test_diagnostics_missing_section_defaults_to_warn() {
+        let toml = r#"
+            [[rules]]
+            type = "no-cycles"
+            name = "test"
+            scope = "**"
+        "#;
+        let config: ArcConfig = toml::from_str(toml).unwrap();
+        let diagnostics = &config.diagnostics;
+        assert_eq!(diagnostics.unlayered_crate.level, DiagnosticLevel::Warn);
+        assert!(diagnostics.unlayered_crate.except.is_empty());
+        assert_eq!(diagnostics.unmatched_baseline_entry, DiagnosticLevel::Warn);
+        assert_eq!(diagnostics.unmatched_except, DiagnosticLevel::Warn);
+    }
+
+    #[test]
+    fn test_diagnostics_bare_level_strings() {
+        let toml = r#"
+            [diagnostics]
+            unlayered-crate = "deny"
+            unmatched-baseline-entry = "allow"
+            unmatched-except = "warn"
+        "#;
+        let config: ArcConfig = toml::from_str(toml).unwrap();
+        let diagnostics = &config.diagnostics;
+        assert_eq!(diagnostics.unlayered_crate.level, DiagnosticLevel::Deny);
+        assert!(
+            diagnostics.unlayered_crate.except.is_empty(),
+            "the bare form names a level and nothing else"
+        );
+        assert_eq!(diagnostics.unmatched_baseline_entry, DiagnosticLevel::Allow);
+        assert_eq!(diagnostics.unmatched_except, DiagnosticLevel::Warn);
+    }
+
+    #[test]
+    fn test_diagnostics_unlayered_crate_table_form() {
+        let toml = r#"
+            [diagnostics]
+            unlayered-crate = { level = "deny", except = ["xtask", "benches"] }
+        "#;
+        let config: ArcConfig = toml::from_str(toml).unwrap();
+        let unlayered = &config.diagnostics.unlayered_crate;
+        assert_eq!(unlayered.level, DiagnosticLevel::Deny);
+        assert_eq!(unlayered.except, ["xtask", "benches"]);
+    }
+
+    #[test]
+    fn test_diagnostics_table_without_level_keeps_the_default() {
+        let toml = r#"
+            [diagnostics]
+            unlayered-crate = { except = ["xtask"] }
+        "#;
+        let config: ArcConfig = toml::from_str(toml).unwrap();
+        let unlayered = &config.diagnostics.unlayered_crate;
+        assert_eq!(unlayered.level, DiagnosticLevel::Warn);
+        assert_eq!(unlayered.except, ["xtask"]);
+    }
+
+    #[test]
+    fn test_diagnostics_reject_unknown_name() {
+        let toml = r#"
+            [diagnostics]
+            unlayered-crates = "warn"
+        "#;
+        let result: Result<ArcConfig, _> = toml::from_str(toml);
+        assert!(
+            result.is_err(),
+            "a mistyped diagnostic name would otherwise switch nothing on"
+        );
+    }
+
+    #[test]
+    fn test_diagnostics_reject_unknown_level() {
+        let toml = r#"
+            [diagnostics]
+            unmatched-except = "loud"
+        "#;
+        let result: Result<ArcConfig, _> = toml::from_str(toml);
+        assert!(result.is_err(), "an unknown level is a config error");
     }
 
     #[test]

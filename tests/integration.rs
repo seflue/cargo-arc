@@ -866,6 +866,110 @@ scope = "domain::**"
     );
 }
 
+// ===== Phase 6: configuration diagnostics =====
+
+/// Rules file naming only two of the fixture's three crates as layers, so
+/// `domain` is left unsorted. `diagnostics` is appended verbatim.
+fn layers_without_domain(dir: &tempfile::TempDir, diagnostics: &str) -> PathBuf {
+    let rules_path = dir.path().join("arc-rules.toml");
+    std::fs::write(
+        &rules_path,
+        format!(
+            r#"
+[config]
+version = 1
+
+[[rules]]
+type = "layers"
+name = "architecture layers"
+layers = ["infra", "application"]
+direction = "top-down"
+{diagnostics}
+"#
+        ),
+    )
+    .unwrap();
+    rules_path
+}
+
+#[test]
+fn test_check_reports_a_crate_no_layer_covers() {
+    let dir = tempfile::tempdir().unwrap();
+    let rules_path = layers_without_domain(&dir, "");
+    let rules_arg = format!("--rules={}", rules_path.display());
+
+    let (_code, stderr) = cargo_arc_check("arch_violation_workspace", &[&rules_arg]);
+    assert_eq!(
+        stderr.matches("unlayered-crate").count(),
+        1,
+        "the unsorted crate should be reported once, stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("unlayered-crate: domain"),
+        "stderr should name the unsorted crate, stderr: {stderr}"
+    );
+}
+
+#[test]
+fn test_check_stays_quiet_about_a_crate_on_the_except_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let rules_path = layers_without_domain(
+        &dir,
+        "\n[diagnostics]\nunlayered-crate = { except = [\"domain\"] }\n",
+    );
+    let rules_arg = format!("--rules={}", rules_path.display());
+
+    let (_code, stderr) = cargo_arc_check("arch_violation_workspace", &[&rules_arg]);
+    assert!(
+        !stderr.contains("unlayered-crate"),
+        "a crate on the except list is deliberately outside, stderr: {stderr}"
+    );
+}
+
+#[test]
+fn test_check_fails_on_a_denied_diagnostic() {
+    let dir = tempfile::tempdir().unwrap();
+    let rules_path = layers_without_domain(&dir, "\n[diagnostics]\nunlayered-crate = \"deny\"\n");
+    let rules_arg = format!("--rules={}", rules_path.display());
+
+    let (code, stderr) = cargo_arc_check("arch_violation_workspace", &[&rules_arg]);
+    assert_eq!(code, 1, "deny should fail the run, stderr: {stderr}");
+    assert!(
+        stderr.contains("error: configuration"),
+        "stderr should head the block as an error, stderr: {stderr}"
+    );
+}
+
+#[test]
+fn test_check_reports_an_except_that_matches_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let rules_path = dir.path().join("arc-rules.toml");
+    std::fs::write(
+        &rules_path,
+        r#"
+[config]
+version = 1
+
+[[rules]]
+type = "forbidden-dependency"
+name = "no infra in domain"
+from = "domain::**"
+to = "infra::**"
+except = [
+  { from = "domain::lgacy", to = "infra::db" },
+]
+"#,
+    )
+    .unwrap();
+    let rules_arg = format!("--rules={}", rules_path.display());
+
+    let (_code, stderr) = cargo_arc_check("arch_violation_workspace", &[&rules_arg]);
+    assert!(
+        stderr.contains("unmatched-except: domain::lgacy"),
+        "a dead except should be reported in the check run, stderr: {stderr}"
+    );
+}
+
 #[test]
 fn test_legacy_check_flag() {
     // --check flag on a fixture without cycles → exit 0

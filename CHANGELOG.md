@@ -26,6 +26,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   alongside allowed ones.
 - Rule names must now be unique across all rule types; `arc-rules.toml` is
   rejected when two rules share a name.
+- A `[diagnostics]` section in `arc-rules.toml` reports gaps in the
+  configuration itself: `unlayered-crate` for a workspace crate no `layers`
+  rule sorts (its edges were skipped without a word), `unmatched-baseline-entry`
+  for a frozen finding that no longer occurs, `unmatched-except` for an `except`
+  pattern that matches no module. Each is set to `allow`, `warn` or `deny` and
+  defaults to `warn`; `deny` fails the run. `unlayered-crate` also takes an
+  `except` list of crates that stand outside the architecture on purpose, and is
+  written either as `"warn"` or as `{ level = "warn", except = ["xtask"] }`.
 
 ### Changed
 

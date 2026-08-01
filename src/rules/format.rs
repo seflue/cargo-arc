@@ -3,7 +3,9 @@
 //! Formats `CheckResult` violations in a style similar to `rustc` error output:
 //! `error[rule-type]: rule-name` with optional source locations and a summary line.
 
-use crate::rules::config::Severity;
+use crate::rules::baseline::FindingKey;
+use crate::rules::config::{DiagnosticLevel, Severity};
+use crate::rules::diagnostics::{Diagnostic, DiagnosticKind};
 use crate::rules::engine::{CheckResult, CycleCluster, Violation, ViolationDetail};
 use std::fmt::Write;
 
@@ -16,7 +18,11 @@ use std::fmt::Write;
 /// the reported findings.
 #[must_use]
 pub fn format_violations(result: &CheckResult, show_suppressed: bool) -> String {
-    if result.violations.is_empty() && result.suppressed.is_empty() && result.baselined.is_empty() {
+    if result.violations.is_empty()
+        && result.suppressed.is_empty()
+        && result.baselined.is_empty()
+        && result.diagnostics.is_empty()
+    {
         return String::new();
     }
 
@@ -66,6 +72,8 @@ pub fn format_violations(result: &CheckResult, show_suppressed: bool) -> String 
         let _ = writeln!(output, "  arc check --show-suppressed lists them");
     }
 
+    output.push_str(&diagnostics_block(&result.diagnostics));
+
     let errors = result
         .violations
         .iter()
@@ -83,6 +91,81 @@ pub fn format_violations(result: &CheckResult, show_suppressed: bool) -> String 
         let _ = writeln!(output, "error: {errors} error(s), {warnings} warning(s)");
     }
     output
+}
+
+/// One block for the gaps in the configuration, headed `warning:` or, as soon
+/// as a `deny` is among them, `error:`. Entries that share a diagnostic and an
+/// explanation take one line together: nineteen unlayered crates are one gap,
+/// not nineteen.
+fn diagnostics_block(diagnostics: &[Diagnostic]) -> String {
+    /// Beyond this many subjects on one line the list stops informing.
+    const SHOWN: usize = 5;
+
+    if diagnostics.is_empty() {
+        return String::new();
+    }
+    let denied = diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.level == DiagnosticLevel::Deny);
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "{}: configuration",
+        if denied { "error" } else { "warning" }
+    );
+
+    let same_line =
+        |a: &Diagnostic, b: &Diagnostic| a.name() == b.name() && explanation(a) == explanation(b);
+    for group in diagnostics.chunk_by(same_line) {
+        let subjects: Vec<String> = group.iter().map(subject).collect();
+        let shown = subjects.len().min(SHOWN);
+        let _ = write!(
+            out,
+            "  {}: {}",
+            group[0].name(),
+            subjects[..shown].join(", ")
+        );
+        if let Some(hidden) = subjects.len().checked_sub(SHOWN).filter(|&n| n > 0) {
+            let _ = write!(out, ", ... {hidden} more");
+        }
+        let _ = writeln!(out);
+        let _ = writeln!(out, "    {}", explanation(&group[0]));
+    }
+    let _ = writeln!(out);
+    out
+}
+
+/// What the diagnostic is about: the crate, the frozen finding, the pattern.
+fn subject(diagnostic: &Diagnostic) -> String {
+    match &diagnostic.kind {
+        DiagnosticKind::UnlayeredCrate { krate } => krate.clone(),
+        DiagnosticKind::UnmatchedBaselineEntry { entry } => {
+            format!("{}: {}", entry.rule, finding(&entry.key))
+        }
+        DiagnosticKind::UnmatchedExcept { entry } => entry.pattern.clone(),
+    }
+}
+
+/// Why the state is worth a word, and what closes it.
+fn explanation(diagnostic: &Diagnostic) -> String {
+    match &diagnostic.kind {
+        DiagnosticKind::UnlayeredCrate { .. } => {
+            "in no layer, so its edges go unchecked".to_string()
+        }
+        DiagnosticKind::UnmatchedBaselineEntry { .. } => {
+            "suppresses nothing; arc check --generate-baseline rewrites the baseline".to_string()
+        }
+        DiagnosticKind::UnmatchedExcept { entry } => {
+            format!("in rule {:?}, matches no module", entry.rule)
+        }
+    }
+}
+
+fn finding(key: &FindingKey) -> String {
+    match key {
+        FindingKey::Edge { from, to } => format!("{from} → {to}"),
+        FindingKey::Ring(members) => format!("{} -> {}", members.join(" -> "), members[0]),
+    }
 }
 
 /// Render one diagnostic block: `{level}[rule-type]: rule-name`, its source
@@ -534,6 +617,143 @@ mod tests {
         assert!(
             !output.contains("error:"),
             "a green run must not print an error line, got:\n{output}"
+        );
+    }
+
+    // ===== diagnostics =====
+
+    use crate::rules::baseline::{BaselineEntry, FindingKey};
+    use crate::rules::config::DiagnosticLevel;
+    use crate::rules::diagnostics::{DeadExcept, Diagnostic, DiagnosticKind};
+
+    fn unlayered(krate: &str, level: DiagnosticLevel) -> Diagnostic {
+        Diagnostic {
+            level,
+            kind: DiagnosticKind::UnlayeredCrate {
+                krate: krate.into(),
+            },
+        }
+    }
+
+    #[test]
+    fn test_format_unlayered_crates_share_one_line() {
+        let result = CheckResult {
+            diagnostics: vec![
+                unlayered("benches", DiagnosticLevel::Warn),
+                unlayered("xtask", DiagnosticLevel::Warn),
+            ],
+            ..Default::default()
+        };
+        let output = format_violations(&result, false);
+        assert!(output.contains("warning: configuration"), "got:\n{output}");
+        assert!(
+            output.contains("  unlayered-crate: benches, xtask"),
+            "got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_format_denied_diagnostic_heads_the_block_with_error() {
+        let result = CheckResult {
+            diagnostics: vec![unlayered("xtask", DiagnosticLevel::Deny)],
+            ..Default::default()
+        };
+        let output = format_violations(&result, false);
+        assert!(output.contains("error: configuration"), "got:\n{output}");
+    }
+
+    #[test]
+    fn test_format_unmatched_except_names_its_rule() {
+        let result = CheckResult {
+            diagnostics: vec![Diagnostic {
+                level: DiagnosticLevel::Warn,
+                kind: DiagnosticKind::UnmatchedExcept {
+                    entry: DeadExcept {
+                        rule: "no infra in domain".into(),
+                        pattern: "domain::lgacy".into(),
+                    },
+                },
+            }],
+            ..Default::default()
+        };
+        let output = format_violations(&result, false);
+        assert!(
+            output.contains("  unmatched-except: domain::lgacy"),
+            "got:\n{output}"
+        );
+        assert!(
+            output.contains(r#"in rule "no infra in domain""#),
+            "got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_format_unmatched_baseline_entry_shows_the_finding() {
+        let result = CheckResult {
+            diagnostics: vec![
+                Diagnostic {
+                    level: DiagnosticLevel::Warn,
+                    kind: DiagnosticKind::UnmatchedBaselineEntry {
+                        entry: BaselineEntry {
+                            rule: "no infra in domain".into(),
+                            key: FindingKey::edge("domain::service", "infra::db"),
+                        },
+                    },
+                },
+                Diagnostic {
+                    level: DiagnosticLevel::Warn,
+                    kind: DiagnosticKind::UnmatchedBaselineEntry {
+                        entry: BaselineEntry {
+                            rule: "domain acyclic".into(),
+                            key: FindingKey::ring(vec![
+                                "domain::a".to_string(),
+                                "domain::b".to_string(),
+                            ]),
+                        },
+                    },
+                },
+            ],
+            ..Default::default()
+        };
+        let output = format_violations(&result, false);
+        assert!(
+            output.contains("domain::service → infra::db"),
+            "got:\n{output}"
+        );
+        assert!(
+            output.contains("domain::a -> domain::b -> domain::a"),
+            "got:\n{output}"
+        );
+        assert!(output.contains("--generate-baseline"), "got:\n{output}");
+    }
+
+    #[test]
+    fn test_format_long_subject_list_is_cut() {
+        let names = ["a", "b", "c", "d", "e", "f", "g"];
+        let result = CheckResult {
+            diagnostics: names
+                .iter()
+                .map(|name| unlayered(name, DiagnosticLevel::Warn))
+                .collect(),
+            ..Default::default()
+        };
+        let output = format_violations(&result, false);
+        assert!(
+            output.contains("a, b, c, d, e, ... 2 more"),
+            "got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_format_diagnostics_do_not_count_as_rule_violations() {
+        let result = CheckResult {
+            diagnostics: vec![unlayered("xtask", DiagnosticLevel::Deny)],
+            ..Default::default()
+        };
+        let output = format_violations(&result, false);
+        assert!(
+            !output.contains("error(s)"),
+            "the summary line counts rule violations, got:\n{output}"
         );
     }
 
