@@ -49,42 +49,48 @@ pub struct Except {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct Rule {
+    pub name: String,
+    #[serde(default = "default_severity")]
+    pub severity: Severity,
+    #[serde(default)]
+    pub except: Vec<Except>,
+    #[serde(flatten)]
+    pub kind: RuleKind,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ForbiddenDependencyRule {
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct NoCyclesRule {
+    pub scope: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LayersRule {
+    pub layers: Vec<String>,
+    pub direction: Direction,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
-pub enum Rule {
-    ForbiddenDependency {
-        name: String,
-        from: String,
-        to: String,
-        #[serde(default = "default_severity")]
-        severity: Severity,
-        #[serde(default)]
-        except: Vec<Except>,
-    },
-    NoCycles {
-        name: String,
-        scope: String,
-        #[serde(default = "default_severity")]
-        severity: Severity,
-        #[serde(default)]
-        except: Vec<Except>,
-    },
-    Layers {
-        name: String,
-        layers: Vec<String>,
-        direction: Direction,
-        #[serde(default = "default_severity")]
-        severity: Severity,
-        #[serde(default)]
-        except: Vec<Except>,
-    },
+pub enum RuleKind {
+    ForbiddenDependency(ForbiddenDependencyRule),
+    NoCycles(NoCyclesRule),
+    Layers(LayersRule),
 }
 
 impl Rule {
-    fn severity_mut(&mut self) -> &mut Severity {
-        match self {
-            Rule::ForbiddenDependency { severity, .. }
-            | Rule::NoCycles { severity, .. }
-            | Rule::Layers { severity, .. } => severity,
+    #[must_use]
+    pub fn rule_type(&self) -> &'static str {
+        match self.kind {
+            RuleKind::ForbiddenDependency(_) => "forbidden-dependency",
+            RuleKind::NoCycles(_) => "no-cycles",
+            RuleKind::Layers(_) => "layers",
         }
     }
 }
@@ -144,9 +150,8 @@ impl ArcConfig {
             .as_ref()
             .map_or(Severity::Error, |c| c.default_severity);
         for rule in &mut self.rules {
-            let sev = rule.severity_mut();
-            if *sev == Severity::Error && default != Severity::Error {
-                *sev = default;
+            if rule.severity == Severity::Error && default != Severity::Error {
+                rule.severity = default;
             }
         }
     }
@@ -167,10 +172,11 @@ mod tests {
         "#;
         let config: ArcConfig = toml::from_str(toml).unwrap();
         assert_eq!(config.rules.len(), 1);
+        assert_eq!(config.rules[0].name, "no infra in domain");
         assert!(matches!(
-            &config.rules[0],
-            Rule::ForbiddenDependency { name, from, to, .. }
-            if name == "no infra in domain" && from == "domain::**" && to == "infra::**"
+            &config.rules[0].kind,
+            RuleKind::ForbiddenDependency(ForbiddenDependencyRule { from, to })
+            if from == "domain::**" && to == "infra::**"
         ));
     }
 
@@ -183,10 +189,11 @@ mod tests {
             scope = "domain::**"
         "#;
         let config: ArcConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.rules[0].name, "domain acyclic");
         assert!(matches!(
-            &config.rules[0],
-            Rule::NoCycles { name, scope, .. }
-            if name == "domain acyclic" && scope == "domain::**"
+            &config.rules[0].kind,
+            RuleKind::NoCycles(NoCyclesRule { scope })
+            if scope == "domain::**"
         ));
     }
 
@@ -200,11 +207,11 @@ mod tests {
             direction = "top-down"
         "#;
         let config: ArcConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.rules[0].name, "architecture layers");
         assert!(matches!(
-            &config.rules[0],
-            Rule::Layers { name, layers, direction, .. }
-            if name == "architecture layers"
-                && layers == &["domain", "application", "infra"]
+            &config.rules[0].kind,
+            RuleKind::Layers(LayersRule { layers, direction })
+            if layers == &["domain", "application", "infra"]
                 && *direction == Direction::TopDown
         ));
     }
@@ -218,10 +225,7 @@ mod tests {
             scope = "**"
         "#;
         let config: ArcConfig = toml::from_str(toml).unwrap();
-        match &config.rules[0] {
-            Rule::NoCycles { severity, .. } => assert_eq!(*severity, Severity::Error),
-            other => panic!("expected NoCycles, got {other:?}"),
-        }
+        assert_eq!(config.rules[0].severity, Severity::Error);
     }
 
     #[test]
@@ -238,10 +242,7 @@ mod tests {
         "#;
         let mut config: ArcConfig = toml::from_str(toml).unwrap();
         config.apply_defaults();
-        match &config.rules[0] {
-            Rule::NoCycles { severity, .. } => assert_eq!(*severity, Severity::Warn),
-            other => panic!("expected NoCycles, got {other:?}"),
-        }
+        assert_eq!(config.rules[0].severity, Severity::Warn);
     }
 
     #[test]
@@ -283,15 +284,11 @@ mod tests {
             ]
         "#;
         let config: ArcConfig = toml::from_str(toml).unwrap();
-        match &config.rules[0] {
-            Rule::NoCycles { except, .. } => {
-                assert_eq!(except.len(), 1);
-                assert_eq!(except[0].from, "app::router");
-                assert_eq!(except[0].to, "app::screens::**");
-                assert_eq!(except[0].reason.as_deref(), Some("router mediates"));
-            }
-            other => panic!("expected NoCycles, got {other:?}"),
-        }
+        let except = &config.rules[0].except;
+        assert_eq!(except.len(), 1);
+        assert_eq!(except[0].from, "app::router");
+        assert_eq!(except[0].to, "app::screens::**");
+        assert_eq!(except[0].reason.as_deref(), Some("router mediates"));
     }
 
     #[test]
@@ -306,13 +303,9 @@ mod tests {
             ]
         "#;
         let config: ArcConfig = toml::from_str(toml).unwrap();
-        match &config.rules[0] {
-            Rule::NoCycles { except, .. } => {
-                assert_eq!(except.len(), 1);
-                assert_eq!(except[0].reason, None);
-            }
-            other => panic!("expected NoCycles, got {other:?}"),
-        }
+        let except = &config.rules[0].except;
+        assert_eq!(except.len(), 1);
+        assert_eq!(except[0].reason, None);
     }
 
     #[test]
@@ -324,10 +317,7 @@ mod tests {
             scope = "app::**"
         "#;
         let config: ArcConfig = toml::from_str(toml).unwrap();
-        match &config.rules[0] {
-            Rule::NoCycles { except, .. } => assert!(except.is_empty()),
-            other => panic!("expected NoCycles, got {other:?}"),
-        }
+        assert!(config.rules[0].except.is_empty());
     }
 
     #[test]
@@ -352,21 +342,13 @@ mod tests {
             ]
         "#;
         let config: ArcConfig = toml::from_str(toml).unwrap();
-        match &config.rules[0] {
-            Rule::ForbiddenDependency { except, .. } => {
-                assert_eq!(except.len(), 1);
-                assert_eq!(except[0].from, "domain::legacy");
-                assert_eq!(except[0].to, "infra::db");
-            }
-            other => panic!("expected ForbiddenDependency, got {other:?}"),
-        }
-        match &config.rules[1] {
-            Rule::Layers { except, .. } => {
-                assert_eq!(except.len(), 1);
-                assert_eq!(except[0].from, "infra::bridge");
-            }
-            other => panic!("expected Layers, got {other:?}"),
-        }
+        let except = &config.rules[0].except;
+        assert_eq!(except.len(), 1);
+        assert_eq!(except[0].from, "domain::legacy");
+        assert_eq!(except[0].to, "infra::db");
+        let except = &config.rules[1].except;
+        assert_eq!(except.len(), 1);
+        assert_eq!(except[0].from, "infra::bridge");
     }
 
     #[test]
@@ -397,8 +379,65 @@ mod tests {
         "#;
         let config: ArcConfig = toml::from_str(toml).unwrap();
         assert_eq!(config.rules.len(), 3);
-        assert!(matches!(&config.rules[0], Rule::ForbiddenDependency { .. }));
-        assert!(matches!(&config.rules[1], Rule::NoCycles { .. }));
-        assert!(matches!(&config.rules[2], Rule::Layers { .. }));
+        assert!(matches!(
+            &config.rules[0].kind,
+            RuleKind::ForbiddenDependency(_)
+        ));
+        assert!(matches!(&config.rules[1].kind, RuleKind::NoCycles(_)));
+        assert!(matches!(&config.rules[2].kind, RuleKind::Layers(_)));
+    }
+
+    #[test]
+    fn test_name_and_except_readable_uniformly_across_rule_types() {
+        let toml = r#"
+            [[rules]]
+            type = "forbidden-dependency"
+            name = "no infra in domain"
+            from = "domain::**"
+            to = "infra::**"
+            except = [
+              { from = "domain::legacy", to = "infra::db" },
+            ]
+
+            [[rules]]
+            type = "no-cycles"
+            name = "domain acyclic"
+            scope = "domain::**"
+
+            [[rules]]
+            type = "layers"
+            name = "architecture layers"
+            layers = ["domain", "application", "infra"]
+            direction = "top-down"
+        "#;
+        let config: ArcConfig = toml::from_str(toml).unwrap();
+        let names: Vec<&str> = config.rules.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "no infra in domain",
+                "domain acyclic",
+                "architecture layers"
+            ]
+        );
+        let except_lens: Vec<usize> = config.rules.iter().map(|r| r.except.len()).collect();
+        assert_eq!(except_lens, [1, 0, 0]);
+    }
+
+    #[test]
+    fn test_parse_fixture_config() {
+        let path = Path::new("tests/fixtures/arch_violation_workspace/arc-rules.toml");
+        let config = ArcConfig::load(path).unwrap();
+        assert_eq!(config.rules.len(), 3);
+        assert_eq!(config.rules[0].name, "no infra in domain");
+        assert_eq!(config.rules[1].name, "architecture layers");
+        assert_eq!(config.rules[2].name, "no cycles in domain");
+        assert!(config.rules.iter().all(|r| r.except.is_empty()));
+        match &config.rules[1].kind {
+            RuleKind::Layers(LayersRule { direction, .. }) => {
+                assert_eq!(*direction, Direction::TopDown);
+            }
+            other => panic!("expected Layers, got {other:?}"),
+        }
     }
 }
