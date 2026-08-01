@@ -464,7 +464,7 @@ mod tests {
         );
     }
 
-    // ca-0365: private use is captured in private_uses (descendant-visible)
+    // A private use lands in private_uses, where a descendant can still resolve it
     #[test]
     fn private_use_captured_in_private_uses() {
         let tmp = test_crate(&[

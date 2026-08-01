@@ -1383,7 +1383,7 @@ mod tests {
         assert!(edge.cycle.is_none());
     }
 
-    // === Cross-Subtree Cycle Tests (ca-0211) ===
+    // === Cross-Subtree Cycle Tests ===
 
     #[test]
     fn test_cross_subtree_cycles_weighted_asymmetric() {
@@ -1457,9 +1457,7 @@ mod tests {
         );
     }
 
-    // === Cycle-Breaking Tests (ca-0170) ===
-
-    // === Barycenter Heuristic Tests (ca-0159) ===
+    // === Barycenter Heuristic Tests ===
 
     #[test]
     fn test_barycenter_reduces_crossings() {

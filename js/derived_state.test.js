@@ -656,7 +656,7 @@ describe('DerivedState', () => {
       expect(result).toBeNull();
     });
 
-    test('full deselect returns null (ca-0301 regression)', () => {
+    test('full deselect returns null (regression)', () => {
       AppState.setHover(appState, 'node', 'fn_1');
       AppState.setSelection(appState, 'node', 'fn_1');
       AppState.clearSelection(appState);

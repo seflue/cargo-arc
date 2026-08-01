@@ -852,7 +852,7 @@ describe('SidebarLogic', () => {
       expect(fakeEl.getAttribute('x')).toBe('1704');
     });
 
-    test('re-clamps X with actual width when wider than SIDEBAR_MIN_WIDTH (ca-0141)', () => {
+    test('re-clamps X with actual width when wider than SIDEBAR_MIN_WIDTH', () => {
       const fakeEl = createFakeElement('foreignObject');
       const innerDiv = createFakeElement('div');
       Object.defineProperty(innerDiv, 'innerHTML', {
@@ -2467,14 +2467,11 @@ describe('SidebarLogic', () => {
     });
   });
 
-  // Minimal real DOM built from the actual HTML strings the sidebar renders
-  // (no jsdom in this project). Supports exactly what production selectors
-  // use: descendant `.class`/`[attr]` lookups and `:scope > a > b` child
-  // chains, plus classList/attr/dataset/closest. This is what lets a test
-  // exercise the real CSS selector strings in sidebar.js instead of a
-  // hand-rolled querySelectorAll mock that echoes back canned answers
-  // regardless of the selector text (which is why the ca-0372 nesting
-  // regression slipped past the pre-existing collapse-all tests).
+  // Minimal DOM parsed from the HTML the sidebar actually renders, since the
+  // project has no jsdom. Tests therefore run against the real selector
+  // strings in sidebar.js. Supports only what those selectors use: descendant
+  // `.class`/`[attr]` lookups, `:scope > a > b` child chains, and
+  // classList/attr/dataset/closest.
   function parseCompound(compound) {
     const attrs = [];
     let rest = compound.replace(/\[([^\]]+)\]/g, (_, a) => {
@@ -2637,7 +2634,7 @@ describe('SidebarLogic', () => {
     return root;
   }
 
-  describe('collapse-all controls cycle blocks (ca-0372)', () => {
+  describe('collapse-all controls cycle blocks', () => {
     let savedClusters;
     let savedNodes;
     let savedArcs;
@@ -2740,7 +2737,7 @@ describe('SidebarLogic', () => {
     });
   });
 
-  describe('cluster row interaction across duplicate arc ids (ca-0372 Phase 6)', () => {
+  describe('cluster row interaction across duplicate arc ids', () => {
     let savedClusters;
     let savedNodes;
 

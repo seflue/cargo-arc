@@ -1222,7 +1222,7 @@ const SidebarLogic = {
     );
 
     // Re-clamp X with actual width — _calcX() clamps with SIDEBAR_MIN_WIDTH
-    // but actual width can be larger, pushing the sidebar beyond viewport (ca-0141)
+    // but actual width can be larger, pushing the sidebar beyond viewport
     let x = this._cachedX != null ? this._cachedX : this._calcX();
     const svg = DomAdapter.getSvgRoot();
     if (svg) {

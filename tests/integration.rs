@@ -400,7 +400,7 @@ fn test_entry_point_imports() {
     );
 }
 
-/// ca-0213: Dev-dependency crate appears as phantom node without --include-tests.
+/// Dev-dependency crate appears as phantom node without --include-tests.
 ///
 /// Fixture topology (`dev_dep_sorting)`:
 ///   foundation  — production crate with modules (handler, service, models, common, `test_support`)
@@ -484,19 +484,19 @@ fn test_dev_dep_crate_hidden_without_include_tests() {
     // test_helper has no production consumers → should be hidden
     assert!(
         !crates.contains(&"test_helper".to_string()),
-        "ca-0213: test_helper should NOT appear without --include-tests (phantom node), but found crates: {crates:?}"
+        "test_helper should NOT appear without --include-tests (phantom node), but found crates: {crates:?}"
     );
 
     // shared_lib is only reachable via test_helper's prod dep → transitive test infra → should be hidden
     assert!(
         !crates.contains(&"shared_lib".to_string()),
-        "ca-0213: shared_lib should NOT appear without --include-tests (transitive dev-dep), but found crates: {crates:?}"
+        "shared_lib should NOT appear without --include-tests (transitive dev-dep), but found crates: {crates:?}"
     );
 
     // consumer only has dev-deps → should be hidden too
     assert!(
         !crates.contains(&"consumer".to_string()),
-        "ca-0213: consumer should NOT appear without --include-tests (only dev-deps), but found crates: {crates:?}"
+        "consumer should NOT appear without --include-tests (only dev-deps), but found crates: {crates:?}"
     );
 
     // No test-context arcs should exist
@@ -506,7 +506,7 @@ fn test_dev_dep_crate_hidden_without_include_tests() {
         .collect();
     assert!(
         test_arcs.is_empty(),
-        "ca-0213: no test arcs should appear without --include-tests, but found: {test_arcs:?}"
+        "no test arcs should appear without --include-tests, but found: {test_arcs:?}"
     );
 
     // foundation should still be visible with its production modules

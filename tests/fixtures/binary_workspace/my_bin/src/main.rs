@@ -7,7 +7,7 @@ fn main() {
         let _config = Config { verbose: true };
         my_lib::init();
 
-        // Path expressions without use-import (ca-0156: path-ref dependencies)
+        // Path expressions without use-import (path-ref dependencies)
         my_lib::engine::Engine::run(&_engine);
         let _cfg2: my_lib::config::Config = Config { verbose: false };
     }

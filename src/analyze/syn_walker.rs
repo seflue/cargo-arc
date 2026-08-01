@@ -357,8 +357,9 @@ pub(crate) fn analyze_modules_syn(
                         existing.children.push(child);
                     }
                 }
-                // Dedup via PartialEq (compares kind + features). With empty
-                // features this is correct; ca-0134 may need feature-merge here.
+                // Dedup via PartialEq (compares kind + features). Correct while
+                // every feature set is empty; once feature filtering lands,
+                // entries differing only in features must be merged, not dropped.
                 for dep in tree.dependencies {
                     if !existing.dependencies.contains(&dep) {
                         existing.dependencies.push(dep);

@@ -2450,7 +2450,7 @@ mod resolve_reexport_tests {
         assert_eq!(dep.target_module, "settings");
     }
 
-    // --- resolve_reexport: ca-0365 — private use, descendant visibility ---
+    // --- resolve_reexport: private use, descendant visibility ---
 
     #[test]
     fn resolve_private_use_for_descendant() {

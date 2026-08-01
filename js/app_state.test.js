@@ -207,7 +207,7 @@ describe('AppState', () => {
     });
   });
 
-  describe('deselect clears stale hover (ca-0301 regression)', () => {
+  describe('deselect clears stale hover (regression)', () => {
     test('clearSelection without clearHover leaves stale hover', () => {
       const state = AppState.create();
       AppState.setHover(state, 'node', 'A');
