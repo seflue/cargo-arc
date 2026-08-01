@@ -90,11 +90,15 @@ pub enum Command {
     Check(CheckArgs),
 }
 
-#[derive(Parser)]
+#[derive(Parser, Default)]
 pub struct CheckArgs {
     /// Path to rules file (default: arc-rules.toml in workspace root)
     #[arg(long)]
     pub rules: Option<PathBuf>,
+
+    /// List findings that an `except` entry allows, instead of only counting them
+    #[arg(long)]
+    pub show_suppressed: bool,
 }
 
 /// Shared flags for analysis configuration, used by both diagram and check modes.
@@ -149,8 +153,7 @@ pub fn run(args: ArcCommand) -> Result<()> {
             return run_check(&check_args, &args.common);
         }
         None if args.check => {
-            let check_args = CheckArgs { rules: None };
-            return run_check(&check_args, &args.common);
+            return run_check(&CheckArgs::default(), &args.common);
         }
         None => {}
     }
@@ -243,9 +246,7 @@ fn run_check(check_args: &CheckArgs, common: &CommonArgs) -> Result<()> {
         "phase: rule check done ({} violations)",
         result.violations.len()
     );
-    if !result.violations.is_empty() {
-        eprint!("{}", format_violations(&result));
-    }
+    eprint!("{}", format_violations(&result, check_args.show_suppressed));
 
     let code = result.exit_code();
     if code != 0 {

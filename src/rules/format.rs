@@ -4,16 +4,18 @@
 //! `error[rule-type]: rule-name` with optional source locations and a summary line.
 
 use crate::rules::config::Severity;
-use crate::rules::engine::{CheckResult, CycleCluster, ViolationDetail};
+use crate::rules::engine::{CheckResult, CycleCluster, Violation, ViolationDetail};
 use std::fmt::Write;
 
 /// Format all violations as compiler-style diagnostics.
 ///
-/// Returns an empty string when there are no violations. Otherwise produces
-/// one diagnostic block per violation followed by a summary line.
+/// Returns an empty string when there are no violations and nothing was
+/// suppressed. Otherwise produces one diagnostic block per violation,
+/// followed by either the suppressed findings (when `show_suppressed`) or a
+/// one-line count of them, then a summary line over the reported findings.
 #[must_use]
-pub fn format_violations(result: &CheckResult) -> String {
-    if result.violations.is_empty() {
+pub fn format_violations(result: &CheckResult, show_suppressed: bool) -> String {
+    if result.violations.is_empty() && result.suppressed.is_empty() {
         return String::new();
     }
 
@@ -24,23 +26,20 @@ pub fn format_violations(result: &CheckResult) -> String {
             Severity::Warn => "warning",
             Severity::Ignore => continue,
         };
+        violation_block(&mut output, violation, level);
+    }
+
+    if show_suppressed {
+        for violation in &result.suppressed {
+            violation_block(&mut output, violation, "except");
+        }
+    } else if !result.suppressed.is_empty() {
         let _ = writeln!(
             output,
-            "{level}[{}]: {}",
-            violation.rule_type, violation.rule_name
+            "{} allowed by except, not counted",
+            plural(result.suppressed.len(), "finding")
         );
-        for loc in &violation.locations {
-            let _ = writeln!(output, "  --> {}:{}", loc.file.display(), loc.line);
-        }
-        match &violation.detail {
-            ViolationDetail::Edge { from, to } => {
-                let _ = writeln!(output, "  = {from} → {to}");
-            }
-            ViolationDetail::Cluster(cluster) => {
-                output.push_str(&cluster_block(cluster, "  "));
-            }
-        }
-        let _ = writeln!(output);
+        let _ = writeln!(output, "  arc check --show-suppressed lists them");
     }
 
     let errors = result
@@ -53,8 +52,37 @@ pub fn format_violations(result: &CheckResult) -> String {
         .iter()
         .filter(|v| v.severity == Severity::Warn)
         .count();
-    let _ = writeln!(output, "error: {errors} error(s), {warnings} warning(s)");
+    // Only when something is actually reported: a run whose findings are all
+    // covered by `except` exits 0, and an `error:` line would read as a
+    // failure in CI logs.
+    if errors + warnings > 0 {
+        let _ = writeln!(output, "error: {errors} error(s), {warnings} warning(s)");
+    }
     output
+}
+
+/// Render one diagnostic block: `{level}[rule-type]: rule-name`, its source
+/// locations, and its edge/cluster detail. `level` is `error`/`warning` for
+/// reported violations, `except` for suppressed ones: the word names the
+/// mechanism that let them through.
+fn violation_block(out: &mut String, violation: &Violation, level: &str) {
+    let _ = writeln!(
+        out,
+        "{level}[{}]: {}",
+        violation.rule_type, violation.rule_name
+    );
+    for loc in &violation.locations {
+        let _ = writeln!(out, "  --> {}:{}", loc.file.display(), loc.line);
+    }
+    match &violation.detail {
+        ViolationDetail::Edge { from, to } => {
+            let _ = writeln!(out, "  = {from} → {to}");
+        }
+        ViolationDetail::Cluster(cluster) => {
+            out.push_str(&cluster_block(cluster, "  "));
+        }
+    }
+    let _ = writeln!(out);
 }
 
 /// Format a cluster-level cycle report (default verbosity).
@@ -228,8 +256,9 @@ mod tests {
                 },
                 locations: vec![],
             }],
+            ..Default::default()
         };
-        let output = format_violations(&result);
+        let output = format_violations(&result, false);
         assert!(output.contains("error[forbidden-dependency]: no infra in domain"));
         assert!(output.contains("= domain::service → infra::db"));
     }
@@ -244,8 +273,9 @@ mod tests {
                 detail: ViolationDetail::Cluster(cluster_fixture("a", "b")),
                 locations: vec![],
             }],
+            ..Default::default()
         };
-        let output = format_violations(&result);
+        let output = format_violations(&result, false);
         assert!(output.contains("warning[no-cycles]: no cycles in domain"));
     }
 
@@ -268,8 +298,9 @@ mod tests {
                     via_reexport: false,
                 }],
             }],
+            ..Default::default()
         };
-        let output = format_violations(&result);
+        let output = format_violations(&result, false);
         assert!(output.contains("--> src/domain/service.rs:42"));
     }
 
@@ -305,16 +336,104 @@ mod tests {
                     locations: vec![],
                 },
             ],
+            ..Default::default()
         };
-        let output = format_violations(&result);
+        let output = format_violations(&result, false);
         assert!(output.contains("error: 2 error(s), 1 warning(s)"));
     }
 
     #[test]
     fn test_format_empty() {
-        let result = CheckResult { violations: vec![] };
-        let output = format_violations(&result);
+        let result = CheckResult::default();
+        let output = format_violations(&result, false);
         assert!(output.is_empty());
+    }
+
+    fn suppressed_edge_violation() -> Violation {
+        Violation {
+            rule_name: "no infra in domain".into(),
+            rule_type: "forbidden-dependency".into(),
+            severity: Severity::Error,
+            detail: ViolationDetail::Edge {
+                from: "domain::service".into(),
+                to: "infra::db".into(),
+            },
+            locations: vec![],
+        }
+    }
+
+    #[test]
+    fn test_format_suppressed_hidden_by_default_but_counted() {
+        let result = CheckResult {
+            suppressed: vec![suppressed_edge_violation()],
+            ..Default::default()
+        };
+        let output = format_violations(&result, false);
+        assert!(
+            !output.contains("except[forbidden-dependency]"),
+            "got:\n{output}"
+        );
+        assert!(
+            output.contains("1 finding allowed by except, not counted"),
+            "got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_format_suppressed_shown_with_flag() {
+        let result = CheckResult {
+            suppressed: vec![suppressed_edge_violation()],
+            ..Default::default()
+        };
+        let output = format_violations(&result, true);
+        assert!(
+            output.contains("except[forbidden-dependency]: no infra in domain"),
+            "got:\n{output}"
+        );
+        assert!(
+            output.contains("= domain::service → infra::db"),
+            "got:\n{output}"
+        );
+        assert!(!output.contains("not counted"), "got:\n{output}");
+    }
+
+    #[test]
+    fn test_format_no_suppressed_output_unchanged() {
+        let result = CheckResult {
+            violations: vec![Violation {
+                rule_name: "no infra in domain".into(),
+                rule_type: "forbidden-dependency".into(),
+                severity: Severity::Error,
+                detail: ViolationDetail::Edge {
+                    from: "domain::service".into(),
+                    to: "infra::db".into(),
+                },
+                locations: vec![],
+            }],
+            ..Default::default()
+        };
+        let without_flag = format_violations(&result, false);
+        let with_flag = format_violations(&result, true);
+        assert_eq!(without_flag, with_flag);
+        assert!(!without_flag.contains("except"), "got:\n{without_flag}");
+        assert!(
+            !without_flag.contains("not counted"),
+            "got:\n{without_flag}"
+        );
+    }
+
+    #[test]
+    fn test_format_only_suppressed_no_reported_violations() {
+        let result = CheckResult {
+            suppressed: vec![suppressed_edge_violation()],
+            ..Default::default()
+        };
+        let output = format_violations(&result, false);
+        assert!(!output.is_empty());
+        assert!(
+            !output.contains("error:"),
+            "a green run must not print an error line, got:\n{output}"
+        );
     }
 
     #[test]
@@ -342,8 +461,9 @@ mod tests {
                 detail: ViolationDetail::Cluster(cluster),
                 locations: vec![],
             }],
+            ..Default::default()
         };
-        let output = format_violations(&result);
+        let output = format_violations(&result, false);
         assert!(output.contains("error[no-cycles]: no cycles in domain"));
         assert!(output.contains("  cluster 1/1: app (2 modules, 1 cycle)"));
         assert!(output.contains("    cycle: a -> b -> a"));

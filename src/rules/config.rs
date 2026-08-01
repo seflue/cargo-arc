@@ -36,6 +36,18 @@ pub enum Direction {
     BottomUp,
 }
 
+/// A permanently allowed edge for the rule it is declared on.
+///
+/// Scoped to its rule rather than a shared section: the exception lives and
+/// dies with the rule it applies to.
+#[derive(Debug, Deserialize)]
+pub struct Except {
+    pub from: String,
+    pub to: String,
+    // Documentation only (cargo-deny style), never evaluated.
+    pub reason: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum Rule {
@@ -45,12 +57,16 @@ pub enum Rule {
         to: String,
         #[serde(default = "default_severity")]
         severity: Severity,
+        #[serde(default)]
+        except: Vec<Except>,
     },
     NoCycles {
         name: String,
         scope: String,
         #[serde(default = "default_severity")]
         severity: Severity,
+        #[serde(default)]
+        except: Vec<Except>,
     },
     Layers {
         name: String,
@@ -58,6 +74,8 @@ pub enum Rule {
         direction: Direction,
         #[serde(default = "default_severity")]
         severity: Severity,
+        #[serde(default)]
+        except: Vec<Except>,
     },
 }
 
@@ -251,6 +269,104 @@ mod tests {
             matches!(result, Err(ConfigError::IoError(..))),
             "expected IoError, got {result:?}"
         );
+    }
+
+    #[test]
+    fn test_parse_except() {
+        let toml = r#"
+            [[rules]]
+            type = "no-cycles"
+            name = "app acyclic"
+            scope = "app::**"
+            except = [
+              { from = "app::router", to = "app::screens::**", reason = "router mediates" },
+            ]
+        "#;
+        let config: ArcConfig = toml::from_str(toml).unwrap();
+        match &config.rules[0] {
+            Rule::NoCycles { except, .. } => {
+                assert_eq!(except.len(), 1);
+                assert_eq!(except[0].from, "app::router");
+                assert_eq!(except[0].to, "app::screens::**");
+                assert_eq!(except[0].reason.as_deref(), Some("router mediates"));
+            }
+            other => panic!("expected NoCycles, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_except_without_reason() {
+        let toml = r#"
+            [[rules]]
+            type = "no-cycles"
+            name = "app acyclic"
+            scope = "app::**"
+            except = [
+              { from = "app::router", to = "app::screens::**" },
+            ]
+        "#;
+        let config: ArcConfig = toml::from_str(toml).unwrap();
+        match &config.rules[0] {
+            Rule::NoCycles { except, .. } => {
+                assert_eq!(except.len(), 1);
+                assert_eq!(except[0].reason, None);
+            }
+            other => panic!("expected NoCycles, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_except_defaults_to_empty() {
+        let toml = r#"
+            [[rules]]
+            type = "no-cycles"
+            name = "app acyclic"
+            scope = "app::**"
+        "#;
+        let config: ArcConfig = toml::from_str(toml).unwrap();
+        match &config.rules[0] {
+            Rule::NoCycles { except, .. } => assert!(except.is_empty()),
+            other => panic!("expected NoCycles, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_except_on_forbidden_dependency_and_layers() {
+        let toml = r#"
+            [[rules]]
+            type = "forbidden-dependency"
+            name = "no infra in domain"
+            from = "domain::**"
+            to = "infra::**"
+            except = [
+              { from = "domain::legacy", to = "infra::db", reason = "pending migration" },
+            ]
+
+            [[rules]]
+            type = "layers"
+            name = "architecture layers"
+            layers = ["domain", "application", "infra"]
+            direction = "top-down"
+            except = [
+              { from = "infra::bridge", to = "domain::events" },
+            ]
+        "#;
+        let config: ArcConfig = toml::from_str(toml).unwrap();
+        match &config.rules[0] {
+            Rule::ForbiddenDependency { except, .. } => {
+                assert_eq!(except.len(), 1);
+                assert_eq!(except[0].from, "domain::legacy");
+                assert_eq!(except[0].to, "infra::db");
+            }
+            other => panic!("expected ForbiddenDependency, got {other:?}"),
+        }
+        match &config.rules[1] {
+            Rule::Layers { except, .. } => {
+                assert_eq!(except.len(), 1);
+                assert_eq!(except[0].from, "infra::bridge");
+            }
+            other => panic!("expected Layers, got {other:?}"),
+        }
     }
 
     #[test]

@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Rules in `arc-rules.toml` take an `except` list of permanently allowed edges,
+  each `{ from, to, reason }`, with the same `*` and `**` patterns the rules
+  themselves use. An allowed edge is not reported; under a `no-cycles` rule it
+  is removed before the search, so rings built through it never form.
+- `arc check --show-suppressed` lists the findings that an `except` entry
+  allows. Without it a run only counts them.
+
 ### Changed
 
 - A `no-cycles` rule now reports one finding per cyclic cluster instead of one
