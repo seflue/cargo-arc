@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is removed before the search, so rings built through it never form.
 - `arc check --show-suppressed` lists the findings that an `except` entry
   allows. Without it a run only counts them.
+- Rule names must now be unique across all rule types; `arc-rules.toml` is
+  rejected when two rules share a name.
 
 ### Changed
 

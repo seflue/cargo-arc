@@ -102,6 +102,7 @@ pub enum ConfigError {
     FileNotFound(PathBuf),
     IoError(PathBuf, std::io::Error),
     ParseError(PathBuf, toml::de::Error),
+    DuplicateRuleName { path: PathBuf, name: String },
 }
 
 impl std::fmt::Display for ConfigError {
@@ -114,6 +115,11 @@ impl std::fmt::Display for ConfigError {
             Self::ParseError(path, err) => {
                 write!(f, "invalid config file {}: {err}", path.display())
             }
+            Self::DuplicateRuleName { path, name } => write!(
+                f,
+                "duplicate rule name {name:?} in {}: rule names must be unique",
+                path.display()
+            ),
         }
     }
 }
@@ -123,8 +129,9 @@ impl std::error::Error for ConfigError {}
 impl ArcConfig {
     /// # Errors
     /// Returns `ConfigError::FileNotFound` if the path does not exist,
-    /// `ConfigError::IoError` for other I/O failures, or
-    /// `ConfigError::ParseError` for invalid TOML.
+    /// `ConfigError::IoError` for other I/O failures,
+    /// `ConfigError::ParseError` for invalid TOML, or
+    /// `ConfigError::DuplicateRuleName` if two rules share a name.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         let content = std::fs::read_to_string(path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -136,7 +143,24 @@ impl ArcConfig {
         let mut config: Self =
             toml::from_str(&content).map_err(|e| ConfigError::ParseError(path.to_path_buf(), e))?;
         config.apply_defaults();
+        config.check_unique_rule_names(path)?;
         Ok(config)
+    }
+
+    /// Rule names must be unique across all rule types: a baseline entry
+    /// carries the rule name and no type, so a duplicate makes it ambiguous
+    /// which rule the frozen finding belongs to.
+    fn check_unique_rule_names(&self, path: &Path) -> Result<(), ConfigError> {
+        let mut seen = std::collections::HashSet::new();
+        for rule in &self.rules {
+            if !seen.insert(rule.name.as_str()) {
+                return Err(ConfigError::DuplicateRuleName {
+                    path: path.to_path_buf(),
+                    name: rule.name.clone(),
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Fill in `config.default_severity` for rules that left `severity` unset.
@@ -456,6 +480,61 @@ mod tests {
         );
         let except_lens: Vec<usize> = config.rules.iter().map(|r| r.except.len()).collect();
         assert_eq!(except_lens, [1, 0, 0]);
+    }
+
+    #[test]
+    fn test_load_rejects_duplicate_rule_name_across_types() {
+        let toml = r#"
+            [[rules]]
+            type = "forbidden-dependency"
+            name = "shared name"
+            from = "domain::**"
+            to = "infra::**"
+
+            [[rules]]
+            type = "no-cycles"
+            name = "shared name"
+            scope = "domain::**"
+        "#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("arc-rules.toml");
+        std::fs::write(&path, toml).unwrap();
+
+        let error = ArcConfig::load(&path).unwrap_err();
+        assert!(
+            matches!(&error, ConfigError::DuplicateRuleName { path: err_path, name }
+                if err_path == &path && name == "shared name"),
+            "expected DuplicateRuleName, got {error:?}"
+        );
+        assert!(error.to_string().contains("shared name"));
+    }
+
+    #[test]
+    fn test_load_accepts_distinct_rule_names() {
+        let toml = r#"
+            [[rules]]
+            type = "forbidden-dependency"
+            name = "no infra in domain"
+            from = "domain::**"
+            to = "infra::**"
+
+            [[rules]]
+            type = "no-cycles"
+            name = "domain acyclic"
+            scope = "domain::**"
+
+            [[rules]]
+            type = "layers"
+            name = "architecture layers"
+            layers = ["domain", "application", "infra"]
+            direction = "top-down"
+        "#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("arc-rules.toml");
+        std::fs::write(&path, toml).unwrap();
+
+        let config = ArcConfig::load(&path).unwrap();
+        assert_eq!(config.rules.len(), 3);
     }
 
     #[test]
