@@ -1,6 +1,6 @@
 use super::constants::{CSS, LAYOUT};
 use super::positioning::PositionedItem;
-use crate::layout::{CycleKind, EdgeDirection, ItemKind, LayoutIR, NodeId};
+use crate::layout::{CycleKind, EdgeDirection, ItemKind, LayoutEdge, LayoutIR, NodeId};
 use crate::model::DependencyKind;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -37,7 +37,8 @@ pub(super) fn render_sidebar(width: f32) -> String {
     )
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::too_many_lines)] // SVG pixel coordinates fit in i32
+#[allow(clippy::cast_possible_truncation)] // SVG pixel coordinates fit in i32
+#[allow(clippy::too_many_lines)] // single cohesive markup template
 pub(super) fn render_toolbar(
     width: f32,
     has_externals: bool,
@@ -202,7 +203,6 @@ pub(super) fn render_tree_lines(
     lines
 }
 
-#[allow(clippy::too_many_lines)]
 pub(super) fn render_nodes(
     positioned: &[PositionedItem],
     parents: &HashSet<NodeId>,
@@ -286,15 +286,7 @@ pub(super) fn render_nodes(
         if parents.contains(&item.id) {
             // Show child count for collapsed parents
             let count_text = if is_collapsed_parent {
-                let child_count = positioned
-                    .iter()
-                    .filter(|p| match &p.kind {
-                        ItemKind::Module { parent, .. }
-                        | ItemKind::ExternalCrate { parent, .. } => *parent == item.id,
-                        _ => false,
-                    })
-                    .count();
-                format!(" (+{child_count})")
+                format!(" (+{})", child_count(positioned, item.id))
             } else {
                 String::new()
             };
@@ -312,20 +304,13 @@ pub(super) fn render_nodes(
 
         // Toggle icon (+/-) for parents
         if parents.contains(&item.id) {
-            let toggle_x = render_x + item.width - LAYOUT.toggle_offset;
-            let toggle_y = render_y + item.height / 2.0 + LAYOUT.toggle_y_offset;
-            let ct = CSS.nodes.collapse_toggle;
-            let toggle_icon = if is_collapsed_parent { "+" } else { "−" };
-            let toggle_cls = if is_hidden {
-                format!("{ct} {collapsed_cls}")
-            } else {
-                ct.to_string()
-            };
-            let _ = writeln!(
-                nodes,
-                "    <text class=\"{toggle_cls}\" data-target=\"{}\" x=\"{}\" y=\"{}\">{toggle_icon}</text>",
-                item.id, toggle_x, toggle_y
-            );
+            nodes.push_str(&render_collapse_toggle(
+                item,
+                render_x,
+                render_y,
+                is_collapsed_parent,
+                is_hidden,
+            ));
         }
     }
 
@@ -333,7 +318,40 @@ pub(super) fn render_nodes(
     nodes
 }
 
-#[allow(clippy::too_many_lines)]
+fn child_count(positioned: &[PositionedItem], parent_id: NodeId) -> usize {
+    positioned
+        .iter()
+        .filter(|p| match &p.kind {
+            ItemKind::Module { parent, .. } | ItemKind::ExternalCrate { parent, .. } => {
+                *parent == parent_id
+            }
+            ItemKind::Crate | ItemKind::ExternalSection => false,
+        })
+        .count()
+}
+
+fn render_collapse_toggle(
+    item: &PositionedItem,
+    render_x: f32,
+    render_y: f32,
+    is_collapsed_parent: bool,
+    is_hidden: bool,
+) -> String {
+    let toggle_x = render_x + item.width - LAYOUT.toggle_offset;
+    let toggle_y = render_y + item.height / 2.0 + LAYOUT.toggle_y_offset;
+    let ct = CSS.nodes.collapse_toggle;
+    let toggle_icon = if is_collapsed_parent { "+" } else { "−" };
+    let toggle_cls = if is_hidden {
+        format!("{ct} {}", CSS.nodes.collapsed)
+    } else {
+        ct.to_string()
+    };
+    format!(
+        "    <text class=\"{toggle_cls}\" data-target=\"{}\" x=\"{toggle_x}\" y=\"{toggle_y}\">{toggle_icon}</text>\n",
+        item.id
+    )
+}
+
 pub(super) fn render_edges(
     positioned_index: &HashMap<NodeId, &PositionedItem>,
     ir: &LayoutIR,
@@ -397,48 +415,12 @@ pub(super) fn render_edges(
                 "M {from_x},{from_y} Q {ctrl_x},{from_y} {ctrl_x},{mid_y} Q {ctrl_x},{to_y} {to_x},{to_y}"
             );
 
-            let cd = &CSS.direction;
-            // Every edge carries its directional dep classes so that, with
-            // cluster mode off, cycle edges fall back to the normal dependency
-            // color. cycle-arc/cycle-arrow are additive markers the container
-            // state (.cluster-mode-on) styles red.
-            let (dir_arc_class, dir_arrow_class, direction) = match edge.direction {
-                EdgeDirection::Downward => (cd.downward, cd.dep_arrow, "downward"),
-                EdgeDirection::Upward => (cd.upward, cd.upward_arrow, "upward"),
-            };
-            let (arc_cycle_marker, arrow_cycle_marker) = if edge.cycle.is_some() {
-                (format!(" {}", cd.cycle_arc), format!(" {}", cd.cycle_arrow))
-            } else {
-                (String::new(), String::new())
-            };
-
-            // Add crate-dep-arc, module-dep-arc, or reexport-arc class based on edge type.
-            // Re-export arcs are their own category (default hidden) so their toggle
-            // stays independent of the module-dep toggle.
-            let is_crate_dep = matches!(
-                (&from.kind, &to.kind),
-                (
-                    ItemKind::Crate | ItemKind::ExternalCrate { .. },
-                    ItemKind::Crate | ItemKind::ExternalCrate { .. }
-                )
-            );
-            let type_class = if edge.reexport {
-                cd.reexport_arc
-            } else if is_crate_dep {
-                cd.crate_dep_arc
-            } else {
-                cd.module_dep_arc
-            };
-            // Re-export arcs start hidden; the toolbar checkbox (unchecked) reveals them.
-            let hidden = if edge.reexport {
-                format!(" {}", CSS.labels.hidden_by_filter)
-            } else {
-                String::new()
-            };
-            let arc_class = format!(
-                "{} {dir_arc_class}{arc_cycle_marker} {type_class}{hidden}",
-                cd.dep_arc
-            );
+            let ArcAttrs {
+                arc: arc_class,
+                arrow: arrow_class,
+                hitarea,
+                direction,
+            } = arc_attrs(edge, &from.kind, &to.kind);
 
             let edge_id = format!("{}-{}", edge.from, edge.to);
             let cycle_ids_attr = if edge.cycle_ids.is_empty() {
@@ -454,7 +436,6 @@ pub(super) fn render_edges(
 
             // Hit-area path (invisible, 12px wide, receives pointer events) → hitareas layer
             // Note: source-locations are read from STATIC_DATA in JavaScript, not DOM attributes
-            let hitarea = format!("{}{hidden}", cd.arc_hitarea);
             let _ = writeln!(
                 hitareas,
                 "    <path class=\"{hitarea}\" data-arc-id=\"{edge_id}\" data-from=\"{}\" data-to=\"{}\" data-direction=\"{direction}\"{cycle_ids_attr} d=\"{path}\"/>",
@@ -467,7 +448,6 @@ pub(super) fn render_edges(
             );
 
             // Arrow head pointing to target → base-arcs layer
-            let arrow_class = format!("{dir_arrow_class}{arrow_cycle_marker}{hidden}");
             let arrow = render_arrow(to_x, to_y, &arrow_class, &edge_id);
             base_arcs.push_str(&arrow);
 
@@ -498,6 +478,65 @@ pub(super) fn render_edges(
   <g id="highlight-hitareas-layer"></g>
 "#
     )
+}
+
+/// The three CSS class lists an arc's elements carry, plus its `data-direction` value.
+struct ArcAttrs {
+    arc: String,
+    arrow: String,
+    hitarea: String,
+    direction: &'static str,
+}
+
+fn arc_attrs(edge: &LayoutEdge, from_kind: &ItemKind, to_kind: &ItemKind) -> ArcAttrs {
+    let cd = &CSS.direction;
+    // Every edge carries its directional dep classes so that, with
+    // cluster mode off, cycle edges fall back to the normal dependency
+    // color. cycle-arc/cycle-arrow are additive markers the container
+    // state (.cluster-mode-on) styles red.
+    let (dir_arc_class, dir_arrow_class, direction) = match edge.direction {
+        EdgeDirection::Downward => (cd.downward, cd.dep_arrow, "downward"),
+        EdgeDirection::Upward => (cd.upward, cd.upward_arrow, "upward"),
+    };
+    let (arc_cycle_marker, arrow_cycle_marker) = if edge.cycle.is_some() {
+        (format!(" {}", cd.cycle_arc), format!(" {}", cd.cycle_arrow))
+    } else {
+        (String::new(), String::new())
+    };
+
+    // Add crate-dep-arc, module-dep-arc, or reexport-arc class based on edge type.
+    // Re-export arcs are their own category (default hidden) so their toggle
+    // stays independent of the module-dep toggle.
+    let is_crate_dep = matches!(
+        (from_kind, to_kind),
+        (
+            ItemKind::Crate | ItemKind::ExternalCrate { .. },
+            ItemKind::Crate | ItemKind::ExternalCrate { .. }
+        )
+    );
+    let type_class = if edge.reexport {
+        cd.reexport_arc
+    } else if is_crate_dep {
+        cd.crate_dep_arc
+    } else {
+        cd.module_dep_arc
+    };
+    // Re-export arcs start hidden; the toolbar checkbox (unchecked) reveals them.
+    let hidden = if edge.reexport {
+        format!(" {}", CSS.labels.hidden_by_filter)
+    } else {
+        String::new()
+    };
+
+    ArcAttrs {
+        arc: format!(
+            "{} {dir_arc_class}{arc_cycle_marker} {type_class}{hidden}",
+            cd.dep_arc
+        ),
+        arrow: format!("{dir_arrow_class}{arrow_cycle_marker}{hidden}"),
+        hitarea: format!("{}{hidden}", cd.arc_hitarea),
+        direction,
+    }
 }
 
 fn render_arrow(x: f32, y: f32, class: &str, edge_id: &str) -> String {
@@ -774,6 +813,37 @@ mod tests {
         assert!(
             output.contains(r#"class="child-count""#),
             "Tspan should have child-count class"
+        );
+    }
+
+    #[test]
+    fn test_render_collapsed_parent_counts_children_and_offers_expand() {
+        let mut ir = LayoutIR::new();
+        let c = ir.add_item(ItemKind::Crate, "parent".into());
+        for child in ["first", "second"] {
+            ir.add_item(
+                ItemKind::Module {
+                    nesting: 1,
+                    parent: c,
+                },
+                child.into(),
+            );
+        }
+        let config = RenderConfig::default();
+        let box_width = calculate_box_width(&ir);
+        let positioned = calculate_positions(&ir, &config, box_width);
+        let parents: HashSet<NodeId> = [c].into();
+        let collapsed: HashSet<NodeId> = [c].into();
+        let positioned_index: HashMap<NodeId, &PositionedItem> =
+            positioned.iter().map(|p| (p.id, p)).collect();
+        let output = render_nodes(&positioned, &parents, None, &collapsed, &positioned_index);
+        assert!(
+            output.contains(r#"class="child-count"> (+2)</tspan>"#),
+            "Collapsed parent should report how many children it hides"
+        );
+        assert!(
+            output.contains(">+</text>"),
+            "Collapsed parent should show the expand icon"
         );
     }
 

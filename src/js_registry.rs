@@ -228,6 +228,77 @@ fn generate_modules_rs(modules: &[JsModuleInfo], sorted_indices: &[usize]) -> St
 mod tests {
     use super::*;
 
+    /// The cargo-arc JS module set (name, file, deps, config keys), fixed to catch drift.
+    fn real_modules() -> Vec<JsModuleInfo> {
+        const TABLE: &[(&str, &str, &[&str], &[&str])] = &[
+            ("ArcLogic", "arc_logic.js", &[], &[]),
+            ("TreeLogic", "tree_logic.js", &[], &[]),
+            ("AppState", "app_state.js", &[], &[]),
+            ("Selectors", "selectors.js", &[], &[]),
+            ("TextMetrics", "text_metrics.js", &[], &[]),
+            ("LayerManager", "layer_manager.js", &[], &[]),
+            ("StaticData", "static_data.js", &["ArcLogic"], &[]),
+            ("DomAdapter", "dom_adapter.js", &["Selectors"], &[]),
+            ("HighlightLogic", "highlight_logic.js", &["ArcLogic"], &[]),
+            (
+                "DerivedState",
+                "derived_state.js",
+                &["TreeLogic", "ArcLogic", "AppState", "HighlightLogic"],
+                &[],
+            ),
+            (
+                "VirtualEdgeLogic",
+                "virtual_edge_logic.js",
+                &["ArcLogic"],
+                &[],
+            ),
+            (
+                "SidebarLogic",
+                "sidebar.js",
+                &["StaticData", "DomAdapter", "Selectors"],
+                &[],
+            ),
+            (
+                "HighlightRenderer",
+                "highlight_renderer.js",
+                &["ArcLogic", "LayerManager"],
+                &[],
+            ),
+            (
+                "SvgScript",
+                "svg_script.js",
+                &[
+                    "ArcLogic",
+                    "StaticData",
+                    "AppState",
+                    "Selectors",
+                    "DomAdapter",
+                    "LayerManager",
+                    "TreeLogic",
+                    "DerivedState",
+                    "HighlightRenderer",
+                    "VirtualEdgeLogic",
+                    "TextMetrics",
+                    "SidebarLogic",
+                ],
+                &["ROW_HEIGHT", "MARGIN", "TOOLBAR_HEIGHT"],
+            ),
+        ];
+
+        TABLE
+            .iter()
+            .map(|&(name, file_name, deps, config_keys)| JsModuleInfo {
+                name: name.into(),
+                file_name: file_name.into(),
+                deps: deps.iter().map(std::string::ToString::to_string).collect(),
+                config_keys: config_keys
+                    .iter()
+                    .map(std::string::ToString::to_string)
+                    .collect(),
+            })
+            .collect()
+    }
+
     // --- Parsing tests ---
 
     #[test]
@@ -407,116 +478,8 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)]
     fn test_topo_sort_real_modules() {
-        let modules = vec![
-            JsModuleInfo {
-                name: "ArcLogic".into(),
-                file_name: "arc_logic.js".into(),
-                deps: vec![],
-                config_keys: vec![],
-            },
-            JsModuleInfo {
-                name: "TreeLogic".into(),
-                file_name: "tree_logic.js".into(),
-                deps: vec![],
-                config_keys: vec![],
-            },
-            JsModuleInfo {
-                name: "AppState".into(),
-                file_name: "app_state.js".into(),
-                deps: vec![],
-                config_keys: vec![],
-            },
-            JsModuleInfo {
-                name: "Selectors".into(),
-                file_name: "selectors.js".into(),
-                deps: vec![],
-                config_keys: vec![],
-            },
-            JsModuleInfo {
-                name: "TextMetrics".into(),
-                file_name: "text_metrics.js".into(),
-                deps: vec![],
-                config_keys: vec![],
-            },
-            JsModuleInfo {
-                name: "LayerManager".into(),
-                file_name: "layer_manager.js".into(),
-                deps: vec![],
-                config_keys: vec![],
-            },
-            JsModuleInfo {
-                name: "StaticData".into(),
-                file_name: "static_data.js".into(),
-                deps: vec!["ArcLogic".into()],
-                config_keys: vec![],
-            },
-            JsModuleInfo {
-                name: "DomAdapter".into(),
-                file_name: "dom_adapter.js".into(),
-                deps: vec!["Selectors".into()],
-                config_keys: vec![],
-            },
-            JsModuleInfo {
-                name: "HighlightLogic".into(),
-                file_name: "highlight_logic.js".into(),
-                deps: vec!["ArcLogic".into()],
-                config_keys: vec![],
-            },
-            JsModuleInfo {
-                name: "DerivedState".into(),
-                file_name: "derived_state.js".into(),
-                deps: vec![
-                    "TreeLogic".into(),
-                    "ArcLogic".into(),
-                    "AppState".into(),
-                    "HighlightLogic".into(),
-                ],
-                config_keys: vec![],
-            },
-            JsModuleInfo {
-                name: "VirtualEdgeLogic".into(),
-                file_name: "virtual_edge_logic.js".into(),
-                deps: vec!["ArcLogic".into()],
-                config_keys: vec![],
-            },
-            JsModuleInfo {
-                name: "SidebarLogic".into(),
-                file_name: "sidebar.js".into(),
-                deps: vec!["StaticData".into(), "DomAdapter".into(), "Selectors".into()],
-                config_keys: vec![],
-            },
-            JsModuleInfo {
-                name: "HighlightRenderer".into(),
-                file_name: "highlight_renderer.js".into(),
-                deps: vec!["ArcLogic".into(), "LayerManager".into()],
-                config_keys: vec![],
-            },
-            JsModuleInfo {
-                name: "SvgScript".into(),
-                file_name: "svg_script.js".into(),
-                deps: vec![
-                    "ArcLogic".into(),
-                    "StaticData".into(),
-                    "AppState".into(),
-                    "Selectors".into(),
-                    "DomAdapter".into(),
-                    "LayerManager".into(),
-                    "TreeLogic".into(),
-                    "DerivedState".into(),
-                    "HighlightRenderer".into(),
-                    "VirtualEdgeLogic".into(),
-                    "TextMetrics".into(),
-                    "SidebarLogic".into(),
-                ],
-                config_keys: vec![
-                    "ROW_HEIGHT".into(),
-                    "MARGIN".into(),
-                    "TOOLBAR_HEIGHT".into(),
-                ],
-            },
-        ];
+        let modules = real_modules();
 
         let sorted = topo_sort(&modules);
         let names: Vec<&str> = sorted.iter().map(|&i| modules[i].name.as_str()).collect();
@@ -687,116 +650,8 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)]
     fn test_source_scan_real_modules() {
-        let modules = vec![
-            JsModuleInfo {
-                name: "ArcLogic".into(),
-                file_name: "arc_logic.js".into(),
-                deps: vec![],
-                config_keys: vec![],
-            },
-            JsModuleInfo {
-                name: "TreeLogic".into(),
-                file_name: "tree_logic.js".into(),
-                deps: vec![],
-                config_keys: vec![],
-            },
-            JsModuleInfo {
-                name: "AppState".into(),
-                file_name: "app_state.js".into(),
-                deps: vec![],
-                config_keys: vec![],
-            },
-            JsModuleInfo {
-                name: "Selectors".into(),
-                file_name: "selectors.js".into(),
-                deps: vec![],
-                config_keys: vec![],
-            },
-            JsModuleInfo {
-                name: "TextMetrics".into(),
-                file_name: "text_metrics.js".into(),
-                deps: vec![],
-                config_keys: vec![],
-            },
-            JsModuleInfo {
-                name: "LayerManager".into(),
-                file_name: "layer_manager.js".into(),
-                deps: vec![],
-                config_keys: vec![],
-            },
-            JsModuleInfo {
-                name: "StaticData".into(),
-                file_name: "static_data.js".into(),
-                deps: vec!["ArcLogic".into()],
-                config_keys: vec![],
-            },
-            JsModuleInfo {
-                name: "DomAdapter".into(),
-                file_name: "dom_adapter.js".into(),
-                deps: vec!["Selectors".into()],
-                config_keys: vec![],
-            },
-            JsModuleInfo {
-                name: "HighlightLogic".into(),
-                file_name: "highlight_logic.js".into(),
-                deps: vec!["ArcLogic".into()],
-                config_keys: vec![],
-            },
-            JsModuleInfo {
-                name: "DerivedState".into(),
-                file_name: "derived_state.js".into(),
-                deps: vec![
-                    "TreeLogic".into(),
-                    "ArcLogic".into(),
-                    "AppState".into(),
-                    "HighlightLogic".into(),
-                ],
-                config_keys: vec![],
-            },
-            JsModuleInfo {
-                name: "VirtualEdgeLogic".into(),
-                file_name: "virtual_edge_logic.js".into(),
-                deps: vec!["ArcLogic".into()],
-                config_keys: vec![],
-            },
-            JsModuleInfo {
-                name: "SidebarLogic".into(),
-                file_name: "sidebar.js".into(),
-                deps: vec!["StaticData".into(), "DomAdapter".into(), "Selectors".into()],
-                config_keys: vec![],
-            },
-            JsModuleInfo {
-                name: "HighlightRenderer".into(),
-                file_name: "highlight_renderer.js".into(),
-                deps: vec!["ArcLogic".into(), "LayerManager".into()],
-                config_keys: vec![],
-            },
-            JsModuleInfo {
-                name: "SvgScript".into(),
-                file_name: "svg_script.js".into(),
-                deps: vec![
-                    "ArcLogic".into(),
-                    "StaticData".into(),
-                    "AppState".into(),
-                    "Selectors".into(),
-                    "DomAdapter".into(),
-                    "LayerManager".into(),
-                    "TreeLogic".into(),
-                    "DerivedState".into(),
-                    "HighlightRenderer".into(),
-                    "VirtualEdgeLogic".into(),
-                    "TextMetrics".into(),
-                    "SidebarLogic".into(),
-                ],
-                config_keys: vec![
-                    "ROW_HEIGHT".into(),
-                    "MARGIN".into(),
-                    "TOOLBAR_HEIGHT".into(),
-                ],
-            },
-        ];
+        let modules = real_modules();
         let sources: Vec<&str> = vec![
             include_str!("../js/arc_logic.js"),
             include_str!("../js/tree_logic.js"),

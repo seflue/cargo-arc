@@ -211,7 +211,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::float_cmp)]
+    #[allow(clippy::float_cmp)] // every box copies the one box_width, so identity is the claim
     fn test_all_boxes_same_width() {
         let mut ir = LayoutIR::new();
         ir.add_item(ItemKind::Crate, "short".into());

@@ -430,52 +430,58 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::many_single_char_names)]
     fn test_arc_z_order() {
         use crate::model::TestKind;
 
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "c".into());
-        let a = ir.add_item(
+        let crate_id = ir.add_item(ItemKind::Crate, "c".into());
+        let cycle_start = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
-                parent: c,
+                parent: crate_id,
             },
             "a".into(),
         );
-        let b = ir.add_item(
+        let cycle_end = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
-                parent: c,
+                parent: crate_id,
             },
             "b".into(),
         );
-        let d = ir.add_item(
+        let prod_end = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
-                parent: c,
+                parent: crate_id,
             },
             "d".into(),
         );
-        let e = ir.add_item(
+        let test_end = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
-                parent: c,
+                parent: crate_id,
             },
             "e".into(),
         );
 
         // Add edges in "wrong" order: cycle first, then production, then test
-        ir.edges
-            .push(LayoutEdge::new(a, b, EdgeContext::production()).with_cycle(
+        ir.edges.push(
+            LayoutEdge::new(cycle_start, cycle_end, EdgeContext::production()).with_cycle(
                 CycleKind::Direct,
                 vec![0],
                 0,
-            ));
-        ir.edges
-            .push(LayoutEdge::new(b, d, EdgeContext::production()));
-        ir.edges
-            .push(LayoutEdge::new(d, e, EdgeContext::test(TestKind::Unit)));
+            ),
+        );
+        ir.edges.push(LayoutEdge::new(
+            cycle_end,
+            prod_end,
+            EdgeContext::production(),
+        ));
+        ir.edges.push(LayoutEdge::new(
+            prod_end,
+            test_end,
+            EdgeContext::test(TestKind::Unit),
+        ));
 
         let svg = render(&ir, &RenderConfig::default());
 

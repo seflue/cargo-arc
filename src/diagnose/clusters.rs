@@ -437,50 +437,53 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::many_single_char_names)]
     fn refs_counts_symbols_not_the_import_sites_carrying_them() {
-        // a <-> b, siblings, so only the ref tie-break decides the pick.
-        // `a -> b` imports three symbols from one `use` group: one line, one
-        // site. `b -> a` imports two symbols, one per line.
-        let mut g = ArcGraph::new();
-        let crate_idx = g.add_node(Node::Crate {
+        // grouped <-> split, siblings, so only the ref tie-break decides the
+        // pick. `grouped -> split` imports three symbols from one `use`
+        // group: one line, one site. `split -> grouped` imports two symbols,
+        // one per line.
+        let mut graph = ArcGraph::new();
+        let crate_idx = graph.add_node(Node::Crate {
             name: "app".into(),
             path: "/app".into(),
         });
-        let a = g.add_node(Node::Module {
+        let grouped = graph.add_node(Node::Module {
             name: "a".into(),
             crate_idx,
         });
-        let b = g.add_node(Node::Module {
+        let split = graph.add_node(Node::Module {
             name: "b".into(),
             crate_idx,
         });
-        g.add_edge(crate_idx, a, Edge::Contains);
-        g.add_edge(crate_idx, b, Edge::Contains);
-        g.add_edge(
-            a,
-            b,
+        graph.add_edge(crate_idx, grouped, Edge::Contains);
+        graph.add_edge(crate_idx, split, Edge::Contains);
+        graph.add_edge(
+            grouped,
+            split,
             Edge::ModuleDep {
                 locations: locations("src/a.rs", &[&["One", "Two", "Three"]]),
                 context: EdgeContext::production(),
             },
         );
-        g.add_edge(
-            b,
-            a,
+        graph.add_edge(
+            split,
+            grouped,
             Edge::ModuleDep {
                 locations: locations("src/b.rs", &[&["Four"], &["Five"]]),
                 context: EdgeContext::production(),
             },
         );
 
-        let r = report(&g);
-        let c = &r.clusters[0];
-        assert_eq!(c.feedback_edges.len(), 1);
+        let cluster_report = report(&graph);
+        let cluster = &cluster_report.clusters[0];
+        assert_eq!(cluster.feedback_edges.len(), 1);
         // The import group counts all three symbols, so the two-symbol edge is
         // the cheaper one and gets picked.
-        assert_eq!(c.feedback_edges[0].refs, 2);
-        assert_eq!((c.feedback_edges[0].from, c.feedback_edges[0].to), (b, a));
+        assert_eq!(cluster.feedback_edges[0].refs, 2);
+        assert_eq!(
+            (cluster.feedback_edges[0].from, cluster.feedback_edges[0].to),
+            (split, grouped)
+        );
     }
 
     #[test]
@@ -505,27 +508,27 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::many_single_char_names)]
     fn child_to_parent_edge_is_preferred_even_with_more_refs() {
-        // `a` is the parent module, `b` is nested inside it. `a -> b` is a
-        // re-export (`pub use b::X`, 2 refs), `b -> a` is a plain import
-        // (`use super::Y`, 5 refs). The module-tree prior must still pick
-        // the child->parent edge, even though it carries more refs.
-        let mut g = ArcGraph::new();
-        let crate_idx = g.add_node(Node::Crate {
+        // `parent` is the parent module, `child` is nested inside it.
+        // `parent -> child` is a re-export (`pub use child::X`, 2 refs),
+        // `child -> parent` is a plain import (`use super::Y`, 5 refs). The
+        // module-tree prior must still pick the child->parent edge, even
+        // though it carries more refs.
+        let mut graph = ArcGraph::new();
+        let crate_idx = graph.add_node(Node::Crate {
             name: "app".into(),
             path: "/app".into(),
         });
-        let a = g.add_node(Node::Module {
+        let parent = graph.add_node(Node::Module {
             name: "a".into(),
             crate_idx,
         });
-        let b = g.add_node(Node::Module {
+        let child = graph.add_node(Node::Module {
             name: "b".into(),
             crate_idx,
         });
-        g.add_edge(crate_idx, a, Edge::Contains);
-        g.add_edge(a, b, Edge::Contains);
+        graph.add_edge(crate_idx, parent, Edge::Contains);
+        graph.add_edge(parent, child, Edge::Contains);
 
         let reexport_locations = (0..2)
             .map(|i| SourceLocation {
@@ -536,9 +539,9 @@ mod tests {
                 via_reexport: true,
             })
             .collect();
-        g.add_edge(
-            a,
-            b,
+        graph.add_edge(
+            parent,
+            child,
             Edge::ModuleDep {
                 locations: reexport_locations,
                 context: EdgeContext::production(),
@@ -554,56 +557,56 @@ mod tests {
                 via_reexport: false,
             })
             .collect();
-        g.add_edge(
-            b,
-            a,
+        graph.add_edge(
+            child,
+            parent,
             Edge::ModuleDep {
                 locations: plain_locations,
                 context: EdgeContext::production(),
             },
         );
 
-        let r = report(&g);
-        assert_eq!(r.clusters.len(), 1);
-        let c = &r.clusters[0];
-        assert_eq!(c.cycles.len(), 1);
-        assert_eq!(c.feedback_edges.len(), 1);
-        let picked = &c.feedback_edges[0];
-        assert_eq!((picked.from, picked.to), (b, a));
+        let cluster_report = report(&graph);
+        assert_eq!(cluster_report.clusters.len(), 1);
+        let cluster = &cluster_report.clusters[0];
+        assert_eq!(cluster.cycles.len(), 1);
+        assert_eq!(cluster.feedback_edges.len(), 1);
+        let picked = &cluster.feedback_edges[0];
+        assert_eq!((picked.from, picked.to), (child, parent));
         assert_eq!(picked.refs, 5);
-        assert_acyclic_after_removal(&g, &c.nodes, &c.feedback_edges);
+        assert_acyclic_after_removal(&graph, &cluster.nodes, &cluster.feedback_edges);
     }
 
     #[test]
-    #[allow(clippy::many_single_char_names)]
     fn reexport_child_to_parent_edge_is_not_preferred() {
-        // `a` is the parent module, `b` is nested inside it and re-exports
-        // `a`'s items (`pub use super::*;`, the prelude pattern) via `b -> a`,
-        // 1 ref. `c` is an unrelated module, forming the cycle a->c->b->a
-        // with plain, non-reexport edges a->c (3 refs) and c->b (5 refs).
-        // Even though `b -> a` carries the fewest refs, the module-tree prior
-        // must not treat it as a preferred candidate: it's structural, same as
-        // any other re-export.
-        let mut g = ArcGraph::new();
-        let crate_idx = g.add_node(Node::Crate {
+        // `parent` is the parent module, `child` is nested inside it and
+        // re-exports `parent`'s items (`pub use super::*;`, the prelude
+        // pattern) via `child -> parent`, 1 ref. `unrelated` is an unrelated
+        // module, forming the cycle parent->unrelated->child->parent with
+        // plain, non-reexport edges parent->unrelated (3 refs) and
+        // unrelated->child (5 refs). Even though `child -> parent` carries
+        // the fewest refs, the module-tree prior must not treat it as a
+        // preferred candidate: it's structural, same as any other re-export.
+        let mut graph = ArcGraph::new();
+        let crate_idx = graph.add_node(Node::Crate {
             name: "app".into(),
             path: "/app".into(),
         });
-        let a = g.add_node(Node::Module {
+        let parent = graph.add_node(Node::Module {
             name: "a".into(),
             crate_idx,
         });
-        let b = g.add_node(Node::Module {
+        let child = graph.add_node(Node::Module {
             name: "b".into(),
             crate_idx,
         });
-        let c = g.add_node(Node::Module {
+        let unrelated = graph.add_node(Node::Module {
             name: "c".into(),
             crate_idx,
         });
-        g.add_edge(crate_idx, a, Edge::Contains);
-        g.add_edge(a, b, Edge::Contains);
-        g.add_edge(crate_idx, c, Edge::Contains);
+        graph.add_edge(crate_idx, parent, Edge::Contains);
+        graph.add_edge(parent, child, Edge::Contains);
+        graph.add_edge(crate_idx, unrelated, Edge::Contains);
 
         let reexport_locations = (0..1)
             .map(|i| SourceLocation {
@@ -614,9 +617,9 @@ mod tests {
                 via_reexport: true,
             })
             .collect();
-        g.add_edge(
-            b,
-            a,
+        graph.add_edge(
+            child,
+            parent,
             Edge::ModuleDep {
                 locations: reexport_locations,
                 context: EdgeContext::production(),
@@ -634,32 +637,32 @@ mod tests {
                 })
                 .collect()
         };
-        g.add_edge(
-            a,
-            c,
+        graph.add_edge(
+            parent,
+            unrelated,
             Edge::ModuleDep {
                 locations: make_locations("src/a.rs", 3),
                 context: EdgeContext::production(),
             },
         );
-        g.add_edge(
-            c,
-            b,
+        graph.add_edge(
+            unrelated,
+            child,
             Edge::ModuleDep {
                 locations: make_locations("src/c.rs", 5),
                 context: EdgeContext::production(),
             },
         );
 
-        let r = report(&g);
-        assert_eq!(r.clusters.len(), 1);
-        let clu = &r.clusters[0];
-        assert_eq!(clu.cycles.len(), 1);
-        assert_eq!(clu.feedback_edges.len(), 1);
-        let picked = &clu.feedback_edges[0];
-        assert_eq!((picked.from, picked.to), (a, c));
+        let cluster_report = report(&graph);
+        assert_eq!(cluster_report.clusters.len(), 1);
+        let cluster = &cluster_report.clusters[0];
+        assert_eq!(cluster.cycles.len(), 1);
+        assert_eq!(cluster.feedback_edges.len(), 1);
+        let picked = &cluster.feedback_edges[0];
+        assert_eq!((picked.from, picked.to), (parent, unrelated));
         assert_eq!(picked.refs, 3);
-        assert_acyclic_after_removal(&g, &clu.nodes, &clu.feedback_edges);
+        assert_acyclic_after_removal(&graph, &cluster.nodes, &cluster.feedback_edges);
     }
 
     #[test]
