@@ -4,7 +4,7 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::process::Command;
 
-/// Helper: build ArcCommand for a fixture with common defaults.
+/// Helper: build `ArcCommand` for a fixture with common defaults.
 fn fixture_args(fixture: &str, include_tests: bool) -> (tempfile::NamedTempFile, ArcCommand) {
     let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join(format!("tests/fixtures/{fixture}/Cargo.toml"));
@@ -36,7 +36,7 @@ fn fixture_args(fixture: &str, include_tests: bool) -> (tempfile::NamedTempFile,
     (temp, cmd)
 }
 
-/// Helper: build ArcCommand for self-analysis (cargo-arc's own Cargo.toml).
+/// Helper: build `ArcCommand` for self-analysis (cargo-arc's own Cargo.toml).
 fn self_args() -> (tempfile::NamedTempFile, ArcCommand) {
     let temp = tempfile::NamedTempFile::new().unwrap();
     let cmd = ArcCommand {
@@ -574,7 +574,7 @@ fn isolated_rules_copy(fixture: &str) -> (tempfile::TempDir, PathBuf) {
 }
 
 /// Run `cargo-arc arc --manifest-path <fixture>/Cargo.toml check [check_args...]` as subprocess.
-/// Returns (exit_code, stderr).
+/// Returns (`exit_code`, stderr).
 fn cargo_arc_check(fixture: &str, check_args: &[&str]) -> (i32, String) {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join(format!("tests/fixtures/{fixture}/Cargo.toml"));

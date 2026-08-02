@@ -407,6 +407,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn test_topo_sort_real_modules() {
         let modules = vec![
             JsModuleInfo {
@@ -686,6 +687,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn test_source_scan_real_modules() {
         let modules = vec![
             JsModuleInfo {

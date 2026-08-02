@@ -493,7 +493,7 @@ fn enrich_volatility(layout: &mut LayoutIR, manifest_path: &Path, vol_config: Vo
 mod tests {
     use super::*;
 
-    /// Helper to parse ArcCommand via Cargo wrapper
+    /// Helper to parse `ArcCommand` via Cargo wrapper
     fn parse_args(args: &[&str]) -> ArcCommand {
         let Cargo::Arc(cmd) = Cargo::parse_from(args);
         cmd
@@ -683,7 +683,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Smoke test - requires rust-analyzer (~30s)
+    #[ignore = "smoke test, requires rust-analyzer (~30s)"]
     fn test_run_with_output_file() {
         let temp = tempfile::NamedTempFile::new().unwrap();
         let cmd = ArcCommand {

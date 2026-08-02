@@ -430,6 +430,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::many_single_char_names)]
     fn test_arc_z_order() {
         use crate::model::TestKind;
 

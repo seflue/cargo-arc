@@ -2021,7 +2021,7 @@ mod tests {
         }
     }
 
-    /// Render `ir` and parse the embedded STATIC_DATA JSON.
+    /// Render `ir` and parse the embedded `STATIC_DATA` JSON.
     fn static_data_json(ir: &LayoutIR) -> serde_json::Value {
         let config = RenderConfig::default();
         let positioned = calculate_positions(ir, &config, calculate_box_width(ir));

@@ -105,7 +105,7 @@ mod tests {
     use std::path::PathBuf;
 
     /// Build a test graph with a crate "test" and modules beneath it.
-    /// Returns (graph, crate_idx).
+    /// Returns (graph, `crate_idx`).
     fn test_crate_graph() -> (ArcGraph, NodeIndex) {
         let mut graph = ArcGraph::new();
         let crate_idx = graph.add_node(Node::Crate {

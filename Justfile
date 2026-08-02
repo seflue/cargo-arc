@@ -17,7 +17,7 @@ test: test-rust test-js
 
 # clippy + biome + tsc typecheck + format check + cycle detection
 lint:
-    cargo clippy -- -D warnings
+    cargo clippy --all-targets -- -D warnings
     cargo fmt --check
     bunx biome check js/
     bunx tsc --project jsconfig.json
@@ -30,7 +30,7 @@ fmt:
 
 # auto-fix lint warnings
 fix:
-    cargo clippy --fix --allow-dirty
+    cargo clippy --fix --all-targets --allow-dirty
     bunx biome check --write js/
 
 diagram:

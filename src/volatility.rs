@@ -408,6 +408,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)]
     fn test_statistics_empty() {
         let analyzer = VolatilityAnalyzer::new(VolatilityConfig::default());
         let stats = analyzer.statistics();

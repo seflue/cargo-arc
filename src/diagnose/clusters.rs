@@ -437,6 +437,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::many_single_char_names)]
     fn refs_counts_symbols_not_the_import_sites_carrying_them() {
         // a <-> b, siblings, so only the ref tie-break decides the pick.
         // `a -> b` imports three symbols from one `use` group: one line, one
@@ -504,6 +505,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::many_single_char_names)]
     fn child_to_parent_edge_is_preferred_even_with_more_refs() {
         // `a` is the parent module, `b` is nested inside it. `a -> b` is a
         // re-export (`pub use b::X`, 2 refs), `b -> a` is a plain import
@@ -573,6 +575,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::many_single_char_names)]
     fn reexport_child_to_parent_edge_is_not_preferred() {
         // `a` is the parent module, `b` is nested inside it and re-exports
         // `a`'s items (`pub use super::*;`, the prelude pattern) via `b -> a`,

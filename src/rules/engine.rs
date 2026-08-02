@@ -605,10 +605,10 @@ mod tests {
 
     /// Writes `entries` to a throwaway `arc-baseline.toml` and loads it back,
     /// the only way to get a populated [`Baseline`] (its fields are private).
-    fn baseline_of(entries: Vec<BaselineEntry>) -> Baseline {
+    fn baseline_of(entries: &[BaselineEntry]) -> Baseline {
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("arc-baseline.toml");
-        Baseline::write(&path, &entries).unwrap();
+        Baseline::write(&path, entries).unwrap();
         Baseline::load(&path).unwrap()
     }
 
@@ -1035,8 +1035,8 @@ mod tests {
         let ViolationDetail::Edge { from, to } = &suppressed[0].detail else {
             panic!("expected an edge detail");
         };
-        assert!(from.contains("b"));
-        assert!(to.contains("a"));
+        assert!(from.contains('b'));
+        assert!(to.contains('a'));
         assert_eq!(
             suppressed[0].locations.len(),
             1,
@@ -1292,7 +1292,7 @@ mod tests {
             rule: rule.name.clone(),
             key: FindingKey::edge("domain::service", "infra::db"),
         };
-        let baseline = baseline_of(vec![entry.clone()]);
+        let baseline = baseline_of(std::slice::from_ref(&entry));
         let result = check_rule_with_baseline(&service_to_db_graph(), &rule, false, &baseline);
         assert_eq!(result.baseline_hits.len(), 1);
         assert_eq!(result.baseline_hits[0].rule, entry.rule);
@@ -1309,7 +1309,7 @@ mod tests {
 
         let rule = no_cycles_rule("no cycles in test", "test::**", vec![]);
         let key = FindingKey::ring(vec!["test::a".to_string(), "test::b".to_string()]);
-        let baseline = baseline_of(vec![BaselineEntry {
+        let baseline = baseline_of(&[BaselineEntry {
             rule: rule.name.clone(),
             key: key.clone(),
         }]);
@@ -1371,7 +1371,7 @@ mod tests {
     #[test]
     fn test_baselined_edge_is_not_a_violation() {
         let rule = no_infra_in_domain(vec![]);
-        let baseline = baseline_of(vec![BaselineEntry {
+        let baseline = baseline_of(&[BaselineEntry {
             rule: rule.name.clone(),
             key: FindingKey::edge("domain::service", "infra::db"),
         }]);
@@ -1384,7 +1384,7 @@ mod tests {
     #[test]
     fn test_baseline_entry_scoped_to_rule_name_does_not_cover_other_rule() {
         let rule = no_infra_in_domain(vec![]);
-        let baseline = baseline_of(vec![BaselineEntry {
+        let baseline = baseline_of(&[BaselineEntry {
             rule: "some other rule".into(),
             key: FindingKey::edge("domain::service", "infra::db"),
         }]);
@@ -1408,7 +1408,7 @@ mod tests {
         add_production_dep(&mut graph, d, a);
 
         let rule = no_cycles_rule("no cycles in test", "test::**", vec![]);
-        let baseline = baseline_of(vec![
+        let baseline = baseline_of(&[
             BaselineEntry {
                 rule: rule.name.clone(),
                 key: FindingKey::ring(vec![
@@ -1447,7 +1447,7 @@ mod tests {
 
         let rule = no_cycles_rule("no cycles in test", "test::**", vec![]);
         // Only the a-b-c ring is baselined.
-        let baseline = baseline_of(vec![BaselineEntry {
+        let baseline = baseline_of(&[BaselineEntry {
             rule: rule.name.clone(),
             key: FindingKey::ring(vec![
                 "test::a".to_string(),
@@ -1484,7 +1484,7 @@ mod tests {
 
         let rule = no_cycles_rule("no cycles in test", "test::**", vec![]);
         // Rotated relative to the traversal order (which starts at "test::a").
-        let baseline = baseline_of(vec![BaselineEntry {
+        let baseline = baseline_of(&[BaselineEntry {
             rule: rule.name.clone(),
             key: FindingKey::ring(vec![
                 "test::c".to_string(),

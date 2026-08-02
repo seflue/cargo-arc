@@ -211,6 +211,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)]
     fn test_all_boxes_same_width() {
         let mut ir = LayoutIR::new();
         ir.add_item(ItemKind::Crate, "short".into());
