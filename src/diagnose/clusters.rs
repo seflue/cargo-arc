@@ -110,8 +110,12 @@ impl ArcGraph {
             if cycles.is_empty() {
                 continue;
             }
-            let (feedback_edges, edges) =
-                self.feedback_edges(sub, &nodes, &cycles, analysis, &tolerated);
+            let node_set: HashSet<NodeIndex> = nodes.iter().copied().collect();
+            let in_cluster: HashSet<usize> = cycles.iter().copied().collect();
+            let edge_cycles = cluster_edge_cycles(analysis, &in_cluster);
+            let feedback_edges =
+                self.feedback_edges(sub, &node_set, &edge_cycles, in_cluster, &tolerated);
+            let edges = self.cluster_edges(sub, &node_set, &edge_cycles);
             let crate_idx = self.owning_crate(nodes[0]);
             clusters.push(Cluster {
                 crate_idx,
@@ -128,10 +132,9 @@ impl ArcGraph {
         ClusterReport { clusters }
     }
 
-    /// Greedy set-cover feedback arc set for one cluster, plus every SCC-internal
-    /// edge (the feedback set is a subset of it).
+    /// Greedy set-cover feedback arc set for one cluster, ranked best-first.
     ///
-    /// The cover breaks every cycle in `analysis`; the `tarjan_scc` pass then
+    /// The cover breaks every cycle in `open`; the `tarjan_scc` pass then
     /// re-covers whatever the residual enumeration still finds untolerated. With
     /// nothing tolerated that pass runs until the cluster is acyclic. With
     /// something tolerated it stops at the enumeration's reach, and
@@ -139,33 +142,13 @@ impl ArcGraph {
     fn feedback_edges(
         &self,
         sub: &DiGraph<NodeIndex, ()>,
-        nodes: &[NodeIndex],
-        cycle_idxs: &[usize],
-        analysis: &CycleAnalysis,
+        node_set: &HashSet<NodeIndex>,
+        edge_cycles: &HashMap<(NodeIndex, NodeIndex), HashSet<usize>>,
+        mut open: HashSet<usize>,
         tolerated: impl Fn(&Cycle) -> bool,
-    ) -> (Vec<CycleEdge>, Vec<CycleEdge>) {
-        let node_set: HashSet<NodeIndex> = nodes.iter().copied().collect();
-        let in_cluster: HashSet<usize> = cycle_idxs.iter().copied().collect();
-
-        // Edge -> gross cycles through it within this cluster.
-        let mut gross: HashMap<(NodeIndex, NodeIndex), usize> = HashMap::new();
-        let mut edge_cycles: HashMap<(NodeIndex, NodeIndex), HashSet<usize>> = HashMap::new();
-        for (&edge, cyc_list) in &analysis.edge_cycles {
-            let here: HashSet<usize> = cyc_list
-                .iter()
-                .copied()
-                .filter(|c| in_cluster.contains(c))
-                .collect();
-            if here.is_empty() {
-                continue;
-            }
-            gross.insert(edge, here.len());
-            edge_cycles.insert(edge, here);
-        }
-
+    ) -> Vec<CycleEdge> {
         let mut chosen: Vec<(NodeIndex, NodeIndex)> = Vec::new();
-        let mut open = in_cluster;
-        self.greedy_cover(&edge_cycles, &mut open, &mut chosen);
+        self.greedy_cover(edge_cycles, &mut open, &mut chosen);
 
         // The minimal-cycle cover alone does not guarantee acyclicity:
         // `minimal_cycles` lists a shortest cycle per edge, not every cycle. So
@@ -174,7 +157,7 @@ impl ArcGraph {
         // this set's job.
         let mut removed: HashSet<(NodeIndex, NodeIndex)> = chosen.iter().copied().collect();
         loop {
-            let pruned = restricted_subgraph(sub, &node_set, &removed);
+            let pruned = restricted_subgraph(sub, node_set, &removed);
             if tarjan_scc(&pruned).iter().all(|scc| scc.len() <= 1) {
                 break;
             }
@@ -198,31 +181,43 @@ impl ArcGraph {
 
         let mut feedback: Vec<CycleEdge> = chosen
             .into_iter()
-            .map(|(from, to)| CycleEdge {
-                from,
-                to,
-                cycles: gross.get(&(from, to)).copied().unwrap_or(0),
-                refs: self.edge_refs(from, to),
-            })
+            .map(|(from, to)| self.cycle_edge(from, to, edge_cycles))
             .collect();
         self.rank(&mut feedback);
+        feedback
+    }
 
+    /// Every SCC-internal edge of the cluster, ranked like the feedback set,
+    /// which stays a subset of it.
+    fn cluster_edges(
+        &self,
+        sub: &DiGraph<NodeIndex, ()>,
+        node_set: &HashSet<NodeIndex>,
+        edge_cycles: &HashMap<(NodeIndex, NodeIndex), HashSet<usize>>,
+    ) -> Vec<CycleEdge> {
         let mut edges: Vec<CycleEdge> = sub
             .edge_references()
             .filter(|e| node_set.contains(&sub[e.source()]) && node_set.contains(&sub[e.target()]))
-            .map(|e| {
-                let (from, to) = (sub[e.source()], sub[e.target()]);
-                CycleEdge {
-                    from,
-                    to,
-                    cycles: gross.get(&(from, to)).copied().unwrap_or(0),
-                    refs: self.edge_refs(from, to),
-                }
-            })
+            .map(|e| self.cycle_edge(sub[e.source()], sub[e.target()], edge_cycles))
             .collect();
         self.rank(&mut edges);
+        edges
+    }
 
-        (feedback, edges)
+    /// One edge measured against the cluster's cycles: an edge outside
+    /// `edge_cycles` carries none of them.
+    fn cycle_edge(
+        &self,
+        from: NodeIndex,
+        to: NodeIndex,
+        edge_cycles: &HashMap<(NodeIndex, NodeIndex), HashSet<usize>>,
+    ) -> CycleEdge {
+        CycleEdge {
+            from,
+            to,
+            cycles: edge_cycles.get(&(from, to)).map_or(0, HashSet::len),
+            refs: self.edge_refs(from, to),
+        }
     }
 
     /// Rank an edge list: traffic desc, refs asc, name asc.
@@ -347,6 +342,26 @@ fn cluster_sort_key(c: &Cluster) -> (usize, usize, usize, usize) {
         c.nodes.len(),
         min_node,
     )
+}
+
+/// Edge -> the cycles of one cluster running through it, named by `in_cluster`.
+/// Edges carrying none of them stay out.
+fn cluster_edge_cycles(
+    analysis: &CycleAnalysis,
+    in_cluster: &HashSet<usize>,
+) -> HashMap<(NodeIndex, NodeIndex), HashSet<usize>> {
+    analysis
+        .edge_cycles
+        .iter()
+        .filter_map(|(&edge, cyc_list)| {
+            let here: HashSet<usize> = cyc_list
+                .iter()
+                .copied()
+                .filter(|c| in_cluster.contains(c))
+                .collect();
+            (!here.is_empty()).then_some((edge, here))
+        })
+        .collect()
 }
 
 /// Copy of `sub` restricted to `node_set`, with `removed` edges dropped. Node
