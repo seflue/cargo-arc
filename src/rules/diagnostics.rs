@@ -100,14 +100,14 @@ fn active_rules(config: &ArcConfig) -> impl Iterator<Item = &Rule> {
     config
         .rules
         .iter()
-        .filter(|rule| rule.severity() != Severity::Ignore)
+        .filter(|rule| rule.severity != Severity::Ignore)
 }
 
 fn is_ignored(config: &ArcConfig, rule_name: &str) -> bool {
     config
         .rules
         .iter()
-        .any(|rule| rule.name == rule_name && rule.severity() == Severity::Ignore)
+        .any(|rule| rule.name == rule_name && rule.severity == Severity::Ignore)
 }
 
 /// Workspace crates that no layer pattern of any active `layers` rule reaches,
@@ -214,7 +214,7 @@ mod tests {
     fn layers_rule(name: &str, layers: &[&str]) -> Rule {
         Rule {
             name: name.into(),
-            declared_severity: Some(Severity::Error),
+            severity: Severity::Error,
             except: vec![],
             kind: RuleKind::Layers(LayersRule {
                 layers: layers.iter().map(|&layer| layer.into()).collect(),
@@ -226,7 +226,7 @@ mod tests {
     fn forbidden_rule(name: &str, except: Vec<Except>) -> Rule {
         Rule {
             name: name.into(),
-            declared_severity: Some(Severity::Error),
+            severity: Severity::Error,
             except,
             kind: RuleKind::ForbiddenDependency(ForbiddenDependencyRule {
                 from: "domain::**".into(),
@@ -244,11 +244,7 @@ mod tests {
     }
 
     fn config_of(rules: Vec<Rule>, diagnostics: Diagnostics) -> ArcConfig {
-        ArcConfig {
-            config: None,
-            rules,
-            diagnostics,
-        }
+        ArcConfig { rules, diagnostics }
     }
 
     fn unlayered_except(crates: &[&str]) -> Diagnostics {
@@ -360,7 +356,7 @@ mod tests {
     fn a_layers_rule_set_to_ignore_makes_no_claim() {
         let graph = workspace(&["domain", "xtask"]);
         let mut rule = layers_rule("architecture layers", &["domain"]);
-        rule.declared_severity = Some(Severity::Ignore);
+        rule.severity = Severity::Ignore;
         let config = config_of(vec![rule], Diagnostics::default());
         assert!(unlayered(&diagnose(&graph, &config)).is_empty());
     }
@@ -478,7 +474,7 @@ mod tests {
         // frozen findings as stale would turn that statement around.
         let graph = workspace(&["domain", "infra"]);
         let mut rule = forbidden_rule("no infra in domain", vec![]);
-        rule.declared_severity = Some(Severity::Ignore);
+        rule.severity = Severity::Ignore;
         let config = config_of(vec![rule], Diagnostics::default());
         let found = diagnose_baseline(&graph, &config, &[stale_entry("no infra in domain")], &[]);
         assert!(unmatched_entries(&found).is_empty());

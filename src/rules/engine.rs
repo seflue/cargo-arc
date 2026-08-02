@@ -294,7 +294,7 @@ impl<'graph> CheckRun<'graph> {
             .map(|(source, target)| Violation {
                 rule_name: rule.name.clone(),
                 rule_type: rule.rule_type().into(),
-                severity: rule.severity(),
+                severity: rule.severity,
                 detail: ViolationDetail::Edge {
                     from: graph.qualified_name(source),
                     to: graph.qualified_name(target),
@@ -324,7 +324,7 @@ impl<'graph> CheckRun<'graph> {
                 baselined.push(Violation {
                     rule_name: rule.name.clone(),
                     rule_type: rule.rule_type().into(),
-                    severity: rule.severity(),
+                    severity: rule.severity,
                     detail: ViolationDetail::Ring { modules },
                     locations: Vec::new(),
                 });
@@ -351,7 +351,7 @@ impl<'graph> CheckRun<'graph> {
             .map(|(i, cluster)| Violation {
                 rule_name: rule.name.clone(),
                 rule_type: rule.rule_type().into(),
-                severity: rule.severity(),
+                severity: rule.severity,
                 detail: ViolationDetail::Cluster(CycleCluster::from_cluster(
                     graph,
                     &analysis,
@@ -435,7 +435,7 @@ impl<'graph> CheckRun<'graph> {
             let violation = Violation {
                 rule_name: rule.name.clone(),
                 rule_type: rule.rule_type().into(),
-                severity: rule.severity(),
+                severity: rule.severity,
                 detail: ViolationDetail::Edge {
                     from: from.clone(),
                     to: to.clone(),
@@ -480,7 +480,7 @@ impl<'graph> CheckRun<'graph> {
         let mut result: CheckResult = config
             .rules
             .iter()
-            .filter(|rule| rule.severity() != Severity::Ignore)
+            .filter(|rule| rule.severity != Severity::Ignore)
             .map(|rule| self.check_rule(rule))
             .collect();
         result.diagnostics = diagnostics::collect(
@@ -817,7 +817,7 @@ mod tests {
     fn no_infra_in_domain(except: Vec<Except>) -> Rule {
         Rule {
             name: "no infra in domain".into(),
-            declared_severity: Some(Severity::Error),
+            severity: Severity::Error,
             except,
             kind: RuleKind::ForbiddenDependency(ForbiddenDependencyRule {
                 from: "domain::**".into(),
@@ -830,7 +830,7 @@ mod tests {
     fn no_cycles_rule(name: &str, scope: &str, except: Vec<Except>) -> Rule {
         Rule {
             name: name.into(),
-            declared_severity: Some(Severity::Error),
+            severity: Severity::Error,
             except,
             kind: RuleKind::NoCycles(NoCyclesRule {
                 scope: scope.into(),
@@ -842,7 +842,7 @@ mod tests {
     fn layers_rule(layers: &[&str], except: Vec<Except>) -> Rule {
         Rule {
             name: "architecture layers".into(),
-            declared_severity: Some(Severity::Error),
+            severity: Severity::Error,
             except,
             kind: RuleKind::Layers(LayersRule {
                 layers: layers.iter().map(|&layer| layer.into()).collect(),
@@ -851,11 +851,9 @@ mod tests {
         }
     }
 
-    /// `ArcConfig` over `rules`, without a `[config]` block and with the
-    /// default diagnostic levels.
+    /// `ArcConfig` over `rules`, with the default diagnostic levels.
     fn config_of(rules: Vec<Rule>) -> ArcConfig {
         ArcConfig {
-            config: None,
             rules,
             diagnostics: Diagnostics::default(),
         }
@@ -1200,7 +1198,7 @@ mod tests {
             no_infra_in_domain(vec![]),
             Rule {
                 name: "no cycles in infra".into(),
-                declared_severity: Some(Severity::Warn),
+                severity: Severity::Warn,
                 except: vec![],
                 kind: RuleKind::NoCycles(NoCyclesRule {
                     scope: "infra::**".into(),
@@ -1373,7 +1371,7 @@ mod tests {
 
         let config = config_of(vec![Rule {
             name: "ignored rule".into(),
-            declared_severity: Some(Severity::Ignore),
+            severity: Severity::Ignore,
             except: vec![],
             kind: RuleKind::ForbiddenDependency(ForbiddenDependencyRule {
                 from: "domain::**".into(),
