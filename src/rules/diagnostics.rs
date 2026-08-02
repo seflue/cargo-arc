@@ -4,10 +4,9 @@
 //! crate no layer sorts, an entry that suppresses nothing any more. Each one
 //! carries the level its `[diagnostics]` entry set.
 
-use crate::graph::ArcGraph;
 use crate::rules::baseline::{Baseline, BaselineEntry};
 use crate::rules::config::{ArcConfig, DiagnosticLevel, Rule, RuleKind, Severity};
-use crate::rules::matching::{PathIndex, resolve_pattern};
+use crate::rules::matching::PatternIndex;
 use petgraph::graph::NodeIndex;
 use std::collections::HashSet;
 
@@ -45,8 +44,8 @@ impl Diagnostic {
 /// Every gap the config asks to hear about. `hits` are the baseline entries
 /// the run matched, so the rest of the baseline is stale.
 #[must_use]
-pub fn collect(
-    graph: &ArcGraph,
+pub(super) fn collect(
+    index: &PatternIndex,
     config: &ArcConfig,
     baseline: &Baseline,
     hits: &[BaselineEntry],
@@ -57,7 +56,7 @@ pub fn collect(
     let level = settings.unlayered_crate.level;
     if level != DiagnosticLevel::Allow {
         found.extend(
-            unlayered_crates(graph, config)
+            unlayered_crates(index, config)
                 .into_iter()
                 .map(|krate| Diagnostic {
                     level,
@@ -83,7 +82,7 @@ pub fn collect(
     let level = settings.unmatched_except;
     if level != DiagnosticLevel::Allow {
         found.extend(
-            dead_excepts(graph, config)
+            dead_excepts(index, config)
                 .into_iter()
                 .map(|entry| Diagnostic {
                     level,
@@ -117,7 +116,7 @@ fn is_ignored(config: &ArcConfig, rule_name: &str) -> bool {
 /// The layer patterns of all rules are taken together: a crate layered by one
 /// rule is sorted, and reporting it against a second rule that says nothing
 /// about it would make module-level layering unusable.
-fn unlayered_crates(graph: &ArcGraph, config: &ArcConfig) -> Vec<String> {
+fn unlayered_crates(index: &PatternIndex, config: &ArcConfig) -> Vec<String> {
     let layer_patterns: Vec<&str> = active_rules(config)
         .filter_map(|rule| match &rule.kind {
             RuleKind::Layers(params) => Some(&params.layers),
@@ -130,10 +129,10 @@ fn unlayered_crates(graph: &ArcGraph, config: &ArcConfig) -> Vec<String> {
         return Vec::new();
     }
 
-    let path_index = PathIndex::build(graph);
+    let graph = index.graph();
     let layered: HashSet<NodeIndex> = layer_patterns
         .into_iter()
-        .flat_map(|pattern| resolve_pattern(pattern, graph, &path_index))
+        .flat_map(|pattern| index.resolve(pattern))
         .map(|idx| graph.owning_crate(idx))
         .collect();
 
@@ -161,18 +160,17 @@ pub struct DeadExcept {
 /// forward-looking allowance, not a typo — so only the pattern side is
 /// checked, never whether the edge itself exists.
 #[must_use]
-pub fn dead_excepts(graph: &ArcGraph, config: &ArcConfig) -> Vec<DeadExcept> {
-    let path_index = PathIndex::build(graph);
+pub(super) fn dead_excepts(index: &PatternIndex, config: &ArcConfig) -> Vec<DeadExcept> {
     let mut dead = Vec::new();
     for rule in active_rules(config) {
         for exception in &rule.except {
-            if resolve_pattern(&exception.from, graph, &path_index).is_empty() {
+            if index.resolve(&exception.from).is_empty() {
                 dead.push(DeadExcept {
                     rule: rule.name.clone(),
                     pattern: exception.from.clone(),
                 });
             }
-            if resolve_pattern(&exception.to, graph, &path_index).is_empty() {
+            if index.resolve(&exception.to).is_empty() {
                 dead.push(DeadExcept {
                     rule: rule.name.clone(),
                     pattern: exception.to.clone(),
@@ -192,6 +190,7 @@ mod tests {
         LayersRule, Rule, RuleKind, Severity, UnlayeredCrate,
     };
     use crate::rules::diagnostics::{Diagnostic, DiagnosticKind, collect, dead_excepts};
+    use crate::rules::matching::PatternIndex;
     use std::path::PathBuf;
 
     /// Workspace graph with one module per named crate, so that a crate
@@ -264,7 +263,7 @@ mod tests {
 
     /// `collect` against an empty baseline.
     fn diagnose(graph: &ArcGraph, config: &ArcConfig) -> Vec<Diagnostic> {
-        collect(graph, config, &Baseline::empty(), &[])
+        collect(&PatternIndex::build(graph), config, &Baseline::empty(), &[])
     }
 
     /// `collect` against a baseline holding `entries`, of which `hits` were
@@ -279,7 +278,7 @@ mod tests {
         let path = tmp.path().join("arc-baseline.toml");
         Baseline::write(&path, entries).unwrap();
         let baseline = Baseline::load(&path).unwrap();
-        collect(graph, config, &baseline, hits)
+        collect(&PatternIndex::build(graph), config, &baseline, hits)
     }
 
     fn unlayered(diagnostics: &[Diagnostic]) -> Vec<&str> {
@@ -412,7 +411,7 @@ mod tests {
             )],
             Diagnostics::default(),
         );
-        let dead = dead_excepts(&graph, &config);
+        let dead = dead_excepts(&PatternIndex::build(&graph), &config);
         assert_eq!(dead.len(), 1);
         assert_eq!(dead[0].rule, "no infra in domain");
         assert_eq!(dead[0].pattern, "domain::typo");
@@ -428,7 +427,7 @@ mod tests {
             )],
             Diagnostics::default(),
         );
-        assert!(dead_excepts(&graph, &config).is_empty());
+        assert!(dead_excepts(&PatternIndex::build(&graph), &config).is_empty());
     }
 
     #[test]

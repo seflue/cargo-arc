@@ -11,7 +11,7 @@ use crate::rules::config::{
     NoCyclesRule, Rule, RuleKind, Severity,
 };
 use crate::rules::diagnostics::{self, Diagnostic};
-use crate::rules::matching::{PathIndex, resolve_pattern};
+use crate::rules::matching::PatternIndex;
 use petgraph::algo::tarjan_scc;
 use petgraph::graph::{DiGraph, NodeIndex};
 use std::collections::{HashMap, HashSet};
@@ -198,28 +198,33 @@ impl FromIterator<CheckResult> for CheckResult {
     }
 }
 
-/// The pattern index is built from `graph` and only valid for it, so bundling
-/// the two under one type keeps that pairing from drifting apart across the
-/// checker calls that need both.
-struct CheckRun<'graph> {
-    graph: &'graph ArcGraph,
-    path_index: PathIndex,
+/// One check of one graph. Rules and configuration diagnostics share the index
+/// built here rather than each building their own.
+pub(crate) struct CheckRun<'graph> {
+    pattern_index: PatternIndex<'graph>,
     baseline: &'graph Baseline,
     include_reexports: bool,
 }
 
 impl<'graph> CheckRun<'graph> {
-    fn new(graph: &'graph ArcGraph, baseline: &'graph Baseline, include_reexports: bool) -> Self {
+    pub(crate) fn new(
+        graph: &'graph ArcGraph,
+        baseline: &'graph Baseline,
+        include_reexports: bool,
+    ) -> Self {
         Self {
-            graph,
-            path_index: PathIndex::build(graph),
+            pattern_index: PatternIndex::build(graph),
             baseline,
             include_reexports,
         }
     }
 
+    fn graph(&self) -> &'graph ArcGraph {
+        self.pattern_index.graph()
+    }
+
     fn resolve(&self, pattern: &str) -> Vec<NodeIndex> {
-        resolve_pattern(pattern, self.graph, &self.path_index)
+        self.pattern_index.resolve(pattern)
     }
 
     fn resolve_set(&self, pattern: &str) -> HashSet<NodeIndex> {
@@ -255,7 +260,7 @@ impl<'graph> CheckRun<'graph> {
     /// edges, not rings: the two sides can have different SCC decompositions,
     /// so there is no shared cluster to report against.
     fn check_cycles(&self, rule: &Rule, params: &NoCyclesRule) -> CheckResult {
-        let graph = self.graph;
+        let graph = self.graph();
         let scope_set = self.resolve_set(&params.scope);
         let except = ResolvedExceptions::resolve(&rule.except, self);
         let mut excepted: Vec<(NodeIndex, NodeIndex)> = Vec::new();
@@ -406,7 +411,7 @@ impl<'graph> CheckRun<'graph> {
         except: &ResolvedExceptions,
         is_violation: impl Fn(NodeIndex, NodeIndex) -> bool,
     ) -> CheckResult {
-        let graph = self.graph;
+        let graph = self.graph();
         let mut violations = Vec::new();
         let mut suppressed = Vec::new();
         let mut baselined = Vec::new();
@@ -465,14 +470,35 @@ impl<'graph> CheckRun<'graph> {
             diagnostics: Vec::new(),
         }
     }
+
+    /// Check all rules in `config` against the run.
+    ///
+    /// Diagnostics are raised after the rules: a stale baseline entry is only
+    /// recognizable once every rule has had its chance to match it.
+    #[must_use]
+    pub(crate) fn check_all(&self, config: &ArcConfig) -> CheckResult {
+        let mut result: CheckResult = config
+            .rules
+            .iter()
+            .filter(|rule| rule.severity() != Severity::Ignore)
+            .map(|rule| self.check_rule(rule))
+            .collect();
+        result.diagnostics = diagnostics::collect(
+            &self.pattern_index,
+            config,
+            self.baseline,
+            &result.baseline_hits,
+        );
+        result
+    }
+
+    #[must_use]
+    pub(crate) fn dead_excepts(&self, config: &ArcConfig) -> Vec<diagnostics::DeadExcept> {
+        diagnostics::dead_excepts(&self.pattern_index, config)
+    }
 }
 
-/// Check all rules in the config against the graph.
-///
-/// Dispatches each rule to its type-specific checker, collects all violations,
-/// and filters out `Severity::Ignore` rules. Diagnostics are raised afterwards:
-/// a stale baseline entry is only recognizable once every rule has had its
-/// chance to match it.
+/// Set up a run over `graph` and check every rule in `config` against it.
 #[must_use]
 pub fn check_rules(
     graph: &ArcGraph,
@@ -480,15 +506,7 @@ pub fn check_rules(
     baseline: &Baseline,
     include_reexports: bool,
 ) -> CheckResult {
-    let run = CheckRun::new(graph, baseline, include_reexports);
-    let mut result: CheckResult = config
-        .rules
-        .iter()
-        .filter(|rule| rule.severity() != Severity::Ignore)
-        .map(|rule| run.check_rule(rule))
-        .collect();
-    result.diagnostics = diagnostics::collect(graph, config, baseline, &result.baseline_hits);
-    result
+    CheckRun::new(graph, baseline, include_reexports).check_all(config)
 }
 
 /// `except` entries of a rule, resolved once to node sets so a per-edge check

@@ -16,8 +16,7 @@ use crate::model::{CrateExportMap, ModulePathMap, WorkspaceCrates};
 use crate::render::{RenderConfig, render};
 use crate::rules::baseline::Baseline;
 use crate::rules::config::{ArcConfig, ConfigError};
-use crate::rules::diagnostics::dead_excepts;
-use crate::rules::engine::{CycleCluster, check_rules};
+use crate::rules::engine::{CheckRun, CycleCluster, check_rules};
 use crate::rules::format::{format_cluster_report, format_violations, plural};
 use crate::volatility::{VolatilityAnalyzer, VolatilityConfig};
 use std::path::Path;
@@ -285,7 +284,9 @@ fn run_generate_baseline(
     baseline_path: &Path,
     include_reexports: bool,
 ) {
-    let dead = dead_excepts(graph, config);
+    let baseline = Baseline::empty();
+    let run = CheckRun::new(graph, &baseline, include_reexports);
+    let dead = run.dead_excepts(config);
     if !dead.is_empty() {
         eprintln!("error: cannot write a baseline while an except matches nothing");
         for d in &dead {
@@ -298,7 +299,7 @@ fn run_generate_baseline(
         std::process::exit(2);
     }
 
-    let result = check_rules(graph, config, &Baseline::empty(), include_reexports);
+    let result = run.check_all(config);
     if let Err(e) = Baseline::write(baseline_path, &result.baseline_entries) {
         eprintln!("error: {e}");
         std::process::exit(2);
