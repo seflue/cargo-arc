@@ -323,7 +323,8 @@ fn run_legacy_cycle_check(graph: &ArcGraph, include_reexports: bool) -> Result<(
     if analysis.cycles.is_empty() {
         return Ok(());
     }
-    let report = graph.cluster_report(&sub, &analysis);
+    // No rules file, so no baseline: every cycle found is one to break.
+    let report = graph.cluster_report(&sub, &analysis, |_| false);
     let total = report.clusters.len();
     let clusters: Vec<CycleCluster> = report
         .clusters

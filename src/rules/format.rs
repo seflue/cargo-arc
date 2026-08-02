@@ -843,7 +843,7 @@ mod tests {
     fn report_of(g: &ArcGraph) -> Vec<CycleCluster> {
         let sub = g.production_subgraph();
         let analysis = sub.minimal_cycles();
-        let report = g.cluster_report(&sub, &analysis);
+        let report = g.cluster_report(&sub, &analysis, |_| false);
         let total = report.clusters.len();
         report
             .clusters

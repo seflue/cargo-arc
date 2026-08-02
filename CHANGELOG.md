@@ -23,7 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rule name; a cycle is keyed by its ring, so a new cycle is reported even when
   it runs through a frozen one's edges. Generation is refused while an `except`
   pattern matches no module, and `--show-suppressed` lists frozen findings
-  alongside allowed ones.
+  alongside allowed ones. In a cluster that mixes frozen and reported cycles,
+  the edge list names only edges that carry a reported one, so it never asks
+  for work on a cycle the baseline froze.
 - Rule names must now be unique across all rule types; `arc-rules.toml` is
   rejected when two rules share a name.
 - A `[diagnostics]` section in `arc-rules.toml` reports gaps in the

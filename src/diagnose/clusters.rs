@@ -1,12 +1,13 @@
-//! Cluster-level cycle aggregation with guaranteed feedback edge sets.
+//! Cluster-level cycle aggregation with verified feedback edge sets.
 //!
 //! Aggregates the per-edge minimal cycles ([`CycleAnalysis`]) into
 //! strongly-connected clusters and, per cluster, computes a feedback arc set
-//! (an edge set whose removal makes the cluster acyclic): greedy set-cover over
-//! the minimal cycles, then a single `tarjan_scc` verification with a residual
-//! re-cover loop
+//! (an edge set whose removal leaves no reported cycle standing): greedy
+//! set-cover over the minimal cycles, then a single `tarjan_scc` verification
+//! with a residual re-cover loop. Tolerate nothing and the set makes the
+//! cluster acyclic; tolerate cycles and those are what is left standing
 
-use super::cycles::{CycleAnalysis, MinimalCycles};
+use super::cycles::{Cycle, CycleAnalysis, MinimalCycles};
 use crate::graph::{ArcGraph, Edge};
 use crate::model::SourceLocation;
 use petgraph::algo::tarjan_scc;
@@ -33,7 +34,8 @@ pub struct Cluster {
     pub nodes: Vec<NodeIndex>,
     /// Indices into [`CycleAnalysis::cycles`] contained in this cluster.
     pub cycles: Vec<usize>,
-    /// Edge set whose removal breaks every cycle, ranked best-first.
+    /// Edge set whose removal breaks every cycle but the tolerated ones, ranked
+    /// best-first.
     pub feedback_edges: Vec<CycleEdge>,
     /// Every SCC-internal edge, ranked like `feedback_edges` (cycles desc, refs
     /// asc, name asc).
@@ -60,16 +62,24 @@ enum RemovalBias {
 }
 
 impl ArcGraph {
-    /// Aggregate `analysis` into SCC clusters, each with a proven feedback set.
+    /// Aggregate `analysis` into SCC clusters, each with a feedback set covering
+    /// the cycles `analysis` still carries.
     ///
     /// `sub` and `analysis` must come from the same subgraph (`analysis` from
     /// `sub.minimal_cycles()`) so that `NodeIndex` values line up and the
     /// feedback sets are computed over the same subgraph.
+    ///
+    /// `tolerated` names the cycles a caller has already accepted and dropped
+    /// from `analysis` while leaving them in `sub`. Such a cycle must not pull
+    /// an edge into a feedback set: that edge would carry none of the reported
+    /// cycles and read as work on something the caller has decided to keep.
+    /// Callers with nothing to tolerate pass `|_| false`.
     #[must_use]
     pub fn cluster_report(
         &self,
         sub: &DiGraph<NodeIndex, ()>,
         analysis: &CycleAnalysis,
+        tolerated: impl Fn(&Cycle) -> bool,
     ) -> ClusterReport {
         // Map each node of a non-trivial SCC to its cluster id.
         let mut node_scc: HashMap<NodeIndex, usize> = HashMap::new();
@@ -100,7 +110,8 @@ impl ArcGraph {
             if cycles.is_empty() {
                 continue;
             }
-            let (feedback_edges, edges) = self.feedback_edges(sub, &nodes, &cycles, analysis);
+            let (feedback_edges, edges) =
+                self.feedback_edges(sub, &nodes, &cycles, analysis, &tolerated);
             let crate_idx = self.owning_crate(nodes[0]);
             clusters.push(Cluster {
                 crate_idx,
@@ -117,14 +128,21 @@ impl ArcGraph {
         ClusterReport { clusters }
     }
 
-    /// Greedy set-cover feedback arc set for one cluster, verified acyclic, plus
-    /// every SCC-internal edge (the feedback set is a subset of it).
+    /// Greedy set-cover feedback arc set for one cluster, plus every SCC-internal
+    /// edge (the feedback set is a subset of it).
+    ///
+    /// The cover breaks every cycle in `analysis`; the `tarjan_scc` pass then
+    /// re-covers whatever the residual enumeration still finds untolerated. With
+    /// nothing tolerated that pass runs until the cluster is acyclic. With
+    /// something tolerated it stops at the enumeration's reach, and
+    /// `minimal_cycles` does not promise that is every cycle.
     fn feedback_edges(
         &self,
         sub: &DiGraph<NodeIndex, ()>,
         nodes: &[NodeIndex],
         cycle_idxs: &[usize],
         analysis: &CycleAnalysis,
+        tolerated: impl Fn(&Cycle) -> bool,
     ) -> (Vec<CycleEdge>, Vec<CycleEdge>) {
         let node_set: HashSet<NodeIndex> = nodes.iter().copied().collect();
         let in_cluster: HashSet<usize> = cycle_idxs.iter().copied().collect();
@@ -149,16 +167,22 @@ impl ArcGraph {
         let mut open = in_cluster;
         self.greedy_cover(&edge_cycles, &mut open, &mut chosen);
 
-        // Prove the feedback set acyclic with a single tarjan_scc pass; only when a
-        // residual SCC survives (rare) enumerate its cycles and re-cover it. The
-        // minimal-cycle cover alone does not guarantee acyclicity.
+        // The minimal-cycle cover alone does not guarantee acyclicity:
+        // `minimal_cycles` lists a shortest cycle per edge, not every cycle. So
+        // keep a `tarjan_scc` guard and re-cover what it finds, minus the cycles
+        // `tolerated` accepts: those are still in `sub`, and breaking them is not
+        // this set's job.
         let mut removed: HashSet<(NodeIndex, NodeIndex)> = chosen.iter().copied().collect();
         loop {
             let pruned = restricted_subgraph(sub, &node_set, &removed);
             if tarjan_scc(&pruned).iter().all(|scc| scc.len() <= 1) {
                 break;
             }
-            let residual = pruned.minimal_cycles();
+            let mut residual = pruned.minimal_cycles();
+            residual.retain_cycles(|cycle| !tolerated(cycle));
+            if residual.cycles.is_empty() {
+                break;
+            }
             let residual_edges: HashMap<(NodeIndex, NodeIndex), HashSet<usize>> = residual
                 .edge_cycles
                 .iter()
@@ -401,22 +425,37 @@ mod tests {
     }
 
     fn report(g: &ArcGraph) -> ClusterReport {
-        let sub = g.production_subgraph();
-        let analysis = sub.minimal_cycles();
-        g.cluster_report(&sub, &analysis)
+        report_tolerating(g, |_| false)
     }
 
-    /// Assert that removing `feedback` leaves the cluster `nodes` acyclic.
-    fn assert_acyclic_after_removal(g: &ArcGraph, nodes: &[NodeIndex], feedback: &[CycleEdge]) {
+    /// Cluster report with the tolerated cycles dropped from the analysis but
+    /// left in the subgraph — the shape a baseline run hands in.
+    fn report_tolerating(g: &ArcGraph, tolerated: impl Fn(&Cycle) -> bool) -> ClusterReport {
+        let sub = g.production_subgraph();
+        let mut analysis = sub.minimal_cycles();
+        analysis.retain_cycles(|cycle| !tolerated(cycle));
+        g.cluster_report(&sub, &analysis, tolerated)
+    }
+
+    /// Assert that removing `feedback` leaves the cluster `nodes` with no cycle
+    /// beyond those `tolerated` accepts. With a predicate that tolerates
+    /// nothing this is the plain acyclicity check.
+    fn assert_only_tolerated_cycles_remain(
+        g: &ArcGraph,
+        nodes: &[NodeIndex],
+        feedback: &[CycleEdge],
+        tolerated: impl Fn(&Cycle) -> bool,
+    ) {
         let sub = g.production_subgraph();
         let node_set: HashSet<NodeIndex> = nodes.iter().copied().collect();
         let removed: HashSet<(NodeIndex, NodeIndex)> =
             feedback.iter().map(|e| (e.from, e.to)).collect();
         let left = restricted_subgraph(&sub, &node_set, &removed).minimal_cycles();
+        let unbroken: Vec<&Cycle> = left.cycles.iter().filter(|c| !tolerated(c)).collect();
         assert!(
-            left.cycles.is_empty(),
-            "feedback set did not break all cycles: {} remain",
-            left.cycles.len()
+            unbroken.is_empty(),
+            "feedback set left {} untolerated cycle(s) standing: {unbroken:?}",
+            unbroken.len()
         );
     }
 
@@ -574,7 +613,12 @@ mod tests {
         let picked = &cluster.feedback_edges[0];
         assert_eq!((picked.from, picked.to), (child, parent));
         assert_eq!(picked.refs, 5);
-        assert_acyclic_after_removal(&graph, &cluster.nodes, &cluster.feedback_edges);
+        assert_only_tolerated_cycles_remain(
+            &graph,
+            &cluster.nodes,
+            &cluster.feedback_edges,
+            |_| false,
+        );
     }
 
     #[test]
@@ -662,7 +706,12 @@ mod tests {
         let picked = &cluster.feedback_edges[0];
         assert_eq!((picked.from, picked.to), (parent, unrelated));
         assert_eq!(picked.refs, 3);
-        assert_acyclic_after_removal(&graph, &cluster.nodes, &cluster.feedback_edges);
+        assert_only_tolerated_cycles_remain(
+            &graph,
+            &cluster.nodes,
+            &cluster.feedback_edges,
+            |_| false,
+        );
     }
 
     #[test]
@@ -680,7 +729,7 @@ mod tests {
         assert_eq!((picked.from, picked.to), (idx[0], idx[1]));
         assert_eq!(picked.refs, 2);
         assert_eq!(picked.cycles, 1);
-        assert_acyclic_after_removal(&g, &c.nodes, &c.feedback_edges);
+        assert_only_tolerated_cycles_remain(&g, &c.nodes, &c.feedback_edges, |_| false);
     }
 
     #[test]
@@ -699,7 +748,7 @@ mod tests {
         let picked = &c.feedback_edges[0];
         assert_eq!((picked.from, picked.to), (idx[0], idx[1]));
         assert_eq!(picked.cycles, 2);
-        assert_acyclic_after_removal(&g, &c.nodes, &c.feedback_edges);
+        assert_only_tolerated_cycles_remain(&g, &c.nodes, &c.feedback_edges, |_| false);
     }
 
     #[test]
@@ -715,7 +764,56 @@ mod tests {
         assert_eq!(c.nodes.len(), 3);
         assert_eq!(c.cycles.len(), 2);
         assert_eq!(c.feedback_edges.len(), 2);
-        assert_acyclic_after_removal(&g, &c.nodes, &c.feedback_edges);
+        assert_only_tolerated_cycles_remain(&g, &c.nodes, &c.feedback_edges, |_| false);
+    }
+
+    /// Three 2-cycles through one hub module: `hub<->a`, `hub<->b`, `hub<->c`.
+    /// One SCC, three edge-disjoint cycles.
+    const HUB_MODULES: &[&str] = &["hub", "a", "b", "c"];
+    const HUB_DEPS: &[(usize, usize, usize)] = &[
+        (0, 1, 1),
+        (1, 0, 1),
+        (0, 2, 1),
+        (2, 0, 1),
+        (0, 3, 1),
+        (3, 0, 1),
+    ];
+
+    #[test]
+    fn every_reported_cycle_gets_an_edge_when_nothing_is_tolerated() {
+        let (g, idx) = graph_with(HUB_MODULES, HUB_DEPS);
+        let r = report(&g);
+        assert_eq!(r.clusters.len(), 1);
+        let c = &r.clusters[0];
+        assert_eq!(c.cycles.len(), 3);
+        let picked: Vec<_> = c.feedback_edges.iter().map(|e| (e.from, e.to)).collect();
+        assert_eq!(
+            picked,
+            vec![(idx[1], idx[0]), (idx[2], idx[0]), (idx[3], idx[0])]
+        );
+        assert_only_tolerated_cycles_remain(&g, &c.nodes, &c.feedback_edges, |_| false);
+    }
+
+    #[test]
+    fn a_tolerated_cycle_pulls_no_edge_into_the_feedback_set() {
+        // hub<->a is tolerated, so it is out of the analysis while its edges
+        // stay in the subgraph. Breaking it is not this report's job: the two
+        // reported cycles need one edge each, and neither of them may be an
+        // edge of the tolerated cycle.
+        let (g, idx) = graph_with(HUB_MODULES, HUB_DEPS);
+        let tolerated = |cycle: &Cycle| cycle.path.len() == 2 && cycle.path.contains(&idx[1]);
+        let r = report_tolerating(&g, tolerated);
+
+        assert_eq!(r.clusters.len(), 1);
+        let c = &r.clusters[0];
+        assert_eq!(c.cycles.len(), 2);
+        assert_eq!(c.feedback_edges.len(), 2);
+        // No edge carrying zero reported cycles: that is what a feedback set
+        // reaching past the reported cycles looks like in the output.
+        assert!(c.feedback_edges.iter().all(|e| e.cycles > 0));
+        let picked: Vec<_> = c.feedback_edges.iter().map(|e| (e.from, e.to)).collect();
+        assert_eq!(picked, vec![(idx[2], idx[0]), (idx[3], idx[0])]);
+        assert_only_tolerated_cycles_remain(&g, &c.nodes, &c.feedback_edges, tolerated);
     }
 
     #[test]
@@ -729,7 +827,7 @@ mod tests {
         assert_eq!(r.clusters.len(), 2);
         for c in &r.clusters {
             assert_eq!(c.feedback_edges.len(), 1);
-            assert_acyclic_after_removal(&g, &c.nodes, &c.feedback_edges);
+            assert_only_tolerated_cycles_remain(&g, &c.nodes, &c.feedback_edges, |_| false);
         }
     }
 

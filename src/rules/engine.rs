@@ -2,7 +2,7 @@
 //!
 //! Checks architecture rules against the dependency graph and collects violations.
 
-use crate::diagnose::{Cluster, CycleAnalysis, MinimalCycles};
+use crate::diagnose::{Cluster, Cycle, CycleAnalysis, MinimalCycles};
 use crate::graph::{ArcGraph, Edge};
 use crate::model::SourceLocation;
 use crate::rules::baseline::{Baseline, BaselineEntry, FindingKey};
@@ -112,6 +112,11 @@ impl CycleCluster {
             feedback_edges,
         }
     }
+}
+
+/// Baseline key of `cycle`, resolved to crate-qualified module names.
+fn ring_key(graph: &ArcGraph, cycle: &Cycle) -> FindingKey {
+    FindingKey::ring(cycle.path.iter().map(|&idx| graph.qualified_name(idx)))
 }
 
 /// Common `::`-prefix over the crate-qualified names of `nodes`, segment-wise.
@@ -306,17 +311,15 @@ impl<'graph> CheckRun<'graph> {
         let mut analysis = subgraph.minimal_cycles();
         // The baseline keys on the ring, not the cluster: a cluster merges or
         // splits as edges are added, so it has no identity to freeze against.
+        // One predicate for both readers below, so the run and its cluster
+        // report cannot disagree about which rings are frozen.
+        let tolerated = |cycle: &Cycle| self.baseline.covers(&rule.name, &ring_key(graph, cycle));
         let mut baselined = Vec::new();
         let mut baseline_entries = Vec::new();
         let mut baseline_hits = Vec::new();
         analysis.retain_cycles(|cycle| {
-            let modules: Vec<String> = cycle
-                .path
-                .iter()
-                .map(|&idx| graph.qualified_name(idx))
-                .collect();
-            let key = FindingKey::ring(modules.clone());
-            if self.baseline.covers(&rule.name, &key) {
+            let key = ring_key(graph, cycle);
+            if tolerated(cycle) {
                 baseline_hits.push(BaselineEntry {
                     rule: rule.name.clone(),
                     key,
@@ -325,7 +328,13 @@ impl<'graph> CheckRun<'graph> {
                     rule_name: rule.name.clone(),
                     rule_type: rule.rule_type().into(),
                     severity: rule.severity,
-                    detail: ViolationDetail::Ring { modules },
+                    detail: ViolationDetail::Ring {
+                        modules: cycle
+                            .path
+                            .iter()
+                            .map(|&idx| graph.qualified_name(idx))
+                            .collect(),
+                    },
                     locations: Vec::new(),
                 });
                 false
@@ -341,7 +350,9 @@ impl<'graph> CheckRun<'graph> {
         // The cluster report is computed per rule, over that rule's own scoped
         // subgraph: two no-cycles rules with different scopes see different views.
         // Clusters left without a surviving ring drop out here on their own.
-        let report = graph.cluster_report(&subgraph, &analysis);
+        // The baselined rings stay in the subgraph, so the report needs the same
+        // predicate to tell them from rings it has to break.
+        let report = graph.cluster_report(&subgraph, &analysis, tolerated);
         let total = report.clusters.len();
 
         let violations = report

@@ -279,7 +279,8 @@ fn attach_clusters(
     include_reexports: bool,
 ) {
     let sub = graph.cycle_subgraph(include_reexports);
-    let report = graph.cluster_report(&sub, analysis);
+    // The diagram shows the graph as it is; rule config plays no part in it.
+    let report = graph.cluster_report(&sub, analysis, |_| false);
     for cluster in report.clusters {
         let Some(&scc_id) = cluster.nodes.first().and_then(|n| analysis.node_scc.get(n)) else {
             continue;
