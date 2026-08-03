@@ -389,9 +389,11 @@ impl<'graph> CheckRun<'graph> {
         // Build layer index: NodeIndex → layer position
         let mut layer_index: std::collections::HashMap<NodeIndex, usize> =
             std::collections::HashMap::new();
-        for (pos, layer_pattern) in params.layers.iter().enumerate() {
-            for idx in self.resolve(layer_pattern) {
-                layer_index.insert(idx, pos);
+        for (pos, layer) in params.layers.iter().enumerate() {
+            for pattern in layer.patterns() {
+                for idx in self.resolve(pattern) {
+                    layer_index.insert(idx, pos);
+                }
             }
         }
         let except = ResolvedExceptions::resolve(&rule.except, self);
@@ -1158,6 +1160,65 @@ mod tests {
         let rule = layers_rule(&["domain", "application", "infra"], vec![]);
         let violations = check_rule(&graph, &rule, false).violations;
         assert!(violations.is_empty());
+    }
+
+    /// Top-down `layers` rule whose ranks may hold several patterns each.
+    fn layers_rule_of_ranks(ranks: &[&[&str]]) -> Rule {
+        Rule {
+            name: "architecture layers".into(),
+            severity: Severity::Error,
+            except: vec![],
+            kind: RuleKind::Layers(LayersRule {
+                layers: ranks
+                    .iter()
+                    .map(|rank| rank.iter().map(|&p| p.to_owned()).collect())
+                    .collect(),
+                direction: Direction::TopDown,
+            }),
+        }
+    }
+
+    #[test]
+    fn test_layers_equal_rank_edge_is_not_a_violation() {
+        let (mut graph, _domain, _service, _model, _infra, db, _api, _app, handler) =
+            multi_crate_graph();
+        // infra::db → application::handler, both on the same rank
+        add_production_dep(&mut graph, db, handler);
+
+        let rule = layers_rule_of_ranks(&[&["domain"], &["infra", "application"]]);
+        let violations = check_rule(&graph, &rule, false).violations;
+        assert!(
+            violations.is_empty(),
+            "crates of equal rank may depend on each other: {violations:?}"
+        );
+    }
+
+    /// Sharing a rank must not exempt its members from the ordering itself.
+    #[test]
+    fn test_layers_equal_rank_still_bound_by_the_ordering() {
+        let (mut graph, _domain, service, _model, _infra, db, _api, _app, _handler) =
+            multi_crate_graph();
+        // infra::db → domain::service, upward out of the shared rank
+        add_production_dep(&mut graph, db, service);
+
+        let rule = layers_rule_of_ranks(&[&["domain"], &["infra", "application"]]);
+        let violations = check_rule(&graph, &rule, false).violations;
+        assert_eq!(violations.len(), 1);
+    }
+
+    /// The order within a rank carries no meaning: reversing it must not change
+    /// the verdict. This is the defect that made equal-rank crates unexpressible.
+    #[test]
+    fn test_layers_order_within_a_rank_does_not_matter() {
+        let (mut graph, _domain, _service, _model, _infra, db, _api, _app, handler) =
+            multi_crate_graph();
+        add_production_dep(&mut graph, db, handler);
+
+        for rank in [["infra", "application"], ["application", "infra"]] {
+            let rule = layers_rule_of_ranks(&[&["domain"], &rank]);
+            let violations = check_rule(&graph, &rule, false).violations;
+            assert!(violations.is_empty(), "order {rank:?} changed the verdict");
+        }
     }
 
     #[test]

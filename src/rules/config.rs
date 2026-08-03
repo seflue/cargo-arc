@@ -175,10 +175,69 @@ pub struct NoCyclesRule {
     pub scope: String,
 }
 
+/// One rank in a `layers` rule: the patterns whose nodes share a position.
+///
+/// Several patterns per rank exist because a rank is not always one crate.
+/// Written either as a bare pattern (`"domain"`) or as a list
+/// (`["adapter_a", "adapter_b"]`); listing equals separately would make the
+/// list order assert a ranking between them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Layer(Vec<String>);
+
+impl Layer {
+    #[must_use]
+    pub fn patterns(&self) -> &[String] {
+        &self.0
+    }
+}
+
+impl From<&str> for Layer {
+    fn from(pattern: &str) -> Self {
+        Self(vec![pattern.to_owned()])
+    }
+}
+
+impl FromIterator<String> for Layer {
+    fn from_iter<I: IntoIterator<Item = String>>(patterns: I) -> Self {
+        Self(patterns.into_iter().collect())
+    }
+}
+
+impl<'de> Deserialize<'de> for Layer {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct LayerVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for LayerVisitor {
+            type Value = Layer;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a module path pattern, or a list of them")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                Ok(Layer::from(v))
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut patterns = Vec::new();
+                while let Some(pattern) = seq.next_element::<String>()? {
+                    patterns.push(pattern);
+                }
+                Ok(patterns.into_iter().collect())
+            }
+        }
+
+        deserializer.deserialize_any(LayerVisitor)
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LayersRule {
-    pub layers: Vec<String>,
+    pub layers: Vec<Layer>,
     pub direction: Direction,
 }
 
@@ -341,12 +400,46 @@ mod tests {
         "#;
         let config = ArcConfig::from_toml(toml).unwrap();
         assert_eq!(config.rules[0].name, "architecture layers");
-        assert!(matches!(
-            &config.rules[0].kind,
-            RuleKind::Layers(LayersRule { layers, direction })
-            if layers == &["domain", "application", "infra"]
-                && *direction == Direction::TopDown
-        ));
+        let RuleKind::Layers(LayersRule { layers, direction }) = &config.rules[0].kind else {
+            panic!("expected Layers, got {:?}", config.rules[0].kind);
+        };
+        let patterns: Vec<&[String]> = layers.iter().map(Layer::patterns).collect();
+        assert_eq!(
+            patterns,
+            [
+                &["domain".to_string()][..],
+                &["application".to_string()][..],
+                &["infra".to_string()][..],
+            ]
+        );
+        assert_eq!(*direction, Direction::TopDown);
+    }
+
+    /// Crates of equal rank share one entry. Without this they need one entry
+    /// each, and the list is ordered, so the order asserts a ranking the
+    /// architecture does not have.
+    #[test]
+    fn test_parse_layers_with_several_patterns_in_one_entry() {
+        let toml = r#"
+            [[rules]]
+            type = "layers"
+            name = "architecture layers"
+            layers = ["domain", ["adapter_a", "adapter_b"], "runtime"]
+            direction = "bottom-up"
+        "#;
+        let config = ArcConfig::from_toml(toml).unwrap();
+        let RuleKind::Layers(LayersRule { layers, .. }) = &config.rules[0].kind else {
+            panic!("expected Layers, got {:?}", config.rules[0].kind);
+        };
+        let patterns: Vec<&[String]> = layers.iter().map(Layer::patterns).collect();
+        assert_eq!(
+            patterns,
+            [
+                &["domain".to_string()][..],
+                &["adapter_a".to_string(), "adapter_b".to_string()][..],
+                &["runtime".to_string()][..],
+            ]
+        );
     }
 
     #[test]

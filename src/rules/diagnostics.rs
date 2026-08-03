@@ -5,7 +5,7 @@
 //! carries the level its `[diagnostics]` entry set.
 
 use crate::rules::baseline::{Baseline, BaselineEntry};
-use crate::rules::config::{ArcConfig, DiagnosticLevel, Rule, RuleKind, Severity};
+use crate::rules::config::{ArcConfig, DiagnosticLevel, Layer, Rule, RuleKind, Severity};
 use crate::rules::matching::PatternIndex;
 use petgraph::graph::NodeIndex;
 use std::collections::HashSet;
@@ -123,6 +123,7 @@ fn unlayered_crates(index: &PatternIndex, config: &ArcConfig) -> Vec<String> {
             _ => None,
         })
         .flatten()
+        .flat_map(Layer::patterns)
         .map(String::as_str)
         .collect();
     if layer_patterns.is_empty() {

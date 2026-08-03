@@ -36,6 +36,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   defaults to `warn`; `deny` fails the run. `unlayered-crate` also takes an
   `except` list of crates that stand outside the architecture on purpose, and is
   written either as `"warn"` or as `{ level = "warn", except = ["xtask"] }`.
+- An entry in a `layers` rule may name several patterns instead of one, written
+  as `["adapter_a", "adapter_b"]` in place of `"adapter_a"`. Crates of equal
+  rank share one entry, so the order they are listed in no longer forbids edges
+  between them. Edges leaving the rank still follow the rule's direction. A
+  plain string is a rank of one, so existing rules are unaffected.
 
 ### Changed
 
