@@ -124,13 +124,13 @@ impl FromIterator<(String, HashSet<String>)> for CrateExportMap {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum DependencyKind {
+pub enum UsageKind {
     Production,
     Test(TestKind),
     Build,
 }
 
-impl DependencyKind {
+impl UsageKind {
     #[must_use]
     pub fn kind_js(&self) -> &str {
         match self {
@@ -152,7 +152,7 @@ impl DependencyKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EdgeContext {
-    pub kind: DependencyKind,
+    pub kind: UsageKind,
     pub features: Vec<String>,
 }
 
@@ -160,21 +160,21 @@ impl EdgeContext {
     #[must_use]
     pub fn production() -> Self {
         Self {
-            kind: DependencyKind::Production,
+            kind: UsageKind::Production,
             features: vec![],
         }
     }
     #[must_use]
     pub fn test(kind: TestKind) -> Self {
         Self {
-            kind: DependencyKind::Test(kind),
+            kind: UsageKind::Test(kind),
             features: vec![],
         }
     }
     #[must_use]
     pub fn build() -> Self {
         Self {
-            kind: DependencyKind::Build,
+            kind: UsageKind::Build,
             features: vec![],
         }
     }
@@ -226,7 +226,7 @@ pub struct DependencyRef {
 
 impl DependencyRef {
     /// Returns full target path: "`crate::module::item`" or "`crate::module`" if no item.
-    /// For empty `target_module` (entry-point): "`crate::item`" or just "crate".
+    /// For empty `target_module` (crate root): "`crate::item`" or just "crate".
     #[must_use]
     pub fn full_target(&self) -> String {
         match (&self.target_item, self.target_module.is_empty()) {
@@ -240,7 +240,7 @@ impl DependencyRef {
     }
 
     /// Returns module-level target: "`crate::module`" (ignores item).
-    /// For empty `target_module` (entry-point): just "crate".
+    /// For empty `target_module` (crate root): just "crate".
     #[must_use]
     pub fn module_target(&self) -> String {
         if self.target_module.is_empty() {
@@ -252,9 +252,7 @@ impl DependencyRef {
 
     /// Build a lookup index from an existing slice of dependencies.
     /// Maps `(full_target, kind)` to the position in the slice.
-    pub(crate) fn build_seen_index(
-        deps: &[DependencyRef],
-    ) -> HashMap<(String, DependencyKind), usize> {
+    pub(crate) fn build_seen_index(deps: &[DependencyRef]) -> HashMap<(String, UsageKind), usize> {
         deps.iter()
             .enumerate()
             .map(|(i, d)| ((d.full_target(), d.context.kind), i))
@@ -265,7 +263,7 @@ impl DependencyRef {
     /// If a duplicate exists, merges features into the existing entry.
     pub(crate) fn dedup_push(
         deps: &mut Vec<DependencyRef>,
-        seen: &mut HashMap<(String, DependencyKind), usize>,
+        seen: &mut HashMap<(String, UsageKind), usize>,
         dep: DependencyRef,
     ) {
         let key = (dep.full_target(), dep.context.kind);
@@ -301,10 +299,10 @@ mod tests {
     #[test]
     fn test_edgecontext_struct_basics() {
         let ctx = EdgeContext::production();
-        assert_eq!(ctx.kind, DependencyKind::Production);
+        assert_eq!(ctx.kind, UsageKind::Production);
         assert!(ctx.features.is_empty());
         let test_ctx = EdgeContext::test(TestKind::Unit);
-        assert_eq!(test_ctx.kind, DependencyKind::Test(TestKind::Unit));
+        assert_eq!(test_ctx.kind, UsageKind::Test(TestKind::Unit));
         assert_ne!(ctx, test_ctx);
         let cloned = ctx.clone();
         assert_eq!(ctx, cloned);
@@ -312,37 +310,31 @@ mod tests {
 
     #[test]
     fn test_dependency_kind_js_strings() {
-        assert_eq!(DependencyKind::Production.kind_js(), "production");
-        assert_eq!(DependencyKind::Production.sub_kind_js(), None);
+        assert_eq!(UsageKind::Production.kind_js(), "production");
+        assert_eq!(UsageKind::Production.sub_kind_js(), None);
 
-        assert_eq!(DependencyKind::Test(TestKind::Unit).kind_js(), "test");
-        assert_eq!(
-            DependencyKind::Test(TestKind::Unit).sub_kind_js(),
-            Some("unit")
-        );
+        assert_eq!(UsageKind::Test(TestKind::Unit).kind_js(), "test");
+        assert_eq!(UsageKind::Test(TestKind::Unit).sub_kind_js(), Some("unit"));
 
+        assert_eq!(UsageKind::Test(TestKind::Integration).kind_js(), "test");
         assert_eq!(
-            DependencyKind::Test(TestKind::Integration).kind_js(),
-            "test"
-        );
-        assert_eq!(
-            DependencyKind::Test(TestKind::Integration).sub_kind_js(),
+            UsageKind::Test(TestKind::Integration).sub_kind_js(),
             Some("integration")
         );
 
-        assert_eq!(DependencyKind::Build.kind_js(), "build");
-        assert_eq!(DependencyKind::Build.sub_kind_js(), None);
+        assert_eq!(UsageKind::Build.kind_js(), "build");
+        assert_eq!(UsageKind::Build.sub_kind_js(), None);
     }
 
     #[test]
     fn test_dependency_kind_is_copy_and_hash() {
         use std::collections::HashSet;
-        let a = DependencyKind::Production;
+        let a = UsageKind::Production;
         let b = a; // Copy
         assert_eq!(a, b);
         let mut set = HashSet::new();
-        set.insert(DependencyKind::Test(TestKind::Unit));
-        set.insert(DependencyKind::Build);
+        set.insert(UsageKind::Test(TestKind::Unit));
+        set.insert(UsageKind::Build);
         assert_eq!(set.len(), 2);
     }
 

@@ -1631,7 +1631,7 @@ mod relative_import_e2e_tests {
 
     #[test]
     fn test_super_filtering_from_workspace() {
-        // Realistic: `use super::filtering::DepInfo` from analyze::workspace
+        // Realistic: `use super::filtering::DependencyInfo` from analyze::workspace
         let mp: ModulePathMap = [(
             "my_crate".to_string(),
             HashSet::from([
@@ -1643,7 +1643,7 @@ mod relative_import_e2e_tests {
         )]
         .into_iter()
         .collect();
-        let uses = parse_test_uses("use super::filtering::DepInfo;");
+        let uses = parse_test_uses("use super::filtering::DependencyInfo;");
         let ctx = ResolutionContextBuilder::new(Path::new("src/analyze/workspace.rs"))
             .module_paths(&mp)
             .current_module_path("analyze::workspace")
@@ -1653,7 +1653,7 @@ mod relative_import_e2e_tests {
         let dep = &deps[0];
         assert_eq!(dep.target_crate, "my_crate");
         assert_eq!(dep.target_module, "analyze::filtering");
-        assert_eq!(dep.target_item, Some("DepInfo".to_string()));
+        assert_eq!(dep.target_item, Some("DependencyInfo".to_string()));
     }
 
     #[test]
@@ -1945,7 +1945,7 @@ mod context_aware_dedup_tests {
                 "other_crate::module::item".to_string(),
                 5,
                 EdgeContext {
-                    kind: DependencyKind::Production,
+                    kind: UsageKind::Production,
                     features: vec!["feat-a".into()],
                 },
                 0,
@@ -1954,7 +1954,7 @@ mod context_aware_dedup_tests {
                 "other_crate::module::item".to_string(),
                 10,
                 EdgeContext {
-                    kind: DependencyKind::Production,
+                    kind: UsageKind::Production,
                     features: vec!["feat-b".into()],
                 },
                 0,
@@ -1996,7 +1996,7 @@ mod context_aware_dedup_tests {
             (
                 item.clone(),
                 EdgeContext {
-                    kind: DependencyKind::Production,
+                    kind: UsageKind::Production,
                     features: vec!["feat-a".into()],
                 },
                 0,
@@ -2004,7 +2004,7 @@ mod context_aware_dedup_tests {
             (
                 item,
                 EdgeContext {
-                    kind: DependencyKind::Production,
+                    kind: UsageKind::Production,
                     features: vec!["feat-b".into()],
                 },
                 0,

@@ -11,7 +11,7 @@ The graph (ADR-005) did not distinguish between production and test dependencies
 
 We introduce `EdgeContext` as a nested enum: `Production` and `Test(TestKind)`. We convert the edge variants `CrateDep` and `ModuleDep` to struct variants with a `context: EdgeContext` field. When a module references the same target from both production and test code, two separate edges are created (dedup key: `(full_target(), context)`).
 
-`EdgeContext` is independent of `DepKind`, which operates at the Cargo.toml level — `EdgeContext` operates at source code level.
+`EdgeContext` is independent of `EffectiveDepKind`, which operates at the Cargo.toml level — `EdgeContext` operates at source code level.
 
 ## Rationale
 

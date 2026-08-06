@@ -717,7 +717,7 @@ mod tests {
     use super::*;
     use crate::diagnose::RepresentativeCycles;
     use crate::graph::{ArcGraph, Edge, Node};
-    use crate::model::{DependencyKind, EdgeContext, SourceLocation, TestKind};
+    use crate::model::{EdgeContext, SourceLocation, TestKind, UsageKind};
     use assert2::check;
     use petgraph::graph::NodeIndex;
     use rstest::rstest;
@@ -954,10 +954,10 @@ mod tests {
     #[test]
     fn test_layout_edge_carries_edge_context() {
         let prod_edge = LayoutEdge::new(0, 1, EdgeContext::production());
-        assert_eq!(prod_edge.context.kind, DependencyKind::Production);
+        assert_eq!(prod_edge.context.kind, UsageKind::Production);
 
         let test_edge = LayoutEdge::new(0, 1, EdgeContext::test(TestKind::Unit));
-        assert_eq!(test_edge.context.kind, DependencyKind::Test(TestKind::Unit));
+        assert_eq!(test_edge.context.kind, UsageKind::Test(TestKind::Unit));
     }
 
     #[test]

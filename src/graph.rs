@@ -2,8 +2,8 @@
 
 use crate::analyze::externals::ExternalsResult;
 use crate::model::{
-    CrateInfo, DependencyKind, DependencyRef, EdgeContext, ModuleInfo, ModuleTree, SourceLocation,
-    TestKind, normalize_crate_name,
+    CrateInfo, DependencyRef, EdgeContext, ModuleInfo, ModuleTree, SourceLocation, TestKind,
+    UsageKind, normalize_crate_name,
 };
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
@@ -90,12 +90,12 @@ impl Edge {
     #[must_use]
     pub fn is_production(&self) -> bool {
         self.context()
-            .is_some_and(|c| c.kind == DependencyKind::Production)
+            .is_some_and(|c| c.kind == UsageKind::Production)
     }
 
     #[must_use]
     pub fn is_production_module_dep(&self) -> bool {
-        matches!(self, Edge::ModuleDep { context, .. } if context.kind == DependencyKind::Production)
+        matches!(self, Edge::ModuleDep { context, .. } if context.kind == UsageKind::Production)
     }
 
     /// Whether this is a production `ModuleDep` whose references are ALL
@@ -106,7 +106,7 @@ impl Edge {
         matches!(
             self,
             Edge::ModuleDep { locations, context }
-                if context.kind == DependencyKind::Production
+                if context.kind == UsageKind::Production
                     && !locations.is_empty()
                     && locations.iter().all(|loc| loc.via_reexport)
         )
@@ -114,12 +114,12 @@ impl Edge {
 
     #[must_use]
     pub fn is_production_crate_dep(&self) -> bool {
-        matches!(self, Edge::CrateDep { context } if context.kind == DependencyKind::Production)
+        matches!(self, Edge::CrateDep { context } if context.kind == UsageKind::Production)
     }
 
     #[must_use]
     pub fn is_test_crate_dep(&self) -> bool {
-        matches!(self, Edge::CrateDep { context } if matches!(context.kind, DependencyKind::Test(_)))
+        matches!(self, Edge::CrateDep { context } if matches!(context.kind, UsageKind::Test(_)))
     }
 }
 
@@ -325,9 +325,9 @@ impl ArcGraph {
 
     /// Collect all descendants of a node (including itself) via Contains edges.
     #[must_use]
-    pub fn containment_subtree(&self, root: NodeIndex) -> HashSet<NodeIndex> {
+    pub fn containment_subtree(&self, start: NodeIndex) -> HashSet<NodeIndex> {
         let mut subtree = HashSet::new();
-        let mut stack = vec![root];
+        let mut stack = vec![start];
         while let Some(node) = stack.pop() {
             if subtree.insert(node) {
                 stack.extend(
@@ -665,7 +665,7 @@ fn aggregate_context(deps: &[&DependencyRef]) -> EdgeContext {
     debug_assert!(!deps.is_empty(), "grouped deps must be non-empty");
     if deps
         .iter()
-        .any(|dep| dep.context.kind == DependencyKind::Production)
+        .any(|dep| dep.context.kind == UsageKind::Production)
     {
         EdgeContext::production()
     } else {

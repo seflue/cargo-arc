@@ -12,8 +12,8 @@ use super::use_parser::{
 };
 use crate::model::normalize_crate_name;
 use crate::model::{
-    CrateExportMap, CrateInfo, DependencyKind, DependencyRef, EdgeContext, ModuleInfo,
-    ModulePathMap, ModuleTree, TestKind, WorkspaceCrates,
+    CrateExportMap, CrateInfo, DependencyRef, EdgeContext, ModuleInfo, ModulePathMap, ModuleTree,
+    TestKind, UsageKind, WorkspaceCrates,
 };
 
 /// Find integration test files in `tests/*.rs`.
@@ -285,7 +285,7 @@ fn walk_module_syn(
     }
 
     if !ctx.include_tests {
-        dependencies.retain(|d| d.context.kind == DependencyKind::Production);
+        dependencies.retain(|d| d.context.kind == UsageKind::Production);
     }
 
     // Extract mod declarations from the same AST (no second file read)

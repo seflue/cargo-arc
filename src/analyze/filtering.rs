@@ -1,12 +1,12 @@
 //! Dependency filtering logic for workspace analysis.
 //!
 //! This module handles:
-//! - Classification of dependencies by kind (Normal/Dev/Build) and scope (Workspace/External)
+//! - Classification of dependencies by kind (Normal/Dev/Build) and origin (Workspace/External)
 //! - Feature string parsing
 //! - Seed crate discovery based on feature configuration
 //! - BFS traversal to collect reachable workspace crates
 
-use cargo_metadata::{DependencyKind as CargoDependencyKind, Metadata, NodeDep};
+use cargo_metadata::{DependencyKind, Metadata, NodeDep};
 use std::collections::{HashMap, HashSet, VecDeque};
 use tracing::{debug, instrument};
 
@@ -15,31 +15,33 @@ use crate::model::{WorkspaceCrates, normalize_crate_name};
 
 // --- Dependency filtering types ---
 
-/// Dependency kind for filtering (internal use)
+/// The one kind a dependency counts as. Cargo lists every section a dependency
+/// appears in; this collapses that list by precedence, normal before dev before
+/// build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DepKind {
+pub(crate) enum EffectiveDependencyKind {
     Normal,
     Dev,
     Build,
     Unknown,
 }
 
-/// Dependency scope for filtering (internal use)
+/// Where a dependency comes from: another member of this workspace, or outside it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DepScope {
+pub(crate) enum DependencyOrigin {
     Workspace,
     External,
 }
 
 /// Extracted dependency info for filtering and debugging
 #[derive(Debug)]
-pub(crate) struct DepInfo<'a> {
+pub(crate) struct DependencyInfo<'a> {
     pub(crate) name: &'a str,
-    pub(crate) kind: DepKind,
-    pub(crate) scope: DepScope,
+    pub(crate) kind: EffectiveDependencyKind,
+    pub(crate) origin: DependencyOrigin,
 }
 
-impl<'a> DepInfo<'a> {
+impl<'a> DependencyInfo<'a> {
     /// Extract dependency info from a cargo metadata `NodeDep`.
     /// `name` is the dependency's package name, resolved via `dep.pkg`.
     /// `dep.name` is the library target name, which diverges from it on
@@ -52,42 +54,44 @@ impl<'a> DepInfo<'a> {
         let kind = if dep
             .dep_kinds
             .iter()
-            .any(|dk| matches!(dk.kind, CargoDependencyKind::Normal))
+            .any(|dk| matches!(dk.kind, DependencyKind::Normal))
         {
-            DepKind::Normal
+            EffectiveDependencyKind::Normal
         } else if dep
             .dep_kinds
             .iter()
-            .any(|dk| matches!(dk.kind, CargoDependencyKind::Development))
+            .any(|dk| matches!(dk.kind, DependencyKind::Development))
         {
-            DepKind::Dev
+            EffectiveDependencyKind::Dev
         } else if dep
             .dep_kinds
             .iter()
-            .any(|dk| matches!(dk.kind, CargoDependencyKind::Build))
+            .any(|dk| matches!(dk.kind, DependencyKind::Build))
         {
-            DepKind::Build
+            EffectiveDependencyKind::Build
         } else {
-            DepKind::Unknown
+            EffectiveDependencyKind::Unknown
         };
 
-        let scope = if workspace_members.contains(name) {
-            DepScope::Workspace
+        let origin = if workspace_members.contains(name) {
+            DependencyOrigin::Workspace
         } else {
-            DepScope::External
+            DependencyOrigin::External
         };
 
-        Self { name, kind, scope }
+        Self { name, kind, origin }
     }
 
     /// Check if this dependency should be included in the workspace graph
     pub(super) fn is_included(&self) -> bool {
-        matches!(self.kind, DepKind::Normal) && matches!(self.scope, DepScope::Workspace)
+        matches!(self.kind, EffectiveDependencyKind::Normal)
+            && matches!(self.origin, DependencyOrigin::Workspace)
     }
 
     /// Check if this is a dev-dependency from the workspace
     pub(super) fn is_dev_workspace(&self) -> bool {
-        matches!(self.kind, DepKind::Dev) && matches!(self.scope, DepScope::Workspace)
+        matches!(self.kind, EffectiveDependencyKind::Dev)
+            && matches!(self.origin, DependencyOrigin::Workspace)
     }
 }
 
@@ -262,44 +266,44 @@ mod tests {
         assert_eq!(reachable.len(), 2);
     }
 
-    // --- DepInfo unit tests ---
+    // --- DependencyInfo unit tests ---
 
     #[test]
-    fn test_dep_info_normal_workspace_is_included() {
-        let info = DepInfo {
+    fn test_dependency_info_normal_workspace_is_included() {
+        let info = DependencyInfo {
             name: "foo",
-            kind: DepKind::Normal,
-            scope: DepScope::Workspace,
+            kind: EffectiveDependencyKind::Normal,
+            origin: DependencyOrigin::Workspace,
         };
         assert!(info.is_included(), "Normal + Workspace should be included");
     }
 
     #[test]
-    fn test_dep_info_dev_workspace_is_excluded() {
-        let info = DepInfo {
+    fn test_dependency_info_dev_workspace_is_excluded() {
+        let info = DependencyInfo {
             name: "foo",
-            kind: DepKind::Dev,
-            scope: DepScope::Workspace,
+            kind: EffectiveDependencyKind::Dev,
+            origin: DependencyOrigin::Workspace,
         };
         assert!(!info.is_included(), "Dev + Workspace should be excluded");
     }
 
     #[test]
-    fn test_dep_info_build_workspace_is_excluded() {
-        let info = DepInfo {
+    fn test_dependency_info_build_workspace_is_excluded() {
+        let info = DependencyInfo {
             name: "foo",
-            kind: DepKind::Build,
-            scope: DepScope::Workspace,
+            kind: EffectiveDependencyKind::Build,
+            origin: DependencyOrigin::Workspace,
         };
         assert!(!info.is_included(), "Build + Workspace should be excluded");
     }
 
     #[test]
-    fn test_dep_info_normal_external_is_excluded() {
-        let info = DepInfo {
+    fn test_dependency_info_normal_external_is_excluded() {
+        let info = DependencyInfo {
             name: "serde",
-            kind: DepKind::Normal,
-            scope: DepScope::External,
+            kind: EffectiveDependencyKind::Normal,
+            origin: DependencyOrigin::External,
         };
         assert!(
             !info.is_included(),
@@ -308,11 +312,11 @@ mod tests {
     }
 
     #[test]
-    fn test_dep_info_dev_external_is_excluded() {
-        let info = DepInfo {
+    fn test_dependency_info_dev_external_is_excluded() {
+        let info = DependencyInfo {
             name: "test-helper",
-            kind: DepKind::Dev,
-            scope: DepScope::External,
+            kind: EffectiveDependencyKind::Dev,
+            origin: DependencyOrigin::External,
         };
         assert!(!info.is_included(), "Dev + External should be excluded");
     }
@@ -320,11 +324,11 @@ mod tests {
     // --- is_dev_workspace() tests ---
 
     #[test]
-    fn test_dep_info_dev_workspace_is_dev_workspace() {
-        let info = DepInfo {
+    fn test_dependency_info_dev_workspace_is_dev_workspace() {
+        let info = DependencyInfo {
             name: "foo",
-            kind: DepKind::Dev,
-            scope: DepScope::Workspace,
+            kind: EffectiveDependencyKind::Dev,
+            origin: DependencyOrigin::Workspace,
         };
         assert!(
             info.is_dev_workspace(),
@@ -333,11 +337,11 @@ mod tests {
     }
 
     #[test]
-    fn test_dep_info_normal_workspace_is_not_dev_workspace() {
-        let info = DepInfo {
+    fn test_dependency_info_normal_workspace_is_not_dev_workspace() {
+        let info = DependencyInfo {
             name: "foo",
-            kind: DepKind::Normal,
-            scope: DepScope::Workspace,
+            kind: EffectiveDependencyKind::Normal,
+            origin: DependencyOrigin::Workspace,
         };
         assert!(
             !info.is_dev_workspace(),
@@ -346,11 +350,11 @@ mod tests {
     }
 
     #[test]
-    fn test_dep_info_dev_external_is_not_dev_workspace() {
-        let info = DepInfo {
+    fn test_dependency_info_dev_external_is_not_dev_workspace() {
+        let info = DependencyInfo {
             name: "foo",
-            kind: DepKind::Dev,
-            scope: DepScope::External,
+            kind: EffectiveDependencyKind::Dev,
+            origin: DependencyOrigin::External,
         };
         assert!(
             !info.is_dev_workspace(),

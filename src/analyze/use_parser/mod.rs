@@ -1,7 +1,7 @@
 //! Syn-based use statement parsing for workspace dependency extraction.
 
 use crate::model::{
-    CrateExportMap, DefKind, DependencyKind, DependencyRef, EdgeContext, ModulePathMap, TestKind,
+    CrateExportMap, DefKind, DependencyRef, EdgeContext, ModulePathMap, TestKind, UsageKind,
     WorkspaceCrates, normalize_crate_name,
 };
 use std::collections::{HashMap, HashSet};
@@ -215,7 +215,7 @@ pub(crate) struct ResolutionContext<'a> {
 fn promote_to_test(base: &EdgeContext) -> EdgeContext {
     EdgeContext {
         kind: match base.kind {
-            DependencyKind::Production => DependencyKind::Test(TestKind::Unit),
+            UsageKind::Production => UsageKind::Test(TestKind::Unit),
             already_test => already_test,
         },
         features: base.features.clone(),
@@ -671,7 +671,7 @@ pub(crate) fn parse_workspace_dependencies(
     ctx: &ResolutionContext,
 ) -> Vec<DependencyRef> {
     let mut deps: Vec<DependencyRef> = Vec::new();
-    let mut seen_targets: HashMap<(String, DependencyKind), usize> = HashMap::new();
+    let mut seen_targets: HashMap<(String, UsageKind), usize> = HashMap::new();
 
     for (item, context, inline_depth) in use_items {
         let line_num = item.use_token.span.start().line;
@@ -818,7 +818,7 @@ pub(crate) fn parse_path_ref_dependencies(
     aliases: &ModuleAliases,
 ) -> Vec<DependencyRef> {
     let mut deps: Vec<DependencyRef> = Vec::new();
-    let mut seen_targets: HashMap<(String, DependencyKind), usize> = HashMap::new();
+    let mut seen_targets: HashMap<(String, UsageKind), usize> = HashMap::new();
 
     for (path, line_num, context, inline_depth) in paths {
         let rewritten = rewrite_through_alias(path, aliases);

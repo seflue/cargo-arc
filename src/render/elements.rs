@@ -1,7 +1,7 @@
 use super::constants::{CSS, LAYOUT};
 use super::positioning::PositionedItem;
 use crate::layout::{CycleKind, EdgeDirection, ItemKind, LayoutEdge, LayoutIR, NodeId};
-use crate::model::DependencyKind;
+use crate::model::UsageKind;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
@@ -373,9 +373,9 @@ pub(super) fn render_edges(
     edge_order.sort_by_key(|&i| {
         let edge = &ir.edges[i];
         match (edge.cycle, edge.direction, &edge.context.kind) {
-            (_, _, DependencyKind::Test(_) | DependencyKind::Build) => 0,
-            (None, EdgeDirection::Downward, DependencyKind::Production) => 1,
-            (None, EdgeDirection::Upward, DependencyKind::Production) => 2,
+            (_, _, UsageKind::Test(_) | UsageKind::Build) => 0,
+            (None, EdgeDirection::Downward, UsageKind::Production) => 1,
+            (None, EdgeDirection::Upward, UsageKind::Production) => 2,
             (Some(_), _, _) => 3,
         }
     });

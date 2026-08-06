@@ -1,6 +1,6 @@
 //! Workspace analysis using cargo metadata.
 
-use super::filtering::{DepInfo, collect_reachable_crates, find_seed_crates};
+use super::filtering::{DependencyInfo, collect_reachable_crates, find_seed_crates};
 use super::hir::FeatureConfig;
 use crate::model::{CrateInfo, WorkspaceCrates, normalize_crate_name};
 use anyhow::{Context, Result};
@@ -69,14 +69,14 @@ fn build_workspace_context(metadata: &cargo_metadata::Metadata) -> WorkspaceCont
     }
 }
 
-type DepsMap = std::collections::HashMap<String, Vec<String>>;
+type DependencyMap = std::collections::HashMap<String, Vec<String>>;
 
 /// Builds resolved dependencies maps from cargo metadata resolve section.
 /// Returns (production deps, dev deps) as separate maps.
 fn build_resolved_deps(
     resolve: &cargo_metadata::Resolve,
     ctx: &WorkspaceContext<'_>,
-) -> (DepsMap, DepsMap) {
+) -> (DependencyMap, DependencyMap) {
     let mut prod_deps = std::collections::HashMap::new();
     let mut dev_deps = std::collections::HashMap::new();
 
@@ -100,8 +100,9 @@ fn build_resolved_deps(
                 .get(dep.pkg.repr.as_str())
                 .copied()
                 .unwrap_or(dep.name.as_str());
-            let info = DepInfo::from_node_dep(dep, dep_pkg_name, &ctx.workspace_member_names);
-            debug!(name = info.name, kind = ?info.kind, scope = ?info.scope);
+            let info =
+                DependencyInfo::from_node_dep(dep, dep_pkg_name, &ctx.workspace_member_names);
+            debug!(name = info.name, kind = ?info.kind, origin = ?info.origin);
             if info.is_included() {
                 prod.push(normalize_crate_name(info.name));
             } else if info.is_dev_workspace() {
@@ -153,8 +154,8 @@ fn is_lib_target(target: &cargo_metadata::Target) -> bool {
 /// Builds a `CrateInfo` from a package and its resolved dependencies.
 fn build_crate_info(
     pkg: &cargo_metadata::Package,
-    prod_deps: &DepsMap,
-    dev_deps: &DepsMap,
+    prod_deps: &DependencyMap,
+    dev_deps: &DependencyMap,
 ) -> CrateInfo {
     let normalized_name = normalize_crate_name(&pkg.name);
     let dependencies = prod_deps.get(&normalized_name).cloned().unwrap_or_default();
@@ -187,8 +188,8 @@ fn build_crate_info(
 /// Filters and builds `CrateInfo` list from workspace packages.
 fn build_filtered_crates(
     metadata: &cargo_metadata::Metadata,
-    prod_deps: &DepsMap,
-    dev_deps: &DepsMap,
+    prod_deps: &DependencyMap,
+    dev_deps: &DependencyMap,
     feature_config: &FeatureConfig,
     workspace_member_names: &WorkspaceCrates,
 ) -> Vec<CrateInfo> {
