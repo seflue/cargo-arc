@@ -21,7 +21,7 @@ The pipeline data model (`cycle_ids: Vec<usize>` per edge, `cycles: {nodes, arcs
 - Output is bounded by the edge count (≤ e per SCC before dedup) — polynomial, no cap, no hang, deterministic.
 - Every cyclic edge lies on at least its own minimal cycle, so highlighting stays complete.
 - Each cycle shown is a genuine *directed* dependency cycle and is minimal, so it reads clearly.
-- The number of minimal cycles an edge is shared across is a free break-candidate signal (see `CONTEXT.md`).
+- The number of minimal cycles an edge is shared across is a free break-candidate signal (*traffic* in the [glossary](../GLOSSARY.md)).
 
 ## Consequences
 
