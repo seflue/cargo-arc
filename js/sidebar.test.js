@@ -1861,8 +1861,8 @@ describe('SidebarLogic', () => {
           cycleCount: 3,
           cycles: [
             [
-              { fromId: 'x', toId: 'y', refs: 2 },
-              { fromId: 'y', toId: 'x', refs: 5 },
+              { fromId: 'x', toId: 'y', symbols: 2 },
+              { fromId: 'y', toId: 'x', symbols: 5 },
             ],
           ],
         },
@@ -1956,7 +1956,7 @@ describe('SidebarLogic', () => {
         '<span class="sidebar-symbol-name">Coupled</span>',
       );
       expect(html).not.toContain('Reexported');
-      // meta counts the filtered coupling symbols, not edge.refs
+      // meta counts the filtered coupling symbols, not edge.symbols
       expect(html).toContain('1 symbols');
     });
 
@@ -2029,20 +2029,20 @@ describe('SidebarLogic', () => {
     // Mirrors the design's own ordering example: three cycles sharing a
     // start node and a first edge (a-b), lengths 3, 3, 4.
     const cycleAbc = [
-      { fromId: 'a', toId: 'b', refs: 1 },
-      { fromId: 'b', toId: 'c', refs: 1 },
-      { fromId: 'c', toId: 'a', refs: 1 },
+      { fromId: 'a', toId: 'b', symbols: 1 },
+      { fromId: 'b', toId: 'c', symbols: 1 },
+      { fromId: 'c', toId: 'a', symbols: 1 },
     ];
     const cycleAbd = [
-      { fromId: 'a', toId: 'b', refs: 1 },
-      { fromId: 'b', toId: 'd', refs: 1 },
-      { fromId: 'd', toId: 'a', refs: 1 },
+      { fromId: 'a', toId: 'b', symbols: 1 },
+      { fromId: 'b', toId: 'd', symbols: 1 },
+      { fromId: 'd', toId: 'a', symbols: 1 },
     ];
     const cycleAbcd = [
-      { fromId: 'a', toId: 'b', refs: 1 },
-      { fromId: 'b', toId: 'c', refs: 1 },
-      { fromId: 'c', toId: 'd', refs: 1 },
-      { fromId: 'd', toId: 'a', refs: 1 },
+      { fromId: 'a', toId: 'b', symbols: 1 },
+      { fromId: 'b', toId: 'c', symbols: 1 },
+      { fromId: 'c', toId: 'd', symbols: 1 },
+      { fromId: 'd', toId: 'a', symbols: 1 },
     ];
 
     beforeEach(() => {
@@ -2133,13 +2133,13 @@ describe('SidebarLogic', () => {
       // reuses block 0's non-closing a-b arc id).
       globalThis.STATIC_DATA.clusters[0].cycles = [
         [
-          { fromId: 'a', toId: 'b', refs: 1 },
-          { fromId: 'b', toId: 'a', refs: 1 },
+          { fromId: 'a', toId: 'b', symbols: 1 },
+          { fromId: 'b', toId: 'a', symbols: 1 },
         ],
         [
-          { fromId: 'b', toId: 'c', refs: 1 },
-          { fromId: 'c', toId: 'a', refs: 1 },
-          { fromId: 'a', toId: 'b', refs: 1 },
+          { fromId: 'b', toId: 'c', symbols: 1 },
+          { fromId: 'c', toId: 'a', symbols: 1 },
+          { fromId: 'a', toId: 'b', symbols: 1 },
         ],
       ];
       const html = SidebarLogic._buildClusterContent('0');
@@ -2152,7 +2152,7 @@ describe('SidebarLogic', () => {
 
     test('closing edge renders a leading loop-closer marker, plain rows do not', () => {
       const closing = SidebarLogic._buildEdgeRow(
-        { fromId: 'a', toId: 'b', refs: 1 },
+        { fromId: 'a', toId: 'b', symbols: 1 },
         [],
         undefined,
         ['edge-closing'],
@@ -2160,7 +2160,7 @@ describe('SidebarLogic', () => {
       expect(closing).toContain('sidebar-edge-closing-marker');
       expect(closing).toContain('&#x21ba;');
       const plain = SidebarLogic._buildEdgeRow(
-        { fromId: 'a', toId: 'b', refs: 1 },
+        { fromId: 'a', toId: 'b', symbols: 1 },
         [],
         undefined,
         [],
@@ -2212,11 +2212,11 @@ describe('SidebarLogic', () => {
       };
       globalThis.STATIC_DATA.clusters[0].cycles = [
         [
-          { fromId: 'a', toId: 'b', refs: 1 },
-          { fromId: 'b', toId: 'c', refs: 1 },
-          { fromId: 'c', toId: 'd', refs: 1 },
-          { fromId: 'd', toId: 'e', refs: 1 },
-          { fromId: 'e', toId: 'a', refs: 1 },
+          { fromId: 'a', toId: 'b', symbols: 1 },
+          { fromId: 'b', toId: 'c', symbols: 1 },
+          { fromId: 'c', toId: 'd', symbols: 1 },
+          { fromId: 'd', toId: 'e', symbols: 1 },
+          { fromId: 'e', toId: 'a', symbols: 1 },
         ],
       ];
       const html = SidebarLogic._buildClusterContent('0');
@@ -2688,8 +2688,8 @@ describe('SidebarLogic', () => {
           cycleCount: 1,
           cycles: [
             [
-              { fromId: 'a', toId: 'b', refs: 1 },
-              { fromId: 'b', toId: 'a', refs: 1 },
+              { fromId: 'a', toId: 'b', symbols: 1 },
+              { fromId: 'b', toId: 'a', symbols: 1 },
             ],
           ],
         },
@@ -2765,13 +2765,13 @@ describe('SidebarLogic', () => {
           cycleCount: 2,
           cycles: [
             [
-              { fromId: 'a', toId: 'b', refs: 1 },
-              { fromId: 'b', toId: 'a', refs: 1 },
+              { fromId: 'a', toId: 'b', symbols: 1 },
+              { fromId: 'b', toId: 'a', symbols: 1 },
             ],
             [
-              { fromId: 'a', toId: 'b', refs: 1 },
-              { fromId: 'b', toId: 'c', refs: 1 },
-              { fromId: 'c', toId: 'a', refs: 1 },
+              { fromId: 'a', toId: 'b', symbols: 1 },
+              { fromId: 'b', toId: 'c', symbols: 1 },
+              { fromId: 'c', toId: 'a', symbols: 1 },
             ],
           ],
         },

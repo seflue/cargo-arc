@@ -1,13 +1,14 @@
 //! Cluster-level cycle aggregation with verified feedback edge sets.
 //!
-//! Aggregates the per-edge minimal cycles ([`CycleAnalysis`]) into
+//! Aggregates the representative cycles ([`CycleAnalysis`]) into
 //! strongly-connected clusters and, per cluster, computes a feedback arc set
 //! (an edge set whose removal leaves no reported cycle standing): greedy
-//! set-cover over the minimal cycles, then a single `tarjan_scc` verification
-//! with a residual re-cover loop. Tolerate nothing and the set makes the
-//! cluster acyclic; tolerate cycles and those are what is left standing
+//! set-cover over the representative cycles, then a single `tarjan_scc`
+//! verification with a residual re-cover loop. Tolerate nothing and the set
+//! makes the cluster acyclic; tolerate cycles and those are what is left
+//! standing
 
-use super::cycles::{Cycle, CycleAnalysis, MinimalCycles};
+use super::cycles::{Cycle, CycleAnalysis, RepresentativeCycles};
 use crate::graph::{ArcGraph, Edge};
 use crate::model::SourceLocation;
 use petgraph::algo::tarjan_scc;
@@ -17,13 +18,13 @@ use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 
 /// One SCC-internal edge, measured against the cluster's cycles.
-pub struct CycleEdge {
+pub struct CyclicEdge {
     pub from: NodeIndex,
     pub to: NodeIndex,
     /// Gross cycles through this edge within the cluster (order-independent).
     pub cycles: usize,
-    /// Distinct symbols crossing the edge (secondary effort proxy for ranking).
-    pub refs: usize,
+    /// Distinct symbols crossing the edge (secondary rank key).
+    pub symbols: usize,
 }
 
 /// One strongly-connected cluster of mutually cyclic modules.
@@ -36,10 +37,10 @@ pub struct Cluster {
     pub cycles: Vec<usize>,
     /// Edge set whose removal breaks every cycle but the tolerated ones, ranked
     /// best-first.
-    pub feedback_edges: Vec<CycleEdge>,
-    /// Every SCC-internal edge, ranked like `feedback_edges` (cycles desc, refs
-    /// asc, name asc).
-    pub edges: Vec<CycleEdge>,
+    pub feedback_edges: Vec<CyclicEdge>,
+    /// Every SCC-internal edge, ranked like `feedback_edges` (cycles desc,
+    /// symbols asc, name asc).
+    pub edges: Vec<CyclicEdge>,
 }
 
 /// Report over all cyclic clusters, ordered by feedback edge count ascending.
@@ -66,7 +67,7 @@ impl ArcGraph {
     /// the cycles `analysis` still carries.
     ///
     /// `sub` and `analysis` must come from the same subgraph (`analysis` from
-    /// `sub.minimal_cycles()`) so that `NodeIndex` values line up and the
+    /// `sub.representative_cycles()`) so that `NodeIndex` values line up and the
     /// feedback sets are computed over the same subgraph.
     ///
     /// `tolerated` names the cycles a caller has already accepted and dropped
@@ -99,7 +100,7 @@ impl ArcGraph {
         // Group cycle indices by cluster (all nodes of a cycle share one SCC).
         let mut grouped: Vec<Vec<usize>> = vec![Vec::new(); scc_members.len()];
         for (cycle_idx, cycle) in analysis.cycles.iter().enumerate() {
-            if let Some(&id) = node_scc.get(&cycle.path[0]) {
+            if let Some(&id) = node_scc.get(&cycle.nodes[0]) {
                 grouped[id].push(cycle_idx);
             }
         }
@@ -138,7 +139,7 @@ impl ArcGraph {
     /// re-covers whatever the residual enumeration still finds untolerated. With
     /// nothing tolerated that pass runs until the cluster is acyclic. With
     /// something tolerated it stops at the enumeration's reach, and
-    /// `minimal_cycles` does not promise that is every cycle.
+    /// `representative_cycles` does not promise that is every cycle.
     fn feedback_edges(
         &self,
         sub: &DiGraph<NodeIndex, ()>,
@@ -146,12 +147,12 @@ impl ArcGraph {
         edge_cycles: &HashMap<(NodeIndex, NodeIndex), HashSet<usize>>,
         mut open: HashSet<usize>,
         tolerated: impl Fn(&Cycle) -> bool,
-    ) -> Vec<CycleEdge> {
+    ) -> Vec<CyclicEdge> {
         let mut chosen: Vec<(NodeIndex, NodeIndex)> = Vec::new();
         self.greedy_cover(edge_cycles, &mut open, &mut chosen);
 
-        // The minimal-cycle cover alone does not guarantee acyclicity:
-        // `minimal_cycles` lists a shortest cycle per edge, not every cycle. So
+        // The representative-cycle cover alone does not guarantee acyclicity:
+        // `representative_cycles` lists a shortest cycle per edge, not every cycle. So
         // keep a `tarjan_scc` guard and re-cover what it finds, minus the cycles
         // `tolerated` accepts: those are still in `sub`, and breaking them is not
         // this set's job.
@@ -161,7 +162,7 @@ impl ArcGraph {
             if tarjan_scc(&pruned).iter().all(|scc| scc.len() <= 1) {
                 break;
             }
-            let mut residual = pruned.minimal_cycles();
+            let mut residual = pruned.representative_cycles();
             residual.retain_cycles(|cycle| !tolerated(cycle));
             if residual.cycles.is_empty() {
                 break;
@@ -179,7 +180,7 @@ impl ArcGraph {
             }
         }
 
-        let mut feedback: Vec<CycleEdge> = chosen
+        let mut feedback: Vec<CyclicEdge> = chosen
             .into_iter()
             .map(|(from, to)| self.cycle_edge(from, to, edge_cycles))
             .collect();
@@ -194,8 +195,8 @@ impl ArcGraph {
         sub: &DiGraph<NodeIndex, ()>,
         node_set: &HashSet<NodeIndex>,
         edge_cycles: &HashMap<(NodeIndex, NodeIndex), HashSet<usize>>,
-    ) -> Vec<CycleEdge> {
-        let mut edges: Vec<CycleEdge> = sub
+    ) -> Vec<CyclicEdge> {
+        let mut edges: Vec<CyclicEdge> = sub
             .edge_references()
             .filter(|e| node_set.contains(&sub[e.source()]) && node_set.contains(&sub[e.target()]))
             .map(|e| self.cycle_edge(sub[e.source()], sub[e.target()], edge_cycles))
@@ -211,21 +212,21 @@ impl ArcGraph {
         from: NodeIndex,
         to: NodeIndex,
         edge_cycles: &HashMap<(NodeIndex, NodeIndex), HashSet<usize>>,
-    ) -> CycleEdge {
-        CycleEdge {
+    ) -> CyclicEdge {
+        CyclicEdge {
             from,
             to,
             cycles: edge_cycles.get(&(from, to)).map_or(0, HashSet::len),
-            refs: self.edge_refs(from, to),
+            symbols: self.edge_symbols(from, to),
         }
     }
 
-    /// Rank an edge list: traffic desc, refs asc, name asc.
-    fn rank(&self, edges: &mut [CycleEdge]) {
+    /// Rank an edge list: traffic desc, symbols asc, name asc.
+    fn rank(&self, edges: &mut [CyclicEdge]) {
         edges.sort_by(|a, b| {
             Reverse(a.cycles)
                 .cmp(&Reverse(b.cycles))
-                .then(a.refs.cmp(&b.refs))
+                .then(a.symbols.cmp(&b.symbols))
                 .then_with(|| {
                     self.qualified_name(a.from)
                         .cmp(&self.qualified_name(b.from))
@@ -236,7 +237,7 @@ impl ArcGraph {
 
     /// Repeatedly remove the edge covering the most still-open cycles until none
     /// remain, appending each pick to `chosen`. Ties break on [`RemovalBias`],
-    /// then fewer refs, then smaller name, so the choice is deterministic.
+    /// then fewer symbols, then smaller name, so the choice is deterministic.
     fn greedy_cover(
         &self,
         edge_cycles: &HashMap<(NodeIndex, NodeIndex), HashSet<usize>>,
@@ -251,10 +252,13 @@ impl ArcGraph {
                 .max_by(|(ea, ca), (eb, cb)| {
                     ca.len()
                         .cmp(&cb.len())
-                        // module-tree direction outranks ref count
+                        // module-tree direction outranks the symbol count
                         .then_with(|| self.removal_bias(**ea).cmp(&self.removal_bias(**eb)))
-                        // fewer refs is better, so the lower-ref edge ranks greater
-                        .then_with(|| self.edge_refs(eb.0, eb.1).cmp(&self.edge_refs(ea.0, ea.1)))
+                        // fewer symbols is better, so the lower count ranks greater
+                        .then_with(|| {
+                            self.edge_symbols(eb.0, eb.1)
+                                .cmp(&self.edge_symbols(ea.0, ea.1))
+                        })
                         // lexicographically smaller name is better
                         .then_with(|| self.name_key(**eb).cmp(&self.name_key(**ea)))
                 })
@@ -281,7 +285,7 @@ impl ArcGraph {
     /// location. Unnamed references (an unresolved alias, say) share one slot
     /// rather than counting zero, so an edge the resolver cannot name never
     /// reads as free.
-    fn edge_refs(&self, from: NodeIndex, to: NodeIndex) -> usize {
+    fn edge_symbols(&self, from: NodeIndex, to: NodeIndex) -> usize {
         self.find_edge(from, to)
             .and_then(|e| match &self[e] {
                 Edge::ModuleDep { locations, .. } => Some(count_symbols(locations)),
@@ -365,7 +369,7 @@ fn cluster_edge_cycles(
 }
 
 /// Copy of `sub` restricted to `node_set`, with `removed` edges dropped. Node
-/// weights stay the original `NodeIndex` values so `minimal_cycles` on the
+/// weights stay the original `NodeIndex` values so `representative_cycles` on the
 /// result reports cycles in `self`'s index space.
 fn restricted_subgraph(
     sub: &DiGraph<NodeIndex, ()>,
@@ -393,7 +397,7 @@ fn restricted_subgraph(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::{ArcGraph, Edge, Node};
+    use crate::graph::{ArcGraph, Edge, Node, Reexports};
     use crate::model::{EdgeContext, SourceLocation};
 
     /// Single-crate graph: `modules` by name, production `ModuleDep` edges
@@ -415,10 +419,10 @@ mod tests {
                 n
             })
             .collect();
-        for &(from, to, refs) in deps {
-            // One symbol per line, so the edge reads the same whether refs
-            // counts sites or symbols.
-            let locations = (0..refs)
+        for &(from, to, symbols) in deps {
+            // One symbol per line, so the edge reads the same whether the count
+            // takes sites or symbols.
+            let locations = (0..symbols)
                 .map(|i| SourceLocation {
                     file: format!("src/{}.rs", modules[from]).into(),
                     line: i + 1,
@@ -446,8 +450,8 @@ mod tests {
     /// Cluster report with the tolerated cycles dropped from the analysis but
     /// left in the subgraph — the shape a baseline run hands in.
     fn report_tolerating(g: &ArcGraph, tolerated: impl Fn(&Cycle) -> bool) -> ClusterReport {
-        let sub = g.production_subgraph();
-        let mut analysis = sub.minimal_cycles();
+        let sub = g.production_subgraph(Reexports::Included);
+        let mut analysis = sub.representative_cycles();
         analysis.retain_cycles(|cycle| !tolerated(cycle));
         g.cluster_report(&sub, &analysis, tolerated)
     }
@@ -458,14 +462,14 @@ mod tests {
     fn assert_only_tolerated_cycles_remain(
         g: &ArcGraph,
         nodes: &[NodeIndex],
-        feedback: &[CycleEdge],
+        feedback: &[CyclicEdge],
         tolerated: impl Fn(&Cycle) -> bool,
     ) {
-        let sub = g.production_subgraph();
+        let sub = g.production_subgraph(Reexports::Included);
         let node_set: HashSet<NodeIndex> = nodes.iter().copied().collect();
         let removed: HashSet<(NodeIndex, NodeIndex)> =
             feedback.iter().map(|e| (e.from, e.to)).collect();
-        let left = restricted_subgraph(&sub, &node_set, &removed).minimal_cycles();
+        let left = restricted_subgraph(&sub, &node_set, &removed).representative_cycles();
         let unbroken: Vec<&Cycle> = left.cycles.iter().filter(|c| !tolerated(c)).collect();
         assert!(
             unbroken.is_empty(),
@@ -491,8 +495,8 @@ mod tests {
     }
 
     #[test]
-    fn refs_counts_symbols_not_the_import_sites_carrying_them() {
-        // grouped <-> split, siblings, so only the ref tie-break decides the
+    fn symbol_count_ignores_the_import_sites_carrying_the_symbols() {
+        // grouped <-> split, siblings, so only the symbol tie-break decides the
         // pick. `grouped -> split` imports three symbols from one `use`
         // group: one line, one site. `split -> grouped` imports two symbols,
         // one per line.
@@ -533,7 +537,7 @@ mod tests {
         assert_eq!(cluster.feedback_edges.len(), 1);
         // The import group counts all three symbols, so the two-symbol edge is
         // the cheaper one and gets picked.
-        assert_eq!(cluster.feedback_edges[0].refs, 2);
+        assert_eq!(cluster.feedback_edges[0].symbols, 2);
         assert_eq!(
             (cluster.feedback_edges[0].from, cluster.feedback_edges[0].to),
             (split, grouped)
@@ -552,7 +556,7 @@ mod tests {
         for loc in locations.iter_mut() {
             loc.symbols.clear();
         }
-        assert_eq!(g.edge_refs(idx[0], idx[1]), 1);
+        assert_eq!(g.edge_symbols(idx[0], idx[1]), 1);
     }
 
     #[test]
@@ -562,12 +566,12 @@ mod tests {
     }
 
     #[test]
-    fn child_to_parent_edge_is_preferred_even_with_more_refs() {
+    fn child_to_parent_edge_is_preferred_even_with_more_symbols() {
         // `parent` is the parent module, `child` is nested inside it.
-        // `parent -> child` is a re-export (`pub use child::X`, 2 refs),
-        // `child -> parent` is a plain import (`use super::Y`, 5 refs). The
+        // `parent -> child` is a re-export (`pub use child::X`, 2 symbols),
+        // `child -> parent` is a plain import (`use super::Y`, 5 symbols). The
         // module-tree prior must still pick the child->parent edge, even
-        // though it carries more refs.
+        // though it carries more symbols.
         let mut graph = ArcGraph::new();
         let crate_idx = graph.add_node(Node::Crate {
             name: "app".into(),
@@ -627,7 +631,7 @@ mod tests {
         assert_eq!(cluster.feedback_edges.len(), 1);
         let picked = &cluster.feedback_edges[0];
         assert_eq!((picked.from, picked.to), (child, parent));
-        assert_eq!(picked.refs, 5);
+        assert_eq!(picked.symbols, 5);
         assert_only_tolerated_cycles_remain(
             &graph,
             &cluster.nodes,
@@ -640,11 +644,11 @@ mod tests {
     fn reexport_child_to_parent_edge_is_not_preferred() {
         // `parent` is the parent module, `child` is nested inside it and
         // re-exports `parent`'s items (`pub use super::*;`, the prelude
-        // pattern) via `child -> parent`, 1 ref. `unrelated` is an unrelated
+        // pattern) via `child -> parent`, 1 symbol. `unrelated` is an unrelated
         // module, forming the cycle parent->unrelated->child->parent with
-        // plain, non-reexport edges parent->unrelated (3 refs) and
-        // unrelated->child (5 refs). Even though `child -> parent` carries
-        // the fewest refs, the module-tree prior must not treat it as a
+        // plain, non-reexport edges parent->unrelated (3 symbols) and
+        // unrelated->child (5 symbols). Even though `child -> parent` carries
+        // the fewest symbols, the module-tree prior must not treat it as a
         // preferred candidate: it's structural, same as any other re-export.
         let mut graph = ArcGraph::new();
         let crate_idx = graph.add_node(Node::Crate {
@@ -720,7 +724,7 @@ mod tests {
         assert_eq!(cluster.feedback_edges.len(), 1);
         let picked = &cluster.feedback_edges[0];
         assert_eq!((picked.from, picked.to), (parent, unrelated));
-        assert_eq!(picked.refs, 3);
+        assert_eq!(picked.symbols, 3);
         assert_only_tolerated_cycles_remain(
             &graph,
             &cluster.nodes,
@@ -730,10 +734,10 @@ mod tests {
     }
 
     #[test]
-    fn fewer_refs_wins_without_a_parent_child_relation() {
+    fn fewer_symbols_wins_without_a_parent_child_relation() {
         // a <-> b, siblings under the crate (no Contains edge between them).
-        // With no module-tree prior to apply, the ref-count tie-break still
-        // decides: a->b carries 2 refs, b->a carries 5.
+        // With no module-tree prior to apply, the symbol-count tie-break still
+        // decides: a->b carries 2 symbols, b->a carries 5.
         let (g, idx) = graph_with(&["a", "b"], &[(0, 1, 2), (1, 0, 5)]);
         let r = report(&g);
         assert_eq!(r.clusters.len(), 1);
@@ -742,7 +746,7 @@ mod tests {
         assert_eq!(c.feedback_edges.len(), 1);
         let picked = &c.feedback_edges[0];
         assert_eq!((picked.from, picked.to), (idx[0], idx[1]));
-        assert_eq!(picked.refs, 2);
+        assert_eq!(picked.symbols, 2);
         assert_eq!(picked.cycles, 1);
         assert_only_tolerated_cycles_remain(&g, &c.nodes, &c.feedback_edges, |_| false);
     }
@@ -816,7 +820,7 @@ mod tests {
         // reported cycles need one edge each, and neither of them may be an
         // edge of the tolerated cycle.
         let (g, idx) = graph_with(HUB_MODULES, HUB_DEPS);
-        let tolerated = |cycle: &Cycle| cycle.path.len() == 2 && cycle.path.contains(&idx[1]);
+        let tolerated = |cycle: &Cycle| cycle.nodes.len() == 2 && cycle.nodes.contains(&idx[1]);
         let r = report_tolerating(&g, tolerated);
 
         assert_eq!(r.clusters.len(), 1);
@@ -882,9 +886,9 @@ mod tests {
 
     #[test]
     fn edges_are_ranked_like_the_feedback_set_which_stays_a_subset() {
-        // a<->b (5, 1 refs) and a<->c (3, 2 refs): one SCC of three nodes, two
-        // disjoint 2-cycles through a. Every edge participates in exactly one
-        // cycle, so refs decides order across all four edges.
+        // a<->b (5, 1 symbols) and a<->c (3, 2 symbols): one SCC of three
+        // nodes, two disjoint 2-cycles through a. Every edge participates in
+        // exactly one cycle, so symbols decide order across all four edges.
         let (g, idx) = graph_with(
             &["a", "b", "c"],
             &[(0, 1, 5), (1, 0, 1), (0, 2, 3), (2, 0, 2)],
@@ -901,10 +905,10 @@ mod tests {
         assert_eq!(
             edges,
             vec![
-                (idx[1], idx[0]), // b->a, 1 ref
-                (idx[2], idx[0]), // c->a, 2 refs
-                (idx[0], idx[2]), // a->c, 3 refs
-                (idx[0], idx[1]), // a->b, 5 refs
+                (idx[1], idx[0]), // b->a, 1 symbol
+                (idx[2], idx[0]), // c->a, 2 symbols
+                (idx[0], idx[2]), // a->c, 3 symbols
+                (idx[0], idx[1]), // a->b, 5 symbols
             ]
         );
     }
@@ -921,12 +925,12 @@ mod tests {
             let ka: Vec<_> = ca
                 .feedback_edges
                 .iter()
-                .map(|e| (e.from, e.to, e.cycles, e.refs))
+                .map(|e| (e.from, e.to, e.cycles, e.symbols))
                 .collect();
             let kb: Vec<_> = cb
                 .feedback_edges
                 .iter()
-                .map(|e| (e.from, e.to, e.cycles, e.refs))
+                .map(|e| (e.from, e.to, e.cycles, e.symbols))
                 .collect();
             assert_eq!(ka, kb);
         }

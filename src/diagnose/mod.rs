@@ -5,7 +5,7 @@ mod cycles;
 mod importers;
 mod order;
 
-pub use clusters::{Cluster, ClusterReport, CycleEdge};
-pub use cycles::{Cycle, CycleAnalysis, MinimalCycles};
+pub use clusters::{Cluster, ClusterReport, CyclicEdge};
+pub use cycles::{Cycle, CycleAnalysis, RepresentativeCycles};
 pub use importers::{ConsumerScope, ImporterPartition, ProviderPartition, SymbolCluster};
 pub use order::order_cycle_blocks;

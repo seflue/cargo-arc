@@ -123,6 +123,25 @@ impl Edge {
     }
 }
 
+/// Whether `pub use` re-export edges take part in cycle detection. Excluded by
+/// default (ADR-022): a re-export passes a name on rather than depending on it.
+/// `--include-reexports` maps to `Included`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reexports {
+    Included,
+    Excluded,
+}
+
+impl From<bool> for Reexports {
+    fn from(include_reexports: bool) -> Self {
+        if include_reexports {
+            Reexports::Included
+        } else {
+            Reexports::Excluded
+        }
+    }
+}
+
 /// Directed dependency graph for workspace crates and modules.
 ///
 /// Wraps `petgraph::DiGraph<Node, Edge>` with domain-specific methods for
@@ -163,40 +182,19 @@ impl ArcGraph {
         Self(DiGraph::new())
     }
 
-    /// Subgraph containing only Production `ModuleDep` edges, with node weights
-    /// mapping back to original `NodeIndex` values.
+    /// Subgraph containing Production `ModuleDep` edges, with node weights
+    /// mapping back to original `NodeIndex` values. `Reexports::Excluded` drops
+    /// pure re-export edges as well.
     #[must_use]
-    pub fn production_subgraph(&self) -> DiGraph<NodeIndex, ()> {
-        self.filter_map(
-            |idx, _| Some(idx),
-            |_, edge| edge.is_production_module_dep().then_some(()),
-        )
-    }
-
-    /// Like [`production_subgraph`](Self::production_subgraph) but with pure
-    /// re-export edges removed. A cycle that survives here is real logic
-    /// coupling; one that vanishes was an idiomatic re-export artifact (ADR-022).
-    #[must_use]
-    pub fn logic_subgraph(&self) -> DiGraph<NodeIndex, ()> {
+    pub fn production_subgraph(&self, reexports: Reexports) -> DiGraph<NodeIndex, ()> {
         self.filter_map(
             |idx, _| Some(idx),
             |_, edge| {
-                (edge.is_production_module_dep() && !edge.is_reexport_module_dep()).then_some(())
+                let keep = edge.is_production_module_dep()
+                    && (reexports == Reexports::Included || !edge.is_reexport_module_dep());
+                keep.then_some(())
             },
         )
-    }
-
-    /// Subgraph used for cycle analysis: [`logic_subgraph`](Self::logic_subgraph)
-    /// by default (pure re-export cycles excluded, ADR-022), or
-    /// [`production_subgraph`](Self::production_subgraph) when `include_reexports`
-    /// is set (the `--include-reexports` opt-in that wants every cycle).
-    #[must_use]
-    pub fn cycle_subgraph(&self, include_reexports: bool) -> DiGraph<NodeIndex, ()> {
-        if include_reexports {
-            self.production_subgraph()
-        } else {
-            self.logic_subgraph()
-        }
     }
 
     /// Return the crate node that owns `idx`. For `Node::Module` this is
@@ -851,10 +849,10 @@ mod tests {
     }
 
     #[test]
-    fn test_logic_subgraph_excludes_pure_reexport_edges() {
+    fn test_production_subgraph_excludes_pure_reexport_edges_when_excluded() {
         // foo re-exports from bar (pub use), bar uses foo (behavioral).
-        // production_subgraph has both edges → cycle; logic_subgraph drops the
-        // pure re-export edge foo→bar → acyclic.
+        // Reexports::Included keeps both edges → cycle; Reexports::Excluded drops
+        // the pure re-export edge foo→bar → acyclic.
         let crates = vec![crate_("my_crate")];
         let modules = vec![tree(ModuleInfo {
             children: vec![
@@ -871,15 +869,19 @@ mod tests {
         })];
         let graph = ArcGraph::build(&crates, &modules, None, false);
 
-        let prod = graph.production_subgraph();
-        assert_eq!(prod.edge_count(), 2, "production keeps both edges");
-        assert!(petgraph::algo::is_cyclic_directed(&prod));
+        let included = graph.production_subgraph(Reexports::Included);
+        assert_eq!(included.edge_count(), 2, "included keeps both edges");
+        assert!(petgraph::algo::is_cyclic_directed(&included));
 
-        let logic = graph.logic_subgraph();
-        assert_eq!(logic.edge_count(), 1, "logic drops the pure re-export edge");
+        let excluded = graph.production_subgraph(Reexports::Excluded);
+        assert_eq!(
+            excluded.edge_count(),
+            1,
+            "excluded drops the pure re-export edge"
+        );
         assert!(
-            !petgraph::algo::is_cyclic_directed(&logic),
-            "logic subgraph is acyclic"
+            !petgraph::algo::is_cyclic_directed(&excluded),
+            "excluded subgraph is acyclic"
         );
     }
 

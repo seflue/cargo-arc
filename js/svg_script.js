@@ -727,11 +727,11 @@ if (typeof document !== 'undefined') {
           (toNode.type === 'crate' ||
             toNode.type === 'external' ||
             toNode.type === 'external-transitive');
-        const depLevel = isCrateDep ? C.crateDepArc : C.moduleDepArc;
+        const arcType = isCrateDep ? C.crateDepArc : C.moduleDepArc;
 
         // Visible path
         const visPath = DomAdapter.createSvgElement('path');
-        visPath.setAttribute('class', `${arcClass} ${depLevel} recovered-arc`);
+        visPath.setAttribute('class', `${arcClass} ${arcType} recovered-arc`);
         visPath.setAttribute('id', `edge-${arcId}`);
         visPath.setAttribute('data-arc-id', arcId);
         visPath.setAttribute('data-direction', direction);

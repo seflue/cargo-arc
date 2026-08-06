@@ -59,7 +59,7 @@ interface StaticCycleData {
 interface StaticCycleArcData {
   fromId: string;
   toId: string;
-  refs: number;
+  symbols: number;
 }
 interface StaticClusterData {
   crate: string;

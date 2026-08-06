@@ -198,9 +198,9 @@ fn violation_block(out: &mut String, violation: &Violation, level: &str) {
 /// Format a cluster-level cycle report (default verbosity).
 ///
 /// One block per SCC cluster ordered by feedback edge count: a header, then
-/// either a single-cycle body (the ring plus its thinnest edge) or a tangle
-/// body (the ranked feedback edges), followed by a summary line. Returns an
-/// empty string when there are no clusters.
+/// either a single-cycle body (the ring plus the edge carrying the fewest
+/// symbols) or a tangle body (the ranked feedback edges), followed by a summary
+/// line. Returns an empty string when there are no clusters.
 #[must_use]
 pub fn format_cluster_report(clusters: &[CycleCluster]) -> String {
     use std::collections::HashSet;
@@ -234,8 +234,9 @@ pub fn format_cluster_report(clusters: &[CycleCluster]) -> String {
 }
 
 /// Render one cluster: header, then either a single-cycle body (the ring plus
-/// its thinnest edge) or a tangle body (the ranked feedback edges). `indent`
-/// prefixes the header; the body indents further relative to it, as before.
+/// the edge carrying the fewest symbols) or a tangle body (the ranked feedback
+/// edges). `indent` prefixes the header; the body indents further relative to
+/// it, as before.
 fn cluster_block(cluster: &CycleCluster, indent: &str) -> String {
     let mut out = String::new();
     let _ = writeln!(
@@ -261,7 +262,7 @@ fn cluster_block(cluster: &CycleCluster, indent: &str) -> String {
                 "{indent}  fewest symbols: {} -> {} ({})",
                 edge.from,
                 edge.to,
-                plural(edge.refs, "symbol"),
+                plural(edge.symbols, "symbol"),
             );
         }
     } else {
@@ -294,11 +295,11 @@ fn cluster_block(cluster: &CycleCluster, indent: &str) -> String {
         for edge in &cluster.feedback_edges {
             let cycle_word = if edge.cycles == 1 { "cycle" } else { "cycles" };
             let cycles = edge.cycles;
-            let refs = plural(edge.refs, "symbol");
+            let symbols = plural(edge.symbols, "symbol");
             let (from, to) = (&edge.from, &edge.to);
             let _ = writeln!(
                 out,
-                "{indent}    {from:<from_width$} -> {to:<to_width$} (on {cycles:>cycles_width$} {cycle_word}, {refs})"
+                "{indent}    {from:<from_width$} -> {to:<to_width$} (on {cycles:>cycles_width$} {cycle_word}, {symbols})"
             );
         }
         // Closes with a property of the cycles (the listed edges are a
@@ -348,7 +349,7 @@ mod tests {
                 from: from.into(),
                 to: to.into(),
                 cycles: 1,
-                refs: 1,
+                symbols: 1,
             }],
         }
     }
@@ -771,7 +772,7 @@ mod tests {
                 from: "a".into(),
                 to: "b".into(),
                 cycles: 1,
-                refs: 1,
+                symbols: 1,
             }],
         };
         let result = CheckResult {
@@ -790,11 +791,11 @@ mod tests {
         assert!(output.contains("    cycle: a -> b -> a"));
     }
 
-    use crate::graph::{ArcGraph, Edge, Node};
+    use crate::graph::{ArcGraph, Edge, Node, Reexports};
 
     // ===== format_cluster_report tests =====
 
-    use crate::diagnose::MinimalCycles;
+    use crate::diagnose::RepresentativeCycles;
     use crate::model::EdgeContext;
 
     /// Single-crate graph "app" with modules by name and production `ModuleDep`
@@ -816,10 +817,10 @@ mod tests {
                 n
             })
             .collect();
-        for &(from, to, refs) in deps {
-            // One symbol per line, so the edge reads the same whether refs
-            // counts sites or symbols.
-            let locations = (0..refs)
+        for &(from, to, symbols) in deps {
+            // One symbol per line, so the edge reads the same whether the count
+            // takes sites or symbols.
+            let locations = (0..symbols)
                 .map(|i| SourceLocation {
                     file: format!("src/{}.rs", modules[from]).into(),
                     line: i + 1,
@@ -841,8 +842,8 @@ mod tests {
     }
 
     fn report_of(g: &ArcGraph) -> Vec<CycleCluster> {
-        let sub = g.production_subgraph();
-        let analysis = sub.minimal_cycles();
+        let sub = g.production_subgraph(Reexports::Included);
+        let analysis = sub.representative_cycles();
         let report = g.cluster_report(&sub, &analysis, |_| false);
         let total = report.clusters.len();
         report

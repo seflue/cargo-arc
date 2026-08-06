@@ -514,7 +514,7 @@ fn arc_attrs(edge: &LayoutEdge, from_kind: &ItemKind, to_kind: &ItemKind) -> Arc
             ItemKind::Crate | ItemKind::ExternalCrate { .. }
         )
     );
-    let type_class = if edge.reexport {
+    let arc_type_class = if edge.reexport {
         cd.reexport_arc
     } else if is_crate_dep {
         cd.crate_dep_arc
@@ -530,7 +530,7 @@ fn arc_attrs(edge: &LayoutEdge, from_kind: &ItemKind, to_kind: &ItemKind) -> Arc
 
     ArcAttrs {
         arc: format!(
-            "{} {dir_arc_class}{arc_cycle_marker} {type_class}{hidden}",
+            "{} {dir_arc_class}{arc_cycle_marker} {arc_type_class}{hidden}",
             cd.dep_arc
         ),
         arrow: format!("{dir_arrow_class}{arrow_cycle_marker}{hidden}"),

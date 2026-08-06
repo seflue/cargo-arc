@@ -2,9 +2,9 @@
 
 use super::toposort::stable_toposort;
 use crate::diagnose::{
-    Cluster, ConsumerScope, Cycle, CycleAnalysis, CycleEdge, order_cycle_blocks,
+    Cluster, ConsumerScope, Cycle, CycleAnalysis, CyclicEdge, order_cycle_blocks,
 };
-use crate::graph::{ArcGraph, Edge, Node};
+use crate::graph::{ArcGraph, Edge, Node, Reexports};
 use crate::model::{EdgeContext, SourceLocation};
 use crate::volatility::Volatility;
 use petgraph::graph::{DiGraph, NodeIndex};
@@ -121,10 +121,10 @@ impl LayoutEdge {
 }
 
 #[derive(Debug)]
-pub struct CycleEdgeInfo {
+pub struct CyclicEdgeInfo {
     pub from_id: NodeId,
     pub to_id: NodeId,
-    pub refs: usize,
+    pub symbols: usize,
 }
 
 #[derive(Debug)]
@@ -132,11 +132,11 @@ pub struct ClusterInfo {
     pub crate_name: String,
     pub module_count: usize,
     pub cycle_count: usize,
-    /// Elementary cycles as ordered edge blocks: `cycles[i]` is one cycle's
-    /// path edges in path order, closing edge last. Blocks are sorted for
+    /// Cycles as ordered edge blocks: `cycles[i]` holds one cycle's edges in
+    /// node order, closing edge last. Blocks are sorted for
     /// top-to-bottom sidebar reading (start node's layout rank, then length,
     /// then rest-sequence rank).
-    pub cycles: Vec<Vec<CycleEdgeInfo>>,
+    pub cycles: Vec<Vec<CyclicEdgeInfo>>,
 }
 
 /// One symbol of a provider: how its consumers are scoped in the module tree,
@@ -174,14 +174,9 @@ impl LayoutIR {
 /// Converts graph nodes to `LayoutItems` with proper nesting and edges with cycle markers,
 /// and attaches each cyclic SCC's cluster (crate name, size, and cycles).
 /// `CrateDep` edges are skipped when `ModuleDep` edges exist between the same crates.
-/// `include_reexports` controls whether idiomatic re-export edges count toward cycles,
-/// matching the subgraph `analysis` was computed from.
+/// `reexports` must match the subgraph `analysis` was computed from.
 #[must_use]
-pub fn build_layout(
-    graph: &ArcGraph,
-    analysis: &CycleAnalysis,
-    include_reexports: bool,
-) -> LayoutIR {
+pub fn build_layout(graph: &ArcGraph, analysis: &CycleAnalysis, reexports: Reexports) -> LayoutIR {
     let mut ir = LayoutIR::new();
     let edge_to_cycles = &analysis.edge_cycles;
     let parent_map = graph.parent_map();
@@ -217,7 +212,7 @@ pub fn build_layout(
         &suppressed,
     );
 
-    attach_clusters(&mut ir, graph, analysis, &node_map, include_reexports);
+    attach_clusters(&mut ir, graph, analysis, &node_map, reexports);
     attach_symbol_scopes(&mut ir, graph, &node_map);
     ir
 }
@@ -276,9 +271,9 @@ fn attach_clusters(
     graph: &ArcGraph,
     analysis: &CycleAnalysis,
     node_map: &HashMap<NodeIndex, NodeId>,
-    include_reexports: bool,
+    reexports: Reexports,
 ) {
-    let sub = graph.cycle_subgraph(include_reexports);
+    let sub = graph.production_subgraph(reexports);
     // The diagram shows the graph as it is; rule config plays no part in it.
     let report = graph.cluster_report(&sub, analysis, |_| false);
     for cluster in report.clusters {
@@ -298,39 +293,39 @@ fn attach_clusters(
     }
 }
 
-/// Translate a cluster's elementary cycles into ordered edge blocks for the
-/// sidebar: each block is one cycle's path, rotated to start at the node with
-/// the smallest layout `NodeId` (the vertical order nodes are drawn in),
-/// closing edge last; blocks are sorted the same way so the sidebar reads
-/// top to bottom with as few jumps as possible. Per-edge `refs` is
-/// looked up from `cluster.edges`, which already covers every SCC-internal
-/// edge, so a cycle-path edge is always found there.
+/// Translate a cluster's cycles into ordered edge blocks for the sidebar: each
+/// block is one cycle's nodes, rotated to start at the node with the smallest
+/// layout `NodeId` (the vertical order nodes are drawn in), closing edge last;
+/// blocks are sorted the same way so the sidebar reads top to bottom with as
+/// few jumps as possible. The per-edge symbol count is looked up from
+/// `cluster.edges`, which already covers every SCC-internal edge, so a cycle
+/// edge is always found there.
 fn cycle_blocks(
     cluster: &Cluster,
     analysis: &CycleAnalysis,
     node_map: &HashMap<NodeIndex, NodeId>,
-) -> Vec<Vec<CycleEdgeInfo>> {
-    let edge_info: HashMap<(NodeIndex, NodeIndex), &CycleEdge> =
+) -> Vec<Vec<CyclicEdgeInfo>> {
+    let edge_info: HashMap<(NodeIndex, NodeIndex), &CyclicEdge> =
         cluster.edges.iter().map(|e| ((e.from, e.to), e)).collect();
-    let raw_paths: Vec<Vec<NodeIndex>> = cluster
+    let raw_cycles: Vec<Vec<NodeIndex>> = cluster
         .cycles
         .iter()
         .filter_map(|&idx| analysis.cycles.get(idx))
-        .map(|cycle| cycle.path.clone())
+        .map(|cycle| cycle.nodes.clone())
         .collect();
     let rank_of = |n: NodeIndex| node_map.get(&n).copied().unwrap_or(usize::MAX);
 
-    order_cycle_blocks(&raw_paths, rank_of)
+    order_cycle_blocks(&raw_cycles, rank_of)
         .into_iter()
-        .map(|path| {
-            Cycle { path }
+        .map(|nodes| {
+            Cycle { nodes }
                 .edges()
                 .filter_map(|(from, to)| {
                     let edge = edge_info.get(&(from, to))?;
-                    Some(CycleEdgeInfo {
+                    Some(CyclicEdgeInfo {
                         from_id: *node_map.get(&from)?,
                         to_id: *node_map.get(&to)?,
-                        refs: edge.refs,
+                        symbols: edge.symbols,
                     })
                 })
                 .collect()
@@ -717,7 +712,7 @@ impl ArcGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diagnose::MinimalCycles;
+    use crate::diagnose::RepresentativeCycles;
     use crate::graph::{ArcGraph, Edge, Node};
     use crate::model::{DependencyKind, EdgeContext, SourceLocation, TestKind};
     use assert2::check;
@@ -985,7 +980,7 @@ mod tests {
         b.crate_with_modules("my_crate", &["mod_a", "mod_b"])
             .prod_dep("mod_a", "mod_b");
         let (graph, _) = b.build();
-        let ir = build_layout(&graph, &no_cycles(), false);
+        let ir = build_layout(&graph, &no_cycles(), Reexports::Excluded);
 
         // Should have 3 items (1 crate + 2 modules)
         assert_eq!(ir.items.len(), 3);
@@ -1004,8 +999,10 @@ mod tests {
             .prod_dep("a", "b")
             .prod_dep("b", "a");
         let (graph, _) = b.build();
-        let analysis = graph.production_subgraph().minimal_cycles();
-        let ir = build_layout(&graph, &analysis, false);
+        let analysis = graph
+            .production_subgraph(Reexports::Included)
+            .representative_cycles();
+        let ir = build_layout(&graph, &analysis, Reexports::Excluded);
 
         // Should have 2 items
         assert_eq!(ir.items.len(), 2);
@@ -1032,8 +1029,10 @@ mod tests {
             // Non-cycle edge: F → A
             .prod_dep("f", "a");
         let (graph, _) = b.build();
-        let analysis = graph.production_subgraph().minimal_cycles();
-        let ir = build_layout(&graph, &analysis, false);
+        let analysis = graph
+            .production_subgraph(Reexports::Included)
+            .representative_cycles();
+        let ir = build_layout(&graph, &analysis, Reexports::Excluded);
 
         // Should have at least 5 cycle edges (3 from cycle 1 + 2 from cycle 2)
         let cycle_edges: Vec<_> = ir.edges.iter().filter(|e| e.cycle.is_some()).collect();
@@ -1078,7 +1077,7 @@ mod tests {
         let mut b = TestGraphBuilder::new();
         b.crate_with_modules("test", &["a", "b"]).prod_dep("a", "b"); // a depends on b
         let (graph, _) = b.build();
-        let ir = build_layout(&graph, &no_cycles(), false);
+        let ir = build_layout(&graph, &no_cycles(), Reexports::Excluded);
 
         // There should be exactly one edge
         assert_eq!(ir.edges.len(), 1);
@@ -1102,7 +1101,7 @@ mod tests {
             .crate_with_modules("crate_b", &["mod_b1", "mod_b2"])
             .crate_dep("crate_a", "crate_b");
         let (graph, _) = b.build();
-        let la = LayoutAssert::new(build_layout(&graph, &no_cycles(), false));
+        let la = LayoutAssert::new(build_layout(&graph, &no_cycles(), Reexports::Excluded));
 
         check!(la.ir.items.len() == 6);
 
@@ -1206,7 +1205,7 @@ mod tests {
             .nested_module("parent", "alpha_child")
             .nested_module("parent", "zebra_child");
         let (graph, _) = b.build();
-        let la = LayoutAssert::new(build_layout(&graph, &no_cycles(), false));
+        let la = LayoutAssert::new(build_layout(&graph, &no_cycles(), Reexports::Excluded));
 
         let pos_parent = la.pos("parent");
         let pos_alpha = la.pos("alpha_child");
@@ -1254,7 +1253,7 @@ mod tests {
             b.prod_dep(from, to);
         }
         let (graph, _) = b.build();
-        let la = LayoutAssert::new(build_layout(&graph, &no_cycles(), false));
+        let la = LayoutAssert::new(build_layout(&graph, &no_cycles(), Reexports::Excluded));
 
         la.assert_top_level_order(expected_order);
     }
@@ -1268,7 +1267,7 @@ mod tests {
             // Test: beta depends on alpha (reverse direction) → must NOT affect order
             .test_dep("beta", "alpha", TestKind::Unit);
         let (graph, _) = b.build();
-        let la = LayoutAssert::new(build_layout(&graph, &no_cycles(), false));
+        let la = LayoutAssert::new(build_layout(&graph, &no_cycles(), Reexports::Excluded));
 
         la.assert_order("alpha", "beta");
     }
@@ -1283,7 +1282,7 @@ mod tests {
             // Test: bbb depends on aaa (reverse) → must NOT affect order
             .test_crate_dep("bbb", "aaa", TestKind::Unit);
         let (graph, _) = b.build();
-        let la = LayoutAssert::new(build_layout(&graph, &no_cycles(), false));
+        let la = LayoutAssert::new(build_layout(&graph, &no_cycles(), Reexports::Excluded));
 
         la.assert_order("aaa", "bbb");
     }
@@ -1309,7 +1308,7 @@ mod tests {
                 .crate_dep("crate_a", "crate_b")
                 .prod_dep_located(self.dep_from, self.dep_to);
             let (graph, _) = b.build();
-            super::build_layout(&graph, &no_cycles(), false)
+            super::build_layout(&graph, &no_cycles(), Reexports::Excluded)
         }
     }
 
@@ -1352,7 +1351,7 @@ mod tests {
             .nested_module("parent_b", "child_b")
             .prod_dep("child_a", "child_b");
         let (graph, _) = b.build();
-        let la = LayoutAssert::new(build_layout(&graph, &no_cycles(), false));
+        let la = LayoutAssert::new(build_layout(&graph, &no_cycles(), Reexports::Excluded));
 
         la.assert_order("parent_a", "parent_b");
     }
@@ -1369,7 +1368,7 @@ mod tests {
             .crate_with_modules("crate_a", &["mod_a"])
             .prod_dep("mod_a", "mod_b"); // no CrateDep edge!
         let (graph, _) = b.build();
-        let la = LayoutAssert::new(build_layout(&graph, &no_cycles(), false));
+        let la = LayoutAssert::new(build_layout(&graph, &no_cycles(), Reexports::Excluded));
 
         la.assert_order("crate_a", "crate_b");
 
@@ -1434,7 +1433,7 @@ mod tests {
             .prod_dep("d1", "b2")
             .prod_dep("d3", "c");
         let (graph, _) = b.build();
-        let ir = build_layout(&graph, &no_cycles(), false);
+        let ir = build_layout(&graph, &no_cycles(), Reexports::Excluded);
 
         let labels: Vec<&str> = ir.items.iter().map(|i| i.label.as_str()).collect();
         let top_level: Vec<&str> = labels
@@ -1471,7 +1470,7 @@ mod tests {
             .prod_dep("a", "d")
             .prod_dep("b", "c");
         let (graph, _) = b.build();
-        let la = LayoutAssert::new(build_layout(&graph, &no_cycles(), false));
+        let la = LayoutAssert::new(build_layout(&graph, &no_cycles(), Reexports::Excluded));
 
         la.assert_order("d", "c");
     }
@@ -1487,7 +1486,7 @@ mod tests {
             .prod_dep("b", "c")
             .prod_dep("b", "d");
         let (graph, _) = b.build();
-        let la = LayoutAssert::new(build_layout(&graph, &no_cycles(), false));
+        let la = LayoutAssert::new(build_layout(&graph, &no_cycles(), Reexports::Excluded));
 
         la.assert_order("a", "c");
         la.assert_order("b", "d");
@@ -1510,7 +1509,7 @@ mod tests {
             // serde depends on proc-macro2 (transitive external dep)
             .crate_dep("serde", "proc-macro2");
         let (graph, _) = b.build();
-        let ir = build_layout(&graph, &no_cycles(), false);
+        let ir = build_layout(&graph, &no_cycles(), Reexports::Excluded);
 
         // All CrateDep edges between external crates should be Downward
         for edge in &ir.edges {
@@ -1549,8 +1548,10 @@ mod tests {
             .prod_dep("m1", "m3")
             .prod_dep("m3", "m0");
         let (graph, _) = b.build();
-        let analysis = graph.cycle_subgraph(false).minimal_cycles();
-        let ir = build_layout(&graph, &analysis, false);
+        let analysis = graph
+            .production_subgraph(Reexports::Excluded)
+            .representative_cycles();
+        let ir = build_layout(&graph, &analysis, Reexports::Excluded);
 
         assert_eq!(ir.clusters.len(), 1, "one cyclic cluster expected");
         let cluster = ir.clusters.values().next().unwrap();
@@ -1594,7 +1595,7 @@ mod tests {
             .crate_dep("app_b", "tokio")
             .crate_dep("app_a", "alpha_crate");
         let (graph, _) = b.build();
-        let la = LayoutAssert::new(build_layout(&graph, &no_cycles(), false));
+        let la = LayoutAssert::new(build_layout(&graph, &no_cycles(), Reexports::Excluded));
 
         // tokio (2 incoming) should appear before alpha_crate (1 incoming),
         // despite alpha_crate being alphabetically first.

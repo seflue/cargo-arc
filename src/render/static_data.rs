@@ -1,7 +1,7 @@
 use super::constants::{CSS, LAYOUT, RenderConfig};
 use super::positioning::PositionedItem;
 use crate::diagnose::ConsumerScope;
-use crate::layout::{CycleEdgeInfo, ItemKind, LayoutIR, NodeId};
+use crate::layout::{CyclicEdgeInfo, ItemKind, LayoutIR, NodeId};
 use crate::model::SourceLocation;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -122,14 +122,14 @@ struct ClusterData {
 struct CycleArcData {
     from_id: String,
     to_id: String,
-    refs: usize,
+    symbols: usize,
 }
 
-fn cycle_arc_data(edge: &CycleEdgeInfo) -> CycleArcData {
+fn cycle_arc_data(edge: &CyclicEdgeInfo) -> CycleArcData {
     CycleArcData {
         from_id: edge.from_id.to_string(),
         to_id: edge.to_id.to_string(),
-        refs: edge.refs,
+        symbols: edge.symbols,
     }
 }
 
@@ -496,8 +496,8 @@ pub(super) fn render_script(
 mod tests {
     use super::super::positioning::{calculate_box_width, calculate_positions};
     use super::*;
-    use crate::diagnose::MinimalCycles;
-    use crate::graph::{ArcGraph, Edge, Node};
+    use crate::diagnose::RepresentativeCycles;
+    use crate::graph::{ArcGraph, Edge, Node, Reexports};
     use crate::layout::{LayoutEdge, build_layout};
     use crate::model::{EdgeContext, SourceLocation};
 
@@ -1857,15 +1857,15 @@ mod tests {
                 module_count: 2,
                 cycle_count: 1,
                 cycles: vec![vec![
-                    crate::layout::CycleEdgeInfo {
+                    crate::layout::CyclicEdgeInfo {
                         from_id: a,
                         to_id: b,
-                        refs: 2,
+                        symbols: 2,
                     },
-                    crate::layout::CycleEdgeInfo {
+                    crate::layout::CyclicEdgeInfo {
                         from_id: b,
                         to_id: a,
-                        refs: 1,
+                        symbols: 1,
                     },
                 ]],
             },
@@ -1894,10 +1894,10 @@ mod tests {
         assert_eq!(block.len(), 2, "closing edge included");
         assert_eq!(block[0]["fromId"], a.to_string());
         assert_eq!(block[0]["toId"], b.to_string());
-        assert_eq!(block[0]["refs"], 2);
+        assert_eq!(block[0]["symbols"], 2);
         assert_eq!(block[1]["fromId"], b.to_string());
         assert_eq!(block[1]["toId"], a.to_string());
-        assert_eq!(block[1]["refs"], 1);
+        assert_eq!(block[1]["symbols"], 1);
         assert!(cl.get("edges").is_none());
         assert!(cl.get("toBreak").is_none());
         // The edge's arc-id addresses a serialized arc.
@@ -1908,8 +1908,8 @@ mod tests {
     fn test_static_data_tangle_cluster_two_edges_ranked_and_addressable() {
         // Two 2-cycles sharing module "a" (a<->b, a<->c): one SCC, two feedback
         // edges. Each lies on exactly one cycle, so ranking (ADR-021: cycles
-        // desc, then refs asc) is decided by refs, not by name — b->a (1 ref)
-        // must rank before c->a (2 refs).
+        // desc, then symbols asc) is decided by the symbol count, not by name —
+        // b->a (1 symbol) must rank before c->a (2 symbols).
         let mut graph = ArcGraph::new();
         let crate_idx = graph.add_node(Node::Crate {
             name: "app".into(),
@@ -1927,10 +1927,10 @@ mod tests {
             })
             .collect();
         let (a, b, c) = (mods[0], mods[1], mods[2]);
-        let locations = |refs: usize| {
-            // One symbol per line, so the edge reads the same whether refs
-            // counts sites or symbols.
-            (0..refs)
+        let locations = |symbols: usize| {
+            // One symbol per line, so the edge reads the same whether the count
+            // takes sites or symbols.
+            (0..symbols)
                 .map(|i| SourceLocation {
                     file: "src/lib.rs".into(),
                     line: i + 1,
@@ -1940,19 +1940,21 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
         };
-        for (from, to, refs) in [(a, b, 5), (b, a, 1), (a, c, 3), (c, a, 2)] {
+        for (from, to, symbols) in [(a, b, 5), (b, a, 1), (a, c, 3), (c, a, 2)] {
             graph.add_edge(
                 from,
                 to,
                 Edge::ModuleDep {
-                    locations: locations(refs),
+                    locations: locations(symbols),
                     context: EdgeContext::production(),
                 },
             );
         }
 
-        let analysis = graph.cycle_subgraph(false).minimal_cycles();
-        let ir = build_layout(&graph, &analysis, false);
+        let analysis = graph
+            .production_subgraph(Reexports::Excluded)
+            .representative_cycles();
+        let ir = build_layout(&graph, &analysis, Reexports::Excluded);
 
         assert_eq!(ir.clusters.len(), 1, "expected exactly one tangle cluster");
 
@@ -1996,19 +1998,19 @@ mod tests {
         assert_eq!(block0.len(), 2, "closing edge included");
         assert_eq!(block0[0]["fromId"], a_id.to_string());
         assert_eq!(block0[0]["toId"], b_id.to_string());
-        assert_eq!(block0[0]["refs"], 5);
+        assert_eq!(block0[0]["symbols"], 5);
         assert_eq!(block0[1]["fromId"], b_id.to_string());
         assert_eq!(block0[1]["toId"], a_id.to_string());
-        assert_eq!(block0[1]["refs"], 1);
+        assert_eq!(block0[1]["symbols"], 1);
 
         let block1 = cycles[1].as_array().unwrap();
         assert_eq!(block1.len(), 2, "closing edge included");
         assert_eq!(block1[0]["fromId"], a_id.to_string());
         assert_eq!(block1[0]["toId"], c_id.to_string());
-        assert_eq!(block1[0]["refs"], 3);
+        assert_eq!(block1[0]["symbols"], 3);
         assert_eq!(block1[1]["fromId"], c_id.to_string());
         assert_eq!(block1[1]["toId"], a_id.to_string());
-        assert_eq!(block1[1]["refs"], 2);
+        assert_eq!(block1[1]["symbols"], 2);
 
         // Every block edge's fromId-toId addresses a serialized arc.
         for edge in block0.iter().chain(block1.iter()) {
@@ -2096,8 +2098,10 @@ mod tests {
         let mut graph = crate_with(&["model", "user"]);
         prod_dep_syms(&mut graph, "user", "model", &["Foo"]);
 
-        let analysis = graph.cycle_subgraph(false).minimal_cycles();
-        let ir = build_layout(&graph, &analysis, false);
+        let analysis = graph
+            .production_subgraph(Reexports::Excluded)
+            .representative_cycles();
+        let ir = build_layout(&graph, &analysis, Reexports::Excluded);
         let id_of = |name: &str| ir.items.iter().find(|it| it.label == name).unwrap().id;
         let (model_id, user_id) = (id_of("model"), id_of("user"));
 
@@ -2141,8 +2145,10 @@ mod tests {
         prod_dep_syms(&mut graph, "parser", "model", &["Foo"]);
         prod_dep_syms(&mut graph, "reexport", "model", &["Foo"]);
 
-        let analysis = graph.cycle_subgraph(false).minimal_cycles();
-        let ir = build_layout(&graph, &analysis, false);
+        let analysis = graph
+            .production_subgraph(Reexports::Excluded)
+            .representative_cycles();
+        let ir = build_layout(&graph, &analysis, Reexports::Excluded);
         let id_of = |name: &str| ir.items.iter().find(|it| it.label == name).unwrap().id;
         let model_id = id_of("model");
 
@@ -2165,8 +2171,10 @@ mod tests {
         prod_dep_syms(&mut graph, "user", "model", &["Foo"]);
         prod_dep_syms(&mut graph, "admin", "model", &["Foo"]);
 
-        let analysis = graph.cycle_subgraph(false).minimal_cycles();
-        let ir = build_layout(&graph, &analysis, false);
+        let analysis = graph
+            .production_subgraph(Reexports::Excluded)
+            .representative_cycles();
+        let ir = build_layout(&graph, &analysis, Reexports::Excluded);
         let id_of = |name: &str| ir.items.iter().find(|it| it.label == name).unwrap().id;
 
         let data = static_data_json(&ir);
@@ -2201,8 +2209,10 @@ mod tests {
             },
         );
 
-        let analysis = graph.cycle_subgraph(false).minimal_cycles();
-        let ir = build_layout(&graph, &analysis, false);
+        let analysis = graph
+            .production_subgraph(Reexports::Excluded)
+            .representative_cycles();
+        let ir = build_layout(&graph, &analysis, Reexports::Excluded);
         let data = static_data_json(&ir);
         assert!(data["symbolScopes"].as_object().unwrap().is_empty());
     }

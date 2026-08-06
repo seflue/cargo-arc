@@ -9,8 +9,8 @@ use crate::analyze::{
     AnalysisBackend, FeatureConfig, ReExportMap, analyze_workspace, collect_crate_exports,
     collect_crate_reexports, externals::analyze_externals, normalize_crate_name,
 };
-use crate::diagnose::MinimalCycles;
-use crate::graph::ArcGraph;
+use crate::diagnose::RepresentativeCycles;
+use crate::graph::{ArcGraph, Reexports};
 use crate::layout::{LayoutIR, build_layout};
 use crate::model::{CrateExportMap, ModulePathMap, WorkspaceCrates};
 use crate::render::{RenderConfig, render};
@@ -187,15 +187,14 @@ pub fn run(args: ArcCommand) -> Result<()> {
         args.externals,
         args.transitive_deps,
     )?;
+    let reexports = Reexports::from(args.common.include_reexports);
     tracing::debug!("phase: cycle detection start");
-    let analysis = graph
-        .cycle_subgraph(args.common.include_reexports)
-        .minimal_cycles();
+    let analysis = graph.production_subgraph(reexports).representative_cycles();
     tracing::debug!(
         "phase: cycle detection done ({} cycles)",
         analysis.cycles.len()
     );
-    let mut layout = build_layout(&graph, &analysis, args.common.include_reexports);
+    let mut layout = build_layout(&graph, &analysis, reexports);
     tracing::debug!("phase: layout built ({} items)", layout.items.len());
 
     if !args.no_volatility {
@@ -237,7 +236,7 @@ fn run_check(check_args: &CheckArgs, common: &CommonArgs) -> Result<()> {
         Ok(config) => config,
         Err(ConfigError::FileNotFound(..)) if !explicit && !check_args.generate_baseline => {
             // No arc-rules.toml and not explicitly requested → legacy cycle check
-            return run_legacy_cycle_check(&graph, common.include_reexports);
+            return run_legacy_cycle_check(&graph, Reexports::from(common.include_reexports));
         }
         Err(e) => {
             eprintln!("error: {e}");
@@ -312,10 +311,10 @@ fn run_generate_baseline(
 }
 
 /// Legacy fallback: global cycle check when no arc-rules.toml exists.
-fn run_legacy_cycle_check(graph: &ArcGraph, include_reexports: bool) -> Result<()> {
+fn run_legacy_cycle_check(graph: &ArcGraph, reexports: Reexports) -> Result<()> {
     tracing::debug!("phase: cycle detection start (--check)");
-    let sub = graph.cycle_subgraph(include_reexports);
-    let analysis = sub.minimal_cycles();
+    let sub = graph.production_subgraph(reexports);
+    let analysis = sub.representative_cycles();
     tracing::debug!(
         "phase: cycle detection done ({} cycles)",
         analysis.cycles.len()

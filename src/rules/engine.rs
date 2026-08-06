@@ -2,7 +2,7 @@
 //!
 //! Checks architecture rules against the dependency graph and collects violations.
 
-use crate::diagnose::{Cluster, Cycle, CycleAnalysis, MinimalCycles};
+use crate::diagnose::{Cluster, Cycle, CycleAnalysis, RepresentativeCycles};
 use crate::graph::{ArcGraph, Edge};
 use crate::model::SourceLocation;
 use crate::rules::baseline::{Baseline, BaselineEntry, FindingKey};
@@ -69,7 +69,7 @@ pub struct CycleClusterEdge {
     pub from: String,
     pub to: String,
     pub cycles: usize,
-    pub refs: usize,
+    pub symbols: usize,
 }
 
 impl CycleCluster {
@@ -86,7 +86,7 @@ impl CycleCluster {
         let place = common_place(graph, &cluster.nodes);
         let ring = (cluster.cycles.len() == 1).then(|| {
             analysis.cycles[cluster.cycles[0]]
-                .path
+                .nodes
                 .iter()
                 .map(|&idx| rel_name(graph, idx, &crate_name))
                 .collect()
@@ -98,7 +98,7 @@ impl CycleCluster {
                 from: rel_name(graph, edge.from, &crate_name),
                 to: rel_name(graph, edge.to, &crate_name),
                 cycles: edge.cycles,
-                refs: edge.refs,
+                symbols: edge.symbols,
             })
             .collect();
         Self {
@@ -116,7 +116,7 @@ impl CycleCluster {
 
 /// Baseline key of `cycle`, resolved to crate-qualified module names.
 fn ring_key(graph: &ArcGraph, cycle: &Cycle) -> FindingKey {
-    FindingKey::ring(cycle.path.iter().map(|&idx| graph.qualified_name(idx)))
+    FindingKey::ring(cycle.nodes.iter().map(|&idx| graph.qualified_name(idx)))
 }
 
 /// Common `::`-prefix over the crate-qualified names of `nodes`, segment-wise.
@@ -308,7 +308,7 @@ impl<'graph> CheckRun<'graph> {
             })
             .collect();
 
-        let mut analysis = subgraph.minimal_cycles();
+        let mut analysis = subgraph.representative_cycles();
         // The baseline keys on the ring, not the cluster: a cluster merges or
         // splits as edges are added, so it has no identity to freeze against.
         // One predicate for both readers below, so the run and its cluster
@@ -330,7 +330,7 @@ impl<'graph> CheckRun<'graph> {
                     severity: rule.severity,
                     detail: ViolationDetail::Ring {
                         modules: cycle
-                            .path
+                            .nodes
                             .iter()
                             .map(|&idx| graph.qualified_name(idx))
                             .collect(),
