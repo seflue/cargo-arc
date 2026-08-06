@@ -138,7 +138,7 @@ const SidebarLogic = {
             html += `<span class="sidebar-ns">${group.modulePath}::</span>`;
           }
           html += `<span class="sidebar-symbol-name">${group.symbol}</span>`;
-          html += this._renderScopeTag(arc.to, group.symbol);
+          html += this._renderLocalityTag(arc.to, group.symbol);
           html += `<span class="sidebar-ref-count">${group.locations.length}</span>`;
           html += `</div>`;
         }
@@ -434,31 +434,31 @@ const SidebarLogic = {
   },
 
   /**
-   * Consumer-scope tag for one symbol of a provider. Empty unless
-   * STATIC_DATA.symbolScopes carries a scope for (providerId, symbol). The tag
-   * states a descriptive fact about where the symbol is consumed, not a verdict
-   * on whether to move it.
+   * Consumer-locality tag for one symbol of a provider. Empty unless
+   * STATIC_DATA.symbolLocalities carries a locality for (providerId, symbol).
+   * The tag states a descriptive fact about where the symbol is consumed, not a
+   * verdict on whether to move it.
    * @param {string} providerId - The provider node id (the arc's `to`).
    * @param {string} symbol
    * @returns {string}
    */
-  _renderScopeTag(providerId, symbol) {
-    const sc =
+  _renderLocalityTag(providerId, symbol) {
+    const sl =
       typeof STATIC_DATA !== 'undefined' &&
-      STATIC_DATA.symbolScopes?.[providerId]?.[symbol];
-    if (!sc) return '';
+      STATIC_DATA.symbolLocalities?.[providerId]?.[symbol];
+    if (!sl) return '';
     const nameOf = (id) => StaticData.getNode(id)?.name ?? id;
     let label;
-    if (sc.scope === 'singleConsumer') {
-      label = `only used by ${nameOf(sc.module)}`;
-    } else if (sc.scope === 'commonAncestor') {
-      label = `used under ${nameOf(sc.module)}`;
-    } else if (sc.scope === 'crateWide') {
-      label = `widely used (${sc.consumers?.length ?? 0} modules)`;
+    if (sl.locality === 'singleConsumer') {
+      label = `only used by ${nameOf(sl.module)}`;
+    } else if (sl.locality === 'commonAncestor') {
+      label = `used under ${nameOf(sl.module)}`;
+    } else if (sl.locality === 'crateWide') {
+      label = `widely used (${sl.consumers?.length ?? 0} modules)`;
     } else {
       return '';
     }
-    return `<span class="sidebar-scope sidebar-scope-${sc.scope}">${label}</span>`;
+    return `<span class="sidebar-locality sidebar-locality-${sl.locality}">${label}</span>`;
   },
 
   /**
@@ -863,7 +863,8 @@ const SidebarLogic = {
   /**
    * One cluster-edge row: the edge (dependent \u2192 dependency, colour-framed
    * like the node view) plus its cycle/symbol meta. When the edge's crossing
-   * symbols are known, the row expands to list them with their scope tags.
+   * symbols are known, the row expands to list them with their locality
+   * tags.
    * @param {StaticCycleArcData} edge
    * @param {Array} symbols - Pre-computed crossing symbols for this edge.
    * @param {string|undefined} focusArcId - Arc whose row should render as focused.
@@ -908,7 +909,7 @@ const SidebarLogic = {
           html += `<span class="sidebar-ns">${u.modulePath}::</span>`;
         }
         html += `<span class="sidebar-symbol-name">${u.symbol}</span>`;
-        html += this._renderScopeTag(edge.toId, u.symbol);
+        html += this._renderLocalityTag(edge.toId, u.symbol);
         html += `</div>`;
       }
       html += `</div>`;

@@ -408,16 +408,18 @@ describe('SidebarLogic', () => {
     });
   });
 
-  describe('buildContent — consumer-scope tags', () => {
+  describe('buildContent — consumer-locality tags', () => {
     afterEach(() => {
-      delete globalThis.STATIC_DATA.symbolScopes;
+      delete globalThis.STATIC_DATA.symbolLocalities;
     });
 
     const overrideWith = (usages) => ({ from: 'x', to: 'y', usages });
 
-    test('single-consumer scope names the sole consumer as a fact', () => {
-      globalThis.STATIC_DATA.symbolScopes = {
-        y: { Foo: { scope: 'singleConsumer', module: 'x', consumers: ['x'] } },
+    test('single-consumer locality names the sole consumer as a fact', () => {
+      globalThis.STATIC_DATA.symbolLocalities = {
+        y: {
+          Foo: { locality: 'singleConsumer', module: 'x', consumers: ['x'] },
+        },
       };
       const html = SidebarLogic.buildContent(
         'any',
@@ -429,15 +431,19 @@ describe('SidebarLogic', () => {
           },
         ]),
       );
-      expect(html).toContain('sidebar-scope-singleConsumer');
+      expect(html).toContain('sidebar-locality-singleConsumer');
       expect(html).toContain('only used by x');
     });
 
     test('common-ancestor states the home, crate-wide states the breadth', () => {
-      globalThis.STATIC_DATA.symbolScopes = {
+      globalThis.STATIC_DATA.symbolLocalities = {
         y: {
-          Anc: { scope: 'commonAncestor', module: 'x', consumers: ['x', 'z'] },
-          Wide: { scope: 'crateWide', consumers: ['x', 'z'] },
+          Anc: {
+            locality: 'commonAncestor',
+            module: 'x',
+            consumers: ['x', 'z'],
+          },
+          Wide: { locality: 'crateWide', consumers: ['x', 'z'] },
         },
       };
       const html = SidebarLogic.buildContent(
@@ -455,14 +461,14 @@ describe('SidebarLogic', () => {
           },
         ]),
       );
-      expect(html).toContain('sidebar-scope-commonAncestor');
+      expect(html).toContain('sidebar-locality-commonAncestor');
       expect(html).toContain('used under x');
-      expect(html).toContain('sidebar-scope-crateWide');
+      expect(html).toContain('sidebar-locality-crateWide');
       expect(html).toContain('widely used (2 modules)');
     });
 
-    test('renders no tag for a symbol without a scope', () => {
-      globalThis.STATIC_DATA.symbolScopes = { y: {} };
+    test('renders no tag for a symbol without a locality', () => {
+      globalThis.STATIC_DATA.symbolLocalities = { y: {} };
       const html = SidebarLogic.buildContent(
         'any',
         overrideWith([
@@ -473,7 +479,7 @@ describe('SidebarLogic', () => {
           },
         ]),
       );
-      expect(html).not.toContain('sidebar-scope');
+      expect(html).not.toContain('sidebar-locality');
     });
   });
 
@@ -1878,7 +1884,7 @@ describe('SidebarLogic', () => {
     afterEach(() => {
       globalThis.STATIC_DATA.clusters = savedClusters;
       delete globalThis.STATIC_DATA.arcs['x-y'];
-      delete globalThis.STATIC_DATA.symbolScopes;
+      delete globalThis.STATIC_DATA.symbolLocalities;
       SidebarLogic._isClusterMode = null;
     });
 
@@ -1918,7 +1924,7 @@ describe('SidebarLogic', () => {
       expect(html).toContain('sidebar-node-to');
     });
 
-    test('edge row expands to crossing symbols with scope tags', () => {
+    test('edge row expands to crossing symbols with locality tags', () => {
       globalThis.STATIC_DATA.arcs['x-y'].usages = [
         {
           symbol: 'Foo',
@@ -1926,14 +1932,16 @@ describe('SidebarLogic', () => {
           locations: [{ file: 'a.rs', line: 1 }],
         },
       ];
-      globalThis.STATIC_DATA.symbolScopes = {
-        y: { Foo: { scope: 'singleConsumer', module: 'x', consumers: ['x'] } },
+      globalThis.STATIC_DATA.symbolLocalities = {
+        y: {
+          Foo: { locality: 'singleConsumer', module: 'x', consumers: ['x'] },
+        },
       };
       const html = SidebarLogic.buildContent('x-y');
       expect(html).toContain('data-collapsible');
       expect(html).toContain('sidebar-edge-symbol');
       expect(html).toContain('<span class="sidebar-symbol-name">Foo</span>');
-      expect(html).toContain('sidebar-scope-singleConsumer');
+      expect(html).toContain('sidebar-locality-singleConsumer');
       expect(html).toContain('only used by x');
     });
 

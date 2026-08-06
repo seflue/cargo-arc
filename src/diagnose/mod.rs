@@ -7,5 +7,5 @@ mod order;
 
 pub use clusters::{Cluster, ClusterReport, CyclicEdge};
 pub use cycles::{Cycle, CycleAnalysis, RepresentativeCycles};
-pub use importers::{ConsumerScope, ImporterPartition, ProviderPartition, SymbolCluster};
+pub use importers::{ConsumerGroup, ConsumerLocality, ImporterPartition, ProviderPartition};
 pub use order::order_cycle_blocks;

@@ -1,6 +1,6 @@
 use super::constants::{CSS, LAYOUT, RenderConfig};
 use super::positioning::PositionedItem;
-use crate::diagnose::ConsumerScope;
+use crate::diagnose::ConsumerLocality;
 use crate::layout::{CyclicEdgeInfo, ItemKind, LayoutIR, NodeId};
 use crate::model::SourceLocation;
 use serde::Serialize;
@@ -18,7 +18,7 @@ struct StaticData {
     cycles: Vec<CycleData>,
     classes: BTreeMap<String, String>,
     clusters: BTreeMap<String, ClusterData>,
-    symbol_scopes: BTreeMap<String, BTreeMap<String, SymbolScopeData>>,
+    symbol_localities: BTreeMap<String, BTreeMap<String, SymbolLocalityData>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     expand_level: Option<usize>,
 }
@@ -133,13 +133,12 @@ fn cycle_arc_data(edge: &CyclicEdgeInfo) -> CycleArcData {
     }
 }
 
-/// Consumer scope of one symbol of a provider. `module` names the common home
-/// (the scope node) for `singleConsumer`/`commonAncestor`; absent for
-/// `crateWide`.
+/// Consumer locality of one symbol of a provider. `module` names the common
+/// home for `singleConsumer`/`commonAncestor`; absent for `crateWide`.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct SymbolScopeData {
-    scope: &'static str,
+struct SymbolLocalityData {
+    locality: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     module: Option<String>,
     consumers: Vec<String>,
@@ -419,24 +418,28 @@ fn generate_static_data(
         })
         .collect();
 
-    let symbol_scopes: BTreeMap<String, BTreeMap<String, SymbolScopeData>> = ir
-        .symbol_scopes
+    let symbol_localities: BTreeMap<String, BTreeMap<String, SymbolLocalityData>> = ir
+        .symbol_localities
         .iter()
-        .map(|(&provider, scopes)| {
-            let per_symbol = scopes
+        .map(|(&provider, localities)| {
+            let per_symbol = localities
                 .iter()
-                .map(|(symbol, sc)| {
-                    let (scope, module) = match sc.scope {
-                        ConsumerScope::SingleConsumer(n) => ("singleConsumer", Some(n.to_string())),
-                        ConsumerScope::CommonAncestor(m) => ("commonAncestor", Some(m.to_string())),
-                        ConsumerScope::CrateWide => ("crateWide", None),
+                .map(|(symbol, sl)| {
+                    let (locality, module) = match sl.locality {
+                        ConsumerLocality::SingleConsumer(n) => {
+                            ("singleConsumer", Some(n.to_string()))
+                        }
+                        ConsumerLocality::CommonAncestor(m) => {
+                            ("commonAncestor", Some(m.to_string()))
+                        }
+                        ConsumerLocality::CrateWide => ("crateWide", None),
                     };
                     (
                         symbol.clone(),
-                        SymbolScopeData {
-                            scope,
+                        SymbolLocalityData {
+                            locality,
                             module,
-                            consumers: sc.consumers.iter().map(ToString::to_string).collect(),
+                            consumers: sl.consumers.iter().map(ToString::to_string).collect(),
                         },
                     )
                 })
@@ -451,7 +454,7 @@ fn generate_static_data(
         cycles,
         classes,
         clusters,
-        symbol_scopes,
+        symbol_localities,
         expand_level: config.expand_level,
     };
     format!(
@@ -2093,7 +2096,7 @@ mod tests {
     }
 
     #[test]
-    fn test_static_data_symbol_scope_single_consumer() {
+    fn test_static_data_symbol_locality_single_consumer() {
         // model provides Foo only to user: single consumer, home = user.
         let mut graph = crate_with(&["model", "user"]);
         prod_dep_syms(&mut graph, "user", "model", &["Foo"]);
@@ -2106,10 +2109,10 @@ mod tests {
         let (model_id, user_id) = (id_of("model"), id_of("user"));
 
         let data = static_data_json(&ir);
-        let sc = &data["symbolScopes"][model_id.to_string()]["Foo"];
-        assert_eq!(sc["scope"], "singleConsumer");
-        assert_eq!(sc["module"], user_id.to_string());
-        assert_eq!(sc["consumers"], serde_json::json!([user_id.to_string()]));
+        let sl = &data["symbolLocalities"][model_id.to_string()]["Foo"];
+        assert_eq!(sl["locality"], "singleConsumer");
+        assert_eq!(sl["module"], user_id.to_string());
+        assert_eq!(sl["consumers"], serde_json::json!([user_id.to_string()]));
     }
 
     /// Add a child module `child` under existing module/crate `parent`.
@@ -2136,7 +2139,7 @@ mod tests {
     }
 
     #[test]
-    fn test_static_data_symbol_scope_common_ancestor() {
+    fn test_static_data_symbol_locality_common_ancestor() {
         // parser & reexport (both under analyze) import Foo from model:
         // common ancestor analyze, provider outside -> home = analyze.
         let mut graph = crate_with(&["model", "analyze"]);
@@ -2153,11 +2156,11 @@ mod tests {
         let model_id = id_of("model");
 
         let data = static_data_json(&ir);
-        let sc = &data["symbolScopes"][model_id.to_string()]["Foo"];
-        assert_eq!(sc["scope"], "commonAncestor");
-        assert_eq!(sc["module"], id_of("analyze").to_string());
+        let sl = &data["symbolLocalities"][model_id.to_string()]["Foo"];
+        assert_eq!(sl["locality"], "commonAncestor");
+        assert_eq!(sl["module"], id_of("analyze").to_string());
         assert_eq!(
-            symbol_ids(&sc["consumers"]),
+            symbol_ids(&sl["consumers"]),
             [id_of("parser").to_string(), id_of("reexport").to_string()]
                 .into_iter()
                 .collect()
@@ -2165,7 +2168,7 @@ mod tests {
     }
 
     #[test]
-    fn test_static_data_symbol_scope_crate_wide() {
+    fn test_static_data_symbol_locality_crate_wide() {
         // Two top-level consumers, no shared module ancestor -> crate-wide, no home.
         let mut graph = crate_with(&["model", "user", "admin"]);
         prod_dep_syms(&mut graph, "user", "model", &["Foo"]);
@@ -2178,11 +2181,11 @@ mod tests {
         let id_of = |name: &str| ir.items.iter().find(|it| it.label == name).unwrap().id;
 
         let data = static_data_json(&ir);
-        let sc = &data["symbolScopes"][id_of("model").to_string()]["Foo"];
-        assert_eq!(sc["scope"], "crateWide");
-        assert!(sc.get("module").is_none(), "crate-wide has no home");
+        let sl = &data["symbolLocalities"][id_of("model").to_string()]["Foo"];
+        assert_eq!(sl["locality"], "crateWide");
+        assert!(sl.get("module").is_none(), "crate-wide has no home");
         assert_eq!(
-            symbol_ids(&sc["consumers"]),
+            symbol_ids(&sl["consumers"]),
             [id_of("user").to_string(), id_of("admin").to_string()]
                 .into_iter()
                 .collect()
@@ -2190,8 +2193,8 @@ mod tests {
     }
 
     #[test]
-    fn test_static_data_symbol_scope_reexport_only_absent() {
-        // A pure re-export edge is republication, not use: no scope entry.
+    fn test_static_data_symbol_locality_reexport_only_absent() {
+        // A pure re-export edge is republication, not use: no locality entry.
         let mut graph = crate_with(&["model", "user"]);
         let (user, model) = (module_idx(&graph, "user"), module_idx(&graph, "model"));
         graph.add_edge(
@@ -2214,6 +2217,6 @@ mod tests {
             .representative_cycles();
         let ir = build_layout(&graph, &analysis, Reexports::Excluded);
         let data = static_data_json(&ir);
-        assert!(data["symbolScopes"].as_object().unwrap().is_empty());
+        assert!(data["symbolLocalities"].as_object().unwrap().is_empty());
     }
 }

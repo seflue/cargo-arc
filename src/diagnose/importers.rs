@@ -2,7 +2,8 @@
 //!
 //! Inverts production `ModuleDep` edges into a per-provider reverse index and
 //! groups a provider's symbols by their shared consumer set. Each group carries
-//! a [`ConsumerScope`] describing where its consumers sit in the module tree.
+//! a [`ConsumerLocality`] describing how close its consumers sit to each other
+//! in the module tree.
 
 use crate::graph::{ArcGraph, Edge};
 use petgraph::graph::NodeIndex;
@@ -14,27 +15,28 @@ pub struct ImporterPartition {
     pub providers: Vec<ProviderPartition>,
 }
 
-/// One provider module and its symbol clusters.
+/// One provider module and its consumer groups.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderPartition {
     pub module: NodeIndex,
-    pub clusters: Vec<SymbolCluster>,
+    pub consumer_groups: Vec<ConsumerGroup>,
 }
 
 /// Symbols of a provider that share the exact same consumer set.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SymbolCluster {
+pub struct ConsumerGroup {
     /// Importing modules, deduplicated and sorted by index.
     pub consumers: Vec<NodeIndex>,
     /// Symbols with exactly this consumer set, sorted lexically.
     pub symbols: Vec<String>,
-    pub scope: ConsumerScope<NodeIndex>,
+    pub locality: ConsumerLocality<NodeIndex>,
 }
 
-/// How a symbol's consumers sit in the module tree. The node in each variant is
-/// the deepest module still enclosing all consumers (their common home).
+/// How close a symbol's consumers sit to each other in the module tree. The
+/// node in each variant is the deepest module still enclosing all consumers
+/// (their common home).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConsumerScope<N> {
+pub enum ConsumerLocality<N> {
     /// Exactly one consumer; the node is that consumer.
     SingleConsumer(N),
     /// All consumers share a common module ancestor (the node), provider outside it.
@@ -80,7 +82,7 @@ impl ArcGraph {
             .into_iter()
             .map(|(module, symbols)| ProviderPartition {
                 module,
-                clusters: self.clusters_of(module, symbols),
+                consumer_groups: self.consumer_groups_of(module, symbols),
             })
             .collect();
 
@@ -88,12 +90,12 @@ impl ArcGraph {
     }
 
     /// Bundle a provider's symbols that share an identical consumer set, one
-    /// [`SymbolCluster`] per set, each tagged with its [`ConsumerScope`].
-    fn clusters_of(
+    /// [`ConsumerGroup`] per set, each tagged with its [`ConsumerLocality`].
+    fn consumer_groups_of(
         &self,
         module: NodeIndex,
         symbols: BTreeMap<String, BTreeSet<NodeIndex>>,
-    ) -> Vec<SymbolCluster> {
+    ) -> Vec<ConsumerGroup> {
         let mut groups: BTreeMap<Vec<NodeIndex>, Vec<String>> = BTreeMap::new();
         for (symbol, consumers) in symbols {
             groups
@@ -105,31 +107,31 @@ impl ArcGraph {
             .into_iter()
             .map(|(consumers, mut symbols)| {
                 symbols.sort();
-                let scope = self.consumer_scope(module, &consumers);
-                SymbolCluster {
+                let locality = self.consumer_locality(module, &consumers);
+                ConsumerGroup {
                     consumers,
                     symbols,
-                    scope,
+                    locality,
                 }
             })
             .collect()
     }
 
-    /// Classify where a symbol cluster's consumers sit in the module tree.
-    fn consumer_scope(
+    /// Classify how close a consumer group's consumers sit in the module tree.
+    fn consumer_locality(
         &self,
         provider: NodeIndex,
         consumers: &[NodeIndex],
-    ) -> ConsumerScope<NodeIndex> {
+    ) -> ConsumerLocality<NodeIndex> {
         if let [only] = consumers {
-            return ConsumerScope::SingleConsumer(*only);
+            return ConsumerLocality::SingleConsumer(*only);
         }
         match self.deepest_common_module(consumers) {
             // A common ancestor that already holds the provider is no proper home.
             Some(ancestor) if !self.containment_subtree(ancestor).contains(&provider) => {
-                ConsumerScope::CommonAncestor(ancestor)
+                ConsumerLocality::CommonAncestor(ancestor)
             }
-            _ => ConsumerScope::CrateWide,
+            _ => ConsumerLocality::CrateWide,
         }
     }
 }
@@ -204,7 +206,7 @@ mod tests {
     }
 
     #[test]
-    fn single_consumer_scope() {
+    fn single_consumer_locality() {
         // user -> model [Foo]
         let (g, idx) = graph_with(&["model", "user"], &[(1, 0, &["Foo"])]);
         let part = g.importer_partition();
@@ -212,11 +214,11 @@ mod tests {
         let provider = &part.providers[0];
         assert_eq!(provider.module, idx[0]);
         assert_eq!(
-            provider.clusters,
-            vec![SymbolCluster {
+            provider.consumer_groups,
+            vec![ConsumerGroup {
                 consumers: vec![idx[1]],
                 symbols: vec!["Foo".to_owned()],
-                scope: ConsumerScope::SingleConsumer(idx[1]),
+                locality: ConsumerLocality::SingleConsumer(idx[1]),
             }]
         );
     }
@@ -230,17 +232,17 @@ mod tests {
         );
         let provider = &g.importer_partition().providers[0];
         assert_eq!(
-            provider.clusters,
+            provider.consumer_groups,
             vec![
-                SymbolCluster {
+                ConsumerGroup {
                     consumers: vec![idx[1]],
                     symbols: vec!["Bar".to_owned(), "Foo".to_owned()],
-                    scope: ConsumerScope::SingleConsumer(idx[1]),
+                    locality: ConsumerLocality::SingleConsumer(idx[1]),
                 },
-                SymbolCluster {
+                ConsumerGroup {
                     consumers: vec![idx[2]],
                     symbols: vec!["Baz".to_owned()],
-                    scope: ConsumerScope::SingleConsumer(idx[2]),
+                    locality: ConsumerLocality::SingleConsumer(idx[2]),
                 },
             ]
         );
@@ -316,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn common_ancestor_outside_provider_scope() {
+    fn common_ancestor_outside_provider_subtree() {
         // model provider; analyze has children parser & reexport, both import Foo.
         let (g, idx) = nested(
             &["model", "analyze", "parser", "reexport"],
@@ -325,11 +327,11 @@ mod tests {
         );
         let provider = &g.importer_partition().providers[0];
         assert_eq!(
-            provider.clusters,
-            vec![SymbolCluster {
+            provider.consumer_groups,
+            vec![ConsumerGroup {
                 consumers: vec![idx[2], idx[3]],
                 symbols: vec!["Foo".to_owned()],
-                scope: ConsumerScope::CommonAncestor(idx[1]),
+                locality: ConsumerLocality::CommonAncestor(idx[1]),
             }]
         );
     }
@@ -343,7 +345,10 @@ mod tests {
             &[(1, 0, &["Foo"]), (2, 0, &["Foo"])],
         );
         let provider = &g.importer_partition().providers[0];
-        assert_eq!(provider.clusters[0].scope, ConsumerScope::CrateWide);
+        assert_eq!(
+            provider.consumer_groups[0].locality,
+            ConsumerLocality::CrateWide
+        );
     }
 
     #[test]
@@ -355,6 +360,9 @@ mod tests {
             &[(1, 0, &["Foo"]), (2, 0, &["Foo"])],
         );
         let provider = &g.importer_partition().providers[0];
-        assert_eq!(provider.clusters[0].scope, ConsumerScope::CrateWide);
+        assert_eq!(
+            provider.consumer_groups[0].locality,
+            ConsumerLocality::CrateWide
+        );
     }
 }

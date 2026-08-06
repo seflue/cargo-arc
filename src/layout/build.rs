@@ -2,7 +2,7 @@
 
 use super::toposort::stable_toposort;
 use crate::diagnose::{
-    Cluster, ConsumerScope, Cycle, CycleAnalysis, CyclicEdge, order_cycle_blocks,
+    Cluster, ConsumerLocality, Cycle, CycleAnalysis, CyclicEdge, order_cycle_blocks,
 };
 use crate::graph::{ArcGraph, Edge, Node, Reexports};
 use crate::model::{EdgeContext, SourceLocation};
@@ -139,11 +139,11 @@ pub struct ClusterInfo {
     pub cycles: Vec<Vec<CyclicEdgeInfo>>,
 }
 
-/// One symbol of a provider: how its consumers are scoped in the module tree,
+/// One symbol of a provider: how close its consumers sit in the module tree,
 /// plus the full consumer list, in layout `NodeId` space.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SymbolScope {
-    pub scope: ConsumerScope<NodeId>,
+pub struct SymbolLocality {
+    pub locality: ConsumerLocality<NodeId>,
     pub consumers: Vec<NodeId>,
 }
 
@@ -152,9 +152,9 @@ pub struct LayoutIR {
     pub items: Vec<LayoutItem>,
     pub edges: Vec<LayoutEdge>,
     pub clusters: BTreeMap<usize, ClusterInfo>,
-    /// Provider `NodeId` → symbol → consumer scope. Providers with only
+    /// Provider `NodeId` → symbol → consumer locality. Providers with only
     /// re-export/test usage carry no entry.
-    pub symbol_scopes: BTreeMap<NodeId, BTreeMap<String, SymbolScope>>,
+    pub symbol_localities: BTreeMap<NodeId, BTreeMap<String, SymbolLocality>>,
 }
 
 impl LayoutIR {
@@ -213,16 +213,16 @@ pub fn build_layout(graph: &ArcGraph, analysis: &CycleAnalysis, reexports: Reexp
     );
 
     attach_clusters(&mut ir, graph, analysis, &node_map, reexports);
-    attach_symbol_scopes(&mut ir, graph, &node_map);
+    attach_symbol_localities(&mut ir, graph, &node_map);
     ir
 }
 
 /// Translate `importer_partition` into layout `NodeId` space and attach it as a
 /// per-symbol side table. Mirrors `attach_clusters`: provider/target/consumer
 /// `NodeIndex` map through `node_map`; endpoints absent from the layout are
-/// skipped. Each symbol of a cluster gets the cluster's hint, so lookup is by
-/// `(provider, symbol)`.
-fn attach_symbol_scopes(
+/// skipped. Each symbol of a consumer group gets the group's hint, so lookup is
+/// by `(provider, symbol)`.
+fn attach_symbol_localities(
     ir: &mut LayoutIR,
     graph: &ArcGraph,
     node_map: &HashMap<NodeIndex, NodeId>,
@@ -231,36 +231,39 @@ fn attach_symbol_scopes(
         let Some(&provider_id) = node_map.get(&provider.module) else {
             continue;
         };
-        let mut symbols: BTreeMap<String, SymbolScope> = BTreeMap::new();
-        for cluster in provider.clusters {
-            // Translate the scope node into layout space; a node absent from the
-            // layout degrades to `CrateWide` rather than dropping the symbol.
-            let scope = match cluster.scope {
-                ConsumerScope::SingleConsumer(n) => {
-                    node_map.get(&n).copied().map(ConsumerScope::SingleConsumer)
-                }
-                ConsumerScope::CommonAncestor(m) => {
-                    node_map.get(&m).copied().map(ConsumerScope::CommonAncestor)
-                }
-                ConsumerScope::CrateWide => Some(ConsumerScope::CrateWide),
+        let mut symbols: BTreeMap<String, SymbolLocality> = BTreeMap::new();
+        for group in provider.consumer_groups {
+            // Translate the common-home node into layout space; a node absent
+            // from the layout degrades to `CrateWide` rather than dropping the
+            // symbol.
+            let locality = match group.locality {
+                ConsumerLocality::SingleConsumer(n) => node_map
+                    .get(&n)
+                    .copied()
+                    .map(ConsumerLocality::SingleConsumer),
+                ConsumerLocality::CommonAncestor(m) => node_map
+                    .get(&m)
+                    .copied()
+                    .map(ConsumerLocality::CommonAncestor),
+                ConsumerLocality::CrateWide => Some(ConsumerLocality::CrateWide),
             }
-            .unwrap_or(ConsumerScope::CrateWide);
-            let consumers: Vec<NodeId> = cluster
+            .unwrap_or(ConsumerLocality::CrateWide);
+            let consumers: Vec<NodeId> = group
                 .consumers
                 .iter()
                 .filter_map(|c| node_map.get(c).copied())
                 .collect();
-            for symbol in cluster.symbols {
+            for symbol in group.symbols {
                 symbols.insert(
                     symbol,
-                    SymbolScope {
-                        scope,
+                    SymbolLocality {
+                        locality,
                         consumers: consumers.clone(),
                     },
                 );
             }
         }
-        ir.symbol_scopes.insert(provider_id, symbols);
+        ir.symbol_localities.insert(provider_id, symbols);
     }
 }
 

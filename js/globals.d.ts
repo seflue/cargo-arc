@@ -67,8 +67,8 @@ interface StaticClusterData {
   cycleCount: number;
   cycles: StaticCycleArcData[][];
 }
-interface StaticSymbolScope {
-  scope: 'singleConsumer' | 'commonAncestor' | 'crateWide';
+interface StaticSymbolLocality {
+  locality: 'singleConsumer' | 'commonAncestor' | 'crateWide';
   module?: string;
   consumers: string[];
 }
@@ -78,7 +78,7 @@ declare const STATIC_DATA: {
   classes: Record<string, string>;
   cycles?: Record<string, StaticCycleData>;
   clusters?: Record<string, StaticClusterData>;
-  symbolScopes?: Record<string, Record<string, StaticSymbolScope>>;
+  symbolLocalities?: Record<string, Record<string, StaticSymbolLocality>>;
   expandLevel?: number | null;
 };
 

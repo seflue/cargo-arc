@@ -812,11 +812,12 @@ fn build_css_rules() -> Vec<CssRule> {
                 ("-webkit-user-select", "none"),
             ],
         ),
-        // Consumer-scope tag (single-consumer / common-home / crate-wide fact):
-        // literal class string from sidebar.js, no constants.rs entry. Neutral
-        // pill; the words carry the meaning, scope-specific colour is deferred.
+        // Consumer-locality tag (single-consumer / common-home / crate-wide
+        // fact): literal class string from sidebar.js, no constants.rs entry.
+        // Neutral pill; the words carry the meaning, a locality-specific colour
+        // is deferred.
         CssRule::class(
-            "sidebar-scope",
+            "sidebar-locality",
             &[
                 ("color", GRAY_400),
                 ("font-size", "9px"),
