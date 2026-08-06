@@ -1,33 +1,33 @@
-//! Violation formatting as compiler-style diagnostics
+//! Violation formatting as compiler-style output
 //!
 //! Formats `CheckResult` violations in a style similar to `rustc` error output:
 //! `error[rule-type]: rule-name` with optional source locations and a summary line.
 
-use crate::rules::baseline::FindingKey;
+use crate::rules::baseline::ViolationKey;
 use crate::rules::config::{DiagnosticLevel, Severity};
 use crate::rules::diagnostics::{Diagnostic, DiagnosticKind};
 use crate::rules::engine::{CheckResult, CycleCluster, Violation, ViolationDetail};
 use std::fmt::Write;
 
-/// Format all violations as compiler-style diagnostics.
+/// Format all violations as compiler-style output.
 ///
 /// Returns an empty string when there are no violations and nothing was
-/// suppressed or baselined. Otherwise produces one diagnostic block per
-/// violation, followed by either the suppressed/baselined findings (when
-/// `show_suppressed`) or a one-line count of them, then a summary line over
-/// the reported findings.
+/// allowed or frozen. Otherwise produces one diagnostic block per
+/// violation, followed by either the allowed/frozen violations (when
+/// `show_silenced`) or a one-line count of them, then a summary line over
+/// the reported violations.
 #[must_use]
-pub fn format_violations(result: &CheckResult, show_suppressed: bool) -> String {
-    if result.violations.is_empty()
-        && result.suppressed.is_empty()
-        && result.baselined.is_empty()
+pub fn format_violations(result: &CheckResult, show_silenced: bool) -> String {
+    if result.reported.is_empty()
+        && result.allowed.is_empty()
+        && result.frozen.is_empty()
         && result.diagnostics.is_empty()
     {
         return String::new();
     }
 
     let mut output = String::new();
-    for violation in &result.violations {
+    for violation in &result.reported {
         let level = match violation.severity {
             Severity::Error => "error",
             Severity::Warn => "warning",
@@ -36,55 +36,55 @@ pub fn format_violations(result: &CheckResult, show_suppressed: bool) -> String 
         violation_block(&mut output, violation, level);
     }
 
-    if show_suppressed {
-        for violation in &result.suppressed {
+    if show_silenced {
+        for violation in &result.allowed {
             violation_block(&mut output, violation, "except");
         }
-        for violation in &result.baselined {
+        for violation in &result.frozen {
             violation_block(&mut output, violation, "baseline");
         }
-    } else if !result.suppressed.is_empty() || !result.baselined.is_empty() {
-        let except_count = result.suppressed.len();
-        let baseline_count = result.baselined.len();
+    } else if !result.allowed.is_empty() || !result.frozen.is_empty() {
+        let except_count = result.allowed.len();
+        let baseline_count = result.frozen.len();
         match (except_count, baseline_count) {
             (n, 0) => {
                 let _ = writeln!(
                     output,
                     "{} allowed by except, not counted",
-                    plural(n, "finding")
+                    plural(n, "violation")
                 );
             }
             (0, n) => {
                 let _ = writeln!(
                     output,
                     "{} frozen in the baseline, not counted",
-                    plural(n, "finding")
+                    plural(n, "violation")
                 );
             }
             (a, b) => {
                 let _ = writeln!(
                     output,
-                    "{} hidden ({a} allowed by except, {b} frozen in the baseline)",
-                    plural(a + b, "finding"),
+                    "{} silenced ({a} allowed by except, {b} frozen in the baseline)",
+                    plural(a + b, "violation"),
                 );
             }
         }
-        let _ = writeln!(output, "  arc check --show-suppressed lists them");
+        let _ = writeln!(output, "  arc check --show-silenced lists them");
     }
 
     output.push_str(&diagnostics_block(&result.diagnostics));
 
     let errors = result
-        .violations
+        .reported
         .iter()
         .filter(|v| v.severity == Severity::Error)
         .count();
     let warnings = result
-        .violations
+        .reported
         .iter()
         .filter(|v| v.severity == Severity::Warn)
         .count();
-    // Only when something is actually reported: a run whose findings are all
+    // Only when something is actually reported: a run whose violations are all
     // covered by `except` exits 0, and an `error:` line would read as a
     // failure in CI logs.
     if errors + warnings > 0 {
@@ -135,12 +135,12 @@ fn diagnostics_block(diagnostics: &[Diagnostic]) -> String {
     out
 }
 
-/// What the diagnostic is about: the crate, the frozen finding, the pattern.
+/// What the diagnostic is about: the crate, the frozen violation, the pattern.
 fn subject(diagnostic: &Diagnostic) -> String {
     match &diagnostic.kind {
         DiagnosticKind::UnlayeredCrate { krate } => krate.clone(),
         DiagnosticKind::UnmatchedBaselineEntry { entry } => {
-            format!("{}: {}", entry.rule, finding(&entry.key))
+            format!("{}: {}", entry.rule, violation(&entry.key))
         }
         DiagnosticKind::UnmatchedExcept { entry } => entry.pattern.clone(),
     }
@@ -153,7 +153,7 @@ fn explanation(diagnostic: &Diagnostic) -> String {
             "in no layer, so its edges go unchecked".to_string()
         }
         DiagnosticKind::UnmatchedBaselineEntry { .. } => {
-            "suppresses nothing; arc check --generate-baseline rewrites the baseline".to_string()
+            "freezes nothing; arc check --generate-baseline rewrites the baseline".to_string()
         }
         DiagnosticKind::UnmatchedExcept { entry } => {
             format!("in rule {:?}, matches no module", entry.rule)
@@ -161,17 +161,17 @@ fn explanation(diagnostic: &Diagnostic) -> String {
     }
 }
 
-fn finding(key: &FindingKey) -> String {
+fn violation(key: &ViolationKey) -> String {
     match key {
-        FindingKey::Edge { from, to } => format!("{from} → {to}"),
-        FindingKey::Ring(members) => format!("{} -> {}", members.join(" -> "), members[0]),
+        ViolationKey::Edge { from, to } => format!("{from} → {to}"),
+        ViolationKey::Cycle(members) => format!("{} -> {}", members.join(" -> "), members[0]),
     }
 }
 
 /// Render one diagnostic block: `{level}[rule-type]: rule-name`, its source
-/// locations, and its edge/cluster/ring detail. `level` is `error`/`warning`
-/// for reported violations, `except` for suppressed ones, `baseline` for
-/// baselined ones: the word names the mechanism that let them through.
+/// locations, and its edge/cluster/cycle detail. `level` is `error`/`warning`
+/// for reported violations, `except` for allowed ones, `baseline` for
+/// frozen ones: the word names the mechanism that let them through.
 fn violation_block(out: &mut String, violation: &Violation, level: &str) {
     let _ = writeln!(
         out,
@@ -188,7 +188,7 @@ fn violation_block(out: &mut String, violation: &Violation, level: &str) {
         ViolationDetail::Cluster(cluster) => {
             out.push_str(&cluster_block(cluster, "  "));
         }
-        ViolationDetail::Ring { modules } => {
+        ViolationDetail::Cycle { modules } => {
             let _ = writeln!(out, "  = {} -> {}", modules.join(" -> "), modules[0]);
         }
     }
@@ -198,7 +198,7 @@ fn violation_block(out: &mut String, violation: &Violation, level: &str) {
 /// Format a cluster-level cycle report (default verbosity).
 ///
 /// One block per SCC cluster ordered by feedback edge count: a header, then
-/// either a single-cycle body (the ring plus the edge carrying the fewest
+/// either a single-cycle body (the cycle plus the edge carrying the fewest
 /// symbols) or a tangle body (the ranked feedback edges), followed by a summary
 /// line. Returns an empty string when there are no clusters.
 #[must_use]
@@ -233,7 +233,7 @@ pub fn format_cluster_report(clusters: &[CycleCluster]) -> String {
     out
 }
 
-/// Render one cluster: header, then either a single-cycle body (the ring plus
+/// Render one cluster: header, then either a single-cycle body (the cycle plus
 /// the edge carrying the fewest symbols) or a tangle body (the ranked feedback
 /// edges). `indent` prefixes the header; the body indents further relative to
 /// it, as before.
@@ -241,7 +241,7 @@ fn cluster_block(cluster: &CycleCluster, indent: &str) -> String {
     let mut out = String::new();
     let _ = writeln!(
         out,
-        "{indent}cluster {}/{}: {} ({}, {})",
+        "{indent}tangle {}/{}: {} ({}, {})",
         cluster.position,
         cluster.total,
         cluster.place,
@@ -249,7 +249,7 @@ fn cluster_block(cluster: &CycleCluster, indent: &str) -> String {
         plural(cluster.cycles, "cycle"),
     );
 
-    if let Some(names) = &cluster.ring {
+    if let Some(names) = &cluster.cycle {
         let _ = writeln!(
             out,
             "{indent}  cycle: {} -> {}",
@@ -344,7 +344,7 @@ mod tests {
             place: "app".into(),
             modules: 2,
             cycles: 1,
-            ring: Some(vec![from.into(), to.into()]),
+            cycle: Some(vec![from.into(), to.into()]),
             feedback_edges: vec![CycleClusterEdge {
                 from: from.into(),
                 to: to.into(),
@@ -357,7 +357,7 @@ mod tests {
     #[test]
     fn test_format_single_error() {
         let result = CheckResult {
-            violations: vec![Violation {
+            reported: vec![Violation {
                 rule_name: "no infra in domain".into(),
                 rule_type: "forbidden-dependency".into(),
                 severity: Severity::Error,
@@ -377,7 +377,7 @@ mod tests {
     #[test]
     fn test_format_warning() {
         let result = CheckResult {
-            violations: vec![Violation {
+            reported: vec![Violation {
                 rule_name: "no cycles in domain".into(),
                 rule_type: "no-cycles".into(),
                 severity: Severity::Warn,
@@ -393,7 +393,7 @@ mod tests {
     #[test]
     fn test_format_with_location() {
         let result = CheckResult {
-            violations: vec![Violation {
+            reported: vec![Violation {
                 rule_name: "test".into(),
                 rule_type: "forbidden-dependency".into(),
                 severity: Severity::Error,
@@ -418,7 +418,7 @@ mod tests {
     #[test]
     fn test_format_summary() {
         let result = CheckResult {
-            violations: vec![
+            reported: vec![
                 Violation {
                     rule_name: "rule1".into(),
                     rule_type: "forbidden-dependency".into(),
@@ -460,7 +460,7 @@ mod tests {
         assert!(output.is_empty());
     }
 
-    fn suppressed_edge_violation() -> Violation {
+    fn allowed_edge_violation() -> Violation {
         Violation {
             rule_name: "no infra in domain".into(),
             rule_type: "forbidden-dependency".into(),
@@ -474,9 +474,9 @@ mod tests {
     }
 
     #[test]
-    fn test_format_suppressed_hidden_by_default_but_counted() {
+    fn test_format_allowed_hidden_by_default_but_counted() {
         let result = CheckResult {
-            suppressed: vec![suppressed_edge_violation()],
+            allowed: vec![allowed_edge_violation()],
             ..Default::default()
         };
         let output = format_violations(&result, false);
@@ -485,15 +485,15 @@ mod tests {
             "got:\n{output}"
         );
         assert!(
-            output.contains("1 finding allowed by except, not counted"),
+            output.contains("1 violation allowed by except, not counted"),
             "got:\n{output}"
         );
     }
 
     #[test]
-    fn test_format_suppressed_shown_with_flag() {
+    fn test_format_allowed_shown_with_flag() {
         let result = CheckResult {
-            suppressed: vec![suppressed_edge_violation()],
+            allowed: vec![allowed_edge_violation()],
             ..Default::default()
         };
         let output = format_violations(&result, true);
@@ -509,9 +509,9 @@ mod tests {
     }
 
     #[test]
-    fn test_format_no_suppressed_output_unchanged() {
+    fn test_format_no_allowed_output_unchanged() {
         let result = CheckResult {
-            violations: vec![Violation {
+            reported: vec![Violation {
                 rule_name: "no infra in domain".into(),
                 rule_type: "forbidden-dependency".into(),
                 severity: Severity::Error,
@@ -533,12 +533,12 @@ mod tests {
         );
     }
 
-    fn baselined_ring_violation() -> Violation {
+    fn frozen_cycle_violation() -> Violation {
         Violation {
             rule_name: "no cycles in domain".into(),
             rule_type: "no-cycles".into(),
             severity: Severity::Error,
-            detail: ViolationDetail::Ring {
+            detail: ViolationDetail::Cycle {
                 modules: vec!["a".into(), "b".into()],
             },
             locations: vec![],
@@ -546,24 +546,24 @@ mod tests {
     }
 
     #[test]
-    fn test_format_baselined_hidden_by_default_but_counted() {
+    fn test_format_frozen_hidden_by_default_but_counted() {
         let result = CheckResult {
-            baselined: vec![baselined_ring_violation()],
+            frozen: vec![frozen_cycle_violation()],
             ..Default::default()
         };
         let output = format_violations(&result, false);
         assert!(!output.contains("baseline[no-cycles]"), "got:\n{output}");
         assert!(
-            output.contains("1 finding frozen in the baseline, not counted"),
+            output.contains("1 violation frozen in the baseline, not counted"),
             "got:\n{output}"
         );
     }
 
     #[test]
-    fn test_format_baselined_shown_with_flag() {
+    fn test_format_frozen_shown_with_flag() {
         let result = CheckResult {
-            suppressed: vec![suppressed_edge_violation()],
-            baselined: vec![baselined_ring_violation()],
+            allowed: vec![allowed_edge_violation()],
+            frozen: vec![frozen_cycle_violation()],
             ..Default::default()
         };
         let output = format_violations(&result, true);
@@ -580,23 +580,24 @@ mod tests {
     }
 
     #[test]
-    fn test_format_both_hidden_counts_combined() {
+    fn test_format_both_silenced_counts_combined() {
         let result = CheckResult {
-            suppressed: vec![suppressed_edge_violation()],
-            baselined: vec![baselined_ring_violation()],
+            allowed: vec![allowed_edge_violation()],
+            frozen: vec![frozen_cycle_violation()],
             ..Default::default()
         };
         let output = format_violations(&result, false);
         assert!(
-            output.contains("2 findings hidden (1 allowed by except, 1 frozen in the baseline)"),
+            output
+                .contains("2 violations silenced (1 allowed by except, 1 frozen in the baseline)"),
             "got:\n{output}"
         );
     }
 
     #[test]
-    fn test_format_only_baselined_no_reported_violations() {
+    fn test_format_only_frozen_no_reported_violations() {
         let result = CheckResult {
-            baselined: vec![baselined_ring_violation()],
+            frozen: vec![frozen_cycle_violation()],
             ..Default::default()
         };
         let output = format_violations(&result, false);
@@ -608,9 +609,9 @@ mod tests {
     }
 
     #[test]
-    fn test_format_only_suppressed_no_reported_violations() {
+    fn test_format_only_allowed_no_reported_violations() {
         let result = CheckResult {
-            suppressed: vec![suppressed_edge_violation()],
+            allowed: vec![allowed_edge_violation()],
             ..Default::default()
         };
         let output = format_violations(&result, false);
@@ -623,7 +624,7 @@ mod tests {
 
     // ===== diagnostics =====
 
-    use crate::rules::baseline::{BaselineEntry, FindingKey};
+    use crate::rules::baseline::{BaselineEntry, ViolationKey};
     use crate::rules::config::DiagnosticLevel;
     use crate::rules::diagnostics::{DeadExcept, Diagnostic, DiagnosticKind};
 
@@ -689,7 +690,7 @@ mod tests {
     }
 
     #[test]
-    fn test_format_unmatched_baseline_entry_shows_the_finding() {
+    fn test_format_unmatched_baseline_entry_shows_the_violation() {
         let result = CheckResult {
             diagnostics: vec![
                 Diagnostic {
@@ -697,7 +698,7 @@ mod tests {
                     kind: DiagnosticKind::UnmatchedBaselineEntry {
                         entry: BaselineEntry {
                             rule: "no infra in domain".into(),
-                            key: FindingKey::edge("domain::service", "infra::db"),
+                            key: ViolationKey::edge("domain::service", "infra::db"),
                         },
                     },
                 },
@@ -706,7 +707,7 @@ mod tests {
                     kind: DiagnosticKind::UnmatchedBaselineEntry {
                         entry: BaselineEntry {
                             rule: "domain acyclic".into(),
-                            key: FindingKey::ring(vec![
+                            key: ViolationKey::cycle(vec![
                                 "domain::a".to_string(),
                                 "domain::b".to_string(),
                             ]),
@@ -767,7 +768,7 @@ mod tests {
             place: "app".into(),
             modules: 2,
             cycles: 1,
-            ring: Some(vec!["a".into(), "b".into()]),
+            cycle: Some(vec!["a".into(), "b".into()]),
             feedback_edges: vec![CycleClusterEdge {
                 from: "a".into(),
                 to: "b".into(),
@@ -776,7 +777,7 @@ mod tests {
             }],
         };
         let result = CheckResult {
-            violations: vec![Violation {
+            reported: vec![Violation {
                 rule_name: "no cycles in domain".into(),
                 rule_type: "no-cycles".into(),
                 severity: Severity::Error,
@@ -787,7 +788,7 @@ mod tests {
         };
         let output = format_violations(&result, false);
         assert!(output.contains("error[no-cycles]: no cycles in domain"));
-        assert!(output.contains("  cluster 1/1: app (2 modules, 1 cycle)"));
+        assert!(output.contains("  tangle 1/1: app (2 modules, 1 cycle)"));
         assert!(output.contains("    cycle: a -> b -> a"));
     }
 
@@ -860,7 +861,7 @@ mod tests {
         let clusters = report_of(&g);
         let out = format_cluster_report(&clusters);
         assert!(
-            out.contains("cluster 1/1: app (2 modules, 1 cycle)"),
+            out.contains("tangle 1/1: app (2 modules, 1 cycle)"),
             "got:\n{out}"
         );
         assert!(out.contains("cycle: a -> b -> a"), "got:\n{out}");
@@ -876,7 +877,7 @@ mod tests {
 
     #[test]
     fn cluster_report_tangle_block() {
-        // Two triangles share a->b, plus a separate a<->e ring on the same
+        // Two triangles share a->b, plus a separate a<->e cycle on the same
         // node: three cycles, two feedback edges carrying two and one cycle.
         let g = cyc_graph(
             &["a", "b", "c", "d", "e"],

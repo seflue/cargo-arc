@@ -311,7 +311,7 @@ impl ArcConfig {
 
     /// Rule names must be unique across all rule types: a baseline entry
     /// carries the rule name and no type, so a duplicate makes it ambiguous
-    /// which rule the frozen finding belongs to.
+    /// which rule the frozen violation belongs to.
     fn check_unique_rule_names(&self, path: &Path) -> Result<(), ConfigError> {
         let mut seen = std::collections::HashSet::new();
         for rule in &self.rules {

@@ -97,11 +97,11 @@ pub struct CheckArgs {
     #[arg(long)]
     pub rules: Option<PathBuf>,
 
-    /// List findings that an `except` entry allows, instead of only counting them
+    /// List the silenced violations, instead of only counting them
     #[arg(long)]
-    pub show_suppressed: bool,
+    pub show_silenced: bool,
 
-    /// Rewrite `arc-baseline.toml` from the current findings instead of checking
+    /// Rewrite `arc-baseline.toml` from the current violations instead of checking
     #[arg(long)]
     pub generate_baseline: bool,
 }
@@ -263,9 +263,9 @@ fn run_check(check_args: &CheckArgs, common: &CommonArgs) -> Result<()> {
     let result = check_rules(&graph, &config, &baseline, common.include_reexports);
     tracing::debug!(
         "phase: rule check done ({} violations)",
-        result.violations.len()
+        result.reported.len()
     );
-    eprint!("{}", format_violations(&result, check_args.show_suppressed));
+    eprint!("{}", format_violations(&result, check_args.show_silenced));
 
     let code = result.exit_code();
     if code != 0 {
@@ -275,8 +275,8 @@ fn run_check(check_args: &CheckArgs, common: &CommonArgs) -> Result<()> {
 }
 
 /// `--generate-baseline`: refuse to write when an `except` pattern matches no
-/// module (it would silently freeze findings that pattern should instead be
-/// suppressing), otherwise rewrite `baseline_path` from the current findings.
+/// module (it would silently freeze violations that pattern should instead be
+/// allowing), otherwise rewrite `baseline_path` from the current violations.
 fn run_generate_baseline(
     graph: &ArcGraph,
     config: &ArcConfig,
@@ -305,7 +305,7 @@ fn run_generate_baseline(
     }
     eprintln!(
         "wrote {} to {}",
-        plural(result.baseline_entries.len(), "finding"),
+        plural(result.baseline_entries.len(), "violation"),
         baseline_path.display()
     );
 }

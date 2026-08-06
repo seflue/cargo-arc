@@ -781,7 +781,7 @@ fn test_generate_baseline_then_check_reports_nothing() {
     );
     assert!(
         !stderr.contains("error["),
-        "all findings should be frozen by the baseline, stderr: {stderr}"
+        "all violations should be frozen by the baseline, stderr: {stderr}"
     );
 
     let baseline_after = std::fs::read_to_string(&baseline_path).unwrap();

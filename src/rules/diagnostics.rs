@@ -1,7 +1,7 @@
 //! Gaps in the configuration itself, as opposed to violations of it.
 //!
 //! A rule states something about the code, a diagnostic about the rules: a
-//! crate no layer sorts, an entry that suppresses nothing any more. Each one
+//! crate no layer sorts, an entry that freezes nothing any more. Each one
 //! carries the level its `[diagnostics]` entry set.
 
 use crate::rules::baseline::{Baseline, BaselineEntry};
@@ -22,7 +22,7 @@ pub enum DiagnosticKind {
     /// a total statement, so a crate missing from it is not allowed but
     /// unsorted: every edge touching it is skipped without a word.
     UnlayeredCrate { krate: String },
-    /// A frozen finding the run no longer produces: fixed, or its rule renamed
+    /// A frozen violation the run no longer produces: fixed, or its rule renamed
     /// out from under the entry.
     UnmatchedBaselineEntry { entry: BaselineEntry },
     /// An `except` pattern that resolves to no module, so it allows nothing.
@@ -185,7 +185,7 @@ pub(super) fn dead_excepts(index: &PatternIndex, config: &ArcConfig) -> Vec<Dead
 #[cfg(test)]
 mod tests {
     use crate::graph::{ArcGraph, Edge, Node};
-    use crate::rules::baseline::{Baseline, BaselineEntry, FindingKey};
+    use crate::rules::baseline::{Baseline, BaselineEntry, ViolationKey};
     use crate::rules::config::{
         ArcConfig, DiagnosticLevel, Diagnostics, Direction, Except, ForbiddenDependencyRule,
         LayersRule, Rule, RuleKind, Severity, UnlayeredCrate,
@@ -453,12 +453,12 @@ mod tests {
     fn stale_entry(rule: &str) -> BaselineEntry {
         BaselineEntry {
             rule: rule.into(),
-            key: FindingKey::edge("domain::service", "infra::service"),
+            key: ViolationKey::edge("domain::service", "infra::service"),
         }
     }
 
     #[test]
-    fn baseline_entry_no_finding_matched_is_reported() {
+    fn baseline_entry_no_violation_matched_is_reported() {
         let graph = workspace(&["domain", "infra"]);
         let config = config_of(
             vec![forbidden_rule("no infra in domain", vec![])],
@@ -472,7 +472,7 @@ mod tests {
     #[test]
     fn baseline_entry_of_an_ignored_rule_is_not_reported() {
         // `severity = "ignore"` says the rule is not checked; reporting its
-        // frozen findings as stale would turn that statement around.
+        // frozen violations as stale would turn that statement around.
         let graph = workspace(&["domain", "infra"]);
         let mut rule = forbidden_rule("no infra in domain", vec![]);
         rule.severity = Severity::Ignore;

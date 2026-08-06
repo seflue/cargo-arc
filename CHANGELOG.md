@@ -14,24 +14,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rules in `arc-rules.toml` take an `except` list of permanently allowed edges,
   each `{ from, to, reason }`, with the same `*` and `**` patterns the rules
   themselves use. An allowed edge is not reported; under a `no-cycles` rule it
-  is removed before the search, so rings built through it never form.
-- `arc check --show-suppressed` lists the findings that an `except` entry
+  is removed before the search, so cycles built through it never form.
+- `arc check --show-silenced` lists the violations that an `except` entry
   allows. Without it a run only counts them.
 - `arc check --generate-baseline` writes `arc-baseline.toml` next to
-  `arc-rules.toml`, freezing the findings a project already has so that only
+  `arc-rules.toml`, freezing the violations a project already has so that only
   new ones are reported. A normal run never writes the file. Entries carry the
-  rule name; a cycle is keyed by its ring, so a new cycle is reported even when
-  it runs through a frozen one's edges. Generation is refused while an `except`
-  pattern matches no module, and `--show-suppressed` lists frozen findings
-  alongside allowed ones. In a cluster that mixes frozen and reported cycles,
-  the edge list names only edges that carry a reported one, so it never asks
-  for work on a cycle the baseline froze.
+  rule name; a cycle is keyed by its members, so a new cycle is reported even
+  when it runs through a frozen one's edges. Generation is refused while an
+  `except` pattern matches no module, and `--show-silenced` lists frozen
+  violations alongside allowed ones. In a cluster that mixes frozen and
+  reported cycles, the edge list names only edges that carry a reported one, so
+  it never asks for work on a cycle the baseline froze.
 - Rule names must now be unique across all rule types; `arc-rules.toml` is
   rejected when two rules share a name.
 - A `[diagnostics]` section in `arc-rules.toml` reports gaps in the
   configuration itself: `unlayered-crate` for a workspace crate no `layers`
   rule sorts (its edges were skipped without a word), `unmatched-baseline-entry`
-  for a frozen finding that no longer occurs, `unmatched-except` for an `except`
+  for a frozen violation that no longer occurs, `unmatched-except` for an `except`
   pattern that matches no module. Each is set to `allow`, `warn` or `deny` and
   defaults to `warn`; `deny` fails the run. `unlayered-crate` also takes an
   `except` list of crates that stand outside the architecture on purpose, and is
@@ -44,7 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- A `no-cycles` rule now reports one finding per cyclic cluster instead of one
+- A `no-cycles` rule now reports one violation per cyclic cluster instead of one
   per elementary cycle, using the same block form as a run without
   `arc-rules.toml`. Each block is headed by the location the cluster sits in,
   the shared module prefix of its members.
