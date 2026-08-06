@@ -68,20 +68,21 @@ const ArcLogic = {
   },
 
   /**
-   * Decide whether an arc should be visible given active toggle layers.
-   * An arc belongs to its dependency-type layer (crate/module/reexport) and,
-   * if it is part of a cycle, additionally to the cluster layer. Visibility is
-   * the OR over all layers the arc belongs to that are currently active.
-   * @param {{isCrateDep?: boolean, isModuleDep?: boolean, isReexport?: boolean, isCycle?: boolean}} membership
-   * @param {{crateDep?: boolean, moduleDep?: boolean, reexport?: boolean, clusterMode?: boolean}} active
+   * Decide whether any active filter still covers this arc. An arc falls under
+   * the filter for its type (crate/module/reexport) and, if it lies on a cycle,
+   * additionally under the cycles filter. The node filters are checked
+   * separately, so a true answer here is a necessary and not a sufficient
+   * condition for visibility.
+   * @param {{isCrateDep?: boolean, isModuleDep?: boolean, isReexport?: boolean, isCycle?: boolean}} arcFilters
+   * @param {{crateDep?: boolean, moduleDep?: boolean, reexport?: boolean, cycle?: boolean}} activeFilters
    * @returns {boolean}
    */
-  isArcVisibleForLayers(membership, active) {
+  matchesActiveFilters(arcFilters, activeFilters) {
     return Boolean(
-      (membership.isCrateDep && active.crateDep) ||
-        (membership.isModuleDep && active.moduleDep) ||
-        (membership.isReexport && active.reexport) ||
-        (membership.isCycle && active.clusterMode),
+      (arcFilters.isCrateDep && activeFilters.crateDep) ||
+        (arcFilters.isModuleDep && activeFilters.moduleDep) ||
+        (arcFilters.isReexport && activeFilters.reexport) ||
+        (arcFilters.isCycle && activeFilters.cycle),
     );
   },
 

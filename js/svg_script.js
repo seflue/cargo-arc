@@ -1127,20 +1127,20 @@ if (typeof document !== 'undefined') {
       return collapsed;
     }
 
-    // Read which arc-visibility layers are currently active from their checkboxes.
-    function readActiveArcLayers() {
+    // Read which arc filters are currently active from their checkboxes.
+    function readActiveArcFilters() {
       const isOn = (selector) =>
         !!DomAdapter.querySelector(selector)?.classList.contains(C.checked);
       return {
         crateDep: isOn('#crate-dep-checkbox'),
         moduleDep: isOn('#module-dep-checkbox'),
         reexport: isOn('#reexport-dep-checkbox'),
-        clusterMode: isOn('#cycles-checkbox'),
+        cycle: isOn('#cycles-checkbox'),
       };
     }
 
-    // Derive an arc's layer membership from the classes it carries.
-    function arcLayerMembership(arc) {
+    // Derive from an arc's classes which filters cover it.
+    function arcFilters(arc) {
       return {
         isCrateDep: arc.classList.contains(C.crateDepArc),
         isModuleDep: arc.classList.contains(C.moduleDepArc),
@@ -1149,15 +1149,15 @@ if (typeof document !== 'undefined') {
       };
     }
 
-    // Recompute visibility of every arc from the active layers. An arc is
-    // visible when any layer it belongs to (its dep-type, plus the cluster
-    // layer for cycle arcs) is active. Replaces per-class toggling so the
-    // outcome is deterministic regardless of toggle order. Arcs with an
-    // endpoint hidden by the node filter (external/transitive) stay hidden:
-    // both filters share the hidden-by-filter class, so the layer recompute
-    // must not resurrect node-filtered arcs.
+    // Recompute visibility of every arc from the active filters. An arc is
+    // visible when any filter covering it (its type, plus the cycles filter for
+    // cycle arcs) is active. Replaces per-class toggling so the outcome is
+    // deterministic regardless of toggle order. Arcs with an endpoint hidden by
+    // a node filter (external/transitive) stay hidden: both sides share the
+    // hidden-by-filter class, so the arc recompute must not resurrect
+    // node-filtered arcs.
     function recomputeArcVisibility() {
-      const active = readActiveArcLayers();
+      const activeFilters = readActiveArcFilters();
       const filterHiddenNodes = getFilterHiddenNodeIds();
 
       DomAdapter.querySelectorAll(
@@ -1174,7 +1174,7 @@ if (typeof document !== 'undefined') {
             filterHiddenNodes.has(endpoints.to));
         const visible =
           !nodeFilteredOut &&
-          ArcLogic.isArcVisibleForLayers(arcLayerMembership(arc), active);
+          ArcLogic.matchesActiveFilters(arcFilters(arc), activeFilters);
         arc.classList.toggle(C.hiddenByFilter, !visible);
         hitarea.classList.toggle(C.hiddenByFilter, !visible);
         DomAdapter.getArrows(arcId).forEach((arrow) => {
@@ -1190,7 +1190,7 @@ if (typeof document !== 'undefined') {
       // Virtual arcs are aggregated module-deps — they follow module-dep.
       DomAdapter.querySelectorAll(Selectors.allVirtualElements()).forEach(
         (el) => {
-          el.classList.toggle(C.hiddenByFilter, !active.moduleDep);
+          el.classList.toggle(C.hiddenByFilter, !activeFilters.moduleDep);
         },
       );
 
@@ -1198,16 +1198,17 @@ if (typeof document !== 'undefined') {
       highlightTiming.immediate();
     }
 
-    // Flip one dep-type layer's checkbox, then recompute arc visibility.
-    function toggleLayerCheckbox(checkboxSelector) {
+    // Flip one arc filter's checkbox, then recompute arc visibility.
+    function toggleFilterCheckbox(checkboxSelector) {
       DomAdapter.querySelector(checkboxSelector)?.classList.toggle(C.checked);
       recomputeArcVisibility();
     }
 
-    // Toggle the cluster (cycles) layer: styling state on the SVG root plus
-    // visibility of cycle arcs. Cycle styling (red) is CSS-gated on the root
-    // class; visibility is recomputed like the other layers.
-    function toggleCyclesVisibility() {
+    // Flip the cycles checkbox. Cluster mode gates the two-level cluster
+    // interaction (a click selects the cluster, an inner edge then focuses) and
+    // CSS-gates the red cycle styling on the root class. It doubles as the
+    // cycles filter, so arc visibility is recomputed like the other filters.
+    function toggleClusterMode() {
       const checkbox = DomAdapter.querySelector('#cycles-checkbox');
       const isChecked = checkbox ? checkbox.classList.toggle(C.checked) : false;
       DomAdapter.getSvgRoot()?.classList.toggle(C.clusterModeOn, isChecked);
@@ -1399,28 +1400,28 @@ if (typeof document !== 'undefined') {
       ?.closest('label')
       ?.addEventListener('click', (e) => {
         e.stopPropagation();
-        toggleLayerCheckbox('#crate-dep-checkbox');
+        toggleFilterCheckbox('#crate-dep-checkbox');
       });
 
     DomAdapter.querySelector('#module-dep-checkbox')
       ?.closest('label')
       ?.addEventListener('click', (e) => {
         e.stopPropagation();
-        toggleLayerCheckbox('#module-dep-checkbox');
+        toggleFilterCheckbox('#module-dep-checkbox');
       });
 
     DomAdapter.querySelector('#reexport-dep-checkbox')
       ?.closest('label')
       ?.addEventListener('click', (e) => {
         e.stopPropagation();
-        toggleLayerCheckbox('#reexport-dep-checkbox');
+        toggleFilterCheckbox('#reexport-dep-checkbox');
       });
 
     DomAdapter.querySelector('#cycles-checkbox')
       ?.closest('label')
       ?.addEventListener('click', (e) => {
         e.stopPropagation();
-        toggleCyclesVisibility();
+        toggleClusterMode();
       });
 
     DomAdapter.querySelector('#external-dep-checkbox')

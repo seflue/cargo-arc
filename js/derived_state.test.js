@@ -1690,7 +1690,7 @@ describe('DerivedState', () => {
       expect(result.arcHighlights.has('B-C')).toBe(false);
       expect(result.arcHighlights.has('C-A')).toBe(false);
       expect(result.nodeHighlights.has('C')).toBe(false);
-      // No cycle glow when the cluster layer is off.
+      // No cycle glow when the cluster category is off.
       expect(result.shadowData.get('A-B')?.glowClass).not.toBe('glowCycle');
     });
   });

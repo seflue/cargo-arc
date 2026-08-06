@@ -66,48 +66,52 @@ describe('ArcLogic (Arrow functions)', () => {
   });
 });
 
-describe('ArcLogic.isArcVisibleForLayers', () => {
-  test('cycle arc is visible via cluster layer when its dep-type layer is off', () => {
-    const membership = { isModuleDep: true, isCycle: true };
-    const active = { moduleDep: false, clusterMode: true };
-    expect(ArcLogic.isArcVisibleForLayers(membership, active)).toBe(true);
+describe('ArcLogic.matchesActiveFilters', () => {
+  test('cycle arc is covered by the cycles filter when its type filter is off', () => {
+    const arcFilters = { isModuleDep: true, isCycle: true };
+    const activeFilters = { moduleDep: false, cycle: true };
+    expect(ArcLogic.matchesActiveFilters(arcFilters, activeFilters)).toBe(true);
   });
 
-  test('cycle arc is visible via its dep-type layer when cluster is off', () => {
-    const membership = { isModuleDep: true, isCycle: true };
-    const active = { moduleDep: true, clusterMode: false };
-    expect(ArcLogic.isArcVisibleForLayers(membership, active)).toBe(true);
+  test('cycle arc is covered by its type filter when the cycles filter is off', () => {
+    const arcFilters = { isModuleDep: true, isCycle: true };
+    const activeFilters = { moduleDep: true, cycle: false };
+    expect(ArcLogic.matchesActiveFilters(arcFilters, activeFilters)).toBe(true);
   });
 
-  test('cycle arc is hidden when both its dep-type and cluster layers are off', () => {
-    const membership = { isModuleDep: true, isCycle: true };
-    const active = { moduleDep: false, clusterMode: false };
-    expect(ArcLogic.isArcVisibleForLayers(membership, active)).toBe(false);
+  test('cycle arc is covered by nothing when both filters are off', () => {
+    const arcFilters = { isModuleDep: true, isCycle: true };
+    const activeFilters = { moduleDep: false, cycle: false };
+    expect(ArcLogic.matchesActiveFilters(arcFilters, activeFilters)).toBe(
+      false,
+    );
   });
 
-  test('non-cycle dep arc is hidden when its dep-type layer is off, even with cluster on', () => {
-    const membership = { isModuleDep: true, isCycle: false };
-    const active = { moduleDep: false, clusterMode: true };
-    expect(ArcLogic.isArcVisibleForLayers(membership, active)).toBe(false);
+  test('non-cycle arc is covered by nothing when its type filter is off, even with the cycles filter on', () => {
+    const arcFilters = { isModuleDep: true, isCycle: false };
+    const activeFilters = { moduleDep: false, cycle: true };
+    expect(ArcLogic.matchesActiveFilters(arcFilters, activeFilters)).toBe(
+      false,
+    );
   });
 
-  test('crate-dep arc follows the crate layer', () => {
-    const membership = { isCrateDep: true };
-    expect(ArcLogic.isArcVisibleForLayers(membership, { crateDep: true })).toBe(
+  test('crate-dep arc follows the crate-dep filter', () => {
+    const arcFilters = { isCrateDep: true };
+    expect(ArcLogic.matchesActiveFilters(arcFilters, { crateDep: true })).toBe(
       true,
     );
-    expect(
-      ArcLogic.isArcVisibleForLayers(membership, { crateDep: false }),
-    ).toBe(false);
+    expect(ArcLogic.matchesActiveFilters(arcFilters, { crateDep: false })).toBe(
+      false,
+    );
   });
 
-  test('reexport arc follows the reexport layer', () => {
-    const membership = { isReexport: true };
-    expect(ArcLogic.isArcVisibleForLayers(membership, { reexport: true })).toBe(
+  test('reexport arc follows the reexport filter', () => {
+    const arcFilters = { isReexport: true };
+    expect(ArcLogic.matchesActiveFilters(arcFilters, { reexport: true })).toBe(
       true,
     );
-    expect(
-      ArcLogic.isArcVisibleForLayers(membership, { reexport: false }),
-    ).toBe(false);
+    expect(ArcLogic.matchesActiveFilters(arcFilters, { reexport: false })).toBe(
+      false,
+    );
   });
 });

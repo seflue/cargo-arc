@@ -101,7 +101,7 @@ pub(super) fn render_toolbar(
             "          </label>\n",
             "          <label class=\"{}\">\n",
             "            <span class=\"{} {}\" id=\"cycles-checkbox\"></span>\n",
-            "            Show Cycles\n",
+            "            Show Circular Dependencies\n",
             "          </label>\n",
             "{}",
             "        </div>\n",

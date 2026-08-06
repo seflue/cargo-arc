@@ -158,9 +158,9 @@ const SidebarLogic = {
     let footerText =
       groups.length === 0
         ? 'Cargo.toml dependency'
-        : `${totalLocs} Referenzen \u00b7 ${symbolCount} Symbole`;
-    if (overrideData?.originalArcs) {
-      footerText += ` \u00b7 ${overrideData.originalArcs.length} Relations`;
+        : `${totalLocs} References \u00b7 ${symbolCount} Symbols`;
+    if (overrideData?.originalArcs?.length) {
+      footerText += ` \u00b7 ${overrideData.originalArcs.length} hidden Dependencies`;
     }
     html += `<div class="sidebar-footer">${footerText}</div>`;
 
@@ -243,8 +243,7 @@ const SidebarLogic = {
     html += `</div>`;
 
     // Footer
-    const total = relations.incoming.length + relations.outgoing.length;
-    html += `<div class="sidebar-footer">${total} Relations \u00b7 ${relations.incoming.length} Dependents \u00b7 ${relations.outgoing.length} Dependencies</div>`;
+    html += `<div class="sidebar-footer">${relations.incoming.length} Dependents \u00b7 ${relations.outgoing.length} Dependencies</div>`;
 
     return html;
   },

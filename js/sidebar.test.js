@@ -296,8 +296,8 @@ describe('SidebarLogic', () => {
       const html = SidebarLogic.buildContent('crate_a-crate_b');
       expect(html).toContain('sidebar-footer');
       // 3 locations total (2 + 1), 2 symbols
-      expect(html).toContain('3 Referenzen');
-      expect(html).toContain('2 Symbole');
+      expect(html).toContain('3 References');
+      expect(html).toContain('2 Symbols');
     });
 
     test('bare locations (empty symbol) render without symbol name', () => {
@@ -1824,9 +1824,7 @@ describe('SidebarLogic', () => {
 
     test('footer shows correct counts', () => {
       const html = SidebarLogic.buildNodeContent('crate_a', makeRelations());
-      // 3 total relations (2 incoming + 1 outgoing)
       // 2 Dependents (incoming), 1 Dependencies (outgoing)
-      expect(html).toContain('3 Relations');
       expect(html).toContain('2 Dependents');
       expect(html).toContain('1 Dependencies');
     });
