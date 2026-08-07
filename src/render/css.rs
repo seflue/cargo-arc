@@ -877,8 +877,8 @@ fn build_css_rules() -> Vec<CssRule> {
                 ("white-space", "nowrap"),
             ],
         ),
-        // Cycle blocks: one collapsible <details> per elementary
-        // cycle in a cluster's sidebar section. Literal class strings from
+        // Cycle blocks: one collapsible <details> per cycle in a
+        // cluster's sidebar section. Literal class strings from
         // sidebar.js, no constants.rs entries (same precedent as the
         // sidebar-edge-row family above).
         CssRule::class("cycle-block", &[("margin-bottom", "8px")]),

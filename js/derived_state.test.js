@@ -1590,7 +1590,7 @@ describe('DerivedState', () => {
     });
 
     test('multi-cycle arc: whole SCC highlighted (two cycles, one SCC)', () => {
-      // Two elementary cycles A→B→C→A and B→C→E→B share the arc B-C, so all
+      // Two cycles A→B→C→A and B→C→E→B share the arc B-C, so all
       // four nodes are mutually reachable: one SCC (sccId=0).
       const MULTI_CYCLE_DATA = {
         nodes: {

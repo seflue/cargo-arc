@@ -267,7 +267,7 @@ fn attach_symbol_localities(
     }
 }
 
-/// Compute each cluster's elementary-cycle blocks and attach them keyed by the
+/// Compute each cluster's cycle blocks and attach them keyed by the
 /// analysis sccId (the same id carried by the layout items).
 fn attach_clusters(
     ir: &mut LayoutIR,

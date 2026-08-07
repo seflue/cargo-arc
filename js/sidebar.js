@@ -635,7 +635,7 @@ const SidebarLogic = {
 
   /**
    * Build cluster (SCC) sidebar: header + one collapsible block per
-   * elementary cycle, edges in path order.
+   * cycle, edges in path order.
    * @param {string} sccId - Key into STATIC_DATA.clusters
    * @param {string} [focusArcId] - Arc whose row should render as focused
    *   (the edge that triggered this view \u2014 the resolved click/hover focus).
