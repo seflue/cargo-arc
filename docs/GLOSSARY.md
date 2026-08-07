@@ -28,6 +28,10 @@ the graph-theoretic name and belongs to the analysis; *circular dependency* is
 the name in dependency analysis, the domain cargo-arc works in, and is the term
 for anything a user reads.
 
+Inside that output the line decides which of the two: prose says *circular
+dependency*, while counts and table cells say *cycle*, because they have to fit
+beside other numbers and are read as a column rather than a sentence.
+
 *Elementary cycle* names every cycle without a repeated node. cargo-arc reports
 a subset of those and never enumerates them all, so the term overstates what is
 on offer.
