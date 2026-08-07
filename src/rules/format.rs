@@ -310,11 +310,14 @@ fn cluster_block(cluster: &CycleCluster, indent: &str) -> String {
         let paired_off = count == cluster.cycles && counts().all(|c| c == 1);
         if !paired_off {
             let _ = if count == 1 {
-                writeln!(out, "{indent}  every cycle contains this edge")
+                writeln!(
+                    out,
+                    "{indent}  every circular dependency contains this edge"
+                )
             } else {
                 writeln!(
                     out,
-                    "{indent}  every cycle contains at least one of these {count} edges"
+                    "{indent}  every circular dependency contains at least one of these {count} edges"
                 )
             };
         }
@@ -897,7 +900,7 @@ mod tests {
         assert!(out.contains("edges, most cycles first:"), "got:\n{out}");
         assert!(out.contains("(on 2 cycles, 1 symbol)"), "got:\n{out}");
         assert!(
-            out.contains("every cycle contains at least one of these 2 edges"),
+            out.contains("every circular dependency contains at least one of these 2 edges"),
             "got:\n{out}"
         );
         assert!(!out.contains("fewest symbols:"), "got:\n{out}");
@@ -916,7 +919,10 @@ mod tests {
         let out = format_cluster_report(&clusters);
         assert!(out.contains("  edges:"), "got:\n{out}");
         assert!(!out.contains("most cycles first"), "got:\n{out}");
-        assert!(!out.contains("every cycle contains"), "got:\n{out}");
+        assert!(
+            !out.contains("every circular dependency contains"),
+            "got:\n{out}"
+        );
     }
 
     #[test]
@@ -929,7 +935,7 @@ mod tests {
         let clusters = report_of(&g);
         let out = format_cluster_report(&clusters);
         assert!(
-            out.contains("every cycle contains this edge"),
+            out.contains("every circular dependency contains this edge"),
             "got:\n{out}"
         );
     }
