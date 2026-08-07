@@ -28,6 +28,10 @@ the graph-theoretic name and belongs to the analysis; *circular dependency* is
 the name in dependency analysis, the domain cargo-arc works in, and is the term
 for anything a user reads.
 
+Inside that output the line decides which of the two: prose says *circular
+dependency*, while counts and table cells say *cycle*, because they have to fit
+beside other numbers and are read as a column rather than a sentence.
+
 *Elementary cycle* names every cycle without a repeated node. cargo-arc reports
 a subset of those and never enumerates them all, so the term overstates what is
 on offer.
@@ -221,6 +225,12 @@ therefore fall under two filters at once.
 rule, and in the frontend an SVG stacking container. All arcs sit in one
 stacking layer whatever filters cover them, so the two groupings cut across each
 other.
+
+*Suppressed* names an arc the diagram does not draw because another already
+covers it: a crate arc that a module arc between the same pair duplicates, or an
+arc outside the selection in group mode. That is the rendering sense and it
+stays. A violation that was found and then hidden is *silenced*, never
+suppressed.
 
 The cycles filter switches the visibility of cyclic edges. Its checkbox
 additionally turns on *cluster mode*, which widens hovering, highlighting and
