@@ -222,6 +222,12 @@ rule, and in the frontend an SVG stacking container. All arcs sit in one
 stacking layer whatever filters cover them, so the two groupings cut across each
 other.
 
+*Suppressed* names an arc the diagram does not draw because another already
+covers it: a crate arc that a module arc between the same pair duplicates, or an
+arc outside the selection in group mode. That is the rendering sense and it
+stays. A violation that was found and then hidden is *silenced*, never
+suppressed.
+
 The cycles filter switches the visibility of cyclic edges. Its checkbox
 additionally turns on *cluster mode*, which widens hovering, highlighting and
 styling from the edge to the whole cluster. That mode is not a filter and keeps
