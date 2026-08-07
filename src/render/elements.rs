@@ -490,10 +490,9 @@ struct ArcAttrs {
 
 fn arc_attrs(edge: &LayoutEdge, from_kind: &ItemKind, to_kind: &ItemKind) -> ArcAttrs {
     let cd = &CSS.direction;
-    // Every edge carries its directional dep classes so that, with
-    // cluster mode off, cycle edges fall back to the normal dependency
-    // color. cycle-arc/cycle-arrow are additive markers the container
-    // state (.cluster-mode-on) styles red.
+    // Cycle edges get the direction classes too, not instead: the cycle color
+    // applies only under `.cluster-mode-on`, so without it the direction class
+    // is the arc's only color.
     let (dir_arc_class, dir_arrow_class, direction) = match edge.direction {
         EdgeDirection::Downward => (cd.downward, cd.dep_arrow, "downward"),
         EdgeDirection::Upward => (cd.upward, cd.upward_arrow, "upward"),
@@ -504,9 +503,6 @@ fn arc_attrs(edge: &LayoutEdge, from_kind: &ItemKind, to_kind: &ItemKind) -> Arc
         (String::new(), String::new())
     };
 
-    // Add crate-dep-arc, module-dep-arc, or reexport-arc class based on edge type.
-    // Re-export arcs are their own category (default hidden) so their toggle
-    // stays independent of the module-dep toggle.
     let is_crate_dep = matches!(
         (from_kind, to_kind),
         (
@@ -514,6 +510,8 @@ fn arc_attrs(edge: &LayoutEdge, from_kind: &ItemKind, to_kind: &ItemKind) -> Arc
             ItemKind::Crate | ItemKind::ExternalCrate { .. }
         )
     );
+    // Exactly one arc-type class per arc, and the JS arc filter selects on it,
+    // so a re-export never answers to the module-dep checkbox.
     let arc_type_class = if edge.reexport {
         cd.reexport_arc
     } else if is_crate_dep {
