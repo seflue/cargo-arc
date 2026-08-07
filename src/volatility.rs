@@ -408,7 +408,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::float_cmp)] // the empty case returns Default, so 0.0 is a literal, not a quotient
+    #[allow(
+        clippy::float_cmp,
+        reason = "the empty case returns Default, so 0.0 is a literal, not a quotient"
+    )]
     fn test_statistics_empty() {
         let analyzer = VolatilityAnalyzer::new(VolatilityConfig::default());
         let stats = analyzer.statistics();
