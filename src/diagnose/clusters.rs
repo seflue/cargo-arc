@@ -4,9 +4,10 @@
 //! strongly-connected clusters and, per cluster, computes a feedback arc set
 //! (an edge set whose removal leaves no reported cycle standing): greedy
 //! set-cover over the representative cycles, then a single `tarjan_scc`
-//! verification with a residual re-cover loop. Tolerate nothing and the set
-//! makes the cluster acyclic; tolerate cycles and those are what is left
-//! standing
+//! verification with a residual re-cover loop.
+//!
+//! The caller names the cycles it tolerates and the set breaks the rest, so
+//! tolerating nothing makes the cluster acyclic.
 
 use super::cycles::{Cycle, CycleAnalysis, RepresentativeCycles};
 use crate::graph::{ArcGraph, Edge};
@@ -35,11 +36,10 @@ pub struct Cluster {
     pub nodes: Vec<NodeIndex>,
     /// Indices into [`CycleAnalysis::cycles`] contained in this cluster.
     pub cycles: Vec<usize>,
-    /// Edge set whose removal breaks every cycle but the tolerated ones, ranked
-    /// best-first.
+    /// Edge set whose removal breaks every cycle the caller does not tolerate,
+    /// ranked traffic desc, symbols asc, name asc.
     pub feedback_edges: Vec<CyclicEdge>,
-    /// Every SCC-internal edge, ranked like `feedback_edges` (cycles desc,
-    /// symbols asc, name asc).
+    /// Every SCC-internal edge, ranked like `feedback_edges`.
     pub edges: Vec<CyclicEdge>,
 }
 
