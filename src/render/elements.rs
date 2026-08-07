@@ -37,8 +37,11 @@ pub(super) fn render_sidebar(width: f32) -> String {
     )
 }
 
-#[allow(clippy::cast_possible_truncation)] // SVG pixel coordinates fit in i32
-#[allow(clippy::too_many_lines)] // single cohesive markup template
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "SVG pixel coordinates fit in i32"
+)]
+#[allow(clippy::too_many_lines, reason = "single cohesive markup template")]
 pub(super) fn render_toolbar(
     width: f32,
     has_externals: bool,
