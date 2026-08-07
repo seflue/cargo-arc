@@ -59,10 +59,10 @@ impl<'graph> PatternIndex<'graph> {
 
         // Check for wildcard suffix
         if let Some(base) = pattern.strip_suffix("::**") {
-            return self.resolve_glob(base);
+            return self.resolve_descendants(base);
         }
         if let Some(base) = pattern.strip_suffix("::*") {
-            return self.resolve_wildcard(base);
+            return self.resolve_children(base);
         }
 
         // Exact match first (could be a module path like "domain::service")
@@ -78,7 +78,7 @@ impl<'graph> PatternIndex<'graph> {
     }
 
     /// `domain::*` — direct children only (via Contains edges).
-    fn resolve_wildcard(&self, base_pattern: &str) -> Vec<NodeIndex> {
+    fn resolve_children(&self, base_pattern: &str) -> Vec<NodeIndex> {
         let Some(base_idx) = self.get(base_pattern) else {
             return Vec::new();
         };
@@ -90,7 +90,7 @@ impl<'graph> PatternIndex<'graph> {
     }
 
     /// `domain::**` — all transitive descendants (excluding the root itself).
-    fn resolve_glob(&self, base_pattern: &str) -> Vec<NodeIndex> {
+    fn resolve_descendants(&self, base_pattern: &str) -> Vec<NodeIndex> {
         let Some(base_idx) = self.get(base_pattern) else {
             return Vec::new();
         };
@@ -152,7 +152,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_wildcard() {
+    fn test_resolve_children() {
         let (mut graph, crate_idx) = test_crate_graph();
         let mod_a = add_module(&mut graph, "a", crate_idx, crate_idx);
         let mod_b = add_module(&mut graph, "b", crate_idx, crate_idx);
@@ -166,7 +166,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_glob() {
+    fn test_resolve_descendants() {
         let (mut graph, crate_idx) = test_crate_graph();
         let mod_a = add_module(&mut graph, "a", crate_idx, crate_idx);
         let mod_b = add_module(&mut graph, "b", crate_idx, crate_idx);
