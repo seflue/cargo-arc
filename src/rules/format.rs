@@ -226,7 +226,7 @@ pub fn format_cluster_report(clusters: &[CycleCluster]) -> String {
     let _ = writeln!(
         out,
         "Summary: {}, {} across {}",
-        plural(clusters.len(), "cluster"),
+        plural(clusters.len(), "tangle"),
         plural(total_cycles, "cycle"),
         plural(crates.len(), "crate"),
     );
@@ -870,7 +870,7 @@ mod tests {
             "got:\n{out}"
         );
         assert!(
-            out.contains("Summary: 1 cluster, 1 cycle across 1 crate"),
+            out.contains("Summary: 1 tangle, 1 cycle across 1 crate"),
             "got:\n{out}"
         );
     }
@@ -943,7 +943,7 @@ mod tests {
         let clusters = report_of(&g);
         let out = format_cluster_report(&clusters);
         assert!(
-            out.contains("Summary: 2 clusters, 2 cycles across 1 crate"),
+            out.contains("Summary: 2 tangles, 2 cycles across 1 crate"),
             "got:\n{out}"
         );
     }
