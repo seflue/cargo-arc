@@ -711,9 +711,9 @@ const SidebarLogic = {
   },
 
   /**
-   * One elementary-cycle block: collapsible header (ordinal, leaf-name path,
+   * One cycle block: collapsible header (ordinal, leaf-name path,
    * module count) plus one `_buildEdgeRow` per edge in path order. The last
-   * edge (the closing back-edge) gets the closing class; an edge whose arc
+   * edge closes the cycle and gets the closing class; an edge whose arc
    * id already appeared in an earlier block gets the repeat class \u2014 except
    * the closing edge, which always renders full.
    * @param {StaticCycleArcData[]} cycle - Edges in path order, closing edge last.
