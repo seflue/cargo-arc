@@ -514,7 +514,9 @@ fn nesting_depth(idx: NodeIndex, parent_map: &HashMap<NodeIndex, NodeIndex>) -> 
 
 /// Determine cycle kind and cycle IDs for an edge.
 /// `CrateDep` edges are always `Transitive` when in a cycle.
-/// `ModuleDep` edges check for a back-edge to distinguish `Direct` vs `Transitive`.
+/// A `ModuleDep` edge sits on a `Direct` cycle when the two modules import each
+/// other (`a <-> b`), and on a `Transitive` one when the cycle runs through
+/// further modules (`a -> b -> c -> a`).
 fn compute_cycle_info(
     src: NodeIndex,
     dst: NodeIndex,
