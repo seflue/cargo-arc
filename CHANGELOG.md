@@ -23,9 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rule name; a cycle is keyed by its members, so a new cycle is reported even
   when it runs through a frozen one's edges. Generation is refused while an
   `except` pattern matches no module, and `--show-silenced` lists frozen
-  violations alongside allowed ones. In a cluster that mixes frozen and
-  reported cycles, the edge list names only edges that carry a reported one, so
-  it never asks for work on a cycle the baseline froze.
+  violations alongside allowed ones. When a tangle holds both frozen and
+  reported cycles, its ranked edge list covers only the reported ones, so no
+  listed edge stands for a cycle the baseline froze.
 - Rule names must now be unique across all rule types; `arc-rules.toml` is
   rejected when two rules share a name.
 - A `[diagnostics]` section in `arc-rules.toml` reports gaps in the
@@ -44,9 +44,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- A `no-cycles` rule now reports one violation per cyclic cluster instead of one
-  per elementary cycle, using the same block form as a run without
-  `arc-rules.toml`. Each block is headed by the location the cluster sits in,
+- A `no-cycles` rule now reports one violation per tangle instead of one per
+  elementary cycle, using the same block form as a run without
+  `arc-rules.toml`. Each block is headed by the location the tangle sits in,
   the shared module prefix of its members.
 - A key that is not part of the format is now an error, and the message names
   the key. Before, such a key was ignored: `[diagnostic]` for `[diagnostics]`,
