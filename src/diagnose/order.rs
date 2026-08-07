@@ -1,4 +1,4 @@
-//! Ordering elementary cycles into display blocks.
+//! Ordering cycles into display blocks.
 //!
 //! Pure and generic over the node type so the ordering can be tested without
 //! any graph machinery.

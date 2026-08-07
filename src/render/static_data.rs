@@ -1771,7 +1771,7 @@ mod tests {
         let cycles = data["cycles"].as_array().expect("cycles is array");
         assert_eq!(cycles.len(), 2);
 
-        // Two elementary cycles, one SCC: both carry sccId 0, as do both arcs.
+        // Two cycles, one SCC: both carry sccId 0, as do both arcs.
         assert_eq!(cycles[0]["sccId"], serde_json::json!(0));
         assert_eq!(cycles[1]["sccId"], serde_json::json!(0));
         assert_eq!(data["arcs"]["1-2"]["sccId"], serde_json::json!(0));
@@ -1993,7 +1993,7 @@ mod tests {
         assert!(cluster.get("edges").is_none());
         assert!(cluster.get("toBreak").is_none());
         let cycles = cluster["cycles"].as_array().unwrap();
-        assert_eq!(cycles.len(), 2, "one block per elementary cycle");
+        assert_eq!(cycles.len(), 2, "one block per cycle");
 
         // Both cycles start at "a" (shared node); tie-break by rest-sequence
         // rank puts a<->b before a<->c since b's layout rank precedes c's.

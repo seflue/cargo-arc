@@ -255,7 +255,7 @@ impl<'graph> CheckRun<'graph> {
         })
     }
 
-    /// Check a `no-cycles` rule: find elementary cycles within the scoped
+    /// Check a `no-cycles` rule: find the cycles within the scoped
     /// subgraph. Pure re-export cycles are excluded unless `include_reexports`
     /// is set (ADR-022). An edge covered by `except` is removed before the
     /// search, so a cycle built through it never forms; if it lay on one, it is
