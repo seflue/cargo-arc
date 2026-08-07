@@ -332,7 +332,7 @@ fn run_legacy_cycle_check(graph: &ArcGraph, reexports: Reexports) -> Result<()> 
         .map(|(i, cluster)| CycleCluster::from_cluster(graph, &analysis, cluster, i + 1, total))
         .collect();
     eprint!("{}", format_cluster_report(&clusters));
-    anyhow::bail!("dependency cycle(s) detected");
+    anyhow::bail!("circular dependencies detected");
 }
 
 fn build_feature_config(common: &CommonArgs) -> FeatureConfig {
