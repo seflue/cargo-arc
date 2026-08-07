@@ -496,10 +496,10 @@ mod tests {
 
     #[test]
     fn symbol_count_ignores_the_import_sites_carrying_the_symbols() {
-        // grouped <-> split, siblings, so only the symbol tie-break decides the
-        // pick. `grouped -> split` imports three symbols from one `use`
-        // group: one line, one site. `split -> grouped` imports two symbols,
-        // one per line.
+        // Siblings, so both edges rank `RemovalBias::Neutral` and the symbol
+        // count alone decides which one lands in the feedback set.
+        // `grouped -> split` imports three symbols in one `use` group: one
+        // line, one site. `split -> grouped` imports two, one per line.
         let mut graph = ArcGraph::new();
         let crate_idx = graph.add_node(Node::Crate {
             name: "app".into(),
@@ -569,9 +569,9 @@ mod tests {
     fn child_to_parent_edge_is_preferred_even_with_more_symbols() {
         // `parent` is the parent module, `child` is nested inside it.
         // `parent -> child` is a re-export (`pub use child::X`, 2 symbols),
-        // `child -> parent` is a plain import (`use super::Y`, 5 symbols). The
-        // module-tree prior must still pick the child->parent edge, even
-        // though it carries more symbols.
+        // `child -> parent` a plain import (`use super::Y`, 5 symbols). The
+        // removal bias outranks the symbol count, so `child -> parent` is
+        // picked despite carrying more.
         let mut graph = ArcGraph::new();
         let crate_idx = graph.add_node(Node::Crate {
             name: "app".into(),
@@ -642,14 +642,10 @@ mod tests {
 
     #[test]
     fn reexport_child_to_parent_edge_is_not_preferred() {
-        // `parent` is the parent module, `child` is nested inside it and
-        // re-exports `parent`'s items (`pub use super::*;`, the prelude
-        // pattern) via `child -> parent`, 1 symbol. `unrelated` is an unrelated
-        // module, forming the cycle parent->unrelated->child->parent with
-        // plain, non-reexport edges parent->unrelated (3 symbols) and
-        // unrelated->child (5 symbols). Even though `child -> parent` carries
-        // the fewest symbols, the module-tree prior must not treat it as a
-        // preferred candidate: it's structural, same as any other re-export.
+        // `child -> parent` is a re-export (`pub use super::*;`, the prelude
+        // pattern), so it ranks `RemovalBias::Structural`, not `Preferred`.
+        // The bias never favours it and the pick goes to the cheapest neutral
+        // edge, even though the re-export carries the fewest symbols.
         let mut graph = ArcGraph::new();
         let crate_idx = graph.add_node(Node::Crate {
             name: "app".into(),
