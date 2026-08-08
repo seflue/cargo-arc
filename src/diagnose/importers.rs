@@ -5,7 +5,7 @@
 //! a [`ConsumerLocality`] describing how close its consumers sit to each other
 //! in the module tree.
 
-use crate::graph::{ArcGraph, Edge};
+use crate::graph::{ArcGraph, EdgeWeight};
 use petgraph::graph::NodeIndex;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -57,7 +57,7 @@ impl ArcGraph {
             if !self[edge_idx].is_production_module_dep() {
                 continue;
             }
-            let Edge::ModuleDep { locations, .. } = &self[edge_idx] else {
+            let EdgeWeight::ModuleDep { locations, .. } = &self[edge_idx] else {
                 continue;
             };
             let Some((consumer, provider)) = self.edge_endpoints(edge_idx) else {
@@ -139,7 +139,7 @@ impl ArcGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::{Edge, Node};
+    use crate::graph::{EdgeWeight, Node};
     use crate::model::{EdgeContext, SourceLocation};
 
     /// Flat builder: every module is a direct crate child. Thin wrapper over
@@ -176,7 +176,7 @@ mod tests {
             } else {
                 idx[parents[i]]
             };
-            g.add_edge(parent, n, Edge::Contains);
+            g.add_edge(parent, n, EdgeWeight::Contains);
             idx.push(n);
         }
         for &(from, to, symbols) in deps {
@@ -190,7 +190,7 @@ mod tests {
             g.add_edge(
                 idx[from],
                 idx[to],
-                Edge::ModuleDep {
+                EdgeWeight::ModuleDep {
                     locations,
                     context: EdgeContext::production(),
                 },
@@ -263,12 +263,12 @@ mod tests {
             name: "user".into(),
             crate_idx,
         });
-        g.add_edge(crate_idx, model, Edge::Contains);
-        g.add_edge(crate_idx, user, Edge::Contains);
+        g.add_edge(crate_idx, model, EdgeWeight::Contains);
+        g.add_edge(crate_idx, user, EdgeWeight::Contains);
         g.add_edge(
             user,
             model,
-            Edge::ModuleDep {
+            EdgeWeight::ModuleDep {
                 locations: vec![SourceLocation {
                     file: "src/user.rs".into(),
                     line: 1,
@@ -298,12 +298,12 @@ mod tests {
             name: "user".into(),
             crate_idx,
         });
-        g.add_edge(crate_idx, model, Edge::Contains);
-        g.add_edge(crate_idx, user, Edge::Contains);
+        g.add_edge(crate_idx, model, EdgeWeight::Contains);
+        g.add_edge(crate_idx, user, EdgeWeight::Contains);
         g.add_edge(
             user,
             model,
-            Edge::ModuleDep {
+            EdgeWeight::ModuleDep {
                 locations: vec![SourceLocation {
                     file: "src/user.rs".into(),
                     line: 1,

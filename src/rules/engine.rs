@@ -3,8 +3,8 @@
 //! Checks architecture rules against the dependency graph and collects violations.
 
 use crate::diagnose::{Cluster, Cycle, CycleAnalysis, RepresentativeCycles};
-use crate::graph::{ArcGraph, Edge};
-use crate::model::SourceLocation;
+use crate::graph::{ArcGraph, EdgeWeight};
+use crate::model::{Edge, EdgeSymbols, SourceLocation};
 use crate::rules::baseline::{Baseline, BaselineEntry, ViolationKey};
 use crate::rules::config::{
     ArcConfig, DiagnosticLevel, Direction, Except, ForbiddenDependencyRule, LayersRule,
@@ -29,18 +29,16 @@ pub struct Violation {
 /// Violation payload: structured data the renderer branches on.
 #[derive(Debug)]
 pub enum ViolationDetail {
-    /// A single forbidden edge, source and target as fully qualified names.
-    /// forbidden-dependency and layers both report this shape.
+    /// One dependency edge. forbidden-dependency, layers and no-cycles all
+    /// report this shape.
     Edge {
-        from: String,
-        to: String,
+        edge: Edge,
+        /// What a baseline entry tolerates on this edge. `Some` only where that
+        /// no longer covers what the edge carries, the one case the report has
+        /// to explain.
+        frozen_for: Option<EdgeSymbols>,
     },
     Cluster(CycleCluster),
-    /// A single cycle the baseline keeps out of `reported`; carries the
-    /// cycle's members since a cluster is not a stable object to key on.
-    Cycle {
-        modules: Vec<String>,
-    },
 }
 
 /// One cyclic cluster, resolved to names and counts for rendering.
@@ -114,9 +112,62 @@ impl CycleCluster {
     }
 }
 
-/// Baseline key of `cycle`, resolved to crate-qualified module names.
-fn cycle_key(graph: &ArcGraph, cycle: &Cycle) -> ViolationKey {
-    ViolationKey::cycle(cycle.nodes.iter().map(|&idx| graph.qualified_name(idx)))
+/// What the baseline says about the cyclic edges of one `no-cycles` rule.
+#[derive(Default)]
+struct CyclicEdges {
+    /// Edges whose entry covers everything they carry.
+    covered: HashSet<(NodeIndex, NodeIndex)>,
+    frozen: Vec<Violation>,
+    /// Edges with an entry that no longer covers them.
+    outgrown: Vec<Violation>,
+    entries: Vec<BaselineEntry>,
+    hits: Vec<BaselineEntry>,
+}
+
+/// One violation on `edge`.
+fn edge_violation(
+    rule: &Rule,
+    edge: &Edge,
+    locations: Vec<SourceLocation>,
+    frozen_for: Option<EdgeSymbols>,
+) -> Violation {
+    Violation {
+        rule_name: rule.name.clone(),
+        rule_type: rule.rule_type().into(),
+        severity: rule.severity,
+        detail: ViolationDetail::Edge {
+            edge: edge.clone(),
+            frozen_for,
+        },
+        locations,
+    }
+}
+
+/// Every edge running inside a non-trivial component of `sub`, as index pairs
+/// of the graph `sub` was built from. Edges between components carry no cycle.
+fn scc_internal_edges(sub: &DiGraph<NodeIndex, ()>) -> Vec<(NodeIndex, NodeIndex)> {
+    let component: HashMap<NodeIndex, usize> = tarjan_scc(sub)
+        .into_iter()
+        .filter(|members| members.len() > 1)
+        .enumerate()
+        .flat_map(|(id, members)| members.into_iter().map(move |node| (node, id)))
+        .collect();
+    sub.edge_indices()
+        .filter_map(|edge| {
+            let (source, target) = sub.edge_endpoints(edge)?;
+            (component.get(&source)? == component.get(&target)?)
+                .then_some((sub[source], sub[target]))
+        })
+        .collect()
+}
+
+/// The cycle's edges, closing back to its first member.
+fn cycle_edges(cycle: &Cycle) -> impl Iterator<Item = (NodeIndex, NodeIndex)> + '_ {
+    cycle
+        .nodes
+        .iter()
+        .zip(cycle.nodes.iter().cycle().skip(1))
+        .map(|(&from, &to)| (from, to))
 }
 
 /// Common `::`-prefix over the crate-qualified names of `nodes`, segment-wise.
@@ -161,8 +212,9 @@ pub struct CheckResult {
     /// The key of every violation actually reported, i.e. what
     /// `--generate-baseline` writes out.
     pub baseline_entries: Vec<BaselineEntry>,
-    /// The baseline entries this run matched. What is left of the baseline
-    /// beyond them no longer freezes anything.
+    /// Every violation the baseline has an entry for, carrying the symbols this
+    /// run observed rather than the frozen ones. An edge that outgrew its entry
+    /// is in here too: the entry matched, it only stopped covering.
     pub baseline_hits: Vec<BaselineEntry>,
     /// Gaps in the configuration, unrelated to any single rule.
     pub diagnostics: Vec<Diagnostic>,
@@ -294,56 +346,23 @@ impl<'graph> CheckRun<'graph> {
 
         let allowed = drop_excepted_edges(&mut subgraph, excepted)
             .into_iter()
-            .map(|(source, target)| Violation {
-                rule_name: rule.name.clone(),
-                rule_type: rule.rule_type().into(),
-                severity: rule.severity,
-                detail: ViolationDetail::Edge {
-                    from: graph.qualified_name(source),
-                    to: graph.qualified_name(target),
-                },
-                locations: module_dep_locations(graph, source, target),
+            .map(|(source, target)| {
+                let edge = Edge::new(graph.qualified_name(source), graph.qualified_name(target));
+                let locations = module_dep_locations(graph, source, target);
+                edge_violation(rule, &edge, locations, None)
             })
             .collect();
 
+        let mut cyclic = self.freeze_cycle_edges(rule, &subgraph);
+
+        // A cycle is frozen when every one of its edges is. Every SCC-internal
+        // edge lies on at least one representative cycle, so that verdict
+        // reaches every cycle. One predicate for both readers below, so the run
+        // and its cluster report cannot disagree.
+        let tolerated =
+            |cycle: &Cycle| cycle_edges(cycle).all(|edge| cyclic.covered.contains(&edge));
         let mut analysis = subgraph.representative_cycles();
-        // The baseline keys on the cycle, not the cluster: a cluster merges or
-        // splits as edges are added, so it has no identity to freeze against.
-        // One predicate for both readers below, so the run and its cluster
-        // report cannot disagree about which cycles are frozen.
-        let tolerated = |cycle: &Cycle| self.baseline.covers(&rule.name, &cycle_key(graph, cycle));
-        let mut frozen = Vec::new();
-        let mut baseline_entries = Vec::new();
-        let mut baseline_hits = Vec::new();
-        analysis.retain_cycles(|cycle| {
-            let key = cycle_key(graph, cycle);
-            if tolerated(cycle) {
-                baseline_hits.push(BaselineEntry {
-                    rule: rule.name.clone(),
-                    key,
-                });
-                frozen.push(Violation {
-                    rule_name: rule.name.clone(),
-                    rule_type: rule.rule_type().into(),
-                    severity: rule.severity,
-                    detail: ViolationDetail::Cycle {
-                        modules: cycle
-                            .nodes
-                            .iter()
-                            .map(|&idx| graph.qualified_name(idx))
-                            .collect(),
-                    },
-                    locations: Vec::new(),
-                });
-                false
-            } else {
-                baseline_entries.push(BaselineEntry {
-                    rule: rule.name.clone(),
-                    key,
-                });
-                true
-            }
-        });
+        analysis.retain_cycles(|cycle| !tolerated(cycle));
 
         // The cluster report is computed per rule, over that rule's own scoped
         // subgraph: two no-cycles rules with different scopes see different views.
@@ -353,7 +372,7 @@ impl<'graph> CheckRun<'graph> {
         let report = graph.cluster_report(&subgraph, &analysis, tolerated);
         let total = report.clusters.len();
 
-        let reported = report
+        let mut reported: Vec<Violation> = report
             .clusters
             .iter()
             .enumerate()
@@ -371,15 +390,62 @@ impl<'graph> CheckRun<'graph> {
                 locations: Vec::new(),
             })
             .collect();
+        reported.append(&mut cyclic.outgrown);
 
         CheckResult {
             reported,
             allowed,
-            frozen,
-            baseline_entries,
-            baseline_hits,
+            frozen: cyclic.frozen,
+            baseline_entries: cyclic.entries,
+            baseline_hits: cyclic.hits,
             diagnostics: Vec::new(),
         }
+    }
+
+    /// Hold every edge inside a component of `subgraph` against the baseline.
+    ///
+    /// Keyed per edge rather than per cluster: a cluster merges and splits as
+    /// edges are added, so it has no identity to freeze against.
+    fn freeze_cycle_edges(&self, rule: &Rule, subgraph: &DiGraph<NodeIndex, ()>) -> CyclicEdges {
+        let graph = self.graph();
+        let mut found = CyclicEdges::default();
+        for (source, target) in scc_internal_edges(subgraph) {
+            let edge = Edge::new(graph.qualified_name(source), graph.qualified_name(target));
+            let locations = module_dep_locations(graph, source, target);
+            let symbols = EdgeSymbols::from_locations(&locations);
+            let tolerated = self.baseline.frozen_for(&rule.name, &edge);
+            let covered = tolerated.is_some_and(|t| t.covers(&symbols));
+            let entry = BaselineEntry {
+                rule: rule.name.clone(),
+                key: ViolationKey {
+                    edge: edge.clone(),
+                    symbols,
+                },
+            };
+            if tolerated.is_some() {
+                found.hits.push(entry.clone());
+            }
+            if covered {
+                found.covered.insert((source, target));
+                found
+                    .frozen
+                    .push(edge_violation(rule, &edge, locations, None));
+            } else {
+                found.entries.push(entry);
+                // An edge that outgrew its entry is reported beside its
+                // cluster, not inside it: the cluster block says which edges
+                // carry the tangle, this says why one of them turned red.
+                if let Some(tolerated) = tolerated {
+                    found.outgrown.push(edge_violation(
+                        rule,
+                        &edge,
+                        locations,
+                        Some(tolerated.clone()),
+                    ));
+                }
+            }
+        }
+        found
     }
 
     /// Check a `layers` rule: edges must respect layer ordering.
@@ -438,37 +504,34 @@ impl<'graph> CheckRun<'graph> {
                 continue;
             }
             let locations = match edge {
-                Edge::ModuleDep { locations, .. } => locations.clone(),
+                EdgeWeight::ModuleDep { locations, .. } => locations.clone(),
                 _ => Vec::new(),
             };
-            let from = graph.qualified_name(source);
-            let to = graph.qualified_name(target);
-            let violation = Violation {
-                rule_name: rule.name.clone(),
-                rule_type: rule.rule_type().into(),
-                severity: rule.severity,
-                detail: ViolationDetail::Edge {
-                    from: from.clone(),
-                    to: to.clone(),
-                },
-                locations,
-            };
+            let edge = Edge::new(graph.qualified_name(source), graph.qualified_name(target));
+            let symbols = EdgeSymbols::from_locations(&locations);
             if except.covers(source, target) {
-                allowed.push(violation);
+                allowed.push(edge_violation(rule, &edge, locations, None));
                 continue;
             }
-            let key = ViolationKey::edge(from, to);
-            if self.baseline.covers(&rule.name, &key) {
-                baseline_hits.push(BaselineEntry {
-                    rule: rule.name.clone(),
-                    key,
-                });
+            let tolerated = self.baseline.frozen_for(&rule.name, &edge);
+            let covered = tolerated.is_some_and(|t| t.covers(&symbols));
+            let violation = edge_violation(
+                rule,
+                &edge,
+                locations,
+                tolerated.filter(|_| !covered).cloned(),
+            );
+            let entry = BaselineEntry {
+                rule: rule.name.clone(),
+                key: ViolationKey { edge, symbols },
+            };
+            if tolerated.is_some() {
+                baseline_hits.push(entry.clone());
+            }
+            if covered {
                 frozen.push(violation);
             } else {
-                baseline_entries.push(BaselineEntry {
-                    rule: rule.name.clone(),
-                    key,
-                });
+                baseline_entries.push(entry);
                 reported.push(violation);
             }
         }
@@ -602,7 +665,7 @@ fn module_dep_locations(
     graph
         .edges_connecting(source, target)
         .find_map(|edge| match edge.weight() {
-            Edge::ModuleDep { locations, .. } => Some(locations.clone()),
+            EdgeWeight::ModuleDep { locations, .. } => Some(locations.clone()),
             _ => None,
         })
         .unwrap_or_default()
@@ -660,7 +723,7 @@ mod tests {
             name: name.into(),
             crate_idx,
         });
-        graph.add_edge(parent, idx, Edge::Contains);
+        graph.add_edge(parent, idx, EdgeWeight::Contains);
         idx
     }
 
@@ -668,7 +731,7 @@ mod tests {
         graph.add_edge(
             from,
             to,
-            Edge::ModuleDep {
+            EdgeWeight::ModuleDep {
                 locations: vec![SourceLocation {
                     file: PathBuf::from("src/lib.rs"),
                     line: 1,
@@ -681,11 +744,60 @@ mod tests {
         );
     }
 
+    fn add_named_dep(graph: &mut ArcGraph, from: NodeIndex, to: NodeIndex, symbols: &[&str]) {
+        graph.add_edge(
+            from,
+            to,
+            EdgeWeight::ModuleDep {
+                locations: vec![SourceLocation {
+                    file: PathBuf::from("src/lib.rs"),
+                    line: 1,
+                    symbols: symbols.iter().map(|s| (*s).to_string()).collect(),
+                    module_path: String::new(),
+                    via_reexport: false,
+                }],
+                context: EdgeContext::production(),
+            },
+        );
+    }
+
+    fn named(symbols: &[&str]) -> EdgeSymbols {
+        EdgeSymbols {
+            named: symbols.iter().map(|s| (*s).to_string()).collect(),
+            bare: false,
+        }
+    }
+
+    /// A baseline entry for an edge built by [`add_production_dep`], whose
+    /// single location names no symbol.
+    fn frozen_edge(rule: &str, from: &str, to: &str) -> BaselineEntry {
+        BaselineEntry {
+            rule: rule.to_string(),
+            key: ViolationKey {
+                edge: Edge::new(from, to),
+                symbols: EdgeSymbols {
+                    bare: true,
+                    ..EdgeSymbols::default()
+                },
+            },
+        }
+    }
+
+    fn named_frozen_edge(rule: &str, from: &str, to: &str, symbols: &[&str]) -> BaselineEntry {
+        BaselineEntry {
+            rule: rule.to_string(),
+            key: ViolationKey {
+                edge: Edge::new(from, to),
+                symbols: named(symbols),
+            },
+        }
+    }
+
     fn add_reexport_dep(graph: &mut ArcGraph, from: NodeIndex, to: NodeIndex) {
         graph.add_edge(
             from,
             to,
-            Edge::ModuleDep {
+            EdgeWeight::ModuleDep {
                 locations: vec![SourceLocation {
                     file: PathBuf::from("src/lib.rs"),
                     line: 1,
@@ -703,7 +815,7 @@ mod tests {
         graph.add_edge(
             from,
             to,
-            Edge::ModuleDep {
+            EdgeWeight::ModuleDep {
                 locations: vec![],
                 context: EdgeContext::test(TestKind::Unit),
             },
@@ -773,11 +885,11 @@ mod tests {
         assert_eq!(reported.len(), 1);
         assert_eq!(reported[0].rule_name, "no infra in domain");
         assert_eq!(reported[0].rule_type, "forbidden-dependency");
-        let ViolationDetail::Edge { from, to } = &reported[0].detail else {
+        let ViolationDetail::Edge { edge, .. } = &reported[0].detail else {
             panic!("expected an edge detail");
         };
-        assert!(from.contains("service"));
-        assert!(to.contains("db"));
+        assert!(edge.from.contains("service"));
+        assert!(edge.to.contains("db"));
     }
 
     #[test]
@@ -886,11 +998,11 @@ mod tests {
         } = check_rule(&service_to_db_graph(), &rule, false);
         assert!(reported.is_empty());
         assert_eq!(allowed.len(), 1);
-        let ViolationDetail::Edge { from, to } = &allowed[0].detail else {
+        let ViolationDetail::Edge { edge, .. } = &allowed[0].detail else {
             panic!("expected an edge detail");
         };
-        assert!(from.contains("service"));
-        assert!(to.contains("db"));
+        assert!(edge.from.contains("service"));
+        assert!(edge.to.contains("db"));
     }
 
     #[test]
@@ -1051,11 +1163,11 @@ mod tests {
             "except should remove the edge before the cycle can form"
         );
         assert_eq!(allowed.len(), 1);
-        let ViolationDetail::Edge { from, to } = &allowed[0].detail else {
+        let ViolationDetail::Edge { edge, .. } = &allowed[0].detail else {
             panic!("expected an edge detail");
         };
-        assert!(from.contains('b'));
-        assert!(to.contains('a'));
+        assert!(edge.from.contains('b'));
+        assert!(edge.to.contains('a'));
         assert_eq!(
             allowed[0].locations.len(),
             1,
@@ -1131,11 +1243,11 @@ mod tests {
         let rule = layers_rule(&["domain", "application", "infra"], vec![]);
         let reported = check_rule(&graph, &rule, false).reported;
         assert_eq!(reported.len(), 1);
-        let ViolationDetail::Edge { from, to } = &reported[0].detail else {
+        let ViolationDetail::Edge { edge, .. } = &reported[0].detail else {
             panic!("expected an edge detail");
         };
-        assert!(from.contains("db"));
-        assert!(to.contains("service"));
+        assert!(edge.from.contains("db"));
+        assert!(edge.to.contains("service"));
     }
 
     #[test]
@@ -1290,8 +1402,8 @@ mod tests {
                 rule_type: "forbidden-dependency".into(),
                 severity: Severity::Error,
                 detail: ViolationDetail::Edge {
-                    from: "a".into(),
-                    to: "b".into(),
+                    edge: Edge::new("a", "b"),
+                    frozen_for: None,
                 },
                 locations: vec![],
             }],
@@ -1309,8 +1421,8 @@ mod tests {
                 rule_type: "no-cycles".into(),
                 severity: Severity::Warn,
                 detail: ViolationDetail::Edge {
-                    from: "a".into(),
-                    to: "b".into(),
+                    edge: Edge::new("a", "b"),
+                    frozen_for: None,
                 },
                 locations: vec![],
             }],
@@ -1328,8 +1440,8 @@ mod tests {
                 rule_type: "forbidden-dependency".into(),
                 severity: Severity::Error,
                 detail: ViolationDetail::Edge {
-                    from: "a".into(),
-                    to: "b".into(),
+                    edge: Edge::new("a", "b"),
+                    frozen_for: None,
                 },
                 locations: vec![],
             }],
@@ -1362,10 +1474,7 @@ mod tests {
     #[test]
     fn test_a_frozen_violation_counts_as_a_baseline_hit() {
         let rule = no_infra_in_domain(vec![]);
-        let entry = BaselineEntry {
-            rule: rule.name.clone(),
-            key: ViolationKey::edge("domain::service", "infra::db"),
-        };
+        let entry = frozen_edge(&rule.name, "domain::service", "infra::db");
         let baseline = baseline_of(std::slice::from_ref(&entry));
         let result = check_rule_with_baseline(&service_to_db_graph(), &rule, false, &baseline);
         assert_eq!(result.baseline_hits.len(), 1);
@@ -1374,7 +1483,7 @@ mod tests {
     }
 
     #[test]
-    fn test_a_frozen_cycle_counts_as_a_baseline_hit() {
+    fn test_a_frozen_cycle_counts_one_hit_per_edge() {
         let (mut graph, crate_idx) = test_crate_graph();
         let a = add_module(&mut graph, "a", crate_idx, crate_idx);
         let b = add_module(&mut graph, "b", crate_idx, crate_idx);
@@ -1382,14 +1491,108 @@ mod tests {
         add_production_dep(&mut graph, b, a);
 
         let rule = no_cycles_rule("no cycles in test", "test::**", vec![]);
-        let key = ViolationKey::cycle(vec!["test::a".to_string(), "test::b".to_string()]);
-        let baseline = baseline_of(&[BaselineEntry {
-            rule: rule.name.clone(),
-            key: key.clone(),
-        }]);
+        let baseline = baseline_of(&[
+            frozen_edge(&rule.name, "test::a", "test::b"),
+            frozen_edge(&rule.name, "test::b", "test::a"),
+        ]);
         let result = check_rule_with_baseline(&graph, &rule, false, &baseline);
-        assert_eq!(result.baseline_hits.len(), 1);
-        assert_eq!(result.baseline_hits[0].key, key);
+        assert_eq!(result.baseline_hits.len(), 2);
+        assert!(result.reported.is_empty());
+        assert_eq!(result.exit_code(), 0);
+    }
+
+    #[test]
+    fn test_one_uncovered_edge_keeps_the_cluster_reported() {
+        let (mut graph, crate_idx) = test_crate_graph();
+        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
+        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
+        add_production_dep(&mut graph, a, b);
+        add_production_dep(&mut graph, b, a);
+
+        let rule = no_cycles_rule("no cycles in test", "test::**", vec![]);
+        let baseline = baseline_of(&[frozen_edge(&rule.name, "test::a", "test::b")]);
+        let result = check_rule_with_baseline(&graph, &rule, false, &baseline);
+        assert_eq!(result.reported.len(), 1);
+        assert!(matches!(
+            result.reported[0].detail,
+            ViolationDetail::Cluster(_)
+        ));
+    }
+
+    #[test]
+    fn test_a_frozen_cycle_edge_that_gains_a_symbol_turns_red() {
+        let (mut graph, crate_idx) = test_crate_graph();
+        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
+        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
+        add_named_dep(&mut graph, a, b, &["Old", "New"]);
+        add_named_dep(&mut graph, b, a, &["Back"]);
+
+        let rule = no_cycles_rule("no cycles in test", "test::**", vec![]);
+        let baseline = baseline_of(&[
+            named_frozen_edge(&rule.name, "test::a", "test::b", &["Old"]),
+            named_frozen_edge(&rule.name, "test::b", "test::a", &["Back"]),
+        ]);
+        let result = check_rule_with_baseline(&graph, &rule, false, &baseline);
+
+        let outgrown: Vec<&Violation> = result
+            .reported
+            .iter()
+            .filter(|v| matches!(&v.detail, ViolationDetail::Edge { frozen_for, .. } if frozen_for.is_some()))
+            .collect();
+        assert_eq!(outgrown.len(), 1, "got: {:?}", result.reported);
+        let ViolationDetail::Edge { frozen_for, .. } = &outgrown[0].detail else {
+            unreachable!("filtered for edges")
+        };
+        assert_eq!(frozen_for.as_ref().unwrap(), &named(&["Old"]));
+        assert_eq!(result.exit_code(), 1);
+    }
+
+    #[test]
+    fn test_leaving_any_single_edge_uncovered_keeps_a_cluster_reported() {
+        // The verdict per cycle is derived from the covered edges, so it holds
+        // only if every SCC-internal edge lies on a representative cycle.
+        let (mut graph, crate_idx) = test_crate_graph();
+        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
+        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
+        let c = add_module(&mut graph, "c", crate_idx, crate_idx);
+        let d = add_module(&mut graph, "d", crate_idx, crate_idx);
+        add_production_dep(&mut graph, a, b);
+        add_production_dep(&mut graph, b, c);
+        add_production_dep(&mut graph, c, a);
+        add_production_dep(&mut graph, b, d);
+        add_production_dep(&mut graph, d, a);
+        let edges = [
+            ("test::a", "test::b"),
+            ("test::b", "test::c"),
+            ("test::c", "test::a"),
+            ("test::b", "test::d"),
+            ("test::d", "test::a"),
+        ];
+
+        let rule = no_cycles_rule("no cycles in test", "test::**", vec![]);
+        let all_frozen: Vec<BaselineEntry> = edges
+            .iter()
+            .map(|(from, to)| frozen_edge(&rule.name, from, to))
+            .collect();
+        let result = check_rule_with_baseline(&graph, &rule, false, &baseline_of(&all_frozen));
+        assert!(
+            result.reported.is_empty(),
+            "every edge frozen leaves nothing"
+        );
+
+        for left_out in &edges {
+            let rest: Vec<BaselineEntry> = edges
+                .iter()
+                .filter(|edge| *edge != left_out)
+                .map(|(from, to)| frozen_edge(&rule.name, from, to))
+                .collect();
+            let result = check_rule_with_baseline(&graph, &rule, false, &baseline_of(&rest));
+            assert_eq!(
+                result.reported.len(),
+                1,
+                "leaving {left_out:?} uncovered must keep its cluster reported"
+            );
+        }
     }
 
     #[test]
@@ -1445,10 +1648,7 @@ mod tests {
     #[test]
     fn test_frozen_edge_is_not_a_violation() {
         let rule = no_infra_in_domain(vec![]);
-        let baseline = baseline_of(&[BaselineEntry {
-            rule: rule.name.clone(),
-            key: ViolationKey::edge("domain::service", "infra::db"),
-        }]);
+        let baseline = baseline_of(&[frozen_edge(&rule.name, "domain::service", "infra::db")]);
         let result = check_rule_with_baseline(&service_to_db_graph(), &rule, false, &baseline);
         assert!(result.reported.is_empty());
         assert_eq!(result.frozen.len(), 1);
@@ -1456,12 +1656,74 @@ mod tests {
     }
 
     #[test]
+    fn test_a_frozen_edge_that_gains_a_symbol_is_reported_with_what_it_froze() {
+        let (mut graph, _domain, service, _model, _infra, db, _api, _app, _handler) =
+            multi_crate_graph();
+        add_named_dep(&mut graph, service, db, &["Pool", "Row"]);
+
+        let rule = no_infra_in_domain(vec![]);
+        let baseline = baseline_of(&[named_frozen_edge(
+            &rule.name,
+            "domain::service",
+            "infra::db",
+            &["Pool"],
+        )]);
+        let result = check_rule_with_baseline(&graph, &rule, false, &baseline);
+
+        assert!(result.frozen.is_empty());
+        assert_eq!(result.reported.len(), 1);
+        let ViolationDetail::Edge { frozen_for, .. } = &result.reported[0].detail else {
+            panic!("expected an edge detail");
+        };
+        assert_eq!(frozen_for.as_ref().unwrap(), &named(&["Pool"]));
+    }
+
+    #[test]
+    fn test_an_outgrown_entry_still_counts_as_a_hit() {
+        // Otherwise the entry reads as freezing nothing, while it does match
+        // its edge and only stopped covering it.
+        let (mut graph, _domain, service, _model, _infra, db, _api, _app, _handler) =
+            multi_crate_graph();
+        add_named_dep(&mut graph, service, db, &["Pool", "Row"]);
+
+        let rule = no_infra_in_domain(vec![]);
+        let baseline = baseline_of(&[named_frozen_edge(
+            &rule.name,
+            "domain::service",
+            "infra::db",
+            &["Pool"],
+        )]);
+        let result = check_rule_with_baseline(&graph, &rule, false, &baseline);
+        assert_eq!(result.baseline_hits.len(), 1);
+        assert_eq!(result.baseline_hits[0].key.symbols, named(&["Pool", "Row"]));
+    }
+
+    #[test]
+    fn test_a_frozen_edge_stays_frozen_when_it_carries_less() {
+        let (mut graph, _domain, service, _model, _infra, db, _api, _app, _handler) =
+            multi_crate_graph();
+        add_named_dep(&mut graph, service, db, &["Pool"]);
+
+        let rule = no_infra_in_domain(vec![]);
+        let baseline = baseline_of(&[named_frozen_edge(
+            &rule.name,
+            "domain::service",
+            "infra::db",
+            &["Pool", "Row"],
+        )]);
+        let result = check_rule_with_baseline(&graph, &rule, false, &baseline);
+        assert!(result.reported.is_empty());
+        assert_eq!(result.frozen.len(), 1);
+    }
+
+    #[test]
     fn test_baseline_entry_scoped_to_rule_name_does_not_cover_other_rule() {
         let rule = no_infra_in_domain(vec![]);
-        let baseline = baseline_of(&[BaselineEntry {
-            rule: "some other rule".into(),
-            key: ViolationKey::edge("domain::service", "infra::db"),
-        }]);
+        let baseline = baseline_of(&[frozen_edge(
+            "some other rule",
+            "domain::service",
+            "infra::db",
+        )]);
         let result = check_rule_with_baseline(&service_to_db_graph(), &rule, false, &baseline);
         assert_eq!(result.reported.len(), 1);
         assert!(result.frozen.is_empty());
@@ -1483,26 +1745,15 @@ mod tests {
 
         let rule = no_cycles_rule("no cycles in test", "test::**", vec![]);
         let baseline = baseline_of(&[
-            BaselineEntry {
-                rule: rule.name.clone(),
-                key: ViolationKey::cycle(vec![
-                    "test::a".to_string(),
-                    "test::b".to_string(),
-                    "test::c".to_string(),
-                ]),
-            },
-            BaselineEntry {
-                rule: rule.name.clone(),
-                key: ViolationKey::cycle(vec![
-                    "test::a".to_string(),
-                    "test::b".to_string(),
-                    "test::d".to_string(),
-                ]),
-            },
+            frozen_edge(&rule.name, "test::a", "test::b"),
+            frozen_edge(&rule.name, "test::b", "test::c"),
+            frozen_edge(&rule.name, "test::c", "test::a"),
+            frozen_edge(&rule.name, "test::b", "test::d"),
+            frozen_edge(&rule.name, "test::d", "test::a"),
         ]);
         let result = check_rule_with_baseline(&graph, &rule, false, &baseline);
         assert!(result.reported.is_empty());
-        assert_eq!(result.frozen.len(), 2);
+        assert_eq!(result.frozen.len(), 5, "one per frozen edge, not per cycle");
     }
 
     #[test]
@@ -1520,17 +1771,13 @@ mod tests {
         add_production_dep(&mut graph, d, a);
 
         let rule = no_cycles_rule("no cycles in test", "test::**", vec![]);
-        // Only the a-b-c cycle is frozen.
-        let baseline = baseline_of(&[BaselineEntry {
-            rule: rule.name.clone(),
-            key: ViolationKey::cycle(vec![
-                "test::a".to_string(),
-                "test::b".to_string(),
-                "test::c".to_string(),
-            ]),
-        }]);
+        let baseline = baseline_of(&[
+            frozen_edge(&rule.name, "test::a", "test::b"),
+            frozen_edge(&rule.name, "test::b", "test::c"),
+            frozen_edge(&rule.name, "test::c", "test::a"),
+        ]);
         let result = check_rule_with_baseline(&graph, &rule, false, &baseline);
-        assert_eq!(result.frozen.len(), 1);
+        assert_eq!(result.frozen.len(), 3);
         assert_eq!(
             result.reported.len(),
             1,
@@ -1544,31 +1791,6 @@ mod tests {
         let cycle = cluster.cycle.as_ref().expect("single remaining cycle");
         assert!(cycle.iter().any(|m| m == "d"), "got: {cycle:?}");
         assert!(!cycle.iter().any(|m| m == "c"), "got: {cycle:?}");
-    }
-
-    #[test]
-    fn test_rotated_baseline_entry_covers_the_same_ring() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
-        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
-        let c = add_module(&mut graph, "c", crate_idx, crate_idx);
-        add_production_dep(&mut graph, a, b);
-        add_production_dep(&mut graph, b, c);
-        add_production_dep(&mut graph, c, a);
-
-        let rule = no_cycles_rule("no cycles in test", "test::**", vec![]);
-        // Rotated relative to the traversal order (which starts at "test::a").
-        let baseline = baseline_of(&[BaselineEntry {
-            rule: rule.name.clone(),
-            key: ViolationKey::cycle(vec![
-                "test::c".to_string(),
-                "test::a".to_string(),
-                "test::b".to_string(),
-            ]),
-        }]);
-        let result = check_rule_with_baseline(&graph, &rule, false, &baseline);
-        assert!(result.reported.is_empty());
-        assert_eq!(result.frozen.len(), 1);
     }
 
     #[test]

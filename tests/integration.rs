@@ -791,6 +791,85 @@ fn test_generate_baseline_then_check_reports_nothing() {
     );
 }
 
+/// Copies a fixture workspace into a fresh tempdir so a test may edit its
+/// sources. Returns the copy's `Cargo.toml`.
+fn writable_fixture_copy(fixture: &str) -> (tempfile::TempDir, PathBuf) {
+    fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_tree(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), &target).unwrap();
+            }
+        }
+    }
+
+    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/{fixture}"));
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join(fixture);
+    copy_tree(&src, &root);
+    (dir, root.join("Cargo.toml"))
+}
+
+/// Like [`cargo_arc_check`], but against a manifest anywhere on disk.
+fn cargo_arc_check_at(manifest: &std::path::Path, check_args: &[&str]) -> (i32, String) {
+    let output = Command::new(env!("CARGO_BIN_EXE_cargo-arc"))
+        .arg("arc")
+        .arg("--manifest-path")
+        .arg(manifest)
+        .arg("check")
+        .args(check_args)
+        .output()
+        .expect("failed to execute cargo-arc");
+    (
+        output.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&output.stderr).to_string(),
+    )
+}
+
+#[test]
+fn test_a_frozen_edge_turns_red_when_it_gains_a_symbol() {
+    let (dir, manifest) = writable_fixture_copy("arch_violation_workspace");
+    let root = manifest.parent().unwrap();
+    let rules_arg = format!("--rules={}", root.join("arc-rules.toml").display());
+
+    let (code, stderr) = cargo_arc_check_at(&manifest, &[&rules_arg, "--generate-baseline"]);
+    assert_eq!(code, 0, "generate should exit 0, stderr: {stderr}");
+
+    let (code, stderr) = cargo_arc_check_at(&manifest, &[&rules_arg]);
+    assert_eq!(code, 0, "every violation is frozen, stderr: {stderr}");
+
+    // One more symbol on the already-frozen domain::service -> infra::db edge.
+    let db = root.join("infra/src/db.rs");
+    let db_source = std::fs::read_to_string(&db).unwrap();
+    std::fs::write(
+        &db,
+        format!("{db_source}\npub fn open() -> bool {{ true }}\n"),
+    )
+    .unwrap();
+    let service = root.join("domain/src/service.rs");
+    let source = std::fs::read_to_string(&service).unwrap();
+    std::fs::write(&service, format!("use infra::db::open;\n{source}")).unwrap();
+
+    let (code, stderr) = cargo_arc_check_at(&manifest, &[&rules_arg]);
+    assert_eq!(
+        code, 1,
+        "the new symbol is outside what the entry froze, stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("frozen for connect, an unnamed reference; now also carries open"),
+        "the report should say what the entry froze and what came on top, stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("freezes nothing"),
+        "the entry still matches its edge, stderr: {stderr}"
+    );
+    drop(dir);
+}
+
 #[test]
 fn test_generate_baseline_refuses_dead_except() {
     let dir = tempfile::tempdir().unwrap();

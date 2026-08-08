@@ -2,7 +2,7 @@
 //!
 //! Types used across analyze and graph modules, extracted to break circular dependencies.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
@@ -15,6 +15,79 @@ pub struct SourceLocation {
     /// True when every reference at this location is a `pub use` re-export
     /// (republish, not behavioral use). Drives the logic-subgraph exclusion.
     pub via_reexport: bool,
+}
+
+/// Which dependency edge, as the crate-qualified names of its endpoints.
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Edge {
+    pub from: String,
+    pub to: String,
+}
+
+impl Edge {
+    #[must_use]
+    pub fn new(from: impl Into<String>, to: impl Into<String>) -> Self {
+        Self {
+            from: from.into(),
+            to: to.into(),
+        }
+    }
+}
+
+/// The distinct symbols crossing one module-dependency edge.
+///
+/// Counting locations instead would read an import group or a glob as a single
+/// reference, no matter how many symbols it carries: one line is one location.
+/// A reference the resolver cannot name sets `bare` rather than adding a name,
+/// so such an edge never reads as free.
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct EdgeSymbols {
+    /// Sorted because the baseline file writes these names in iteration order.
+    pub named: BTreeSet<String>,
+    pub bare: bool,
+}
+
+impl EdgeSymbols {
+    #[must_use]
+    pub fn from_locations(locations: &[SourceLocation]) -> Self {
+        Self {
+            named: locations
+                .iter()
+                .flat_map(|l| l.symbols.iter().cloned())
+                .collect(),
+            bare: locations.iter().any(|l| l.symbols.is_empty()),
+        }
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.named.len() + usize::from(self.bare)
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.named.is_empty() && !self.bare
+    }
+
+    /// Whether `self` is at least as wide as `observed`, on names and on `bare`.
+    #[must_use]
+    pub fn covers(&self, observed: &Self) -> bool {
+        observed.named.is_subset(&self.named) && (self.bare || !observed.bare)
+    }
+
+    #[must_use]
+    pub fn difference(&self, other: &Self) -> Self {
+        Self {
+            named: self.named.difference(&other.named).cloned().collect(),
+            bare: self.bare && !other.bare,
+        }
+    }
+
+    /// Take in `other`'s symbols, so two records of one edge tolerate both sets.
+    pub fn merge(&mut self, other: &Self) {
+        self.named.extend(other.named.iter().cloned());
+        self.bare |= other.bare;
+    }
 }
 
 /// The item kind at a symbol's definition site.
@@ -295,6 +368,51 @@ pub struct ModuleTree {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    fn location(symbols: &[&str]) -> SourceLocation {
+        SourceLocation {
+            file: PathBuf::from("src/a.rs"),
+            line: 1,
+            symbols: symbols.iter().map(|s| (*s).to_string()).collect(),
+            module_path: "krate::a".to_string(),
+            via_reexport: false,
+        }
+    }
+
+    #[test]
+    fn import_group_counts_every_symbol_it_carries() {
+        let symbols = EdgeSymbols::from_locations(&[location(&["One", "Two", "Three"])]);
+        assert_eq!(symbols.len(), 3);
+    }
+
+    #[test]
+    fn unnamed_references_share_one_slot() {
+        let symbols = EdgeSymbols::from_locations(&[location(&[]), location(&[])]);
+        assert_eq!(symbols.len(), 1);
+    }
+
+    #[test]
+    fn the_same_symbol_on_two_lines_counts_once() {
+        let symbols = EdgeSymbols::from_locations(&[location(&["One"]), location(&["One", "Two"])]);
+        assert_eq!(symbols.len(), 2);
+    }
+
+    #[test]
+    fn a_wider_entry_covers_a_narrower_observation() {
+        let frozen = EdgeSymbols::from_locations(&[location(&["Foo", "Bar"])]);
+        assert!(frozen.covers(&EdgeSymbols::from_locations(&[location(&["Foo"])])));
+        assert!(!frozen.covers(&EdgeSymbols::from_locations(&[location(&["Foo", "Baz"])])));
+    }
+
+    #[test]
+    fn an_unnamed_reference_needs_the_bare_flag_to_be_covered() {
+        let named_only = EdgeSymbols::from_locations(&[location(&["Foo"])]);
+        let bare = EdgeSymbols::from_locations(&[location(&[])]);
+        assert!(!named_only.covers(&bare));
+
+        let with_bare = EdgeSymbols::from_locations(&[location(&["Foo"]), location(&[])]);
+        assert!(with_bare.covers(&bare));
+    }
 
     #[test]
     fn test_edgecontext_struct_basics() {

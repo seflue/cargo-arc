@@ -4,7 +4,8 @@
 //! crate no layer sorts, an entry that freezes nothing any more. Each one
 //! carries the level its `[diagnostics]` entry set.
 
-use crate::rules::baseline::{Baseline, BaselineEntry};
+use crate::model::EdgeSymbols;
+use crate::rules::baseline::{Baseline, BaselineEntry, StaleEntry};
 use crate::rules::config::{ArcConfig, DiagnosticLevel, Layer, Rule, RuleKind, Severity};
 use crate::rules::matching::PatternIndex;
 use petgraph::graph::NodeIndex;
@@ -25,6 +26,12 @@ pub enum DiagnosticKind {
     /// A frozen violation the run no longer produces: fixed, or its rule renamed
     /// out from under the entry.
     UnmatchedBaselineEntry { entry: BaselineEntry },
+    /// A frozen edge that still violates, but no longer carries every symbol its
+    /// entry tolerates. `surplus` is the part nothing crosses any more.
+    WideBaselineEntry {
+        entry: BaselineEntry,
+        surplus: EdgeSymbols,
+    },
     /// An `except` pattern that resolves to no module, so it allows nothing.
     UnmatchedExcept { entry: DeadExcept },
 }
@@ -35,7 +42,10 @@ impl Diagnostic {
     pub fn name(&self) -> &'static str {
         match self.kind {
             DiagnosticKind::UnlayeredCrate { .. } => "unlayered-crate",
-            DiagnosticKind::UnmatchedBaselineEntry { .. } => "unmatched-baseline-entry",
+            // Both say the baseline names something the run does not confirm;
+            // the config has one switch for the pair.
+            DiagnosticKind::UnmatchedBaselineEntry { .. }
+            | DiagnosticKind::WideBaselineEntry { .. } => "unmatched-baseline-entry",
             DiagnosticKind::UnmatchedExcept { .. } => "unmatched-except",
         }
     }
@@ -71,10 +81,15 @@ pub(super) fn collect(
             baseline
                 .unmatched(hits)
                 .into_iter()
-                .filter(|entry| !is_ignored(config, &entry.rule))
-                .map(|entry| Diagnostic {
+                .filter(|stale| !is_ignored(config, &stale.entry().rule))
+                .map(|stale| Diagnostic {
                     level,
-                    kind: DiagnosticKind::UnmatchedBaselineEntry { entry },
+                    kind: match stale {
+                        StaleEntry::Gone(entry) => DiagnosticKind::UnmatchedBaselineEntry { entry },
+                        StaleEntry::TooWide { entry, surplus } => {
+                            DiagnosticKind::WideBaselineEntry { entry, surplus }
+                        }
+                    },
                 }),
         );
     }
@@ -184,7 +199,8 @@ pub(super) fn dead_excepts(index: &PatternIndex, config: &ArcConfig) -> Vec<Dead
 
 #[cfg(test)]
 mod tests {
-    use crate::graph::{ArcGraph, Edge, Node};
+    use crate::graph::{ArcGraph, EdgeWeight, Node};
+    use crate::model::{Edge, EdgeSymbols};
     use crate::rules::baseline::{Baseline, BaselineEntry, ViolationKey};
     use crate::rules::config::{
         ArcConfig, DiagnosticLevel, Diagnostics, Direction, Except, ForbiddenDependencyRule,
@@ -207,7 +223,7 @@ mod tests {
                 name: "service".into(),
                 crate_idx,
             });
-            graph.add_edge(crate_idx, module, Edge::Contains);
+            graph.add_edge(crate_idx, module, EdgeWeight::Contains);
         }
         graph
     }
@@ -453,7 +469,13 @@ mod tests {
     fn stale_entry(rule: &str) -> BaselineEntry {
         BaselineEntry {
             rule: rule.into(),
-            key: ViolationKey::edge("domain::service", "infra::service"),
+            key: ViolationKey {
+                edge: Edge::new("domain::service", "infra::service"),
+                symbols: EdgeSymbols {
+                    named: ["Service".to_string()].into_iter().collect(),
+                    bare: false,
+                },
+            },
         }
     }
 

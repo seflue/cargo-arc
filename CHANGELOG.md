@@ -19,13 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allows. Without it a run only counts them.
 - `arc check --generate-baseline` writes `arc-baseline.toml` next to
   `arc-rules.toml`, freezing the violations a project already has so that only
-  new ones are reported. A normal run never writes the file. Entries carry the
-  rule name; a cycle is keyed by its members, so a new cycle is reported even
-  when it runs through a frozen one's edges. Generation is refused while an
-  `except` pattern matches no module, and `--show-silenced` lists frozen
-  violations alongside allowed ones. When a tangle holds both frozen and
-  reported cycles, its ranked edge list covers only the reported ones, so no
-  listed edge stands for a cycle the baseline froze.
+  new ones are reported. A normal run never writes the file. An entry carries
+  the rule name and names one dependency edge together with the symbols
+  tolerated on it. A cycle is frozen when every one of its edges is, so an entry
+  outlives a refactor that reshapes the cycle around it, and an edge that gains
+  a symbol is reported again. Generation is refused while an `except` pattern
+  matches no module, and `--show-silenced` lists frozen violations alongside
+  allowed ones. When a tangle holds both frozen and reported cycles, its ranked
+  edge list covers only the reported ones, so no listed edge stands for a cycle
+  the baseline froze.
 - Rule names must now be unique across all rule types; `arc-rules.toml` is
   rejected when two rules share a name.
 - A `[diagnostics]` section in `arc-rules.toml` reports gaps in the

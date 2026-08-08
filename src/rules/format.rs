@@ -3,7 +3,7 @@
 //! Formats `CheckResult` violations in a style similar to `rustc` error output:
 //! `error[rule-type]: rule-name` with optional source locations and a summary line.
 
-use crate::rules::baseline::ViolationKey;
+use crate::model::{Edge, EdgeSymbols};
 use crate::rules::config::{DiagnosticLevel, Severity};
 use crate::rules::diagnostics::{Diagnostic, DiagnosticKind};
 use crate::rules::engine::{CheckResult, CycleCluster, Violation, ViolationDetail};
@@ -140,8 +140,19 @@ fn subject(diagnostic: &Diagnostic) -> String {
     match &diagnostic.kind {
         DiagnosticKind::UnlayeredCrate { krate } => krate.clone(),
         DiagnosticKind::UnmatchedBaselineEntry { entry } => {
-            format!("{}: {}", entry.rule, violation(&entry.key))
+            format!("{}: {}", entry.rule, edge(&entry.key.edge))
         }
+        DiagnosticKind::WideBaselineEntry { entry, surplus } => format!(
+            "{}: {} ({} no longer {})",
+            entry.rule,
+            edge(&entry.key.edge),
+            symbol_list(surplus),
+            if surplus.len() == 1 {
+                "crosses"
+            } else {
+                "cross"
+            }
+        ),
         DiagnosticKind::UnmatchedExcept { entry } => entry.pattern.clone(),
     }
 }
@@ -155,17 +166,28 @@ fn explanation(diagnostic: &Diagnostic) -> String {
         DiagnosticKind::UnmatchedBaselineEntry { .. } => {
             "freezes nothing; arc check --generate-baseline rewrites the baseline".to_string()
         }
+        DiagnosticKind::WideBaselineEntry { .. } => {
+            "freezes more than the edge carries; arc check --generate-baseline narrows the entry"
+                .to_string()
+        }
         DiagnosticKind::UnmatchedExcept { entry } => {
             format!("in rule {:?}, matches no module", entry.rule)
         }
     }
 }
 
-fn violation(key: &ViolationKey) -> String {
-    match key {
-        ViolationKey::Edge { from, to } => format!("{from} → {to}"),
-        ViolationKey::Cycle(members) => format!("{} -> {}", members.join(" -> "), members[0]),
+fn edge(edge: &Edge) -> String {
+    format!("{} → {}", edge.from, edge.to)
+}
+
+/// Symbol names for a message, in the order the baseline file writes them. An
+/// unnamed reference has nothing to print, so it is spelled out.
+fn symbol_list(symbols: &EdgeSymbols) -> String {
+    let mut names: Vec<&str> = symbols.named.iter().map(String::as_str).collect();
+    if symbols.bare {
+        names.push("an unnamed reference");
     }
+    names.join(", ")
 }
 
 /// Render one diagnostic block: `{level}[rule-type]: rule-name`, its source
@@ -182,14 +204,23 @@ fn violation_block(out: &mut String, violation: &Violation, level: &str) {
         let _ = writeln!(out, "  --> {}:{}", loc.file.display(), loc.line);
     }
     match &violation.detail {
-        ViolationDetail::Edge { from, to } => {
-            let _ = writeln!(out, "  = {from} → {to}");
+        ViolationDetail::Edge {
+            edge: ends,
+            frozen_for,
+        } => {
+            let _ = writeln!(out, "  = {}", edge(ends));
+            if let Some(frozen_for) = frozen_for {
+                let carries = EdgeSymbols::from_locations(&violation.locations);
+                let _ = writeln!(
+                    out,
+                    "  = frozen for {}; now also carries {}",
+                    symbol_list(frozen_for),
+                    symbol_list(&carries.difference(frozen_for))
+                );
+            }
         }
         ViolationDetail::Cluster(cluster) => {
             out.push_str(&cluster_block(cluster, "  "));
-        }
-        ViolationDetail::Cycle { modules } => {
-            let _ = writeln!(out, "  = {} -> {}", modules.join(" -> "), modules[0]);
         }
     }
     let _ = writeln!(out);
@@ -365,8 +396,8 @@ mod tests {
                 rule_type: "forbidden-dependency".into(),
                 severity: Severity::Error,
                 detail: ViolationDetail::Edge {
-                    from: "domain::service".into(),
-                    to: "infra::db".into(),
+                    edge: Edge::new("domain::service", "infra::db"),
+                    frozen_for: None,
                 },
                 locations: vec![],
             }],
@@ -401,8 +432,8 @@ mod tests {
                 rule_type: "forbidden-dependency".into(),
                 severity: Severity::Error,
                 detail: ViolationDetail::Edge {
-                    from: "a".into(),
-                    to: "b".into(),
+                    edge: Edge::new("a", "b"),
+                    frozen_for: None,
                 },
                 locations: vec![SourceLocation {
                     file: PathBuf::from("src/domain/service.rs"),
@@ -427,8 +458,8 @@ mod tests {
                     rule_type: "forbidden-dependency".into(),
                     severity: Severity::Error,
                     detail: ViolationDetail::Edge {
-                        from: "a".into(),
-                        to: "b".into(),
+                        edge: Edge::new("a", "b"),
+                        frozen_for: None,
                     },
                     locations: vec![],
                 },
@@ -444,8 +475,8 @@ mod tests {
                     rule_type: "layers".into(),
                     severity: Severity::Error,
                     detail: ViolationDetail::Edge {
-                        from: "x".into(),
-                        to: "y".into(),
+                        edge: Edge::new("x", "y"),
+                        frozen_for: None,
                     },
                     locations: vec![],
                 },
@@ -469,8 +500,8 @@ mod tests {
             rule_type: "forbidden-dependency".into(),
             severity: Severity::Error,
             detail: ViolationDetail::Edge {
-                from: "domain::service".into(),
-                to: "infra::db".into(),
+                edge: Edge::new("domain::service", "infra::db"),
+                frozen_for: None,
             },
             locations: vec![],
         }
@@ -519,8 +550,8 @@ mod tests {
                 rule_type: "forbidden-dependency".into(),
                 severity: Severity::Error,
                 detail: ViolationDetail::Edge {
-                    from: "domain::service".into(),
-                    to: "infra::db".into(),
+                    edge: Edge::new("domain::service", "infra::db"),
+                    frozen_for: None,
                 },
                 locations: vec![],
             }],
@@ -541,11 +572,35 @@ mod tests {
             rule_name: "no cycles in domain".into(),
             rule_type: "no-cycles".into(),
             severity: Severity::Error,
-            detail: ViolationDetail::Cycle {
-                modules: vec!["a".into(), "b".into()],
+            detail: ViolationDetail::Edge {
+                edge: Edge::new("domain::a", "domain::b"),
+                frozen_for: None,
             },
             locations: vec![],
         }
+    }
+
+    #[test]
+    fn test_format_counts_a_frozen_cycle_once_per_edge() {
+        // A frozen cycle is its frozen edges, so a two-module ring counts two.
+        let result = CheckResult {
+            frozen: vec![
+                frozen_cycle_violation(),
+                Violation {
+                    detail: ViolationDetail::Edge {
+                        edge: Edge::new("domain::b", "domain::a"),
+                        frozen_for: None,
+                    },
+                    ..frozen_cycle_violation()
+                },
+            ],
+            ..Default::default()
+        };
+        let output = format_violations(&result, false);
+        assert!(
+            output.contains("2 violations frozen in the baseline, not counted"),
+            "got:\n{output}"
+        );
     }
 
     #[test]
@@ -578,7 +633,7 @@ mod tests {
             output.contains("baseline[no-cycles]: no cycles in domain"),
             "got:\n{output}"
         );
-        assert!(output.contains("= a -> b -> a"), "got:\n{output}");
+        assert!(output.contains("= domain::a → domain::b"), "got:\n{output}");
         assert!(!output.contains("not counted"), "got:\n{output}");
     }
 
@@ -692,32 +747,33 @@ mod tests {
         );
     }
 
+    fn baseline_entry(rule: &str, from: &str, to: &str, symbols: &[&str]) -> BaselineEntry {
+        BaselineEntry {
+            rule: rule.into(),
+            key: ViolationKey {
+                edge: Edge::new(from, to),
+                symbols: EdgeSymbols {
+                    named: symbols.iter().map(|s| (*s).to_string()).collect(),
+                    bare: false,
+                },
+            },
+        }
+    }
+
     #[test]
     fn test_format_unmatched_baseline_entry_shows_the_violation() {
         let result = CheckResult {
-            diagnostics: vec![
-                Diagnostic {
-                    level: DiagnosticLevel::Warn,
-                    kind: DiagnosticKind::UnmatchedBaselineEntry {
-                        entry: BaselineEntry {
-                            rule: "no infra in domain".into(),
-                            key: ViolationKey::edge("domain::service", "infra::db"),
-                        },
-                    },
+            diagnostics: vec![Diagnostic {
+                level: DiagnosticLevel::Warn,
+                kind: DiagnosticKind::UnmatchedBaselineEntry {
+                    entry: baseline_entry(
+                        "no infra in domain",
+                        "domain::service",
+                        "infra::db",
+                        &[],
+                    ),
                 },
-                Diagnostic {
-                    level: DiagnosticLevel::Warn,
-                    kind: DiagnosticKind::UnmatchedBaselineEntry {
-                        entry: BaselineEntry {
-                            rule: "domain acyclic".into(),
-                            key: ViolationKey::cycle(vec![
-                                "domain::a".to_string(),
-                                "domain::b".to_string(),
-                            ]),
-                        },
-                    },
-                },
-            ],
+            }],
             ..Default::default()
         };
         let output = format_violations(&result, false);
@@ -725,11 +781,106 @@ mod tests {
             output.contains("domain::service → infra::db"),
             "got:\n{output}"
         );
+        assert!(output.contains("--generate-baseline"), "got:\n{output}");
+    }
+
+    #[test]
+    fn test_format_wide_baseline_entry_names_what_no_longer_crosses() {
+        let result = CheckResult {
+            diagnostics: vec![Diagnostic {
+                level: DiagnosticLevel::Warn,
+                kind: DiagnosticKind::WideBaselineEntry {
+                    entry: baseline_entry(
+                        "core acyclic",
+                        "core::writer",
+                        "core::keywords",
+                        &["RESERVED", "TYPES"],
+                    ),
+                    surplus: EdgeSymbols {
+                        named: ["TYPES".to_string()].into_iter().collect(),
+                        bare: false,
+                    },
+                },
+            }],
+            ..Default::default()
+        };
+        let output = format_violations(&result, false);
         assert!(
-            output.contains("domain::a -> domain::b -> domain::a"),
+            output.contains("core::writer → core::keywords (TYPES no longer crosses)"),
             "got:\n{output}"
         );
-        assert!(output.contains("--generate-baseline"), "got:\n{output}");
+        assert!(
+            output.contains("freezes more than the edge carries"),
+            "got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_format_both_stale_entry_kinds_report_under_one_name() {
+        let result = CheckResult {
+            diagnostics: vec![
+                Diagnostic {
+                    level: DiagnosticLevel::Warn,
+                    kind: DiagnosticKind::UnmatchedBaselineEntry {
+                        entry: baseline_entry("a rule", "a", "b", &[]),
+                    },
+                },
+                Diagnostic {
+                    level: DiagnosticLevel::Warn,
+                    kind: DiagnosticKind::WideBaselineEntry {
+                        entry: baseline_entry("a rule", "c", "d", &["One"]),
+                        surplus: EdgeSymbols {
+                            named: ["One".to_string()].into_iter().collect(),
+                            bare: false,
+                        },
+                    },
+                },
+            ],
+            ..Default::default()
+        };
+        let output = format_violations(&result, false);
+        assert_eq!(
+            output.matches("unmatched-baseline-entry").count(),
+            2,
+            "one line each, both under the same name; got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_format_an_outgrown_edge_says_what_it_froze_and_what_it_added() {
+        let result = CheckResult {
+            reported: vec![Violation {
+                rule_name: "core acyclic".into(),
+                rule_type: "no-cycles".into(),
+                severity: Severity::Error,
+                detail: ViolationDetail::Edge {
+                    edge: Edge::new("core::writer", "core::keywords"),
+                    frozen_for: Some(EdgeSymbols {
+                        named: ["RESERVED".to_string(), "TYPES".to_string()]
+                            .into_iter()
+                            .collect(),
+                        bare: false,
+                    }),
+                },
+                locations: vec![SourceLocation {
+                    file: PathBuf::from("src/writer.rs"),
+                    line: 12,
+                    symbols: vec![
+                        "RESERVED".to_string(),
+                        "TYPES".to_string(),
+                        "MODIFIERS".to_string(),
+                    ],
+                    module_path: String::new(),
+                    via_reexport: false,
+                }],
+            }],
+            ..Default::default()
+        };
+        let output = format_violations(&result, false);
+        assert!(
+            output.contains("= frozen for RESERVED, TYPES; now also carries MODIFIERS"),
+            "got:\n{output}"
+        );
     }
 
     #[test]
@@ -795,7 +946,7 @@ mod tests {
         assert!(output.contains("    cycle: a -> b -> a"));
     }
 
-    use crate::graph::{ArcGraph, Edge, Node, Reexports};
+    use crate::graph::{ArcGraph, EdgeWeight, Node, Reexports};
 
     // ===== format_cluster_report tests =====
 
@@ -817,7 +968,7 @@ mod tests {
                     name: (*m).into(),
                     crate_idx,
                 });
-                g.add_edge(crate_idx, n, Edge::Contains);
+                g.add_edge(crate_idx, n, EdgeWeight::Contains);
                 n
             })
             .collect();
@@ -836,7 +987,7 @@ mod tests {
             g.add_edge(
                 idx[from],
                 idx[to],
-                Edge::ModuleDep {
+                EdgeWeight::ModuleDep {
                     locations,
                     context: EdgeContext::production(),
                 },

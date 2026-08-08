@@ -500,7 +500,7 @@ mod tests {
     use super::super::positioning::{calculate_box_width, calculate_positions};
     use super::*;
     use crate::diagnose::RepresentativeCycles;
-    use crate::graph::{ArcGraph, Edge, Node, Reexports};
+    use crate::graph::{ArcGraph, EdgeWeight, Node, Reexports};
     use crate::layout::{LayoutEdge, build_layout};
     use crate::model::{EdgeContext, SourceLocation};
 
@@ -1925,7 +1925,7 @@ mod tests {
                     name: name.into(),
                     crate_idx,
                 });
-                graph.add_edge(crate_idx, idx, Edge::Contains);
+                graph.add_edge(crate_idx, idx, EdgeWeight::Contains);
                 idx
             })
             .collect();
@@ -1947,7 +1947,7 @@ mod tests {
             graph.add_edge(
                 from,
                 to,
-                Edge::ModuleDep {
+                EdgeWeight::ModuleDep {
                     locations: locations(symbols),
                     context: EdgeContext::production(),
                 },
@@ -2063,7 +2063,7 @@ mod tests {
                 name: name.into(),
                 crate_idx,
             });
-            graph.add_edge(crate_idx, idx, Edge::Contains);
+            graph.add_edge(crate_idx, idx, EdgeWeight::Contains);
         }
         graph
     }
@@ -2082,7 +2082,7 @@ mod tests {
         graph.add_edge(
             src,
             dst,
-            Edge::ModuleDep {
+            EdgeWeight::ModuleDep {
                 locations: vec![SourceLocation {
                     file: format!("src/{from}.rs").into(),
                     line: 1,
@@ -2126,7 +2126,7 @@ mod tests {
             name: child.into(),
             crate_idx,
         });
-        graph.add_edge(parent_idx, child_idx, Edge::Contains);
+        graph.add_edge(parent_idx, child_idx, EdgeWeight::Contains);
     }
 
     fn symbol_ids(value: &serde_json::Value) -> BTreeSet<String> {
@@ -2200,7 +2200,7 @@ mod tests {
         graph.add_edge(
             user,
             model,
-            Edge::ModuleDep {
+            EdgeWeight::ModuleDep {
                 locations: vec![SourceLocation {
                     file: "src/user.rs".into(),
                     line: 1,

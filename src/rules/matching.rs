@@ -3,7 +3,7 @@
 //! Resolves module path patterns like `domain::*` or `domain::**` to concrete
 //! `NodeIndex` sets in the `ArcGraph`.
 
-use crate::graph::{ArcGraph, Edge};
+use crate::graph::{ArcGraph, EdgeWeight};
 use petgraph::graph::NodeIndex;
 use petgraph::visit::EdgeRef;
 
@@ -84,7 +84,7 @@ impl<'graph> PatternIndex<'graph> {
         };
         self.graph
             .edges(base_idx)
-            .filter(|edge| matches!(edge.weight(), Edge::Contains))
+            .filter(|edge| matches!(edge.weight(), EdgeWeight::Contains))
             .map(|edge| edge.target())
             .collect()
     }
@@ -127,7 +127,7 @@ mod tests {
             name: name.into(),
             crate_idx,
         });
-        graph.add_edge(parent, idx, Edge::Contains);
+        graph.add_edge(parent, idx, EdgeWeight::Contains);
         idx
     }
 

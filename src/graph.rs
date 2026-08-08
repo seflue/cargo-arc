@@ -55,7 +55,7 @@ impl Node {
 }
 
 #[derive(Debug)]
-pub enum Edge {
+pub enum EdgeWeight {
     CrateDep {
         context: EdgeContext,
     },
@@ -70,20 +70,22 @@ pub enum Edge {
     DevDep,
 }
 
-impl Edge {
+impl EdgeWeight {
     /// Returns the edge context, if this is a dependency edge (not Contains).
     #[must_use]
     pub fn context(&self) -> Option<&EdgeContext> {
         match self {
-            Edge::CrateDep { context } | Edge::ModuleDep { context, .. } => Some(context),
-            Edge::Contains | Edge::DevDep => None,
+            EdgeWeight::CrateDep { context } | EdgeWeight::ModuleDep { context, .. } => {
+                Some(context)
+            }
+            EdgeWeight::Contains | EdgeWeight::DevDep => None,
         }
     }
 
     /// Whether this edge is a crate-level dependency, shown or not.
     #[must_use]
     pub fn is_crate_dep(&self) -> bool {
-        matches!(self, Edge::CrateDep { .. } | Edge::DevDep)
+        matches!(self, EdgeWeight::CrateDep { .. } | EdgeWeight::DevDep)
     }
 
     /// Whether this edge represents a production dependency.
@@ -95,7 +97,7 @@ impl Edge {
 
     #[must_use]
     pub fn is_production_module_dep(&self) -> bool {
-        matches!(self, Edge::ModuleDep { context, .. } if context.kind == UsageKind::Production)
+        matches!(self, EdgeWeight::ModuleDep { context, .. } if context.kind == UsageKind::Production)
     }
 
     /// Whether this is a production `ModuleDep` whose references are ALL
@@ -105,7 +107,7 @@ impl Edge {
     pub fn is_reexport_module_dep(&self) -> bool {
         matches!(
             self,
-            Edge::ModuleDep { locations, context }
+            EdgeWeight::ModuleDep { locations, context }
                 if context.kind == UsageKind::Production
                     && !locations.is_empty()
                     && locations.iter().all(|loc| loc.via_reexport)
@@ -114,12 +116,12 @@ impl Edge {
 
     #[must_use]
     pub fn is_production_crate_dep(&self) -> bool {
-        matches!(self, Edge::CrateDep { context } if context.kind == UsageKind::Production)
+        matches!(self, EdgeWeight::CrateDep { context } if context.kind == UsageKind::Production)
     }
 
     #[must_use]
     pub fn is_test_crate_dep(&self) -> bool {
-        matches!(self, Edge::CrateDep { context } if matches!(context.kind, UsageKind::Test(_)))
+        matches!(self, EdgeWeight::CrateDep { context } if matches!(context.kind, UsageKind::Test(_)))
     }
 }
 
@@ -144,12 +146,12 @@ impl From<bool> for Reexports {
 
 /// Directed dependency graph for workspace crates and modules.
 ///
-/// Wraps `petgraph::DiGraph<Node, Edge>` with domain-specific methods for
+/// Wraps `petgraph::DiGraph<Node, EdgeWeight>` with domain-specific methods for
 /// dependency analysis, reachability, and layout ordering.
-pub struct ArcGraph(DiGraph<Node, Edge>);
+pub struct ArcGraph(DiGraph<Node, EdgeWeight>);
 
 impl std::ops::Deref for ArcGraph {
-    type Target = DiGraph<Node, Edge>;
+    type Target = DiGraph<Node, EdgeWeight>;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
@@ -221,7 +223,7 @@ impl ArcGraph {
         let mut crate_name = None;
         while let Some(edge) = self
             .edges_directed(current, petgraph::Direction::Incoming)
-            .find(|edge| matches!(edge.weight(), Edge::Contains))
+            .find(|edge| matches!(edge.weight(), EdgeWeight::Contains))
         {
             let parent = edge.source();
             if self[parent].is_crate() {
@@ -249,7 +251,7 @@ impl ArcGraph {
     ///
     /// Crates not in this set are test infrastructure (dev-dep crates and their
     /// transitive production dependencies) and should be pruned from the layout.
-    /// An incoming [`Edge::DevDep`] is what separates a test helper from an entry
+    /// An incoming [`EdgeWeight::DevDep`] is what separates a test helper from an entry
     /// point: both are depended upon by nothing that ships.
     ///
     /// When test `CrateDep` edges exist (--include-tests), all crates are reachable.
@@ -276,7 +278,7 @@ impl ArcGraph {
         // crates become reachable via BFS if a production dep points to them.
         let has_any_contains = all_crates.iter().any(|&node| {
             self.edges(node)
-                .any(|edge| matches!(edge.weight(), Edge::Contains))
+                .any(|edge| matches!(edge.weight(), EdgeWeight::Contains))
         });
         let anchors: HashSet<NodeIndex> = if has_any_contains {
             all_crates
@@ -284,7 +286,7 @@ impl ArcGraph {
                 .copied()
                 .filter(|&node| {
                     self.edges(node)
-                        .any(|edge| matches!(edge.weight(), Edge::Contains))
+                        .any(|edge| matches!(edge.weight(), EdgeWeight::Contains))
                         || self.is_entry_point(node)
                 })
                 .collect()
@@ -332,7 +334,7 @@ impl ArcGraph {
             if subtree.insert(node) {
                 stack.extend(
                     self.edges(node)
-                        .filter(|edge| matches!(edge.weight(), Edge::Contains))
+                        .filter(|edge| matches!(edge.weight(), EdgeWeight::Contains))
                         .map(|edge| edge.target()),
                 );
             }
@@ -344,7 +346,7 @@ impl ArcGraph {
     #[must_use]
     pub fn contains_child(&self, parent: NodeIndex, child: NodeIndex) -> bool {
         self.edges(parent)
-            .any(|edge| edge.target() == child && matches!(edge.weight(), Edge::Contains))
+            .any(|edge| edge.target() == child && matches!(edge.weight(), EdgeWeight::Contains))
     }
 
     /// Build a map from child → parent for all `Contains` edges.
@@ -352,7 +354,7 @@ impl ArcGraph {
     #[allow(clippy::missing_panics_doc)]
     pub fn parent_map(&self) -> HashMap<NodeIndex, NodeIndex> {
         self.edge_indices()
-            .filter(|&edge_idx| matches!(self[edge_idx], Edge::Contains))
+            .filter(|&edge_idx| matches!(self[edge_idx], EdgeWeight::Contains))
             .map(|edge_idx| {
                 let (parent, child) = self.edge_endpoints(edge_idx).expect("edge should exist");
                 (child, parent)
@@ -373,7 +375,7 @@ impl ArcGraph {
                 out.push(node);
                 match self
                     .edges_directed(node, petgraph::Direction::Incoming)
-                    .find(|edge| matches!(edge.weight(), Edge::Contains))
+                    .find(|edge| matches!(edge.weight(), EdgeWeight::Contains))
                 {
                     Some(edge) => node = edge.source(),
                     None => break,
@@ -393,7 +395,7 @@ impl ArcGraph {
 
     /// Build a unified graph from crate and module analysis data.
     /// `include_tests` decides whether dev-dependencies become shown test edges
-    /// or the invisible [`Edge::DevDep`].
+    /// or the invisible [`EdgeWeight::DevDep`].
     #[must_use]
     pub(crate) fn build(
         crates: &[CrateInfo],
@@ -476,7 +478,8 @@ impl GraphBuilder {
             name: module.name.clone(),
             crate_idx,
         });
-        self.graph.add_edge(parent_idx, module_idx, Edge::Contains);
+        self.graph
+            .add_edge(parent_idx, module_idx, EdgeWeight::Contains);
         self.module_map.insert(module.full_path.clone(), module_idx);
 
         self.stash_deps(&module.full_path, &module.dependencies);
@@ -495,18 +498,18 @@ impl GraphBuilder {
             let prod = crate_info.dependencies.iter().map(|dep| {
                 (
                     dep,
-                    Edge::CrateDep {
+                    EdgeWeight::CrateDep {
                         context: EdgeContext::production(),
                     },
                 )
             });
             let dev = crate_info.dev_dependencies.iter().map(|dep| {
                 let edge = if include_tests {
-                    Edge::CrateDep {
+                    EdgeWeight::CrateDep {
                         context: EdgeContext::test(TestKind::Unit),
                     }
                 } else {
-                    Edge::DevDep
+                    EdgeWeight::DevDep
                 };
                 (dep, edge)
             });
@@ -552,8 +555,11 @@ impl GraphBuilder {
             for (to_idx, target, target_deps) in resolved {
                 let context = aggregate_context(&target_deps);
                 let locations = build_source_locations(&target_deps, &target);
-                self.graph
-                    .add_edge(from_idx, to_idx, Edge::ModuleDep { locations, context });
+                self.graph.add_edge(
+                    from_idx,
+                    to_idx,
+                    EdgeWeight::ModuleDep { locations, context },
+                );
             }
         }
     }
@@ -605,7 +611,7 @@ impl GraphBuilder {
                 continue;
             };
             self.graph
-                .add_edge(ws_idx, ext_idx, Edge::CrateDep { context });
+                .add_edge(ws_idx, ext_idx, EdgeWeight::CrateDep { context });
         }
 
         // External -> external edges (only populated in transitive mode)
@@ -615,7 +621,7 @@ impl GraphBuilder {
             if let (Some(&from_idx), Some(&to_idx)) = (from, to) {
                 let context = edge_context_from_dep_kinds(&dep.dep_kinds);
                 self.graph
-                    .add_edge(from_idx, to_idx, Edge::CrateDep { context });
+                    .add_edge(from_idx, to_idx, EdgeWeight::CrateDep { context });
             }
         }
     }
@@ -736,11 +742,15 @@ mod tests {
         graph.edge_indices().fold(
             (0, 0, 0),
             |(crate_dep_count, module_dep_count, contains_count), edge_idx| match graph[edge_idx] {
-                Edge::CrateDep { .. } => (crate_dep_count + 1, module_dep_count, contains_count),
-                Edge::ModuleDep { .. } => (crate_dep_count, module_dep_count + 1, contains_count),
-                Edge::Contains => (crate_dep_count, module_dep_count, contains_count + 1),
+                EdgeWeight::CrateDep { .. } => {
+                    (crate_dep_count + 1, module_dep_count, contains_count)
+                }
+                EdgeWeight::ModuleDep { .. } => {
+                    (crate_dep_count, module_dep_count + 1, contains_count)
+                }
+                EdgeWeight::Contains => (crate_dep_count, module_dep_count, contains_count + 1),
                 // Not a shown dependency; tests that care query it directly.
-                Edge::DevDep => (crate_dep_count, module_dep_count, contains_count),
+                EdgeWeight::DevDep => (crate_dep_count, module_dep_count, contains_count),
             },
         )
     }
@@ -753,7 +763,7 @@ mod tests {
         graph
             .edge_indices()
             .find_map(|edge_idx| match &graph[edge_idx] {
-                Edge::ModuleDep { context, locations } => {
+                EdgeWeight::ModuleDep { context, locations } => {
                     let (from_node, to_node) =
                         graph.edge_endpoints(edge_idx).expect("edge should exist");
                     (graph[from_node].name() == from_name && graph[to_node].name() == to_name)
@@ -1037,7 +1047,7 @@ mod tests {
             name: "foo".into(),
             crate_idx,
         });
-        graph.add_edge(crate_idx, mod_idx, Edge::Contains);
+        graph.add_edge(crate_idx, mod_idx, EdgeWeight::Contains);
         let ext_idx = graph.add_node(Node::ExternalCrate {
             name: "serde".into(),
             version: "1.0.0".into(),
@@ -1047,7 +1057,7 @@ mod tests {
         graph.add_edge(
             crate_idx,
             ext_idx,
-            Edge::CrateDep {
+            EdgeWeight::CrateDep {
                 context: EdgeContext::production(),
             },
         );
@@ -1073,7 +1083,7 @@ mod tests {
         graph.add_edge(
             a,
             b,
-            Edge::CrateDep {
+            EdgeWeight::CrateDep {
                 context: EdgeContext::production(),
             },
         );
@@ -1096,7 +1106,7 @@ mod tests {
             name: "engine".into(),
             crate_idx: lib,
         });
-        graph.add_edge(lib, module, Edge::Contains);
+        graph.add_edge(lib, module, EdgeWeight::Contains);
 
         let binary = graph.add_node(Node::Crate {
             name: "binary".into(),
@@ -1110,12 +1120,12 @@ mod tests {
             graph.add_edge(
                 source,
                 lib,
-                Edge::CrateDep {
+                EdgeWeight::CrateDep {
                     context: EdgeContext::production(),
                 },
             );
         }
-        graph.add_edge(binary, helper, Edge::DevDep);
+        graph.add_edge(binary, helper, EdgeWeight::DevDep);
         (graph, binary, helper)
     }
 
@@ -1160,17 +1170,17 @@ mod tests {
             name: "store".into(),
             crate_idx,
         });
-        graph.add_edge(crate_idx, top_store, Edge::Contains);
+        graph.add_edge(crate_idx, top_store, EdgeWeight::Contains);
         let core = graph.add_node(Node::Module {
             name: "core".into(),
             crate_idx,
         });
-        graph.add_edge(crate_idx, core, Edge::Contains);
+        graph.add_edge(crate_idx, core, EdgeWeight::Contains);
         let core_store = graph.add_node(Node::Module {
             name: "store".into(),
             crate_idx,
         });
-        graph.add_edge(core, core_store, Edge::Contains);
+        graph.add_edge(core, core_store, EdgeWeight::Contains);
 
         assert_eq!(graph.qualified_name(top_store), "my-crate::store");
         assert_eq!(graph.qualified_name(core_store), "my-crate::core::store");

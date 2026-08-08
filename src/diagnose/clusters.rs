@@ -10,8 +10,8 @@
 //! tolerating nothing makes the cluster acyclic.
 
 use super::cycles::{Cycle, CycleAnalysis, RepresentativeCycles};
-use crate::graph::{ArcGraph, Edge};
-use crate::model::SourceLocation;
+use crate::graph::{ArcGraph, EdgeWeight};
+use crate::model::EdgeSymbols;
 use petgraph::algo::tarjan_scc;
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
@@ -217,7 +217,7 @@ impl ArcGraph {
             from,
             to,
             cycles: edge_cycles.get(&(from, to)).map_or(0, HashSet::len),
-            symbols: self.edge_symbols(from, to),
+            symbols: self.edge_symbols(from, to).len(),
         }
     }
 
@@ -257,7 +257,8 @@ impl ArcGraph {
                         // fewer symbols is better, so the lower count ranks greater
                         .then_with(|| {
                             self.edge_symbols(eb.0, eb.1)
-                                .cmp(&self.edge_symbols(ea.0, ea.1))
+                                .len()
+                                .cmp(&self.edge_symbols(ea.0, ea.1).len())
                         })
                         // lexicographically smaller name is better
                         .then_with(|| self.name_key(**eb).cmp(&self.name_key(**ea)))
@@ -279,19 +280,15 @@ impl ArcGraph {
     }
 
     /// Distinct symbols crossing the module-dependency edge `from -> to`.
-    ///
-    /// Counting locations instead would read an import group or a glob as a
-    /// single reference, no matter how many symbols it carries: one line is one
-    /// location. Unnamed references (an unresolved alias, say) share one slot
-    /// rather than counting zero, so an edge the resolver cannot name never
-    /// reads as free.
-    fn edge_symbols(&self, from: NodeIndex, to: NodeIndex) -> usize {
+    pub(crate) fn edge_symbols(&self, from: NodeIndex, to: NodeIndex) -> EdgeSymbols {
         self.find_edge(from, to)
             .and_then(|e| match &self[e] {
-                Edge::ModuleDep { locations, .. } => Some(count_symbols(locations)),
+                EdgeWeight::ModuleDep { locations, .. } => {
+                    Some(EdgeSymbols::from_locations(locations))
+                }
                 _ => None,
             })
-            .unwrap_or(0)
+            .unwrap_or_default()
     }
 
     fn name_key(&self, edge: (NodeIndex, NodeIndex)) -> (String, String) {
@@ -325,17 +322,6 @@ impl ArcGraph {
         }
         RemovalBias::Neutral
     }
-}
-
-/// Distinct symbols in `locations`, with all unnamed references sharing one
-/// slot. Mirrors the usage grouping the SVG carries.
-fn count_symbols(locations: &[SourceLocation]) -> usize {
-    let named: HashSet<&str> = locations
-        .iter()
-        .flat_map(|l| l.symbols.iter().map(String::as_str))
-        .collect();
-    let unnamed = usize::from(locations.iter().any(|l| l.symbols.is_empty()));
-    named.len() + unnamed
 }
 
 fn cluster_sort_key(c: &Cluster) -> (usize, usize, usize, usize) {
@@ -397,7 +383,7 @@ fn restricted_subgraph(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::{ArcGraph, Edge, Node, Reexports};
+    use crate::graph::{ArcGraph, EdgeWeight, Node, Reexports};
     use crate::model::{EdgeContext, SourceLocation};
 
     /// Single-crate graph: `modules` by name, production `ModuleDep` edges
@@ -415,7 +401,7 @@ mod tests {
                     name: (*m).into(),
                     crate_idx,
                 });
-                g.add_edge(crate_idx, n, Edge::Contains);
+                g.add_edge(crate_idx, n, EdgeWeight::Contains);
                 n
             })
             .collect();
@@ -434,7 +420,7 @@ mod tests {
             g.add_edge(
                 idx[from],
                 idx[to],
-                Edge::ModuleDep {
+                EdgeWeight::ModuleDep {
                     locations,
                     context: EdgeContext::production(),
                 },
@@ -513,12 +499,12 @@ mod tests {
             name: "b".into(),
             crate_idx,
         });
-        graph.add_edge(crate_idx, grouped, Edge::Contains);
-        graph.add_edge(crate_idx, split, Edge::Contains);
+        graph.add_edge(crate_idx, grouped, EdgeWeight::Contains);
+        graph.add_edge(crate_idx, split, EdgeWeight::Contains);
         graph.add_edge(
             grouped,
             split,
-            Edge::ModuleDep {
+            EdgeWeight::ModuleDep {
                 locations: locations("src/a.rs", &[&["One", "Two", "Three"]]),
                 context: EdgeContext::production(),
             },
@@ -526,7 +512,7 @@ mod tests {
         graph.add_edge(
             split,
             grouped,
-            Edge::ModuleDep {
+            EdgeWeight::ModuleDep {
                 locations: locations("src/b.rs", &[&["Four"], &["Five"]]),
                 context: EdgeContext::production(),
             },
@@ -550,13 +536,13 @@ mod tests {
         // locations count 1, not 0.
         let (mut g, idx) = graph_with(&["a", "b"], &[(0, 1, 2), (1, 0, 1)]);
         let edge = g.find_edge(idx[0], idx[1]).unwrap();
-        let Edge::ModuleDep { locations, .. } = &mut g[edge] else {
+        let EdgeWeight::ModuleDep { locations, .. } = &mut g[edge] else {
             unreachable!("graph_with builds module deps")
         };
         for loc in locations.iter_mut() {
             loc.symbols.clear();
         }
-        assert_eq!(g.edge_symbols(idx[0], idx[1]), 1);
+        assert_eq!(g.edge_symbols(idx[0], idx[1]).len(), 1);
     }
 
     #[test]
@@ -585,8 +571,8 @@ mod tests {
             name: "b".into(),
             crate_idx,
         });
-        graph.add_edge(crate_idx, parent, Edge::Contains);
-        graph.add_edge(parent, child, Edge::Contains);
+        graph.add_edge(crate_idx, parent, EdgeWeight::Contains);
+        graph.add_edge(parent, child, EdgeWeight::Contains);
 
         let reexport_locations = (0..2)
             .map(|i| SourceLocation {
@@ -600,7 +586,7 @@ mod tests {
         graph.add_edge(
             parent,
             child,
-            Edge::ModuleDep {
+            EdgeWeight::ModuleDep {
                 locations: reexport_locations,
                 context: EdgeContext::production(),
             },
@@ -618,7 +604,7 @@ mod tests {
         graph.add_edge(
             child,
             parent,
-            Edge::ModuleDep {
+            EdgeWeight::ModuleDep {
                 locations: plain_locations,
                 context: EdgeContext::production(),
             },
@@ -663,9 +649,9 @@ mod tests {
             name: "c".into(),
             crate_idx,
         });
-        graph.add_edge(crate_idx, parent, Edge::Contains);
-        graph.add_edge(parent, child, Edge::Contains);
-        graph.add_edge(crate_idx, unrelated, Edge::Contains);
+        graph.add_edge(crate_idx, parent, EdgeWeight::Contains);
+        graph.add_edge(parent, child, EdgeWeight::Contains);
+        graph.add_edge(crate_idx, unrelated, EdgeWeight::Contains);
 
         let reexport_locations = (0..1)
             .map(|i| SourceLocation {
@@ -679,7 +665,7 @@ mod tests {
         graph.add_edge(
             child,
             parent,
-            Edge::ModuleDep {
+            EdgeWeight::ModuleDep {
                 locations: reexport_locations,
                 context: EdgeContext::production(),
             },
@@ -699,7 +685,7 @@ mod tests {
         graph.add_edge(
             parent,
             unrelated,
-            Edge::ModuleDep {
+            EdgeWeight::ModuleDep {
                 locations: make_locations("src/a.rs", 3),
                 context: EdgeContext::production(),
             },
@@ -707,7 +693,7 @@ mod tests {
         graph.add_edge(
             unrelated,
             child,
-            Edge::ModuleDep {
+            EdgeWeight::ModuleDep {
                 locations: make_locations("src/c.rs", 5),
                 context: EdgeContext::production(),
             },

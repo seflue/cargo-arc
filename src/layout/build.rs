@@ -4,7 +4,7 @@ use super::toposort::stable_toposort;
 use crate::diagnose::{
     Cluster, ConsumerLocality, Cycle, CycleAnalysis, CyclicEdge, order_cycle_blocks,
 };
-use crate::graph::{ArcGraph, Edge, Node, Reexports};
+use crate::graph::{ArcGraph, EdgeWeight, Node, Reexports};
 use crate::model::{EdgeContext, SourceLocation};
 use crate::volatility::Volatility;
 use petgraph::graph::{DiGraph, NodeIndex};
@@ -464,14 +464,16 @@ fn populate_edges(
         let (src, dst) = (edge.source(), edge.target());
 
         let (locations, context, is_module_dep) = match edge.weight() {
-            Edge::CrateDep { context } => {
+            EdgeWeight::CrateDep { context } => {
                 if suppressed.contains(&(src, dst)) {
                     continue;
                 }
                 (vec![], context.clone(), false)
             }
-            Edge::ModuleDep { locations, context } => (locations.clone(), context.clone(), true),
-            Edge::Contains | Edge::DevDep => continue,
+            EdgeWeight::ModuleDep { locations, context } => {
+                (locations.clone(), context.clone(), true)
+            }
+            EdgeWeight::Contains | EdgeWeight::DevDep => continue,
         };
 
         if let (Some(&from), Some(&to)) = (node_map.get(&src), node_map.get(&dst)) {
@@ -494,7 +496,7 @@ fn module_source_path(graph: &ArcGraph, idx: NodeIndex) -> Option<String> {
     graph
         .edges_directed(idx, petgraph::Direction::Outgoing)
         .find_map(|edge| match edge.weight() {
-            Edge::ModuleDep { locations, .. } => {
+            EdgeWeight::ModuleDep { locations, .. } => {
                 locations.first().map(|loc| loc.file.display().to_string())
             }
             _ => None,
@@ -533,7 +535,7 @@ fn compute_cycle_info(
     let has_reverse_module_dep = is_module_dep
         && graph
             .find_edge(dst, src)
-            .is_some_and(|ei| matches!(graph[ei], Edge::ModuleDep { .. }));
+            .is_some_and(|ei| matches!(graph[ei], EdgeWeight::ModuleDep { .. }));
 
     let kind = if has_reverse_module_dep {
         CycleKind::Direct
@@ -678,7 +680,7 @@ impl ArcGraph {
     fn suppressed_crate_pairs(&self) -> HashSet<(NodeIndex, NodeIndex)> {
         self.edge_references()
             .filter_map(|edge| match edge.weight() {
-                Edge::ModuleDep { .. } => {
+                EdgeWeight::ModuleDep { .. } => {
                     let src_crate = self.owning_crate(edge.source());
                     let dst_crate = self.owning_crate(edge.target());
                     (src_crate != dst_crate).then_some((src_crate, dst_crate))
@@ -718,7 +720,7 @@ impl ArcGraph {
 mod tests {
     use super::*;
     use crate::diagnose::RepresentativeCycles;
-    use crate::graph::{ArcGraph, Edge, Node};
+    use crate::graph::{ArcGraph, EdgeWeight, Node};
     use crate::model::{EdgeContext, SourceLocation, TestKind, UsageKind};
     use assert2::check;
     use petgraph::graph::NodeIndex;
@@ -762,7 +764,8 @@ mod tests {
                     crate_idx,
                 });
                 self.names.insert(mod_name.to_string(), mod_idx);
-                self.graph.add_edge(crate_idx, mod_idx, Edge::Contains);
+                self.graph
+                    .add_edge(crate_idx, mod_idx, EdgeWeight::Contains);
             }
             self
         }
@@ -789,7 +792,8 @@ mod tests {
                 crate_idx,
             });
             self.names.insert(child.to_string(), child_idx);
-            self.graph.add_edge(parent_idx, child_idx, Edge::Contains);
+            self.graph
+                .add_edge(parent_idx, child_idx, EdgeWeight::Contains);
             self
         }
 
@@ -800,7 +804,7 @@ mod tests {
             self.graph.add_edge(
                 src,
                 dst,
-                Edge::ModuleDep {
+                EdgeWeight::ModuleDep {
                     locations: vec![],
                     context: EdgeContext::production(),
                 },
@@ -815,7 +819,7 @@ mod tests {
             self.graph.add_edge(
                 src,
                 dst,
-                Edge::ModuleDep {
+                EdgeWeight::ModuleDep {
                     locations: vec![],
                     context: EdgeContext::test(kind),
                 },
@@ -830,7 +834,7 @@ mod tests {
             self.graph.add_edge(
                 src,
                 dst,
-                Edge::CrateDep {
+                EdgeWeight::CrateDep {
                     context: EdgeContext::production(),
                 },
             );
@@ -844,7 +848,7 @@ mod tests {
             self.graph.add_edge(
                 src,
                 dst,
-                Edge::CrateDep {
+                EdgeWeight::CrateDep {
                     context: EdgeContext::test(kind),
                 },
             );
@@ -878,7 +882,7 @@ mod tests {
             self.graph.add_edge(
                 src,
                 dst,
-                Edge::ModuleDep {
+                EdgeWeight::ModuleDep {
                     locations: vec![SourceLocation {
                         file: PathBuf::from(file),
                         line,

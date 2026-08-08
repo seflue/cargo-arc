@@ -1,52 +1,61 @@
 //! Frozen violations from `arc-baseline.toml`.
 
+use crate::model::{Edge, EdgeSymbols};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
-/// Identifies a violation independent of the rule wording that produced it.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum ViolationKey {
-    /// `forbidden-dependency` and `layers` report this shape.
-    Edge { from: String, to: String },
-    /// `no-cycles`: the cycle's members in traversal order, canonically
-    /// rotated to start at the smallest name.
-    Cycle(Vec<String>),
+/// Identifies a violation independent of the rule wording that produced it: the
+/// edge it runs on, plus the symbols observed crossing it.
+///
+/// The edge is what a stored entry is looked up by. The symbols are what the
+/// run observed on a fresh key, and what the entry tolerates on a stored one.
+///
+/// A cycle has no key of its own: it is frozen when every one of its edges is.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ViolationKey {
+    pub edge: Edge,
+    pub symbols: EdgeSymbols,
 }
 
-impl ViolationKey {
-    #[must_use]
-    pub fn edge(from: impl Into<String>, to: impl Into<String>) -> Self {
-        Self::Edge {
-            from: from.into(),
-            to: to.into(),
-        }
-    }
-
-    /// Rotates to start at the lexicographically smallest name, preserving
-    /// direction: rotation of the same cycle keeps the key, the reverse
-    /// traversal over the same members does not.
-    #[must_use]
-    pub fn cycle(members: impl IntoIterator<Item = String>) -> Self {
-        let mut members: Vec<String> = members.into_iter().collect();
-        if let Some(min_pos) = (0..members.len()).min_by_key(|&i| members[i].as_str()) {
-            members.rotate_left(min_pos);
-        }
-        Self::Cycle(members)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct BaselineEntry {
     pub rule: String,
     pub key: ViolationKey,
 }
 
-/// Keyed by rule name so a lookup borrows both parts instead of rebuilding
-/// them: the rule name is the foreign key, the set holds that rule's violations.
+/// An entry that no longer describes what the run finds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StaleEntry {
+    /// The edge no longer violates: fixed, or the rule renamed out from under
+    /// the entry.
+    Gone(BaselineEntry),
+    /// The edge still violates, but carries less than the entry tolerates.
+    /// `entry` holds the tolerated set, `surplus` the part of it nothing
+    /// crosses any more.
+    TooWide {
+        entry: BaselineEntry,
+        surplus: EdgeSymbols,
+    },
+}
+
+impl StaleEntry {
+    #[must_use]
+    pub fn entry(&self) -> &BaselineEntry {
+        match self {
+            Self::Gone(entry) | Self::TooWide { entry, .. } => entry,
+        }
+    }
+}
+
+/// The edges one rule freezes, and the symbols each of them tolerates.
+type FrozenEdges = HashMap<Edge, EdgeSymbols>;
+
+/// Rule name outside, edge inside, so a lookup borrows both and allocates
+/// nothing.
 #[derive(Debug, Default)]
 pub struct Baseline {
-    entries: HashMap<String, HashSet<ViolationKey>>,
+    entries: HashMap<String, FrozenEdges>,
 }
 
 impl Baseline {
@@ -60,10 +69,8 @@ impl Baseline {
     /// Missing file is not an error: nothing is frozen then.
     ///
     /// # Errors
-    /// Returns `BaselineError::Io` for I/O failures other than a missing
-    /// file, `BaselineError::Parse` for invalid TOML, or
-    /// `BaselineError::Malformed` if a violation has neither a full
-    /// `from`/`to` pair nor a `cycle` (or both).
+    /// Returns `BaselineError::Io` for I/O failures other than a missing file,
+    /// or `BaselineError::Parse` for invalid TOML.
     pub fn load(path: &Path) -> Result<Self, BaselineError> {
         let content = match std::fs::read_to_string(path) {
             Ok(content) => content,
@@ -72,48 +79,73 @@ impl Baseline {
         };
         let on_disk: OnDiskBaseline =
             toml::from_str(&content).map_err(|e| BaselineError::Parse(path.to_path_buf(), e))?;
-        let mut entries: HashMap<String, HashSet<ViolationKey>> = HashMap::new();
+        let mut entries: HashMap<String, FrozenEdges> = HashMap::new();
         for violation in on_disk.violations {
-            let entry = violation.into_entry(path)?;
-            entries.entry(entry.rule).or_default().insert(entry.key);
+            let entry = violation.into_entry();
+            entries
+                .entry(entry.rule)
+                .or_default()
+                .entry(entry.key.edge)
+                .or_default()
+                .merge(&entry.key.symbols);
         }
         Ok(Self { entries })
     }
 
+    /// The symbols `rule` tolerates on `edge`, if it is frozen at all.
+    ///
+    /// Returns the set rather than a verdict: the message for an edge that
+    /// outgrew its entry has to name what was frozen.
     #[must_use]
-    pub fn covers(&self, rule: &str, key: &ViolationKey) -> bool {
-        self.entries
-            .get(rule)
-            .is_some_and(|keys| keys.contains(key))
+    pub fn frozen_for(&self, rule: &str, edge: &Edge) -> Option<&EdgeSymbols> {
+        self.entries.get(rule)?.get(edge)
     }
 
-    /// Entries that no violation in `hits` matched, sorted so a report over them
-    /// reads the same on every run. Whether such an entry is worth reporting is
-    /// the caller's call: the baseline does not know which rules a run skipped.
+    /// Entries the run no longer confirms, sorted so a report over them reads
+    /// the same on every run. `hits` are the frozen edges this run found, each
+    /// carrying the symbols observed on it.
+    ///
+    /// Whether such an entry is worth reporting is the caller's call: the
+    /// baseline does not know which rules a run skipped.
     #[must_use]
-    pub fn unmatched(&self, hits: &[BaselineEntry]) -> Vec<BaselineEntry> {
-        let hit: HashSet<(&str, &ViolationKey)> = hits
+    pub fn unmatched(&self, hits: &[BaselineEntry]) -> Vec<StaleEntry> {
+        let observed: HashMap<(&str, &Edge), &EdgeSymbols> = hits
             .iter()
-            .map(|entry| (entry.rule.as_str(), &entry.key))
+            .map(|hit| ((hit.rule.as_str(), &hit.key.edge), &hit.key.symbols))
             .collect();
-        let mut left: Vec<BaselineEntry> = self
+        let mut stale: Vec<StaleEntry> = self
             .entries
             .iter()
-            .flat_map(|(rule, keys)| keys.iter().map(move |key| (rule, key)))
-            .filter(|(rule, key)| !hit.contains(&(rule.as_str(), *key)))
-            .map(|(rule, key)| BaselineEntry {
-                rule: rule.clone(),
-                key: key.clone(),
+            .flat_map(|(rule, edges)| {
+                edges
+                    .iter()
+                    .map(move |(edge, symbols)| (rule, edge, symbols))
+            })
+            .filter_map(|(rule, edge, tolerated)| {
+                let entry = BaselineEntry {
+                    rule: rule.clone(),
+                    key: ViolationKey {
+                        edge: edge.clone(),
+                        symbols: tolerated.clone(),
+                    },
+                };
+                match observed.get(&(rule.as_str(), edge)) {
+                    None => Some(StaleEntry::Gone(entry)),
+                    Some(found) => {
+                        let surplus = tolerated.difference(found);
+                        (!surplus.is_empty()).then_some(StaleEntry::TooWide { entry, surplus })
+                    }
+                }
             })
             .collect();
-        left.sort_by(|a, b| (&a.rule, &a.key).cmp(&(&b.rule, &b.key)));
-        left
+        stale.sort_by(|a, b| a.entry().cmp(b.entry()));
+        stale
     }
 
-    /// Number of frozen violations across all rules.
+    /// Number of frozen edges across all rules.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.entries.values().map(HashSet::len).sum()
+        self.entries.values().map(HashMap::len).sum()
     }
 
     #[must_use]
@@ -121,25 +153,46 @@ impl Baseline {
         self.entries.is_empty()
     }
 
-    /// Writes the file from scratch, entries sorted deterministically.
+    /// Writes the file from scratch, entries sorted deterministically. Two
+    /// records of the same edge under the same rule become one entry
+    /// tolerating both symbol sets.
     ///
     /// # Errors
     /// Returns `BaselineError::Serialize` if encoding fails, or
     /// `BaselineError::Io` if the file cannot be written.
     pub fn write(path: &Path, entries: &[BaselineEntry]) -> Result<(), BaselineError> {
-        let mut sorted: Vec<&BaselineEntry> = entries.iter().collect();
-        sorted.sort_by(|a, b| (&a.rule, &a.key).cmp(&(&b.rule, &b.key)));
+        let mut merged: BTreeMap<(&str, &Edge), EdgeSymbols> = BTreeMap::new();
+        for entry in entries {
+            merged
+                .entry((&entry.rule, &entry.key.edge))
+                .or_default()
+                .merge(&entry.key.symbols);
+        }
         let on_disk = OnDiskBaseline {
             config: OnDiskConfig { version: 1 },
-            violations: sorted
+            violations: merged
                 .into_iter()
-                .map(OnDiskViolation::from_entry)
+                .map(|((rule, edge), symbols)| OnDiskViolation {
+                    rule: rule.to_string(),
+                    from: edge.from.clone(),
+                    to: edge.to.clone(),
+                    symbols: symbols.named.into_iter().collect(),
+                    bare: symbols.bare,
+                })
                 .collect(),
         };
         let content = toml::to_string_pretty(&on_disk).map_err(BaselineError::Serialize)?;
-        std::fs::write(path, content).map_err(|e| BaselineError::Io(path.to_path_buf(), e))
+        std::fs::write(path, format!("{HEADER}{content}"))
+            .map_err(|e| BaselineError::Io(path.to_path_buf(), e))
     }
 }
+
+/// Prepended by [`Baseline::write`]; TOML ignores it on the way back in.
+const HEADER: &str = "\
+# Generated by cargo-arc. Every entry freezes one dependency edge and the
+# symbols crossing it; a symbol that appears later is reported again.
+# Regenerate with: cargo arc check --generate-baseline
+";
 
 #[derive(Debug, Deserialize, Serialize)]
 struct OnDiskConfig {
@@ -156,49 +209,26 @@ struct OnDiskBaseline {
 #[derive(Debug, Deserialize, Serialize)]
 struct OnDiskViolation {
     rule: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    from: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    to: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    cycle: Option<Vec<String>>,
+    from: String,
+    to: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    symbols: Vec<String>,
+    /// True when the edge carries a reference the resolver could not name.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    bare: bool,
 }
 
 impl OnDiskViolation {
-    fn from_entry(entry: &BaselineEntry) -> Self {
-        match &entry.key {
-            ViolationKey::Edge { from, to } => Self {
-                rule: entry.rule.clone(),
-                from: Some(from.clone()),
-                to: Some(to.clone()),
-                cycle: None,
+    fn into_entry(self) -> BaselineEntry {
+        BaselineEntry {
+            rule: self.rule,
+            key: ViolationKey {
+                edge: Edge::new(self.from, self.to),
+                symbols: EdgeSymbols {
+                    named: self.symbols.into_iter().collect(),
+                    bare: self.bare,
+                },
             },
-            ViolationKey::Cycle(members) => Self {
-                rule: entry.rule.clone(),
-                from: None,
-                to: None,
-                cycle: Some(members.clone()),
-            },
-        }
-    }
-
-    fn into_entry(self, path: &Path) -> Result<BaselineEntry, BaselineError> {
-        match (self.from, self.to, self.cycle) {
-            (Some(from), Some(to), None) => Ok(BaselineEntry {
-                rule: self.rule,
-                key: ViolationKey::Edge { from, to },
-            }),
-            (None, None, Some(cycle)) => Ok(BaselineEntry {
-                rule: self.rule,
-                key: ViolationKey::cycle(cycle),
-            }),
-            _ => Err(BaselineError::Malformed(
-                path.to_path_buf(),
-                format!(
-                    "violation for rule {:?} needs either from/to or cycle, not both or neither",
-                    self.rule
-                ),
-            )),
         }
     }
 }
@@ -207,7 +237,6 @@ impl OnDiskViolation {
 pub enum BaselineError {
     Io(PathBuf, std::io::Error),
     Parse(PathBuf, toml::de::Error),
-    Malformed(PathBuf, String),
     Serialize(toml::ser::Error),
 }
 
@@ -219,9 +248,6 @@ impl std::fmt::Display for BaselineError {
             }
             Self::Parse(path, err) => {
                 write!(f, "invalid baseline file {}: {err}", path.display())
-            }
-            Self::Malformed(path, msg) => {
-                write!(f, "malformed baseline file {}: {msg}", path.display())
             }
             Self::Serialize(err) => write!(f, "cannot serialize baseline: {err}"),
         }
@@ -235,132 +261,27 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    #[test]
-    fn cycle_key_is_independent_of_rotation() {
-        let a = ViolationKey::cycle(["a".to_string(), "b".to_string(), "c".to_string()]);
-        let b = ViolationKey::cycle(["c".to_string(), "a".to_string(), "b".to_string()]);
-        assert_eq!(a, b);
+    fn symbols(named: &[&str]) -> EdgeSymbols {
+        EdgeSymbols {
+            named: named.iter().map(|s| (*s).to_string()).collect(),
+            bare: false,
+        }
     }
 
-    #[test]
-    fn cycle_key_differs_by_membership_and_length() {
-        let base = ViolationKey::cycle(["a".to_string(), "b".to_string(), "c".to_string()]);
-        let different_member =
-            ViolationKey::cycle(["a".to_string(), "b".to_string(), "d".to_string()]);
-        let different_length = ViolationKey::cycle(["a".to_string(), "b".to_string()]);
-        assert_ne!(base, different_member);
-        assert_ne!(base, different_length);
+    fn bare() -> EdgeSymbols {
+        EdgeSymbols {
+            named: std::collections::BTreeSet::new(),
+            bare: true,
+        }
     }
 
-    #[test]
-    fn cycle_key_differs_by_traversal_direction() {
-        let forward = ViolationKey::cycle(["a".to_string(), "b".to_string(), "c".to_string()]);
-        let backward = ViolationKey::cycle(["a".to_string(), "c".to_string(), "b".to_string()]);
-        assert_ne!(forward, backward);
-    }
-
-    #[test]
-    fn covers_is_scoped_to_rule_name() {
-        let entries = [BaselineEntry {
-            rule: "no infra in domain".to_string(),
-            key: ViolationKey::edge("domain::legacy", "infra::db"),
-        }];
-        let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("arc-baseline.toml");
-        Baseline::write(&path, &entries).unwrap();
-        let baseline = Baseline::load(&path).unwrap();
-
-        let key = ViolationKey::edge("domain::legacy", "infra::db");
-        assert!(baseline.covers("no infra in domain", &key));
-        assert!(!baseline.covers("other rule", &key));
-    }
-
-    #[test]
-    fn round_trip_covers_both_key_shapes_and_writes_violations_table() {
-        let entries = [
-            BaselineEntry {
-                rule: "no infra in domain".to_string(),
-                key: ViolationKey::edge("domain::legacy", "infra::db"),
-            },
-            BaselineEntry {
-                rule: "domain acyclic".to_string(),
-                key: ViolationKey::cycle(vec!["domain::a".to_string(), "domain::b".to_string()]),
-            },
-        ];
-        let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("arc-baseline.toml");
-        Baseline::write(&path, &entries).unwrap();
-
-        let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("[[violations]]"));
-
-        let baseline = Baseline::load(&path).unwrap();
-        assert_eq!(baseline.len(), 2);
-        assert!(baseline.covers(
-            "no infra in domain",
-            &ViolationKey::edge("domain::legacy", "infra::db")
-        ));
-        assert!(baseline.covers(
-            "domain acyclic",
-            &ViolationKey::cycle(vec!["domain::a".to_string(), "domain::b".to_string()])
-        ));
-    }
-
-    #[test]
-    fn write_is_deterministic_regardless_of_input_order() {
-        let a = BaselineEntry {
-            rule: "no infra in domain".to_string(),
-            key: ViolationKey::edge("domain::legacy", "infra::db"),
-        };
-        let b = BaselineEntry {
-            rule: "domain acyclic".to_string(),
-            key: ViolationKey::cycle(vec!["domain::a".to_string(), "domain::b".to_string()]),
-        };
-
-        let tmp = TempDir::new().unwrap();
-        let path_1 = tmp.path().join("order-1.toml");
-        let path_2 = tmp.path().join("order-2.toml");
-        Baseline::write(&path_1, &[a.clone(), b.clone()]).unwrap();
-        Baseline::write(&path_2, &[b, a]).unwrap();
-
-        let content_1 = std::fs::read_to_string(&path_1).unwrap();
-        let content_2 = std::fs::read_to_string(&path_2).unwrap();
-        assert_eq!(content_1, content_2);
-    }
-
-    #[test]
-    fn missing_file_is_an_empty_baseline() {
-        let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("does-not-exist.toml");
-        let baseline = Baseline::load(&path).unwrap();
-        assert!(baseline.is_empty());
-        assert!(!baseline.covers("any rule", &ViolationKey::edge("a", "b")));
-    }
-
-    #[test]
-    fn malformed_entry_without_from_to_or_cycle_is_rejected() {
-        let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("arc-baseline.toml");
-        std::fs::write(
-            &path,
-            r#"
-            [config]
-            version = 1
-
-            [[violations]]
-            rule = "broken"
-            "#,
-        )
-        .unwrap();
-
-        let result = Baseline::load(&path);
-        assert!(matches!(result, Err(BaselineError::Malformed(_, _))));
-    }
-
-    fn entry(rule: &str, key: ViolationKey) -> BaselineEntry {
+    fn entry(rule: &str, from: &str, to: &str, symbols: EdgeSymbols) -> BaselineEntry {
         BaselineEntry {
             rule: rule.to_string(),
-            key,
+            key: ViolationKey {
+                edge: Edge::new(from, to),
+                symbols,
+            },
         }
     }
 
@@ -375,79 +296,177 @@ mod tests {
     }
 
     #[test]
-    fn hit_entry_is_absent_from_unmatched() {
+    fn an_entry_covers_a_subset_of_its_symbols_but_not_a_new_one() {
         let stored = entry(
             "no infra in domain",
-            ViolationKey::edge("domain::legacy", "infra::db"),
-        );
-        let (_tmp, baseline) = baseline_of(std::slice::from_ref(&stored));
-        assert!(baseline.unmatched(&[stored]).is_empty());
-    }
-
-    #[test]
-    fn entry_no_run_hit_is_reported() {
-        let hit = entry(
-            "no infra in domain",
-            ViolationKey::edge("domain::legacy", "infra::db"),
-        );
-        let fixed = entry(
-            "no infra in domain",
-            ViolationKey::edge("domain::service", "infra::db"),
-        );
-        let (_tmp, baseline) = baseline_of(&[hit.clone(), fixed.clone()]);
-        assert_eq!(baseline.unmatched(&[hit]), vec![fixed]);
-    }
-
-    #[test]
-    fn hit_under_another_rule_name_does_not_cover_the_entry() {
-        let stored = entry(
-            "no infra in domain",
-            ViolationKey::edge("domain::legacy", "infra::db"),
-        );
-        let (_tmp, baseline) = baseline_of(std::slice::from_ref(&stored));
-        let elsewhere = entry(
-            "some other rule",
-            ViolationKey::edge("domain::legacy", "infra::db"),
-        );
-        assert_eq!(baseline.unmatched(&[elsewhere]), vec![stored]);
-    }
-
-    #[test]
-    fn hit_in_another_rotation_covers_the_cycle_entry() {
-        let stored = entry(
-            "domain acyclic",
-            ViolationKey::cycle(vec![
-                "domain::a".to_string(),
-                "domain::b".to_string(),
-                "domain::c".to_string(),
-            ]),
+            "domain::legacy",
+            "infra::db",
+            symbols(&["Foo", "Bar"]),
         );
         let (_tmp, baseline) = baseline_of(&[stored]);
-        let rotated = entry(
-            "domain acyclic",
-            ViolationKey::cycle(vec![
-                "domain::c".to_string(),
-                "domain::a".to_string(),
-                "domain::b".to_string(),
-            ]),
-        );
-        assert!(baseline.unmatched(&[rotated]).is_empty());
+
+        let tolerated = baseline
+            .frozen_for(
+                "no infra in domain",
+                &Edge::new("domain::legacy", "infra::db"),
+            )
+            .unwrap();
+        assert!(tolerated.covers(&symbols(&["Foo"])));
+        assert!(!tolerated.covers(&symbols(&["Foo", "Baz"])));
     }
 
     #[test]
-    fn unmatched_order_is_independent_of_storage_order() {
-        let a = entry("a rule", ViolationKey::edge("x", "y"));
+    fn an_unnamed_reference_needs_the_bare_flag_in_the_file() {
+        let named_only = entry("a rule", "a", "b", symbols(&["Foo"]));
+        let (_tmp, baseline) = baseline_of(&[named_only]);
+        assert!(
+            !baseline
+                .frozen_for("a rule", &Edge::new("a", "b"))
+                .unwrap()
+                .covers(&bare())
+        );
+
+        let mut both = symbols(&["Foo"]);
+        both.bare = true;
+        let (_tmp, baseline) = baseline_of(&[entry("a rule", "a", "b", both)]);
+        assert!(
+            baseline
+                .frozen_for("a rule", &Edge::new("a", "b"))
+                .unwrap()
+                .covers(&bare())
+        );
+    }
+
+    #[test]
+    fn frozen_for_is_scoped_to_rule_name() {
+        let stored = entry(
+            "no infra in domain",
+            "domain::legacy",
+            "infra::db",
+            symbols(&["Db"]),
+        );
+        let (_tmp, baseline) = baseline_of(&[stored]);
+        assert!(
+            baseline
+                .frozen_for(
+                    "no infra in domain",
+                    &Edge::new("domain::legacy", "infra::db")
+                )
+                .is_some()
+        );
+        assert!(
+            baseline
+                .frozen_for("other rule", &Edge::new("domain::legacy", "infra::db"))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn round_trip_keeps_symbols_and_writes_violations_table() {
+        let mut with_bare = symbols(&["Read"]);
+        with_bare.bare = true;
+        let entries = [
+            entry(
+                "no infra in domain",
+                "domain::legacy",
+                "infra::db",
+                symbols(&["Pool", "Row"]),
+            ),
+            entry(
+                "domain acyclic",
+                "domain::a",
+                "domain::b",
+                with_bare.clone(),
+            ),
+        ];
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("arc-baseline.toml");
+        Baseline::write(&path, &entries).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("[[violations]]"));
+
+        let baseline = Baseline::load(&path).unwrap();
+        assert_eq!(baseline.len(), 2);
+        assert_eq!(
+            baseline.frozen_for(
+                "no infra in domain",
+                &Edge::new("domain::legacy", "infra::db")
+            ),
+            Some(&symbols(&["Pool", "Row"]))
+        );
+        assert_eq!(
+            baseline.frozen_for("domain acyclic", &Edge::new("domain::a", "domain::b")),
+            Some(&with_bare)
+        );
+    }
+
+    #[test]
+    fn the_generated_file_says_how_to_regenerate_it_without_disturbing_the_parser() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("arc-baseline.toml");
+        Baseline::write(&path, &[entry("a rule", "a", "b", symbols(&["X"]))]).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("--generate-baseline"), "got:\n{content}");
+        assert_eq!(Baseline::load(&path).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn write_is_deterministic_regardless_of_input_order() {
+        let a = entry(
+            "no infra in domain",
+            "domain::legacy",
+            "infra::db",
+            symbols(&["Pool"]),
+        );
         let b = entry(
-            "b rule",
-            ViolationKey::cycle(vec!["m::a".to_string(), "m::b".to_string()]),
+            "domain acyclic",
+            "domain::a",
+            "domain::b",
+            symbols(&["Node"]),
         );
-        let (_tmp_1, one_way) = baseline_of(&[a.clone(), b.clone()]);
-        let (_tmp_2, other_way) = baseline_of(&[b, a]);
-        assert_eq!(one_way.unmatched(&[]), other_way.unmatched(&[]));
+
+        let tmp = TempDir::new().unwrap();
+        let path_1 = tmp.path().join("order-1.toml");
+        let path_2 = tmp.path().join("order-2.toml");
+        Baseline::write(&path_1, &[a.clone(), b.clone()]).unwrap();
+        Baseline::write(&path_2, &[b, a]).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&path_1).unwrap(),
+            std::fs::read_to_string(&path_2).unwrap()
+        );
     }
 
     #[test]
-    fn hand_written_rotated_cycle_is_still_covered() {
+    fn two_records_of_one_edge_become_one_entry_tolerating_both() {
+        let (_tmp, baseline) = baseline_of(&[
+            entry("a rule", "a", "b", symbols(&["One"])),
+            entry("a rule", "a", "b", symbols(&["Two"])),
+        ]);
+        assert_eq!(baseline.len(), 1);
+        assert_eq!(
+            baseline.frozen_for("a rule", &Edge::new("a", "b")),
+            Some(&symbols(&["One", "Two"]))
+        );
+    }
+
+    #[test]
+    fn missing_file_is_an_empty_baseline() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("does-not-exist.toml");
+        let baseline = Baseline::load(&path).unwrap();
+        assert!(baseline.is_empty());
+        assert!(
+            baseline
+                .frozen_for("any rule", &Edge::new("a", "b"))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn an_entry_without_an_edge_is_rejected() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("arc-baseline.toml");
         std::fs::write(
@@ -457,20 +476,63 @@ mod tests {
             version = 1
 
             [[violations]]
-            rule = "domain acyclic"
-            cycle = ["domain::b", "domain::c", "domain::a"]
+            rule = "broken"
             "#,
         )
         .unwrap();
 
-        let baseline = Baseline::load(&path).unwrap();
-        assert!(baseline.covers(
-            "domain acyclic",
-            &ViolationKey::cycle(vec![
-                "domain::a".to_string(),
-                "domain::b".to_string(),
-                "domain::c".to_string(),
-            ])
+        assert!(matches!(
+            Baseline::load(&path),
+            Err(BaselineError::Parse(_, _))
         ));
+    }
+
+    #[test]
+    fn an_entry_matched_with_the_symbols_it_names_is_not_stale() {
+        let stored = entry("a rule", "a", "b", symbols(&["One", "Two"]));
+        let (_tmp, baseline) = baseline_of(std::slice::from_ref(&stored));
+        assert!(baseline.unmatched(&[stored]).is_empty());
+    }
+
+    #[test]
+    fn an_edge_the_run_no_longer_finds_is_gone() {
+        let hit = entry("a rule", "a", "b", symbols(&["One"]));
+        let fixed = entry("a rule", "c", "d", symbols(&["Two"]));
+        let (_tmp, baseline) = baseline_of(&[hit.clone(), fixed.clone()]);
+        assert_eq!(baseline.unmatched(&[hit]), vec![StaleEntry::Gone(fixed)]);
+    }
+
+    #[test]
+    fn an_entry_the_edge_outgrew_downward_is_too_wide() {
+        let stored = entry("a rule", "a", "b", symbols(&["One", "Two"]));
+        let (_tmp, baseline) = baseline_of(std::slice::from_ref(&stored));
+        let observed = entry("a rule", "a", "b", symbols(&["One"]));
+        assert_eq!(
+            baseline.unmatched(&[observed]),
+            vec![StaleEntry::TooWide {
+                entry: stored,
+                surplus: symbols(&["Two"]),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_hit_under_another_rule_name_does_not_confirm_the_entry() {
+        let stored = entry("a rule", "a", "b", symbols(&["One"]));
+        let (_tmp, baseline) = baseline_of(std::slice::from_ref(&stored));
+        let elsewhere = entry("some other rule", "a", "b", symbols(&["One"]));
+        assert_eq!(
+            baseline.unmatched(&[elsewhere]),
+            vec![StaleEntry::Gone(stored)]
+        );
+    }
+
+    #[test]
+    fn unmatched_order_is_independent_of_storage_order() {
+        let a = entry("a rule", "x", "y", symbols(&["One"]));
+        let b = entry("b rule", "m::a", "m::b", symbols(&["Two"]));
+        let (_tmp_1, one_way) = baseline_of(&[a.clone(), b.clone()]);
+        let (_tmp_2, other_way) = baseline_of(&[b, a]);
+        assert_eq!(one_way.unmatched(&[]), other_way.unmatched(&[]));
     }
 }
