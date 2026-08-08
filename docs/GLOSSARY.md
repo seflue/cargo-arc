@@ -177,6 +177,21 @@ graphics sense and it stays; this entry governs the rule position. *Tier* is a
 deployment boundary in the architecture literature, while a layer here is a
 position in a rule and is matched against module paths.
 
+### What a run prints
+
+| Term | Definition | Avoid |
+|------|------------|-------|
+| **Report** | The blocks on stderr: one per reported violation, with its locations and the edge or cycle it found. What a reader goes to for why a run is red. | output |
+| **Status** | How one rule came out: `ok`, `WARN` when it produced warnings only, `FAILED` when it produced an error. One line on stdout carries it, per rule and one for the configuration, printed whether or not anything fired. | severity |
+
+The report and the status lines are split by role, not by audience. The report
+says what was found, a status line says how one rule came out. A run without a
+rules file prints a report and no status line, because it has no rule to judge.
+
+*Severity* is configured and belongs to the rule; a status is produced and
+belongs to the run. The two do not read off each other in either direction: a
+rule of severity `error` whose violations are all frozen has status `ok`.
+
 ## Symbols and consumers
 
 | Term | Definition | Avoid |
