@@ -16,8 +16,8 @@ use crate::model::{CrateExportMap, ModulePathMap, WorkspaceCrates};
 use crate::render::{RenderConfig, render};
 use crate::rules::baseline::Baseline;
 use crate::rules::config::{ArcConfig, ConfigError};
-use crate::rules::engine::{CheckRun, CycleCluster, check_rules};
-use crate::rules::format::{format_cluster_report, format_violations, plural};
+use crate::rules::engine::{CheckRun, check_rules};
+use crate::rules::format::{format_violations, plural};
 use crate::volatility::{VolatilityAnalyzer, VolatilityConfig};
 use std::path::Path;
 
@@ -234,10 +234,10 @@ fn run_check(check_args: &CheckArgs, common: &CommonArgs) -> Result<()> {
 
     let config = match ArcConfig::load(rules_path) {
         Ok(config) => config,
-        Err(ConfigError::FileNotFound(..)) if !explicit && !check_args.generate_baseline => {
-            // No arc-rules.toml and not explicitly requested → legacy cycle check
-            return run_legacy_cycle_check(&graph, Reexports::from(common.include_reexports));
-        }
+        // A missing rules file is the default run, not a failure: the implicit
+        // cycle rule stands in for it. A file named on the command line is a
+        // different matter, its absence is a mistake.
+        Err(ConfigError::FileNotFound(..)) if !explicit => ArcConfig::implicit(),
         Err(e) => {
             eprintln!("error: {e}");
             std::process::exit(2);
@@ -308,31 +308,6 @@ fn run_generate_baseline(
         plural(result.baseline_entries.len(), "violation"),
         baseline_path.display()
     );
-}
-
-/// Legacy fallback: global cycle check when no arc-rules.toml exists.
-fn run_legacy_cycle_check(graph: &ArcGraph, reexports: Reexports) -> Result<()> {
-    tracing::debug!("phase: cycle detection start (--check)");
-    let sub = graph.production_subgraph(reexports);
-    let analysis = sub.representative_cycles();
-    tracing::debug!(
-        "phase: cycle detection done ({} cycles)",
-        analysis.cycles.len()
-    );
-    if analysis.cycles.is_empty() {
-        return Ok(());
-    }
-    // No rules file, so no baseline: every cycle found is one to break.
-    let report = graph.cluster_report(&sub, &analysis, |_| false);
-    let total = report.clusters.len();
-    let clusters: Vec<CycleCluster> = report
-        .clusters
-        .iter()
-        .enumerate()
-        .map(|(i, cluster)| CycleCluster::from_cluster(graph, &analysis, cluster, i + 1, total))
-        .collect();
-    eprint!("{}", format_cluster_report(&clusters));
-    anyhow::bail!("circular dependencies detected");
 }
 
 fn build_feature_config(common: &CommonArgs) -> FeatureConfig {

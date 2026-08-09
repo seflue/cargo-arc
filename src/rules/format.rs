@@ -226,44 +226,6 @@ fn violation_block(out: &mut String, violation: &Violation, level: &str) {
     let _ = writeln!(out);
 }
 
-/// Format a cluster-level cycle report (default verbosity).
-///
-/// One block per SCC cluster ordered by feedback edge count: a header, then
-/// either a single-cycle body (the cycle plus the edge carrying the fewest
-/// symbols) or a tangle body (the ranked feedback edges), followed by a summary
-/// line. Returns an empty string when there are no clusters.
-#[must_use]
-pub fn format_cluster_report(clusters: &[CycleCluster]) -> String {
-    use std::collections::HashSet;
-
-    if clusters.is_empty() {
-        return String::new();
-    }
-    let mut out = String::new();
-
-    for (i, cluster) in clusters.iter().enumerate() {
-        if i > 0 {
-            let _ = writeln!(out);
-        }
-        out.push_str(&cluster_block(cluster, ""));
-    }
-
-    let total_cycles: usize = clusters.iter().map(|c| c.cycles).sum();
-    let crates: HashSet<&str> = clusters.iter().map(|c| c.crate_name.as_str()).collect();
-    let _ = writeln!(out);
-    // No total over the feedback sets: different clusters' sets have nothing to
-    // do with each other, so their sum reads as a to-do list without measuring
-    // anything.
-    let _ = writeln!(
-        out,
-        "Summary: {}, {} across {}",
-        plural(clusters.len(), "tangle"),
-        plural(total_cycles, "cycle"),
-        plural(crates.len(), "crate"),
-    );
-    out
-}
-
 /// Render one cluster: header, then either a single-cycle body (the cycle plus
 /// the edge carrying the fewest symbols) or a tangle body (the ranked feedback
 /// edges). `indent` prefixes the header; the body indents further relative to
@@ -948,7 +910,7 @@ mod tests {
 
     use crate::graph::{ArcGraph, EdgeWeight, Node, Reexports};
 
-    // ===== format_cluster_report tests =====
+    // ===== cluster_block tests =====
 
     use crate::diagnose::RepresentativeCycles;
     use crate::model::EdgeContext;
@@ -1013,7 +975,7 @@ mod tests {
     fn cluster_report_single_cycle_block() {
         let g = cyc_graph(&["a", "b"], &[(0, 1, 1), (1, 0, 3)]);
         let clusters = report_of(&g);
-        let out = format_cluster_report(&clusters);
+        let out = cluster_block(&clusters[0], "");
         assert!(
             out.contains("tangle 1/1: app (2 modules, 1 cycle)"),
             "got:\n{out}"
@@ -1021,10 +983,6 @@ mod tests {
         assert!(out.contains("cycle: a -> b -> a"), "got:\n{out}");
         assert!(
             out.contains("fewest symbols: a -> b (1 symbol)"),
-            "got:\n{out}"
-        );
-        assert!(
-            out.contains("Summary: 1 tangle, 1 cycle across 1 crate"),
             "got:\n{out}"
         );
     }
@@ -1046,7 +1004,7 @@ mod tests {
             ],
         );
         let clusters = report_of(&g);
-        let out = format_cluster_report(&clusters);
+        let out = cluster_block(&clusters[0], "");
         assert!(out.contains("(5 modules, 3 cycles)"), "got:\n{out}");
         assert!(out.contains("edges, most cycles first:"), "got:\n{out}");
         assert!(out.contains("(on 2 cycles, 1 symbol)"), "got:\n{out}");
@@ -1067,7 +1025,7 @@ mod tests {
             &[(0, 1, 1), (1, 0, 1), (0, 2, 1), (2, 0, 1)],
         );
         let clusters = report_of(&g);
-        let out = format_cluster_report(&clusters);
+        let out = cluster_block(&clusters[0], "");
         assert!(out.contains("  edges:"), "got:\n{out}");
         assert!(!out.contains("most cycles first"), "got:\n{out}");
         assert!(
@@ -1084,31 +1042,10 @@ mod tests {
             &[(0, 1, 1), (1, 2, 1), (2, 0, 1), (1, 3, 1), (3, 0, 1)],
         );
         let clusters = report_of(&g);
-        let out = format_cluster_report(&clusters);
+        let out = cluster_block(&clusters[0], "");
         assert!(
             out.contains("every circular dependency contains this edge"),
             "got:\n{out}"
         );
-    }
-
-    #[test]
-    fn cluster_report_summary_counts_clusters_cycles_and_crates() {
-        let g = cyc_graph(
-            &["a", "b", "c", "d"],
-            &[(0, 1, 1), (1, 0, 1), (2, 3, 1), (3, 2, 1)],
-        );
-        let clusters = report_of(&g);
-        let out = format_cluster_report(&clusters);
-        assert!(
-            out.contains("Summary: 2 tangles, 2 cycles across 1 crate"),
-            "got:\n{out}"
-        );
-    }
-
-    #[test]
-    fn cluster_report_empty_is_blank() {
-        let g = cyc_graph(&["a", "b"], &[(0, 1, 1)]);
-        let clusters = report_of(&g);
-        assert!(format_cluster_report(&clusters).is_empty());
     }
 }

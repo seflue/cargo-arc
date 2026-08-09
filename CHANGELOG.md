@@ -50,6 +50,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   elementary cycle, using the same block form as a run without
   `arc-rules.toml`. Each block is headed by the location the tangle sits in,
   the shared module prefix of its members.
+- A run without `arc-rules.toml` is a rule run like any other: a missing file
+  means an implicit `no-cycles` rule over the whole workspace, reported under
+  the name `no cycles`, and it carries the baseline and the `except` list the
+  same way a written rule does. Before, it took a path of its own that knew
+  neither. A `no-cycles` rule in the file replaces the implicit one instead of
+  joining it, so a narrower `scope` can allow cycles the implicit rule would
+  forbid; the name `no cycles` is reserved unless the file checks cycles itself.
+  The summary line that counted cycles and tangles went with the old path.
 - A key that is not part of the format is now an error, and the message names
   the key. Before, such a key was ignored: `[diagnostic]` for `[diagnostics]`,
   `scpoe` for `scope`, or `excpet` inside `unlayered-crate` all loaded fine and

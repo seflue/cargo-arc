@@ -736,11 +736,26 @@ scope = "**"
 
 #[test]
 fn test_check_no_config_fallback() {
-    // multi_crate has no arc-rules.toml → legacy global cycle check → exit 0 (no cycles)
+    // multi_crate has no arc-rules.toml → implicit cycle rule → exit 0 (no cycles)
     let (code, stderr) = cargo_arc_check("multi_crate", &[]);
     assert_eq!(
         code, 0,
-        "should exit 0 with legacy fallback (no cycles), stderr: {stderr}"
+        "should exit 0 under the implicit rule (no cycles), stderr: {stderr}"
+    );
+}
+
+/// Without a rules file the run judges under the implicit cycle rule, so its
+/// report names that rule the way it names a written one.
+#[test]
+fn test_check_without_a_rules_file_reports_under_the_implicit_rule() {
+    let (code, stderr) = cargo_arc_check("reexport_cycle_workspace", &[]);
+    assert_eq!(
+        code, 1,
+        "the logic cycle should fail the run, stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("error[no-cycles]: no cycles"),
+        "report should name the implicit rule, stderr: {stderr}"
     );
 }
 
@@ -788,6 +803,28 @@ fn test_generate_baseline_then_check_reports_nothing() {
     assert_eq!(
         baseline_before, baseline_after,
         "a normal check run must not rewrite the baseline"
+    );
+}
+
+/// A workspace without a rules file can freeze its cycle stock: the implicit
+/// rule carries the baseline, where the earlier fallback path had none.
+#[test]
+fn test_generate_baseline_without_a_rules_file() {
+    let (_dir, manifest) = writable_fixture_copy("reexport_cycle_workspace");
+    let baseline_path = manifest.parent().unwrap().join("arc-baseline.toml");
+
+    let (code, stderr) = cargo_arc_check_at(&manifest, &["--generate-baseline"]);
+    assert_eq!(code, 0, "generate should exit 0, stderr: {stderr}");
+    let baseline = std::fs::read_to_string(&baseline_path).unwrap();
+    assert!(
+        baseline.contains(r#"rule = "no cycles""#),
+        "baseline should freeze under the implicit rule, got:\n{baseline}"
+    );
+
+    let (code, stderr) = cargo_arc_check_at(&manifest, &[]);
+    assert_eq!(
+        code, 0,
+        "the frozen cycle stock should pass, stderr: {stderr}"
     );
 }
 

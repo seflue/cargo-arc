@@ -3,6 +3,11 @@
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
+/// Name of the implicit cycle rule. It reaches the user in every report block
+/// it raises and keys the baseline entries it freezes, so it reads as the
+/// assertion it makes, like the names in a rules file.
+const IMPLICIT_RULE_NAME: &str = "no cycles";
+
 #[derive(Debug)]
 pub struct ArcConfig {
     pub rules: Vec<Rule>,
@@ -266,6 +271,7 @@ pub enum ConfigError {
     IoError(PathBuf, std::io::Error),
     ParseError(PathBuf, toml::de::Error),
     DuplicateRuleName { path: PathBuf, name: String },
+    ReservedRuleName { path: PathBuf, name: String },
 }
 
 impl std::fmt::Display for ConfigError {
@@ -283,6 +289,12 @@ impl std::fmt::Display for ConfigError {
                 "duplicate rule name {name:?} in {}: rule names must be unique",
                 path.display()
             ),
+            Self::ReservedRuleName { path, name } => write!(
+                f,
+                "rule name {name:?} in {} belongs to the implicit cycle rule: \
+                 rename it, or state a no-cycles rule of your own",
+                path.display()
+            ),
         }
     }
 }
@@ -293,8 +305,9 @@ impl ArcConfig {
     /// # Errors
     /// Returns `ConfigError::FileNotFound` if the path does not exist,
     /// `ConfigError::IoError` for other I/O failures,
-    /// `ConfigError::ParseError` for invalid TOML, or
-    /// `ConfigError::DuplicateRuleName` if two rules share a name.
+    /// `ConfigError::ParseError` for invalid TOML,
+    /// `ConfigError::DuplicateRuleName` if two rules share a name, or
+    /// `ConfigError::ReservedRuleName` if one carries the implicit rule's name.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         let content = std::fs::read_to_string(path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -303,10 +316,62 @@ impl ArcConfig {
                 ConfigError::IoError(path.to_path_buf(), e)
             }
         })?;
-        let config = Self::from_toml(&content)
+        let mut config = Self::from_toml(&content)
             .map_err(|e| ConfigError::ParseError(path.to_path_buf(), e))?;
         config.check_unique_rule_names(path)?;
+        config.add_implicit_rule(path)?;
         Ok(config)
+    }
+
+    /// The configuration of a run that finds no rules file: the implicit cycle
+    /// rule and nothing else.
+    #[must_use]
+    pub fn implicit() -> Self {
+        Self {
+            rules: vec![Self::implicit_rule()],
+            diagnostics: Diagnostics::default(),
+        }
+    }
+
+    fn implicit_rule() -> Rule {
+        Rule {
+            name: IMPLICIT_RULE_NAME.to_owned(),
+            severity: Severity::Error,
+            except: Vec::new(),
+            kind: RuleKind::NoCycles(NoCyclesRule {
+                scope: "**".to_owned(),
+            }),
+        }
+    }
+
+    /// Add the implicit cycle rule unless the file states a `no-cycles` rule of
+    /// its own. Beside a narrower scope the implicit one would still forbid the
+    /// cycles that rule deliberately allows, so the written rule replaces it
+    /// rather than joining it.
+    ///
+    /// # Errors
+    /// `ConfigError::ReservedRuleName` if a rule already carries the implicit
+    /// rule's name.
+    fn add_implicit_rule(&mut self, path: &Path) -> Result<(), ConfigError> {
+        if self
+            .rules
+            .iter()
+            .any(|rule| matches!(rule.kind, RuleKind::NoCycles(_)))
+        {
+            return Ok(());
+        }
+        if self
+            .rules
+            .iter()
+            .any(|rule| rule.name == IMPLICIT_RULE_NAME)
+        {
+            return Err(ConfigError::ReservedRuleName {
+                path: path.to_path_buf(),
+                name: IMPLICIT_RULE_NAME.to_owned(),
+            });
+        }
+        self.rules.push(Self::implicit_rule());
+        Ok(())
     }
 
     /// Rule names must be unique across all rule types: a baseline entry
@@ -912,5 +977,96 @@ mod tests {
             }
             other => panic!("expected Layers, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_implicit_config_carries_one_cycle_rule_over_the_workspace() {
+        let config = ArcConfig::implicit();
+        assert_eq!(config.rules.len(), 1);
+        assert_eq!(config.rules[0].name, "no cycles");
+        assert_eq!(config.rules[0].severity, Severity::Error);
+        assert!(matches!(
+            &config.rules[0].kind,
+            RuleKind::NoCycles(NoCyclesRule { scope }) if scope == "**"
+        ));
+    }
+
+    #[test]
+    fn test_config_without_a_cycle_rule_gets_the_implicit_one() {
+        let toml = r#"
+            [[rules]]
+            type = "forbidden-dependency"
+            name = "no infra in domain"
+            from = "domain::**"
+            to = "infra::**"
+        "#;
+        let mut config = ArcConfig::from_toml(toml).unwrap();
+        config
+            .add_implicit_rule(Path::new("arc-rules.toml"))
+            .unwrap();
+        assert_eq!(config.rules.len(), 2);
+        assert_eq!(config.rules[1].name, "no cycles");
+    }
+
+    /// Without this the implicit scope `**` would sit next to a narrower one and
+    /// forbid the cycles that rule deliberately allows.
+    #[test]
+    fn test_a_cycle_rule_in_the_file_replaces_the_implicit_one() {
+        let toml = r#"
+            [[rules]]
+            type = "no-cycles"
+            name = "domain acyclic"
+            scope = "domain::**"
+        "#;
+        let mut config = ArcConfig::from_toml(toml).unwrap();
+        config
+            .add_implicit_rule(Path::new("arc-rules.toml"))
+            .unwrap();
+        assert_eq!(config.rules.len(), 1);
+        assert_eq!(config.rules[0].name, "domain acyclic");
+    }
+
+    /// A baseline entry names its rule and no type, so two rules of that name
+    /// would make the frozen violations ambiguous.
+    #[test]
+    fn test_a_rule_named_like_the_implicit_one_is_rejected() {
+        let toml = r#"
+            [[rules]]
+            type = "forbidden-dependency"
+            name = "no cycles"
+            from = "domain::**"
+            to = "infra::**"
+        "#;
+        let mut config = ArcConfig::from_toml(toml).unwrap();
+        let err = config
+            .add_implicit_rule(Path::new("arc-rules.toml"))
+            .unwrap_err();
+        assert!(
+            matches!(&err, ConfigError::ReservedRuleName { name, .. } if name == "no cycles"),
+            "got: {err:?}"
+        );
+    }
+
+    /// The name is only reserved where the implicit rule would land: with a
+    /// `no-cycles` rule in the file nothing is injected, so nothing collides.
+    #[test]
+    fn test_the_reserved_name_is_free_once_the_file_checks_cycles_itself() {
+        let toml = r#"
+            [[rules]]
+            type = "forbidden-dependency"
+            name = "no cycles"
+            from = "domain::**"
+            to = "infra::**"
+
+            [[rules]]
+            type = "no-cycles"
+            name = "domain acyclic"
+            scope = "domain::**"
+        "#;
+        let mut config = ArcConfig::from_toml(toml).unwrap();
+        config
+            .add_implicit_rule(Path::new("arc-rules.toml"))
+            .unwrap();
+        assert_eq!(config.rules.len(), 2);
     }
 }
