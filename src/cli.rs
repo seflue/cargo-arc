@@ -1,8 +1,10 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
+use std::process::ExitCode;
 use tracing_subscriber::EnvFilter;
 
 use crate::analyze::{
@@ -17,7 +19,7 @@ use crate::render::{RenderConfig, render};
 use crate::rules::baseline::Baseline;
 use crate::rules::config::{ArcConfig, ConfigError};
 use crate::rules::engine::{CheckRun, check_rules};
-use crate::rules::format::{format_violations, plural};
+use crate::rules::format::{format_status, format_violations, plural};
 use crate::volatility::{VolatilityAnalyzer, VolatilityConfig};
 use std::path::Path;
 
@@ -140,8 +142,26 @@ pub struct CommonArgs {
     pub debug: bool,
 }
 
+/// A run that errored never judged at all, so it arrives as `Err` instead and
+/// `main` maps that to exit 2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Judgment {
+    Clean,
+    Negative,
+}
+
+impl Judgment {
+    #[must_use]
+    pub fn exit_code(self) -> ExitCode {
+        match self {
+            Self::Clean => ExitCode::SUCCESS,
+            Self::Negative => ExitCode::from(1),
+        }
+    }
+}
+
 #[allow(clippy::missing_errors_doc, clippy::missing_panics_doc)]
-pub fn run(args: ArcCommand) -> Result<()> {
+pub fn run(args: ArcCommand) -> Result<Judgment> {
     if args.common.debug {
         tracing_subscriber::fmt()
             .with_env_filter(
@@ -170,7 +190,8 @@ pub fn run(args: ArcCommand) -> Result<()> {
     };
 
     if args.volatility {
-        return run_volatility_report(&args.common.manifest_path, vol_config, args.output.as_ref());
+        run_volatility_report(&args.common.manifest_path, vol_config, args.output.as_ref())?;
+        return Ok(Judgment::Clean);
     }
 
     let feature_config = build_feature_config(&args.common);
@@ -207,11 +228,13 @@ pub fn run(args: ArcCommand) -> Result<()> {
     };
     let svg = render(&layout, &config);
     tracing::debug!("phase: render done ({} bytes)", svg.len());
-    write_output(&svg, args.output.as_ref())
+    write_output(&svg, args.output.as_ref())?;
+    // The diagram judges nothing, so it can only ever be clean or an error.
+    Ok(Judgment::Clean)
 }
 
 /// Run the `check` subcommand: load rules, evaluate against graph, report violations.
-fn run_check(check_args: &CheckArgs, common: &CommonArgs) -> Result<()> {
+fn run_check(check_args: &CheckArgs, common: &CommonArgs) -> Result<Judgment> {
     let feature_config = build_feature_config(common);
 
     #[cfg(feature = "hir")]
@@ -238,26 +261,17 @@ fn run_check(check_args: &CheckArgs, common: &CommonArgs) -> Result<()> {
         // cycle rule stands in for it. A file named on the command line is a
         // different matter, its absence is a mistake.
         Err(ConfigError::FileNotFound(..)) if !explicit => ArcConfig::implicit(),
-        Err(e) => {
-            eprintln!("error: {e}");
-            std::process::exit(2);
-        }
+        Err(e) => return Err(e.into()),
     };
 
     let baseline_path = resolve_repo_path(rules_path).join("arc-baseline.toml");
 
     if check_args.generate_baseline {
-        run_generate_baseline(&graph, &config, &baseline_path, common.include_reexports);
-        return Ok(());
+        run_generate_baseline(&graph, &config, &baseline_path, common.include_reexports)?;
+        return Ok(Judgment::Clean);
     }
 
-    let baseline = match Baseline::load(&baseline_path) {
-        Ok(baseline) => baseline,
-        Err(e) => {
-            eprintln!("error: {e}");
-            std::process::exit(2);
-        }
-    };
+    let baseline = Baseline::load(&baseline_path)?;
 
     tracing::debug!("phase: rule check start");
     let result = check_rules(&graph, &config, &baseline, common.include_reexports);
@@ -266,12 +280,13 @@ fn run_check(check_args: &CheckArgs, common: &CommonArgs) -> Result<()> {
         result.reported.len()
     );
     eprint!("{}", format_violations(&result, check_args.show_silenced));
+    print!("{}", format_status(&result));
 
-    let code = result.exit_code();
-    if code != 0 {
-        std::process::exit(code);
-    }
-    Ok(())
+    Ok(if result.has_negative_judgment() {
+        Judgment::Negative
+    } else {
+        Judgment::Clean
+    })
 }
 
 /// `--generate-baseline`: refuse to write when an `except` pattern matches no
@@ -282,32 +297,31 @@ fn run_generate_baseline(
     config: &ArcConfig,
     baseline_path: &Path,
     include_reexports: bool,
-) {
+) -> Result<()> {
     let baseline = Baseline::empty();
     let run = CheckRun::new(graph, &baseline, include_reexports);
     let dead = run.dead_excepts(config);
     if !dead.is_empty() {
-        eprintln!("error: cannot write a baseline while an except matches nothing");
+        let mut message = String::from("cannot write a baseline while an except matches nothing");
         for d in &dead {
-            eprintln!(
-                "  rule {:?}: pattern {:?} matches no module",
+            let _ = write!(
+                message,
+                "\n  rule {:?}: pattern {:?} matches no module",
                 d.rule, d.pattern
             );
         }
-        eprintln!("  fix the pattern or delete the entry, then run again");
-        std::process::exit(2);
+        message.push_str("\n  fix the pattern or delete the entry, then run again");
+        anyhow::bail!(message);
     }
 
     let result = run.check_all(config);
-    if let Err(e) = Baseline::write(baseline_path, &result.baseline_entries) {
-        eprintln!("error: {e}");
-        std::process::exit(2);
-    }
+    Baseline::write(baseline_path, &result.baseline_entries)?;
     eprintln!(
         "wrote {} to {}",
         plural(result.baseline_entries.len(), "violation"),
         baseline_path.display()
     );
+    Ok(())
 }
 
 fn build_feature_config(common: &CommonArgs) -> FeatureConfig {

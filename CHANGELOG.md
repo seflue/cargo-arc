@@ -38,6 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   defaults to `warn`; `deny` fails the run. `unlayered-crate` also takes an
   `except` list of crates that stand outside the architecture on purpose, and is
   written either as `"warn"` or as `{ level = "warn", except = ["xtask"] }`.
+- `arc check` states its judgment on stdout, one line per checked rule and one
+  for the configuration: `<rule> ok: 0 errors, 0 warnings, 0 allowed, 0 frozen`,
+  with `WARN` and `FAILED` for the other two outcomes. The line is printed
+  whether or not the rule fired, so a clean run says so instead of falling
+  silent. Allowed and frozen violations are counted apart, because one is meant
+  to stay and the other to shrink. The report itself stays on stderr.
 - An entry in a `layers` rule may name several patterns instead of one, written
   as `["adapter_a", "adapter_b"]` in place of `"adapter_a"`. Crates of equal
   rank share one entry, so the order they are listed in no longer forbids edges
@@ -50,6 +56,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   elementary cycle, using the same block form as a run without
   `arc-rules.toml`. Each block is headed by the location the tangle sits in,
   the shared module prefix of its members.
+- A run that reached no judgment now exits 2 instead of 1. A rules file, a
+  baseline or a workspace that fails to load is no longer indistinguishable from
+  an architecture violation. Exit 1 keeps its meaning: a rule reported an error,
+  or a diagnostic set to `deny` fired.
 - A run without `arc-rules.toml` is a rule run like any other: a missing file
   means an implicit `no-cycles` rule over the whole workspace, reported under
   the name `no cycles`, and it carries the baseline and the `except` list the

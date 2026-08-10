@@ -14,8 +14,8 @@ use std::fmt::Write;
 /// Returns an empty string when there are no violations and nothing was
 /// allowed or frozen. Otherwise produces one diagnostic block per
 /// violation, followed by either the allowed/frozen violations (when
-/// `show_silenced`) or a one-line count of them, then a summary line over
-/// the reported violations.
+/// `show_silenced`) or a one-line count of them. The per-rule counts belong to
+/// [`format_status`], which writes them to stdout.
 #[must_use]
 pub fn format_violations(result: &CheckResult, show_silenced: bool) -> String {
     if result.reported.is_empty()
@@ -73,24 +73,64 @@ pub fn format_violations(result: &CheckResult, show_silenced: bool) -> String {
     }
 
     output.push_str(&diagnostics_block(&result.diagnostics));
-
-    let errors = result
-        .reported
-        .iter()
-        .filter(|v| v.severity == Severity::Error)
-        .count();
-    let warnings = result
-        .reported
-        .iter()
-        .filter(|v| v.severity == Severity::Warn)
-        .count();
-    // Only when something is actually reported: a run whose violations are all
-    // covered by `except` exits 0, and an `error:` line would read as a
-    // failure in CI logs.
-    if errors + warnings > 0 {
-        let _ = writeln!(output, "error: {errors} error(s), {warnings} warning(s)");
-    }
     output
+}
+
+/// Render one status line per rule checked, plus one for the configuration.
+///
+/// `allowed` and `frozen` stay apart because one is meant to stay and the other
+/// to shrink, so their sum would say nothing over time.
+#[must_use]
+pub fn format_status(result: &CheckResult) -> String {
+    let mut output = String::new();
+    for rule in &result.checked_rules {
+        let reported = |severity| {
+            of_rule(&result.reported, rule)
+                .filter(|violation| violation.severity == severity)
+                .count()
+        };
+        let errors = reported(Severity::Error);
+        let warnings = reported(Severity::Warn);
+        let _ = writeln!(
+            output,
+            "{rule} {}: {errors} errors, {warnings} warnings, {} allowed, {} frozen",
+            status_word(errors, warnings),
+            of_rule(&result.allowed, rule).count(),
+            of_rule(&result.frozen, rule).count()
+        );
+    }
+
+    let level = |wanted| {
+        result
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.level == wanted)
+            .count()
+    };
+    // Without this line, a run whose rules are all `ok` would exit 1 over a
+    // denied diagnostic with nothing on stdout saying why.
+    let denied = level(DiagnosticLevel::Deny);
+    let warned = level(DiagnosticLevel::Warn);
+    let _ = writeln!(
+        output,
+        "config {}: {denied} errors, {warned} warnings",
+        status_word(denied, warned)
+    );
+    output
+}
+
+fn of_rule<'a>(violations: &'a [Violation], rule: &'a str) -> impl Iterator<Item = &'a Violation> {
+    violations
+        .iter()
+        .filter(move |violation| violation.rule_name == rule)
+}
+
+fn status_word(errors: usize, warnings: usize) -> &'static str {
+    match (errors, warnings) {
+        (0, 0) => "ok",
+        (0, _) => "WARN",
+        _ => "FAILED",
+    }
 }
 
 /// One block for the gaps in the configuration, headed `warning:` or, as soon
@@ -412,8 +452,14 @@ mod tests {
     }
 
     #[test]
-    fn test_format_summary() {
+    fn test_status_lines_count_per_rule() {
         let result = CheckResult {
+            checked_rules: vec![
+                "rule1".into(),
+                "rule2".into(),
+                "rule3".into(),
+                "rule4".into(),
+            ],
             reported: vec![
                 Violation {
                     rule_name: "rule1".into(),
@@ -445,8 +491,14 @@ mod tests {
             ],
             ..Default::default()
         };
-        let output = format_violations(&result, false);
-        assert!(output.contains("error: 2 error(s), 1 warning(s)"));
+        assert_eq!(
+            format_status(&result),
+            "rule1 FAILED: 1 errors, 0 warnings, 0 allowed, 0 frozen\n\
+             rule2 WARN: 0 errors, 1 warnings, 0 allowed, 0 frozen\n\
+             rule3 FAILED: 1 errors, 0 warnings, 0 allowed, 0 frozen\n\
+             rule4 ok: 0 errors, 0 warnings, 0 allowed, 0 frozen\n\
+             config ok: 0 errors, 0 warnings\n"
+        );
     }
 
     #[test]
@@ -863,15 +915,16 @@ mod tests {
     }
 
     #[test]
-    fn test_format_diagnostics_do_not_count_as_rule_violations() {
+    fn test_diagnostics_count_on_the_config_line_not_against_a_rule() {
         let result = CheckResult {
+            checked_rules: vec!["some rule".into()],
             diagnostics: vec![unlayered("xtask", DiagnosticLevel::Deny)],
             ..Default::default()
         };
-        let output = format_violations(&result, false);
-        assert!(
-            !output.contains("error(s)"),
-            "the summary line counts rule violations, got:\n{output}"
+        assert_eq!(
+            format_status(&result),
+            "some rule ok: 0 errors, 0 warnings, 0 allowed, 0 frozen\n\
+             config FAILED: 1 errors, 0 warnings\n"
         );
     }
 

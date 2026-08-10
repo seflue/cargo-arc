@@ -218,6 +218,9 @@ pub struct CheckResult {
     pub baseline_hits: Vec<BaselineEntry>,
     /// Gaps in the configuration, unrelated to any single rule.
     pub diagnostics: Vec<Diagnostic>,
+    /// The rules this run checked, in the order they are written. A rule that
+    /// found nothing appears here and nowhere else.
+    pub checked_rules: Vec<String>,
 }
 
 impl CheckResult {
@@ -227,15 +230,13 @@ impl CheckResult {
         self.reported.iter().any(|v| v.severity == Severity::Error)
     }
 
-    /// Exit code: 1 if a rule was violated at error level or a diagnostic is
-    /// set to `deny`, 0 otherwise.
     #[must_use]
-    pub fn exit_code(&self) -> i32 {
+    pub fn has_negative_judgment(&self) -> bool {
         let denied = self
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.level == DiagnosticLevel::Deny);
-        i32::from(self.has_errors() || denied)
+        self.has_errors() || denied
     }
 }
 
@@ -399,6 +400,7 @@ impl<'graph> CheckRun<'graph> {
             baseline_entries: cyclic.entries,
             baseline_hits: cyclic.hits,
             diagnostics: Vec::new(),
+            checked_rules: Vec::new(),
         }
     }
 
@@ -542,6 +544,7 @@ impl<'graph> CheckRun<'graph> {
             baseline_entries,
             baseline_hits,
             diagnostics: Vec::new(),
+            checked_rules: Vec::new(),
         }
     }
 
@@ -551,12 +554,14 @@ impl<'graph> CheckRun<'graph> {
     /// recognizable once every rule has had its chance to match it.
     #[must_use]
     pub(crate) fn check_all(&self, config: &ArcConfig) -> CheckResult {
-        let mut result: CheckResult = config
+        let checked: Vec<&Rule> = config
             .rules
             .iter()
             .filter(|rule| rule.severity != Severity::Ignore)
-            .map(|rule| self.check_rule(rule))
             .collect();
+
+        let mut result: CheckResult = checked.iter().map(|rule| self.check_rule(rule)).collect();
+        result.checked_rules = checked.iter().map(|rule| rule.name.clone()).collect();
         result.diagnostics = diagnostics::collect(
             &self.pattern_index,
             config,
@@ -1410,7 +1415,7 @@ mod tests {
             ..Default::default()
         };
         assert!(result.has_errors());
-        assert_eq!(result.exit_code(), 1);
+        assert!(result.has_negative_judgment());
     }
 
     #[test]
@@ -1429,7 +1434,7 @@ mod tests {
             ..Default::default()
         };
         assert!(!result.has_errors());
-        assert_eq!(result.exit_code(), 0);
+        assert!(!result.has_negative_judgment());
     }
 
     #[test]
@@ -1448,7 +1453,7 @@ mod tests {
             ..Default::default()
         };
         assert!(!result.has_errors());
-        assert_eq!(result.exit_code(), 0);
+        assert!(!result.has_negative_judgment());
     }
 
     #[test]
@@ -1498,7 +1503,7 @@ mod tests {
         let result = check_rule_with_baseline(&graph, &rule, false, &baseline);
         assert_eq!(result.baseline_hits.len(), 2);
         assert!(result.reported.is_empty());
-        assert_eq!(result.exit_code(), 0);
+        assert!(!result.has_negative_judgment());
     }
 
     #[test]
@@ -1544,7 +1549,7 @@ mod tests {
             unreachable!("filtered for edges")
         };
         assert_eq!(frozen_for.as_ref().unwrap(), &named(&["Old"]));
-        assert_eq!(result.exit_code(), 1);
+        assert!(result.has_negative_judgment());
     }
 
     #[test]
@@ -1607,7 +1612,7 @@ mod tests {
             ..Default::default()
         };
         assert!(!result.has_errors(), "no rule was violated");
-        assert_eq!(result.exit_code(), 1);
+        assert!(result.has_negative_judgment());
     }
 
     #[test]
@@ -1621,7 +1626,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        assert_eq!(result.exit_code(), 0);
+        assert!(!result.has_negative_judgment());
     }
 
     #[test]
@@ -1652,7 +1657,7 @@ mod tests {
         let result = check_rule_with_baseline(&service_to_db_graph(), &rule, false, &baseline);
         assert!(result.reported.is_empty());
         assert_eq!(result.frozen.len(), 1);
-        assert_eq!(result.exit_code(), 0);
+        assert!(!result.has_negative_judgment());
     }
 
     #[test]

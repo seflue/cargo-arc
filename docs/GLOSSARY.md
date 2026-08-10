@@ -186,7 +186,11 @@ position in a rule and is matched against module paths.
 
 The report and the status lines are split by role, not by audience. The report
 says what was found, a status line says how one rule came out. A run without a
-rules file prints a report and no status line, because it has no rule to judge.
+rules file judges by the implicit `no cycles` rule and carries its status line
+like any other.
+
+A rule at severity `ignore` gets no status line. It is never checked, so there
+is no outcome to state, and the three status words all name one.
 
 *Severity* is configured and belongs to the rule; a status is produced and
 belongs to the run. The two do not read off each other in either direction: a

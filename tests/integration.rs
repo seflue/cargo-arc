@@ -576,6 +576,14 @@ fn isolated_rules_copy(fixture: &str) -> (tempfile::TempDir, PathBuf) {
 /// Run `cargo-arc arc --manifest-path <fixture>/Cargo.toml check [check_args...]` as subprocess.
 /// Returns (`exit_code`, stderr).
 fn cargo_arc_check(fixture: &str, check_args: &[&str]) -> (i32, String) {
+    let (code, _stdout, stderr) = cargo_arc_check_streams(fixture, check_args);
+    (code, stderr)
+}
+
+/// Like [`cargo_arc_check`], but keeps stdout apart from stderr. The two carry
+/// different things: stdout judges, stderr reports.
+/// Returns (`exit_code`, stdout, stderr).
+fn cargo_arc_check_streams(fixture: &str, check_args: &[&str]) -> (i32, String, String) {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join(format!("tests/fixtures/{fixture}/Cargo.toml"));
     let output = Command::new(env!("CARGO_BIN_EXE_cargo-arc"))
@@ -587,8 +595,11 @@ fn cargo_arc_check(fixture: &str, check_args: &[&str]) -> (i32, String) {
         .output()
         .expect("failed to execute cargo-arc");
     let code = output.status.code().unwrap_or(-1);
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    (code, stderr)
+    (
+        code,
+        String::from_utf8_lossy(&output.stdout).to_string(),
+        String::from_utf8_lossy(&output.stderr).to_string(),
+    )
 }
 
 /// Run `cargo-arc arc --manifest-path <fixture>/Cargo.toml --check` (legacy flag) as subprocess.
@@ -757,6 +768,203 @@ fn test_check_without_a_rules_file_reports_under_the_implicit_rule() {
         stderr.contains("error[no-cycles]: no cycles"),
         "report should name the implicit rule, stderr: {stderr}"
     );
+}
+
+/// Without this line a clean run is silent, and so is a run that never
+/// happened.
+#[test]
+fn test_check_prints_a_status_line_for_a_rule_that_found_nothing() {
+    let rules = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(
+        rules.path(),
+        r#"
+[config]
+version = 1
+
+[[rules]]
+type = "no-cycles"
+name = "global no-cycles"
+scope = "**"
+"#,
+    )
+    .unwrap();
+
+    let rules_arg = format!("--rules={}", rules.path().display());
+    let (code, stdout, stderr) = cargo_arc_check_streams("multi_crate", &[&rules_arg]);
+    assert_eq!(code, 0, "multi_crate has no cycles, stderr: {stderr}");
+    assert!(
+        stdout.contains("global no-cycles ok: 0 errors, 0 warnings, 0 allowed, 0 frozen"),
+        "stdout should carry the rule's status line, stdout: {stdout}"
+    );
+}
+
+#[test]
+fn test_check_says_warn_for_a_warning_rule_and_still_exits_0() {
+    let rules = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(
+        rules.path(),
+        r#"
+[config]
+version = 1
+
+[[rules]]
+type = "forbidden-dependency"
+name = "no infra in domain"
+from = "domain::**"
+to = "infra::**"
+severity = "warn"
+
+# The fixture has cycles under domain and infra. This rule exists so the
+# implicit one is not hung in and does not turn the run red behind the
+# rule under test.
+[[rules]]
+type = "no-cycles"
+name = "no cycles in application"
+scope = "application::**"
+"#,
+    )
+    .unwrap();
+
+    let rules_arg = format!("--rules={}", rules.path().display());
+    let (code, stdout, stderr) = cargo_arc_check_streams("arch_violation_workspace", &[&rules_arg]);
+    assert_eq!(
+        code, 0,
+        "a warning is not a negative judgment, stderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("no infra in domain WARN: 0 errors, 1 warnings, 0 allowed, 0 frozen"),
+        "stdout should state the rule warned, stdout: {stdout}"
+    );
+}
+
+#[test]
+fn test_check_gives_the_configuration_its_own_status_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let rules_path = dir.path().join("arc-rules.toml");
+    std::fs::write(
+        &rules_path,
+        r#"
+[config]
+version = 1
+
+# multi_crate has no cycles, so the rule comes out clean. Its except names a
+# module that does not exist, and that gap is what fails the run.
+[[rules]]
+type = "no-cycles"
+name = "global no-cycles"
+scope = "**"
+except = [
+  { from = "crate_a::no_such_module", to = "crate_b::gamma" },
+]
+
+[diagnostics]
+unmatched-except = "deny"
+"#,
+    )
+    .unwrap();
+
+    let rules_arg = format!("--rules={}", rules_path.display());
+    let (code, stdout, stderr) = cargo_arc_check_streams("multi_crate", &[&rules_arg]);
+    assert_eq!(
+        code, 1,
+        "a denied diagnostic fails the run, stderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("global no-cycles ok: 0 errors, 0 warnings, 0 allowed, 0 frozen"),
+        "the rule itself came out clean, stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("config FAILED: 1 errors, 0 warnings"),
+        "stdout should state that the configuration is what failed, stdout: {stdout}"
+    );
+}
+
+/// Severity is configured and status is produced, so neither reads off the
+/// other.
+#[test]
+fn test_check_says_ok_for_an_error_rule_whose_violations_are_all_frozen() {
+    let (dir, rules_path) = isolated_rules_copy("arch_violation_workspace");
+    let rules_arg = format!("--rules={}", rules_path.display());
+
+    let (code, stderr) = cargo_arc_check(
+        "arch_violation_workspace",
+        &[&rules_arg, "--generate-baseline"],
+    );
+    assert_eq!(code, 0, "generate should exit 0, stderr: {stderr}");
+    assert!(dir.path().join("arc-baseline.toml").exists());
+
+    let (code, stdout, stderr) = cargo_arc_check_streams("arch_violation_workspace", &[&rules_arg]);
+    assert_eq!(code, 0, "everything is frozen, stderr: {stderr}");
+    assert!(
+        stdout.contains("no infra in domain ok: 0 errors, 0 warnings, 0 allowed, 1 frozen"),
+        "an error rule with only frozen violations is ok, stdout: {stdout}"
+    );
+}
+
+/// Writing a baseline records, it does not judge.
+#[test]
+fn test_generate_baseline_prints_no_status_line() {
+    let (_dir, rules_path) = isolated_rules_copy("arch_violation_workspace");
+    let rules_arg = format!("--rules={}", rules_path.display());
+
+    let (code, stdout, stderr) = cargo_arc_check_streams(
+        "arch_violation_workspace",
+        &[&rules_arg, "--generate-baseline"],
+    );
+    assert_eq!(
+        code, 0,
+        "writing a baseline is not a judgment, stderr: {stderr}"
+    );
+    assert!(
+        stdout.is_empty(),
+        "nothing judged, so stdout stays empty, stdout: {stdout}"
+    );
+}
+
+/// A rule at `ignore` is never checked, so there is no outcome to state.
+#[test]
+fn test_check_gives_an_ignored_rule_no_status_line() {
+    let rules = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(
+        rules.path(),
+        r#"
+[config]
+version = 1
+
+[[rules]]
+type = "no-cycles"
+name = "global no-cycles"
+scope = "**"
+
+[[rules]]
+type = "forbidden-dependency"
+name = "crate_b out of crate_a"
+from = "crate_a::**"
+to = "crate_b::**"
+severity = "ignore"
+"#,
+    )
+    .unwrap();
+
+    let rules_arg = format!("--rules={}", rules.path().display());
+    let (code, stdout, stderr) = cargo_arc_check_streams("multi_crate", &[&rules_arg]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stdout.contains("global no-cycles ok:"),
+        "the checked rule has its line, stdout: {stdout}"
+    );
+    assert!(
+        !stdout.contains("crate_b out of crate_a"),
+        "the ignored rule has none, stdout: {stdout}"
+    );
+}
+
+#[test]
+fn test_check_exits_2_when_the_graph_cannot_be_built() {
+    let missing = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/no_such_workspace/Cargo.toml");
+    let (code, stderr) = cargo_arc_check_at(&missing, &[]);
+    assert_eq!(code, 2, "no judgment was possible, stderr: {stderr}");
 }
 
 #[test]

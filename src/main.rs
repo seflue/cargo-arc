@@ -1,10 +1,14 @@
 use cargo_arc::{Cargo, run};
 use clap::Parser;
+use std::process::ExitCode;
 
-fn main() {
+fn main() -> ExitCode {
     let Cargo::Arc(cmd) = Cargo::parse();
-    if let Err(e) = run(cmd) {
-        eprintln!("Error: {e}");
-        std::process::exit(1);
+    match run(cmd) {
+        Ok(judgment) => judgment.exit_code(),
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::from(2)
+        }
     }
 }

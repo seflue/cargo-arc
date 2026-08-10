@@ -8,7 +8,7 @@ pub mod render;
 pub mod rules;
 pub mod volatility;
 
-pub use cli::{ArcCommand, Cargo, run};
+pub use cli::{ArcCommand, Cargo, Judgment, run};
 
 #[cfg(test)]
 mod js_registry;
