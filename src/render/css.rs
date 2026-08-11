@@ -676,7 +676,7 @@ fn build_css_rules() -> Vec<CssRule> {
                 ("gap", "6px"),
             ],
         ),
-        // Cluster sidebar counts line ("N modules · M cycles · K to break"):
+        // Cluster sidebar counts line ("N modules · M cycles"):
         // literal class string from sidebar.js, no constants.rs entry (Phase 2).
         CssRule::class(
             "sidebar-subheader",
