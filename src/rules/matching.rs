@@ -46,11 +46,9 @@ impl<'graph> PatternIndex<'graph> {
     /// - `"domain::service"` — exact module match
     /// - `"domain::*"` — direct children of `domain`
     /// - `"domain::**"` — all transitive descendants of `domain`
-    /// - `"crate::domain"` — `crate::` prefix is stripped
     #[must_use]
     pub(super) fn resolve(&self, pattern: &str) -> Vec<NodeIndex> {
         let graph = self.graph;
-        let pattern = pattern.strip_prefix("crate::").unwrap_or(pattern);
 
         // Bare `**` matches all non-external nodes
         if pattern == "**" {
@@ -183,18 +181,5 @@ mod tests {
         let (graph, _) = test_crate_graph();
         let result = PatternIndex::build(&graph).resolve("nonexistent");
         assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_resolve_crate_prefix_stripped() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let mod_a = add_module(&mut graph, "a", crate_idx, crate_idx);
-        let mod_b = add_module(&mut graph, "b", crate_idx, crate_idx);
-        // "crate::test" should resolve the same as "test"
-        let mut result = PatternIndex::build(&graph).resolve("crate::test");
-        result.sort_unstable();
-        let mut expected = vec![crate_idx, mod_a, mod_b];
-        expected.sort_unstable();
-        assert_eq!(result, expected);
     }
 }

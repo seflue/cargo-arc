@@ -1295,6 +1295,39 @@ except = [
 }
 
 #[test]
+fn test_check_denies_a_rule_pattern_that_matches_nothing() {
+    // `crate::` is not a prefix a rules file can use: it names no crate of the
+    // workspace, so the rule reaches nothing and the run must not stay green.
+    let dir = tempfile::tempdir().unwrap();
+    let rules_path = dir.path().join("arc-rules.toml");
+    std::fs::write(
+        &rules_path,
+        r#"
+[config]
+version = 1
+
+[[rules]]
+type = "forbidden-dependency"
+name = "no infra in domain"
+from = "crate::domain"
+to = "infra::**"
+"#,
+    )
+    .unwrap();
+    let rules_arg = format!("--rules={}", rules_path.display());
+
+    let (code, stderr) = cargo_arc_check("arch_violation_workspace", &[&rules_arg]);
+    assert!(
+        stderr.contains("unmatched-pattern: crate::domain"),
+        "a rule pattern matching nothing should be reported, stderr: {stderr}"
+    );
+    assert_eq!(
+        code, 1,
+        "the diagnostic denies by default, so the run fails, stderr: {stderr}"
+    );
+}
+
+#[test]
 fn test_legacy_check_flag() {
     // --check flag on a fixture without cycles → exit 0
     let (code, stderr) = cargo_arc_legacy_check("multi_crate");

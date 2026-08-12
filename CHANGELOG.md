@@ -34,10 +34,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   configuration itself: `unlayered-crate` for a workspace crate no `layers`
   rule sorts (its edges were skipped without a word), `unmatched-baseline-entry`
   for a frozen violation that no longer occurs, `unmatched-except` for an `except`
-  pattern that matches no module. Each is set to `allow`, `warn` or `deny` and
-  defaults to `warn`; `deny` fails the run. `unlayered-crate` also takes an
-  `except` list of crates that stand outside the architecture on purpose, and is
-  written either as `"warn"` or as `{ level = "warn", except = ["xtask"] }`.
+  pattern that matches no module, `unmatched-pattern` for a rule pattern that
+  matches no module. Each is set to `allow`, `warn` or `deny`; `deny` fails the
+  run. `unmatched-pattern` defaults to `deny` because a rule whose pattern
+  misses checks nothing and leaves the run green, the others default to `warn`.
+  `unlayered-crate` also takes an `except` list of crates that stand outside the
+  architecture on purpose, and is written either as `"warn"` or as
+  `{ level = "warn", except = ["xtask"] }`.
 - `arc check` states its judgment on stdout, one line per checked rule and one
   for the configuration: `<rule> ok: 0 errors, 0 warnings, 0 allowed, 0 frozen`,
   with `WARN` and `FAILED` for the other two outcomes. The line is printed
@@ -60,6 +63,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per rule instead of once per violation, and the violations stand indented
   below it: the edge on a `= ` line, its source locations on `--> ` lines under
   that. Before, a rule with six violations repeated its header six times.
+- A pattern in `arc-rules.toml` starts at the crate name, and the `crate::`
+  prefix is no longer stripped from it. A rules file covers the workspace, so
+  `crate::` has no referent there; `crate::domain` now matches nothing, like
+  `self::` and `super::` and like any typo, and `unmatched-pattern` reports it.
+  Existing rules that use the prefix must drop it.
 - A run that reached no judgment now exits 2 instead of 1. A rules file, a
   baseline or a workspace that fails to load is no longer indistinguishable from
   an architecture violation. Exit 1 keeps its meaning: a rule reported an error,

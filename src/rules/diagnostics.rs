@@ -34,6 +34,9 @@ pub enum DiagnosticKind {
     },
     /// An `except` pattern that resolves to no module, so it allows nothing.
     UnmatchedExcept { entry: DeadExcept },
+    /// A rule's own pattern that resolves to no module, so the rule checks
+    /// nothing and reports nothing.
+    UnmatchedPattern { entry: DeadPattern },
 }
 
 impl Diagnostic {
@@ -47,6 +50,7 @@ impl Diagnostic {
             DiagnosticKind::UnmatchedBaselineEntry { .. }
             | DiagnosticKind::WideBaselineEntry { .. } => "unmatched-baseline-entry",
             DiagnosticKind::UnmatchedExcept { .. } => "unmatched-except",
+            DiagnosticKind::UnmatchedPattern { .. } => "unmatched-pattern",
         }
     }
 }
@@ -102,6 +106,18 @@ pub(super) fn collect(
                 .map(|entry| Diagnostic {
                     level,
                     kind: DiagnosticKind::UnmatchedExcept { entry },
+                }),
+        );
+    }
+
+    let level = settings.unmatched_pattern;
+    if level != DiagnosticLevel::Allow {
+        found.extend(
+            unmatched_patterns(index, config)
+                .into_iter()
+                .map(|entry| Diagnostic {
+                    level,
+                    kind: DiagnosticKind::UnmatchedPattern { entry },
                 }),
         );
     }
@@ -197,6 +213,33 @@ pub(super) fn dead_excepts(index: &PatternIndex, config: &ArcConfig) -> Vec<Dead
     dead
 }
 
+/// A rule pattern that matches no module: a typo or a rename, and the rule it
+/// belongs to then checks nothing.
+#[derive(Debug)]
+pub struct DeadPattern {
+    pub rule: String,
+    pub pattern: String,
+}
+
+/// Patterns across `config` that resolve to no node, `except` aside. A rule
+/// whose pattern misses has no other way of saying so: it checks zero edges,
+/// reports nothing, and leaves the run green.
+fn unmatched_patterns(index: &PatternIndex, config: &ArcConfig) -> Vec<DeadPattern> {
+    active_rules(config)
+        .flat_map(|rule| {
+            rule.kind
+                .patterns()
+                .into_iter()
+                .filter(|pattern| index.resolve(pattern).is_empty())
+                .map(|pattern| DeadPattern {
+                    rule: rule.name.clone(),
+                    pattern: pattern.to_owned(),
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use crate::graph::{ArcGraph, EdgeWeight, Node};
@@ -204,7 +247,7 @@ mod tests {
     use crate::rules::baseline::{Baseline, BaselineEntry, ViolationKey};
     use crate::rules::config::{
         ArcConfig, DiagnosticLevel, Diagnostics, Direction, Except, ForbiddenDependencyRule,
-        LayersRule, Rule, RuleKind, Severity, UnlayeredCrate,
+        LayersRule, NoCyclesRule, Rule, RuleKind, Severity, UnlayeredCrate,
     };
     use crate::rules::diagnostics::{Diagnostic, DiagnosticKind, collect, dead_excepts};
     use crate::rules::matching::PatternIndex;
@@ -240,15 +283,33 @@ mod tests {
         }
     }
 
-    fn forbidden_rule(name: &str, except: Vec<Except>) -> Rule {
+    fn cycles_rule(name: &str, scope: &str) -> Rule {
         Rule {
             name: name.into(),
             severity: Severity::Error,
-            except,
-            kind: RuleKind::ForbiddenDependency(ForbiddenDependencyRule {
-                from: "domain::**".into(),
-                to: "infra::**".into(),
+            except: vec![],
+            kind: RuleKind::NoCycles(NoCyclesRule {
+                scope: scope.into(),
             }),
+        }
+    }
+
+    fn forbidden_between(name: &str, from: &str, to: &str) -> Rule {
+        Rule {
+            name: name.into(),
+            severity: Severity::Error,
+            except: vec![],
+            kind: RuleKind::ForbiddenDependency(ForbiddenDependencyRule {
+                from: from.into(),
+                to: to.into(),
+            }),
+        }
+    }
+
+    fn forbidden_rule(name: &str, except: Vec<Except>) -> Rule {
+        Rule {
+            except,
+            ..forbidden_between(name, "domain::**", "infra::**")
         }
     }
 
@@ -299,6 +360,16 @@ mod tests {
             .iter()
             .filter_map(|diagnostic| match &diagnostic.kind {
                 DiagnosticKind::UnlayeredCrate { krate } => Some(krate.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn unmatched_patterns(diagnostics: &[Diagnostic]) -> Vec<&str> {
+        diagnostics
+            .iter()
+            .filter_map(|diagnostic| match &diagnostic.kind {
+                DiagnosticKind::UnmatchedPattern { entry } => Some(entry.pattern.as_str()),
                 _ => None,
             })
             .collect()
@@ -462,6 +533,115 @@ mod tests {
             )),
             "got: {found:?}"
         );
+    }
+
+    // ===== unmatched-pattern =====
+
+    #[test]
+    fn rule_pattern_matching_no_module_is_reported() {
+        let graph = workspace(&["domain", "infra"]);
+        let config = config_of(
+            vec![forbidden_between(
+                "no infra in domain",
+                "domian::**",
+                "infra::**",
+            )],
+            Diagnostics::default(),
+        );
+        assert_eq!(
+            unmatched_patterns(&diagnose(&graph, &config)),
+            ["domian::**"]
+        );
+    }
+
+    /// A rules file covers the workspace, so `crate::` names nothing: the
+    /// pattern misses like any typo, and this diagnostic is what says so.
+    #[test]
+    fn a_crate_prefixed_pattern_misses_like_any_other() {
+        let graph = workspace(&["domain", "infra"]);
+        let config = config_of(
+            vec![forbidden_between(
+                "no infra in domain",
+                "crate::domain",
+                "infra::**",
+            )],
+            Diagnostics::default(),
+        );
+        assert_eq!(
+            unmatched_patterns(&diagnose(&graph, &config)),
+            ["crate::domain"]
+        );
+    }
+
+    #[test]
+    fn a_scope_matching_no_module_is_reported() {
+        let graph = workspace(&["domain"]);
+        let config = config_of(
+            vec![cycles_rule("domain acyclic", "domian::**")],
+            Diagnostics::default(),
+        );
+        assert_eq!(
+            unmatched_patterns(&diagnose(&graph, &config)),
+            ["domian::**"]
+        );
+    }
+
+    #[test]
+    fn a_layer_entry_matching_no_module_is_reported() {
+        let graph = workspace(&["domain", "infra"]);
+        let config = config_of(
+            vec![layers_rule("architecture layers", &["infra", "domian"])],
+            Diagnostics::default(),
+        );
+        assert_eq!(unmatched_patterns(&diagnose(&graph, &config)), ["domian"]);
+    }
+
+    #[test]
+    fn a_rule_set_to_ignore_has_no_dead_pattern() {
+        // Same reading as everywhere else: an unchecked rule states nothing,
+        // so its patterns have no reach to fall short of.
+        let graph = workspace(&["domain", "infra"]);
+        let mut rule = forbidden_between("no infra in domain", "domian::**", "infra::**");
+        rule.severity = Severity::Ignore;
+        let config = config_of(vec![rule], Diagnostics::default());
+        assert!(unmatched_patterns(&diagnose(&graph, &config)).is_empty());
+    }
+
+    #[test]
+    fn an_unmatched_pattern_is_denied_by_default() {
+        let graph = workspace(&["domain", "infra"]);
+        let config = config_of(
+            vec![forbidden_between(
+                "no infra in domain",
+                "domian::**",
+                "infra::**",
+            )],
+            Diagnostics::default(),
+        );
+        let found = diagnose(&graph, &config);
+        let levels: Vec<DiagnosticLevel> = found
+            .iter()
+            .filter(|diagnostic| diagnostic.name() == "unmatched-pattern")
+            .map(|diagnostic| diagnostic.level)
+            .collect();
+        assert_eq!(levels, [DiagnosticLevel::Deny]);
+    }
+
+    #[test]
+    fn allow_silences_an_unmatched_pattern() {
+        let graph = workspace(&["domain", "infra"]);
+        let config = config_of(
+            vec![forbidden_between(
+                "no infra in domain",
+                "domian::**",
+                "infra::**",
+            )],
+            Diagnostics {
+                unmatched_pattern: DiagnosticLevel::Allow,
+                ..Diagnostics::default()
+            },
+        );
+        assert!(unmatched_patterns(&diagnose(&graph, &config)).is_empty());
     }
 
     // ===== unmatched-baseline-entry =====

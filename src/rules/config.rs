@@ -115,7 +115,7 @@ impl<'de> Deserialize<'de> for UnlayeredCrate {
 
 /// A mistyped name is rejected rather than ignored: a diagnostic that silently
 /// stays off is the state this section exists to end.
-#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct Diagnostics {
     #[serde(default)]
@@ -124,6 +124,29 @@ pub struct Diagnostics {
     pub unmatched_baseline_entry: DiagnosticLevel,
     #[serde(default)]
     pub unmatched_except: DiagnosticLevel,
+    #[serde(default = "Diagnostics::unmatched_pattern_default")]
+    pub unmatched_pattern: DiagnosticLevel,
+}
+
+impl Diagnostics {
+    /// A rule pattern that matches nothing constrains nothing, and the run
+    /// stays green over it; a dead `except` only allows too much and shows up
+    /// as a violation. That asymmetry is why this one denies where the others
+    /// warn.
+    fn unmatched_pattern_default() -> DiagnosticLevel {
+        DiagnosticLevel::Deny
+    }
+}
+
+impl Default for Diagnostics {
+    fn default() -> Self {
+        Self {
+            unlayered_crate: UnlayeredCrate::default(),
+            unmatched_baseline_entry: DiagnosticLevel::default(),
+            unmatched_except: DiagnosticLevel::default(),
+            unmatched_pattern: Self::unmatched_pattern_default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -252,6 +275,27 @@ pub enum RuleKind {
     ForbiddenDependency(ForbiddenDependencyRule),
     NoCycles(NoCyclesRule),
     Layers(LayersRule),
+}
+
+impl RuleKind {
+    /// Every module path pattern the rule itself is written with. `except`
+    /// patterns are not among them: those state an allowance, not the reach of
+    /// the rule, and have their own diagnostic.
+    #[must_use]
+    pub fn patterns(&self) -> Vec<&str> {
+        match self {
+            Self::ForbiddenDependency(params) => {
+                vec![params.from.as_str(), params.to.as_str()]
+            }
+            Self::NoCycles(params) => vec![params.scope.as_str()],
+            Self::Layers(params) => params
+                .layers
+                .iter()
+                .flat_map(Layer::patterns)
+                .map(String::as_str)
+                .collect(),
+        }
+    }
 }
 
 impl Rule {
@@ -503,6 +547,46 @@ mod tests {
                 &["domain".to_string()][..],
                 &["adapter_a".to_string(), "adapter_b".to_string()][..],
                 &["runtime".to_string()][..],
+            ]
+        );
+    }
+
+    #[test]
+    fn test_rule_patterns_per_kind() {
+        let toml = r#"
+            [[rules]]
+            type = "forbidden-dependency"
+            name = "no infra in domain"
+            from = "domain::**"
+            to = "infra::**"
+            except = [
+              { from = "domain::legacy", to = "infra::db" },
+            ]
+
+            [[rules]]
+            type = "no-cycles"
+            name = "domain acyclic"
+            scope = "domain::**"
+
+            [[rules]]
+            type = "layers"
+            name = "architecture layers"
+            layers = ["domain", ["adapter_a", "adapter_b"]]
+            direction = "top-down"
+        "#;
+        let config = ArcConfig::from_toml(toml).unwrap();
+        let patterns: Vec<Vec<&str>> = config
+            .rules
+            .iter()
+            .map(|rule| rule.kind.patterns())
+            .collect();
+        assert_eq!(
+            patterns,
+            [
+                // The `except` patterns are the other diagnostic's business.
+                vec!["domain::**", "infra::**"],
+                vec!["domain::**"],
+                vec!["domain", "adapter_a", "adapter_b"],
             ]
         );
     }
@@ -807,7 +891,7 @@ mod tests {
     }
 
     #[test]
-    fn test_diagnostics_missing_section_defaults_to_warn() {
+    fn test_diagnostics_missing_section_uses_the_per_diagnostic_defaults() {
         let toml = r#"
             [[rules]]
             type = "no-cycles"
@@ -820,6 +904,29 @@ mod tests {
         assert!(diagnostics.unlayered_crate.except.is_empty());
         assert_eq!(diagnostics.unmatched_baseline_entry, DiagnosticLevel::Warn);
         assert_eq!(diagnostics.unmatched_except, DiagnosticLevel::Warn);
+        assert_eq!(diagnostics.unmatched_pattern, DiagnosticLevel::Deny);
+    }
+
+    /// A section that sets other diagnostics must not pull this one down to the
+    /// shared `warn` default along the way.
+    #[test]
+    fn test_unmatched_pattern_stays_denied_when_the_section_omits_it() {
+        let toml = r#"
+            [diagnostics]
+            unmatched-except = "allow"
+        "#;
+        let config = ArcConfig::from_toml(toml).unwrap();
+        assert_eq!(config.diagnostics.unmatched_pattern, DiagnosticLevel::Deny);
+    }
+
+    #[test]
+    fn test_unmatched_pattern_is_configurable() {
+        let toml = r#"
+            [diagnostics]
+            unmatched-pattern = "warn"
+        "#;
+        let config = ArcConfig::from_toml(toml).unwrap();
+        assert_eq!(config.diagnostics.unmatched_pattern, DiagnosticLevel::Warn);
     }
 
     #[test]

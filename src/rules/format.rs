@@ -194,6 +194,7 @@ fn subject(diagnostic: &Diagnostic) -> String {
             }
         ),
         DiagnosticKind::UnmatchedExcept { entry } => entry.pattern.clone(),
+        DiagnosticKind::UnmatchedPattern { entry } => entry.pattern.clone(),
     }
 }
 
@@ -212,6 +213,12 @@ fn explanation(diagnostic: &Diagnostic) -> String {
         }
         DiagnosticKind::UnmatchedExcept { entry } => {
             format!("in rule {:?}, matches no module", entry.rule)
+        }
+        DiagnosticKind::UnmatchedPattern { entry } => {
+            format!(
+                "in rule {:?}, matches no module: the rule checks nothing",
+                entry.rule
+            )
         }
     }
 }
@@ -844,7 +851,7 @@ mod tests {
 
     use crate::rules::baseline::{BaselineEntry, ViolationKey};
     use crate::rules::config::DiagnosticLevel;
-    use crate::rules::diagnostics::{DeadExcept, Diagnostic, DiagnosticKind};
+    use crate::rules::diagnostics::{DeadExcept, DeadPattern, Diagnostic, DiagnosticKind};
 
     fn unlayered(krate: &str, level: DiagnosticLevel) -> Diagnostic {
         Diagnostic {
@@ -880,6 +887,57 @@ mod tests {
         };
         let output = format_violations(&result, false);
         assert!(output.contains("error: configuration"), "got:\n{output}");
+    }
+
+    #[test]
+    fn test_format_unmatched_pattern_names_its_rule_and_the_consequence() {
+        let result = CheckResult {
+            diagnostics: vec![Diagnostic {
+                level: DiagnosticLevel::Deny,
+                kind: DiagnosticKind::UnmatchedPattern {
+                    entry: DeadPattern {
+                        rule: "no infra in domain".into(),
+                        pattern: "domian::**".into(),
+                    },
+                },
+            }],
+            ..Default::default()
+        };
+        let output = format_violations(&result, false);
+        assert!(
+            output.contains("  unmatched-pattern: domian::**"),
+            "got:\n{output}"
+        );
+        assert!(
+            output.contains(
+                "    in rule \"no infra in domain\", matches no module: the rule checks nothing"
+            ),
+            "got:\n{output}"
+        );
+    }
+
+    /// Typos of one rule collapse onto one line, so a rules file with several
+    /// of them stays readable.
+    #[test]
+    fn test_format_unmatched_patterns_of_one_rule_share_one_line() {
+        let dead = |pattern: &str| Diagnostic {
+            level: DiagnosticLevel::Deny,
+            kind: DiagnosticKind::UnmatchedPattern {
+                entry: DeadPattern {
+                    rule: "architecture layers".into(),
+                    pattern: pattern.into(),
+                },
+            },
+        };
+        let result = CheckResult {
+            diagnostics: vec![dead("domian"), dead("crate::infra")],
+            ..Default::default()
+        };
+        let output = format_violations(&result, false);
+        assert!(
+            output.contains("  unmatched-pattern: domian, crate::infra"),
+            "got:\n{output}"
+        );
     }
 
     #[test]
