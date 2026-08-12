@@ -56,6 +56,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   elementary cycle, using the same block form as a run without
   `arc-rules.toml`. Each block is headed by the location the tangle sits in,
   the shared module prefix of its members.
+- The rule header on stderr, `error[rule-type]: rule-name`, is now printed once
+  per rule instead of once per violation, and the violations stand indented
+  below it: the edge on a `= ` line, its source locations on `--> ` lines under
+  that. Before, a rule with six violations repeated its header six times.
 - A run that reached no judgment now exits 2 instead of 1. A rules file, a
   baseline or a workspace that fails to load is no longer indistinguishable from
   an architecture violation. Exit 1 keeps its meaning: a rule reported an error,

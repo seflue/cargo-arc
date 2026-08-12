@@ -672,8 +672,8 @@ fn test_pure_reexport_cycle_excluded_by_default() {
     );
 }
 
-/// Reads the `stderr` layout of `format::violation_block`: diagnostic blocks
-/// separated by a blank line, each carrying its edge on a `  = ` line.
+/// Reads the `stderr` layout of `format::rule_block`: one block per rule,
+/// separated by a blank line, each violation carrying its edge on a `  = ` line.
 fn layers_violation_edges(stderr: &str) -> Vec<String> {
     stderr
         .split("\n\n")

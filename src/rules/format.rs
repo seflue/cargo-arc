@@ -12,10 +12,10 @@ use std::fmt::Write;
 /// Format all violations as compiler-style output.
 ///
 /// Returns an empty string when there are no violations and nothing was
-/// allowed or frozen. Otherwise produces one diagnostic block per
-/// violation, followed by either the allowed/frozen violations (when
-/// `show_silenced`) or a one-line count of them. The per-rule counts belong to
-/// [`format_status`], which writes them to stdout.
+/// allowed or frozen. Otherwise produces one block per rule that fired,
+/// followed by either the allowed/frozen violations (when `show_silenced`) or
+/// a one-line count of them. The per-rule counts belong to [`format_status`],
+/// which writes them to stdout.
 #[must_use]
 pub fn format_violations(result: &CheckResult, show_silenced: bool) -> String {
     if result.reported.is_empty()
@@ -27,21 +27,21 @@ pub fn format_violations(result: &CheckResult, show_silenced: bool) -> String {
     }
 
     let mut output = String::new();
-    for violation in &result.reported {
-        let level = match violation.severity {
+    for rule in result.reported.chunk_by(same_rule) {
+        let level = match rule[0].severity {
             Severity::Error => "error",
             Severity::Warn => "warning",
             Severity::Ignore => continue,
         };
-        violation_block(&mut output, violation, level);
+        rule_block(&mut output, rule, level);
     }
 
     if show_silenced {
-        for violation in &result.allowed {
-            violation_block(&mut output, violation, "except");
+        for rule in result.allowed.chunk_by(same_rule) {
+            rule_block(&mut output, rule, "except");
         }
-        for violation in &result.frozen {
-            violation_block(&mut output, violation, "baseline");
+        for rule in result.frozen.chunk_by(same_rule) {
+            rule_block(&mut output, rule, "baseline");
         }
     } else if !result.allowed.is_empty() || !result.frozen.is_empty() {
         let except_count = result.allowed.len();
@@ -230,19 +230,34 @@ fn symbol_list(symbols: &EdgeSymbols) -> String {
     names.join(", ")
 }
 
-/// Render one diagnostic block: `{level}[rule-type]: rule-name`, its source
-/// locations, and its edge/cluster/cycle detail. `level` is `error`/`warning`
-/// for reported violations, `except` for allowed ones, `baseline` for
-/// frozen ones: the word names the mechanism that let them through.
-fn violation_block(out: &mut String, violation: &Violation, level: &str) {
+/// Violations of one rule reach the result together: `CheckRun::check_rules`
+/// collects one `CheckResult` per rule and the `FromIterator` impl appends them
+/// in that order, so grouping consecutive equals is enough to gather them. That
+/// two rules cannot share a header rests on `check_unique_rule_names`, which
+/// rejects a configuration whose rules repeat a name.
+fn same_rule(a: &Violation, b: &Violation) -> bool {
+    a.rule_name == b.rule_name && a.rule_type == b.rule_type && a.severity == b.severity
+}
+
+/// Render one rule's block: `{level}[rule-type]: rule-name` once, then every
+/// violation of that rule below it. `level` is `error`/`warning` for reported
+/// violations, `except` for allowed ones, `baseline` for frozen ones: the word
+/// names the mechanism that let them through.
+fn rule_block(out: &mut String, violations: &[Violation], level: &str) {
     let _ = writeln!(
         out,
         "{level}[{}]: {}",
-        violation.rule_type, violation.rule_name
+        violations[0].rule_type, violations[0].rule_name
     );
-    for loc in &violation.locations {
-        let _ = writeln!(out, "  --> {}:{}", loc.file.display(), loc.line);
+    for violation in violations {
+        violation_body(out, violation);
     }
+    let _ = writeln!(out);
+}
+
+/// One violation under its rule header: the fact the rule established, then
+/// the source locations that carry it.
+fn violation_body(out: &mut String, violation: &Violation) {
     match &violation.detail {
         ViolationDetail::Edge {
             edge: ends,
@@ -253,17 +268,19 @@ fn violation_block(out: &mut String, violation: &Violation, level: &str) {
                 let carries = EdgeSymbols::from_locations(&violation.locations);
                 let _ = writeln!(
                     out,
-                    "  = frozen for {}; now also carries {}",
+                    "    frozen for {}; now also carries {}",
                     symbol_list(frozen_for),
                     symbol_list(&carries.difference(frozen_for))
                 );
             }
         }
         ViolationDetail::Cluster(cluster) => {
-            out.push_str(&cluster_block(cluster, "  "));
+            out.push_str(&cluster_block(cluster, "    "));
         }
     }
-    let _ = writeln!(out);
+    for loc in &violation.locations {
+        let _ = writeln!(out, "    --> {}:{}", loc.file.display(), loc.line);
+    }
 }
 
 /// Render one cluster: header, then either a single-cycle body (the cycle plus
@@ -451,6 +468,106 @@ mod tests {
         assert!(output.contains("--> src/domain/service.rs:42"));
     }
 
+    /// Edge violation of `no infra in domain`, one location per call.
+    fn domain_violation(from: &str, file: &str) -> Violation {
+        Violation {
+            rule_name: "no infra in domain".into(),
+            rule_type: "forbidden-dependency".into(),
+            severity: Severity::Error,
+            detail: ViolationDetail::Edge {
+                edge: Edge::new(from, "infra::db"),
+                frozen_for: None,
+            },
+            locations: vec![SourceLocation {
+                file: PathBuf::from(file),
+                line: 12,
+                symbols: vec![],
+                module_path: String::new(),
+                via_reexport: false,
+            }],
+        }
+    }
+
+    #[test]
+    fn test_format_heads_a_rule_once_however_many_violations() {
+        let result = CheckResult {
+            reported: vec![
+                domain_violation("domain::a", "src/domain/a.rs"),
+                domain_violation("domain::b", "src/domain/b.rs"),
+            ],
+            ..Default::default()
+        };
+        let output = format_violations(&result, false);
+        assert_eq!(
+            output
+                .matches("error[forbidden-dependency]: no infra in domain")
+                .count(),
+            1,
+            "got:\n{output}"
+        );
+        assert!(
+            output.contains("  = domain::a → infra::db\n    --> src/domain/a.rs:12\n"),
+            "got:\n{output}"
+        );
+        assert!(
+            output.contains("  = domain::b → infra::db\n    --> src/domain/b.rs:12\n"),
+            "got:\n{output}"
+        );
+    }
+
+    /// The case the ticket measured: on wgpu one `no-cycles` rule repeated its
+    /// header over twelve tangles.
+    #[test]
+    fn test_format_heads_a_rule_once_over_several_tangles() {
+        let tangle = |position, from: &str, to: &str| Violation {
+            rule_name: "no cycles".into(),
+            rule_type: "no-cycles".into(),
+            severity: Severity::Error,
+            detail: ViolationDetail::Cluster(CycleCluster {
+                position,
+                total: 2,
+                ..cluster_fixture(from, to)
+            }),
+            locations: vec![],
+        };
+        let result = CheckResult {
+            reported: vec![tangle(1, "a", "b"), tangle(2, "c", "d")],
+            ..Default::default()
+        };
+        let output = format_violations(&result, false);
+        assert_eq!(
+            output.matches("error[no-cycles]: no cycles").count(),
+            1,
+            "got:\n{output}"
+        );
+        assert!(output.contains("tangle 1/2:"), "got:\n{output}");
+        assert!(output.contains("tangle 2/2:"), "got:\n{output}");
+    }
+
+    #[test]
+    fn test_format_heads_each_rule_separately() {
+        let result = CheckResult {
+            reported: vec![
+                domain_violation("domain::a", "src/domain/a.rs"),
+                Violation {
+                    rule_name: "no cycles in domain".into(),
+                    rule_type: "no-cycles".into(),
+                    ..domain_violation("domain::b", "src/domain/b.rs")
+                },
+            ],
+            ..Default::default()
+        };
+        let output = format_violations(&result, false);
+        assert!(
+            output.contains("error[forbidden-dependency]: no infra in domain"),
+            "got:\n{output}"
+        );
+        assert!(
+            output.contains("error[no-cycles]: no cycles in domain"),
+            "got:\n{output}"
+        );
+    }
+
     #[test]
     fn test_status_lines_count_per_rule() {
         let result = CheckResult {
@@ -594,20 +711,25 @@ mod tests {
         }
     }
 
+    /// Both edges of a two-module ring, frozen under one rule.
+    fn frozen_ring() -> Vec<Violation> {
+        vec![
+            frozen_cycle_violation(),
+            Violation {
+                detail: ViolationDetail::Edge {
+                    edge: Edge::new("domain::b", "domain::a"),
+                    frozen_for: None,
+                },
+                ..frozen_cycle_violation()
+            },
+        ]
+    }
+
     #[test]
     fn test_format_counts_a_frozen_cycle_once_per_edge() {
         // A frozen cycle is its frozen edges, so a two-module ring counts two.
         let result = CheckResult {
-            frozen: vec![
-                frozen_cycle_violation(),
-                Violation {
-                    detail: ViolationDetail::Edge {
-                        edge: Edge::new("domain::b", "domain::a"),
-                        frozen_for: None,
-                    },
-                    ..frozen_cycle_violation()
-                },
-            ],
+            frozen: frozen_ring(),
             ..Default::default()
         };
         let output = format_violations(&result, false);
@@ -649,6 +771,30 @@ mod tests {
         );
         assert!(output.contains("= domain::a → domain::b"), "got:\n{output}");
         assert!(!output.contains("not counted"), "got:\n{output}");
+    }
+
+    #[test]
+    fn test_format_heads_silenced_violations_once_per_rule() {
+        let result = CheckResult {
+            frozen: frozen_ring(),
+            ..Default::default()
+        };
+        let output = format_violations(&result, true);
+        assert_eq!(
+            output
+                .matches("baseline[no-cycles]: no cycles in domain")
+                .count(),
+            1,
+            "got:\n{output}"
+        );
+        assert!(
+            output.contains("  = domain::a → domain::b"),
+            "got:\n{output}"
+        );
+        assert!(
+            output.contains("  = domain::b → domain::a"),
+            "got:\n{output}"
+        );
     }
 
     #[test]
@@ -892,7 +1038,7 @@ mod tests {
         };
         let output = format_violations(&result, false);
         assert!(
-            output.contains("= frozen for RESERVED, TYPES; now also carries MODIFIERS"),
+            output.contains("frozen for RESERVED, TYPES; now also carries MODIFIERS"),
             "got:\n{output}"
         );
     }
