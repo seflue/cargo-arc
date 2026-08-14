@@ -23,6 +23,16 @@ src/
 └── main.rs      # Entry point
 ```
 
+## Filter visibility
+
+Filtering hides elements instead of removing them from the DOM.
+Node filters and arc filters write the same class for that, `hidden-by-filter` (`src/render/constants.rs`, `js/svg_script.js`).
+
+Arc visibility is recomputed from the whole set of active filters rather than toggled per filter, so the result does not depend on the order the checkboxes were clicked.
+The recompute reads the node filters as well and leaves an arc hidden while either endpoint is hidden.
+Neither filter kind can therefore override the other.
+What that means for a reader of the diagram is in [DIAGRAM.md](DIAGRAM.md#filters).
+
 ## Architecture Decision Records
 
 | # | Title | Status | Date |
@@ -45,5 +55,7 @@ src/
 | 016 | [Replace Tooltip with Persistent Sidebar](adr/016-sidebar-replaces-tooltip.md) | Active | 2026-01-31 |
 | 017 | [SCC Condensation for Deterministic Cycle Resolution](adr/017-scc-condensation-for-cycle-resolution.md) | Active | 2026-02-11 |
 | 018 | [EdgeContext Enum for Production and Test Context on Edges](adr/018-edge-context-enum.md) | Active | 2026-02-11 |
-| 019 | [Detect Elementary Cycles via Johnson's Algorithm](adr/019-elementary-cycles-via-johnsons-algorithm.md) | Active | 2026-02-16 |
+| 019 | [Detect Elementary Cycles via Johnson's Algorithm](adr/019-elementary-cycles-via-johnsons-algorithm.md) | Superseded by 021 | 2026-02-16 |
 | 020 | [Resolve Re-Exports to Determine True Dependencies](adr/020-resolve-reexports-for-true-dependencies.md) | Active | 2026-02-23 |
+| 021 | [Detect Cycles via the Minimal Cycle per Edge](adr/021-minimal-cycle-per-edge.md) | Active | 2026-07-10 |
+| 022 | [Tag Re-Export Edges, Don't Drop Them](adr/022-reexport-edges-tagged-not-dropped.md) | Active | 2026-07-14 |

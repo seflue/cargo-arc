@@ -3,9 +3,8 @@
 [![Crates.io](https://img.shields.io/crates/v/cargo-arc)](https://crates.io/crates/cargo-arc)
 [![CI](https://github.com/seflue/cargo-arc/actions/workflows/ci.yml/badge.svg)](https://github.com/seflue/cargo-arc/actions/workflows/ci.yml)
 
-Generates a collapsible arc diagram of your Cargo workspace as SVG.
-You get a tree of your crates and their modules, connected by arcs
-that trace `use` dependencies between them.
+`cargo arc` draws a Cargo workspace as a collapsible arc diagram in SVG, a tree of your crates and their modules connected by arcs that trace the `use` dependencies between them.
+`cargo arc check` holds the same workspace against architecture rules you write down, and fails the build when one breaks.
 
 ## Installation
 
@@ -19,7 +18,8 @@ Requires a stable Rust toolchain.
 
 ```bash
 # In any Cargo workspace:
-cargo arc -o deps.svg
+cargo arc -o deps.svg   # the diagram
+cargo arc check         # the architecture rules
 ```
 
 Open the generated SVG in a browser.
@@ -35,66 +35,20 @@ Arcs between nodes show where dependencies exist.
 - **Select** a node or arc to highlight its relationships
 - **Cycles** — circular dependencies are detected and highlighted
 
-## Features
+## Architecture Rules
 
-- **Cross-crate module dependencies** — traces `use` dependencies across the whole workspace at module level
-- **Feature filtering** — show only crates involved in a specific Cargo feature
-- **Interactive SVG** — collapse, expand, and select directly in the browser
-- **External dependencies** — visualize which external crates your modules depend on
-- **Volatility report** — identifies frequently-changed modules based on git history
+Circular dependencies are forbidden by default, and a workspace without a rules file is checked against that one rule.
+`arc-rules.toml` states which crate may depend on which, which single dependency must never appear, and where circular dependencies are permitted after all.
+`cargo arc check` reports what it finds and exits non-zero on a violation, so it belongs in CI next to the test suite.
 
-### Feature Filtering
+A workspace that has grown for years rarely comes out clean on the first run.
+`cargo arc check --generate-baseline` freezes what exists today, so the run turns green and reports everything added after it.
 
-Show only the dependency subgraph for a specific Cargo feature:
+## Documentation
 
-```bash
-# Show crates involved in the "web" feature (includes default deps)
-cargo arc --features web -o web-deps.svg
-
-# Exclude default deps — show ONLY the "web" feature graph
-cargo arc --features web --no-default-features -o web-deps.svg
-```
-
-### External Dependencies
-
-Show which external crates your modules depend on:
-
-```bash
-# Direct external dependencies only
-cargo arc --externals -o deps.svg
-
-# Include transitive external dependencies
-cargo arc --externals --transitive-deps -o deps.svg
-```
-
-External dependencies appear as separate nodes in the graph. The sidebar
-distinguishes direct from transitive dependencies with distinct styling.
-
-### Expand Level
-
-Start with deeper modules pre-collapsed to keep large workspaces readable:
-
-```bash
-# Show only crates (everything collapsed)
-cargo arc --expand-level 0 -o deps.svg
-
-# Show crates and their direct modules
-cargo arc --expand-level 1 -o deps.svg
-```
-
-Nodes beyond the given depth start collapsed. Click to expand interactively.
-
-### Volatility Report
-
-Analyze which modules changed most frequently over the last months:
-
-```bash
-cargo arc --volatility
-```
-
-Useful for identifying hotspots before refactoring. The analysis period
-and thresholds are configurable (`--volatility-months`, `--volatility-low`,
-`--volatility-high`).
+- [docs/DIAGRAM.md](docs/DIAGRAM.md) — the diagram: what it draws, interaction, filters, flags
+- [docs/RULES.md](docs/RULES.md) — the rules: how to start, the baseline, the file format
+- [docs/GLOSSARY.md](docs/GLOSSARY.md) — the terms both documents use
 
 ## Similar Projects
 
@@ -105,9 +59,7 @@ and thresholds are configurable (`--volatility-months`, `--volatility-low`,
 
 ## References
 
-The arc diagram layout is inspired by Martin Wattenberg's
-[Arc Diagrams: Visualizing Structure in Strings](http://hint.fm/papers/arc-diagrams.pdf)
-(IEEE InfoVis 2002).
+The arc diagram layout is inspired by Martin Wattenberg's [Arc Diagrams: Visualizing Structure in Strings](http://hint.fm/papers/arc-diagrams.pdf) (IEEE InfoVis 2002).
 
 ## Development
 

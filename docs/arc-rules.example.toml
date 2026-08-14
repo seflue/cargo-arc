@@ -1,0 +1,34 @@
+# Example rules file for `cargo arc check`, explained in docs/RULES.md.
+#
+# Copy it next to your workspace `Cargo.toml` as `arc-rules.toml` and replace
+# the crate names with your own. The workspace it describes has four crates:
+# `cli` and `storage` on the outside, `services` in the middle, `core` at the
+# bottom.
+
+[config]
+version = 1
+
+# The list runs from the top layer to the bottom one, so a dependency may only
+# point at a later entry. `cli` and `storage` share a position, which leaves
+# dependencies between them unconstrained.
+[[rules]]
+type = "layers"
+name = "architecture layers"
+layers = [["cli", "storage"], "services", "core"]
+direction = "top-down"
+
+# `storage` sits above `services`, so the layer rule lets it reach down there.
+# It still must not: the database adapter takes its types from `core` and is
+# driven by `services`, never the other way round.
+[[rules]]
+type = "forbidden-dependency"
+name = "no services in storage"
+from = "storage"
+to = "services"
+
+# Without a `no-cycles` rule of its own a run checks the whole workspace for
+# circular dependencies. Writing one replaces that, so this keeps the scope.
+[[rules]]
+type = "no-cycles"
+name = "no cycles"
+scope = "**"

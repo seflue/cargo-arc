@@ -1086,6 +1086,25 @@ mod tests {
         }
     }
 
+    /// The file `docs/RULES.md` quotes from and offers for copying. Loading it
+    /// here keeps the documented format and the parsed one the same thing.
+    #[test]
+    fn test_parse_documented_example() {
+        let path = Path::new("docs/arc-rules.example.toml");
+        let config = ArcConfig::load(path).unwrap();
+        let kinds: Vec<&str> = config.rules.iter().map(Rule::rule_type).collect();
+        assert_eq!(kinds, ["layers", "forbidden-dependency", "no-cycles"]);
+        assert!(
+            config.rules.iter().all(|rule| rule.except.is_empty()),
+            "the example answers no finding yet, so it carries no except"
+        );
+        assert_eq!(
+            config.diagnostics,
+            Diagnostics::default(),
+            "the example answers no finding yet, so it configures no diagnostic"
+        );
+    }
+
     #[test]
     fn test_implicit_config_carries_one_cycle_rule_over_the_workspace() {
         let config = ArcConfig::implicit();
