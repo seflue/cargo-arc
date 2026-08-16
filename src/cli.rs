@@ -41,10 +41,6 @@ pub struct ArcCommand {
     #[command(flatten)]
     pub common: CommonArgs,
 
-    /// Validate dependency graph (exit 1 if cycles found) [legacy, use `check` subcommand]
-    #[arg(long, hide = true)]
-    pub check: bool,
-
     /// Output file (default: stdout)
     #[arg(short, long)]
     pub output: Option<PathBuf>,
@@ -93,7 +89,7 @@ pub enum Command {
     Check(CheckArgs),
 }
 
-#[derive(Parser, Default)]
+#[derive(Parser)]
 pub struct CheckArgs {
     /// Path to rules file (default: arc-rules.toml in workspace root)
     #[arg(long)]
@@ -172,15 +168,8 @@ pub fn run(args: ArcCommand) -> Result<Judgment> {
             .init();
     }
 
-    // Handle `check` subcommand or legacy `--check` flag
-    match args.command {
-        Some(Command::Check(check_args)) => {
-            return run_check(&check_args, &args.common);
-        }
-        None if args.check => {
-            return run_check(&CheckArgs::default(), &args.common);
-        }
-        None => {}
+    if let Some(Command::Check(check_args)) = args.command {
+        return run_check(&check_args, &args.common);
     }
 
     let vol_config = VolatilityConfig {
@@ -527,17 +516,9 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_legacy_check_flag() {
-        let cmd = parse_args(&["cargo", "arc", "--check"]);
-        assert!(cmd.check);
-        assert!(cmd.command.is_none());
-    }
-
-    #[test]
     fn test_parse_diagram_default() {
         let cmd = parse_args(&["cargo", "arc"]);
         assert!(cmd.command.is_none());
-        assert!(!cmd.check);
     }
 
     #[test]
@@ -546,13 +527,6 @@ mod tests {
         let cmd = parse_args(&["cargo", "arc", "--features", "web", "check"]);
         assert!(matches!(cmd.command, Some(Command::Check(..))));
         assert_eq!(cmd.common.features, vec!["web"]);
-    }
-
-    #[test]
-    fn test_parse_check_flag_plus_subcommand() {
-        // --check + check subcommand: subcommand takes precedence
-        let cmd = parse_args(&["cargo", "arc", "--check", "check"]);
-        assert!(matches!(cmd.command, Some(Command::Check(..))));
     }
 
     // ===== Legacy CLI parsing tests (adapted from old Args) =====
@@ -687,7 +661,6 @@ mod tests {
                 include_reexports: false,
                 debug: false,
             },
-            check: false,
             output: Some(temp.path().to_path_buf()),
             volatility: false,
             no_volatility: false,

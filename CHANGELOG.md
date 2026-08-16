@@ -91,6 +91,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `default_severity` to something else, which made an error rule impossible to
   write under `default_severity = "warn"`.
 
+### Removed
+
+- The hidden `--check` flag, the pre-0.3.0 way of asking for a cycle check.
+  `arc check` replaces it and accepts the same common arguments; without an
+  `arc-rules.toml` it falls back to the implicit `no cycles` rule, so a run
+  that passed the flag keeps its verdict.
+
 ## [0.3.1] - 2026-07-30
 
 ### Changed

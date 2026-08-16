@@ -20,7 +20,6 @@ fn fixture_args(fixture: &str, include_tests: bool) -> (tempfile::NamedTempFile,
             include_reexports: false,
             debug: false,
         },
-        check: false,
         output: Some(temp.path().to_path_buf()),
         volatility: false,
         no_volatility: true,
@@ -50,7 +49,6 @@ fn self_args() -> (tempfile::NamedTempFile, ArcCommand) {
             include_reexports: false,
             debug: false,
         },
-        check: false,
         output: Some(temp.path().to_path_buf()),
         volatility: false,
         no_volatility: true,
@@ -318,7 +316,6 @@ fn test_cfg_test_included_with_flag() {
             include_reexports: false,
             debug: false,
         },
-        check: false,
         output: Some(temp.path().to_path_buf()),
         volatility: false,
         no_volatility: false,
@@ -361,7 +358,6 @@ fn test_entry_point_imports() {
             include_reexports: false,
             debug: false,
         },
-        check: false,
         output: Some(temp.path().to_path_buf()),
         volatility: false,
         no_volatility: false,
@@ -602,25 +598,9 @@ fn cargo_arc_check_streams(fixture: &str, check_args: &[&str]) -> (i32, String, 
     )
 }
 
-/// Run `cargo-arc arc --manifest-path <fixture>/Cargo.toml --check` (legacy flag) as subprocess.
-fn cargo_arc_legacy_check(fixture: &str) -> (i32, String) {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join(format!("tests/fixtures/{fixture}/Cargo.toml"));
-    let output = Command::new(env!("CARGO_BIN_EXE_cargo-arc"))
-        .arg("arc")
-        .arg("--manifest-path")
-        .arg(&manifest)
-        .arg("--check")
-        .output()
-        .expect("failed to execute cargo-arc");
-    let code = output.status.code().unwrap_or(-1);
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    (code, stderr)
-}
-
-/// Run legacy `--check`, optionally with `--include-reexports`. That flag is a
-/// common-level argument, so it precedes `--check` on the command line.
-fn cargo_arc_legacy_check_opts(fixture: &str, include_reexports: bool) -> (i32, String) {
+/// Run `check`, optionally with `--include-reexports`. That flag is a
+/// common-level argument, so it precedes the subcommand on the command line.
+fn cargo_arc_check_reexports(fixture: &str, include_reexports: bool) -> (i32, String) {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join(format!("tests/fixtures/{fixture}/Cargo.toml"));
     let mut command = Command::new(env!("CARGO_BIN_EXE_cargo-arc"));
@@ -628,7 +608,7 @@ fn cargo_arc_legacy_check_opts(fixture: &str, include_reexports: bool) -> (i32, 
     if include_reexports {
         command.arg("--include-reexports");
     }
-    command.arg("--check");
+    command.arg("check");
     let output = command.output().expect("failed to execute cargo-arc");
     let code = output.status.code().unwrap_or(-1);
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -642,7 +622,7 @@ fn test_pure_reexport_cycle_excluded_by_default() {
 
     // Default (logic subgraph): the re-export cycle is filtered out; only the
     // real cycle is reported.
-    let (code, stderr) = cargo_arc_legacy_check_opts("reexport_cycle_workspace", false);
+    let (code, stderr) = cargo_arc_check_reexports("reexport_cycle_workspace", false);
     assert_eq!(
         code, 1,
         "real cycle should still fail the check, stderr: {stderr}"
@@ -657,7 +637,7 @@ fn test_pure_reexport_cycle_excluded_by_default() {
     );
 
     // --include-reexports (full graph): the re-export cycle reappears.
-    let (code, stderr) = cargo_arc_legacy_check_opts("reexport_cycle_workspace", true);
+    let (code, stderr) = cargo_arc_check_reexports("reexport_cycle_workspace", true);
     assert_eq!(
         code, 1,
         "both cycles should fail the check, stderr: {stderr}"
@@ -1324,15 +1304,5 @@ to = "infra::**"
     assert_eq!(
         code, 1,
         "the diagnostic denies by default, so the run fails, stderr: {stderr}"
-    );
-}
-
-#[test]
-fn test_legacy_check_flag() {
-    // --check flag on a fixture without cycles → exit 0
-    let (code, stderr) = cargo_arc_legacy_check("multi_crate");
-    assert_eq!(
-        code, 0,
-        "legacy --check should work (no cycles → exit 0), stderr: {stderr}"
     );
 }

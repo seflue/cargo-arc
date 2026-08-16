@@ -21,7 +21,7 @@ lint:
     cargo fmt --check
     bunx biome check js/
     bunx tsc --project jsconfig.json
-    cargo run -- arc --check
+    cargo run -- arc check
 
 # format Rust + JS
 fmt:
