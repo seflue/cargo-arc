@@ -1,0 +1,39 @@
+# Architecture rules for cargo-arc itself, checked by `just lint`.
+#
+# cargo-arc is a single crate, so every pattern here is a module path. A module
+# path matches that one module, which is why each position also carries the
+# `::**` form for the modules below it.
+
+[config]
+version = 1
+
+# `cli` drives a run, `render` and `rules` are the two things a run produces,
+# and they rest on the analysis layer. `diagnose`, `layout` and `analyze` share
+# a position: the layout builder reads the cycle and order analysis, and that is
+# how the diagram gets its shape.
+[[rules]]
+type = "layers"
+name = "architecture layers"
+layers = [
+  ["cargo-arc::cli"],
+  [
+    "cargo-arc::render",
+    "cargo-arc::render::**",
+    "cargo-arc::rules",
+    "cargo-arc::rules::**",
+  ],
+  [
+    "cargo-arc::diagnose",
+    "cargo-arc::diagnose::**",
+    "cargo-arc::layout",
+    "cargo-arc::layout::**",
+    "cargo-arc::analyze",
+    "cargo-arc::analyze::**",
+  ],
+  ["cargo-arc::graph"],
+  ["cargo-arc::model", "cargo-arc::volatility"],
+]
+direction = "top-down"
+
+# No `no-cycles` rule: without one the run checks the whole crate, which is the
+# scope we want. Writing it out would replace that rule with an identical one.

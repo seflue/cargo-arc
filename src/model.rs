@@ -2,6 +2,7 @@
 //!
 //! Types used across analyze and graph modules, extracted to break circular dependencies.
 
+use cargo_metadata::DependencyKind;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
@@ -362,6 +363,42 @@ pub struct ModuleInfo {
 #[derive(Debug, Clone)]
 pub struct ModuleTree {
     pub root: ModuleInfo,
+}
+
+/// Metadata for a single external crate (one entry per version).
+#[derive(Debug, Clone)]
+pub(crate) struct ExternalCrateInfo {
+    pub(crate) name: String,
+    pub(crate) version: String,
+    pub(crate) package_id: String,
+}
+
+/// Dependency edge between two external crates.
+#[derive(Debug, Clone)]
+pub(crate) struct ExternalDep {
+    pub(crate) from_pkg_id: String,
+    pub(crate) to_pkg_id: String,
+    pub(crate) dep_kinds: Vec<DependencyKind>,
+}
+
+/// Dependency edge from a workspace crate to an external crate.
+#[derive(Debug, Clone)]
+pub(crate) struct WorkspaceExternalDep {
+    pub(crate) workspace_crate: String,
+    pub(crate) external_pkg_id: String,
+    pub(crate) dep_kinds: Vec<DependencyKind>,
+}
+
+/// Result of external dependency analysis from cargo metadata.
+#[derive(Debug)]
+pub(crate) struct ExternalsResult {
+    pub(crate) crates: Vec<ExternalCrateInfo>,
+    pub(crate) external_deps: Vec<ExternalDep>,
+    pub(crate) workspace_deps: Vec<WorkspaceExternalDep>,
+    /// `workspace_crate_name` -> (`code_name` -> `package_id`).
+    /// Per-workspace-crate map because different workspace crates can depend on
+    /// different versions of the same external crate.
+    pub(crate) crate_name_map: HashMap<String, HashMap<String, String>>,
 }
 
 #[cfg(test)]

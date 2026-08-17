@@ -1,47 +1,8 @@
 //! External crate dependency analysis using cargo metadata.
 
-// Some fields (dep_kinds, crate_name_map) are consumed by later phases
-// (layout, use-parser integration) and appear unused until then.
-#![allow(dead_code)]
-
+use crate::model::{ExternalCrateInfo, ExternalDep, ExternalsResult, WorkspaceExternalDep};
 use cargo_metadata::{DependencyKind, Metadata};
 use std::collections::{HashMap, HashSet, VecDeque};
-
-/// Metadata for a single external crate (one entry per version).
-#[derive(Debug, Clone)]
-pub(crate) struct ExternalCrateInfo {
-    pub(crate) name: String,
-    pub(crate) version: String,
-    pub(crate) package_id: String,
-}
-
-/// Dependency edge between two external crates.
-#[derive(Debug, Clone)]
-pub(crate) struct ExternalDep {
-    pub(crate) from_pkg_id: String,
-    pub(crate) to_pkg_id: String,
-    pub(crate) dep_kinds: Vec<DependencyKind>,
-}
-
-/// Dependency edge from a workspace crate to an external crate.
-#[derive(Debug, Clone)]
-pub(crate) struct WorkspaceExternalDep {
-    pub(crate) workspace_crate: String,
-    pub(crate) external_pkg_id: String,
-    pub(crate) dep_kinds: Vec<DependencyKind>,
-}
-
-/// Result of external dependency analysis from cargo metadata.
-#[derive(Debug)]
-pub(crate) struct ExternalsResult {
-    pub(crate) crates: Vec<ExternalCrateInfo>,
-    pub(crate) external_deps: Vec<ExternalDep>,
-    pub(crate) workspace_deps: Vec<WorkspaceExternalDep>,
-    /// `workspace_crate_name` -> (`code_name` -> `package_id`).
-    /// Per-workspace-crate map because different workspace crates can depend on
-    /// different versions of the same external crate.
-    pub(crate) crate_name_map: HashMap<String, HashMap<String, String>>,
-}
 
 fn is_relevant_dep(dep: &cargo_metadata::NodeDep) -> bool {
     dep.dep_kinds.iter().any(|dk| {

@@ -1,9 +1,8 @@
 //! Graph Types & Builder
 
-use crate::analyze::externals::ExternalsResult;
 use crate::model::{
-    CrateInfo, DependencyRef, EdgeContext, ModuleInfo, ModuleTree, SourceLocation, TestKind,
-    UsageKind, normalize_crate_name,
+    CrateInfo, DependencyRef, EdgeContext, ExternalsResult, ModuleInfo, ModuleTree, SourceLocation,
+    TestKind, UsageKind, normalize_crate_name,
 };
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
@@ -1208,7 +1207,7 @@ mod tests {
 
     #[test]
     fn test_build_graph_with_externals() {
-        use crate::analyze::externals::*;
+        use crate::model::{ExternalCrateInfo, ExternalDep, WorkspaceExternalDep};
         use cargo_metadata::DependencyKind as DK;
 
         let crates = vec![crate_("my_crate")];
@@ -1247,7 +1246,7 @@ mod tests {
 
     #[test]
     fn test_external_is_direct_dependency_flag() {
-        use crate::analyze::externals::*;
+        use crate::model::{ExternalCrateInfo, ExternalDep, WorkspaceExternalDep};
         use cargo_metadata::DependencyKind as DK;
 
         let crates = vec![crate_("my_crate")];
@@ -1322,7 +1321,7 @@ mod tests {
 
     #[test]
     fn test_resolve_node_finds_external() {
-        use crate::analyze::externals::*;
+        use crate::model::ExternalCrateInfo;
 
         let crates = vec![crate_("my_crate")];
         let externals = ExternalsResult {
