@@ -162,16 +162,20 @@ A pattern names crates and modules by their path:
 | Pattern | Matches |
 |---------|---------|
 | `core` | the crate `core`, and every module in it |
-| `core::model` | that one module |
+| `core::model` | the module `core::model`, and every module in it |
 | `core::*` | the direct children of `core` |
 | `core::**` | every module below `core`, not `core` itself |
 | `**` | everything in the workspace |
 
+A crate name and a module path both cover what they name and every module in it.
+`::**` drops the name itself and keeps the modules in it.
+`::*` keeps only the direct children.
 Wildcards cut at `::` only, so there is no `core_*`.
 A pattern always starts at a crate name; there is no `crate::` prefix, because a rules file applies to the workspace and not from inside one crate.
 
-The difference between `storage` and `storage::**` matters for crate-level dependencies: only the first covers the crate node itself, so only it sees the dependency declared in `Cargo.toml`.
-Both cover the modules.
+A crate has the dependencies its `Cargo.toml` declares, and a module has the imports written in its own file.
+`storage` covers those, and `storage::**` does not, because it leaves out `storage` itself.
+Both cover the modules in it.
 
 A pattern that matches nothing fails the run by default (`unmatched-pattern`, see [Diagnostics](#diagnostics)).
 A rule built from it checks nothing and would otherwise leave the workspace green.
@@ -260,7 +264,7 @@ Rule names are unique across all types, because a baseline entry names its rule 
 
 ### `except`
 
-An `except` entry permanently allows one dependency under one rule:
+An `except` entry permanently allows dependencies under one rule:
 
 ```toml
 [[rules]]
@@ -273,7 +277,10 @@ except = [
 ]
 ```
 
-Both sides are patterns.
+Both sides are patterns, so the entry allows every dependency from one side to the other.
+Here that is any module in `storage::migrations` reaching any module in `services::schema`.
+Widening one costs more than widening a rule.
+The allowance stays, and `unmatched-except` reports only an entry that matches no module at all.
 `reason` is documentation and is never evaluated.
 Exceptions belong to the rule they are written on; there is no shared list.
 

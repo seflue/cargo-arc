@@ -1,8 +1,7 @@
 # Architecture rules for cargo-arc itself, checked by `just lint`.
 #
-# cargo-arc is a single crate, so every pattern here is a module path. A module
-# path matches that one module, which is why each position also carries the
-# `::**` form for the modules below it.
+# cargo-arc is a single crate, so every pattern here is a module path, and each
+# one covers its module and every module below it.
 
 [config]
 version = 1
@@ -16,20 +15,8 @@ type = "layers"
 name = "architecture layers"
 layers = [
   ["cargo-arc::cli"],
-  [
-    "cargo-arc::render",
-    "cargo-arc::render::**",
-    "cargo-arc::rules",
-    "cargo-arc::rules::**",
-  ],
-  [
-    "cargo-arc::diagnose",
-    "cargo-arc::diagnose::**",
-    "cargo-arc::layout",
-    "cargo-arc::layout::**",
-    "cargo-arc::analyze",
-    "cargo-arc::analyze::**",
-  ],
+  ["cargo-arc::render", "cargo-arc::rules"],
+  ["cargo-arc::diagnose", "cargo-arc::layout", "cargo-arc::analyze"],
   ["cargo-arc::graph"],
   ["cargo-arc::model", "cargo-arc::volatility"],
 ]

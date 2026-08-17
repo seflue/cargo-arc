@@ -42,10 +42,10 @@ impl<'graph> PatternIndex<'graph> {
     /// Resolve a module path pattern to matching graph nodes.
     ///
     /// Supported patterns:
-    /// - `"domain"` — crate node + all contained modules
-    /// - `"domain::service"` — exact module match
-    /// - `"domain::*"` — direct children of `domain`
-    /// - `"domain::**"` — all transitive descendants of `domain`
+    /// - `"domain"` — the crate and every module in it
+    /// - `"domain::service"` — that module and every module in it
+    /// - `"domain::*"` — the direct children of `domain`
+    /// - `"domain::**"` — every module in `domain`, not `domain` itself
     #[must_use]
     pub(super) fn resolve(&self, pattern: &str) -> Vec<NodeIndex> {
         let graph = self.graph;
@@ -63,13 +63,8 @@ impl<'graph> PatternIndex<'graph> {
             return self.resolve_children(base);
         }
 
-        // Exact match first (could be a module path like "domain::service")
         if let Some(idx) = self.get(pattern) {
-            // If it's a crate node, return crate + all descendants
-            if graph[idx].is_crate() {
-                return graph.containment_subtree(idx).into_iter().collect();
-            }
-            return vec![idx];
+            return graph.containment_subtree(idx).into_iter().collect();
         }
 
         Vec::new()
@@ -133,8 +128,15 @@ mod tests {
     fn test_resolve_exact_module() {
         let (mut graph, crate_idx) = test_crate_graph();
         let service = add_module(&mut graph, "service", crate_idx, crate_idx);
-        let result = PatternIndex::build(&graph).resolve("test::service");
-        assert_eq!(result, vec![service]);
+        let inner = add_module(&mut graph, "inner", crate_idx, service);
+        let leaf = add_module(&mut graph, "leaf", crate_idx, inner);
+        // Sibling of the pattern, so the result must stop at the subtree.
+        let _other = add_module(&mut graph, "other", crate_idx, crate_idx);
+        let mut result = PatternIndex::build(&graph).resolve("test::service");
+        result.sort_unstable();
+        let mut expected = vec![service, inner, leaf];
+        expected.sort_unstable();
+        assert_eq!(result, expected);
     }
 
     #[test]
