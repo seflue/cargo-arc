@@ -225,6 +225,8 @@ A tangle holding exactly one cycle is written out in full, and the edge carrying
 A tangle holding several gets the ranked feedback arcs, stated in prose as "every cycle contains at least one of these edges".
 An edge appears with every reported cycle it lies on, not only with the shortest one it stands in for.
 
+A tangle whose edges are all frozen keeps its block, feedback arc set included, marked `(frozen)` on the tangle line (`tangle 1/1 (frozen): ...`); it only shows up under `--show-silenced`.
+
 Crate-level dependencies never take part in the search: a cycle between crates is a thing Cargo already refuses, and what is left runs between modules.
 A dependency whose imports are all `pub use` counts only under `--include-reexports`: republishing a name is not a dependency on it, and the idiomatic re-export cycles that arise from it are not violations.
 
@@ -331,6 +333,7 @@ symbols = ["Pool"]
 An entry freezes one dependency edge under one rule, plus the symbols observed crossing it.
 `bare = true` marks an edge that also carries a reference the resolver could not name.
 A cycle has no entry of its own: it is frozen when every one of its edges is.
+A tangle frozen this way is still reported as a tangle: freezing every one of its edges silences its block, it does not remove it.
 
 Freezing the symbols is what keeps a frozen edge from becoming a licence.
 Once the edge carries something new, it is reported again:
@@ -370,12 +373,25 @@ error[forbidden-dependency]: no services in storage
     --> storage/src/pool.rs:31
 ```
 
-Silenced violations are counted rather than listed, and `--show-silenced` lists them under an `except[...]` or `baseline[...]` header:
+Silenced violations are counted rather than listed:
 
 ```
 6 violations frozen in the baseline, not counted
   arc check --show-silenced lists them
 ```
+
+`--show-silenced` folds them into the block of the rule they belong to, marked at the end of their own line; a reported entry next to them carries no mark:
+
+```
+error[forbidden-dependency]: no services in storage
+  = storage::cache → services::worker
+    --> storage/src/cache.rs:8
+  = storage::pool → services::worker (frozen)
+    --> storage/src/pool.rs:12
+    --> storage/src/pool.rs:31
+```
+
+A rule with nothing reported is headed `silenced` instead of `error` or `warning`.
 
 Exit codes are flat:
 

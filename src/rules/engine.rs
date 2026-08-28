@@ -16,12 +16,21 @@ use petgraph::algo::tarjan_scc;
 use petgraph::graph::{DiGraph, NodeIndex};
 use std::collections::{HashMap, HashSet};
 
+/// Whether a violation counts, and if not, what silenced it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViolationState {
+    Reported,
+    Allowed,
+    Frozen,
+}
+
 /// A single architecture rule violation.
 #[derive(Debug)]
 pub struct Violation {
     pub rule_name: String,
     pub rule_type: String,
     pub severity: Severity,
+    pub state: ViolationState,
     pub detail: ViolationDetail,
     pub locations: Vec<SourceLocation>,
 }
@@ -44,7 +53,8 @@ pub enum ViolationDetail {
 /// One cyclic cluster, resolved to names and counts for rendering.
 #[derive(Debug)]
 pub struct CycleCluster {
-    /// 1-based position among the clusters of the same rule.
+    /// 1-based position among the clusters of the same rule and violation
+    /// state; reported and silenced tangles are numbered separately.
     pub position: usize,
     pub total: usize,
     pub crate_name: String,
@@ -117,7 +127,6 @@ impl CycleCluster {
 struct CyclicEdges {
     /// Edges whose entry covers everything they carry.
     covered: HashSet<(NodeIndex, NodeIndex)>,
-    frozen: Vec<Violation>,
     /// Edges with an entry that no longer covers them.
     outgrown: Vec<Violation>,
     entries: Vec<BaselineEntry>,
@@ -130,11 +139,13 @@ fn edge_violation(
     edge: &Edge,
     locations: Vec<SourceLocation>,
     frozen_for: Option<EdgeSymbols>,
+    state: ViolationState,
 ) -> Violation {
     Violation {
         rule_name: rule.name.clone(),
         rule_type: rule.rule_type().into(),
         severity: rule.severity,
+        state,
         detail: ViolationDetail::Edge {
             edge: edge.clone(),
             frozen_for,
@@ -201,14 +212,9 @@ fn rel_name(graph: &ArcGraph, idx: NodeIndex, crate_name: &str) -> String {
 /// Aggregated result of checking all rules.
 #[derive(Debug, Default)]
 pub struct CheckResult {
-    pub reported: Vec<Violation>,
-    /// Violations allowed by an `except` entry: they never affect
-    /// `has_errors`/`exit_code`, and are only printed under
-    /// `--show-silenced`.
-    pub allowed: Vec<Violation>,
-    /// Violations an `arc-baseline.toml` entry covers: like `allowed`, they
-    /// never affect `has_errors`/`exit_code`.
-    pub frozen: Vec<Violation>,
+    /// Per rule, the reported violations first, then the allowed, then the
+    /// frozen: `format_violations` groups this back into one block per rule.
+    pub violations: Vec<Violation>,
     /// The key of every violation actually reported, i.e. what
     /// `--generate-baseline` writes out.
     pub baseline_entries: Vec<BaselineEntry>,
@@ -224,10 +230,34 @@ pub struct CheckResult {
 }
 
 impl CheckResult {
-    /// Whether any violation has `Severity::Error`.
+    /// Violations that count: neither allowed nor frozen.
+    pub fn reported(&self) -> impl Iterator<Item = &Violation> {
+        self.violations
+            .iter()
+            .filter(|v| v.state == ViolationState::Reported)
+    }
+
+    /// Violations permitted by an `except` entry: they never affect
+    /// `has_errors`/`exit_code`, and are only printed under
+    /// `--show-silenced`.
+    pub fn allowed(&self) -> impl Iterator<Item = &Violation> {
+        self.violations
+            .iter()
+            .filter(|v| v.state == ViolationState::Allowed)
+    }
+
+    /// Violations an `arc-baseline.toml` entry covers: like `allowed`, they
+    /// never affect `has_errors`/`exit_code`.
+    pub fn frozen(&self) -> impl Iterator<Item = &Violation> {
+        self.violations
+            .iter()
+            .filter(|v| v.state == ViolationState::Frozen)
+    }
+
+    /// Whether any reported violation has `Severity::Error`.
     #[must_use]
     pub fn has_errors(&self) -> bool {
-        self.reported.iter().any(|v| v.severity == Severity::Error)
+        self.reported().any(|v| v.severity == Severity::Error)
     }
 
     #[must_use]
@@ -243,9 +273,7 @@ impl CheckResult {
 impl FromIterator<CheckResult> for CheckResult {
     fn from_iter<I: IntoIterator<Item = CheckResult>>(iter: I) -> Self {
         iter.into_iter().fold(Self::default(), |mut acc, result| {
-            acc.reported.extend(result.reported);
-            acc.allowed.extend(result.allowed);
-            acc.frozen.extend(result.frozen);
+            acc.violations.extend(result.violations);
             acc.baseline_entries.extend(result.baseline_entries);
             acc.baseline_hits.extend(result.baseline_hits);
             acc.diagnostics.extend(result.diagnostics);
@@ -345,12 +373,12 @@ impl<'graph> CheckRun<'graph> {
             },
         );
 
-        let allowed = drop_excepted_edges(&mut subgraph, excepted)
+        let allowed: Vec<Violation> = drop_excepted_edges(&mut subgraph, excepted)
             .into_iter()
             .map(|(source, target)| {
                 let edge = Edge::new(graph.qualified_name(source), graph.qualified_name(target));
                 let locations = module_dep_locations(graph, source, target);
-                edge_violation(rule, &edge, locations, None)
+                edge_violation(rule, &edge, locations, None, ViolationState::Allowed)
             })
             .collect();
 
@@ -362,25 +390,29 @@ impl<'graph> CheckRun<'graph> {
         // and its cluster report cannot disagree.
         let tolerated =
             |cycle: &Cycle| cycle_edges(cycle).all(|edge| cyclic.covered.contains(&edge));
-        let mut analysis = subgraph.representative_cycles();
-        analysis.retain_cycles(|cycle| !tolerated(cycle));
 
         // The cluster report is computed per rule, over that rule's own scoped
         // subgraph: two no-cycles rules with different scopes see different views.
-        // Clusters left without a surviving cycle drop out here on their own.
-        // The frozen cycles stay in the subgraph, so the report needs the same
-        // predicate to tell them from cycles it has to break.
+        // `tolerated` decides per cluster whether it carries an untolerated cycle
+        // of its own (`Cluster::tolerated == false`, reported) or is wholly frozen
+        // (reported as one frozen tangle instead of its individual edges).
+        let analysis = subgraph.representative_cycles();
         let report = graph.cluster_report(&subgraph, &analysis, tolerated);
-        let total = report.clusters.len();
 
-        let mut reported: Vec<Violation> = report
+        // Position and total are counted within each marking group: without
+        // `--show-silenced` only the reported group prints, so its numbering
+        // must not skip over frozen tangles the reader never sees.
+        let (frozen_clusters, reported_clusters): (Vec<_>, Vec<_>) = report
             .clusters
             .iter()
-            .enumerate()
-            .map(|(i, cluster)| Violation {
+            .partition(|cluster| cluster.tolerated);
+
+        let cluster_violation =
+            |state: ViolationState, i: usize, total: usize, cluster: &Cluster| Violation {
                 rule_name: rule.name.clone(),
                 rule_type: rule.rule_type().into(),
                 severity: rule.severity,
+                state,
                 detail: ViolationDetail::Cluster(CycleCluster::from_cluster(
                     graph,
                     &analysis,
@@ -389,14 +421,31 @@ impl<'graph> CheckRun<'graph> {
                     total,
                 )),
                 locations: Vec::new(),
+            };
+
+        let reported_total = reported_clusters.len();
+        let mut reported: Vec<Violation> = reported_clusters
+            .into_iter()
+            .enumerate()
+            .map(|(i, cluster)| {
+                cluster_violation(ViolationState::Reported, i, reported_total, cluster)
             })
             .collect();
         reported.append(&mut cyclic.outgrown);
 
+        let frozen_total = frozen_clusters.len();
+        let frozen: Vec<Violation> = frozen_clusters
+            .into_iter()
+            .enumerate()
+            .map(|(i, cluster)| cluster_violation(ViolationState::Frozen, i, frozen_total, cluster))
+            .collect();
+
+        let mut violations = reported;
+        violations.extend(allowed);
+        violations.extend(frozen);
+
         CheckResult {
-            reported,
-            allowed,
-            frozen: cyclic.frozen,
+            violations,
             baseline_entries: cyclic.entries,
             baseline_hits: cyclic.hits,
             diagnostics: Vec::new(),
@@ -429,9 +478,6 @@ impl<'graph> CheckRun<'graph> {
             }
             if covered {
                 found.covered.insert((source, target));
-                found
-                    .frozen
-                    .push(edge_violation(rule, &edge, locations, None));
             } else {
                 found.entries.push(entry);
                 // An edge that outgrew its entry is reported beside its
@@ -443,6 +489,7 @@ impl<'graph> CheckRun<'graph> {
                         &edge,
                         locations,
                         Some(tolerated.clone()),
+                        ViolationState::Reported,
                     ));
                 }
             }
@@ -512,16 +559,28 @@ impl<'graph> CheckRun<'graph> {
             let edge = Edge::new(graph.qualified_name(source), graph.qualified_name(target));
             let symbols = EdgeSymbols::from_locations(&locations);
             if except.covers(source, target) {
-                allowed.push(edge_violation(rule, &edge, locations, None));
+                allowed.push(edge_violation(
+                    rule,
+                    &edge,
+                    locations,
+                    None,
+                    ViolationState::Allowed,
+                ));
                 continue;
             }
             let tolerated = self.baseline.frozen_for(&rule.name, &edge);
             let covered = tolerated.is_some_and(|t| t.covers(&symbols));
+            let state = if covered {
+                ViolationState::Frozen
+            } else {
+                ViolationState::Reported
+            };
             let violation = edge_violation(
                 rule,
                 &edge,
                 locations,
                 tolerated.filter(|_| !covered).cloned(),
+                state,
             );
             let entry = BaselineEntry {
                 rule: rule.name.clone(),
@@ -537,10 +596,11 @@ impl<'graph> CheckRun<'graph> {
                 reported.push(violation);
             }
         }
+        let mut violations = reported;
+        violations.extend(allowed);
+        violations.extend(frozen);
         CheckResult {
-            reported,
-            allowed,
-            frozen,
+            violations,
             baseline_entries,
             baseline_hits,
             diagnostics: Vec::new(),
@@ -886,7 +946,8 @@ mod tests {
         // domain::service → infra::db (forbidden)
         add_production_dep(&mut graph, service, db);
 
-        let reported = check_rule(&graph, &no_infra_in_domain(vec![]), false).reported;
+        let result = check_rule(&graph, &no_infra_in_domain(vec![]), false);
+        let reported: Vec<_> = result.reported().collect();
         assert_eq!(reported.len(), 1);
         assert_eq!(reported[0].rule_name, "no infra in domain");
         assert_eq!(reported[0].rule_type, "forbidden-dependency");
@@ -904,7 +965,8 @@ mod tests {
         // domain::service → application::handler (allowed, rule forbids domain→infra)
         add_production_dep(&mut graph, service, handler);
 
-        let reported = check_rule(&graph, &no_infra_in_domain(vec![]), false).reported;
+        let result = check_rule(&graph, &no_infra_in_domain(vec![]), false);
+        let reported: Vec<_> = result.reported().collect();
         assert!(reported.is_empty());
     }
 
@@ -916,7 +978,8 @@ mod tests {
         add_production_dep(&mut graph, service, db);
         add_production_dep(&mut graph, model, api);
 
-        let reported = check_rule(&graph, &no_infra_in_domain(vec![]), false).reported;
+        let result = check_rule(&graph, &no_infra_in_domain(vec![]), false);
+        let reported: Vec<_> = result.reported().collect();
         assert_eq!(reported.len(), 2);
     }
 
@@ -927,7 +990,8 @@ mod tests {
         // Test-only edge: should not trigger violation
         add_test_dep(&mut graph, service, db);
 
-        let reported = check_rule(&graph, &no_infra_in_domain(vec![]), false).reported;
+        let result = check_rule(&graph, &no_infra_in_domain(vec![]), false);
+        let reported: Vec<_> = result.reported().collect();
         assert!(reported.is_empty());
     }
 
@@ -998,10 +1062,9 @@ mod tests {
     #[test]
     fn test_forbidden_except_allows_matching_edge() {
         let rule = no_infra_in_domain(vec![except_edge("domain::service", "infra::db")]);
-        let CheckResult {
-            reported, allowed, ..
-        } = check_rule(&service_to_db_graph(), &rule, false);
-        assert!(reported.is_empty());
+        let result = check_rule(&service_to_db_graph(), &rule, false);
+        let allowed: Vec<_> = result.allowed().collect();
+        assert!(result.reported().next().is_none());
         assert_eq!(allowed.len(), 1);
         let ViolationDetail::Edge { edge, .. } = &allowed[0].detail else {
             panic!("expected an edge detail");
@@ -1013,21 +1076,17 @@ mod tests {
     #[test]
     fn test_forbidden_except_not_matching_leaves_violation_reported() {
         let rule = no_infra_in_domain(vec![except_edge("domain::model", "infra::db")]);
-        let CheckResult {
-            reported, allowed, ..
-        } = check_rule(&service_to_db_graph(), &rule, false);
-        assert_eq!(reported.len(), 1);
-        assert!(allowed.is_empty());
+        let result = check_rule(&service_to_db_graph(), &rule, false);
+        assert_eq!(result.reported().count(), 1);
+        assert!(result.allowed().next().is_none());
     }
 
     #[test]
     fn test_forbidden_except_pattern_matches_glob() {
         let rule = no_infra_in_domain(vec![except_edge("domain::**", "infra::**")]);
-        let CheckResult {
-            reported, allowed, ..
-        } = check_rule(&service_to_db_graph(), &rule, false);
-        assert!(reported.is_empty());
-        assert_eq!(allowed.len(), 1);
+        let result = check_rule(&service_to_db_graph(), &rule, false);
+        assert!(result.reported().next().is_none());
+        assert_eq!(result.allowed().count(), 1);
     }
 
     // ===== Task 2.2: no-cycles tests =====
@@ -1042,7 +1101,8 @@ mod tests {
         add_production_dep(&mut graph, b, a);
 
         let rule = no_cycles_rule("no cycles in test", "test::**", vec![]);
-        let reported = check_rule(&graph, &rule, false).reported;
+        let result = check_rule(&graph, &rule, false);
+        let reported: Vec<_> = result.reported().collect();
         assert_eq!(reported.len(), 1);
         let ViolationDetail::Cluster(cluster) = &reported[0].detail else {
             panic!("expected a cluster detail");
@@ -1064,12 +1124,12 @@ mod tests {
         let rule = no_cycles_rule("no cycles", "test::**", vec![]);
         // Default: the idiomatic re-export cycle is not reported (ADR-022).
         assert!(
-            check_rule(&graph, &rule, false).reported.is_empty(),
+            check_rule(&graph, &rule, false).reported().next().is_none(),
             "pure re-export cycle should be ignored by default"
         );
         // --include-reexports opts back into the full graph and surfaces it.
         assert_eq!(
-            check_rule(&graph, &rule, true).reported.len(),
+            check_rule(&graph, &rule, true).reported().count(),
             1,
             "include_reexports should surface the re-export cycle"
         );
@@ -1085,7 +1145,8 @@ mod tests {
 
         // Rule scoped to domain only — should not find infra cycle
         let rule = no_cycles_rule("no cycles in domain", "domain::**", vec![]);
-        let reported = check_rule(&graph, &rule, false).reported;
+        let result = check_rule(&graph, &rule, false);
+        let reported: Vec<_> = result.reported().collect();
         assert!(reported.is_empty());
     }
 
@@ -1097,7 +1158,8 @@ mod tests {
         add_production_dep(&mut graph, service, model);
 
         let rule = no_cycles_rule("no cycles in domain", "domain::**", vec![]);
-        let reported = check_rule(&graph, &rule, false).reported;
+        let result = check_rule(&graph, &rule, false);
+        let reported: Vec<_> = result.reported().collect();
         assert!(reported.is_empty());
     }
 
@@ -1118,7 +1180,8 @@ mod tests {
         add_production_dep(&mut graph, api, db);
 
         let rule = no_cycles_rule("global no-cycles", "**", vec![]);
-        let reported = check_rule(&graph, &rule, false).reported;
+        let result = check_rule(&graph, &rule, false);
+        let reported: Vec<_> = result.reported().collect();
         assert_eq!(reported.len(), 2);
     }
 
@@ -1137,7 +1200,8 @@ mod tests {
         add_production_dep(&mut graph, d, a);
 
         let rule = no_cycles_rule("no cycles in test", "test::**", vec![]);
-        let reported = check_rule(&graph, &rule, false).reported;
+        let result = check_rule(&graph, &rule, false);
+        let reported: Vec<_> = result.reported().collect();
         assert_eq!(reported.len(), 1);
         let ViolationDetail::Cluster(cluster) = &reported[0].detail else {
             panic!("expected a cluster detail");
@@ -1160,11 +1224,10 @@ mod tests {
             "test::**",
             vec![except_edge("test::b", "test::a")],
         );
-        let CheckResult {
-            reported, allowed, ..
-        } = check_rule(&graph, &rule, false);
+        let result = check_rule(&graph, &rule, false);
+        let allowed: Vec<_> = result.allowed().collect();
         assert!(
-            reported.is_empty(),
+            result.reported().next().is_none(),
             "except should remove the edge before the cycle can form"
         );
         assert_eq!(allowed.len(), 1);
@@ -1193,12 +1256,10 @@ mod tests {
             "test::**",
             vec![except_edge("test::a", "test::b")],
         );
-        let CheckResult {
-            reported, allowed, ..
-        } = check_rule(&graph, &rule, false);
-        assert!(reported.is_empty());
+        let result = check_rule(&graph, &rule, false);
+        assert!(result.reported().next().is_none());
         assert!(
-            allowed.is_empty(),
+            result.allowed().next().is_none(),
             "an edge that never lay on a cycle is not an allowed violation"
         );
     }
@@ -1234,7 +1295,8 @@ mod tests {
         add_production_dep(&mut graph, service, db);
 
         let rule = layers_rule(&["domain", "application", "infra"], vec![]);
-        let reported = check_rule(&graph, &rule, false).reported;
+        let result = check_rule(&graph, &rule, false);
+        let reported: Vec<_> = result.reported().collect();
         assert!(reported.is_empty());
     }
 
@@ -1246,7 +1308,8 @@ mod tests {
         add_production_dep(&mut graph, db, service);
 
         let rule = layers_rule(&["domain", "application", "infra"], vec![]);
-        let reported = check_rule(&graph, &rule, false).reported;
+        let result = check_rule(&graph, &rule, false);
+        let reported: Vec<_> = result.reported().collect();
         assert_eq!(reported.len(), 1);
         let ViolationDetail::Edge { edge, .. } = &reported[0].detail else {
             panic!("expected an edge detail");
@@ -1263,7 +1326,8 @@ mod tests {
         add_production_dep(&mut graph, service, db);
 
         let rule = layers_rule(&["domain", "application", "infra"], vec![]);
-        let reported = check_rule(&graph, &rule, false).reported;
+        let result = check_rule(&graph, &rule, false);
+        let reported: Vec<_> = result.reported().collect();
         assert!(reported.is_empty());
     }
 
@@ -1291,7 +1355,8 @@ mod tests {
         add_production_dep(&mut graph, db, handler);
 
         let rule = layers_rule_of_ranks(&[&["domain"], &["infra", "application"]]);
-        let reported = check_rule(&graph, &rule, false).reported;
+        let result = check_rule(&graph, &rule, false);
+        let reported: Vec<_> = result.reported().collect();
         assert!(
             reported.is_empty(),
             "crates of equal rank may depend on each other: {reported:?}"
@@ -1307,7 +1372,8 @@ mod tests {
         add_production_dep(&mut graph, db, service);
 
         let rule = layers_rule_of_ranks(&[&["domain"], &["infra", "application"]]);
-        let reported = check_rule(&graph, &rule, false).reported;
+        let result = check_rule(&graph, &rule, false);
+        let reported: Vec<_> = result.reported().collect();
         assert_eq!(reported.len(), 1);
     }
 
@@ -1321,7 +1387,8 @@ mod tests {
 
         for rank in [["infra", "application"], ["application", "infra"]] {
             let rule = layers_rule_of_ranks(&[&["domain"], &rank]);
-            let reported = check_rule(&graph, &rule, false).reported;
+            let result = check_rule(&graph, &rule, false);
+            let reported: Vec<_> = result.reported().collect();
             assert!(reported.is_empty(), "order {rank:?} changed the verdict");
         }
     }
@@ -1335,7 +1402,8 @@ mod tests {
         add_production_dep(&mut graph, a, b);
 
         let rule = layers_rule(&["domain", "infra"], vec![]);
-        let reported = check_rule(&graph, &rule, false).reported;
+        let result = check_rule(&graph, &rule, false);
+        let reported: Vec<_> = result.reported().collect();
         assert!(reported.is_empty());
     }
 
@@ -1350,11 +1418,9 @@ mod tests {
             &["domain", "application", "infra"],
             vec![except_edge("infra::db", "domain::service")],
         );
-        let CheckResult {
-            reported, allowed, ..
-        } = check_rule(&graph, &rule, false);
-        assert!(reported.is_empty());
-        assert_eq!(allowed.len(), 1);
+        let result = check_rule(&graph, &rule, false);
+        assert!(result.reported().next().is_none());
+        assert_eq!(result.allowed().count(), 1);
     }
 
     // ===== Task 2.4: orchestration tests =====
@@ -1381,14 +1447,13 @@ mod tests {
             },
         ]);
         let result = check_rules(&graph, &config, &Baseline::empty(), false);
-        assert_eq!(result.reported.len(), 2);
+        assert_eq!(result.reported().count(), 2);
         assert!(
             result
-                .reported
-                .iter()
+                .reported()
                 .any(|v| v.rule_type == "forbidden-dependency")
         );
-        assert!(result.reported.iter().any(|v| v.rule_type == "no-cycles"));
+        assert!(result.reported().any(|v| v.rule_type == "no-cycles"));
     }
 
     #[test]
@@ -1396,16 +1461,17 @@ mod tests {
         let (graph, _) = test_crate_graph();
         let config = config_of(vec![]);
         let result = check_rules(&graph, &config, &Baseline::empty(), false);
-        assert!(result.reported.is_empty());
+        assert!(result.reported().next().is_none());
     }
 
     #[test]
     fn test_check_result_has_errors() {
         let result = CheckResult {
-            reported: vec![Violation {
+            violations: vec![Violation {
                 rule_name: "test".into(),
                 rule_type: "forbidden-dependency".into(),
                 severity: Severity::Error,
+                state: ViolationState::Reported,
                 detail: ViolationDetail::Edge {
                     edge: Edge::new("a", "b"),
                     frozen_for: None,
@@ -1419,12 +1485,33 @@ mod tests {
     }
 
     #[test]
+    fn test_has_errors_ignores_a_frozen_error_violation() {
+        let result = CheckResult {
+            violations: vec![Violation {
+                rule_name: "test".into(),
+                rule_type: "forbidden-dependency".into(),
+                severity: Severity::Error,
+                state: ViolationState::Frozen,
+                detail: ViolationDetail::Edge {
+                    edge: Edge::new("a", "b"),
+                    frozen_for: None,
+                },
+                locations: vec![],
+            }],
+            ..Default::default()
+        };
+        assert!(!result.has_errors());
+        assert!(!result.has_negative_judgment());
+    }
+
+    #[test]
     fn test_check_result_only_warnings() {
         let result = CheckResult {
-            reported: vec![Violation {
+            violations: vec![Violation {
                 rule_name: "test".into(),
                 rule_type: "no-cycles".into(),
                 severity: Severity::Warn,
+                state: ViolationState::Reported,
                 detail: ViolationDetail::Edge {
                     edge: Edge::new("a", "b"),
                     frozen_for: None,
@@ -1440,10 +1527,11 @@ mod tests {
     #[test]
     fn test_check_result_exit_code_ignores_allowed_error() {
         let result = CheckResult {
-            allowed: vec![Violation {
+            violations: vec![Violation {
                 rule_name: "test".into(),
                 rule_type: "forbidden-dependency".into(),
                 severity: Severity::Error,
+                state: ViolationState::Allowed,
                 detail: ViolationDetail::Edge {
                     edge: Edge::new("a", "b"),
                     frozen_for: None,
@@ -1502,7 +1590,7 @@ mod tests {
         ]);
         let result = check_rule_with_baseline(&graph, &rule, false, &baseline);
         assert_eq!(result.baseline_hits.len(), 2);
-        assert!(result.reported.is_empty());
+        assert!(result.reported().next().is_none());
         assert!(!result.has_negative_judgment());
     }
 
@@ -1517,11 +1605,9 @@ mod tests {
         let rule = no_cycles_rule("no cycles in test", "test::**", vec![]);
         let baseline = baseline_of(&[frozen_edge(&rule.name, "test::a", "test::b")]);
         let result = check_rule_with_baseline(&graph, &rule, false, &baseline);
-        assert_eq!(result.reported.len(), 1);
-        assert!(matches!(
-            result.reported[0].detail,
-            ViolationDetail::Cluster(_)
-        ));
+        let reported: Vec<_> = result.reported().collect();
+        assert_eq!(reported.len(), 1);
+        assert!(matches!(reported[0].detail, ViolationDetail::Cluster(_)));
     }
 
     #[test]
@@ -1539,12 +1625,12 @@ mod tests {
         ]);
         let result = check_rule_with_baseline(&graph, &rule, false, &baseline);
 
-        let outgrown: Vec<&Violation> = result
-            .reported
+        let reported: Vec<&Violation> = result.reported().collect();
+        let outgrown: Vec<&&Violation> = reported
             .iter()
             .filter(|v| matches!(&v.detail, ViolationDetail::Edge { frozen_for, .. } if frozen_for.is_some()))
             .collect();
-        assert_eq!(outgrown.len(), 1, "got: {:?}", result.reported);
+        assert_eq!(outgrown.len(), 1, "got: {reported:?}");
         let ViolationDetail::Edge { frozen_for, .. } = &outgrown[0].detail else {
             unreachable!("filtered for edges")
         };
@@ -1581,7 +1667,7 @@ mod tests {
             .collect();
         let result = check_rule_with_baseline(&graph, &rule, false, &baseline_of(&all_frozen));
         assert!(
-            result.reported.is_empty(),
+            result.reported().next().is_none(),
             "every edge frozen leaves nothing"
         );
 
@@ -1593,7 +1679,7 @@ mod tests {
                 .collect();
             let result = check_rule_with_baseline(&graph, &rule, false, &baseline_of(&rest));
             assert_eq!(
-                result.reported.len(),
+                result.reported().count(),
                 1,
                 "leaving {left_out:?} uncovered must keep its cluster reported"
             );
@@ -1645,7 +1731,7 @@ mod tests {
             }),
         }]);
         let result = check_rules(&graph, &config, &Baseline::empty(), false);
-        assert!(result.reported.is_empty());
+        assert!(result.reported().next().is_none());
     }
 
     // ===== Baseline tests =====
@@ -1655,8 +1741,8 @@ mod tests {
         let rule = no_infra_in_domain(vec![]);
         let baseline = baseline_of(&[frozen_edge(&rule.name, "domain::service", "infra::db")]);
         let result = check_rule_with_baseline(&service_to_db_graph(), &rule, false, &baseline);
-        assert!(result.reported.is_empty());
-        assert_eq!(result.frozen.len(), 1);
+        assert!(result.reported().next().is_none());
+        assert_eq!(result.frozen().count(), 1);
         assert!(!result.has_negative_judgment());
     }
 
@@ -1675,9 +1761,10 @@ mod tests {
         )]);
         let result = check_rule_with_baseline(&graph, &rule, false, &baseline);
 
-        assert!(result.frozen.is_empty());
-        assert_eq!(result.reported.len(), 1);
-        let ViolationDetail::Edge { frozen_for, .. } = &result.reported[0].detail else {
+        assert!(result.frozen().next().is_none());
+        let reported: Vec<_> = result.reported().collect();
+        assert_eq!(reported.len(), 1);
+        let ViolationDetail::Edge { frozen_for, .. } = &reported[0].detail else {
             panic!("expected an edge detail");
         };
         assert_eq!(frozen_for.as_ref().unwrap(), &named(&["Pool"]));
@@ -1717,8 +1804,8 @@ mod tests {
             &["Pool", "Row"],
         )]);
         let result = check_rule_with_baseline(&graph, &rule, false, &baseline);
-        assert!(result.reported.is_empty());
-        assert_eq!(result.frozen.len(), 1);
+        assert!(result.reported().next().is_none());
+        assert_eq!(result.frozen().count(), 1);
     }
 
     #[test]
@@ -1730,12 +1817,12 @@ mod tests {
             "infra::db",
         )]);
         let result = check_rule_with_baseline(&service_to_db_graph(), &rule, false, &baseline);
-        assert_eq!(result.reported.len(), 1);
-        assert!(result.frozen.is_empty());
+        assert_eq!(result.reported().count(), 1);
+        assert!(result.frozen().next().is_none());
     }
 
     #[test]
-    fn test_freezing_every_cycle_of_a_cluster_removes_the_cluster() {
+    fn test_a_wholly_frozen_tangle_is_one_frozen_cluster() {
         let (mut graph, crate_idx) = test_crate_graph();
         let a = add_module(&mut graph, "a", crate_idx, crate_idx);
         let b = add_module(&mut graph, "b", crate_idx, crate_idx);
@@ -1757,8 +1844,18 @@ mod tests {
             frozen_edge(&rule.name, "test::d", "test::a"),
         ]);
         let result = check_rule_with_baseline(&graph, &rule, false, &baseline);
-        assert!(result.reported.is_empty());
-        assert_eq!(result.frozen.len(), 5, "one per frozen edge, not per cycle");
+        assert_eq!(result.reported().count(), 0);
+        assert_eq!(
+            result.frozen().count(),
+            1,
+            "one frozen cluster, not one per frozen edge"
+        );
+        let ViolationDetail::Cluster(cluster) = &result.frozen().next().unwrap().detail else {
+            panic!("expected a cluster detail");
+        };
+        assert_eq!(cluster.cycles, 2);
+        assert!(!cluster.feedback_edges.is_empty());
+        assert!(!result.has_negative_judgment());
     }
 
     #[test]
@@ -1782,14 +1879,19 @@ mod tests {
             frozen_edge(&rule.name, "test::c", "test::a"),
         ]);
         let result = check_rule_with_baseline(&graph, &rule, false, &baseline);
-        assert_eq!(result.frozen.len(), 3);
         assert_eq!(
-            result.reported.len(),
+            result.frozen().count(),
+            0,
+            "the cluster is mixed, so it is reported; a mixed cluster has no frozen twin"
+        );
+        let reported: Vec<_> = result.reported().collect();
+        assert_eq!(
+            reported.len(),
             1,
             "the a-b-d cycle shares edge a->b with the frozen cycle, but is a distinct \
              violation and must still be reported"
         );
-        let ViolationDetail::Cluster(cluster) = &result.reported[0].detail else {
+        let ViolationDetail::Cluster(cluster) = &reported[0].detail else {
             panic!("expected a cluster detail");
         };
         assert_eq!(cluster.cycles, 1);
@@ -1812,7 +1914,10 @@ mod tests {
         ]);
 
         let first = check_rules(&graph, &config, &Baseline::empty(), false);
-        assert!(!first.reported.is_empty(), "sanity: violations exist");
+        assert!(
+            first.reported().next().is_some(),
+            "sanity: violations exist"
+        );
 
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("arc-baseline.toml");
@@ -1820,7 +1925,8 @@ mod tests {
         let baseline = Baseline::load(&path).unwrap();
 
         let second = check_rules(&graph, &config, &baseline, false);
-        assert!(second.reported.is_empty(), "got: {:?}", second.reported);
-        assert!(!second.frozen.is_empty());
+        let reported: Vec<_> = second.reported().collect();
+        assert!(reported.is_empty(), "got: {reported:?}");
+        assert!(second.frozen().next().is_some());
     }
 }

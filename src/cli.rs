@@ -266,7 +266,7 @@ fn run_check(check_args: &CheckArgs, common: &CommonArgs) -> Result<Judgment> {
     let result = check_rules(&graph, &config, &baseline, common.include_reexports);
     tracing::debug!(
         "phase: rule check done ({} violations)",
-        result.reported.len()
+        result.reported().count()
     );
     eprint!("{}", format_violations(&result, check_args.show_silenced));
     print!("{}", format_status(&result));

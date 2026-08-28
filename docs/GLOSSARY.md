@@ -110,6 +110,7 @@ Both axes are configured in one set of words and printed in another.
 `error`, `warn`, `ignore`, `allow` and `deny` say what to do with a case; the output names what the run produced, an error or a warning.
 So a violation of severity `warn` is printed and counted as a warning, and a diagnostic at level `deny` is printed as an error.
 The printed word is neither a fourth value of an axis nor a severity assigned to a diagnostic.
+A rule with nothing reported is headed `silenced` in place of that word, which says the block holds nothing that counts, not that silenced is a severity.
 
 *Glob* promises the shell's matching.
 Wildcards here cut at `::` only, so a prefix glob such as `domain_*` does not exist.

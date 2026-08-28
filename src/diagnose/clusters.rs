@@ -34,10 +34,13 @@ pub struct Cluster {
     pub crate_idx: NodeIndex,
     /// All SCC member modules.
     pub nodes: Vec<NodeIndex>,
-    /// Indices into [`CycleAnalysis::cycles`] contained in this cluster.
+    /// Indices into [`CycleAnalysis::cycles`] contained in this cluster: its
+    /// untolerated cycles, or, when every cycle is tolerated, all of them.
     pub cycles: Vec<usize>,
-    /// Edge set whose removal breaks every cycle the caller does not tolerate,
-    /// ranked traffic desc, symbols asc, name asc.
+    /// Set when the cluster has no untolerated cycle of its own.
+    pub tolerated: bool,
+    /// Edge set whose removal breaks every cycle in `cycles`, ranked traffic
+    /// desc, symbols asc, name asc.
     pub feedback_edges: Vec<CyclicEdge>,
     /// Every SCC-internal edge, ranked like `feedback_edges`.
     pub edges: Vec<CyclicEdge>,
@@ -70,11 +73,12 @@ impl ArcGraph {
     /// `sub.representative_cycles()`) so that `NodeIndex` values line up and the
     /// feedback sets are computed over the same subgraph.
     ///
-    /// `tolerated` names the cycles a caller has already accepted and dropped
-    /// from `analysis` while leaving them in `sub`. Such a cycle must not pull
-    /// an edge into a feedback set: that edge would carry none of the reported
-    /// cycles and read as work on something the caller has decided to keep.
-    /// Callers with nothing to tolerate pass `|_| false`.
+    /// `tolerated` names the cycles a caller accepts. A cluster with an
+    /// untolerated cycle of its own carries only those: an edge pulled in by a
+    /// tolerated cycle would carry none of the reported ones and read as work
+    /// on something the caller has decided to keep. A cluster whose cycles are
+    /// all tolerated stays in the report, with a feedback set over its own
+    /// cycles. Callers with nothing to tolerate pass `|_| false`.
     #[must_use]
     pub fn cluster_report(
         &self,
@@ -107,21 +111,33 @@ impl ArcGraph {
 
         let mut clusters: Vec<Cluster> = Vec::new();
         for (id, nodes) in scc_members.into_iter().enumerate() {
-            let cycles = std::mem::take(&mut grouped[id]);
-            if cycles.is_empty() {
+            let all = std::mem::take(&mut grouped[id]);
+            if all.is_empty() {
                 continue;
             }
+            let untolerated: Vec<usize> = all
+                .iter()
+                .copied()
+                .filter(|&idx| !tolerated(&analysis.cycles[idx]))
+                .collect();
+            let cluster_tolerated = untolerated.is_empty();
+            let cycles = if cluster_tolerated { all } else { untolerated };
             let node_set: HashSet<NodeIndex> = nodes.iter().copied().collect();
             let in_cluster: HashSet<usize> = cycles.iter().copied().collect();
             let edge_cycles = cluster_edge_cycles(analysis, &in_cluster);
+            // A wholly tolerated cluster's set exists to shrink its own debt, so
+            // none of its cycles counts as tolerated while the set is computed.
             let feedback_edges =
-                self.feedback_edges(sub, &node_set, &edge_cycles, in_cluster, &tolerated);
+                self.feedback_edges(sub, &node_set, &edge_cycles, in_cluster, |cycle: &Cycle| {
+                    !cluster_tolerated && tolerated(cycle)
+                });
             let edges = self.cluster_edges(sub, &node_set, &edge_cycles);
             let crate_idx = self.owning_crate(nodes[0]);
             clusters.push(Cluster {
                 crate_idx,
                 nodes,
                 cycles,
+                tolerated: cluster_tolerated,
                 feedback_edges,
                 edges,
             });
@@ -433,12 +449,11 @@ mod tests {
         report_tolerating(g, |_| false)
     }
 
-    /// Cluster report with the tolerated cycles dropped from the analysis but
-    /// left in the subgraph — the shape a baseline run hands in.
+    /// Cluster report over the full analysis, `tolerated` naming the cycles a
+    /// caller accepts — the shape a baseline run hands in.
     fn report_tolerating(g: &ArcGraph, tolerated: impl Fn(&Cycle) -> bool) -> ClusterReport {
         let sub = g.production_subgraph(Reexports::Included);
-        let mut analysis = sub.representative_cycles();
-        analysis.retain_cycles(|cycle| !tolerated(cycle));
+        let analysis = sub.representative_cycles();
         g.cluster_report(&sub, &analysis, tolerated)
     }
 
@@ -815,6 +830,61 @@ mod tests {
         let picked: Vec<_> = c.feedback_edges.iter().map(|e| (e.from, e.to)).collect();
         assert_eq!(picked, vec![(idx[2], idx[0]), (idx[3], idx[0])]);
         assert_only_tolerated_cycles_remain(&g, &c.nodes, &c.feedback_edges, tolerated);
+    }
+
+    #[test]
+    fn a_wholly_tolerated_cluster_stays_in_the_report() {
+        let (g, _) = graph_with(&["a", "b"], &[(0, 1, 1), (1, 0, 1)]);
+        let r = report_tolerating(&g, |_| true);
+        assert_eq!(r.clusters.len(), 1);
+        let c = &r.clusters[0];
+        assert!(c.tolerated);
+        assert_eq!(c.cycles.len(), 1);
+    }
+
+    #[test]
+    fn a_wholly_tolerated_cluster_gets_a_feedback_set_for_its_own_cycles() {
+        let (g, idx) = graph_with(HUB_MODULES, HUB_DEPS);
+        let r = report_tolerating(&g, |_| true);
+
+        assert_eq!(r.clusters.len(), 1);
+        let c = &r.clusters[0];
+        assert!(c.tolerated);
+        let picked: Vec<_> = c.feedback_edges.iter().map(|e| (e.from, e.to)).collect();
+        assert_eq!(
+            picked,
+            vec![(idx[1], idx[0]), (idx[2], idx[0]), (idx[3], idx[0])]
+        );
+        assert_only_tolerated_cycles_remain(&g, &c.nodes, &c.feedback_edges, |_| false);
+    }
+
+    #[test]
+    fn a_wholly_tolerated_cluster_becomes_acyclic_even_when_the_cover_leaves_a_cycle_standing() {
+        // a->b->c->d->a is a representative cycle for none of its own edges:
+        // b<->c and c<->d are shorter cycles through (b,c) and (c,d), and
+        // a->b->d->a is shorter than a->b->c->d->a through (a,b) and (d,a).
+        // Covering the three representative cycles can therefore leave
+        // a->b->c->d->a untouched, so breaking it needs the `tarjan_scc`
+        // residual loop, not the greedy cover alone.
+        let (g, idx) = graph_with(
+            &["a", "b", "c", "d"],
+            &[
+                (0, 1, 1), // a->b
+                (1, 2, 1), // b->c
+                (1, 3, 1), // b->d
+                (2, 1, 1), // c->b
+                (2, 3, 1), // c->d
+                (3, 0, 1), // d->a
+                (3, 2, 1), // d->c
+            ],
+        );
+        let r = report_tolerating(&g, |_| true);
+
+        assert_eq!(r.clusters.len(), 1);
+        let c = &r.clusters[0];
+        assert!(c.tolerated);
+        assert_eq!(c.nodes.len(), idx.len());
+        assert_only_tolerated_cycles_remain(&g, &c.nodes, &c.feedback_edges, |_| false);
     }
 
     #[test]

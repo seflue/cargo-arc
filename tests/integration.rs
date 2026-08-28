@@ -1016,6 +1016,34 @@ fn test_generate_baseline_without_a_rules_file() {
     );
 }
 
+/// `reexport_cycle_workspace` holds a `delta<->gamma` cycle whose edges the
+/// baseline freezes wholesale: `--show-silenced` must still print it as one
+/// tangle, not as the edges that make it up.
+#[test]
+fn test_show_silenced_prints_a_frozen_tangle_as_a_tangle() {
+    let (_dir, manifest) = writable_fixture_copy("reexport_cycle_workspace");
+
+    let (code, stderr) = cargo_arc_check_at(&manifest, &["--generate-baseline"]);
+    assert_eq!(code, 0, "generate should exit 0, stderr: {stderr}");
+
+    let (code, stderr) = cargo_arc_check_at(&manifest, &["--show-silenced"]);
+    assert_eq!(code, 0, "the frozen tangle should pass, stderr: {stderr}");
+    assert!(
+        stderr.contains("silenced[no-cycles]: no cycles"),
+        "got:\n{stderr}"
+    );
+    assert!(
+        stderr
+            .lines()
+            .any(|line| line.contains("tangle 1/") && line.contains("(frozen)")),
+        "got:\n{stderr}"
+    );
+    assert!(
+        !stderr.lines().any(|line| line.starts_with("  = ")),
+        "a frozen tangle prints as a cluster, not as a list of frozen edges, got:\n{stderr}"
+    );
+}
+
 /// Copies a fixture workspace into a fresh tempdir so a test may edit its
 /// sources. Returns the copy's `Cargo.toml`.
 fn writable_fixture_copy(fixture: &str) -> (tempfile::TempDir, PathBuf) {
