@@ -15,6 +15,7 @@ use crate::rules::matching::PatternIndex;
 use petgraph::algo::tarjan_scc;
 use petgraph::graph::{DiGraph, NodeIndex};
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 /// Whether a violation counts, and if not, what silenced it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,17 +37,56 @@ pub struct LayerOverlapError {
     pub second: Vec<String>,
 }
 
-impl std::fmt::Display for LayerOverlapError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl LayerOverlapError {
+    /// Carry the rules file the overlap was written in. The engine resolves
+    /// patterns against a graph and never opens that file, so the path is
+    /// attached where it is known.
+    #[must_use]
+    pub fn in_file(self, path: &Path) -> LayerOverlapInFile {
+        LayerOverlapInFile {
+            path: path.to_path_buf(),
+            overlap: self,
+        }
+    }
+
+    fn fmt_in(&self, f: &mut std::fmt::Formatter<'_>, path: Option<&Path>) -> std::fmt::Result {
+        write!(f, "rule {:?}", self.rule)?;
+        if let Some(path) = path {
+            write!(f, " in {}", path.display())?;
+        }
         write!(
             f,
-            "rule {:?}: {:?} matches both layer {:?} and layer {:?}",
-            self.rule, self.node, self.first, self.second
+            ": {:?} matches both layer {:?} and layer {:?}; a layers rule \
+             gives a node one position, so split it into two rules",
+            self.node, self.first, self.second
         )
     }
 }
 
+impl std::fmt::Display for LayerOverlapError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.fmt_in(f, None)
+    }
+}
+
 impl std::error::Error for LayerOverlapError {}
+
+/// An overlap together with the rules file it stands in. Every `ConfigError`
+/// names its file, and this failure is of the same class: the file says
+/// something a `layers` rule cannot mean.
+#[derive(Debug)]
+pub struct LayerOverlapInFile {
+    path: PathBuf,
+    overlap: LayerOverlapError,
+}
+
+impl std::fmt::Display for LayerOverlapInFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.overlap.fmt_in(f, Some(&self.path))
+    }
+}
+
+impl std::error::Error for LayerOverlapInFile {}
 
 /// A single architecture rule violation.
 #[derive(Debug)]
@@ -1175,6 +1215,14 @@ mod tests {
     }
 
     #[test]
+    fn test_forbidden_except_wildcard_matches_inside_a_segment() {
+        let rule = no_infra_in_domain(vec![except_edge("domain::serv*", "infra::*b")]);
+        let result = check_rule(&service_to_db_graph(), &rule, false);
+        assert!(result.reported().next().is_none());
+        assert_eq!(result.allowed().count(), 1);
+    }
+
+    #[test]
     fn test_forbidden_except_pattern_matches_glob() {
         let rule = no_infra_in_domain(vec![except_edge("domain::**", "infra::**")]);
         let result = check_rule(&service_to_db_graph(), &rule, false);
@@ -1579,6 +1627,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_layer_overlap_names_the_rules_file() {
+        let overlap = LayerOverlapError {
+            rule: "architecture layers".into(),
+            node: "domain".into(),
+            first: vec!["domain*".into()],
+            second: vec!["*main".into()],
+        };
+        assert_eq!(
+            overlap.in_file(Path::new("arc-rules.toml")).to_string(),
+            "rule \"architecture layers\" in arc-rules.toml: \"domain\" matches both layer [\"domain*\"] and layer [\"*main\"]; \
+             a layers rule gives a node one position, so split it into two rules"
+        );
+    }
+
     /// Both positions match the crate itself, which pulls its modules along:
     /// three nodes overlap, not one, so a run naming an arbitrary one of them
     /// would disagree with itself between runs.
@@ -1598,7 +1661,8 @@ mod tests {
             .expect_err("a node matched by two ordinary positions must fail the run");
         assert_eq!(
             err.to_string(),
-            "rule \"architecture layers\": \"svc_application_orders\" matches both layer [\"*application*\"] and layer [\"*orders*\"]"
+            "rule \"architecture layers\": \"svc_application_orders\" matches both layer [\"*application*\"] and layer [\"*orders*\"]; \
+             a layers rule gives a node one position, so split it into two rules"
         );
     }
 

@@ -598,6 +598,36 @@ fn cargo_arc_check_streams(fixture: &str, check_args: &[&str]) -> (i32, String, 
     )
 }
 
+/// An overlap is refused while the rules run, not while the file loads, so the
+/// path has to be attached on the way out rather than coming from the loader.
+#[test]
+fn overlapping_layer_positions_name_the_rules_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let rules = dir.path().join("arc-rules.toml");
+    std::fs::write(
+        &rules,
+        "[[rules]]\n\
+         type = \"layers\"\n\
+         name = \"overlapping layers\"\n\
+         layers = [[\"domain*\"], [\"*main\"]]\n\
+         direction = \"top-down\"\n",
+    )
+    .unwrap();
+    let (code, stderr) = cargo_arc_check(
+        "arch_violation_workspace",
+        &["--rules", rules.to_str().unwrap()],
+    );
+    assert_ne!(code, 0, "an overlap must fail the run, stderr: {stderr}");
+    assert!(
+        stderr.contains(&rules.display().to_string()),
+        "the message must name the rules file, stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("overlapping layers"),
+        "the message must name the rule, stderr: {stderr}"
+    );
+}
+
 /// Run `check`, optionally with `--include-reexports`. That flag is a
 /// common-level argument, so it precedes the subcommand on the command line.
 fn cargo_arc_check_reexports(fixture: &str, include_reexports: bool) -> (i32, String) {

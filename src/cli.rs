@@ -256,14 +256,21 @@ fn run_check(check_args: &CheckArgs, common: &CommonArgs) -> Result<Judgment> {
     let baseline_path = resolve_repo_path(rules_path).join("arc-baseline.toml");
 
     if check_args.generate_baseline {
-        run_generate_baseline(&graph, &config, &baseline_path, common.include_reexports)?;
+        run_generate_baseline(
+            &graph,
+            &config,
+            rules_path,
+            &baseline_path,
+            common.include_reexports,
+        )?;
         return Ok(Judgment::Clean);
     }
 
     let baseline = Baseline::load(&baseline_path)?;
 
     tracing::debug!("phase: rule check start");
-    let result = check_rules(&graph, &config, &baseline, common.include_reexports)?;
+    let result = check_rules(&graph, &config, &baseline, common.include_reexports)
+        .map_err(|overlap| overlap.in_file(rules_path))?;
     tracing::debug!(
         "phase: rule check done ({} violations)",
         result.reported().count()
@@ -284,6 +291,7 @@ fn run_check(check_args: &CheckArgs, common: &CommonArgs) -> Result<Judgment> {
 fn run_generate_baseline(
     graph: &ArcGraph,
     config: &ArcConfig,
+    rules_path: &Path,
     baseline_path: &Path,
     include_reexports: bool,
 ) -> Result<()> {
@@ -303,7 +311,9 @@ fn run_generate_baseline(
         anyhow::bail!(message);
     }
 
-    let result = run.check_all(config)?;
+    let result = run
+        .check_all(config)
+        .map_err(|overlap| overlap.in_file(rules_path))?;
     Baseline::write(baseline_path, &result.baseline_entries)?;
     eprintln!(
         "wrote {} to {}",
