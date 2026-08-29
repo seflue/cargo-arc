@@ -6,6 +6,7 @@
 use crate::graph::{ArcGraph, EdgeWeight};
 use petgraph::graph::NodeIndex;
 use petgraph::visit::EdgeRef;
+use std::collections::HashSet;
 
 fn non_external_indices(graph: &ArcGraph) -> impl Iterator<Item = NodeIndex> + '_ {
     graph
@@ -46,6 +47,9 @@ impl<'graph> PatternIndex<'graph> {
     /// - `"domain::service"` — that module and every module in it
     /// - `"domain::*"` — the direct children of `domain`
     /// - `"domain::**"` — every module in `domain`, not `domain` itself
+    /// - `*` inside a name segment matches any run of characters, never `::`;
+    ///   a name it matches contributes its whole containment subtree, same as
+    ///   an exact name would.
     #[must_use]
     pub(super) fn resolve(&self, pattern: &str) -> Vec<NodeIndex> {
         let graph = self.graph;
@@ -63,34 +67,91 @@ impl<'graph> PatternIndex<'graph> {
             return self.resolve_children(base);
         }
 
-        if let Some(idx) = self.get(pattern) {
-            return graph.containment_subtree(idx).into_iter().collect();
+        let mut result = HashSet::new();
+        for idx in self.matching_indices(pattern) {
+            result.extend(graph.containment_subtree(idx));
         }
-
-        Vec::new()
+        result.into_iter().collect()
     }
 
-    /// `domain::*` — direct children only (via Contains edges).
+    /// `domain::*` — direct children of every node `base_pattern` names.
     fn resolve_children(&self, base_pattern: &str) -> Vec<NodeIndex> {
-        let Some(base_idx) = self.get(base_pattern) else {
-            return Vec::new();
-        };
-        self.graph
-            .edges(base_idx)
-            .filter(|edge| matches!(edge.weight(), EdgeWeight::Contains))
-            .map(|edge| edge.target())
+        self.matching_indices(base_pattern)
+            .into_iter()
+            .flat_map(|base_idx| {
+                self.graph
+                    .edges(base_idx)
+                    .filter(|edge| matches!(edge.weight(), EdgeWeight::Contains))
+                    .map(|edge| edge.target())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<HashSet<_>>()
+            .into_iter()
             .collect()
     }
 
-    /// `domain::**` — all transitive descendants (excluding the root itself).
+    /// `domain::**` — transitive descendants of every node `base_pattern`
+    /// names, excluding those nodes themselves.
     fn resolve_descendants(&self, base_pattern: &str) -> Vec<NodeIndex> {
-        let Some(base_idx) = self.get(base_pattern) else {
-            return Vec::new();
-        };
-        let mut subtree = self.graph.containment_subtree(base_idx);
-        subtree.remove(&base_idx);
-        subtree.into_iter().collect()
+        let mut result = HashSet::new();
+        for base_idx in self.matching_indices(base_pattern) {
+            let mut subtree = self.graph.containment_subtree(base_idx);
+            subtree.remove(&base_idx);
+            result.extend(subtree);
+        }
+        result.into_iter().collect()
     }
+
+    /// Nodes named by `pattern`, without expanding into their subtrees.
+    ///
+    /// A wildcard-free pattern is a single `HashMap` lookup, so rule files
+    /// without `*` see no slowdown. A pattern containing `*` scans
+    /// `self.names`, matching qualified names segment by segment.
+    fn matching_indices(&self, pattern: &str) -> Vec<NodeIndex> {
+        if !pattern.contains('*') {
+            return self.get(pattern).into_iter().collect();
+        }
+        let pattern_segments: Vec<&str> = pattern.split("::").collect();
+        self.names
+            .iter()
+            .filter(|(name, _)| {
+                let name_segments: Vec<&str> = name.split("::").collect();
+                name_segments.len() == pattern_segments.len()
+                    && pattern_segments
+                        .iter()
+                        .zip(&name_segments)
+                        .all(|(&p, &n)| segment_matches(p, n))
+            })
+            .map(|(_, &idx)| idx)
+            .collect()
+    }
+}
+
+/// Whether `*` in `pattern` can stretch to make `name` match, where `*`
+/// stands for any run of characters, including none, within this one
+/// segment. Both are already free of `::`.
+fn segment_matches(pattern: &str, name: &str) -> bool {
+    let mut parts = pattern.split('*');
+    let first = parts.next().unwrap_or_default();
+    let Some(mut remainder) = name.strip_prefix(first) else {
+        return false;
+    };
+
+    let mut parts = parts.peekable();
+    while let Some(part) = parts.next() {
+        if parts.peek().is_none() {
+            return remainder.ends_with(part);
+        }
+        if part.is_empty() {
+            continue;
+        }
+        let Some(pos) = remainder.find(part) else {
+            return false;
+        };
+        remainder = &remainder[pos + part.len()..];
+    }
+
+    remainder.is_empty()
 }
 
 #[cfg(test)]
@@ -183,5 +244,91 @@ mod tests {
         let (graph, _) = test_crate_graph();
         let result = PatternIndex::build(&graph).resolve("nonexistent");
         assert!(result.is_empty());
+    }
+
+    fn add_crate(graph: &mut ArcGraph, name: &str) -> NodeIndex {
+        graph.add_node(Node::Crate {
+            name: name.into(),
+            path: PathBuf::from(format!("/{name}")),
+        })
+    }
+
+    #[test]
+    fn test_resolve_wildcard_crate_suffix_brings_modules() {
+        let mut graph = ArcGraph::new();
+        let orders = add_crate(&mut graph, "app_orders");
+        let orders_service = add_module(&mut graph, "service", orders, orders);
+        let orders_v2 = add_crate(&mut graph, "app_orders_v2");
+        let orders_v2_service = add_module(&mut graph, "service", orders_v2, orders_v2);
+        let billing = add_crate(&mut graph, "app_billing");
+
+        let mut result = PatternIndex::build(&graph).resolve("app_orders*");
+        result.sort_unstable();
+        let mut expected = vec![orders, orders_service, orders_v2, orders_v2_service];
+        expected.sort_unstable();
+        assert_eq!(result, expected);
+        assert!(!result.contains(&billing));
+    }
+
+    #[test]
+    fn test_resolve_wildcard_infix_matches_middle_of_name() {
+        let mut graph = ArcGraph::new();
+        let orders = add_crate(&mut graph, "app_orders");
+        let billing = add_crate(&mut graph, "app_billing");
+
+        let result = PatternIndex::build(&graph).resolve("*orders*");
+        assert_eq!(result, vec![orders]);
+        assert!(!result.contains(&billing));
+    }
+
+    #[test]
+    fn test_resolve_wildcard_does_not_cross_segment_boundary() {
+        let mut graph = ArcGraph::new();
+        let core = add_crate(&mut graph, "core");
+        let service = add_module(&mut graph, "service", core, core);
+        let _inner = add_module(&mut graph, "inner", core, service);
+
+        let result = PatternIndex::build(&graph).resolve("*::inner");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_wildcard_base_before_descendants() {
+        let mut graph = ArcGraph::new();
+        let orders = add_crate(&mut graph, "app_orders");
+        let orders_service = add_module(&mut graph, "service", orders, orders);
+        let billing = add_crate(&mut graph, "app_billing");
+        let billing_service = add_module(&mut graph, "service", billing, billing);
+        let infra = add_crate(&mut graph, "infra_db");
+
+        let mut result = PatternIndex::build(&graph).resolve("app_*::**");
+        result.sort_unstable();
+        let mut expected = vec![orders_service, billing_service];
+        expected.sort_unstable();
+        assert_eq!(result, expected);
+        assert!(!result.contains(&orders));
+        assert!(!result.contains(&billing));
+        assert!(!result.contains(&infra));
+    }
+
+    #[test]
+    fn test_resolve_wildcard_no_match_is_empty() {
+        let (graph, _) = test_crate_graph();
+        let result = PatternIndex::build(&graph).resolve("no_such_*");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_bare_double_star_matches_all_non_external() {
+        let mut graph = ArcGraph::new();
+        let orders = add_crate(&mut graph, "app_orders");
+        let orders_service = add_module(&mut graph, "service", orders, orders);
+        let billing = add_crate(&mut graph, "app_billing");
+
+        let mut result = PatternIndex::build(&graph).resolve("**");
+        result.sort_unstable();
+        let mut expected = vec![orders, orders_service, billing];
+        expected.sort_unstable();
+        assert_eq!(result, expected);
     }
 }
