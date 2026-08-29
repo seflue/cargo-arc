@@ -88,7 +88,7 @@ An edge carrying few symbols is described by that count, not by a shape.
 | **Frozen** | Covered by an `arc-baseline.toml` entry: debt that exists, is tolerated until someone gets to it, and is expected to shrink. | baselined |
 | **Silenced** | The genus of allowed and frozen, and what `--show-silenced` lists. Never a state on its own. | suppressed |
 | **Baseline** | The set of frozen violations, kept in `arc-baseline.toml` beside the rules file. Only `--generate-baseline` writes it. | — |
-| **Diagnostic** | A gap in the configuration rather than in the architecture: a crate no layer sorts, a baseline entry that matches nothing, an `except` that matches nothing, a rule pattern that matches nothing. | — |
+| **Diagnostic** | A gap in the configuration rather than in the architecture: a crate no layer sorts, a baseline entry that matches nothing, an `except` that matches nothing, a rule pattern that matches nothing, a catch-all layer that holds nothing. | — |
 | **Diagnostic level** | Whether the state a diagnostic names is tolerated: `allow`, `warn`, `deny`. | severity |
 | **Layer** | One position in a `layers` rule, holding one or more patterns, or `*` for the nodes no other layer holds. Patterns in the same layer sit at the same position. | tier |
 | **Pattern** | A module path with optional wildcards: `domain`, `domain::service`, `domain::*`, `domain::**`, `domain*` (`*` standing for any run of characters within one segment), or a bare `**`. | glob |

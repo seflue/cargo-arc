@@ -337,7 +337,7 @@ unmatched-pattern = "deny"
 | `unlayered-crate` | `warn` | a crate no `layers` rule sorts into a position |
 | `unmatched-baseline-entry` | `warn` | a frozen violation the run no longer produces, or one that froze more symbols than the edge still carries |
 | `unmatched-except` | `warn` | an `except` pattern matching no module |
-| `unmatched-pattern` | `deny` | a rule pattern matching no module |
+| `unmatched-pattern` | `deny` | a rule pattern matching no module, or a catch-all layer whose rest is empty |
 
 `unmatched-pattern` denies where the others warn because of what its failure looks like: a rule whose pattern misses checks nothing, reports nothing, and leaves the run green.
 A dead `except` only allows too much, and the violation it should have allowed shows up on its own.
