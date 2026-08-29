@@ -369,12 +369,12 @@ impl std::fmt::Display for ConfigError {
             ),
             Self::CatchAllNotAlone { path, name } => write!(
                 f,
-                "rule {name:?} in {}: the catch-all `*` must stand alone in its layer position",
+                "rule {name:?} in {}: the catch-all layer `*` must stand alone in its position",
                 path.display()
             ),
             Self::MultipleCatchAllPositions { path, name } => write!(
                 f,
-                "rule {name:?} in {}: only one layer position may be the catch-all `*`",
+                "rule {name:?} in {}: only one position may be the catch-all layer `*`",
                 path.display()
             ),
         }
