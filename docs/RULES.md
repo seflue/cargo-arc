@@ -175,6 +175,8 @@ Inside one segment, `*` stands for any run of characters, including none.
 It may sit anywhere in the segment and appear more than once, but never crosses a `::`.
 So `core*` names every crate that starts with `core`, and `*_test` every one that ends with `_test`.
 A pattern always starts at a crate name; there is no `crate::` prefix, because a rules file applies to the workspace and not from inside one crate.
+A `*` anywhere outside a `layers` position is an ordinary pattern and matches every crate, together with its modules.
+Only a whole `layers` position consisting of `*` is the catch-all layer, described under [`layers`](#layers).
 
 A crate has the dependencies its `Cargo.toml` declares, and a module has the imports written in its own file.
 `storage` covers those, and `storage::**` does not, because it leaves out `storage` itself.
