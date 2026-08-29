@@ -538,7 +538,6 @@ impl<'graph> CheckRun<'graph> {
     ) -> Result<CheckResult, LayerOverlapError> {
         // Build layer index: NodeIndex → layer position
         let mut layer_index: HashMap<NodeIndex, usize> = HashMap::new();
-        let mut claimed: HashMap<NodeIndex, (usize, &[String])> = HashMap::new();
         // Every overlap found, not just the first: which node a `HashSet`
         // resolves first is unstable between runs, so picking one as soon as
         // it turns up would report a different node each time for the same
@@ -550,13 +549,12 @@ impl<'graph> CheckRun<'graph> {
                 continue; // the catch-all is assigned below, once every ordinary claim is known
             };
             for idx in patterns.iter().flat_map(|pattern| self.resolve(pattern)) {
-                if let Some(&(earlier_pos, _)) = claimed.get(&idx) {
+                if let Some(&earlier_pos) = layer_index.get(&idx) {
                     if earlier_pos != pos {
                         overlaps.push((idx, earlier_pos, pos));
                     }
                     continue;
                 }
-                claimed.insert(idx, (pos, patterns));
                 layer_index.insert(idx, pos);
             }
         }
@@ -567,17 +565,17 @@ impl<'graph> CheckRun<'graph> {
             .iter()
             .min_by_key(|(idx, ..)| self.graph().qualified_name(*idx))
         {
+            let position_patterns = |pos: usize| {
+                params.layers[pos]
+                    .patterns()
+                    .expect("only ordinary positions can overlap")
+                    .to_vec()
+            };
             return Err(LayerOverlapError {
                 rule: rule.name.clone(),
                 node: self.graph().qualified_name(node),
-                first: params.layers[first_pos]
-                    .patterns()
-                    .expect("an overlap position always carries ordinary patterns")
-                    .to_vec(),
-                second: params.layers[second_pos]
-                    .patterns()
-                    .expect("an overlap position always carries ordinary patterns")
-                    .to_vec(),
+                first: position_patterns(first_pos),
+                second: position_patterns(second_pos),
             });
         }
         if let Some(rest) = self.pattern_index.layer_rest(&params.layers) {
