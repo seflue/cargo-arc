@@ -715,7 +715,7 @@ if (typeof document !== 'undefined') {
           arrowClass = C.depArrow;
         }
 
-        // Crate-level vs module-level arc
+        // Arc type: crate-dep or module-dep
         const fromNode = StaticData.getNode(fromId);
         const toNode = StaticData.getNode(toId);
         const isCrateDep =
@@ -727,11 +727,14 @@ if (typeof document !== 'undefined') {
           (toNode.type === 'crate' ||
             toNode.type === 'external' ||
             toNode.type === 'external-transitive');
-        const arcType = isCrateDep ? C.crateDepArc : C.moduleDepArc;
+        const arcTypeClass = isCrateDep ? C.crateDepArc : C.moduleDepArc;
 
         // Visible path
         const visPath = DomAdapter.createSvgElement('path');
-        visPath.setAttribute('class', `${arcClass} ${arcType} recovered-arc`);
+        visPath.setAttribute(
+          'class',
+          `${arcClass} ${arcTypeClass} recovered-arc`,
+        );
         visPath.setAttribute('id', `edge-${arcId}`);
         visPath.setAttribute('data-arc-id', arcId);
         visPath.setAttribute('data-direction', direction);
