@@ -1231,9 +1231,15 @@ scope = "domain::**"
 // ===== Phase 6: configuration diagnostics =====
 
 /// Rules file naming only two of the fixture's three crates as layers, so
-/// `domain` is left unsorted. `diagnostics` is appended verbatim.
-fn layers_without_domain(dir: &tempfile::TempDir, diagnostics: &str) -> PathBuf {
+/// `domain` is left unsorted. `exhaustive` writes `exhaustive = true` into the
+/// rule; `diagnostics` is appended verbatim.
+fn layers_without_domain(dir: &tempfile::TempDir, exhaustive: bool, diagnostics: &str) -> PathBuf {
     let rules_path = dir.path().join("arc-rules.toml");
+    let exhaustive_line = if exhaustive {
+        "exhaustive = true\n"
+    } else {
+        ""
+    };
     std::fs::write(
         &rules_path,
         format!(
@@ -1246,7 +1252,7 @@ type = "layers"
 name = "architecture layers"
 layers = ["infra", "application"]
 direction = "top-down"
-{diagnostics}
+{exhaustive_line}{diagnostics}
 "#
         ),
     )
@@ -1255,20 +1261,35 @@ direction = "top-down"
 }
 
 #[test]
-fn test_check_reports_a_crate_no_layer_covers() {
+fn test_check_reports_a_crate_an_exhaustive_rule_leaves_unsorted() {
     let dir = tempfile::tempdir().unwrap();
-    let rules_path = layers_without_domain(&dir, "");
+    let rules_path = layers_without_domain(&dir, true, "");
     let rules_arg = format!("--rules={}", rules_path.display());
 
     let (_code, stderr) = cargo_arc_check("arch_violation_workspace", &[&rules_arg]);
     assert_eq!(
-        stderr.matches("unlayered-crate").count(),
+        stderr.matches("unlayered-node").count(),
         1,
         "the unsorted crate should be reported once, stderr: {stderr}"
     );
     assert!(
-        stderr.contains("unlayered-crate: domain"),
+        stderr.contains("unlayered-node: domain"),
         "stderr should name the unsorted crate, stderr: {stderr}"
+    );
+}
+
+#[test]
+fn test_check_says_nothing_about_a_crate_when_the_rule_is_not_exhaustive() {
+    let dir = tempfile::tempdir().unwrap();
+    let rules_path = layers_without_domain(&dir, false, "");
+    let rules_arg = format!("--rules={}", rules_path.display());
+
+    // `arch_violation_workspace` carries other, unrelated violations of its
+    // own, so the exit code stays 1 regardless; only the diagnostic is ours.
+    let (_code, stderr) = cargo_arc_check("arch_violation_workspace", &[&rules_arg]);
+    assert!(
+        !stderr.contains("unlayered-node"),
+        "stderr should not warn about a crate the rule never asserted, stderr: {stderr}"
     );
 }
 
@@ -1277,13 +1298,14 @@ fn test_check_stays_quiet_about_a_crate_on_the_except_list() {
     let dir = tempfile::tempdir().unwrap();
     let rules_path = layers_without_domain(
         &dir,
-        "\n[diagnostics]\nunlayered-crate = { except = [\"domain\"] }\n",
+        true,
+        "\n[diagnostics]\nunlayered-node = { except = [\"domain\"] }\n",
     );
     let rules_arg = format!("--rules={}", rules_path.display());
 
     let (_code, stderr) = cargo_arc_check("arch_violation_workspace", &[&rules_arg]);
     assert!(
-        !stderr.contains("unlayered-crate"),
+        !stderr.contains("unlayered-node"),
         "a crate on the except list is deliberately outside, stderr: {stderr}"
     );
 }
@@ -1291,7 +1313,8 @@ fn test_check_stays_quiet_about_a_crate_on_the_except_list() {
 #[test]
 fn test_check_fails_on_a_denied_diagnostic() {
     let dir = tempfile::tempdir().unwrap();
-    let rules_path = layers_without_domain(&dir, "\n[diagnostics]\nunlayered-crate = \"deny\"\n");
+    let rules_path =
+        layers_without_domain(&dir, true, "\n[diagnostics]\nunlayered-node = \"deny\"\n");
     let rules_arg = format!("--rules={}", rules_path.display());
 
     let (code, stderr) = cargo_arc_check("arch_violation_workspace", &[&rules_arg]);

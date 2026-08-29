@@ -88,9 +88,10 @@ An edge carrying few symbols is described by that count, not by a shape.
 | **Frozen** | Covered by an `arc-baseline.toml` entry: debt that exists, is tolerated until someone gets to it, and is expected to shrink. | baselined |
 | **Silenced** | The genus of allowed and frozen, and what `--show-silenced` lists. Never a state on its own. | suppressed |
 | **Baseline** | The set of frozen violations, kept in `arc-baseline.toml` beside the rules file. Only `--generate-baseline` writes it. | — |
-| **Diagnostic** | A gap in the configuration rather than in the architecture: a crate no layer sorts, a baseline entry that matches nothing, an `except` that matches nothing, a rule pattern that matches nothing, a catch-all layer that holds nothing. | — |
+| **Diagnostic** | A gap in the configuration rather than in the architecture: a node an exhaustive `layers` rule leaves in no position, a baseline entry that matches nothing, an `except` that matches nothing, a rule pattern that matches nothing, a catch-all layer that holds nothing. | — |
 | **Diagnostic level** | Whether the state a diagnostic names is tolerated: `allow`, `warn`, `deny`. | severity |
 | **Layer** | One position in a `layers` rule, holding one or more patterns, or `*` for the nodes no other layer holds. Patterns in the same layer sit at the same position. | tier |
+| **Exhaustive rule** | A `layers` rule carrying `exhaustive = true`, which claims to sort everything it addresses: its crate patterns claim every workspace crate, its module patterns every module of the crates those patterns reach. Without the field a rule says nothing about what it does not name. | total, complete |
 | **Pattern** | A module path with optional wildcards: `domain`, `domain::service`, `domain::*`, `domain::**`, `domain*` (`*` standing for any run of characters within one segment), or a bare `**`. | glob |
 | **Scope** | The pattern a `no-cycles` rule searches inside. Not a concept beside pattern, just the name of its role there. | — |
 
@@ -118,6 +119,9 @@ A rule with nothing reported is headed `silenced` in place of that word, which s
 *Layer* also names an SVG stacking order in the frontend.
 That is the ordinary graphics sense and it stays; this entry governs the rule position.
 *Tier* is a deployment boundary in the architecture literature, while a layer here is a position in a rule and is matched against module paths.
+
+*Total* and *complete* both overstate the claim: a rule written only from module patterns is exhaustive over the modules of the crates it reaches, and says nothing about the rest of the workspace.
+*Exhaustive* is scoped by what the rule addresses, which is the point of the field.
 
 ### What a run prints
 

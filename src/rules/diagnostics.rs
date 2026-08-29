@@ -1,14 +1,12 @@
 //! Gaps in the configuration itself, as opposed to violations of it.
 //!
 //! A rule states something about the code, a diagnostic about the rules: a
-//! crate no layer sorts, an entry that freezes nothing any more. Each one
-//! carries the level its `[diagnostics]` entry set.
+//! node an exhaustive rule leaves in no position, an entry that freezes
+//! nothing any more. Each one carries the level its `[diagnostics]` entry set.
 
 use crate::model::EdgeSymbols;
 use crate::rules::baseline::{Baseline, BaselineEntry, StaleEntry};
-use crate::rules::config::{
-    ArcConfig, DiagnosticLevel, Layer, LayersRule, Rule, RuleKind, Severity,
-};
+use crate::rules::config::{ArcConfig, DiagnosticLevel, Layer, Rule, RuleKind, Severity};
 use crate::rules::matching::PatternIndex;
 use petgraph::graph::NodeIndex;
 use std::collections::HashSet;
@@ -21,10 +19,10 @@ pub struct Diagnostic {
 
 #[derive(Debug)]
 pub enum DiagnosticKind {
-    /// A workspace crate that no `layers` rule sorts into a layer. `layers` is
-    /// a total statement, so a crate missing from it is not allowed but
-    /// unsorted: every edge touching it is skipped without a word.
-    UnlayeredCrate { krate: String },
+    /// A node an exhaustive `layers` rule leaves in no position. Only the topmost
+    /// node of a containment chain is reported: a missing entry is one gap, not its
+    /// whole subtree. Every edge touching the node is skipped without a word.
+    UnlayeredNode { entry: UnsortedNode },
     /// A frozen violation the run no longer produces: fixed, or its rule renamed
     /// out from under the entry.
     UnmatchedBaselineEntry { entry: BaselineEntry },
@@ -49,7 +47,7 @@ impl Diagnostic {
     #[must_use]
     pub fn name(&self) -> &'static str {
         match self.kind {
-            DiagnosticKind::UnlayeredCrate { .. } => "unlayered-crate",
+            DiagnosticKind::UnlayeredNode { .. } => "unlayered-node",
             // Both say the baseline names something the run does not confirm;
             // the config has one switch for the pair.
             DiagnosticKind::UnmatchedBaselineEntry { .. }
@@ -74,14 +72,14 @@ pub(super) fn collect(
     let settings = &config.diagnostics;
     let mut found = Vec::new();
 
-    let level = settings.unlayered_crate.level;
+    let level = settings.unlayered_node.level;
     if level != DiagnosticLevel::Allow {
         found.extend(
-            unlayered_crates(index, config)
+            unlayered_nodes(index, config)
                 .into_iter()
-                .map(|krate| Diagnostic {
+                .map(|entry| Diagnostic {
                     level,
-                    kind: DiagnosticKind::UnlayeredCrate { krate },
+                    kind: DiagnosticKind::UnlayeredNode { entry },
                 }),
         );
     }
@@ -156,56 +154,90 @@ fn is_ignored(config: &ArcConfig, rule_name: &str) -> bool {
         .any(|rule| rule.name == rule_name && rule.severity == Severity::Ignore)
 }
 
-/// Workspace crates that no layer pattern of any active `layers` rule reaches,
-/// minus the ones the config puts outside on purpose.
-///
-/// The layer patterns of all rules are taken together: a crate layered by one
-/// rule is sorted, and reporting it against a second rule that says nothing
-/// about it would make module-level layering unusable. A rule carrying a
-/// catch-all sorts every crate on its own, whatever its ordinary positions
-/// name, so its presence alone settles the question.
-fn unlayered_crates(index: &PatternIndex, config: &ArcConfig) -> Vec<String> {
-    let layers_params: Vec<&LayersRule> = active_rules(config)
-        .filter_map(|rule| match &rule.kind {
-            RuleKind::Layers(params) => Some(params),
-            _ => None,
-        })
-        .collect();
-    if layers_params.is_empty() {
-        return Vec::new();
-    }
+/// A node an exhaustive `layers` rule leaves in no position.
+#[derive(Debug)]
+pub struct UnsortedNode {
+    pub rule: String,
+    pub node: String,
+}
 
+/// Nodes an exhaustive `layers` rule claims but does not sort into a
+/// position, one rule at a time. A rule that does not declare itself
+/// `exhaustive` makes no claim and contributes nothing here. A node the
+/// `[diagnostics]` `except` list resolves to is dropped with its subtree, and
+/// of a containment chain only the topmost unsorted node survives.
+fn unlayered_nodes(index: &PatternIndex, config: &ArcConfig) -> Vec<UnsortedNode> {
     let graph = index.graph();
-    let catch_all_present = layers_params
+    let excepted: HashSet<NodeIndex> = config
+        .diagnostics
+        .unlayered_node
+        .except
         .iter()
-        .flat_map(|params| &params.layers)
-        .any(Layer::is_catch_all);
+        .flat_map(|name| index.resolve(name))
+        .collect();
+    let parents = graph.parent_map();
 
-    let layered: HashSet<NodeIndex> = if catch_all_present {
-        graph
-            .node_indices()
-            .filter(|&idx| graph[idx].is_crate())
-            .collect()
-    } else {
-        layers_params
+    let mut found = Vec::new();
+    for rule in active_rules(config) {
+        let RuleKind::Layers(params) = &rule.kind else {
+            continue;
+        };
+        if !params.exhaustive {
+            continue;
+        }
+
+        let patterns: Vec<&str> = params
+            .layers
             .iter()
-            .flat_map(|params| &params.layers)
             .filter_map(Layer::patterns)
             .flatten()
+            .map(String::as_str)
+            .collect();
+
+        let sorted: HashSet<NodeIndex> = patterns
+            .iter()
+            .flat_map(|pattern| index.resolve(pattern))
+            .collect();
+
+        let mut claimed: HashSet<NodeIndex> = HashSet::new();
+        if patterns.iter().any(|pattern| !pattern.contains("::")) {
+            claimed.extend(graph.node_indices().filter(|&idx| graph[idx].is_crate()));
+        }
+
+        let touched: HashSet<NodeIndex> = patterns
+            .iter()
+            .filter(|pattern| pattern.contains("::"))
             .flat_map(|pattern| index.resolve(pattern))
             .map(|idx| graph.owning_crate(idx))
-            .collect()
-    };
+            .collect();
+        if !touched.is_empty() {
+            claimed.extend(graph.node_indices().filter(|&idx| {
+                graph[idx].is_module() && touched.contains(&graph.owning_crate(idx))
+            }));
+        }
 
-    let except = &config.diagnostics.unlayered_crate.except;
-    let mut crates: Vec<String> = graph
-        .node_indices()
-        .filter(|&idx| graph[idx].is_crate() && !layered.contains(&idx))
-        .map(|idx| graph[idx].name().to_string())
-        .filter(|name| !except.contains(name))
-        .collect();
-    crates.sort();
-    crates
+        let unsorted: HashSet<NodeIndex> = claimed
+            .into_iter()
+            .filter(|idx| !sorted.contains(idx) && !excepted.contains(idx))
+            .collect();
+
+        let mut names: Vec<String> = unsorted
+            .iter()
+            .filter(|idx| {
+                parents
+                    .get(idx)
+                    .is_none_or(|parent| !unsorted.contains(parent))
+            })
+            .map(|&idx| graph.qualified_name(idx))
+            .collect();
+        names.sort();
+
+        found.extend(names.into_iter().map(|node| UnsortedNode {
+            rule: rule.name.clone(),
+            node,
+        }));
+    }
+    found
 }
 
 /// An `except` pattern that matches no module: a typo or a rename, and it
@@ -291,11 +323,12 @@ mod tests {
     use crate::model::{Edge, EdgeSymbols};
     use crate::rules::baseline::{Baseline, BaselineEntry, ViolationKey};
     use crate::rules::config::{
-        ArcConfig, DiagnosticLevel, Diagnostics, Direction, Except, ForbiddenDependencyRule,
-        LayersRule, NoCyclesRule, Rule, RuleKind, Severity, UnlayeredCrate,
+        ArcConfig, DiagnosticLevel, Diagnostics, Direction, Except, ForbiddenDependencyRule, Layer,
+        LayersRule, NoCyclesRule, Rule, RuleKind, Severity, UnlayeredNode,
     };
     use crate::rules::diagnostics::{Diagnostic, DiagnosticKind, collect, dead_excepts};
     use crate::rules::matching::PatternIndex;
+    use petgraph::graph::NodeIndex;
     use std::path::PathBuf;
 
     /// Workspace graph with one module per named crate, so that a crate
@@ -316,6 +349,27 @@ mod tests {
         graph
     }
 
+    fn add_crate(graph: &mut ArcGraph, name: &str) -> NodeIndex {
+        graph.add_node(Node::Crate {
+            name: name.into(),
+            path: PathBuf::from(format!("/{name}")),
+        })
+    }
+
+    fn add_module(
+        graph: &mut ArcGraph,
+        name: &str,
+        crate_idx: NodeIndex,
+        parent: NodeIndex,
+    ) -> NodeIndex {
+        let idx = graph.add_node(Node::Module {
+            name: name.into(),
+            crate_idx,
+        });
+        graph.add_edge(parent, idx, EdgeWeight::Contains);
+        idx
+    }
+
     fn layers_rule(name: &str, layers: &[&str]) -> Rule {
         Rule {
             name: name.into(),
@@ -324,7 +378,19 @@ mod tests {
             kind: RuleKind::Layers(LayersRule {
                 layers: layers.iter().map(|&layer| layer.into()).collect(),
                 direction: Direction::TopDown,
+                exhaustive: false,
             }),
+        }
+    }
+
+    fn exhaustive_layers_rule(name: &str, layers: &[&str]) -> Rule {
+        Rule {
+            kind: RuleKind::Layers(LayersRule {
+                layers: layers.iter().map(|&layer| layer.into()).collect(),
+                direction: Direction::TopDown,
+                exhaustive: true,
+            }),
+            ..layers_rule(name, layers)
         }
     }
 
@@ -370,11 +436,11 @@ mod tests {
         ArcConfig { rules, diagnostics }
     }
 
-    fn unlayered_except(crates: &[&str]) -> Diagnostics {
+    fn unlayered_node_except(names: &[&str]) -> Diagnostics {
         Diagnostics {
-            unlayered_crate: UnlayeredCrate {
-                level: DiagnosticLevel::Warn,
-                except: crates.iter().map(|&name| name.into()).collect(),
+            unlayered_node: UnlayeredNode {
+                level: DiagnosticLevel::Deny,
+                except: names.iter().map(|&name| name.into()).collect(),
             },
             ..Diagnostics::default()
         }
@@ -404,7 +470,19 @@ mod tests {
         diagnostics
             .iter()
             .filter_map(|diagnostic| match &diagnostic.kind {
-                DiagnosticKind::UnlayeredCrate { krate } => Some(krate.as_str()),
+                DiagnosticKind::UnlayeredNode { entry } => Some(entry.node.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn unlayered_of(diagnostics: &[Diagnostic]) -> Vec<(&str, &str)> {
+        diagnostics
+            .iter()
+            .filter_map(|diagnostic| match &diagnostic.kind {
+                DiagnosticKind::UnlayeredNode { entry } => {
+                    Some((entry.rule.as_str(), entry.node.as_str()))
+                }
                 _ => None,
             })
             .collect()
@@ -440,26 +518,213 @@ mod tests {
             .collect()
     }
 
-    // ===== unlayered-crate =====
+    // ===== unlayered-node =====
 
     #[test]
-    fn crate_outside_every_layer_pattern_is_reported_once() {
+    fn a_rule_without_exhaustive_claims_nothing() {
         let graph = workspace(&["domain", "infra", "xtask"]);
         let config = config_of(
             vec![layers_rule("architecture layers", &["infra", "domain"])],
             Diagnostics::default(),
         );
+        assert!(unlayered(&diagnose(&graph, &config)).is_empty());
+    }
+
+    #[test]
+    fn an_exhaustive_crate_rule_claims_every_workspace_crate() {
+        let graph = workspace(&["domain", "infra", "xtask"]);
+        let config = config_of(
+            vec![exhaustive_layers_rule(
+                "architecture layers",
+                &["infra", "domain"],
+            )],
+            Diagnostics::default(),
+        );
+        // `xtask::service` is not reported: no module pattern claims it.
         assert_eq!(unlayered(&diagnose(&graph, &config)), ["xtask"]);
     }
 
     #[test]
-    fn crate_on_the_except_list_is_not_reported() {
-        let graph = workspace(&["domain", "infra", "xtask"]);
+    fn an_exhaustive_module_rule_claims_the_modules_of_the_crates_it_touches() {
+        let mut graph = ArcGraph::new();
+        let app = add_crate(&mut graph, "app");
+        add_module(&mut graph, "service", app, app);
+        add_module(&mut graph, "store", app, app);
+        let xtask = add_crate(&mut graph, "xtask");
+        add_module(&mut graph, "service", xtask, xtask);
+
         let config = config_of(
-            vec![layers_rule("architecture layers", &["infra", "domain"])],
-            unlayered_except(&["xtask"]),
+            vec![exhaustive_layers_rule("app layers", &["app::service"])],
+            Diagnostics::default(),
+        );
+        // Neither `app` nor `xtask` nor `xtask::service` is claimed: the
+        // module pattern says nothing about the crate node or other crates.
+        assert_eq!(unlayered(&diagnose(&graph, &config)), ["app::store"]);
+    }
+
+    #[test]
+    fn an_exhaustive_module_rule_leaves_the_crate_node_alone() {
+        // The assertion the repo's own arc-rules.toml rests on.
+        let mut graph = ArcGraph::new();
+        let app = add_crate(&mut graph, "app");
+        add_module(&mut graph, "service", app, app);
+
+        let config = config_of(
+            vec![exhaustive_layers_rule("app layers", &["app::service"])],
+            Diagnostics::default(),
         );
         assert!(unlayered(&diagnose(&graph, &config)).is_empty());
+    }
+
+    #[test]
+    fn an_exhaustive_mixed_rule_makes_both_demands() {
+        let mut graph = ArcGraph::new();
+        let app = add_crate(&mut graph, "app");
+        add_module(&mut graph, "service", app, app);
+        add_module(&mut graph, "store", app, app);
+        let infra = add_crate(&mut graph, "infra");
+        add_module(&mut graph, "db", infra, infra);
+        let xtask = add_crate(&mut graph, "xtask");
+        add_module(&mut graph, "tool", xtask, xtask);
+
+        let config = config_of(
+            vec![exhaustive_layers_rule(
+                "architecture layers",
+                &["infra", "app::service"],
+            )],
+            Diagnostics::default(),
+        );
+        // The crate pattern `infra` claims all three crates, so `app` and
+        // `xtask` are gaps; the module pattern claims `app`'s modules, so
+        // `app::store` is a gap too, folded into `app` by the topmost filter.
+        assert_eq!(unlayered(&diagnose(&graph, &config)), ["app", "xtask"]);
+    }
+
+    #[test]
+    fn only_the_topmost_unsorted_module_is_reported() {
+        let mut graph = ArcGraph::new();
+        let app = add_crate(&mut graph, "app");
+        let service = add_module(&mut graph, "service", app, app);
+        add_module(&mut graph, "inner", app, service);
+        add_module(&mut graph, "store", app, app);
+
+        let config = config_of(
+            vec![exhaustive_layers_rule("app layers", &["app::store"])],
+            Diagnostics::default(),
+        );
+        assert_eq!(unlayered(&diagnose(&graph, &config)), ["app::service"]);
+    }
+
+    #[test]
+    fn every_pattern_of_a_ranked_position_sorts() {
+        // A position holding several patterns is the shape this repo's own
+        // rules file uses, so all of them have to count, not just the first.
+        let mut graph = ArcGraph::new();
+        let app = add_crate(&mut graph, "app");
+        add_module(&mut graph, "service", app, app);
+        add_module(&mut graph, "store", app, app);
+        add_module(&mut graph, "report", app, app);
+
+        let rank: Layer = ["app::service", "app::store"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let rule = Rule {
+            kind: RuleKind::Layers(LayersRule {
+                layers: vec![rank],
+                direction: Direction::TopDown,
+                exhaustive: true,
+            }),
+            ..layers_rule("app layers", &[])
+        };
+        let config = config_of(vec![rule], Diagnostics::default());
+        assert_eq!(unlayered(&diagnose(&graph, &config)), ["app::report"]);
+    }
+
+    #[test]
+    fn a_child_position_leaves_a_grandchild_reportable() {
+        // `app::*` names the direct children only, so `inner` is unsorted with
+        // a sorted parent: it is topmost itself and reported in its own right.
+        let mut graph = ArcGraph::new();
+        let app = add_crate(&mut graph, "app");
+        let service = add_module(&mut graph, "service", app, app);
+        add_module(&mut graph, "inner", app, service);
+        add_module(&mut graph, "store", app, app);
+
+        let config = config_of(
+            vec![exhaustive_layers_rule("app layers", &["app::*"])],
+            Diagnostics::default(),
+        );
+        assert_eq!(
+            unlayered(&diagnose(&graph, &config)),
+            ["app::service::inner"]
+        );
+    }
+
+    #[test]
+    fn an_exhaustive_module_pattern_that_matches_nothing_claims_nothing() {
+        // A misspelled module pattern touches no crate, so the module claim has
+        // nothing to range over and `unmatched-pattern` carries the report alone.
+        let graph = workspace(&["domain", "infra"]);
+        let config = config_of(
+            vec![exhaustive_layers_rule("app layers", &["domain::srevice"])],
+            Diagnostics::default(),
+        );
+        let found = diagnose(&graph, &config);
+        assert!(unlayered(&found).is_empty());
+        assert_eq!(unmatched_patterns(&found), ["domain::srevice"]);
+    }
+
+    #[test]
+    fn an_exhaustive_crate_pattern_that_matches_nothing_still_claims_every_crate() {
+        // The other half of the asymmetry: a crate pattern claims the workspace
+        // whether or not it resolves, so the typo costs two diagnostics.
+        let graph = workspace(&["domain", "infra"]);
+        let config = config_of(
+            vec![exhaustive_layers_rule(
+                "architecture layers",
+                &["dmoain", "infra"],
+            )],
+            Diagnostics::default(),
+        );
+        let found = diagnose(&graph, &config);
+        assert_eq!(unlayered(&found), ["domain"]);
+        assert_eq!(unmatched_patterns(&found), ["dmoain"]);
+    }
+
+    #[test]
+    fn an_excepted_node_takes_its_modules_with_it() {
+        let mut graph = ArcGraph::new();
+        let app = add_crate(&mut graph, "app");
+        let service = add_module(&mut graph, "service", app, app);
+        add_module(&mut graph, "inner", app, service);
+        add_module(&mut graph, "store", app, app);
+
+        let config = config_of(
+            vec![exhaustive_layers_rule("app layers", &["app::store"])],
+            unlayered_node_except(&["app::service"]),
+        );
+        assert!(unlayered(&diagnose(&graph, &config)).is_empty());
+    }
+
+    #[test]
+    fn each_exhaustive_rule_stands_for_itself() {
+        let graph = workspace(&["domain", "infra", "tools"]);
+        let config = config_of(
+            vec![
+                exhaustive_layers_rule("core layers", &["infra", "domain"]),
+                exhaustive_layers_rule("tool layers", &["tools"]),
+            ],
+            Diagnostics::default(),
+        );
+        assert_eq!(
+            unlayered_of(&diagnose(&graph, &config)),
+            [
+                ("core layers", "tools"),
+                ("tool layers", "domain"),
+                ("tool layers", "infra"),
+            ]
+        );
     }
 
     #[test]
@@ -472,45 +737,11 @@ mod tests {
     }
 
     #[test]
-    fn a_crate_layered_by_one_of_two_rules_is_not_reported() {
-        let graph = workspace(&["domain", "infra", "tools"]);
-        let config = config_of(
-            vec![
-                layers_rule("core layers", &["infra", "domain"]),
-                layers_rule("tool layers", &["tools"]),
-            ],
-            Diagnostics::default(),
-        );
-        assert!(unlayered(&diagnose(&graph, &config)).is_empty());
-    }
-
-    #[test]
-    fn a_module_pattern_layers_the_crate_it_sits_in() {
-        // Layering inside one crate: that crate takes part, the others do not.
-        let graph = workspace(&["app", "xtask"]);
-        let config = config_of(
-            vec![layers_rule("app layers", &["app::service"])],
-            Diagnostics::default(),
-        );
-        assert_eq!(unlayered(&diagnose(&graph, &config)), ["xtask"]);
-    }
-
-    #[test]
-    fn a_layers_rule_set_to_ignore_makes_no_claim() {
+    fn an_exhaustive_rule_set_to_ignore_makes_no_claim() {
         let graph = workspace(&["domain", "xtask"]);
-        let mut rule = layers_rule("architecture layers", &["domain"]);
+        let mut rule = exhaustive_layers_rule("architecture layers", &["domain"]);
         rule.severity = Severity::Ignore;
         let config = config_of(vec![rule], Diagnostics::default());
-        assert!(unlayered(&diagnose(&graph, &config)).is_empty());
-    }
-
-    #[test]
-    fn a_catch_all_layer_sorts_every_crate_so_none_is_unlayered() {
-        let graph = workspace(&["domain", "infra", "xtask"]);
-        let config = config_of(
-            vec![layers_rule("architecture layers", &["domain", "*"])],
-            Diagnostics::default(),
-        );
         assert!(unlayered(&diagnose(&graph, &config)).is_empty());
     }
 
@@ -518,9 +749,9 @@ mod tests {
     fn allow_silences_a_diagnostic() {
         let graph = workspace(&["domain", "xtask"]);
         let config = config_of(
-            vec![layers_rule("architecture layers", &["domain"])],
+            vec![exhaustive_layers_rule("architecture layers", &["domain"])],
             Diagnostics {
-                unlayered_crate: UnlayeredCrate {
+                unlayered_node: UnlayeredNode {
                     level: DiagnosticLevel::Allow,
                     except: vec![],
                 },
@@ -534,10 +765,10 @@ mod tests {
     fn the_configured_level_reaches_the_diagnostic() {
         let graph = workspace(&["domain", "xtask"]);
         let config = config_of(
-            vec![layers_rule("architecture layers", &["domain"])],
+            vec![exhaustive_layers_rule("architecture layers", &["domain"])],
             Diagnostics {
-                unlayered_crate: UnlayeredCrate {
-                    level: DiagnosticLevel::Deny,
+                unlayered_node: UnlayeredNode {
+                    level: DiagnosticLevel::Warn,
                     except: vec![],
                 },
                 ..Diagnostics::default()
@@ -545,7 +776,7 @@ mod tests {
         );
         let found = diagnose(&graph, &config);
         assert_eq!(found.len(), 1);
-        assert_eq!(found[0].level, DiagnosticLevel::Deny);
+        assert_eq!(found[0].level, DiagnosticLevel::Warn);
     }
 
     // ===== unmatched-except =====

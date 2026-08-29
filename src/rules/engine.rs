@@ -873,7 +873,7 @@ mod tests {
     use crate::graph::Node;
     use crate::model::EdgeContext;
     use crate::rules::config::Diagnostics;
-    use crate::rules::diagnostics::DiagnosticKind;
+    use crate::rules::diagnostics::{DiagnosticKind, UnsortedNode};
     use std::path::PathBuf;
 
     // -- Test graph helpers --
@@ -1172,6 +1172,7 @@ mod tests {
             kind: RuleKind::Layers(LayersRule {
                 layers: layers.iter().map(|&layer| layer.into()).collect(),
                 direction: Direction::TopDown,
+                exhaustive: false,
             }),
         }
     }
@@ -1484,6 +1485,7 @@ mod tests {
                     .map(|rank| rank.iter().map(|&p| p.to_owned()).collect())
                     .collect(),
                 direction: Direction::TopDown,
+                exhaustive: false,
             }),
         }
     }
@@ -1804,19 +1806,25 @@ mod tests {
     }
 
     #[test]
-    fn test_check_rules_reports_a_crate_outside_every_layer() {
+    fn test_check_rules_reports_a_crate_an_exhaustive_rule_leaves_unsorted() {
         let (mut graph, _domain, service, _model, _infra, db, _api, _app, _handler) =
             multi_crate_graph();
         add_production_dep(&mut graph, service, db);
 
-        // The layers rule names two of the three crates.
-        let config = config_of(vec![layers_rule(&["infra", "domain"], vec![])]);
+        // The layers rule names two of the three crates and declares itself
+        // exhaustive, so the third is a gap.
+        let mut rule = layers_rule(&["infra", "domain"], vec![]);
+        let RuleKind::Layers(params) = &mut rule.kind else {
+            unreachable!("layers_rule builds a layers rule")
+        };
+        params.exhaustive = true;
+        let config = config_of(vec![rule]);
         let result = check_rules(&graph, &config, &Baseline::empty(), false).unwrap();
         let unlayered: Vec<&str> = result
             .diagnostics
             .iter()
             .filter_map(|diagnostic| match &diagnostic.kind {
-                DiagnosticKind::UnlayeredCrate { krate } => Some(krate.as_str()),
+                DiagnosticKind::UnlayeredNode { entry } => Some(entry.node.as_str()),
                 _ => None,
             })
             .collect();
@@ -1950,8 +1958,11 @@ mod tests {
         let result = CheckResult {
             diagnostics: vec![Diagnostic {
                 level: DiagnosticLevel::Deny,
-                kind: DiagnosticKind::UnlayeredCrate {
-                    krate: "xtask".into(),
+                kind: DiagnosticKind::UnlayeredNode {
+                    entry: UnsortedNode {
+                        rule: "architecture layers".into(),
+                        node: "xtask".into(),
+                    },
                 },
             }],
             ..Default::default()
@@ -1965,8 +1976,11 @@ mod tests {
         let result = CheckResult {
             diagnostics: vec![Diagnostic {
                 level: DiagnosticLevel::Warn,
-                kind: DiagnosticKind::UnlayeredCrate {
-                    krate: "xtask".into(),
+                kind: DiagnosticKind::UnlayeredNode {
+                    entry: UnsortedNode {
+                        rule: "architecture layers".into(),
+                        node: "xtask".into(),
+                    },
                 },
             }],
             ..Default::default()

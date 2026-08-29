@@ -21,6 +21,10 @@ layers = [
   ["cargo-arc::model", "cargo-arc::volatility"],
 ]
 direction = "top-down"
+# The claim is over the modules of this crate: a new top-level module fails the
+# run until it is placed. The crate node `cargo-arc` is not claimed, because no
+# crate pattern names it.
+exhaustive = true
 
 # No `no-cycles` rule: without one the run checks the whole crate, which is the
 # scope we want. Writing it out would replace that rule with an identical one.

@@ -102,29 +102,52 @@ scope = "**"
 As soon as the file states a `no-cycles` rule of its own, the implicit rule is gone, including the wide scope it carried.
 Keeping the name `no cycles` also keeps the baseline entries written under the implicit rule: they are keyed by rule name.
 
-## The warning you did not ask for
+## Saying that a rule is complete
 
-From the first `layers` rule onwards, a run reports every crate that no layer matches:
+A `layers` rule judges the nodes its positions name, and nothing else.
+An edge with an endpoint no position matches is skipped without a word, and the run stays green over it.
+The rule was never asked about that node.
+
+Sometimes the silence is a mistake rather than a statement: a position was meant to catch that node, and it was left out by accident.
+Say so with `exhaustive = true`, and the same silence becomes a report:
+
+```toml
+[[rules]]
+type = "layers"
+name = "architecture layers"
+layers = [["cli", "storage"], "services", "core"]
+direction = "top-down"
+exhaustive = true
+```
 
 ```
-warning: configuration
-  unlayered-crate: xtask
-    in no layer, so its edges go unchecked
+error: configuration
+  unlayered-node: xtask
+    in rule "architecture layers", in no layer, so its edges go unchecked
 ```
 
-`layers` is a total statement about the workspace, so a crate missing from it is not permitted, it is unsorted: no rule looks at its dependencies at all.
-This is the only feedback on whether your file describes the whole workspace, and there are two very different reasons for a crate to show up in it.
+What the claim covers follows what the rule addresses, not the whole workspace by default.
+A pattern without `::` names a crate, and a rule carrying one claims every workspace crate: the rule above sorts `cli`, `storage`, `services` and `core`, and now anything else is a gap.
+A pattern with `::` names a module, and a rule carrying one claims every module of the crates its module patterns reach, saying nothing about the other crates and nothing about the crate nodes themselves.
+A rule that mixes both kinds of pattern makes both claims side by side.
 
-If the crate was forgotten, put it in a layer.
+Only the topmost unsorted node of a containment chain is reported: a crate left out entirely is one gap, not one per module underneath it.
+And each rule is judged on its own.
+A crate one exhaustive rule places is still reported against a second exhaustive rule that leaves it out, because nothing pools the rules together.
+
+If the node was forgotten, put it in a layer.
 If it is outside the architecture on purpose (build tooling, examples, benchmarks), say so in the diagnostic:
 
 ```toml
 [diagnostics]
-unlayered-crate = { level = "warn", except = ["xtask"] }
+unlayered-node = { level = "deny", except = ["xtask"] }
 ```
 
 The `except` on a rule does not reach the diagnostics, which is why this list exists separately.
 What does not work is inventing a layer for `xtask`: that sorts it into an order it has no place in, and the rule then asserts something about it.
+The names here are qualified node names, and an excepted node takes the modules below it with it, the way a pattern does.
+
+`exhaustive` and the catch-all layer `*` are refused together when the file loads: the catch-all already holds every node the rule's other positions leave, so the claim would be satisfied by construction and check nothing.
 
 ## Debt goes in the baseline, not on `warn`
 
@@ -203,8 +226,10 @@ Every entry in `layers` is one position, holding either a pattern or a list of p
 - `top-down`: the list starts at the top layer, dependencies point at later entries.
 - `bottom-up`: the list starts at the bottom layer, dependencies point at earlier entries.
 
+`exhaustive` is optional and defaults to `false`; setting it makes the rule claim to sort everything it addresses, described under [Saying that a rule is complete](#saying-that-a-rule-is-complete).
+
 Two nodes sharing a position are unordered, so a dependency between them passes.
-A dependency with an endpoint that no layer matches is not checked at all; the crates this happens to are reported as `unlayered-crate`.
+A dependency with an endpoint that no layer matches is not checked at all; without `exhaustive = true` nothing says which nodes those are.
 
 A position written as the bare string `"*"`, or the single-element list `["*"]`, is the catch-all layer.
 It holds every node the rule's other positions do not match, so once a rule carries one, no crate is left unlayered by it.
@@ -212,6 +237,7 @@ Its place in the list is its rank like any other position.
 A rule may carry at most one catch-all, and it must stand alone in its position.
 Both are refused when the rules file loads.
 A catch-all whose rest is empty, because the rule's other positions already cover the whole workspace, is reported as `unmatched-pattern`, the same as a pattern matching nothing.
+A rule carrying a catch-all may not also be `exhaustive`: both together are refused when the file loads, because the catch-all would already satisfy the claim and check nothing.
 
 Two ordinary positions of one rule matching the same node fail the run outright, naming the node and both positions, instead of silently keeping whichever position resolved it last.
 
@@ -326,7 +352,7 @@ Each has a level: `allow` says nothing, `warn` reports without failing, `deny` f
 
 ```toml
 [diagnostics]
-unlayered-crate = { level = "warn", except = ["xtask"] }
+unlayered-node = { level = "deny", except = ["xtask"] }
 unmatched-baseline-entry = "warn"
 unmatched-except = "warn"
 unmatched-pattern = "deny"
@@ -334,16 +360,17 @@ unmatched-pattern = "deny"
 
 | Diagnostic | Default | Raised when |
 |------------|---------|-------------|
-| `unlayered-crate` | `warn` | a crate no `layers` rule sorts into a position |
+| `unlayered-node` | `deny` | a node an `exhaustive` `layers` rule leaves in no position |
 | `unmatched-baseline-entry` | `warn` | a frozen violation the run no longer produces, or one that froze more symbols than the edge still carries |
 | `unmatched-except` | `warn` | an `except` pattern matching no module |
 | `unmatched-pattern` | `deny` | a rule pattern matching no module, or a catch-all layer whose rest is empty |
 
-`unmatched-pattern` denies where the others warn because of what its failure looks like: a rule whose pattern misses checks nothing, reports nothing, and leaves the run green.
+`unlayered-node` and `unmatched-pattern` deny where the others warn because of what their failure looks like: a rule whose pattern misses checks nothing, and an edge to an unsorted node is skipped without a word; both leave the run green.
+`unlayered-node` also only ever fires for a rule that asked for it.
 A dead `except` only allows too much, and the violation it should have allowed shows up on its own.
 
-Only `unlayered-crate` takes the table form with `except`; the others are written as a level alone.
-The crates listed there are the ones deliberately outside the architecture.
+Only `unlayered-node` takes the table form with `except`; the others are written as a level alone.
+The names listed there are qualified node names, deliberately outside the architecture, and each takes the modules below it with it.
 
 Diagnostics do not belong to any single rule and are counted on their own status line:
 

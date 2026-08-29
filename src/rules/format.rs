@@ -138,7 +138,7 @@ fn status_word(errors: usize, warnings: usize) -> &'static str {
 
 /// One block for the gaps in the configuration, headed `warning:` or, as soon
 /// as a `deny` is among them, `error:`. Entries that share a diagnostic and an
-/// explanation take one line together: nineteen unlayered crates are one gap,
+/// explanation take one line together: nineteen unlayered nodes are one gap,
 /// not nineteen.
 fn diagnostics_block(diagnostics: &[Diagnostic]) -> String {
     /// Beyond this many subjects on one line the list stops informing.
@@ -178,10 +178,10 @@ fn diagnostics_block(diagnostics: &[Diagnostic]) -> String {
     out
 }
 
-/// What the diagnostic is about: the crate, the frozen violation, the pattern.
+/// What the diagnostic is about: the node, the frozen violation, the pattern.
 fn subject(diagnostic: &Diagnostic) -> String {
     match &diagnostic.kind {
-        DiagnosticKind::UnlayeredCrate { krate } => krate.clone(),
+        DiagnosticKind::UnlayeredNode { entry } => entry.node.clone(),
         DiagnosticKind::UnmatchedBaselineEntry { entry } => {
             format!("{}: {}", entry.rule, edge(&entry.key.edge))
         }
@@ -205,8 +205,11 @@ fn subject(diagnostic: &Diagnostic) -> String {
 /// Why the state is worth a word, and what closes it.
 fn explanation(diagnostic: &Diagnostic) -> String {
     match &diagnostic.kind {
-        DiagnosticKind::UnlayeredCrate { .. } => {
-            "in no layer, so its edges go unchecked".to_string()
+        DiagnosticKind::UnlayeredNode { entry } => {
+            format!(
+                "in rule {:?}, in no layer, so its edges go unchecked",
+                entry.rule
+            )
         }
         DiagnosticKind::UnmatchedBaselineEntry { .. } => {
             "freezes nothing; arc check --generate-baseline rewrites the baseline".to_string()
@@ -957,30 +960,85 @@ mod tests {
 
     use crate::rules::baseline::{BaselineEntry, ViolationKey};
     use crate::rules::config::DiagnosticLevel;
-    use crate::rules::diagnostics::{DeadExcept, DeadPattern, Diagnostic, DiagnosticKind};
+    use crate::rules::diagnostics::{
+        DeadExcept, DeadPattern, Diagnostic, DiagnosticKind, UnsortedNode,
+    };
 
-    fn unlayered(krate: &str, level: DiagnosticLevel) -> Diagnostic {
+    fn unlayered(rule: &str, node: &str, level: DiagnosticLevel) -> Diagnostic {
         Diagnostic {
             level,
-            kind: DiagnosticKind::UnlayeredCrate {
-                krate: krate.into(),
+            kind: DiagnosticKind::UnlayeredNode {
+                entry: UnsortedNode {
+                    rule: rule.into(),
+                    node: node.into(),
+                },
             },
         }
     }
 
     #[test]
-    fn test_format_unlayered_crates_share_one_line() {
+    fn test_format_unlayered_nodes_of_one_rule_share_one_line() {
         let result = CheckResult {
             diagnostics: vec![
-                unlayered("benches", DiagnosticLevel::Warn),
-                unlayered("xtask", DiagnosticLevel::Warn),
+                unlayered("architecture layers", "benches", DiagnosticLevel::Warn),
+                unlayered("architecture layers", "xtask", DiagnosticLevel::Warn),
             ],
             ..Default::default()
         };
         let output = format_violations(&result, false);
         assert!(output.contains("warning: configuration"), "got:\n{output}");
         assert!(
-            output.contains("  unlayered-crate: benches, xtask"),
+            output.contains("  unlayered-node: benches, xtask"),
+            "got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_format_unlayered_crate_and_module_share_one_line() {
+        let result = CheckResult {
+            diagnostics: vec![
+                unlayered("architecture layers", "app::store", DiagnosticLevel::Warn),
+                unlayered("architecture layers", "xtask", DiagnosticLevel::Warn),
+            ],
+            ..Default::default()
+        };
+        let output = format_violations(&result, false);
+        assert!(
+            output.contains("  unlayered-node: app::store, xtask"),
+            "got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_format_unlayered_nodes_of_two_rules_take_a_line_each() {
+        let result = CheckResult {
+            diagnostics: vec![
+                unlayered("core layers", "tools", DiagnosticLevel::Warn),
+                unlayered("tool layers", "domain", DiagnosticLevel::Warn),
+            ],
+            ..Default::default()
+        };
+        let output = format_violations(&result, false);
+        assert!(output.contains("unlayered-node: tools"), "got:\n{output}");
+        assert!(output.contains("unlayered-node: domain"), "got:\n{output}");
+        assert!(!output.contains("tools, domain"), "got:\n{output}");
+    }
+
+    #[test]
+    fn test_format_unlayered_node_names_its_rule_and_the_consequence() {
+        let result = CheckResult {
+            diagnostics: vec![unlayered(
+                "architecture layers",
+                "xtask",
+                DiagnosticLevel::Deny,
+            )],
+            ..Default::default()
+        };
+        let output = format_violations(&result, false);
+        assert!(
+            output.contains(
+                "    in rule \"architecture layers\", in no layer, so its edges go unchecked"
+            ),
             "got:\n{output}"
         );
     }
@@ -988,7 +1046,11 @@ mod tests {
     #[test]
     fn test_format_denied_diagnostic_heads_the_block_with_error() {
         let result = CheckResult {
-            diagnostics: vec![unlayered("xtask", DiagnosticLevel::Deny)],
+            diagnostics: vec![unlayered(
+                "architecture layers",
+                "xtask",
+                DiagnosticLevel::Deny,
+            )],
             ..Default::default()
         };
         let output = format_violations(&result, false);
@@ -1238,7 +1300,7 @@ mod tests {
         let result = CheckResult {
             diagnostics: names
                 .iter()
-                .map(|name| unlayered(name, DiagnosticLevel::Warn))
+                .map(|name| unlayered("architecture layers", name, DiagnosticLevel::Warn))
                 .collect(),
             ..Default::default()
         };
@@ -1253,7 +1315,11 @@ mod tests {
     fn test_diagnostics_count_on_the_config_line_not_against_a_rule() {
         let result = CheckResult {
             checked_rules: vec!["some rule".into()],
-            diagnostics: vec![unlayered("xtask", DiagnosticLevel::Deny)],
+            diagnostics: vec![unlayered(
+                "architecture layers",
+                "xtask",
+                DiagnosticLevel::Deny,
+            )],
             ..Default::default()
         };
         assert_eq!(

@@ -31,15 +31,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rule names must now be unique across all rule types; `arc-rules.toml` is
   rejected when two rules share a name.
 - A `[diagnostics]` section in `arc-rules.toml` reports gaps in the
-  configuration itself: `unlayered-crate` for a workspace crate no `layers`
-  rule sorts (its edges were skipped without a word), `unmatched-baseline-entry`
-  for a frozen violation that no longer occurs, `unmatched-except` for an `except`
-  pattern that matches no module, `unmatched-pattern` for a rule pattern that
-  matches no module. Each is set to `allow`, `warn` or `deny`; `deny` fails the
-  run. `unmatched-pattern` defaults to `deny` because a rule whose pattern
-  misses checks nothing and leaves the run green, the others default to `warn`.
-  `unlayered-crate` also takes an `except` list of crates that stand outside the
-  architecture on purpose, and is written either as `"warn"` or as
+  configuration itself: `unlayered-node` for a node an `exhaustive` `layers`
+  rule leaves in no position (its edges were skipped without a word),
+  `unmatched-baseline-entry` for a frozen violation that no longer occurs,
+  `unmatched-except` for an `except` pattern that matches no module,
+  `unmatched-pattern` for a rule pattern that matches no module. Each is set to
+  `allow`, `warn` or `deny`; `deny` fails the run. `unmatched-pattern` and
+  `unlayered-node` default to `deny`, for the same failure shape: a rule whose
+  pattern misses, or an edge to an unsorted node, checks nothing and leaves the
+  run green; the others default to `warn`.
+  `unlayered-node` also takes an `except` list of qualified node names that
+  stand outside the architecture on purpose, each taking the modules below it
+  with it, and is written either as `"warn"` or as
   `{ level = "warn", except = ["xtask"] }`.
 - `arc check` states its judgment on stdout, one line per checked rule and one
   for the configuration: `<rule> ok: 0 errors, 0 warnings, 0 allowed, 0 frozen`,
@@ -52,6 +55,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rank share one entry, so the order they are listed in no longer forbids edges
   between them. Edges leaving the rank still follow the rule's direction. A
   plain string is a rank of one, so existing rules are unaffected.
+- A `layers` rule takes `exhaustive = true` (default `false`) to declare itself
+  complete over what it addresses: its crate patterns claim every workspace
+  crate, its module patterns every module of the crates those patterns reach.
+  Each gap is reported as `unlayered-node`, naming the topmost node of a
+  containment chain rather than every module below it, and each rule is judged
+  on its own. Without the field a rule says nothing about the nodes it does not
+  name. `exhaustive = true` beside the catch-all layer `*` is refused when the
+  file loads, because the catch-all would satisfy the claim by construction.
 
 ### Changed
 
@@ -82,7 +93,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The summary line that counted cycles and tangles went with the old path.
 - A key that is not part of the format is now an error, and the message names
   the key. Before, such a key was ignored: `[diagnostic]` for `[diagnostics]`,
-  `scpoe` for `scope`, or `excpet` inside `unlayered-crate` all loaded fine and
+  `scpoe` for `scope`, or `excpet` inside `unlayered-node` all loaded fine and
   switched nothing on.
 
 ### Fixed

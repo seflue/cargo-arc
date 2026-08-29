@@ -53,28 +53,47 @@ pub enum DiagnosticLevel {
     Deny,
 }
 
-/// The `unlayered-crate` diagnostic: its level plus the crates that are
-/// deliberately outside the architecture (build tooling, examples). The list
-/// is the only way to tell *forgotten* from *deliberately outside*; `except`
-/// on a rule does not reach diagnostics.
+/// The `unlayered-node` diagnostic: its level plus the nodes that are
+/// deliberately outside the architecture (build tooling, examples). A name here
+/// is a qualified node name and takes the modules below it with it, the way a
+/// pattern does; `except` on a rule does not reach diagnostics.
 ///
 /// Written either as a bare level (`"warn"`) or as a table
 /// (`{ level = "warn", except = ["xtask"] }`).
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct UnlayeredCrate {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnlayeredNode {
     pub level: DiagnosticLevel,
     pub except: Vec<String>,
 }
 
-impl<'de> Deserialize<'de> for UnlayeredCrate {
+impl UnlayeredNode {
+    /// A node an exhaustive rule leaves unsorted has the failure shape
+    /// `unmatched-pattern` denies for: its edges are skipped without a word and
+    /// the run stays green. The level only ever reaches someone who wrote
+    /// `exhaustive = true`.
+    fn default_level() -> DiagnosticLevel {
+        DiagnosticLevel::Deny
+    }
+}
+
+impl Default for UnlayeredNode {
+    fn default() -> Self {
+        Self {
+            level: Self::default_level(),
+            except: Vec::new(),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for UnlayeredNode {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         // `#[serde(untagged)]` would only report "data did not match any
         // variant". Deserializing the table arm as its own
         // `deny_unknown_fields` struct names the offending key instead.
-        struct UnlayeredCrateVisitor;
+        struct UnlayeredNodeVisitor;
 
-        impl<'de> serde::de::Visitor<'de> for UnlayeredCrateVisitor {
-            type Value = UnlayeredCrate;
+        impl<'de> serde::de::Visitor<'de> for UnlayeredNodeVisitor {
+            type Value = UnlayeredNode;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 formatter.write_str("a diagnostic level string, or a table with level/except")
@@ -83,7 +102,7 @@ impl<'de> Deserialize<'de> for UnlayeredCrate {
             fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
                 let level =
                     DiagnosticLevel::deserialize(serde::de::value::StrDeserializer::new(v))?;
-                Ok(UnlayeredCrate {
+                Ok(UnlayeredNode {
                     level,
                     except: Vec::new(),
                 })
@@ -96,20 +115,20 @@ impl<'de> Deserialize<'de> for UnlayeredCrate {
                 #[derive(Deserialize)]
                 #[serde(deny_unknown_fields)]
                 struct Table {
-                    #[serde(default)]
+                    #[serde(default = "UnlayeredNode::default_level")]
                     level: DiagnosticLevel,
                     #[serde(default)]
                     except: Vec<String>,
                 }
                 let table = Table::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
-                Ok(UnlayeredCrate {
+                Ok(UnlayeredNode {
                     level: table.level,
                     except: table.except,
                 })
             }
         }
 
-        deserializer.deserialize_any(UnlayeredCrateVisitor)
+        deserializer.deserialize_any(UnlayeredNodeVisitor)
     }
 }
 
@@ -119,7 +138,7 @@ impl<'de> Deserialize<'de> for UnlayeredCrate {
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct Diagnostics {
     #[serde(default)]
-    pub unlayered_crate: UnlayeredCrate,
+    pub unlayered_node: UnlayeredNode,
     #[serde(default)]
     pub unmatched_baseline_entry: DiagnosticLevel,
     #[serde(default)]
@@ -141,7 +160,7 @@ impl Diagnostics {
 impl Default for Diagnostics {
     fn default() -> Self {
         Self {
-            unlayered_crate: UnlayeredCrate::default(),
+            unlayered_node: UnlayeredNode::default(),
             unmatched_baseline_entry: DiagnosticLevel::default(),
             unmatched_except: DiagnosticLevel::default(),
             unmatched_pattern: Self::unmatched_pattern_default(),
@@ -292,6 +311,8 @@ impl<'de> Deserialize<'de> for Layer {
 pub struct LayersRule {
     pub layers: Vec<Layer>,
     pub direction: Direction,
+    #[serde(default)]
+    pub exhaustive: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -344,6 +365,7 @@ pub enum ConfigError {
     ReservedRuleName { path: PathBuf, name: String },
     CatchAllNotAlone { path: PathBuf, name: String },
     MultipleCatchAllPositions { path: PathBuf, name: String },
+    ExhaustiveWithCatchAll { path: PathBuf, name: String },
 }
 
 impl std::fmt::Display for ConfigError {
@@ -377,6 +399,13 @@ impl std::fmt::Display for ConfigError {
                 "rule {name:?} in {}: only one position may be the catch-all layer `*`",
                 path.display()
             ),
+            Self::ExhaustiveWithCatchAll { path, name } => write!(
+                f,
+                "rule {name:?} in {} claims to be exhaustive beside the catch-all layer `*`, \
+                 which already holds every node its other positions leave: drop \
+                 `exhaustive = true`, or drop the catch-all",
+                path.display()
+            ),
         }
     }
 }
@@ -402,6 +431,7 @@ impl ArcConfig {
             .map_err(|e| ConfigError::ParseError(path.to_path_buf(), e))?;
         config.check_unique_rule_names(path)?;
         config.check_catch_all_layers(path)?;
+        config.check_exhaustive_layers(path)?;
         config.add_implicit_rule(path)?;
         Ok(config)
     }
@@ -506,6 +536,24 @@ impl ArcConfig {
         Ok(())
     }
 
+    /// Reject a `layers` rule that declares itself exhaustive beside a catch-all
+    /// layer. `layer_rest` hands the catch-all every non-external node the other
+    /// positions leave, so the claim holds by construction and checks nothing.
+    fn check_exhaustive_layers(&self, path: &Path) -> Result<(), ConfigError> {
+        for rule in &self.rules {
+            let RuleKind::Layers(params) = &rule.kind else {
+                continue;
+            };
+            if params.exhaustive && params.layers.iter().any(Layer::is_catch_all) {
+                return Err(ConfigError::ExhaustiveWithCatchAll {
+                    path: path.to_path_buf(),
+                    name: rule.name.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// Fills in `config.default_severity` for rules that left `severity` unset.
     fn from_toml(content: &str) -> Result<Self, toml::de::Error> {
         let raw: RawConfig = toml::from_str(content)?;
@@ -581,7 +629,10 @@ mod tests {
         "#;
         let config = ArcConfig::from_toml(toml).unwrap();
         assert_eq!(config.rules[0].name, "architecture layers");
-        let RuleKind::Layers(LayersRule { layers, direction }) = &config.rules[0].kind else {
+        let RuleKind::Layers(LayersRule {
+            layers, direction, ..
+        }) = &config.rules[0].kind
+        else {
             panic!("expected Layers, got {:?}", config.rules[0].kind);
         };
         assert_eq!(
@@ -593,6 +644,54 @@ mod tests {
             ]
         );
         assert_eq!(*direction, Direction::TopDown);
+    }
+
+    #[test]
+    fn test_layers_exhaustive_defaults_to_false() {
+        let toml = r#"
+            [[rules]]
+            type = "layers"
+            name = "architecture layers"
+            layers = ["domain", "infra"]
+            direction = "top-down"
+        "#;
+        let config = ArcConfig::from_toml(toml).unwrap();
+        let RuleKind::Layers(LayersRule { exhaustive, .. }) = &config.rules[0].kind else {
+            panic!("expected Layers, got {:?}", config.rules[0].kind);
+        };
+        assert!(!exhaustive);
+    }
+
+    #[test]
+    fn test_layers_exhaustive_parses() {
+        let toml = r#"
+            [[rules]]
+            type = "layers"
+            name = "architecture layers"
+            layers = ["domain", "infra"]
+            direction = "top-down"
+            exhaustive = true
+        "#;
+        let config = ArcConfig::from_toml(toml).unwrap();
+        let RuleKind::Layers(LayersRule { exhaustive, .. }) = &config.rules[0].kind else {
+            panic!("expected Layers, got {:?}", config.rules[0].kind);
+        };
+        assert!(exhaustive);
+    }
+
+    #[test]
+    fn test_reject_misspelled_exhaustive() {
+        assert_rejects_key(
+            r#"
+            [[rules]]
+            type = "layers"
+            name = "architecture layers"
+            layers = ["domain", "infra"]
+            direction = "top-down"
+            exhuastive = true
+        "#,
+            "exhuastive",
+        );
     }
 
     /// Crates of equal rank share one entry. Without this they need one entry
@@ -970,8 +1069,8 @@ mod tests {
         "#;
         let config = ArcConfig::from_toml(toml).unwrap();
         let diagnostics = &config.diagnostics;
-        assert_eq!(diagnostics.unlayered_crate.level, DiagnosticLevel::Warn);
-        assert!(diagnostics.unlayered_crate.except.is_empty());
+        assert_eq!(diagnostics.unlayered_node.level, DiagnosticLevel::Deny);
+        assert!(diagnostics.unlayered_node.except.is_empty());
         assert_eq!(diagnostics.unmatched_baseline_entry, DiagnosticLevel::Warn);
         assert_eq!(diagnostics.unmatched_except, DiagnosticLevel::Warn);
         assert_eq!(diagnostics.unmatched_pattern, DiagnosticLevel::Deny);
@@ -989,6 +1088,21 @@ mod tests {
         assert_eq!(config.diagnostics.unmatched_pattern, DiagnosticLevel::Deny);
     }
 
+    /// Same asymmetry as `unmatched-pattern`: a section that sets other
+    /// diagnostics must not pull this one down to the shared `warn` default.
+    #[test]
+    fn test_unlayered_node_stays_denied_when_the_section_omits_it() {
+        let toml = r#"
+            [diagnostics]
+            unmatched-except = "allow"
+        "#;
+        let config = ArcConfig::from_toml(toml).unwrap();
+        assert_eq!(
+            config.diagnostics.unlayered_node.level,
+            DiagnosticLevel::Deny
+        );
+    }
+
     #[test]
     fn test_unmatched_pattern_is_configurable() {
         let toml = r#"
@@ -1003,15 +1117,15 @@ mod tests {
     fn test_diagnostics_bare_level_strings() {
         let toml = r#"
             [diagnostics]
-            unlayered-crate = "deny"
+            unlayered-node = "deny"
             unmatched-baseline-entry = "allow"
             unmatched-except = "warn"
         "#;
         let config = ArcConfig::from_toml(toml).unwrap();
         let diagnostics = &config.diagnostics;
-        assert_eq!(diagnostics.unlayered_crate.level, DiagnosticLevel::Deny);
+        assert_eq!(diagnostics.unlayered_node.level, DiagnosticLevel::Deny);
         assert!(
-            diagnostics.unlayered_crate.except.is_empty(),
+            diagnostics.unlayered_node.except.is_empty(),
             "the bare form names a level and nothing else"
         );
         assert_eq!(diagnostics.unmatched_baseline_entry, DiagnosticLevel::Allow);
@@ -1019,13 +1133,13 @@ mod tests {
     }
 
     #[test]
-    fn test_diagnostics_unlayered_crate_table_form() {
+    fn test_diagnostics_unlayered_node_table_form() {
         let toml = r#"
             [diagnostics]
-            unlayered-crate = { level = "deny", except = ["xtask", "benches"] }
+            unlayered-node = { level = "deny", except = ["xtask", "benches"] }
         "#;
         let config = ArcConfig::from_toml(toml).unwrap();
-        let unlayered = &config.diagnostics.unlayered_crate;
+        let unlayered = &config.diagnostics.unlayered_node;
         assert_eq!(unlayered.level, DiagnosticLevel::Deny);
         assert_eq!(unlayered.except, ["xtask", "benches"]);
     }
@@ -1034,11 +1148,11 @@ mod tests {
     fn test_diagnostics_table_without_level_keeps_the_default() {
         let toml = r#"
             [diagnostics]
-            unlayered-crate = { except = ["xtask"] }
+            unlayered-node = { except = ["xtask"] }
         "#;
         let config = ArcConfig::from_toml(toml).unwrap();
-        let unlayered = &config.diagnostics.unlayered_crate;
-        assert_eq!(unlayered.level, DiagnosticLevel::Warn);
+        let unlayered = &config.diagnostics.unlayered_node;
+        assert_eq!(unlayered.level, DiagnosticLevel::Deny);
         assert_eq!(unlayered.except, ["xtask"]);
     }
 
@@ -1046,7 +1160,7 @@ mod tests {
     fn test_diagnostics_reject_unknown_name() {
         let toml = r#"
             [diagnostics]
-            unlayered-crates = "warn"
+            unlayered-nodes = "warn"
         "#;
         let result = ArcConfig::from_toml(toml);
         assert!(
@@ -1080,7 +1194,7 @@ mod tests {
         assert_rejects_key(
             r#"
             [diagnostic]
-            unlayered-crate = "deny"
+            unlayered-node = "deny"
         "#,
             "diagnostic",
         );
@@ -1129,11 +1243,11 @@ mod tests {
     }
 
     #[test]
-    fn test_reject_unknown_key_in_unlayered_crate_table() {
+    fn test_reject_unknown_key_in_unlayered_node_table() {
         assert_rejects_key(
             r#"
             [diagnostics]
-            unlayered-crate = { level = "deny", excpet = ["xtask"] }
+            unlayered-node = { level = "deny", excpet = ["xtask"] }
         "#,
             "excpet",
         );
@@ -1341,5 +1455,47 @@ mod tests {
             "got: {error:?}"
         );
         assert!(error.to_string().contains("architecture layers"));
+    }
+
+    #[test]
+    fn test_exhaustive_beside_a_catch_all_fails_to_load() {
+        let toml = r#"
+            [[rules]]
+            type = "layers"
+            name = "architecture layers"
+            layers = ["*", "domain"]
+            direction = "top-down"
+            exhaustive = true
+        "#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("arc-rules.toml");
+        std::fs::write(&path, toml).unwrap();
+
+        let error = ArcConfig::load(&path).unwrap_err();
+        assert!(
+            matches!(&error, ConfigError::ExhaustiveWithCatchAll { name, .. } if name == "architecture layers"),
+            "got: {error:?}"
+        );
+        let message = error.to_string();
+        assert!(message.contains("architecture layers"));
+        assert!(message.contains("exhaustive"));
+    }
+
+    #[test]
+    fn test_an_exhaustive_rule_without_a_catch_all_loads() {
+        let toml = r#"
+            [[rules]]
+            type = "layers"
+            name = "architecture layers"
+            layers = ["domain", "infra"]
+            direction = "top-down"
+            exhaustive = true
+        "#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("arc-rules.toml");
+        std::fs::write(&path, toml).unwrap();
+
+        let config = ArcConfig::load(&path).unwrap();
+        assert_eq!(config.rules.len(), 2);
     }
 }
