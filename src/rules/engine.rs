@@ -539,25 +539,46 @@ impl<'graph> CheckRun<'graph> {
         // Build layer index: NodeIndex → layer position
         let mut layer_index: HashMap<NodeIndex, usize> = HashMap::new();
         let mut claimed: HashMap<NodeIndex, (usize, &[String])> = HashMap::new();
+        // Every overlap found, not just the first: which node a `HashSet`
+        // resolves first is unstable between runs, so picking one as soon as
+        // it turns up would report a different node each time for the same
+        // input. Collecting them all first and then choosing by qualified
+        // name below is what makes the report reproducible.
+        let mut overlaps: Vec<(NodeIndex, usize, usize)> = Vec::new();
         for (pos, layer) in params.layers.iter().enumerate() {
             let Some(patterns) = layer.patterns() else {
                 continue; // the catch-all is assigned below, once every ordinary claim is known
             };
             for idx in patterns.iter().flat_map(|pattern| self.resolve(pattern)) {
-                if let Some(&(earlier_pos, earlier_patterns)) = claimed.get(&idx) {
+                if let Some(&(earlier_pos, _)) = claimed.get(&idx) {
                     if earlier_pos != pos {
-                        return Err(LayerOverlapError {
-                            rule: rule.name.clone(),
-                            node: self.graph().qualified_name(idx),
-                            first: earlier_patterns.to_vec(),
-                            second: patterns.to_vec(),
-                        });
+                        overlaps.push((idx, earlier_pos, pos));
                     }
                     continue;
                 }
                 claimed.insert(idx, (pos, patterns));
                 layer_index.insert(idx, pos);
             }
+        }
+        // A crate's qualified name is a prefix of its modules', so it sorts
+        // first and names the place the reader has to edit, rather than an
+        // arbitrary module beneath it.
+        if let Some(&(node, first_pos, second_pos)) = overlaps
+            .iter()
+            .min_by_key(|(idx, ..)| self.graph().qualified_name(*idx))
+        {
+            return Err(LayerOverlapError {
+                rule: rule.name.clone(),
+                node: self.graph().qualified_name(node),
+                first: params.layers[first_pos]
+                    .patterns()
+                    .expect("an overlap position always carries ordinary patterns")
+                    .to_vec(),
+                second: params.layers[second_pos]
+                    .patterns()
+                    .expect("an overlap position always carries ordinary patterns")
+                    .to_vec(),
+            });
         }
         if let Some(rest) = self.pattern_index.layer_rest(&params.layers) {
             let pos = params
@@ -1536,38 +1557,51 @@ mod tests {
     fn test_catch_all_needs_no_rule_change_when_a_crate_is_added() {
         let rule = catch_all_above_domain_rule();
 
-        let (mut small_graph, domain, svc_orders, _billing) = domain_and_others_graph();
-        add_production_dep(&mut small_graph, domain, svc_orders);
-        assert_eq!(check_rule(&small_graph, &rule, false).reported().count(), 1);
+        let mut before = ArcGraph::new();
+        let domain = before.add_node(Node::Crate {
+            name: "domain".into(),
+            path: PathBuf::from("/domain"),
+        });
+        let svc_orders = before.add_node(Node::Crate {
+            name: "svc_orders".into(),
+            path: PathBuf::from("/svc_orders"),
+        });
+        add_production_dep(&mut before, domain, svc_orders);
+        assert_eq!(check_rule(&before, &rule, false).reported().count(), 1);
 
-        // svc_billing is named nowhere: not in the graph above, not in the rule.
-        let (mut bigger_graph, domain2, svc_orders2, svc_billing2) = domain_and_others_graph();
-        add_production_dep(&mut bigger_graph, domain2, svc_orders2);
-        add_production_dep(&mut bigger_graph, domain2, svc_billing2);
-        let result = check_rule(&bigger_graph, &rule, false);
+        // Same rule, a graph that really adds svc_billing.
+        let (mut after, domain2, svc_orders2, svc_billing2) = domain_and_others_graph();
+        add_production_dep(&mut after, domain2, svc_orders2);
+        add_production_dep(&mut after, domain2, svc_billing2);
+        let result = check_rule(&after, &rule, false);
         assert_eq!(
             result.reported().count(),
             2,
-            "the crate absent from every position still falls under the catch-all"
+            "the crate added after the rule was written still falls under the catch-all"
         );
     }
 
+    /// Both positions match the crate itself, which pulls its modules along:
+    /// three nodes overlap, not one, so a run naming an arbitrary one of them
+    /// would disagree with itself between runs.
     #[test]
     fn test_layers_overlapping_ordinary_positions_fail_the_run() {
         let mut graph = ArcGraph::new();
-        graph.add_node(Node::Crate {
+        let crate_idx = graph.add_node(Node::Crate {
             name: "svc_application_orders".into(),
             path: PathBuf::from("/svc_application_orders"),
         });
+        add_module(&mut graph, "alpha", crate_idx, crate_idx);
+        add_module(&mut graph, "beta", crate_idx, crate_idx);
 
         let rule = layers_rule_of_ranks(&[&["*application*"], &["*orders*"]]);
         let err = CheckRun::new(&graph, &Baseline::empty(), false)
             .check_rule(&rule)
             .expect_err("a node matched by two ordinary positions must fail the run");
-        let message = err.to_string();
-        assert!(message.contains("*application*"), "got: {message}");
-        assert!(message.contains("*orders*"), "got: {message}");
-        assert!(message.contains("svc_application_orders"), "got: {message}");
+        assert_eq!(
+            err.to_string(),
+            "rule \"architecture layers\": \"svc_application_orders\" matches both layer [\"*application*\"] and layer [\"*orders*\"]"
+        );
     }
 
     #[test]
