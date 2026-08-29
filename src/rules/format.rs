@@ -198,6 +198,7 @@ fn subject(diagnostic: &Diagnostic) -> String {
         ),
         DiagnosticKind::UnmatchedExcept { entry } => entry.pattern.clone(),
         DiagnosticKind::UnmatchedPattern { entry } => entry.pattern.clone(),
+        DiagnosticKind::DeadCatchAllLayer { .. } => "*".to_string(),
     }
 }
 
@@ -223,6 +224,9 @@ fn explanation(diagnostic: &Diagnostic) -> String {
                 entry.rule
             )
         }
+        DiagnosticKind::DeadCatchAllLayer { rule } => format!(
+            "in rule {rule:?}, its other layers already cover every node, so the catch-all layer (\"*\") holds nothing"
+        ),
     }
 }
 
@@ -1013,6 +1017,30 @@ mod tests {
         assert!(
             output.contains(
                 "    in rule \"no infra in domain\", matches no module: the rule checks nothing"
+            ),
+            "got:\n{output}"
+        );
+    }
+
+    /// The catch-all matches nothing not because of a typo but because the
+    /// rule's other layers already cover the workspace, so it needs its own
+    /// wording rather than reusing the typo message.
+    #[test]
+    fn test_format_dead_catch_all_layer_states_why_it_holds_nothing() {
+        let result = CheckResult {
+            diagnostics: vec![Diagnostic {
+                level: DiagnosticLevel::Deny,
+                kind: DiagnosticKind::DeadCatchAllLayer {
+                    rule: "architecture layers".into(),
+                },
+            }],
+            ..Default::default()
+        };
+        let output = format_violations(&result, false);
+        assert!(output.contains("  unmatched-pattern: *"), "got:\n{output}");
+        assert!(
+            output.contains(
+                "    in rule \"architecture layers\", its other layers already cover every node, so the catch-all layer (\"*\") holds nothing"
             ),
             "got:\n{output}"
         );

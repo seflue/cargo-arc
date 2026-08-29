@@ -39,6 +39,9 @@ pub enum DiagnosticKind {
     /// A rule's own pattern that resolves to no module, so the rule checks
     /// nothing and reports nothing.
     UnmatchedPattern { entry: DeadPattern },
+    /// A rule's catch-all layer whose rest is empty: its ordinary layers
+    /// already cover every node, so `*` never receives one.
+    DeadCatchAllLayer { rule: String },
 }
 
 impl Diagnostic {
@@ -52,7 +55,9 @@ impl Diagnostic {
             DiagnosticKind::UnmatchedBaselineEntry { .. }
             | DiagnosticKind::WideBaselineEntry { .. } => "unmatched-baseline-entry",
             DiagnosticKind::UnmatchedExcept { .. } => "unmatched-except",
-            DiagnosticKind::UnmatchedPattern { .. } => "unmatched-pattern",
+            DiagnosticKind::UnmatchedPattern { .. } | DiagnosticKind::DeadCatchAllLayer { .. } => {
+                "unmatched-pattern"
+            }
         }
     }
 }
@@ -120,6 +125,14 @@ pub(super) fn collect(
                 .map(|entry| Diagnostic {
                     level,
                     kind: DiagnosticKind::UnmatchedPattern { entry },
+                }),
+        );
+        found.extend(
+            dead_catch_alls(index, config)
+                .into_iter()
+                .map(|rule| Diagnostic {
+                    level,
+                    kind: DiagnosticKind::DeadCatchAllLayer { rule },
                 }),
         );
     }
@@ -237,14 +250,11 @@ pub struct DeadPattern {
     pub pattern: String,
 }
 
-/// Patterns across `config` that resolve to no node, `except` aside, plus any
-/// catch-all whose rest is empty. A rule whose pattern misses has no other
-/// way of saying so: it checks zero edges, reports nothing, and leaves the
-/// run green. A catch-all whose ordinary positions already cover every node
-/// is the same class of dead configuration, the way Rust reports an
-/// unreachable `_` arm.
+/// Patterns across `config` that resolve to no node, `except` aside. A rule
+/// whose pattern misses has no other way of saying so: it checks zero edges,
+/// reports nothing, and leaves the run green.
 fn unmatched_patterns(index: &PatternIndex, config: &ArcConfig) -> Vec<DeadPattern> {
-    let mut dead: Vec<DeadPattern> = active_rules(config)
+    active_rules(config)
         .flat_map(|rule| {
             rule.kind
                 .patterns()
@@ -256,20 +266,23 @@ fn unmatched_patterns(index: &PatternIndex, config: &ArcConfig) -> Vec<DeadPatte
                 })
                 .collect::<Vec<_>>()
         })
-        .collect();
+        .collect()
+}
 
-    dead.extend(active_rules(config).filter_map(|rule| {
-        let RuleKind::Layers(params) = &rule.kind else {
-            return None;
-        };
-        let rest = index.layer_rest(&params.layers)?;
-        rest.is_empty().then(|| DeadPattern {
-            rule: rule.name.clone(),
-            pattern: "*".to_owned(),
+/// Rules whose catch-all layer's rest is empty: the ordinary layers already
+/// cover every node, the way Rust reports an unreachable `_` arm. Unlike
+/// [`unmatched_patterns`], this is not a typo: the rule's other positions do
+/// cover the workspace, and `*` is left with nothing to add.
+fn dead_catch_alls(index: &PatternIndex, config: &ArcConfig) -> Vec<String> {
+    active_rules(config)
+        .filter_map(|rule| {
+            let RuleKind::Layers(params) = &rule.kind else {
+                return None;
+            };
+            let rest = index.layer_rest(&params.layers)?;
+            rest.is_empty().then(|| rule.name.clone())
         })
-    }));
-
-    dead
+        .collect()
 }
 
 #[cfg(test)]
@@ -402,6 +415,16 @@ mod tests {
             .iter()
             .filter_map(|diagnostic| match &diagnostic.kind {
                 DiagnosticKind::UnmatchedPattern { entry } => Some(entry.pattern.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn dead_catch_all_layers(diagnostics: &[Diagnostic]) -> Vec<&str> {
+        diagnostics
+            .iter()
+            .filter_map(|diagnostic| match &diagnostic.kind {
+                DiagnosticKind::DeadCatchAllLayer { rule } => Some(rule.as_str()),
                 _ => None,
             })
             .collect()
@@ -671,9 +694,9 @@ mod tests {
 
     /// The ordinary positions already name every crate in the fixture, so the
     /// catch-all catches nothing: the same class of dead configuration as a
-    /// pattern that matches no module.
+    /// pattern that matches no module, reported under the same diagnostic name.
     #[test]
-    fn a_catch_all_whose_rest_is_empty_is_an_unmatched_pattern() {
+    fn a_catch_all_whose_rest_is_empty_is_reported_as_dead() {
         let graph = workspace(&["domain", "infra"]);
         let config = config_of(
             vec![layers_rule(
@@ -682,7 +705,10 @@ mod tests {
             )],
             Diagnostics::default(),
         );
-        assert_eq!(unmatched_patterns(&diagnose(&graph, &config)), ["*"]);
+        assert_eq!(
+            dead_catch_all_layers(&diagnose(&graph, &config)),
+            ["architecture layers"]
+        );
     }
 
     #[test]
