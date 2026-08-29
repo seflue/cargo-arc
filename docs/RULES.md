@@ -165,17 +165,22 @@ A pattern names crates and modules by their path:
 | `core::model` | the module `core::model`, and every module in it |
 | `core::*` | the direct children of `core` |
 | `core::**` | every module below `core`, not `core` itself |
+| `core*` | every crate starting with `core`, and every module in each |
 | `**` | everything in the workspace |
 
 A crate name and a module path both cover what they name and every module in it.
 `::**` drops the name itself and keeps the modules in it.
 `::*` keeps only the direct children.
-Wildcards cut at `::` only, so there is no `core_*`.
+Inside one segment, `*` stands for any run of characters, including none.
+It may sit anywhere in the segment and appear more than once, but never crosses a `::`.
+So `core*` names every crate that starts with `core`, and `*_test` every one that ends with `_test`.
 A pattern always starts at a crate name; there is no `crate::` prefix, because a rules file applies to the workspace and not from inside one crate.
 
 A crate has the dependencies its `Cargo.toml` declares, and a module has the imports written in its own file.
 `storage` covers those, and `storage::**` does not, because it leaves out `storage` itself.
 Both cover the modules in it.
+The same distinction holds for a wildcard pattern.
+`storage*` covers the dependencies of every crate it matches, and `storage*::**` does not.
 
 A pattern that matches nothing fails the run by default (`unmatched-pattern`, see [Diagnostics](#diagnostics)).
 A rule built from it checks nothing and would otherwise leave the workspace green.
@@ -198,6 +203,28 @@ Every entry in `layers` is one position, holding either a pattern or a list of p
 
 Two nodes sharing a position are unordered, so a dependency between them passes.
 A dependency with an endpoint that no layer matches is not checked at all; the crates this happens to are reported as `unlayered-crate`.
+
+A position written as the bare string `"*"`, or the single-element list `["*"]`, is the catch-all layer.
+It holds every node the rule's other positions do not match, so once a rule carries one, no crate is left unlayered by it.
+Its place in the list is its rank like any other position.
+A rule may carry at most one catch-all, and it must stand alone in its position.
+Both are refused when the rules file loads.
+A catch-all whose rest is empty, because the rule's other positions already cover the whole workspace, is reported as `unmatched-pattern`, the same as a pattern matching nothing.
+
+Two ordinary positions of one rule matching the same node fail the run outright, naming the node and both positions, instead of silently keeping whichever position resolved it last.
+
+The shortest useful `layers` rule states a single boundary without sorting the rest of the workspace first:
+
+```toml
+[[rules]]
+type = "layers"
+name = "core stays at the bottom"
+layers = ["*", "core"]
+direction = "top-down"
+```
+
+This forbids `core` from depending on anything outside itself.
+A dependency the other way, or between any two crates that share the catch-all, is permitted, because `layers` only judges across positions, never within one.
 
 ### `forbidden-dependency`
 

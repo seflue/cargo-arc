@@ -90,8 +90,8 @@ An edge carrying few symbols is described by that count, not by a shape.
 | **Baseline** | The set of frozen violations, kept in `arc-baseline.toml` beside the rules file. Only `--generate-baseline` writes it. | — |
 | **Diagnostic** | A gap in the configuration rather than in the architecture: a crate no layer sorts, a baseline entry that matches nothing, an `except` that matches nothing, a rule pattern that matches nothing. | — |
 | **Diagnostic level** | Whether the state a diagnostic names is tolerated: `allow`, `warn`, `deny`. | severity |
-| **Layer** | One position in a `layers` rule, holding one or more patterns. Patterns in the same layer sit at the same position. | tier |
-| **Pattern** | A module path with optional wildcards: `domain`, `domain::service`, `domain::*`, `domain::**`, or a bare `**`. | glob |
+| **Layer** | One position in a `layers` rule, holding one or more patterns, or `*` for the nodes no other layer holds. Patterns in the same layer sit at the same position. | tier |
+| **Pattern** | A module path with optional wildcards: `domain`, `domain::service`, `domain::*`, `domain::**`, `domain*` (`*` standing for any run of characters within one segment), or a bare `**`. | glob |
 | **Scope** | The pattern a `no-cycles` rule searches inside. Not a concept beside pattern, just the name of its role there. | — |
 
 *Allowed* and *frozen* are kept apart because one is meant to stay and the other is meant to shrink.
@@ -112,8 +112,8 @@ So a violation of severity `warn` is printed and counted as a warning, and a dia
 The printed word is neither a fourth value of an axis nor a severity assigned to a diagnostic.
 A rule with nothing reported is headed `silenced` in place of that word, which says the block holds nothing that counts, not that silenced is a severity.
 
-*Glob* promises the shell's matching.
-Wildcards here cut at `::` only, so a prefix glob such as `domain_*` does not exist.
+*Glob* promises the shell's matching, and what is absent here is character classes, alternation and negation.
+`*` is the one wildcard, and it never crosses a `::`.
 
 *Layer* also names an SVG stacking order in the frontend.
 That is the ordinary graphics sense and it stays; this entry governs the rule position.

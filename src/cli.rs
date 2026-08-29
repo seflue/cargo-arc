@@ -263,7 +263,7 @@ fn run_check(check_args: &CheckArgs, common: &CommonArgs) -> Result<Judgment> {
     let baseline = Baseline::load(&baseline_path)?;
 
     tracing::debug!("phase: rule check start");
-    let result = check_rules(&graph, &config, &baseline, common.include_reexports);
+    let result = check_rules(&graph, &config, &baseline, common.include_reexports)?;
     tracing::debug!(
         "phase: rule check done ({} violations)",
         result.reported().count()
@@ -303,7 +303,7 @@ fn run_generate_baseline(
         anyhow::bail!(message);
     }
 
-    let result = run.check_all(config);
+    let result = run.check_all(config)?;
     Baseline::write(baseline_path, &result.baseline_entries)?;
     eprintln!(
         "wrote {} to {}",

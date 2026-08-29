@@ -6,7 +6,9 @@
 
 use crate::model::EdgeSymbols;
 use crate::rules::baseline::{Baseline, BaselineEntry, StaleEntry};
-use crate::rules::config::{ArcConfig, DiagnosticLevel, Layer, Rule, RuleKind, Severity};
+use crate::rules::config::{
+    ArcConfig, DiagnosticLevel, Layer, LayersRule, Rule, RuleKind, Severity,
+};
 use crate::rules::matching::PatternIndex;
 use petgraph::graph::NodeIndex;
 use std::collections::HashSet;
@@ -146,27 +148,41 @@ fn is_ignored(config: &ArcConfig, rule_name: &str) -> bool {
 ///
 /// The layer patterns of all rules are taken together: a crate layered by one
 /// rule is sorted, and reporting it against a second rule that says nothing
-/// about it would make module-level layering unusable.
+/// about it would make module-level layering unusable. A rule carrying a
+/// catch-all sorts every crate on its own, whatever its ordinary positions
+/// name, so its presence alone settles the question.
 fn unlayered_crates(index: &PatternIndex, config: &ArcConfig) -> Vec<String> {
-    let layer_patterns: Vec<&str> = active_rules(config)
+    let layers_params: Vec<&LayersRule> = active_rules(config)
         .filter_map(|rule| match &rule.kind {
-            RuleKind::Layers(params) => Some(&params.layers),
+            RuleKind::Layers(params) => Some(params),
             _ => None,
         })
-        .flatten()
-        .flat_map(Layer::patterns)
-        .map(String::as_str)
         .collect();
-    if layer_patterns.is_empty() {
+    if layers_params.is_empty() {
         return Vec::new();
     }
 
     let graph = index.graph();
-    let layered: HashSet<NodeIndex> = layer_patterns
-        .into_iter()
-        .flat_map(|pattern| index.resolve(pattern))
-        .map(|idx| graph.owning_crate(idx))
-        .collect();
+    let catch_all_present = layers_params
+        .iter()
+        .flat_map(|params| &params.layers)
+        .any(Layer::is_catch_all);
+
+    let layered: HashSet<NodeIndex> = if catch_all_present {
+        graph
+            .node_indices()
+            .filter(|&idx| graph[idx].is_crate())
+            .collect()
+    } else {
+        layers_params
+            .iter()
+            .flat_map(|params| &params.layers)
+            .filter_map(Layer::patterns)
+            .flatten()
+            .flat_map(|pattern| index.resolve(pattern))
+            .map(|idx| graph.owning_crate(idx))
+            .collect()
+    };
 
     let except = &config.diagnostics.unlayered_crate.except;
     let mut crates: Vec<String> = graph
@@ -221,11 +237,14 @@ pub struct DeadPattern {
     pub pattern: String,
 }
 
-/// Patterns across `config` that resolve to no node, `except` aside. A rule
-/// whose pattern misses has no other way of saying so: it checks zero edges,
-/// reports nothing, and leaves the run green.
+/// Patterns across `config` that resolve to no node, `except` aside, plus any
+/// catch-all whose rest is empty. A rule whose pattern misses has no other
+/// way of saying so: it checks zero edges, reports nothing, and leaves the
+/// run green. A catch-all whose ordinary positions already cover every node
+/// is the same class of dead configuration, the way Rust reports an
+/// unreachable `_` arm.
 fn unmatched_patterns(index: &PatternIndex, config: &ArcConfig) -> Vec<DeadPattern> {
-    active_rules(config)
+    let mut dead: Vec<DeadPattern> = active_rules(config)
         .flat_map(|rule| {
             rule.kind
                 .patterns()
@@ -237,7 +256,20 @@ fn unmatched_patterns(index: &PatternIndex, config: &ArcConfig) -> Vec<DeadPatte
                 })
                 .collect::<Vec<_>>()
         })
-        .collect()
+        .collect();
+
+    dead.extend(active_rules(config).filter_map(|rule| {
+        let RuleKind::Layers(params) = &rule.kind else {
+            return None;
+        };
+        let rest = index.layer_rest(&params.layers)?;
+        rest.is_empty().then(|| DeadPattern {
+            rule: rule.name.clone(),
+            pattern: "*".to_owned(),
+        })
+    }));
+
+    dead
 }
 
 #[cfg(test)]
@@ -450,6 +482,16 @@ mod tests {
     }
 
     #[test]
+    fn a_catch_all_layer_sorts_every_crate_so_none_is_unlayered() {
+        let graph = workspace(&["domain", "infra", "xtask"]);
+        let config = config_of(
+            vec![layers_rule("architecture layers", &["domain", "*"])],
+            Diagnostics::default(),
+        );
+        assert!(unlayered(&diagnose(&graph, &config)).is_empty());
+    }
+
+    #[test]
     fn allow_silences_a_diagnostic() {
         let graph = workspace(&["domain", "xtask"]);
         let config = config_of(
@@ -625,6 +667,22 @@ mod tests {
             .map(|diagnostic| diagnostic.level)
             .collect();
         assert_eq!(levels, [DiagnosticLevel::Deny]);
+    }
+
+    /// The ordinary positions already name every crate in the fixture, so the
+    /// catch-all catches nothing: the same class of dead configuration as a
+    /// pattern that matches no module.
+    #[test]
+    fn a_catch_all_whose_rest_is_empty_is_an_unmatched_pattern() {
+        let graph = workspace(&["domain", "infra"]);
+        let config = config_of(
+            vec![layers_rule(
+                "architecture layers",
+                &["domain", "infra", "*"],
+            )],
+            Diagnostics::default(),
+        );
+        assert_eq!(unmatched_patterns(&diagnose(&graph, &config)), ["*"]);
     }
 
     #[test]

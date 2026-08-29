@@ -203,31 +203,56 @@ pub struct NoCyclesRule {
     pub scope: String,
 }
 
-/// One rank in a `layers` rule: the patterns whose nodes share a position.
+/// One rank in a `layers` rule: either the patterns whose nodes share that
+/// position, or the catch-all that stands for whatever the rule's other
+/// positions do not match.
 ///
-/// Several patterns per rank exist because a rank is not always one crate.
-/// Written either as a bare pattern (`"domain"`) or as a list
+/// Several patterns per ordinary rank exist because a rank is not always one
+/// crate. Written either as a bare pattern (`"domain"`) or as a list
 /// (`["adapter_a", "adapter_b"]`); listing equals separately would make the
-/// list order assert a ranking between them.
+/// list order assert a ranking between them. The catch-all is written as the
+/// bare string `"*"` or the single-element list `["*"]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Layer(Vec<String>);
+pub enum Layer {
+    Patterns(Vec<String>),
+    CatchAll,
+}
 
 impl Layer {
+    /// The patterns of an ordinary position; `None` for the catch-all, which
+    /// carries none of its own to check for emptiness the ordinary way.
     #[must_use]
-    pub fn patterns(&self) -> &[String] {
-        &self.0
+    pub fn patterns(&self) -> Option<&[String]> {
+        match self {
+            Self::Patterns(patterns) => Some(patterns),
+            Self::CatchAll => None,
+        }
+    }
+
+    #[must_use]
+    pub fn is_catch_all(&self) -> bool {
+        matches!(self, Self::CatchAll)
     }
 }
 
 impl From<&str> for Layer {
     fn from(pattern: &str) -> Self {
-        Self(vec![pattern.to_owned()])
+        if pattern == "*" {
+            Self::CatchAll
+        } else {
+            Self::Patterns(vec![pattern.to_owned()])
+        }
     }
 }
 
 impl FromIterator<String> for Layer {
     fn from_iter<I: IntoIterator<Item = String>>(patterns: I) -> Self {
-        Self(patterns.into_iter().collect())
+        let patterns: Vec<String> = patterns.into_iter().collect();
+        if patterns == ["*"] {
+            Self::CatchAll
+        } else {
+            Self::Patterns(patterns)
+        }
     }
 }
 
@@ -291,7 +316,8 @@ impl RuleKind {
             Self::Layers(params) => params
                 .layers
                 .iter()
-                .flat_map(Layer::patterns)
+                .filter_map(Layer::patterns)
+                .flatten()
                 .map(String::as_str)
                 .collect(),
         }
@@ -316,6 +342,8 @@ pub enum ConfigError {
     ParseError(PathBuf, toml::de::Error),
     DuplicateRuleName { path: PathBuf, name: String },
     ReservedRuleName { path: PathBuf, name: String },
+    CatchAllNotAlone { path: PathBuf, name: String },
+    MultipleCatchAllPositions { path: PathBuf, name: String },
 }
 
 impl std::fmt::Display for ConfigError {
@@ -337,6 +365,16 @@ impl std::fmt::Display for ConfigError {
                 f,
                 "rule name {name:?} in {} belongs to the implicit cycle rule: \
                  rename it, or state a no-cycles rule of your own",
+                path.display()
+            ),
+            Self::CatchAllNotAlone { path, name } => write!(
+                f,
+                "rule {name:?} in {}: the catch-all `*` must stand alone in its layer position",
+                path.display()
+            ),
+            Self::MultipleCatchAllPositions { path, name } => write!(
+                f,
+                "rule {name:?} in {}: only one layer position may be the catch-all `*`",
                 path.display()
             ),
         }
@@ -363,6 +401,7 @@ impl ArcConfig {
         let mut config = Self::from_toml(&content)
             .map_err(|e| ConfigError::ParseError(path.to_path_buf(), e))?;
         config.check_unique_rule_names(path)?;
+        config.check_catch_all_layers(path)?;
         config.add_implicit_rule(path)?;
         Ok(config)
     }
@@ -426,6 +465,39 @@ impl ArcConfig {
         for rule in &self.rules {
             if !seen.insert(rule.name.as_str()) {
                 return Err(ConfigError::DuplicateRuleName {
+                    path: path.to_path_buf(),
+                    name: rule.name.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Reject a `layers` rule whose catch-all does not stand alone in its
+    /// position, or that carries more than one catch-all position. Neither is
+    /// catchable from inside `Layer`'s `Deserialize`, which has no rule name
+    /// to report against.
+    fn check_catch_all_layers(&self, path: &Path) -> Result<(), ConfigError> {
+        for rule in &self.rules {
+            let RuleKind::Layers(params) = &rule.kind else {
+                continue;
+            };
+            let mut catch_alls = 0;
+            for layer in &params.layers {
+                match layer {
+                    Layer::CatchAll => catch_alls += 1,
+                    Layer::Patterns(patterns) => {
+                        if patterns.iter().any(|pattern| pattern == "*") {
+                            return Err(ConfigError::CatchAllNotAlone {
+                                path: path.to_path_buf(),
+                                name: rule.name.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+            if catch_alls > 1 {
+                return Err(ConfigError::MultipleCatchAllPositions {
                     path: path.to_path_buf(),
                     name: rule.name.clone(),
                 });
@@ -512,13 +584,12 @@ mod tests {
         let RuleKind::Layers(LayersRule { layers, direction }) = &config.rules[0].kind else {
             panic!("expected Layers, got {:?}", config.rules[0].kind);
         };
-        let patterns: Vec<&[String]> = layers.iter().map(Layer::patterns).collect();
         assert_eq!(
-            patterns,
-            [
-                &["domain".to_string()][..],
-                &["application".to_string()][..],
-                &["infra".to_string()][..],
+            layers,
+            &[
+                Layer::Patterns(vec!["domain".to_string()]),
+                Layer::Patterns(vec!["application".to_string()]),
+                Layer::Patterns(vec!["infra".to_string()]),
             ]
         );
         assert_eq!(*direction, Direction::TopDown);
@@ -540,13 +611,12 @@ mod tests {
         let RuleKind::Layers(LayersRule { layers, .. }) = &config.rules[0].kind else {
             panic!("expected Layers, got {:?}", config.rules[0].kind);
         };
-        let patterns: Vec<&[String]> = layers.iter().map(Layer::patterns).collect();
         assert_eq!(
-            patterns,
-            [
-                &["domain".to_string()][..],
-                &["adapter_a".to_string(), "adapter_b".to_string()][..],
-                &["runtime".to_string()][..],
+            layers,
+            &[
+                Layer::Patterns(vec!["domain".to_string()]),
+                Layer::Patterns(vec!["adapter_a".to_string(), "adapter_b".to_string()]),
+                Layer::Patterns(vec!["runtime".to_string()]),
             ]
         );
     }
@@ -1194,5 +1264,82 @@ mod tests {
             .add_implicit_rule(Path::new("arc-rules.toml"))
             .unwrap();
         assert_eq!(config.rules.len(), 2);
+    }
+
+    // ===== catch-all layer =====
+
+    #[test]
+    fn test_catch_all_bare_star_parses_as_catch_all_layer() {
+        let toml = r#"
+            [[rules]]
+            type = "layers"
+            name = "architecture layers"
+            layers = ["*", "domain"]
+            direction = "top-down"
+        "#;
+        let config = ArcConfig::from_toml(toml).unwrap();
+        let RuleKind::Layers(LayersRule { layers, .. }) = &config.rules[0].kind else {
+            panic!("expected Layers, got {:?}", config.rules[0].kind);
+        };
+        assert_eq!(layers[0], Layer::CatchAll);
+        assert_eq!(layers[1], Layer::Patterns(vec!["domain".to_string()]));
+    }
+
+    #[test]
+    fn test_catch_all_single_element_list_parses_as_catch_all_layer() {
+        let toml = r#"
+            [[rules]]
+            type = "layers"
+            name = "architecture layers"
+            layers = [["*"], "domain"]
+            direction = "top-down"
+        "#;
+        let config = ArcConfig::from_toml(toml).unwrap();
+        let RuleKind::Layers(LayersRule { layers, .. }) = &config.rules[0].kind else {
+            panic!("expected Layers, got {:?}", config.rules[0].kind);
+        };
+        assert_eq!(layers[0], Layer::CatchAll);
+    }
+
+    #[test]
+    fn test_catch_all_alongside_other_patterns_fails_to_load() {
+        let toml = r#"
+            [[rules]]
+            type = "layers"
+            name = "architecture layers"
+            layers = [["*", "core"], "domain"]
+            direction = "top-down"
+        "#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("arc-rules.toml");
+        std::fs::write(&path, toml).unwrap();
+
+        let error = ArcConfig::load(&path).unwrap_err();
+        assert!(
+            matches!(&error, ConfigError::CatchAllNotAlone { name, .. } if name == "architecture layers"),
+            "got: {error:?}"
+        );
+        assert!(error.to_string().contains("architecture layers"));
+    }
+
+    #[test]
+    fn test_two_catch_all_positions_fail_to_load() {
+        let toml = r#"
+            [[rules]]
+            type = "layers"
+            name = "architecture layers"
+            layers = ["*", "*"]
+            direction = "top-down"
+        "#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("arc-rules.toml");
+        std::fs::write(&path, toml).unwrap();
+
+        let error = ArcConfig::load(&path).unwrap_err();
+        assert!(
+            matches!(&error, ConfigError::MultipleCatchAllPositions { name, .. } if name == "architecture layers"),
+            "got: {error:?}"
+        );
+        assert!(error.to_string().contains("architecture layers"));
     }
 }

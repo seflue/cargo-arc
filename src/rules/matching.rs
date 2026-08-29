@@ -4,6 +4,7 @@
 //! `NodeIndex` sets in the `ArcGraph`.
 
 use crate::graph::{ArcGraph, EdgeWeight};
+use crate::rules::config::Layer;
 use petgraph::graph::NodeIndex;
 use petgraph::visit::EdgeRef;
 use std::collections::HashSet;
@@ -100,6 +101,29 @@ impl<'graph> PatternIndex<'graph> {
             result.extend(subtree);
         }
         result.into_iter().collect()
+    }
+
+    /// Every non-external node that `layers`'s ordinary positions do not
+    /// match: the catch-all's own reach. `None` when `layers` carries no
+    /// catch-all, the one situation this set has a use. Shared by the
+    /// `layers` check, which assigns this set to the catch-all's position,
+    /// and the `unmatched-pattern` diagnostic, which reports the catch-all as
+    /// dead when this set is empty.
+    pub(super) fn layer_rest(&self, layers: &[Layer]) -> Option<HashSet<NodeIndex>> {
+        if !layers.iter().any(Layer::is_catch_all) {
+            return None;
+        }
+        let matched: HashSet<NodeIndex> = layers
+            .iter()
+            .filter_map(Layer::patterns)
+            .flatten()
+            .flat_map(|pattern| self.resolve(pattern))
+            .collect();
+        Some(
+            non_external_indices(self.graph)
+                .filter(|idx| !matched.contains(idx))
+                .collect(),
+        )
     }
 
     /// Nodes named by `pattern`, without expanding into their subtrees.

@@ -7,7 +7,7 @@ use crate::graph::{ArcGraph, EdgeWeight};
 use crate::model::{Edge, EdgeSymbols, SourceLocation};
 use crate::rules::baseline::{Baseline, BaselineEntry, ViolationKey};
 use crate::rules::config::{
-    ArcConfig, DiagnosticLevel, Direction, Except, ForbiddenDependencyRule, LayersRule,
+    ArcConfig, DiagnosticLevel, Direction, Except, ForbiddenDependencyRule, Layer, LayersRule,
     NoCyclesRule, Rule, RuleKind, Severity,
 };
 use crate::rules::diagnostics::{self, Diagnostic};
@@ -23,6 +23,30 @@ pub enum ViolationState {
     Allowed,
     Frozen,
 }
+
+/// Two ordinary positions of one `layers` rule claim the same node. No
+/// diagnostic level has a defensible reading here: `allow` would leave a
+/// judgment about the architecture hanging on array order. The run fails
+/// outright instead of reporting a violation.
+#[derive(Debug)]
+pub struct LayerOverlapError {
+    pub rule: String,
+    pub node: String,
+    pub first: Vec<String>,
+    pub second: Vec<String>,
+}
+
+impl std::fmt::Display for LayerOverlapError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "rule {:?}: {:?} matches both layer {:?} and layer {:?}",
+            self.rule, self.node, self.first, self.second
+        )
+    }
+}
+
+impl std::error::Error for LayerOverlapError {}
 
 /// A single architecture rule violation.
 #[derive(Debug)]
@@ -316,10 +340,14 @@ impl<'graph> CheckRun<'graph> {
     }
 
     /// Dispatch one rule to the checker for its kind, ignoring its severity.
-    fn check_rule(&self, rule: &Rule) -> CheckResult {
+    ///
+    /// # Errors
+    /// `LayerOverlapError` if a `layers` rule's ordinary positions both claim
+    /// one node.
+    fn check_rule(&self, rule: &Rule) -> Result<CheckResult, LayerOverlapError> {
         match &rule.kind {
-            RuleKind::ForbiddenDependency(params) => self.check_forbidden(rule, params),
-            RuleKind::NoCycles(params) => self.check_cycles(rule, params),
+            RuleKind::ForbiddenDependency(params) => Ok(self.check_forbidden(rule, params)),
+            RuleKind::NoCycles(params) => Ok(self.check_cycles(rule, params)),
             RuleKind::Layers(params) => self.check_layers(rule, params),
         }
     }
@@ -497,21 +525,54 @@ impl<'graph> CheckRun<'graph> {
         found
     }
 
-    /// Check a `layers` rule: edges must respect layer ordering.
-    fn check_layers(&self, rule: &Rule, params: &LayersRule) -> CheckResult {
+    /// Check a `layers` rule: edges must respect layer ordering. A node
+    /// claimed by two ordinary positions fails the run rather than silently
+    /// landing in whichever position resolved it last.
+    ///
+    /// # Errors
+    /// `LayerOverlapError` if two ordinary positions both claim one node.
+    fn check_layers(
+        &self,
+        rule: &Rule,
+        params: &LayersRule,
+    ) -> Result<CheckResult, LayerOverlapError> {
         // Build layer index: NodeIndex → layer position
-        let mut layer_index: std::collections::HashMap<NodeIndex, usize> =
-            std::collections::HashMap::new();
+        let mut layer_index: HashMap<NodeIndex, usize> = HashMap::new();
+        let mut claimed: HashMap<NodeIndex, (usize, &[String])> = HashMap::new();
         for (pos, layer) in params.layers.iter().enumerate() {
-            for pattern in layer.patterns() {
-                for idx in self.resolve(pattern) {
-                    layer_index.insert(idx, pos);
+            let Some(patterns) = layer.patterns() else {
+                continue; // the catch-all is assigned below, once every ordinary claim is known
+            };
+            for idx in patterns.iter().flat_map(|pattern| self.resolve(pattern)) {
+                if let Some(&(earlier_pos, earlier_patterns)) = claimed.get(&idx) {
+                    if earlier_pos != pos {
+                        return Err(LayerOverlapError {
+                            rule: rule.name.clone(),
+                            node: self.graph().qualified_name(idx),
+                            first: earlier_patterns.to_vec(),
+                            second: patterns.to_vec(),
+                        });
+                    }
+                    continue;
                 }
+                claimed.insert(idx, (pos, patterns));
+                layer_index.insert(idx, pos);
             }
         }
+        if let Some(rest) = self.pattern_index.layer_rest(&params.layers) {
+            let pos = params
+                .layers
+                .iter()
+                .position(Layer::is_catch_all)
+                .expect("layer_rest returned Some only when a catch-all position exists");
+            for idx in rest {
+                layer_index.insert(idx, pos);
+            }
+        }
+
         let except = ResolvedExceptions::resolve(&rule.except, self);
 
-        self.check_edge_violations(rule, &except, |source, target| {
+        Ok(self.check_edge_violations(rule, &except, |source, target| {
             let (Some(&source_layer), Some(&target_layer)) =
                 (layer_index.get(&source), layer_index.get(&target))
             else {
@@ -523,7 +584,7 @@ impl<'graph> CheckRun<'graph> {
                 // bottom-up: lower layers may depend on higher layers
                 Direction::BottomUp => source_layer < target_layer,
             }
-        })
+        }))
     }
 
     /// Shared by all edge-predicate rule checks (forbidden-dependency, layers);
@@ -612,15 +673,23 @@ impl<'graph> CheckRun<'graph> {
     ///
     /// Diagnostics are raised after the rules: a stale baseline entry is only
     /// recognizable once every rule has had its chance to match it.
-    #[must_use]
-    pub(crate) fn check_all(&self, config: &ArcConfig) -> CheckResult {
+    ///
+    /// # Errors
+    /// `LayerOverlapError` if a `layers` rule's ordinary positions both claim
+    /// one node.
+    pub(crate) fn check_all(&self, config: &ArcConfig) -> Result<CheckResult, LayerOverlapError> {
         let checked: Vec<&Rule> = config
             .rules
             .iter()
             .filter(|rule| rule.severity != Severity::Ignore)
             .collect();
 
-        let mut result: CheckResult = checked.iter().map(|rule| self.check_rule(rule)).collect();
+        let mut result: CheckResult = checked
+            .iter()
+            .map(|rule| self.check_rule(rule))
+            .collect::<Result<Vec<CheckResult>, LayerOverlapError>>()?
+            .into_iter()
+            .collect();
         result.checked_rules = checked.iter().map(|rule| rule.name.clone()).collect();
         result.diagnostics = diagnostics::collect(
             &self.pattern_index,
@@ -628,7 +697,7 @@ impl<'graph> CheckRun<'graph> {
             self.baseline,
             &result.baseline_hits,
         );
-        result
+        Ok(result)
     }
 
     #[must_use]
@@ -638,13 +707,16 @@ impl<'graph> CheckRun<'graph> {
 }
 
 /// Set up a run over `graph` and check every rule in `config` against it.
-#[must_use]
+///
+/// # Errors
+/// `LayerOverlapError` if a `layers` rule's ordinary positions both claim one
+/// node.
 pub fn check_rules(
     graph: &ArcGraph,
     config: &ArcConfig,
     baseline: &Baseline,
     include_reexports: bool,
-) -> CheckResult {
+) -> Result<CheckResult, LayerOverlapError> {
     CheckRun::new(graph, baseline, include_reexports).check_all(config)
 }
 
@@ -757,7 +829,9 @@ mod tests {
         include_reexports: bool,
         baseline: &Baseline,
     ) -> CheckResult {
-        CheckRun::new(graph, baseline, include_reexports).check_rule(rule)
+        CheckRun::new(graph, baseline, include_reexports)
+            .check_rule(rule)
+            .expect("no layer overlap in this test graph")
     }
 
     /// Writes `entries` to a throwaway `arc-baseline.toml` and loads it back,
@@ -1407,6 +1481,95 @@ mod tests {
         assert!(reported.is_empty());
     }
 
+    /// A "domain" crate plus two crates that do not match `*domain*`.
+    fn domain_and_others_graph() -> (ArcGraph, NodeIndex, NodeIndex, NodeIndex) {
+        let mut graph = ArcGraph::new();
+        let domain = graph.add_node(Node::Crate {
+            name: "domain".into(),
+            path: PathBuf::from("/domain"),
+        });
+        let svc_orders = graph.add_node(Node::Crate {
+            name: "svc_orders".into(),
+            path: PathBuf::from("/svc_orders"),
+        });
+        let svc_billing = graph.add_node(Node::Crate {
+            name: "svc_billing".into(),
+            path: PathBuf::from("/svc_billing"),
+        });
+        (graph, domain, svc_orders, svc_billing)
+    }
+
+    /// Top-down `layers = [["*"], ["*domain*"]]`: the catch-all above domain.
+    fn catch_all_above_domain_rule() -> Rule {
+        layers_rule_of_ranks(&[&["*"], &["*domain*"]])
+    }
+
+    #[test]
+    fn test_layers_catch_all_domain_depending_downward_is_a_violation() {
+        let (mut graph, domain, svc_orders, _svc_billing) = domain_and_others_graph();
+        add_production_dep(&mut graph, domain, svc_orders);
+
+        let result = check_rule(&graph, &catch_all_above_domain_rule(), false);
+        assert_eq!(result.reported().count(), 1);
+    }
+
+    #[test]
+    fn test_layers_catch_all_may_depend_on_domain() {
+        let (mut graph, domain, svc_orders, _svc_billing) = domain_and_others_graph();
+        add_production_dep(&mut graph, svc_orders, domain);
+
+        let result = check_rule(&graph, &catch_all_above_domain_rule(), false);
+        assert!(result.reported().next().is_none());
+    }
+
+    #[test]
+    fn test_layers_catch_all_edge_inside_domain_is_not_a_violation() {
+        let (mut graph, domain, ..) = domain_and_others_graph();
+        let inner = add_module(&mut graph, "inner", domain, domain);
+        add_production_dep(&mut graph, domain, inner);
+
+        let result = check_rule(&graph, &catch_all_above_domain_rule(), false);
+        assert!(result.reported().next().is_none());
+    }
+
+    #[test]
+    fn test_catch_all_needs_no_rule_change_when_a_crate_is_added() {
+        let rule = catch_all_above_domain_rule();
+
+        let (mut small_graph, domain, svc_orders, _billing) = domain_and_others_graph();
+        add_production_dep(&mut small_graph, domain, svc_orders);
+        assert_eq!(check_rule(&small_graph, &rule, false).reported().count(), 1);
+
+        // svc_billing is named nowhere: not in the graph above, not in the rule.
+        let (mut bigger_graph, domain2, svc_orders2, svc_billing2) = domain_and_others_graph();
+        add_production_dep(&mut bigger_graph, domain2, svc_orders2);
+        add_production_dep(&mut bigger_graph, domain2, svc_billing2);
+        let result = check_rule(&bigger_graph, &rule, false);
+        assert_eq!(
+            result.reported().count(),
+            2,
+            "the crate absent from every position still falls under the catch-all"
+        );
+    }
+
+    #[test]
+    fn test_layers_overlapping_ordinary_positions_fail_the_run() {
+        let mut graph = ArcGraph::new();
+        graph.add_node(Node::Crate {
+            name: "svc_application_orders".into(),
+            path: PathBuf::from("/svc_application_orders"),
+        });
+
+        let rule = layers_rule_of_ranks(&[&["*application*"], &["*orders*"]]);
+        let err = CheckRun::new(&graph, &Baseline::empty(), false)
+            .check_rule(&rule)
+            .expect_err("a node matched by two ordinary positions must fail the run");
+        let message = err.to_string();
+        assert!(message.contains("*application*"), "got: {message}");
+        assert!(message.contains("*orders*"), "got: {message}");
+        assert!(message.contains("svc_application_orders"), "got: {message}");
+    }
+
     #[test]
     fn test_layers_except_allows_matching_edge() {
         let (mut graph, _domain, service, _model, _infra, db, _api, _app, _handler) =
@@ -1446,7 +1609,7 @@ mod tests {
                 }),
             },
         ]);
-        let result = check_rules(&graph, &config, &Baseline::empty(), false);
+        let result = check_rules(&graph, &config, &Baseline::empty(), false).unwrap();
         assert_eq!(result.reported().count(), 2);
         assert!(
             result
@@ -1460,7 +1623,7 @@ mod tests {
     fn test_check_rules_empty() {
         let (graph, _) = test_crate_graph();
         let config = config_of(vec![]);
-        let result = check_rules(&graph, &config, &Baseline::empty(), false);
+        let result = check_rules(&graph, &config, &Baseline::empty(), false).unwrap();
         assert!(result.reported().next().is_none());
     }
 
@@ -1552,7 +1715,7 @@ mod tests {
 
         // The layers rule names two of the three crates.
         let config = config_of(vec![layers_rule(&["infra", "domain"], vec![])]);
-        let result = check_rules(&graph, &config, &Baseline::empty(), false);
+        let result = check_rules(&graph, &config, &Baseline::empty(), false).unwrap();
         let unlayered: Vec<&str> = result
             .diagnostics
             .iter()
@@ -1730,7 +1893,7 @@ mod tests {
                 to: "infra::**".into(),
             }),
         }]);
-        let result = check_rules(&graph, &config, &Baseline::empty(), false);
+        let result = check_rules(&graph, &config, &Baseline::empty(), false).unwrap();
         assert!(result.reported().next().is_none());
     }
 
@@ -1913,7 +2076,7 @@ mod tests {
             no_cycles_rule("no cycles in infra", "infra::**", vec![]),
         ]);
 
-        let first = check_rules(&graph, &config, &Baseline::empty(), false);
+        let first = check_rules(&graph, &config, &Baseline::empty(), false).unwrap();
         assert!(
             first.reported().next().is_some(),
             "sanity: violations exist"
@@ -1924,7 +2087,7 @@ mod tests {
         Baseline::write(&path, &first.baseline_entries).unwrap();
         let baseline = Baseline::load(&path).unwrap();
 
-        let second = check_rules(&graph, &config, &baseline, false);
+        let second = check_rules(&graph, &config, &baseline, false).unwrap();
         let reported: Vec<_> = second.reported().collect();
         assert!(reported.is_empty(), "got: {reported:?}");
         assert!(second.frozen().next().is_some());
