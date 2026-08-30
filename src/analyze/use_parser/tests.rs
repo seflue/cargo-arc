@@ -2578,6 +2578,7 @@ mod external_crate_tests {
 /// must resolve to `parent::child`, not to a top-level `child`.
 mod module_alias_tests {
     use super::*;
+    use rstest::rstest;
 
     fn nested_module_paths() -> ModulePathMap {
         [(
@@ -2597,7 +2598,7 @@ mod module_alias_tests {
         let uses = parse_test_uses("use crate::parent::child;");
         let aliases = collect_module_aliases(&uses, &ctx);
         assert_eq!(
-            aliases.get("child").map(String::as_str),
+            aliases.target("child"),
             Some("crate::parent::child"),
             "leaf name should bind to the full module path: {aliases:?}"
         );
@@ -2611,12 +2612,9 @@ mod module_alias_tests {
             .build();
         let uses = parse_test_uses("use crate::parent::{child, Other};");
         let aliases = collect_module_aliases(&uses, &ctx);
-        assert_eq!(
-            aliases.get("child").map(String::as_str),
-            Some("crate::parent::child")
-        );
+        assert_eq!(aliases.target("child"), Some("crate::parent::child"));
         assert!(
-            !aliases.contains_key("Other"),
+            aliases.target("Other").is_none(),
             "non-module items must not enter the alias map: {aliases:?}"
         );
     }
@@ -2630,7 +2628,7 @@ mod module_alias_tests {
         let uses = parse_test_uses("use crate::parent::child as kid;");
         let aliases = collect_module_aliases(&uses, &ctx);
         assert_eq!(
-            aliases.get("kid").map(String::as_str),
+            aliases.target("kid"),
             Some("crate::parent::child"),
             "rename binds the alias name to the original module: {aliases:?}"
         );
@@ -2649,7 +2647,7 @@ mod module_alias_tests {
         let uses = parse_test_uses("use other_crate::module;");
         let aliases = collect_module_aliases(&uses, &ctx);
         assert_eq!(
-            aliases.get("module").map(String::as_str),
+            aliases.target("module"),
             Some("other_crate::module"),
             "workspace module alias keeps the code-side crate name: {aliases:?}"
         );
@@ -2710,11 +2708,97 @@ mod module_alias_tests {
         let ctx = ResolutionContextBuilder::new(Path::new("src/consumer.rs"))
             .module_paths(&mp)
             .build();
-        let aliases = HashMap::new();
+        let aliases = ModuleAliases::new();
         let paths = vec![("child::Item".to_string(), 20, EdgeContext::production(), 0)];
         let deps = parse_path_ref_dependencies(&paths, &ctx, &aliases);
         assert_eq!(deps.len(), 1, "top-level module still resolves: {deps:?}");
         assert_eq!(deps[0].target_module, "child");
+    }
+
+    fn colliding_module_paths() -> ModulePathMap {
+        [(
+            "my_crate".to_string(),
+            HashSet::from(["consumer".into(), "shared".into()]),
+        )]
+        .into_iter()
+        .collect()
+    }
+
+    fn foreign_crate_names() -> HashMap<String, String> {
+        [("remote_lib".to_string(), "remote_lib 1.0".to_string())]
+            .into_iter()
+            .collect()
+    }
+
+    /// The name can collide through either half of the `use`: its last path
+    /// segment or the alias it is renamed to.
+    #[rstest]
+    #[case::last_segment("use remote_lib::shared;")]
+    #[case::alias_name("use remote_lib as shared;")]
+    fn test_binding_from_another_crate_beats_same_named_module(#[case] use_line: &str) {
+        let mp = colliding_module_paths();
+        let ext = foreign_crate_names();
+        let ctx = ResolutionContextBuilder::new(Path::new("src/consumer.rs"))
+            .module_paths(&mp)
+            .current_module_path("consumer")
+            .external_crate_names(&ext)
+            .build();
+        let uses = parse_test_uses(use_line);
+        let aliases = collect_module_aliases(&uses, &ctx);
+        let paths = vec![("shared::Item".to_string(), 20, EdgeContext::production(), 0)];
+        let deps = parse_path_ref_dependencies(&paths, &ctx, &aliases);
+        assert_eq!(deps.len(), 1, "the reference resolves once: {deps:?}");
+        assert_eq!(
+            deps[0].target_crate, "remote_lib",
+            "the binding names the other crate, not the module beside the file: {deps:?}"
+        );
+    }
+
+    #[test]
+    fn test_item_import_from_this_crate_leaves_the_module_alone() {
+        let mp: ModulePathMap = [(
+            "my_crate".to_string(),
+            HashSet::from(["consumer".into(), "util".into(), "helper".into()]),
+        )]
+        .into_iter()
+        .collect();
+        let ctx = ResolutionContextBuilder::new(Path::new("src/consumer.rs"))
+            .module_paths(&mp)
+            .current_module_path("consumer")
+            .build();
+        let uses = parse_test_uses("use crate::util::helper;");
+        let aliases = collect_module_aliases(&uses, &ctx);
+        let paths = vec![(
+            "helper::thing".to_string(),
+            20,
+            EdgeContext::production(),
+            0,
+        )];
+        let deps = parse_path_ref_dependencies(&paths, &ctx, &aliases);
+        assert_eq!(
+            deps.len(),
+            1,
+            "an item import does not take the name away from the module: {deps:?}"
+        );
+        assert_eq!(deps[0].target_module, "helper");
+    }
+
+    #[test]
+    fn test_unplaceable_binding_beats_same_named_module() {
+        let mp = colliding_module_paths();
+        let ctx = ResolutionContextBuilder::new(Path::new("src/consumer.rs"))
+            .module_paths(&mp)
+            .current_module_path("consumer")
+            .build();
+        let uses = parse_test_uses("use remote_lib::shared;");
+        let aliases = collect_module_aliases(&uses, &ctx);
+        let paths = vec![("shared::Item".to_string(), 20, EdgeContext::production(), 0)];
+        let deps = parse_path_ref_dependencies(&paths, &ctx, &aliases);
+        assert!(
+            deps.is_empty(),
+            "the name is bound even where the binding cannot be placed, \
+             and the module beside the file is not what it names: {deps:?}"
+        );
     }
 }
 
@@ -2797,7 +2881,7 @@ mod use_self_tests {
         let uses = parse_test_uses("use crate::auxil::{self, dxgi::Factory};");
         let aliases = collect_module_aliases(&uses, &ctx);
         assert_eq!(
-            aliases.get("auxil").map(String::as_str),
+            aliases.target("auxil"),
             Some("crate::auxil"),
             "`self` binds the module name locally: {aliases:?}"
         );

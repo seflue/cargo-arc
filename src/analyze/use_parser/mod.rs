@@ -4,6 +4,7 @@ use crate::model::{
     CrateExportMap, DefKind, DependencyRef, EdgeContext, ModulePathMap, TestKind, UsageKind,
     WorkspaceCrates, normalize_crate_name,
 };
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::path::Path;
@@ -746,17 +747,66 @@ fn expand_glob(dep: DependencyRef, reexport_map: &ReExportMap) -> Vec<Dependency
         .collect()
 }
 
-/// Local binding name → absolute path of the module it names.
-/// Absolute means `crate::a::b` for the current crate and `other_crate::b` otherwise,
-/// so a binding stays valid wherever in the file it is used.
-pub(crate) type ModuleAliases = HashMap<String, String>;
+/// What the `use` items of one file bind.
+///
+/// `modules` holds a binding name → the absolute path of the module it names.
+/// Absolute means `crate::a::b` for the current crate and `other_crate::b`
+/// otherwise, so a binding stays valid wherever in the file it is used.
+///
+/// `elsewhere` holds the names bound to something this crate does not contain.
+/// The parser need not know what that something is. An import from a crate it has
+/// no metadata for still binds the name, and the module beside the file is then not
+/// what a bare path starting with that name means.
+#[derive(Debug, Default)]
+pub(crate) struct ModuleAliases {
+    modules: HashMap<String, String>,
+    elsewhere: HashSet<String>,
+}
+
+impl ModuleAliases {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// The module path a name is bound to, where it is bound to one.
+    fn target(&self, name: &str) -> Option<&str> {
+        self.modules.get(name).map(String::as_str)
+    }
+
+    /// The path to resolve for a reference, or `None` when the reference is not
+    /// this crate's to place.
+    ///
+    /// `queue::TempResource` under `queue → crate::device::queue` becomes
+    /// `crate::device::queue::TempResource`. A first segment bound elsewhere yields
+    /// `None`: the binding rules out the module beside the file, and nothing here
+    /// says what to put in its place. An unbound path is returned unchanged.
+    fn path_to_resolve<'p>(&self, path: &'p str) -> Option<Cow<'p, str>> {
+        let Some((first, rest)) = path.split_once("::") else {
+            return Some(Cow::Borrowed(path));
+        };
+        if let Some(target) = self.target(first) {
+            return Some(Cow::Owned(format!("{target}::{rest}")));
+        }
+        if self.elsewhere.contains(first) {
+            return None;
+        }
+        Some(Cow::Borrowed(path))
+    }
+
+    fn bind_module(&mut self, name: &str, module_path: String) {
+        self.modules.insert(name.to_string(), module_path);
+    }
+
+    fn bind_elsewhere(&mut self, name: &str) {
+        self.elsewhere.insert(name.to_string());
+    }
+}
 
 /// Build the file-local module alias table from its `use` items.
 ///
 /// `use crate::device::{queue, Device}` binds `queue` to the module `device::queue`;
-/// a later `queue::TempResource` is only resolvable against that binding. Only
-/// module imports are recorded — `Device` names an item and is skipped, because
-/// qualified uses of an item are references to the item itself, already resolved.
+/// a later `queue::TempResource` is only resolvable against that binding. What each
+/// binding means for later references is decided in [`classify_binding`].
 pub(crate) fn collect_module_aliases(
     use_items: &[(syn::ItemUse, EdgeContext, usize)],
     ctx: &ResolutionContext,
@@ -768,22 +818,65 @@ pub(crate) fn collect_module_aliases(
         let original_paths = resolve_use_tree(&item.tree, "", false);
 
         for (alias_path, original_path) in alias_paths.iter().zip(original_paths.iter()) {
-            let Some(dep) = resolve_single_path(ctx, original_path, 0, context, *inline_depth)
-            else {
-                continue;
-            };
-            // A module import carries no item; anything else names a symbol.
-            if dep.target_item.is_some() || dep.target_module.is_empty() {
-                continue;
-            }
             let Some(binding) = alias_path.rsplit("::").next() else {
                 continue;
             };
-            aliases.insert(binding.to_string(), absolute_module_path(ctx, &dep));
+            // A glob binds every name it carries and none of them is written here.
+            if binding == "*" {
+                continue;
+            }
+            let dep = resolve_single_path(ctx, original_path, 0, context, *inline_depth);
+            match classify_binding(ctx, dep.as_ref(), binding) {
+                Binding::Module(module_path) => aliases.bind_module(binding, module_path),
+                Binding::Elsewhere => aliases.bind_elsewhere(binding),
+                Binding::OwnItem => {}
+            }
         }
     }
 
     aliases
+}
+
+/// What one `use` binding means for later references to its name.
+enum Binding {
+    /// Names a module. A later `binding::Item` resolves through this path.
+    Module(String),
+    /// Names something this crate does not contain.
+    Elsewhere,
+    /// Names an item of this crate. A qualified use of an item is a reference to
+    /// the item and already resolved, so later paths resolve on their own.
+    OwnItem,
+}
+
+/// Classify one binding. `dep` is what its path resolved to, `None` where the
+/// resolution chain could not place it.
+///
+/// A path the parser cannot place is a path out of this crate: every form that
+/// stays inside resolves. Its name is therefore bound elsewhere, and that is what
+/// keeps `parse_bare_module_import` off it.
+///
+/// A binding from another crate needs an entry only where its name also names a
+/// module of this crate. Without one, the reference lands on that module. Whether
+/// it would is asked of `parse_bare_module_import` rather than restated here, so
+/// the two cannot drift apart.
+fn classify_binding(
+    ctx: &ResolutionContext,
+    dep: Option<&DependencyRef>,
+    binding: &str,
+) -> Binding {
+    let Some(dep) = dep else {
+        return Binding::Elsewhere;
+    };
+    if dep.target_item.is_none() && !dep.target_module.is_empty() {
+        return Binding::Module(absolute_module_path(ctx, dep));
+    }
+    if dep.target_crate == normalize_crate_name(ctx.current_crate) {
+        return Binding::OwnItem;
+    }
+    if parse_bare_module_import(ctx, binding, 0, &EdgeContext::production()).is_some() {
+        return Binding::Module(dep.full_target());
+    }
+    Binding::Elsewhere
 }
 
 /// Render a resolved module dependency as a path that `resolve_single_path` can
@@ -796,21 +889,13 @@ fn absolute_module_path(ctx: &ResolutionContext, dep: &DependencyRef) -> String 
     }
 }
 
-/// Rewrite a path whose first segment is a locally bound module name.
-/// `queue::TempResource` + `queue → crate::device::queue` = `crate::device::queue::TempResource`.
-fn rewrite_through_alias(path: &str, aliases: &ModuleAliases) -> Option<String> {
-    let (first, rest) = path.split_once("::")?;
-    let target = aliases.get(first)?;
-    Some(format!("{target}::{rest}"))
-}
-
 /// Parse path references into workspace-relevant dependencies.
 ///
 /// Takes pre-collected path refs from `collect_all_path_refs()` and resolves
 /// each through the existing resolution chain (`resolve_single_path()`).
-/// Paths starting with a name bound by a `use` in the same file are rewritten
-/// against `aliases` first; that binding is authoritative, so no fallback to the
-/// bare path is attempted.
+/// A path starting with a name the file's `use` items bind goes through
+/// [`ModuleAliases::path_to_resolve`] first. That binding is authoritative, so a
+/// path it rules out is dropped rather than resolved on its own.
 /// Deduplicates by `full_target()` — same strategy as `parse_workspace_dependencies()`.
 pub(crate) fn parse_path_ref_dependencies(
     paths: &[(String, usize, EdgeContext, usize)],
@@ -821,10 +906,11 @@ pub(crate) fn parse_path_ref_dependencies(
     let mut seen_targets: HashMap<(String, UsageKind), usize> = HashMap::new();
 
     for (path, line_num, context, inline_depth) in paths {
-        let rewritten = rewrite_through_alias(path, aliases);
-        let effective = rewritten.as_deref().unwrap_or(path);
+        let Some(effective) = aliases.path_to_resolve(path) else {
+            continue;
+        };
         if let Some(mut dep) =
-            resolve_single_path(ctx, effective, *line_num, context, *inline_depth)
+            resolve_single_path(ctx, &effective, *line_num, context, *inline_depth)
         {
             resolve_reexport(&mut dep, ctx.reexport_map, ctx.current_module_path);
             DependencyRef::dedup_push(&mut deps, &mut seen_targets, dep);

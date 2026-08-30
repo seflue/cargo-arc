@@ -1387,3 +1387,14 @@ to = "infra::**"
         "the diagnostic denies by default, so the run fails, stderr: {stderr}"
     );
 }
+
+#[test]
+fn test_import_from_outside_does_not_cycle_through_a_same_named_module() {
+    // Every import in my_crate::consumer names a module beside consumer.rs, and
+    // each of those modules depends on consumer, so mistaking one invents a cycle.
+    let (code, stderr) = cargo_arc_check("foreign_name_collision", &[]);
+    assert_eq!(
+        code, 0,
+        "neither import is a dependency on the module beside the file, stderr: {stderr}"
+    );
+}
