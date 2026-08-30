@@ -63,6 +63,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on its own. Without the field a rule says nothing about the nodes it does not
   name. `exhaustive = true` beside the catch-all layer `*` is refused when the
   file loads, because the catch-all would satisfy the claim by construction.
+- A `*` in a pattern now matches inside a name part instead of only as a whole
+  segment, so one entry such as `*application*` covers every crate whose name
+  carries the layer, rather than each being listed by hand in every rule. A `*`
+  never crosses `::`, `**` still stands for whole segments, and `*` also matches
+  the empty string, so `nwa_application*` covers a crate named `nwa_application`
+  as well. The existing forms `**`, `core::**` and `core::*` denote the same sets
+  as before. Wildcards hold in `except` too.
+- A `layers` rule takes `*` as a position of its own, the catch-all layer, which
+  holds every node the rule's other positions leave. That is how "all of this is
+  one layer, except these" is written now that patterns can overlap by
+  construction. A catch-all that stays empty is reported as `unmatched-pattern`.
 
 ### Changed
 
@@ -95,6 +106,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the key. Before, such a key was ignored: `[diagnostic]` for `[diagnostics]`,
   `scpoe` for `scope`, or `excpet` inside `unlayered-node` all loaded fine and
   switched nothing on.
+- A module pattern now matches its node and everything below it, the way a crate
+  pattern always has, so `storage::model` covers the modules under it and the
+  pair `storage::model` plus `storage::model::**` collapses to the first alone.
+  `::**` still means the subtree without the node and `::*` still means the
+  direct children; only the bare form widened. A rule written as such a pair
+  keeps its meaning. The change reaches every rule type, `except` included, where
+  a pattern that is now wider grants a wider permanent allowance.
+- Two positions of a `layers` rule that match the same node now fail the run,
+  which names the node, both positions and the rules file. Before, the later
+  position won without a word. Once patterns carry wildcards an overlap stops
+  being a typo and becomes the ordinary case, so it has to be said out loud. The
+  catch-all layer `*` is exempt: holding what the other positions leave is what
+  it is for.
 
 ### Fixed
 
