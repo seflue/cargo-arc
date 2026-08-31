@@ -1,0 +1,8 @@
+[config]
+version = 1
+
+[[rules]]
+type = "layers"
+name = "architecture layers"
+layers = ["b", "a", "d"]
+direction = "top-down"

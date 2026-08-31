@@ -105,8 +105,8 @@ Keeping the name `no cycles` also keeps the baseline entries written under the i
 ## Saying that a rule is complete
 
 A `layers` rule judges the nodes its positions name, and nothing else.
-An edge with an endpoint no position matches is skipped without a word, and the run stays green over it.
-The rule was never asked about that node.
+Where such a node belongs is never asked, and a dependency between two of them is skipped without a word, so the run stays green over both.
+A dependency that only runs over such a node is checked, under the pair at its ends.
 
 Sometimes the silence is a mistake rather than a statement: a position was meant to catch that node, and it was left out by accident.
 Say so with `exhaustive = true`, and the same silence becomes a report:
@@ -123,7 +123,7 @@ exhaustive = true
 ```
 error: configuration
   unlayered-node: xtask
-    in rule "architecture layers", in no layer, so its edges go unchecked
+    in rule "architecture layers", in no layer, so its own place goes unchecked
 ```
 
 What the claim covers follows what the rule addresses, not the whole workspace by default.
@@ -229,7 +229,22 @@ Every entry in `layers` is one position, holding either a pattern or a list of p
 `exhaustive` is optional and defaults to `false`; setting it makes the rule claim to sort everything it addresses, described under [Saying that a rule is complete](#saying-that-a-rule-is-complete).
 
 Two nodes sharing a position are unordered, so a dependency between them passes.
-A dependency with an endpoint that no layer matches is not checked at all; without `exhaustive = true` nothing says which nodes those are.
+
+What the rule holds against the order is the dependency, whether it is written as one edge or runs over other nodes.
+A node no layer matches does not break it: if `services` reaches `core` through an unlayered `util`, that is the dependency `services → core`, reported under the pair with its hops below it.
+
+```
+error[layers]: architecture layers
+  = services → core
+    services → util
+      --> services/src/lib.rs:3
+    util → core
+      --> util/src/lib.rs:7
+```
+
+The pair is also what silences it: an `except` or a baseline entry on `services → core` covers the dependency however it runs today, and it stays covered when tomorrow it runs over a different node.
+The walk stops at every layered node, because the order already answers that pair, and an edge that `except` or the baseline covers connects two layered nodes and is therefore never a hop.
+A dependency with an endpoint no layer matches is still not checked, and neither is the place of that node itself; without `exhaustive = true` nothing says which nodes those are.
 
 A position written as the bare string `"*"`, or the single-element list `["*"]`, is the catch-all layer.
 It holds every node the rule's other positions do not match, so once a rule carries one, no crate is left unlayered by it.
@@ -365,7 +380,7 @@ unmatched-pattern = "deny"
 | `unmatched-except` | `warn` | an `except` pattern matching no module |
 | `unmatched-pattern` | `deny` | a rule pattern matching no module, or a catch-all layer whose rest is empty |
 
-`unlayered-node` and `unmatched-pattern` deny where the others warn because of what their failure looks like: a rule whose pattern misses checks nothing, and an edge to an unsorted node is skipped without a word; both leave the run green.
+`unlayered-node` and `unmatched-pattern` deny where the others warn because of what their failure looks like: a rule whose pattern misses checks nothing, and an unsorted node is never asked where it belongs; both leave the run green.
 `unlayered-node` also only ever fires for a rule that asked for it.
 A dead `except` only allows too much, and the violation it should have allowed shows up on its own.
 

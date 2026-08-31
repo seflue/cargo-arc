@@ -558,11 +558,12 @@ fn test_dev_dep_crate_visible_with_include_tests() {
 
 // ===== Phase 4: check subcommand integration tests =====
 
-/// Copies `<fixture>/arc-rules.toml` into a fresh tempdir so a `--generate-baseline`
-/// run writes `arc-baseline.toml` there instead of into the checked-in fixture.
-fn isolated_rules_copy(fixture: &str) -> (tempfile::TempDir, PathBuf) {
+/// Copies `<fixture>/<rules_file>` into a fresh tempdir as `arc-rules.toml`,
+/// so a `--generate-baseline` run writes `arc-baseline.toml` there instead of
+/// into the checked-in fixture.
+fn isolated_rules_copy(fixture: &str, rules_file: &str) -> (tempfile::TempDir, PathBuf) {
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join(format!("tests/fixtures/{fixture}/arc-rules.toml"));
+        .join(format!("tests/fixtures/{fixture}/{rules_file}"));
     let dir = tempfile::tempdir().unwrap();
     let dest = dir.path().join("arc-rules.toml");
     std::fs::copy(&src, &dest).unwrap();
@@ -725,6 +726,107 @@ fn test_check_with_violations() {
     assert!(
         !layers_edges.contains(&"application::handler → domain::service".to_string()),
         "layers rule should not flag application::handler → domain::service, got: {layers_edges:?}"
+    );
+}
+
+/// Runs `check` on the transitive fixture (`a → b → c → d`, one dependency
+/// each) with one of its rules files. None of them positions `c`, so every
+/// dependency between two positioned crates runs through an unpositioned one.
+fn transitive_layers_check(rules_file: &str) -> (i32, Vec<String>) {
+    let rules = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
+        "tests/fixtures/transitive_layers_workspace/{rules_file}"
+    ));
+    let rules_arg = format!("--rules={}", rules.display());
+    let (code, stderr) = cargo_arc_check("transitive_layers_workspace", &[&rules_arg]);
+    (code, layers_violation_edges(&stderr))
+}
+
+#[test]
+fn layers_hold_when_the_order_follows_the_code() {
+    let (code, edges) = transitive_layers_check("layers-a-b-d.toml");
+    assert_eq!(code, 0, "the order follows the code, edges: {edges:?}");
+    assert!(edges.is_empty(), "nothing to report, got: {edges:?}");
+}
+
+/// Both orders put `d` above `b`, and `b` reaches `d` through `c`. The pair is
+/// reported, not the hop that carries it.
+#[test]
+fn layers_report_a_dependency_running_through_an_unpositioned_crate() {
+    for rules_file in ["layers-d-a-b.toml", "layers-a-d-b.toml"] {
+        let (code, edges) = transitive_layers_check(rules_file);
+        assert_eq!(code, 1, "{rules_file} puts d above b, edges: {edges:?}");
+        assert_eq!(edges, ["b → d"], "from {rules_file}");
+    }
+}
+
+/// The written edge keeps its own report. `a → b` stands against the order,
+/// `b → d` runs downward under it. The pair appears twice because the crates
+/// are connected twice, by the manifest and by the `use` in `lib.rs`, which
+/// the crate node carries as its own module dependency.
+#[test]
+fn layers_report_a_written_edge_as_before() {
+    let (code, edges) = transitive_layers_check("layers-b-a-d.toml");
+    assert_eq!(code, 1, "b above a contradicts a → b, edges: {edges:?}");
+    assert!(
+        !edges.is_empty() && edges.iter().all(|edge| edge == "a → b"),
+        "only the written edge stands against this order, got: {edges:?}"
+    );
+}
+
+/// The baseline key is the pair, so a generated entry names `b` and `d` and
+/// nothing about the hops between them.
+#[test]
+fn a_transitive_dependency_freezes_on_its_pair() {
+    let (dir, rules_path) = isolated_rules_copy("transitive_layers_workspace", "layers-a-d-b.toml");
+    let rules_arg = format!("--rules={}", rules_path.display());
+
+    let (code, stderr) = cargo_arc_check(
+        "transitive_layers_workspace",
+        &[&rules_arg, "--generate-baseline"],
+    );
+    assert_eq!(code, 0, "generate should exit 0, stderr: {stderr}");
+    let written = std::fs::read_to_string(dir.path().join("arc-baseline.toml")).unwrap();
+    assert!(
+        written.contains("from = \"b\"") && written.contains("to = \"d\""),
+        "the entry should name the pair, baseline: {written}"
+    );
+
+    let (code, stderr) = cargo_arc_check("transitive_layers_workspace", &[&rules_arg]);
+    assert_eq!(code, 0, "the frozen pair is not reported, stderr: {stderr}");
+}
+
+/// `except` works on the pair as well. `unmatched-except` asks whether the
+/// patterns resolve to nodes, not whether an edge is written between them, so
+/// an entry on a pair with no edge is not reported as dead.
+#[test]
+fn an_except_on_the_pair_allows_a_transitive_dependency() {
+    let dir = tempfile::tempdir().unwrap();
+    let rules_path = dir.path().join("arc-rules.toml");
+    std::fs::write(
+        &rules_path,
+        r#"
+[config]
+version = 1
+
+[[rules]]
+type = "layers"
+name = "architecture layers"
+layers = ["a", "d", "b"]
+direction = "top-down"
+except = [{ from = "b", to = "d" }]
+
+[diagnostics]
+unmatched-except = "deny"
+"#,
+    )
+    .unwrap();
+    let rules_arg = format!("--rules={}", rules_path.display());
+
+    let (code, stderr) = cargo_arc_check("transitive_layers_workspace", &[&rules_arg]);
+    assert_eq!(code, 0, "the pair is excepted, stderr: {stderr}");
+    assert!(
+        !stderr.contains("unmatched-except"),
+        "the except entry matched, stderr: {stderr}"
     );
 }
 
@@ -893,7 +995,7 @@ unmatched-except = "deny"
 /// other.
 #[test]
 fn test_check_says_ok_for_an_error_rule_whose_violations_are_all_frozen() {
-    let (dir, rules_path) = isolated_rules_copy("arch_violation_workspace");
+    let (dir, rules_path) = isolated_rules_copy("arch_violation_workspace", "arc-rules.toml");
     let rules_arg = format!("--rules={}", rules_path.display());
 
     let (code, stderr) = cargo_arc_check(
@@ -914,7 +1016,7 @@ fn test_check_says_ok_for_an_error_rule_whose_violations_are_all_frozen() {
 /// Writing a baseline records, it does not judge.
 #[test]
 fn test_generate_baseline_prints_no_status_line() {
-    let (_dir, rules_path) = isolated_rules_copy("arch_violation_workspace");
+    let (_dir, rules_path) = isolated_rules_copy("arch_violation_workspace", "arc-rules.toml");
     let rules_arg = format!("--rules={}", rules_path.display());
 
     let (code, stdout, stderr) = cargo_arc_check_streams(
@@ -1010,7 +1112,7 @@ fn test_check_invalid_config() {
 
 #[test]
 fn test_generate_baseline_then_check_reports_nothing() {
-    let (dir, rules_path) = isolated_rules_copy("arch_violation_workspace");
+    let (dir, rules_path) = isolated_rules_copy("arch_violation_workspace", "arc-rules.toml");
     let rules_arg = format!("--rules={}", rules_path.display());
     let baseline_path = dir.path().join("arc-baseline.toml");
 

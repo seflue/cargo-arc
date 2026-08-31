@@ -207,7 +207,7 @@ fn explanation(diagnostic: &Diagnostic) -> String {
     match &diagnostic.kind {
         DiagnosticKind::UnlayeredNode { entry } => {
             format!(
-                "in rule {:?}, in no layer, so its edges go unchecked",
+                "in rule {:?}, in no layer, so its own place goes unchecked",
                 entry.rule
             )
         }
@@ -281,6 +281,7 @@ fn violation_body(out: &mut String, violation: &Violation) {
         ViolationDetail::Edge {
             edge: ends,
             frozen_for,
+            via,
         } => {
             let _ = writeln!(out, "  = {}{mark}", edge(ends));
             if let Some(frozen_for) = frozen_for {
@@ -291,6 +292,15 @@ fn violation_body(out: &mut String, violation: &Violation) {
                     symbol_list(frozen_for),
                     symbol_list(&carries.difference(frozen_for))
                 );
+            }
+            // The pair heads the block, so the hops go below it, each over the
+            // imports that write it. A crate dependency has no imports, so its
+            // hops stand alone.
+            for hop in via {
+                let _ = writeln!(out, "    {}", edge(&hop.edge));
+                for loc in &hop.locations {
+                    let _ = writeln!(out, "      --> {}:{}", loc.file.display(), loc.line);
+                }
             }
         }
         ViolationDetail::Cluster(cluster) => {
@@ -413,7 +423,7 @@ pub(crate) fn plural(n: usize, base: &str) -> String {
 mod tests {
     use super::*;
     use crate::model::SourceLocation;
-    use crate::rules::engine::{CycleClusterEdge, Violation};
+    use crate::rules::engine::{CycleClusterEdge, Hop, Violation};
     use std::path::PathBuf;
 
     /// Single-cycle, single-edge `CycleCluster` fixture for tests that only
@@ -447,6 +457,7 @@ mod tests {
                 detail: ViolationDetail::Edge {
                     edge: Edge::new("domain::service", "infra::db"),
                     frozen_for: None,
+                    via: Vec::new(),
                 },
                 locations: vec![],
             }],
@@ -485,6 +496,7 @@ mod tests {
                 detail: ViolationDetail::Edge {
                     edge: Edge::new("a", "b"),
                     frozen_for: None,
+                    via: Vec::new(),
                 },
                 locations: vec![SourceLocation {
                     file: PathBuf::from("src/domain/service.rs"),
@@ -500,6 +512,74 @@ mod tests {
         assert!(output.contains("--> src/domain/service.rs:42"));
     }
 
+    /// One hop, with as many locations as `lines` holds.
+    fn hop(from: &str, to: &str, file: &str, lines: &[usize]) -> Hop {
+        Hop {
+            edge: Edge::new(from, to),
+            locations: lines
+                .iter()
+                .map(|&line| SourceLocation {
+                    file: PathBuf::from(file),
+                    line,
+                    symbols: vec![],
+                    module_path: String::new(),
+                    via_reexport: false,
+                })
+                .collect(),
+        }
+    }
+
+    /// `b → d` over `c`, as a `layers` violation.
+    fn violation_over_hops(via: Vec<Hop>) -> CheckResult {
+        CheckResult {
+            violations: vec![Violation {
+                rule_name: "architecture layers".into(),
+                rule_type: "layers".into(),
+                severity: Severity::Error,
+                state: ViolationState::Reported,
+                detail: ViolationDetail::Edge {
+                    edge: Edge::new("b", "d"),
+                    frozen_for: None,
+                    via,
+                },
+                locations: vec![],
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_format_hops_stand_under_the_pair() {
+        let result = violation_over_hops(vec![
+            hop("b", "c", "b/src/lib.rs", &[3]),
+            hop("c", "d", "c/src/lib.rs", &[7]),
+        ]);
+        let output = format_violations(&result, false);
+        assert!(
+            output.contains(
+                "  = b → d\n\
+                 \x20   b → c\n\
+                 \x20     --> b/src/lib.rs:3\n\
+                 \x20   c → d\n\
+                 \x20     --> c/src/lib.rs:7\n"
+            ),
+            "got:\n{output}"
+        );
+    }
+
+    /// A crate dependency is written in a manifest, not at a location the
+    /// report can point at. Its hops stand alone.
+    #[test]
+    fn test_format_hops_without_locations_still_stand() {
+        let result = violation_over_hops(vec![hop("b", "c", "", &[]), hop("c", "d", "", &[])]);
+        let output = format_violations(&result, false);
+        assert!(
+            output.contains("  = b → d\n    b → c\n    c → d\n"),
+            "got:\n{output}"
+        );
+        assert!(!output.contains("-->"), "got:\n{output}");
+    }
+
     /// Edge violation of `no infra in domain`, one location per call.
     fn domain_violation(from: &str, file: &str) -> Violation {
         Violation {
@@ -510,6 +590,7 @@ mod tests {
             detail: ViolationDetail::Edge {
                 edge: Edge::new(from, "infra::db"),
                 frozen_for: None,
+                via: Vec::new(),
             },
             locations: vec![SourceLocation {
                 file: PathBuf::from(file),
@@ -645,6 +726,7 @@ mod tests {
                     detail: ViolationDetail::Edge {
                         edge: Edge::new("a", "b"),
                         frozen_for: None,
+                        via: Vec::new(),
                     },
                     locations: vec![],
                 },
@@ -664,6 +746,7 @@ mod tests {
                     detail: ViolationDetail::Edge {
                         edge: Edge::new("x", "y"),
                         frozen_for: None,
+                        via: Vec::new(),
                     },
                     locations: vec![],
                 },
@@ -696,6 +779,7 @@ mod tests {
             detail: ViolationDetail::Edge {
                 edge: Edge::new("domain::service", "infra::db"),
                 frozen_for: None,
+                via: Vec::new(),
             },
             locations: vec![],
         }
@@ -747,6 +831,7 @@ mod tests {
                 detail: ViolationDetail::Edge {
                     edge: Edge::new("domain::service", "infra::db"),
                     frozen_for: None,
+                    via: Vec::new(),
                 },
                 locations: vec![],
             }],
@@ -771,6 +856,7 @@ mod tests {
             detail: ViolationDetail::Edge {
                 edge: Edge::new("domain::a", "storage::pool"),
                 frozen_for: None,
+                via: Vec::new(),
             },
             locations: vec![],
         }
@@ -784,6 +870,7 @@ mod tests {
                 detail: ViolationDetail::Edge {
                     edge: Edge::new("domain::b", "storage::pool"),
                     frozen_for: None,
+                    via: Vec::new(),
                 },
                 ..frozen_edge_violation()
             },
@@ -1037,7 +1124,7 @@ mod tests {
         let output = format_violations(&result, false);
         assert!(
             output.contains(
-                "    in rule \"architecture layers\", in no layer, so its edges go unchecked"
+                "    in rule \"architecture layers\", in no layer, so its own place goes unchecked"
             ),
             "got:\n{output}"
         );
@@ -1272,6 +1359,7 @@ mod tests {
                             .collect(),
                         bare: false,
                     }),
+                    via: Vec::new(),
                 },
                 locations: vec![SourceLocation {
                     file: PathBuf::from("src/writer.rs"),

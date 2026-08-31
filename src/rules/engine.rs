@@ -14,6 +14,7 @@ use crate::rules::diagnostics::{self, Diagnostic};
 use crate::rules::matching::PatternIndex;
 use petgraph::algo::tarjan_scc;
 use petgraph::graph::{DiGraph, NodeIndex};
+use petgraph::visit::EdgeRef;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -110,8 +111,20 @@ pub enum ViolationDetail {
         /// no longer covers what the edge carries, the one case the report has
         /// to explain.
         frozen_for: Option<EdgeSymbols>,
+        /// The hops a dependency takes to reach `edge.to`, in order. Empty
+        /// where the pair is written as an edge of its own.
+        via: Vec<Hop>,
     },
     Cluster(CycleCluster),
+}
+
+/// One edge of a dependency that reaches its target over other nodes. Carries
+/// the pair it connects and the imports that write it, none for a crate
+/// dependency.
+#[derive(Debug)]
+pub struct Hop {
+    pub edge: Edge,
+    pub locations: Vec<SourceLocation>,
 }
 
 /// One cyclic cluster, resolved to names and counts for rendering.
@@ -197,11 +210,47 @@ struct CyclicEdges {
     hits: Vec<BaselineEntry>,
 }
 
-/// One violation on `edge`.
+/// One dependency to hold against a rule, and what carries it. `locations`
+/// holds the imports of a written module edge, `via` the hops of a dependency
+/// that runs over other nodes. A crate dependency has neither.
+struct Dependency {
+    source: NodeIndex,
+    target: NodeIndex,
+    locations: Vec<SourceLocation>,
+    via: Vec<Hop>,
+}
+
+/// One positioned node [`CheckRun::reached_over_unpositioned`] reached, and
+/// the unpositioned nodes it passed on the way there, in that order. `over`
+/// holds neither end. The walk leaves out a node it reaches directly, so
+/// `over` is never empty.
+struct Reached {
+    target: NodeIndex,
+    over: Vec<NodeIndex>,
+}
+
+/// The hops from `source` to `reached.target`, in order.
+fn hops(graph: &ArcGraph, source: NodeIndex, reached: &Reached) -> Vec<Hop> {
+    let nodes: Vec<NodeIndex> = std::iter::once(source)
+        .chain(reached.over.iter().copied())
+        .chain(std::iter::once(reached.target))
+        .collect();
+    nodes
+        .windows(2)
+        .map(|hop| Hop {
+            edge: Edge::new(graph.qualified_name(hop[0]), graph.qualified_name(hop[1])),
+            locations: module_dep_locations(graph, hop[0], hop[1]),
+        })
+        .collect()
+}
+
+/// One violation on `edge`. `via` holds the hops of a dependency that is not
+/// written as one edge, and is empty for one that is.
 fn edge_violation(
     rule: &Rule,
     edge: &Edge,
     locations: Vec<SourceLocation>,
+    via: Vec<Hop>,
     frozen_for: Option<EdgeSymbols>,
     state: ViolationState,
 ) -> Violation {
@@ -213,6 +262,7 @@ fn edge_violation(
         detail: ViolationDetail::Edge {
             edge: edge.clone(),
             frozen_for,
+            via,
         },
         locations,
     }
@@ -446,7 +496,14 @@ impl<'graph> CheckRun<'graph> {
             .map(|(source, target)| {
                 let edge = Edge::new(graph.qualified_name(source), graph.qualified_name(target));
                 let locations = module_dep_locations(graph, source, target);
-                edge_violation(rule, &edge, locations, None, ViolationState::Allowed)
+                edge_violation(
+                    rule,
+                    &edge,
+                    locations,
+                    Vec::new(),
+                    None,
+                    ViolationState::Allowed,
+                )
             })
             .collect();
 
@@ -556,6 +613,7 @@ impl<'graph> CheckRun<'graph> {
                         rule,
                         &edge,
                         locations,
+                        Vec::new(),
                         Some(tolerated.clone()),
                         ViolationState::Reported,
                     ));
@@ -631,7 +689,7 @@ impl<'graph> CheckRun<'graph> {
 
         let except = ResolvedExceptions::resolve(&rule.except, self);
 
-        Ok(self.check_edge_violations(rule, &except, |source, target| {
+        let is_violation = |source: NodeIndex, target: NodeIndex| {
             let (Some(&source_layer), Some(&target_layer)) =
                 (layer_index.get(&source), layer_index.get(&target))
             else {
@@ -643,19 +701,159 @@ impl<'graph> CheckRun<'graph> {
                 // bottom-up: lower layers may depend on higher layers
                 Direction::BottomUp => source_layer < target_layer,
             }
-        }))
+        };
+
+        // The order forbids the pair, so a dependency that reaches its target
+        // over nodes the rule left unpositioned counts like a written edge.
+        let mut dependencies = self.written_dependencies(&is_violation);
+        dependencies.extend(self.transitive_dependencies(&layer_index, &is_violation));
+        Ok(self.check_dependency_violations(rule, &except, dependencies))
     }
 
-    /// Shared by all edge-predicate rule checks (forbidden-dependency, layers);
-    /// only the predicate and the rule-type label differ between them. An edge
-    /// covered by `except` still produces a `Violation`, but lands in the
-    /// allowed side. A baseline check runs only after that: `except` is a
-    /// permanent allowance, the baseline a frozen one.
+    /// Dependencies that reach one positioned node from another over nodes
+    /// `positioned` holds no entry for.
+    ///
+    /// A positioned node ends the walk. The order is transitive, so going on
+    /// through one says nothing its two halves do not already say. An edge
+    /// silenced by `except` or a baseline joins two positioned nodes and is
+    /// therefore never a hop here.
+    ///
+    /// A pair is reported over the fewest hops, and between two of equal count
+    /// over the nodes that sort first by qualified name. Without that order,
+    /// the report names other nodes on every run.
+    fn transitive_dependencies(
+        &self,
+        positioned: &HashMap<NodeIndex, usize>,
+        is_violation: &impl Fn(NodeIndex, NodeIndex) -> bool,
+    ) -> Vec<Dependency> {
+        let graph = self.graph();
+        let mut sources: Vec<NodeIndex> = positioned.keys().copied().collect();
+        sources.sort_by_cached_key(|&node| graph.qualified_name(node));
+        sources
+            .into_iter()
+            .flat_map(|source| {
+                self.reached_over_unpositioned(source, positioned)
+                    .into_iter()
+                    .filter(move |reached| is_violation(source, reached.target))
+                    .map(move |reached| Dependency {
+                        source,
+                        target: reached.target,
+                        locations: Vec::new(),
+                        via: hops(graph, source, &reached),
+                    })
+            })
+            .collect()
+    }
+
+    /// Every positioned node `source` reaches over at least one unpositioned
+    /// node, with the nodes it passes to get there. The walk goes breadth
+    /// first and enters each node once, so those are the fewest possible and
+    /// no node is a target twice. A node reached directly passes none and is left
+    /// out. It is a written edge, which [`Self::written_dependencies`] already
+    /// holds against the rule.
+    fn reached_over_unpositioned(
+        &self,
+        source: NodeIndex,
+        positioned: &HashMap<NodeIndex, usize>,
+    ) -> Vec<Reached> {
+        let graph = self.graph();
+        let mut reached: HashSet<NodeIndex> = HashSet::from([source]);
+        let mut frontier = vec![(source, Vec::new())];
+        let mut found = Vec::new();
+        while !frontier.is_empty() {
+            let mut next: Vec<(NodeIndex, Vec<NodeIndex>)> = Vec::new();
+            for (node, over) in frontier {
+                let mut neighbors: Vec<NodeIndex> = graph
+                    .edges(node)
+                    .filter(|edge| edge.weight().is_production())
+                    .map(|edge| edge.target())
+                    .collect();
+                neighbors.sort_by_cached_key(|&neighbor| graph.qualified_name(neighbor));
+                for neighbor in neighbors {
+                    if !reached.insert(neighbor) {
+                        continue;
+                    }
+                    if positioned.contains_key(&neighbor) {
+                        if !over.is_empty() {
+                            found.push(Reached {
+                                target: neighbor,
+                                over: over.clone(),
+                            });
+                        }
+                        continue;
+                    }
+                    let mut onward = over.clone();
+                    onward.push(neighbor);
+                    next.push((neighbor, onward));
+                }
+            }
+            // Within one round every entry has taken the same number of hops,
+            // so ordering them by name decides the next round's ties before
+            // they arise.
+            next.sort_by_cached_key(|(_, over)| {
+                over.iter()
+                    .map(|&node| graph.qualified_name(node))
+                    .collect::<Vec<_>>()
+            });
+            frontier = next;
+        }
+        found
+    }
+
+    /// Edge-predicate rule check over the written edges alone, which is all a
+    /// forbidden-dependency rule asks about.
     fn check_edge_violations(
         &self,
         rule: &Rule,
         except: &ResolvedExceptions,
         is_violation: impl Fn(NodeIndex, NodeIndex) -> bool,
+    ) -> CheckResult {
+        let dependencies = self.written_dependencies(&is_violation);
+        self.check_dependency_violations(rule, except, dependencies)
+    }
+
+    /// The production edges `is_violation` rejects, one dependency each.
+    fn written_dependencies(
+        &self,
+        is_violation: &impl Fn(NodeIndex, NodeIndex) -> bool,
+    ) -> Vec<Dependency> {
+        let graph = self.graph();
+        graph
+            .edge_indices()
+            .filter_map(|edge_idx| {
+                let weight = &graph[edge_idx];
+                if !weight.is_production() {
+                    return None;
+                }
+                let (source, target) = graph.edge_endpoints(edge_idx).expect("edge should exist");
+                if !is_violation(source, target) {
+                    return None;
+                }
+                Some(Dependency {
+                    source,
+                    target,
+                    locations: match weight {
+                        EdgeWeight::ModuleDep { locations, .. } => locations.clone(),
+                        _ => Vec::new(),
+                    },
+                    via: Vec::new(),
+                })
+            })
+            .collect()
+    }
+
+    /// Shared by all edge-predicate rule checks (forbidden-dependency, layers);
+    /// only which dependencies reach here and the rule-type label differ
+    /// between them. A dependency covered by `except` still produces a
+    /// `Violation`, but lands in the allowed side. A baseline check runs only
+    /// after that: `except` is a permanent allowance, the baseline a frozen
+    /// one. Both are keyed on the pair, so a dependency running over
+    /// intermediate nodes is silenced the same way a written edge is.
+    fn check_dependency_violations(
+        &self,
+        rule: &Rule,
+        except: &ResolvedExceptions,
+        dependencies: Vec<Dependency>,
     ) -> CheckResult {
         let graph = self.graph();
         let mut reported = Vec::new();
@@ -663,19 +861,13 @@ impl<'graph> CheckRun<'graph> {
         let mut frozen = Vec::new();
         let mut baseline_entries = Vec::new();
         let mut baseline_hits = Vec::new();
-        for edge_idx in graph.edge_indices() {
-            let edge = &graph[edge_idx];
-            if !edge.is_production() {
-                continue;
-            }
-            let (source, target) = graph.edge_endpoints(edge_idx).expect("edge should exist");
-            if !is_violation(source, target) {
-                continue;
-            }
-            let locations = match edge {
-                EdgeWeight::ModuleDep { locations, .. } => locations.clone(),
-                _ => Vec::new(),
-            };
+        for dependency in dependencies {
+            let Dependency {
+                source,
+                target,
+                locations,
+                via,
+            } = dependency;
             let edge = Edge::new(graph.qualified_name(source), graph.qualified_name(target));
             let symbols = EdgeSymbols::from_locations(&locations);
             if except.covers(source, target) {
@@ -683,6 +875,7 @@ impl<'graph> CheckRun<'graph> {
                     rule,
                     &edge,
                     locations,
+                    via,
                     None,
                     ViolationState::Allowed,
                 ));
@@ -699,6 +892,7 @@ impl<'graph> CheckRun<'graph> {
                 rule,
                 &edge,
                 locations,
+                via,
                 tolerated.filter(|_| !covered).cloned(),
                 state,
             );
@@ -1550,6 +1744,120 @@ mod tests {
         assert!(reported.is_empty());
     }
 
+    /// One crate node per name in `crates`, plus a production dependency for
+    /// every pair in `deps`. Both take names rather than indices, because the
+    /// layers tests below assert on names.
+    fn crate_graph(crates: &[&str], deps: &[(&str, &str)]) -> ArcGraph {
+        let mut graph = ArcGraph::new();
+        let mut index: HashMap<&str, NodeIndex> = HashMap::new();
+        for &name in crates {
+            let node = graph.add_node(Node::Crate {
+                name: name.into(),
+                path: PathBuf::from(format!("/{name}")),
+            });
+            index.insert(name, node);
+        }
+        for &(from, to) in deps {
+            add_production_dep(&mut graph, index[from], index[to]);
+        }
+        graph
+    }
+
+    /// `a → b → c → d`, one dependency each. No rule below positions `c`, so
+    /// `b` reaches `d` without an edge saying so.
+    fn chain_of_four_crates() -> ArcGraph {
+        crate_graph(&["a", "b", "c", "d"], &[("a", "b"), ("b", "c"), ("c", "d")])
+    }
+
+    /// The hops of a violation, as `(from, to)` pairs.
+    fn hop_pairs(violation: &Violation) -> Vec<(&str, &str)> {
+        let ViolationDetail::Edge { via, .. } = &violation.detail else {
+            panic!("expected an edge detail");
+        };
+        via.iter()
+            .map(|hop| (hop.edge.from.as_str(), hop.edge.to.as_str()))
+            .collect()
+    }
+
+    /// The pair of a violation's edge.
+    fn violation_pair(violation: &Violation) -> (&str, &str) {
+        let ViolationDetail::Edge { edge, .. } = &violation.detail else {
+            panic!("expected an edge detail");
+        };
+        (edge.from.as_str(), edge.to.as_str())
+    }
+
+    #[test]
+    fn test_layers_dependency_over_an_unpositioned_crate_is_a_violation() {
+        let rule = layers_rule(&["a", "d", "b"], vec![]);
+        let result = check_rule(&chain_of_four_crates(), &rule, false);
+        let reported: Vec<_> = result.reported().collect();
+        assert_eq!(reported.len(), 1, "one pair, one violation: {reported:?}");
+        assert_eq!(violation_pair(reported[0]), ("b", "d"));
+        assert_eq!(hop_pairs(reported[0]), [("b", "c"), ("c", "d")]);
+    }
+
+    /// The same crates under an order they obey. Reaching `d` over `c` is no
+    /// more a violation than reaching it directly.
+    #[test]
+    fn test_layers_dependency_over_an_unpositioned_crate_may_run_downward() {
+        let rule = layers_rule(&["a", "b", "d"], vec![]);
+        let result = check_rule(&chain_of_four_crates(), &rule, false);
+        assert!(result.reported().next().is_none());
+    }
+
+    /// The same pair reachable over either of two crates. The report takes the
+    /// crate that sorts first, on every run.
+    #[test]
+    fn test_layers_equal_hop_counts_resolve_by_name() {
+        let graph = crate_graph(
+            &["b", "d", "k", "m"],
+            &[("b", "k"), ("k", "d"), ("b", "m"), ("m", "d")],
+        );
+        let rule = layers_rule(&["d", "b"], vec![]);
+        for _ in 0..10 {
+            let result = check_rule(&graph, &rule, false);
+            let reported: Vec<_> = result.reported().collect();
+            assert_eq!(reported.len(), 1, "one pair, one violation: {reported:?}");
+            assert_eq!(hop_pairs(reported[0]), [("b", "k"), ("k", "d")]);
+        }
+    }
+
+    /// Two hops beat three, even when the crates of the longer way sort first
+    /// by name.
+    #[test]
+    fn test_layers_more_hops_are_not_reported() {
+        let graph = crate_graph(
+            &["b", "d", "p", "q", "z"],
+            &[("b", "z"), ("z", "d"), ("b", "p"), ("p", "q"), ("q", "d")],
+        );
+        let rule = layers_rule(&["d", "b"], vec![]);
+        let result = check_rule(&graph, &rule, false);
+        let reported: Vec<_> = result.reported().collect();
+        assert_eq!(reported.len(), 1, "one pair, one violation: {reported:?}");
+        assert_eq!(hop_pairs(reported[0]), [("b", "z"), ("z", "d")]);
+    }
+
+    /// A written edge is reported as itself. It brings the location of its
+    /// import, and no hops.
+    #[test]
+    fn test_layers_written_edge_wins_over_the_hops() {
+        let graph = crate_graph(&["b", "c", "d"], &[("b", "c"), ("c", "d"), ("b", "d")]);
+        let rule = layers_rule(&["d", "b"], vec![]);
+        let result = check_rule(&graph, &rule, false);
+        let reported: Vec<_> = result.reported().collect();
+        assert_eq!(reported.len(), 1, "one pair, one violation: {reported:?}");
+        assert_eq!(violation_pair(reported[0]), ("b", "d"));
+        assert!(
+            hop_pairs(reported[0]).is_empty(),
+            "the edge carries the dependency itself"
+        );
+        assert!(
+            !reported[0].locations.is_empty(),
+            "the written edge brings its locations"
+        );
+    }
+
     /// A "domain" crate plus two crates that do not match `*domain*`.
     fn domain_and_others_graph() -> (ArcGraph, NodeIndex, NodeIndex, NodeIndex) {
         let mut graph = ArcGraph::new();
@@ -1736,6 +2044,7 @@ mod tests {
                 detail: ViolationDetail::Edge {
                     edge: Edge::new("a", "b"),
                     frozen_for: None,
+                    via: Vec::new(),
                 },
                 locations: vec![],
             }],
@@ -1756,6 +2065,7 @@ mod tests {
                 detail: ViolationDetail::Edge {
                     edge: Edge::new("a", "b"),
                     frozen_for: None,
+                    via: Vec::new(),
                 },
                 locations: vec![],
             }],
@@ -1776,6 +2086,7 @@ mod tests {
                 detail: ViolationDetail::Edge {
                     edge: Edge::new("a", "b"),
                     frozen_for: None,
+                    via: Vec::new(),
                 },
                 locations: vec![],
             }],
@@ -1796,6 +2107,7 @@ mod tests {
                 detail: ViolationDetail::Edge {
                     edge: Edge::new("a", "b"),
                     frozen_for: None,
+                    via: Vec::new(),
                 },
                 locations: vec![],
             }],

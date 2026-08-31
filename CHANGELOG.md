@@ -32,13 +32,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rejected when two rules share a name.
 - A `[diagnostics]` section in `arc-rules.toml` reports gaps in the
   configuration itself: `unlayered-node` for a node an `exhaustive` `layers`
-  rule leaves in no position (its edges were skipped without a word),
+  rule leaves in no position (the rule never asks where it belongs),
   `unmatched-baseline-entry` for a frozen violation that no longer occurs,
   `unmatched-except` for an `except` pattern that matches no module,
   `unmatched-pattern` for a rule pattern that matches no module. Each is set to
   `allow`, `warn` or `deny`; `deny` fails the run. `unmatched-pattern` and
   `unlayered-node` default to `deny`, for the same failure shape: a rule whose
-  pattern misses, or an edge to an unsorted node, checks nothing and leaves the
+  pattern misses, or a node it leaves unsorted, checks nothing and leaves the
   run green; the others default to `warn`.
   `unlayered-node` also takes an `except` list of qualified node names that
   stand outside the architecture on purpose, each taking the modules below it
@@ -119,6 +119,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   being a typo and becomes the ordinary case, so it has to be said out loud. The
   catch-all layer `*` is exempt: holding what the other positions leave is what
   it is for.
+- A `layers` rule now checks dependencies rather than written edges: one that
+  reaches its target over nodes the rule sorts into no position counts like a
+  direct one and is reported under the pair at its ends, with its hops listed
+  below it. Before, such a dependency vanished from the check, so an order that
+  contradicts the code could stay green. A project that passes on 0.3.1 can turn
+  red on this; `arc check --generate-baseline` freezes what is there. The
+  baseline key and `except` both address the pair, so an entry stays valid when
+  the dependency later runs over another node. The diagnostic for an unsorted
+  node now says its own place goes unchecked, which is what is left.
 
 ### Fixed
 
