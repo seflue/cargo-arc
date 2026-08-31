@@ -7,7 +7,7 @@ fn main() -> ExitCode {
     match run(cmd) {
         Ok(judgment) => judgment.exit_code(),
         Err(e) => {
-            eprintln!("error: {e}");
+            eprintln!("error: {e:#}");
             ExitCode::from(2)
         }
     }

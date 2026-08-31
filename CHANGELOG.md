@@ -125,6 +125,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A rule with `severity = "error"` was downgraded whenever `[config]` set
   `default_severity` to something else, which made an error rule impossible to
   write under `default_severity = "warn"`.
+- An error message now carries the whole chain instead of only its outermost
+  layer. A run aimed at a directory without a `Cargo.toml` reported `Failed to
+  run cargo metadata` and nothing else; it now names the manifest path it
+  targeted and passes on what cargo itself said.
 
 ### Removed
 

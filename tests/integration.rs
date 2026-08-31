@@ -978,6 +978,21 @@ fn test_check_exits_2_when_the_graph_cannot_be_built() {
 }
 
 #[test]
+fn test_check_on_a_manifest_path_without_a_cargo_toml_names_the_path_and_forwards_cargos_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let (code, stderr) = cargo_arc_check_at(dir.path(), &[]);
+    assert_eq!(code, 2, "no judgment was possible, stderr: {stderr}");
+    assert!(
+        stderr.contains(&dir.path().display().to_string()),
+        "the targeted manifest path should be named, stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("manifest path"),
+        "cargo's own message should be forwarded, stderr: {stderr}"
+    );
+}
+
+#[test]
 fn test_check_invalid_config() {
     let rules = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(rules.path(), "this is not valid { toml [").unwrap();
