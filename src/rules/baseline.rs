@@ -247,7 +247,11 @@ impl std::fmt::Display for BaselineError {
                 write!(f, "cannot read baseline file {}: {err}", path.display())
             }
             Self::Parse(path, err) => {
-                write!(f, "invalid baseline file {}: {err}", path.display())
+                write!(
+                    f,
+                    "invalid baseline file {}: {err}\nregenerate with: cargo arc check --generate-baseline",
+                    path.display()
+                )
             }
             Self::Serialize(err) => write!(f, "cannot serialize baseline: {err}"),
         }
@@ -485,6 +489,29 @@ mod tests {
             Baseline::load(&path),
             Err(BaselineError::Parse(_, _))
         ));
+    }
+
+    #[test]
+    fn an_unparsable_baseline_names_the_way_back() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("arc-baseline.toml");
+        std::fs::write(
+            &path,
+            r#"
+            [[violations]]
+            rule = "no cycles"
+            from = "a"
+            to = "b"
+            "#,
+        )
+        .unwrap();
+
+        let message = Baseline::load(&path).unwrap_err().to_string();
+        assert!(message.contains(&path.display().to_string()), "{message}");
+        assert!(
+            message.contains("cargo arc check --generate-baseline"),
+            "{message}"
+        );
     }
 
     #[test]
