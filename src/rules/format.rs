@@ -293,12 +293,12 @@ fn violation_body(out: &mut String, violation: &Violation) {
                     symbol_list(&carries.difference(frozen_for))
                 );
             }
-            // The pair heads the block, so the hops go below it, each over the
-            // imports that write it. A crate dependency has no imports, so its
-            // hops stand alone.
-            for hop in via {
-                let _ = writeln!(out, "    {}", edge(&hop.edge));
-                for loc in &hop.locations {
+            // The pair heads the block, so the edges it runs through go below
+            // it, each over the imports that write it. A crate dependency has
+            // no imports, so its edges stand alone.
+            for written in via {
+                let _ = writeln!(out, "    {}", edge(&written.edge));
+                for loc in &written.locations {
                     let _ = writeln!(out, "      --> {}:{}", loc.file.display(), loc.line);
                 }
             }
@@ -423,7 +423,7 @@ pub(crate) fn plural(n: usize, base: &str) -> String {
 mod tests {
     use super::*;
     use crate::model::SourceLocation;
-    use crate::rules::engine::{CycleClusterEdge, Hop, Violation};
+    use crate::rules::engine::{CycleClusterEdge, Violation, WrittenEdge};
     use std::path::PathBuf;
 
     /// Single-cycle, single-edge `CycleCluster` fixture for tests that only
@@ -512,9 +512,9 @@ mod tests {
         assert!(output.contains("--> src/domain/service.rs:42"));
     }
 
-    /// One hop, with as many locations as `lines` holds.
-    fn hop(from: &str, to: &str, file: &str, lines: &[usize]) -> Hop {
-        Hop {
+    /// One written edge, with as many locations as `lines` holds.
+    fn written_edge(from: &str, to: &str, file: &str, lines: &[usize]) -> WrittenEdge {
+        WrittenEdge {
             edge: Edge::new(from, to),
             locations: lines
                 .iter()
@@ -530,7 +530,7 @@ mod tests {
     }
 
     /// `b → d` over `c`, as a `layers` violation.
-    fn violation_over_hops(via: Vec<Hop>) -> CheckResult {
+    fn violation_over_two_edges(via: Vec<WrittenEdge>) -> CheckResult {
         CheckResult {
             violations: vec![Violation {
                 rule_name: "architecture layers".into(),
@@ -549,10 +549,10 @@ mod tests {
     }
 
     #[test]
-    fn test_format_hops_stand_under_the_pair() {
-        let result = violation_over_hops(vec![
-            hop("b", "c", "b/src/lib.rs", &[3]),
-            hop("c", "d", "c/src/lib.rs", &[7]),
+    fn test_format_the_edges_stand_under_the_pair() {
+        let result = violation_over_two_edges(vec![
+            written_edge("b", "c", "b/src/lib.rs", &[3]),
+            written_edge("c", "d", "c/src/lib.rs", &[7]),
         ]);
         let output = format_violations(&result, false);
         assert!(
@@ -568,10 +568,13 @@ mod tests {
     }
 
     /// A crate dependency is written in a manifest, not at a location the
-    /// report can point at. Its hops stand alone.
+    /// report can point at. Its edges stand alone.
     #[test]
-    fn test_format_hops_without_locations_still_stand() {
-        let result = violation_over_hops(vec![hop("b", "c", "", &[]), hop("c", "d", "", &[])]);
+    fn test_format_edges_without_locations_still_stand() {
+        let result = violation_over_two_edges(vec![
+            written_edge("b", "c", "", &[]),
+            written_edge("c", "d", "", &[]),
+        ]);
         let output = format_violations(&result, false);
         assert!(
             output.contains("  = b → d\n    b → c\n    c → d\n"),

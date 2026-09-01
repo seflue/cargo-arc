@@ -111,18 +111,17 @@ pub enum ViolationDetail {
         /// no longer covers what the edge carries, the one case the report has
         /// to explain.
         frozen_for: Option<EdgeSymbols>,
-        /// The hops a dependency takes to reach `edge.to`, in order. Empty
-        /// where the pair is written as an edge of its own.
-        via: Vec<Hop>,
+        /// The edges a dependency runs through to reach `edge.to`, in order.
+        /// Empty where the pair is written as an edge of its own.
+        via: Vec<WrittenEdge>,
     },
     Cluster(CycleCluster),
 }
 
-/// One edge of a dependency that reaches its target over other nodes. Carries
-/// the pair it connects and the imports that write it, none for a crate
-/// dependency.
+/// One edge as the code writes it: the pair it connects and the imports that
+/// write it, none for a crate dependency.
 #[derive(Debug)]
-pub struct Hop {
+pub struct WrittenEdge {
     pub edge: Edge,
     pub locations: Vec<SourceLocation>,
 }
@@ -210,50 +209,70 @@ struct CyclicEdges {
     hits: Vec<BaselineEntry>,
 }
 
-/// One dependency to hold against a rule, and what carries it. `locations`
-/// holds the imports of a written module edge, `via` the hops of a dependency
-/// that runs over other nodes. A crate dependency has neither.
+/// One dependency to hold against a rule: its two ends and what carries it.
 struct Dependency {
     source: NodeIndex,
     target: NodeIndex,
-    locations: Vec<SourceLocation>,
-    via: Vec<Hop>,
+    carrier: Carrier,
 }
 
-/// One positioned node [`CheckRun::reached_over_unpositioned`] reached, and
-/// the unpositioned nodes it passed on the way there, in that order. `over`
-/// holds neither end. The walk leaves out a node it reaches directly, so
-/// `over` is never empty.
-struct Reached {
+/// What carries a dependency from its source to its target.
+enum Carrier {
+    /// The pair is an edge of the graph. Holds the imports that write it, none
+    /// for a crate dependency, which is written in a manifest.
+    Written(Vec<SourceLocation>),
+    /// The pair is reached over other nodes. Holds the edges from source to
+    /// target, in order.
+    Path(Vec<WrittenEdge>),
+}
+
+impl Carrier {
+    /// The symbols crossing the dependency, as the baseline compares and
+    /// stores them. A path is frozen by its pair alone and has none.
+    fn observed_symbols(&self) -> EdgeSymbols {
+        match self {
+            Self::Written(locations) => EdgeSymbols::from_locations(locations),
+            Self::Path(_) => EdgeSymbols::default(),
+        }
+    }
+}
+
+/// A way from the `source` of [`CheckRun::routes_over_unpositioned`] to a
+/// positioned node, as the unpositioned nodes between. `over` is never empty.
+struct Route {
     target: NodeIndex,
     over: Vec<NodeIndex>,
 }
 
-/// The hops from `source` to `reached.target`, in order.
-fn hops(graph: &ArcGraph, source: NodeIndex, reached: &Reached) -> Vec<Hop> {
+/// The edges of `route` from `source`, in order, each with the imports that
+/// write it.
+fn written_edges(graph: &ArcGraph, source: NodeIndex, route: &Route) -> Vec<WrittenEdge> {
     let nodes: Vec<NodeIndex> = std::iter::once(source)
-        .chain(reached.over.iter().copied())
-        .chain(std::iter::once(reached.target))
+        .chain(route.over.iter().copied())
+        .chain(std::iter::once(route.target))
         .collect();
     nodes
         .windows(2)
-        .map(|hop| Hop {
-            edge: Edge::new(graph.qualified_name(hop[0]), graph.qualified_name(hop[1])),
-            locations: module_dep_locations(graph, hop[0], hop[1]),
+        .map(|pair| WrittenEdge {
+            edge: Edge::new(graph.qualified_name(pair[0]), graph.qualified_name(pair[1])),
+            locations: module_dep_locations(graph, pair[0], pair[1]),
         })
         .collect()
 }
 
-/// One violation on `edge`. `via` holds the hops of a dependency that is not
-/// written as one edge, and is empty for one that is.
+/// One violation on `edge`. A written carrier fills the violation's
+/// `locations`, a path its `via`; the other stays empty.
 fn edge_violation(
     rule: &Rule,
     edge: &Edge,
-    locations: Vec<SourceLocation>,
-    via: Vec<Hop>,
+    carrier: Carrier,
     frozen_for: Option<EdgeSymbols>,
     state: ViolationState,
 ) -> Violation {
+    let (locations, via) = match carrier {
+        Carrier::Written(locations) => (locations, Vec::new()),
+        Carrier::Path(via) => (Vec::new(), via),
+    };
     Violation {
         rule_name: rule.name.clone(),
         rule_type: rule.rule_type().into(),
@@ -448,10 +467,12 @@ impl<'graph> CheckRun<'graph> {
         let from_set = self.resolve_set(&params.from);
         let to_set = self.resolve_set(&params.to);
         let except = ResolvedExceptions::resolve(&rule.except, self);
-
-        self.check_edge_violations(rule, &except, |source, target| {
+        let is_violation = |source: NodeIndex, target: NodeIndex| {
             from_set.contains(&source) && to_set.contains(&target)
-        })
+        };
+
+        let dependencies = self.written_dependencies(&is_violation);
+        self.check_dependency_violations(rule, &except, dependencies)
     }
 
     /// Check a `no-cycles` rule: find the cycles within the scoped
@@ -499,8 +520,7 @@ impl<'graph> CheckRun<'graph> {
                 edge_violation(
                     rule,
                     &edge,
-                    locations,
-                    Vec::new(),
+                    Carrier::Written(locations),
                     None,
                     ViolationState::Allowed,
                 )
@@ -612,8 +632,7 @@ impl<'graph> CheckRun<'graph> {
                     found.outgrown.push(edge_violation(
                         rule,
                         &edge,
-                        locations,
-                        Vec::new(),
+                        Carrier::Written(locations),
                         Some(tolerated.clone()),
                         ViolationState::Reported,
                     ));
@@ -705,57 +724,62 @@ impl<'graph> CheckRun<'graph> {
 
         // The order forbids the pair, so a dependency that reaches its target
         // over nodes the rule left unpositioned counts like a written edge.
+        let positioned: HashSet<NodeIndex> = layer_index.keys().copied().collect();
         let mut dependencies = self.written_dependencies(&is_violation);
-        dependencies.extend(self.transitive_dependencies(&layer_index, &is_violation));
+        dependencies.extend(self.dependencies_over_unpositioned(&positioned, &is_violation));
         Ok(self.check_dependency_violations(rule, &except, dependencies))
     }
 
-    /// Dependencies that reach one positioned node from another over nodes
-    /// `positioned` holds no entry for.
+    /// Dependencies from one positioned node to another that run over one or
+    /// more unpositioned nodes, limited to those `is_violation` rejects.
     ///
-    /// A positioned node ends the walk. The order is transitive, so going on
-    /// through one says nothing its two halves do not already say. An edge
-    /// silenced by `except` or a baseline joins two positioned nodes and is
-    /// therefore never a hop here.
+    /// A route stops at the first positioned node `p` it meets. The order is
+    /// transitive, so where `a -> p` and `p -> b` are both allowed, `a -> b`
+    /// is allowed too, and both halves are held against the rule on their own.
     ///
-    /// A pair is reported over the fewest hops, and between two of equal count
-    /// over the nodes that sort first by qualified name. Without that order,
-    /// the report names other nodes on every run.
-    fn transitive_dependencies(
+    /// The stop also keeps a silenced edge from producing findings elsewhere.
+    /// `except` and the baseline address positioned pairs, so a silenced edge
+    /// joins two positioned nodes and is never a step of a route.
+    ///
+    /// Where a pair is reachable more than one way, the shortest route is
+    /// taken, and among equally short ones the one whose nodes sort first by
+    /// qualified name, so the report names the same nodes on every run.
+    fn dependencies_over_unpositioned(
         &self,
-        positioned: &HashMap<NodeIndex, usize>,
+        positioned: &HashSet<NodeIndex>,
         is_violation: &impl Fn(NodeIndex, NodeIndex) -> bool,
     ) -> Vec<Dependency> {
         let graph = self.graph();
-        let mut sources: Vec<NodeIndex> = positioned.keys().copied().collect();
+        // A `HashSet` iterates in a different order on every run; sorting the
+        // sources fixes the order the report lists the pairs in.
+        let mut sources: Vec<NodeIndex> = positioned.iter().copied().collect();
         sources.sort_by_cached_key(|&node| graph.qualified_name(node));
         sources
             .into_iter()
             .flat_map(|source| {
-                self.reached_over_unpositioned(source, positioned)
+                self.routes_over_unpositioned(source, positioned)
                     .into_iter()
-                    .filter(move |reached| is_violation(source, reached.target))
-                    .map(move |reached| Dependency {
+                    .filter(move |route| is_violation(source, route.target))
+                    .map(move |route| Dependency {
                         source,
-                        target: reached.target,
-                        locations: Vec::new(),
-                        via: hops(graph, source, &reached),
+                        target: route.target,
+                        carrier: Carrier::Path(written_edges(graph, source, &route)),
                     })
             })
             .collect()
     }
 
-    /// Every positioned node `source` reaches over at least one unpositioned
-    /// node, with the nodes it passes to get there. The walk goes breadth
-    /// first and enters each node once, so those are the fewest possible and
-    /// no node is a target twice. A node reached directly passes none and is left
-    /// out. It is a written edge, which [`Self::written_dependencies`] already
-    /// holds against the rule.
-    fn reached_over_unpositioned(
+    /// Every route from `source` to a positioned node over at least one
+    /// unpositioned node. The walk goes breadth first and enters each node
+    /// once, so every route is a shortest one and no node is the target of
+    /// two. A node `source` reaches directly gets no route: that is a written
+    /// edge, which [`Self::written_dependencies`] already holds against the
+    /// rule.
+    fn routes_over_unpositioned(
         &self,
         source: NodeIndex,
-        positioned: &HashMap<NodeIndex, usize>,
-    ) -> Vec<Reached> {
+        positioned: &HashSet<NodeIndex>,
+    ) -> Vec<Route> {
         let graph = self.graph();
         let mut reached: HashSet<NodeIndex> = HashSet::from([source]);
         let mut frontier = vec![(source, Vec::new())];
@@ -768,14 +792,16 @@ impl<'graph> CheckRun<'graph> {
                     .filter(|edge| edge.weight().is_production())
                     .map(|edge| edge.target())
                     .collect();
+                // Fixes the order routes are found in, and with it the order
+                // the report lists them in.
                 neighbors.sort_by_cached_key(|&neighbor| graph.qualified_name(neighbor));
                 for neighbor in neighbors {
                     if !reached.insert(neighbor) {
                         continue;
                     }
-                    if positioned.contains_key(&neighbor) {
+                    if positioned.contains(&neighbor) {
                         if !over.is_empty() {
-                            found.push(Reached {
+                            found.push(Route {
                                 target: neighbor,
                                 over: over.clone(),
                             });
@@ -787,9 +813,8 @@ impl<'graph> CheckRun<'graph> {
                     next.push((neighbor, onward));
                 }
             }
-            // Within one round every entry has taken the same number of hops,
-            // so ordering them by name decides the next round's ties before
-            // they arise.
+            // `reached` keeps the first route to a node. All entries of a
+            // round are equally long, so name order here breaks the ties.
             next.sort_by_cached_key(|(_, over)| {
                 over.iter()
                     .map(|&node| graph.qualified_name(node))
@@ -798,18 +823,6 @@ impl<'graph> CheckRun<'graph> {
             frontier = next;
         }
         found
-    }
-
-    /// Edge-predicate rule check over the written edges alone, which is all a
-    /// forbidden-dependency rule asks about.
-    fn check_edge_violations(
-        &self,
-        rule: &Rule,
-        except: &ResolvedExceptions,
-        is_violation: impl Fn(NodeIndex, NodeIndex) -> bool,
-    ) -> CheckResult {
-        let dependencies = self.written_dependencies(&is_violation);
-        self.check_dependency_violations(rule, except, dependencies)
     }
 
     /// The production edges `is_violation` rejects, one dependency each.
@@ -832,11 +845,10 @@ impl<'graph> CheckRun<'graph> {
                 Some(Dependency {
                     source,
                     target,
-                    locations: match weight {
+                    carrier: Carrier::Written(match weight {
                         EdgeWeight::ModuleDep { locations, .. } => locations.clone(),
                         _ => Vec::new(),
-                    },
-                    via: Vec::new(),
+                    }),
                 })
             })
             .collect()
@@ -861,21 +873,19 @@ impl<'graph> CheckRun<'graph> {
         let mut frozen = Vec::new();
         let mut baseline_entries = Vec::new();
         let mut baseline_hits = Vec::new();
-        for dependency in dependencies {
-            let Dependency {
-                source,
-                target,
-                locations,
-                via,
-            } = dependency;
+        for Dependency {
+            source,
+            target,
+            carrier,
+        } in dependencies
+        {
             let edge = Edge::new(graph.qualified_name(source), graph.qualified_name(target));
-            let symbols = EdgeSymbols::from_locations(&locations);
+            let symbols = carrier.observed_symbols();
             if except.covers(source, target) {
                 allowed.push(edge_violation(
                     rule,
                     &edge,
-                    locations,
-                    via,
+                    carrier,
                     None,
                     ViolationState::Allowed,
                 ));
@@ -891,8 +901,7 @@ impl<'graph> CheckRun<'graph> {
             let violation = edge_violation(
                 rule,
                 &edge,
-                locations,
-                via,
+                carrier,
                 tolerated.filter(|_| !covered).cloned(),
                 state,
             );
@@ -1769,13 +1778,13 @@ mod tests {
         crate_graph(&["a", "b", "c", "d"], &[("a", "b"), ("b", "c"), ("c", "d")])
     }
 
-    /// The hops of a violation, as `(from, to)` pairs.
-    fn hop_pairs(violation: &Violation) -> Vec<(&str, &str)> {
+    /// The edges a violation runs through, as `(from, to)` pairs.
+    fn via_pairs(violation: &Violation) -> Vec<(&str, &str)> {
         let ViolationDetail::Edge { via, .. } = &violation.detail else {
             panic!("expected an edge detail");
         };
         via.iter()
-            .map(|hop| (hop.edge.from.as_str(), hop.edge.to.as_str()))
+            .map(|written| (written.edge.from.as_str(), written.edge.to.as_str()))
             .collect()
     }
 
@@ -1794,7 +1803,7 @@ mod tests {
         let reported: Vec<_> = result.reported().collect();
         assert_eq!(reported.len(), 1, "one pair, one violation: {reported:?}");
         assert_eq!(violation_pair(reported[0]), ("b", "d"));
-        assert_eq!(hop_pairs(reported[0]), [("b", "c"), ("c", "d")]);
+        assert_eq!(via_pairs(reported[0]), [("b", "c"), ("c", "d")]);
     }
 
     /// The same crates under an order they obey. Reaching `d` over `c` is no
@@ -1809,7 +1818,7 @@ mod tests {
     /// The same pair reachable over either of two crates. The report takes the
     /// crate that sorts first, on every run.
     #[test]
-    fn test_layers_equal_hop_counts_resolve_by_name() {
+    fn test_layers_equal_path_lengths_resolve_by_name() {
         let graph = crate_graph(
             &["b", "d", "k", "m"],
             &[("b", "k"), ("k", "d"), ("b", "m"), ("m", "d")],
@@ -1819,14 +1828,14 @@ mod tests {
             let result = check_rule(&graph, &rule, false);
             let reported: Vec<_> = result.reported().collect();
             assert_eq!(reported.len(), 1, "one pair, one violation: {reported:?}");
-            assert_eq!(hop_pairs(reported[0]), [("b", "k"), ("k", "d")]);
+            assert_eq!(via_pairs(reported[0]), [("b", "k"), ("k", "d")]);
         }
     }
 
-    /// Two hops beat three, even when the crates of the longer way sort first
+    /// Two edges beat three, even when the crates of the longer way sort first
     /// by name.
     #[test]
-    fn test_layers_more_hops_are_not_reported() {
+    fn test_layers_the_longer_way_is_not_reported() {
         let graph = crate_graph(
             &["b", "d", "p", "q", "z"],
             &[("b", "z"), ("z", "d"), ("b", "p"), ("p", "q"), ("q", "d")],
@@ -1835,13 +1844,13 @@ mod tests {
         let result = check_rule(&graph, &rule, false);
         let reported: Vec<_> = result.reported().collect();
         assert_eq!(reported.len(), 1, "one pair, one violation: {reported:?}");
-        assert_eq!(hop_pairs(reported[0]), [("b", "z"), ("z", "d")]);
+        assert_eq!(via_pairs(reported[0]), [("b", "z"), ("z", "d")]);
     }
 
     /// A written edge is reported as itself. It brings the location of its
-    /// import, and no hops.
+    /// import, and nothing it runs through.
     #[test]
-    fn test_layers_written_edge_wins_over_the_hops() {
+    fn test_layers_written_edge_wins_over_the_longer_path() {
         let graph = crate_graph(&["b", "c", "d"], &[("b", "c"), ("c", "d"), ("b", "d")]);
         let rule = layers_rule(&["d", "b"], vec![]);
         let result = check_rule(&graph, &rule, false);
@@ -1849,7 +1858,7 @@ mod tests {
         assert_eq!(reported.len(), 1, "one pair, one violation: {reported:?}");
         assert_eq!(violation_pair(reported[0]), ("b", "d"));
         assert!(
-            hop_pairs(reported[0]).is_empty(),
+            via_pairs(reported[0]).is_empty(),
             "the edge carries the dependency itself"
         );
         assert!(

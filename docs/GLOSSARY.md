@@ -83,7 +83,6 @@ An edge carrying few symbols is described by that count, not by a shape.
 | **Rule** | One named check from `arc-rules.toml`, of type `layers`, `forbidden-dependency` or `no-cycles`. A name is unique across all types. | — |
 | **Severity** | How bad breaking a rule is: `error`, `warn`, `ignore`. A property of the rule, not of what it finds. | — |
 | **Violation** | One fact a rule established: a dependency, or a cycle, under that rule. A dependency holds whether it is written as one edge or runs through nodes in between, and either way the violation names its two ends. Every violation is in exactly one of the three states below. | finding |
-| **Hop** | One edge of a dependency that reaches its target over nodes a rule sorts into no position. The violation names the two ends, its hops say how they connect. | step, leg |
 | **Reported** | The state that counts: neither allowed nor frozen. Only reported violations reach the exit code. | — |
 | **Allowed** | Permitted by an `except` entry on the rule, permanently and by intent. | whitelisted, ignored |
 | **Frozen** | Covered by an `arc-baseline.toml` entry: debt that exists, is tolerated until someone gets to it, and is expected to shrink. | baselined |

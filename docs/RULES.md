@@ -231,7 +231,7 @@ Every entry in `layers` is one position, holding either a pattern or a list of p
 Two nodes sharing a position are unordered, so a dependency between them passes.
 
 What the rule holds against the order is the dependency, whether it is written as one edge or runs over other nodes.
-A node no layer matches does not break it: if `services` reaches `core` through an unlayered `util`, that is the dependency `services → core`, reported under the pair with its hops below it.
+A node no layer matches does not break it: if `services` reaches `core` through an unlayered `util`, that is the dependency `services → core`, reported under the pair with the edges it runs through below it.
 
 ```
 error[layers]: architecture layers
@@ -243,7 +243,7 @@ error[layers]: architecture layers
 ```
 
 The pair is also what silences it: an `except` or a baseline entry on `services → core` covers the dependency however it runs today, and it stays covered when tomorrow it runs over a different node.
-The walk stops at every layered node, because the order already answers that pair, and an edge that `except` or the baseline covers connects two layered nodes and is therefore never a hop.
+The walk stops at every layered node, because the order already answers that pair, and an edge that `except` or the baseline covers connects two layered nodes and is therefore never one of the edges such a dependency runs through.
 A dependency with an endpoint no layer matches is still not checked, and neither is the place of that node itself; without `exhaustive = true` nothing says which nodes those are.
 
 A position written as the bare string `"*"`, or the single-element list `["*"]`, is the catch-all layer.

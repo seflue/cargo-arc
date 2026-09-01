@@ -404,12 +404,9 @@ pub(super) fn render_edges(
             let from_y = from.y + from.height / 2.0 + y_offset; // outgoing: below center
             let to_y = to.y + to.height / 2.0 - y_offset; // incoming: above center
 
-            // Calculate "hops" - how many rows the arc spans
-            let hops = ((to_y - from_y).abs() / row_height).round().max(1.0);
+            let rows_spanned = ((to_y - from_y).abs() / row_height).round().max(1.0);
 
-            // Control point X scales with number of hops
-            // Base offset + additional offset per hop
-            let arc_offset = LAYOUT.arc_base + (hops * LAYOUT.arc_scale);
+            let arc_offset = LAYOUT.arc_base + (rows_spanned * LAYOUT.arc_scale);
             let ctrl_x = base_x + arc_offset;
             let mid_y = f32::midpoint(from_y, to_y);
 

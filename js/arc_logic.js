@@ -93,12 +93,12 @@ const ArcLogic = {
   // === Arc geometry (from svg_script.js ArcLogic) ===
 
   /**
-   * Calculate arc offset based on number of hops between nodes
-   * @param {number} hops - Number of row hops between source and target
+   * Calculate arc offset based on the rows an arc spans
+   * @param {number} rowsSpanned - Number of rows between source and target
    * @returns {number} - Offset for arc control point
    */
-  getArcOffset(hops) {
-    return 20 + hops * 15;
+  getArcOffset(rowsSpanned) {
+    return 20 + rowsSpanned * 15;
   },
 
   /**
@@ -112,8 +112,11 @@ const ArcLogic = {
    * @returns {{path: string, toX: number, toY: number, ctrlX: number, midY: number}}
    */
   calculateArcPath(fromX, fromY, toX, toY, maxRight, rowHeight) {
-    const hops = Math.max(1, Math.round(Math.abs(toY - fromY) / rowHeight));
-    const arcOffset = this.getArcOffset(hops);
+    const rowsSpanned = Math.max(
+      1,
+      Math.round(Math.abs(toY - fromY) / rowHeight),
+    );
+    const arcOffset = this.getArcOffset(rowsSpanned);
     const ctrlX = maxRight + arcOffset;
     const midY = (fromY + toY) / 2;
 

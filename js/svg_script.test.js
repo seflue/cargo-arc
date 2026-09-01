@@ -3,19 +3,19 @@ import { ArcLogic } from './arc_logic.js';
 
 describe('ArcLogic', () => {
   describe('getArcOffset', () => {
-    test('calculates correct offset for 1 hop', () => {
+    test('calculates correct offset for 1 row', () => {
       expect(ArcLogic.getArcOffset(1)).toBe(35); // 20 + 1*15
     });
 
-    test('calculates correct offset for 3 hops', () => {
+    test('calculates correct offset for 3 rows', () => {
       expect(ArcLogic.getArcOffset(3)).toBe(65); // 20 + 3*15
     });
 
-    test('calculates correct offset for 0 hops', () => {
+    test('calculates correct offset for 0 rows', () => {
       expect(ArcLogic.getArcOffset(0)).toBe(20); // 20 + 0*15
     });
 
-    test('calculates correct offset for 10 hops', () => {
+    test('calculates correct offset for 10 rows', () => {
       expect(ArcLogic.getArcOffset(10)).toBe(170); // 20 + 10*15
     });
   });
@@ -39,17 +39,17 @@ describe('ArcLogic', () => {
     });
 
     test('calculates ctrlX based on maxRight and arc offset', () => {
-      // 150 distance, rowHeight 24 => hops = max(1, round(150/24)) = 6
+      // 150 distance, rowHeight 24 => rowsSpanned = max(1, round(150/24)) = 6
       // arcOffset = 20 + 6*15 = 110
       // ctrlX = 200 + 110 = 310
       const result = ArcLogic.calculateArcPath(100, 0, 100, 150, 200, 24);
       expect(result.ctrlX).toBe(310);
     });
 
-    test('minimum hops is 1', () => {
-      // Even with small distance, hops should be at least 1
+    test('minimum rowsSpanned is 1', () => {
+      // Even with small distance, rowsSpanned should be at least 1
       const result = ArcLogic.calculateArcPath(100, 50, 100, 55, 200, 24);
-      // hops = max(1, round(5/24)) = max(1, 0) = 1
+      // rowsSpanned = max(1, round(5/24)) = max(1, 0) = 1
       // arcOffset = 20 + 1*15 = 35
       // ctrlX = 200 + 35 = 235
       expect(result.ctrlX).toBe(235);

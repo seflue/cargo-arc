@@ -493,12 +493,12 @@ if (typeof document !== 'undefined') {
         const fromY = visiblePositionY.get(arc.from);
         const toY = visiblePositionY.get(arc.to);
         if (fromY === undefined || toY === undefined) continue;
-        const hops = Math.max(
+        const rowsSpanned = Math.max(
           1,
           Math.round(Math.abs(toY - fromY) / ROW_HEIGHT),
         );
-        // arc_base (20) + hops * arc_scale (15) + arrow_length (8)
-        maxArcWidth = Math.max(maxArcWidth, 20 + hops * 15 + 8);
+        // arc_base (20) + rowsSpanned * arc_scale (15) + arrow_length (8)
+        maxArcWidth = Math.max(maxArcWidth, 20 + rowsSpanned * 15 + 8);
       }
 
       const sidebarSpace = 280 + SIDEBAR_SHADOW_PAD;

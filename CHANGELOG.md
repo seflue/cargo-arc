@@ -121,9 +121,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it is for.
 - A `layers` rule now checks dependencies rather than written edges: one that
   reaches its target over nodes the rule sorts into no position counts like a
-  direct one and is reported under the pair at its ends, with its hops listed
-  below it. Before, such a dependency vanished from the check, so an order that
-  contradicts the code could stay green. A project that passes on 0.3.1 can turn
+  direct one and is reported under the pair at its ends, with the edges it runs
+  through listed below it. Before, such a dependency vanished from the check, so
+  an order that contradicts the code could stay green. A project that passes on 0.3.1 can turn
   red on this; `arc check --generate-baseline` freezes what is there. The
   baseline key and `except` both address the pair, so an entry stays valid when
   the dependency later runs over another node. The diagnostic for an unsorted

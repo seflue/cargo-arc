@@ -749,7 +749,7 @@ fn layers_hold_when_the_order_follows_the_code() {
 }
 
 /// Both orders put `d` above `b`, and `b` reaches `d` through `c`. The pair is
-/// reported, not the hop that carries it.
+/// reported, not the edges that carry it.
 #[test]
 fn layers_report_a_dependency_running_through_an_unpositioned_crate() {
     for rules_file in ["layers-d-a-b.toml", "layers-a-d-b.toml"] {
@@ -774,7 +774,7 @@ fn layers_report_a_written_edge_as_before() {
 }
 
 /// The baseline key is the pair, so a generated entry names `b` and `d` and
-/// nothing about the hops between them.
+/// nothing about the edges between them.
 #[test]
 fn a_transitive_dependency_freezes_on_its_pair() {
     let (dir, rules_path) = isolated_rules_copy("transitive_layers_workspace", "layers-a-d-b.toml");

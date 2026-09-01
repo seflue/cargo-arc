@@ -28,8 +28,8 @@ pub(super) fn calculate_max_arc_width(
         .filter_map(|edge| {
             let from = positioned_index.get(&edge.from).copied()?;
             let to = positioned_index.get(&edge.to).copied()?;
-            let hops = ((to.y - from.y).abs() / row_height).round().max(1.0);
-            Some(LAYOUT.arc_base + hops * LAYOUT.arc_scale + LAYOUT.arrow_length)
+            let rows_spanned = ((to.y - from.y).abs() / row_height).round().max(1.0);
+            Some(LAYOUT.arc_base + rows_spanned * LAYOUT.arc_scale + LAYOUT.arrow_length)
         })
         .fold(0.0_f32, f32::max)
 }
@@ -190,7 +190,7 @@ mod tests {
                 format!("m{i}"),
             );
         }
-        // Edge von erstem zu letztem Modul (9 Hops)
+        // Edge von erstem zu letztem Modul (9 Zeilen)
         ir.edges
             .push(LayoutEdge::new(1, 10, EdgeContext::production()));
 
@@ -201,7 +201,7 @@ mod tests {
         let max_arc_width = calculate_max_arc_width(&positioned_index, &ir, config.row_height);
         let (width, _height) = calculate_canvas_size(&positioned, &config, max_arc_width);
 
-        // max_arc for 9 hops = 20 + 9*15 + 8 = 163px
+        // max_arc for 9 rows = 20 + 9*15 + 8 = 163px
         // Canvas must include box_width + max_arc + margin
         let expected_min = box_width + 163.0;
         assert!(
