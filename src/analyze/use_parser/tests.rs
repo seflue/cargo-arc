@@ -84,8 +84,43 @@ impl<'a> ResolutionContextBuilder<'a> {
     }
 }
 
-fn parse_test_uses(source: &str) -> Vec<(syn::ItemUse, EdgeContext, usize)> {
+fn parse_test_uses(source: &str) -> CollectedUses {
     collect_all_use_items(&syn::parse_file(source).unwrap(), EdgeContext::production())
+}
+
+/// Path references standing in the file's own region, from the tuple form the
+/// fixtures write them in.
+fn root_path_refs(paths: Vec<(String, usize, EdgeContext, usize)>) -> CollectedPathRefs {
+    CollectedPathRefs {
+        refs: paths
+            .into_iter()
+            .map(|(path, line, context, inline_depth)| PathRef {
+                path,
+                line,
+                context,
+                inline_depth,
+                region: BindingRegions::ROOT,
+            })
+            .collect(),
+        regions: BindingRegions::default(),
+    }
+}
+
+/// `use` items in the file's own region, from the tuple form the fixtures write
+/// them in.
+fn root_uses(uses: Vec<(syn::ItemUse, EdgeContext, usize)>) -> CollectedUses {
+    CollectedUses {
+        items: uses
+            .into_iter()
+            .map(|(item, context, inline_depth)| CollectedUse {
+                item,
+                context,
+                inline_depth,
+                region: BindingRegions::ROOT,
+            })
+            .collect(),
+        regions: BindingRegions::default(),
+    }
 }
 
 mod reexport_visibility_tests {
@@ -1142,7 +1177,10 @@ mod tests {
         let syntax = syn::parse_file(source).unwrap();
         let uses = collect_all_use_items(&syntax, EdgeContext::production());
         assert_eq!(uses.len(), 1);
-        assert_eq!(uses[0].1, EdgeContext::test(crate::model::TestKind::Unit));
+        assert_eq!(
+            uses[0].context,
+            EdgeContext::test(crate::model::TestKind::Unit)
+        );
     }
 
     #[test]
@@ -1155,7 +1193,7 @@ mod normal {
         let syntax = syn::parse_file(source).unwrap();
         let uses = collect_all_use_items(&syntax, EdgeContext::production());
         assert_eq!(uses.len(), 1);
-        assert_eq!(uses[0].1, EdgeContext::production());
+        assert_eq!(uses[0].context, EdgeContext::production());
     }
 
     #[test]
@@ -1167,7 +1205,10 @@ use other_crate::test_helper;
         let syntax = syn::parse_file(source).unwrap();
         let uses = collect_all_use_items(&syntax, EdgeContext::production());
         assert_eq!(uses.len(), 1);
-        assert_eq!(uses[0].1, EdgeContext::test(crate::model::TestKind::Unit));
+        assert_eq!(
+            uses[0].context,
+            EdgeContext::test(crate::model::TestKind::Unit)
+        );
     }
 
     #[test]
@@ -1183,7 +1224,10 @@ mod tests {
         let syntax = syn::parse_file(source).unwrap();
         let uses = collect_all_use_items(&syntax, EdgeContext::production());
         assert_eq!(uses.len(), 1);
-        assert_eq!(uses[0].1, EdgeContext::test(crate::model::TestKind::Unit));
+        assert_eq!(
+            uses[0].context,
+            EdgeContext::test(crate::model::TestKind::Unit)
+        );
     }
 
     #[test]
@@ -1197,7 +1241,10 @@ mod hir_tests {
         let syntax = syn::parse_file(source).unwrap();
         let uses = collect_all_use_items(&syntax, EdgeContext::production());
         assert_eq!(uses.len(), 1);
-        assert_eq!(uses[0].1, EdgeContext::test(crate::model::TestKind::Unit));
+        assert_eq!(
+            uses[0].context,
+            EdgeContext::test(crate::model::TestKind::Unit)
+        );
     }
 
     #[test]
@@ -1211,7 +1258,10 @@ mod hir_tests {
         let syntax = syn::parse_file(source).unwrap();
         let uses = collect_all_use_items(&syntax, EdgeContext::production());
         assert_eq!(uses.len(), 1);
-        assert_eq!(uses[0].1, EdgeContext::test(crate::model::TestKind::Unit));
+        assert_eq!(
+            uses[0].context,
+            EdgeContext::test(crate::model::TestKind::Unit)
+        );
     }
 
     /// Known limitation: `#[cfg(test)]` on `fn` items is NOT detected —
@@ -1229,7 +1279,7 @@ fn test_helper() {
         let uses = collect_all_use_items(&syntax, EdgeContext::production());
         assert_eq!(uses.len(), 1);
         // fn-level cfg(test) is NOT propagated — use is tagged Production
-        assert_eq!(uses[0].1, EdgeContext::production());
+        assert_eq!(uses[0].context, EdgeContext::production());
     }
 }
 
@@ -1246,7 +1296,7 @@ fn main() {
         let syntax = syn::parse_file(source).unwrap();
         let refs = collect_all_path_refs(&syntax, EdgeContext::production());
         assert!(
-            refs.iter().any(|(p, _, _, _)| p == "my_server::run"),
+            refs.iter().any(|r| r.path == "my_server::run"),
             "should collect my_server::run, found: {refs:?}"
         );
     }
@@ -1261,7 +1311,7 @@ fn main() {
         let syntax = syn::parse_file(source).unwrap();
         let refs = collect_all_path_refs(&syntax, EdgeContext::production());
         assert!(
-            refs.iter().any(|(p, _, _, _)| p == "my_lib::Config"),
+            refs.iter().any(|r| r.path == "my_lib::Config"),
             "should collect my_lib::Config, found: {refs:?}"
         );
     }
@@ -1280,7 +1330,7 @@ fn main() {
         let syntax = syn::parse_file(source).unwrap();
         let refs = collect_all_path_refs(&syntax, EdgeContext::production());
         assert!(
-            refs.iter().any(|(p, _, _, _)| p == "my_lib::check"),
+            refs.iter().any(|r| r.path == "my_lib::check"),
             "should collect my_lib::check, found: {refs:?}"
         );
     }
@@ -1293,7 +1343,7 @@ fn process<T: my_lib::Trait>(_t: T) {}
         let syntax = syn::parse_file(source).unwrap();
         let refs = collect_all_path_refs(&syntax, EdgeContext::production());
         assert!(
-            refs.iter().any(|(p, _, _, _)| p == "my_lib::Trait"),
+            refs.iter().any(|r| r.path == "my_lib::Trait"),
             "should collect my_lib::Trait, found: {refs:?}"
         );
     }
@@ -1308,7 +1358,7 @@ fn main() {
         let syntax = syn::parse_file(source).unwrap();
         let refs = collect_all_path_refs(&syntax, EdgeContext::production());
         assert!(
-            refs.iter().any(|(p, _, _, _)| p == "my_lib::Config"),
+            refs.iter().any(|r| r.path == "my_lib::Config"),
             "should collect my_lib::Config from struct literal, found: {refs:?}"
         );
     }
@@ -1325,7 +1375,7 @@ fn main() {
         let refs = collect_all_path_refs(&syntax, EdgeContext::production());
         // "println" is a single segment → not collected
         assert!(
-            !refs.iter().any(|(p, _, _, _)| p == "println"),
+            !refs.iter().any(|r| r.path == "println"),
             "single-segment paths should not be collected, found: {refs:?}"
         );
     }
@@ -1340,8 +1390,7 @@ fn main() {
         let syntax = syn::parse_file(source).unwrap();
         let refs = collect_all_path_refs(&syntax, EdgeContext::production());
         assert!(
-            refs.iter()
-                .any(|(p, _, _, _)| p == "my_lib::Config::default"),
+            refs.iter().any(|r| r.path == "my_lib::Config::default"),
             "should collect full path my_lib::Config::default, found: {refs:?}"
         );
     }
@@ -1357,11 +1406,11 @@ fn main() {
         let syntax = syn::parse_file(source).unwrap();
         let refs = collect_all_path_refs(&syntax, EdgeContext::production());
         assert!(
-            refs.iter().any(|(p, _, _, _)| p == "my_server::run"),
+            refs.iter().any(|r| r.path == "my_server::run"),
             "should collect my_server::run, found: {refs:?}"
         );
         assert!(
-            refs.iter().any(|(p, _, _, _)| p == "my_lib::Config"),
+            refs.iter().any(|r| r.path == "my_lib::Config"),
             "should collect my_lib::Config, found: {refs:?}"
         );
     }
@@ -1385,11 +1434,11 @@ mod tests {
         let refs = collect_all_path_refs(&syntax, EdgeContext::production());
         let matching: Vec<_> = refs
             .iter()
-            .filter(|(p, _, _, _)| p == "other_crate::module::helper")
+            .filter(|r| r.path == "other_crate::module::helper")
             .collect();
         assert_eq!(matching.len(), 1);
         assert_eq!(
-            matching[0].2,
+            matching[0].context,
             EdgeContext::test(crate::model::TestKind::Unit)
         );
     }
@@ -1405,10 +1454,10 @@ fn main() {
         let refs = collect_all_path_refs(&syntax, EdgeContext::production());
         let matching: Vec<_> = refs
             .iter()
-            .filter(|(p, _, _, _)| p == "other_crate::module::run")
+            .filter(|r| r.path == "other_crate::module::run")
             .collect();
         assert_eq!(matching.len(), 1);
-        assert_eq!(matching[0].2, EdgeContext::production());
+        assert_eq!(matching[0].context, EdgeContext::production());
     }
 }
 
@@ -1432,7 +1481,8 @@ mod path_ref_resolution_tests {
             .workspace_crates(&ws)
             .module_paths(&mp)
             .build();
-        let deps = parse_path_ref_dependencies(&paths, &ctx, &ModuleAliases::new());
+        let deps =
+            parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &ModuleAliases::default());
         assert_eq!(
             deps.len(),
             1,
@@ -1458,7 +1508,8 @@ mod path_ref_resolution_tests {
         let ctx = ResolutionContextBuilder::new(Path::new("src/main.rs"))
             .module_paths(&mp)
             .build();
-        let deps = parse_path_ref_dependencies(&paths, &ctx, &ModuleAliases::new());
+        let deps =
+            parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &ModuleAliases::default());
         assert_eq!(deps.len(), 1, "should resolve crate-local path: {deps:?}");
         assert_eq!(deps[0].target_crate, "my_crate");
         assert_eq!(deps[0].target_module, "module");
@@ -1474,7 +1525,8 @@ mod path_ref_resolution_tests {
         let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs"))
             .module_paths(&mp)
             .build();
-        let deps = parse_path_ref_dependencies(&paths, &ctx, &ModuleAliases::new());
+        let deps =
+            parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &ModuleAliases::default());
         assert_eq!(deps.len(), 1, "should resolve bare module path: {deps:?}");
         assert_eq!(deps[0].target_crate, "my_crate");
         assert_eq!(deps[0].target_module, "cli");
@@ -1499,7 +1551,8 @@ mod path_ref_resolution_tests {
             ),
         ];
         let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs")).build();
-        let deps = parse_path_ref_dependencies(&paths, &ctx, &ModuleAliases::new());
+        let deps =
+            parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &ModuleAliases::default());
         assert!(deps.is_empty(), "unknown paths should be skipped: {deps:?}");
     }
 
@@ -1522,7 +1575,8 @@ mod path_ref_resolution_tests {
             .workspace_crates(&ws)
             .crate_exports(&exports)
             .build();
-        let deps = parse_path_ref_dependencies(&paths, &ctx, &ModuleAliases::new());
+        let deps =
+            parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &ModuleAliases::default());
         assert_eq!(deps.len(), 1, "should resolve entry-point path: {deps:?}");
         assert_eq!(deps[0].target_crate, "other_crate");
         assert_eq!(deps[0].target_module, "");
@@ -1553,7 +1607,8 @@ mod path_ref_resolution_tests {
             .workspace_crates(&ws)
             .module_paths(&mp)
             .build();
-        let deps = parse_path_ref_dependencies(&paths, &ctx, &ModuleAliases::new());
+        let deps =
+            parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &ModuleAliases::default());
         assert_eq!(deps.len(), 1, "duplicate paths should be deduped: {deps:?}");
     }
 }
@@ -1819,11 +1874,17 @@ mod inner {
         let uses = collect_all_use_items(&syntax, EdgeContext::production());
         assert_eq!(uses.len(), 3);
         // top-level use: depth 0
-        assert_eq!(uses[0].2, 0, "top-level use should have depth 0");
+        assert_eq!(uses[0].inline_depth, 0, "top-level use should have depth 0");
         // use inside mod inner: depth 1
-        assert_eq!(uses[1].2, 1, "use in mod inner should have depth 1");
+        assert_eq!(
+            uses[1].inline_depth, 1,
+            "use in mod inner should have depth 1"
+        );
         // use inside mod inner::deep: depth 2
-        assert_eq!(uses[2].2, 2, "use in mod deep should have depth 2");
+        assert_eq!(
+            uses[2].inline_depth, 2,
+            "use in mod deep should have depth 2"
+        );
     }
 }
 
@@ -1849,7 +1910,7 @@ mod context_aware_dedup_tests {
             (item, EdgeContext::test(TestKind::Unit), 0),
         ];
         let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs")).build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&root_uses(uses), &ctx);
         assert_eq!(
             deps.len(),
             2,
@@ -1887,7 +1948,8 @@ mod context_aware_dedup_tests {
             .workspace_crates(&ws)
             .module_paths(&mp)
             .build();
-        let deps = parse_path_ref_dependencies(&paths, &ctx, &ModuleAliases::new());
+        let deps =
+            parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &ModuleAliases::default());
         assert_eq!(
             deps.len(),
             2,
@@ -1925,7 +1987,8 @@ mod context_aware_dedup_tests {
             .workspace_crates(&ws)
             .module_paths(&mp)
             .build();
-        let deps = parse_path_ref_dependencies(&paths, &ctx, &ModuleAliases::new());
+        let deps =
+            parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &ModuleAliases::default());
         assert_eq!(
             deps.len(),
             1,
@@ -1964,7 +2027,8 @@ mod context_aware_dedup_tests {
             .workspace_crates(&ws)
             .module_paths(&mp)
             .build();
-        let deps = parse_path_ref_dependencies(&paths, &ctx, &ModuleAliases::new());
+        let deps =
+            parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &ModuleAliases::default());
         assert_eq!(
             deps.len(),
             1,
@@ -2011,7 +2075,7 @@ mod context_aware_dedup_tests {
             ),
         ];
         let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs")).build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&root_uses(uses), &ctx);
         assert_eq!(
             deps.len(),
             1,
@@ -2170,7 +2234,8 @@ mod reexport_resolution_tests {
             .module_paths(&mp)
             .reexport_map(&map)
             .build();
-        let deps = parse_path_ref_dependencies(&paths, &ctx, &ModuleAliases::new());
+        let deps =
+            parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &ModuleAliases::default());
         assert_eq!(deps.len(), 1);
         assert_eq!(
             deps[0].target_module, "parent::child",
@@ -2598,7 +2663,7 @@ mod module_alias_tests {
         let uses = parse_test_uses("use crate::parent::child;");
         let aliases = collect_module_aliases(&uses, &ctx);
         assert_eq!(
-            aliases.target("child"),
+            aliases.target(BindingRegions::ROOT, "child"),
             Some("crate::parent::child"),
             "leaf name should bind to the full module path: {aliases:?}"
         );
@@ -2612,9 +2677,12 @@ mod module_alias_tests {
             .build();
         let uses = parse_test_uses("use crate::parent::{child, Other};");
         let aliases = collect_module_aliases(&uses, &ctx);
-        assert_eq!(aliases.target("child"), Some("crate::parent::child"));
+        assert_eq!(
+            aliases.target(BindingRegions::ROOT, "child"),
+            Some("crate::parent::child")
+        );
         assert!(
-            aliases.target("Other").is_none(),
+            aliases.target(BindingRegions::ROOT, "Other").is_none(),
             "non-module items must not enter the alias map: {aliases:?}"
         );
     }
@@ -2628,7 +2696,7 @@ mod module_alias_tests {
         let uses = parse_test_uses("use crate::parent::child as kid;");
         let aliases = collect_module_aliases(&uses, &ctx);
         assert_eq!(
-            aliases.target("kid"),
+            aliases.target(BindingRegions::ROOT, "kid"),
             Some("crate::parent::child"),
             "rename binds the alias name to the original module: {aliases:?}"
         );
@@ -2647,7 +2715,7 @@ mod module_alias_tests {
         let uses = parse_test_uses("use other_crate::module;");
         let aliases = collect_module_aliases(&uses, &ctx);
         assert_eq!(
-            aliases.target("module"),
+            aliases.target(BindingRegions::ROOT, "module"),
             Some("other_crate::module"),
             "workspace module alias keeps the code-side crate name: {aliases:?}"
         );
@@ -2662,7 +2730,7 @@ mod module_alias_tests {
         let uses = parse_test_uses("use crate::parent::child;");
         let aliases = collect_module_aliases(&uses, &ctx);
         let paths = vec![("child::Item".to_string(), 20, EdgeContext::production(), 0)];
-        let deps = parse_path_ref_dependencies(&paths, &ctx, &aliases);
+        let deps = parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &aliases);
         assert_eq!(deps.len(), 1, "alias-qualified path must resolve: {deps:?}");
         assert_eq!(deps[0].target_module, "parent::child");
         assert_eq!(deps[0].target_item, Some("Item".to_string()));
@@ -2691,7 +2759,7 @@ mod module_alias_tests {
             EdgeContext::production(),
             0,
         )];
-        let deps = parse_path_ref_dependencies(&paths, &ctx, &aliases);
+        let deps = parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &aliases);
         assert_eq!(deps.len(), 1, "should resolve through alias: {deps:?}");
         assert_eq!(deps[0].target_module, "parent::child::inner");
         assert_eq!(deps[0].target_item, Some("Item".to_string()));
@@ -2708,9 +2776,9 @@ mod module_alias_tests {
         let ctx = ResolutionContextBuilder::new(Path::new("src/consumer.rs"))
             .module_paths(&mp)
             .build();
-        let aliases = ModuleAliases::new();
+        let aliases = ModuleAliases::default();
         let paths = vec![("child::Item".to_string(), 20, EdgeContext::production(), 0)];
-        let deps = parse_path_ref_dependencies(&paths, &ctx, &aliases);
+        let deps = parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &aliases);
         assert_eq!(deps.len(), 1, "top-level module still resolves: {deps:?}");
         assert_eq!(deps[0].target_module, "child");
     }
@@ -2746,7 +2814,7 @@ mod module_alias_tests {
         let uses = parse_test_uses(use_line);
         let aliases = collect_module_aliases(&uses, &ctx);
         let paths = vec![("shared::Item".to_string(), 20, EdgeContext::production(), 0)];
-        let deps = parse_path_ref_dependencies(&paths, &ctx, &aliases);
+        let deps = parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &aliases);
         assert_eq!(deps.len(), 1, "the reference resolves once: {deps:?}");
         assert_eq!(
             deps[0].target_crate, "remote_lib",
@@ -2774,13 +2842,78 @@ mod module_alias_tests {
             EdgeContext::production(),
             0,
         )];
-        let deps = parse_path_ref_dependencies(&paths, &ctx, &aliases);
+        let deps = parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &aliases);
         assert_eq!(
             deps.len(),
             1,
             "an item import does not take the name away from the module: {deps:?}"
         );
         assert_eq!(deps[0].target_module, "helper");
+    }
+
+    /// A reference numbered by one walk is looked up against bindings numbered by
+    /// the other. Disagreeing counts would mean disagreeing numbers.
+    #[test]
+    fn test_both_collectors_number_the_same_regions() {
+        let file = syn::parse_file(
+            "fn draw() { let _ = 1; }\n\
+             mod inner { fn stats() { { use crate::metrics; metrics::count(); } } }\n\
+             #[cfg(test)] mod tests { fn t() {} }",
+        )
+        .unwrap();
+        let uses = collect_all_use_items(&file, EdgeContext::production());
+        let refs = collect_all_path_refs(&file, EdgeContext::production());
+        assert!(
+            uses.regions.count() > 1,
+            "the fixture is meant to nest regions"
+        );
+        assert_eq!(
+            uses.regions.count(),
+            refs.regions.count(),
+            "both walks number the regions of the same file"
+        );
+    }
+
+    /// A `use` binds where it is written. One inside a function body says nothing
+    /// about the function beside it, where the bare name still means the module
+    /// next to the file.
+    #[test]
+    fn test_binding_in_a_function_body_leaves_the_neighbour_module_alone() {
+        let mp: ModulePathMap = [(
+            "my_crate".to_string(),
+            HashSet::from([
+                "render".into(),
+                "render::queue".into(),
+                "metrics".into(),
+                "metrics::queue".into(),
+            ]),
+        )]
+        .into_iter()
+        .collect();
+        let ctx = ResolutionContextBuilder::new(Path::new("src/render/mod.rs"))
+            .module_paths(&mp)
+            .current_module_path("render")
+            .build();
+        let file = syn::parse_file(
+            "fn draw() { queue::submit(); }\n\
+             fn stats() { use crate::metrics::queue; queue::len(); }",
+        )
+        .unwrap();
+        let uses = collect_all_use_items(&file, EdgeContext::production());
+        let refs = collect_all_path_refs(&file, EdgeContext::production());
+
+        let aliases = collect_module_aliases(&uses, &ctx);
+        let deps = parse_path_ref_dependencies(&refs, &ctx, &aliases);
+
+        let targets: Vec<&str> = deps.iter().map(|d| d.target_module.as_str()).collect();
+        assert!(
+            targets.contains(&"render::queue"),
+            "the binding in `stats` must not take the name away from `draw`: {deps:?}"
+        );
+        assert!(
+            targets.contains(&"metrics::queue"),
+            "the binding still holds in the body it was written in: {deps:?}"
+        );
     }
 
     #[test]
@@ -2793,7 +2926,7 @@ mod module_alias_tests {
         let uses = parse_test_uses("use remote_lib::shared;");
         let aliases = collect_module_aliases(&uses, &ctx);
         let paths = vec![("shared::Item".to_string(), 20, EdgeContext::production(), 0)];
-        let deps = parse_path_ref_dependencies(&paths, &ctx, &aliases);
+        let deps = parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &aliases);
         assert!(
             deps.is_empty(),
             "the name is bound even where the binding cannot be placed, \
@@ -2881,7 +3014,7 @@ mod use_self_tests {
         let uses = parse_test_uses("use crate::auxil::{self, dxgi::Factory};");
         let aliases = collect_module_aliases(&uses, &ctx);
         assert_eq!(
-            aliases.target("auxil"),
+            aliases.target(BindingRegions::ROOT, "auxil"),
             Some("crate::auxil"),
             "`self` binds the module name locally: {aliases:?}"
         );

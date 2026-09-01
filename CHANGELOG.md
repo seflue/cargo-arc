@@ -138,6 +138,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   layer. A run aimed at a directory without a `Cargo.toml` reported `Failed to
   run cargo metadata` and nothing else; it now names the manifest path it
   targeted and passes on what cargo itself said.
+- A `use` binds only where it is written. One inside a function body or a nested
+  module bound its name for the whole file, so a bare path elsewhere in that file
+  pointed at the imported module instead of the module beside the file, or lost
+  its dependency altogether when the import came from another crate. A rule over
+  such an edge then passed because the edge was missing, not because the code
+  kept it.
 
 ### Removed
 

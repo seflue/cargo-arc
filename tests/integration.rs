@@ -1506,6 +1506,21 @@ to = "infra::**"
 }
 
 #[test]
+fn test_binding_in_a_function_body_keeps_the_neighbour_module_edge() {
+    // Only `consumer::stats` binds `shared` to something else. `consumer::draw`
+    // depends on the module beside it, and that edge closes a cycle with it.
+    let (code, stderr) = cargo_arc_check("scoped_binding", &[]);
+    assert_eq!(
+        code, 1,
+        "the dependency of draw on the neighbour module closes a cycle, stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("consumer") && stderr.contains("shared"),
+        "the cycle names both modules, stderr: {stderr}"
+    );
+}
+
+#[test]
 fn test_import_from_outside_does_not_cycle_through_a_same_named_module() {
     // Every import in my_crate::consumer names a module beside consumer.rs, and
     // each of those modules depends on consumer, so mistaking one invents a cycle.

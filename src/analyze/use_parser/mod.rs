@@ -223,42 +223,127 @@ fn promote_to_test(base: &EdgeContext) -> EdgeContext {
     }
 }
 
-/// Shared `visit_item_mod` for cfg(test) scope tracking via `EdgeContext`.
-/// Used by both `UseCollector` and `PathRefCollector` — the logic is identical.
-macro_rules! impl_cfg_test_visit_item_mod {
+/// Where a `use` binds: an inline module body, a block, or the file itself.
+pub(crate) type RegionId = usize;
+
+/// The binding regions of one file, as parent links.
+///
+/// A `use` is an item and binds in its enclosing module or block only. A later
+/// reference therefore sees a binding when the binding's region is the
+/// reference's own region or one enclosing it.
+///
+/// Both collectors number the regions of the same file, and a reference from one
+/// walk is looked up against bindings from the other. The two numberings have to
+/// agree, which is why both take them from `impl_binding_region_visits!` and
+/// neither prunes its traversal.
+#[derive(Debug, Clone)]
+pub(crate) struct BindingRegions {
+    parents: Vec<Option<RegionId>>,
+}
+
+impl BindingRegions {
+    /// The file itself. Encloses every other region and is enclosed by none.
+    pub(crate) const ROOT: RegionId = 0;
+
+    fn open(&mut self, parent: RegionId) -> RegionId {
+        self.parents.push(Some(parent));
+        self.parents.len() - 1
+    }
+
+    #[cfg(test)]
+    pub(crate) fn count(&self) -> usize {
+        self.parents.len()
+    }
+
+    /// A region and everything enclosing it, innermost first.
+    fn enclosing(&self, region: RegionId) -> impl Iterator<Item = RegionId> + '_ {
+        std::iter::successors(Some(region), move |&inner| {
+            self.parents.get(inner).copied().flatten()
+        })
+    }
+}
+
+impl Default for BindingRegions {
+    fn default() -> Self {
+        Self {
+            parents: vec![None],
+        }
+    }
+}
+
+/// Shared `visit_item_mod` and `visit_block` for both collectors.
+///
+/// Both open a binding region. `visit_item_mod` also carries the cfg(test)
+/// context and the inline module depth, which counts modules only: `use super::X`
+/// in a function body still means the parent module.
+macro_rules! impl_binding_region_visits {
     () => {
         fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
             let prev_context = self.context.clone();
             let prev_depth = self.inline_depth;
+            let prev_region = self.region;
             if is_cfg_test(&node.attrs) {
                 self.context = promote_to_test(&self.context);
             }
             // Inline modules (with body) add nesting depth; `mod foo;` (external) does not
             if node.content.is_some() {
                 self.inline_depth += 1;
+                self.region = self.regions.open(prev_region);
             }
             syn::visit::visit_item_mod(self, node);
             self.context = prev_context;
             self.inline_depth = prev_depth;
+            self.region = prev_region;
+        }
+
+        fn visit_block(&mut self, node: &'ast syn::Block) {
+            let prev_region = self.region;
+            self.region = self.regions.open(prev_region);
+            syn::visit::visit_block(self, node);
+            self.region = prev_region;
         }
     };
+}
+
+/// One `use` item with what its position says about it.
+pub(crate) struct CollectedUse {
+    pub(crate) item: syn::ItemUse,
+    pub(crate) context: EdgeContext,
+    pub(crate) inline_depth: usize,
+    pub(crate) region: RegionId,
+}
+
+/// The `use` items of one file, with the regions they were written in.
+#[derive(Default)]
+pub(crate) struct CollectedUses {
+    items: Vec<CollectedUse>,
+    regions: BindingRegions,
+}
+
+impl Deref for CollectedUses {
+    type Target = [CollectedUse];
+
+    fn deref(&self) -> &Self::Target {
+        &self.items
+    }
 }
 
 /// Collect all `use` items from a parsed file, including those nested inside
 /// function bodies, blocks, and other scopes. Uses `syn::visit::Visit` to
 /// traverse the full AST regardless of nesting depth.
 ///
-/// Returns `(ItemUse, EdgeContext)` tuples: uses inside `#[cfg(test)]` scopes
-/// or with `#[cfg(test)]` on the item itself are tagged `Test(Unit)`,
-/// all others are `Production`.
+/// Uses inside `#[cfg(test)]` scopes or with `#[cfg(test)]` on the item itself
+/// are tagged `Test(Unit)`, all others are `Production`.
 pub(crate) fn collect_all_use_items(
     syntax: &syn::File,
     base_context: EdgeContext,
-) -> Vec<(syn::ItemUse, EdgeContext, usize)> {
+) -> CollectedUses {
     struct UseCollector {
-        uses: Vec<(syn::ItemUse, EdgeContext, usize)>,
+        uses: Vec<CollectedUse>,
         context: EdgeContext,
         inline_depth: usize,
+        regions: BindingRegions,
+        region: RegionId,
     }
     impl<'ast> Visit<'ast> for UseCollector {
         fn visit_item_use(&mut self, node: &'ast syn::ItemUse) {
@@ -267,32 +352,74 @@ pub(crate) fn collect_all_use_items(
             } else {
                 self.context.clone()
             };
-            self.uses.push((node.clone(), ctx, self.inline_depth));
+            self.uses.push(CollectedUse {
+                item: node.clone(),
+                context: ctx,
+                inline_depth: self.inline_depth,
+                region: self.region,
+            });
         }
 
-        impl_cfg_test_visit_item_mod!();
+        impl_binding_region_visits!();
     }
     let mut collector = UseCollector {
         uses: Vec::new(),
         context: base_context,
         inline_depth: 0,
+        regions: BindingRegions::default(),
+        region: BindingRegions::ROOT,
     };
     collector.visit_file(syntax);
-    collector.uses
+    CollectedUses {
+        items: collector.uses,
+        regions: collector.regions,
+    }
+}
+
+/// One qualified path reference with what its position says about it.
+#[derive(Debug)]
+pub(crate) struct PathRef {
+    pub(crate) path: String,
+    pub(crate) line: usize,
+    pub(crate) context: EdgeContext,
+    pub(crate) inline_depth: usize,
+    pub(crate) region: RegionId,
+}
+
+/// The qualified path references of one file, with the regions they stand in.
+#[derive(Debug, Default)]
+pub(crate) struct CollectedPathRefs {
+    refs: Vec<PathRef>,
+    /// The regions this walk numbered. A reference is looked up against bindings
+    /// numbered by the other walk, so the two numberings have to match. Only the
+    /// test that guards that match reads them; resolution goes through the
+    /// numbering that came with the bindings.
+    #[cfg(test)]
+    regions: BindingRegions,
+}
+
+impl Deref for CollectedPathRefs {
+    type Target = [PathRef];
+
+    fn deref(&self) -> &Self::Target {
+        &self.refs
+    }
 }
 
 /// Collect all qualified path references (2+ segments) from a parsed file.
 /// Uses `syn::visit::Visit` to traverse expressions, types, patterns, and trait bounds.
-/// Returns `(path_string, line_number, EdgeContext)` tuples: references inside
-/// `#[cfg(test)]` scopes are tagged `Test(Unit)`, all others `Production`.
+/// References inside `#[cfg(test)]` scopes are tagged `Test(Unit)`, all others
+/// `Production`.
 pub(crate) fn collect_all_path_refs(
     syntax: &syn::File,
     base_context: EdgeContext,
-) -> Vec<(String, usize, EdgeContext, usize)> {
+) -> CollectedPathRefs {
     struct PathRefCollector {
-        paths: Vec<(String, usize, EdgeContext, usize)>,
+        paths: Vec<PathRef>,
         context: EdgeContext,
         inline_depth: usize,
+        regions: BindingRegions,
+        region: RegionId,
     }
     impl<'ast> Visit<'ast> for PathRefCollector {
         fn visit_path(&mut self, node: &'ast syn::Path) {
@@ -307,22 +434,33 @@ pub(crate) fn collect_all_path_refs(
                     .segments
                     .first()
                     .map_or(0, |s| s.ident.span().start().line);
-                self.paths
-                    .push((path_str, line, self.context.clone(), self.inline_depth));
+                self.paths.push(PathRef {
+                    path: path_str,
+                    line,
+                    context: self.context.clone(),
+                    inline_depth: self.inline_depth,
+                    region: self.region,
+                });
             }
             // Continue visiting nested paths (e.g. in generics)
             syn::visit::visit_path(self, node);
         }
 
-        impl_cfg_test_visit_item_mod!();
+        impl_binding_region_visits!();
     }
     let mut collector = PathRefCollector {
         paths: Vec::new(),
         context: base_context,
         inline_depth: 0,
+        regions: BindingRegions::default(),
+        region: BindingRegions::ROOT,
     };
     collector.visit_file(syntax);
-    collector.paths
+    CollectedPathRefs {
+        refs: collector.paths,
+        #[cfg(test)]
+        regions: collector.regions,
+    }
 }
 
 /// Join a prefix and segment with `::`, handling empty prefix.
@@ -668,13 +806,14 @@ fn parse_external_crate_import(
 ///
 /// Deduplicates by `full_target()` to keep distinct symbols but avoid duplicates.
 pub(crate) fn parse_workspace_dependencies(
-    use_items: &[(syn::ItemUse, EdgeContext, usize)],
+    use_items: &CollectedUses,
     ctx: &ResolutionContext,
 ) -> Vec<DependencyRef> {
     let mut deps: Vec<DependencyRef> = Vec::new();
     let mut seen_targets: HashMap<(String, UsageKind), usize> = HashMap::new();
 
-    for (item, context, inline_depth) in use_items {
+    for collected in use_items.iter() {
+        let item = &collected.item;
         let line_num = item.use_token.span.start().line;
         let paths = resolve_use_tree(&item.tree, "", false);
         // A `use` that republishes a name under a visibility reachable from
@@ -683,8 +822,13 @@ pub(crate) fn parse_workspace_dependencies(
         let via_reexport = is_reexport_visibility(&item.vis);
 
         for path in paths {
-            if let Some(mut dep) = resolve_single_path(ctx, &path, line_num, context, *inline_depth)
-            {
+            if let Some(mut dep) = resolve_single_path(
+                ctx,
+                &path,
+                line_num,
+                &collected.context,
+                collected.inline_depth,
+            ) {
                 dep.via_reexport = via_reexport;
                 for mut dep in expand_glob(dep, ctx.reexport_map) {
                     resolve_reexport(&mut dep, ctx.reexport_map, ctx.current_module_path);
@@ -759,46 +903,72 @@ fn expand_glob(dep: DependencyRef, reexport_map: &ReExportMap) -> Vec<Dependency
 /// what a bare path starting with that name means.
 #[derive(Debug, Default)]
 pub(crate) struct ModuleAliases {
-    modules: HashMap<String, String>,
-    elsewhere: HashSet<String>,
+    regions: BindingRegions,
+    modules: HashMap<RegionId, HashMap<String, String>>,
+    elsewhere: HashMap<RegionId, HashSet<String>>,
 }
 
 impl ModuleAliases {
-    fn new() -> Self {
-        Self::default()
+    fn new(regions: BindingRegions) -> Self {
+        Self {
+            regions,
+            ..Self::default()
+        }
     }
 
-    /// The module path a name is bound to, where it is bound to one.
-    fn target(&self, name: &str) -> Option<&str> {
-        self.modules.get(name).map(String::as_str)
+    /// The module path a name is bound to as seen from `region`, where it is
+    /// bound to one.
+    #[cfg(test)]
+    fn target(&self, region: RegionId, name: &str) -> Option<&str> {
+        self.regions
+            .enclosing(region)
+            .find_map(|enclosing| self.modules.get(&enclosing)?.get(name))
+            .map(String::as_str)
     }
 
-    /// The path to resolve for a reference, or `None` when the reference is not
-    /// this crate's to place.
+    /// The path to resolve for a reference standing in `region`, or `None` when
+    /// the reference is not this crate's to place.
     ///
     /// `queue::TempResource` under `queue → crate::device::queue` becomes
     /// `crate::device::queue::TempResource`. A first segment bound elsewhere yields
     /// `None`: the binding rules out the module beside the file, and nothing here
     /// says what to put in its place. An unbound path is returned unchanged.
-    fn path_to_resolve<'p>(&self, path: &'p str) -> Option<Cow<'p, str>> {
+    ///
+    /// Only bindings written in `region` or around it are asked. A `use` in the
+    /// body of one function says nothing about the function beside it, so the
+    /// innermost region that binds the name wins and a sibling region is never
+    /// consulted.
+    fn path_to_resolve<'p>(&self, path: &'p str, region: RegionId) -> Option<Cow<'p, str>> {
         let Some((first, rest)) = path.split_once("::") else {
             return Some(Cow::Borrowed(path));
         };
-        if let Some(target) = self.target(first) {
-            return Some(Cow::Owned(format!("{target}::{rest}")));
-        }
-        if self.elsewhere.contains(first) {
-            return None;
+        for enclosing in self.regions.enclosing(region) {
+            if let Some(target) = self.modules.get(&enclosing).and_then(|m| m.get(first)) {
+                return Some(Cow::Owned(format!("{target}::{rest}")));
+            }
+            if self
+                .elsewhere
+                .get(&enclosing)
+                .is_some_and(|names| names.contains(first))
+            {
+                return None;
+            }
         }
         Some(Cow::Borrowed(path))
     }
 
-    fn bind_module(&mut self, name: &str, module_path: String) {
-        self.modules.insert(name.to_string(), module_path);
+    fn bind_module(&mut self, region: RegionId, name: &str, module_path: String) {
+        self.modules
+            .entry(region)
+            .or_default()
+            .insert(name.to_string(), module_path);
     }
 
-    fn bind_elsewhere(&mut self, name: &str) {
-        self.elsewhere.insert(name.to_string());
+    fn bind_elsewhere(&mut self, region: RegionId, name: &str) {
+        self.elsewhere
+            .entry(region)
+            .or_default()
+            .insert(name.to_string());
     }
 }
 
@@ -808,14 +978,14 @@ impl ModuleAliases {
 /// a later `queue::TempResource` is only resolvable against that binding. What each
 /// binding means for later references is decided in [`classify_binding`].
 pub(crate) fn collect_module_aliases(
-    use_items: &[(syn::ItemUse, EdgeContext, usize)],
+    use_items: &CollectedUses,
     ctx: &ResolutionContext,
 ) -> ModuleAliases {
-    let mut aliases = ModuleAliases::new();
+    let mut aliases = ModuleAliases::new(use_items.regions.clone());
 
-    for (item, context, inline_depth) in use_items {
-        let alias_paths = resolve_use_tree(&item.tree, "", true);
-        let original_paths = resolve_use_tree(&item.tree, "", false);
+    for collected in use_items.iter() {
+        let alias_paths = resolve_use_tree(&collected.item.tree, "", true);
+        let original_paths = resolve_use_tree(&collected.item.tree, "", false);
 
         for (alias_path, original_path) in alias_paths.iter().zip(original_paths.iter()) {
             let Some(binding) = alias_path.rsplit("::").next() else {
@@ -825,10 +995,18 @@ pub(crate) fn collect_module_aliases(
             if binding == "*" {
                 continue;
             }
-            let dep = resolve_single_path(ctx, original_path, 0, context, *inline_depth);
+            let dep = resolve_single_path(
+                ctx,
+                original_path,
+                0,
+                &collected.context,
+                collected.inline_depth,
+            );
             match classify_binding(ctx, dep.as_ref(), binding) {
-                Binding::Module(module_path) => aliases.bind_module(binding, module_path),
-                Binding::Elsewhere => aliases.bind_elsewhere(binding),
+                Binding::Module(module_path) => {
+                    aliases.bind_module(collected.region, binding, module_path);
+                }
+                Binding::Elsewhere => aliases.bind_elsewhere(collected.region, binding),
                 Binding::OwnItem => {}
             }
         }
@@ -898,20 +1076,24 @@ fn absolute_module_path(ctx: &ResolutionContext, dep: &DependencyRef) -> String 
 /// path it rules out is dropped rather than resolved on its own.
 /// Deduplicates by `full_target()` — same strategy as `parse_workspace_dependencies()`.
 pub(crate) fn parse_path_ref_dependencies(
-    paths: &[(String, usize, EdgeContext, usize)],
+    paths: &CollectedPathRefs,
     ctx: &ResolutionContext,
     aliases: &ModuleAliases,
 ) -> Vec<DependencyRef> {
     let mut deps: Vec<DependencyRef> = Vec::new();
     let mut seen_targets: HashMap<(String, UsageKind), usize> = HashMap::new();
 
-    for (path, line_num, context, inline_depth) in paths {
-        let Some(effective) = aliases.path_to_resolve(path) else {
+    for path_ref in paths.iter() {
+        let Some(effective) = aliases.path_to_resolve(&path_ref.path, path_ref.region) else {
             continue;
         };
-        if let Some(mut dep) =
-            resolve_single_path(ctx, &effective, *line_num, context, *inline_depth)
-        {
+        if let Some(mut dep) = resolve_single_path(
+            ctx,
+            &effective,
+            path_ref.line,
+            &path_ref.context,
+            path_ref.inline_depth,
+        ) {
             resolve_reexport(&mut dep, ctx.reexport_map, ctx.current_module_path);
             DependencyRef::dedup_push(&mut deps, &mut seen_targets, dep);
         }
