@@ -198,7 +198,7 @@ pub(crate) fn collect_crate_exports(crate_info: &CrateInfo) -> HashSet<String> {
 #[derive(Clone)]
 struct WalkContext<'a> {
     crate_name: &'a str,
-    crate_root: &'a Path,
+    workspace_root: &'a Path,
     workspace_crates: &'a WorkspaceCrates,
     all_module_paths: &'a ModulePathMap,
     crate_exports: &'a CrateExportMap,
@@ -250,7 +250,7 @@ fn walk_module_syn(
     };
 
     let source_file = file_path
-        .strip_prefix(ctx.crate_root)
+        .strip_prefix(ctx.workspace_root)
         .map_or_else(|_| file_path.to_path_buf(), std::path::Path::to_path_buf);
 
     // Relative module path within the crate (e.g. "render" for render/mod.rs, "" for root)
@@ -330,7 +330,7 @@ pub(crate) fn analyze_modules_syn(
 
     let ctx = WalkContext {
         crate_name: &normalized,
-        crate_root: &crate_info.path,
+        workspace_root: &crate_info.workspace_root,
         workspace_crates,
         all_module_paths,
         crate_exports,

@@ -154,6 +154,7 @@ fn is_lib_target(target: &cargo_metadata::Target) -> bool {
 /// Builds a `CrateInfo` from a package and its resolved dependencies.
 fn build_crate_info(
     pkg: &cargo_metadata::Package,
+    workspace_root: &Path,
     prod_deps: &DependencyMap,
     dev_deps: &DependencyMap,
 ) -> CrateInfo {
@@ -178,6 +179,7 @@ fn build_crate_info(
     CrateInfo {
         name: pkg.name.to_string(),
         path: pkg.manifest_path.parent().unwrap().into(),
+        workspace_root: workspace_root.to_path_buf(),
         lib_root,
         bin_roots,
         dependencies,
@@ -214,7 +216,14 @@ fn build_filtered_crates(
         .workspace_packages()
         .into_iter()
         .filter(|pkg| should_include_crate(pkg, &reachable, feature_config))
-        .map(|pkg| build_crate_info(pkg, prod_deps, dev_deps))
+        .map(|pkg| {
+            build_crate_info(
+                pkg,
+                metadata.workspace_root.as_std_path(),
+                prod_deps,
+                dev_deps,
+            )
+        })
         .collect();
 
     debug!(crate_count = crates.len(), "final result");

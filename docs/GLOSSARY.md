@@ -129,12 +129,15 @@ That is the ordinary graphics sense and it stays; this entry governs the rule po
 |------|------------|-------|
 | **Report** | The blocks on stderr: one per rule that fired, headed by the rule and holding each of its violations, with the locations and the edge or cycle each one found. What a reader goes to for why a run is red. | output |
 | **Status** | How one rule came out: `ok`, `WARN` when it produced warnings only, `FAILED` when it produced an error. One line on stdout carries it, per rule and one for the configuration, printed whether or not anything fired. | severity |
+| **Location** | The file and line of an import that writes an edge, printed as `--> path:line` and listed in the sidebar. The path is relative to the root of the analyzed workspace; a file outside it stays absolute. | source |
 
 The report and the status lines are split by role, not by audience.
 The report says what was found, a status line says how one rule came out.
 
 *Severity* is configured and belongs to the rule; a status is produced and belongs to the run.
 The two do not read off each other in either direction: a rule of severity `error` whose violations are all frozen has status `ok`.
+
+*Source* is taken in `rules/engine.rs`, where it names the outgoing end of an edge.
 
 ## Symbols and consumers
 

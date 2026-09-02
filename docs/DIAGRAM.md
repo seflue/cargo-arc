@@ -39,7 +39,8 @@ The toolbar button does the same for the whole tree and flips between **Collapse
 
 The sidebar is divided into two sections.
 The first lists the modules and crates that depend on the selected node, the second the ones it depends on.
-Each entry expands into the symbols crossing that relation, and each symbol into the source locations that import it, as `file:line`.
+Each entry expands into the symbols crossing that relation, and each symbol into the locations that import it, as `file:line`.
+A location is defined in [GLOSSARY.md](GLOSSARY.md).
 The footer counts both directions, `N Dependents · M Dependencies`.
 
 ### The sidebar for an arc

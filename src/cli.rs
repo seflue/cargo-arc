@@ -91,7 +91,7 @@ pub enum Command {
 
 #[derive(Parser)]
 pub struct CheckArgs {
-    /// Path to rules file (default: arc-rules.toml in workspace root)
+    /// Path to rules file (default: arc-rules.toml next to the manifest)
     #[arg(long)]
     pub rules: Option<PathBuf>,
 
@@ -239,8 +239,8 @@ fn run_check(check_args: &CheckArgs, common: &CommonArgs) -> Result<Judgment> {
         false,
     )?;
 
-    let workspace_root = resolve_repo_path(&common.manifest_path);
-    let default_rules_path = workspace_root.join("arc-rules.toml");
+    let manifest_dir = resolve_repo_path(&common.manifest_path);
+    let default_rules_path = manifest_dir.join("arc-rules.toml");
     let rules_path = check_args.rules.as_deref().unwrap_or(&default_rules_path);
     let explicit = check_args.rules.is_some();
 

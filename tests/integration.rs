@@ -729,6 +729,134 @@ fn test_check_with_violations() {
     );
 }
 
+/// A location prints relative to the workspace root, not to the crate that
+/// owns the file: it opens from wherever the manifest given to `-m` sits.
+#[test]
+fn locations_are_relative_to_the_workspace_root() {
+    let (code, stderr) = cargo_arc_check("arch_violation_workspace", &[]);
+    assert_eq!(code, 1, "should exit 1 on violations, stderr: {stderr}");
+    assert!(
+        stderr.contains("--> domain/src/"),
+        "a location should be relative to the workspace root, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("--> src/"),
+        "a location should not be relative to its own crate root, got: {stderr}"
+    );
+}
+
+/// `-m` on a member manifest still anchors locations at the workspace root:
+/// `cargo_metadata` resolves the same `workspace_root` no matter which
+/// member's manifest is named, and the anchor follows it, not `-m`.
+#[test]
+fn locations_stay_workspace_relative_for_a_member_manifest() {
+    let rules = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/arch_violation_workspace/arc-rules.toml");
+    let rules_arg = format!("--rules={}", rules.display());
+    let (code, stderr) = cargo_arc_check("arch_violation_workspace/domain", &[&rules_arg]);
+    assert_eq!(code, 1, "should exit 1 on violations, stderr: {stderr}");
+    assert!(
+        stderr.contains("--> domain/src/"),
+        "a location should stay relative to the workspace root, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("--> src/"),
+        "a location should not be relative to the member manifest's directory, got: {stderr}"
+    );
+}
+
+/// Two violations from different crates whose files sit at the same path
+/// under their own crate root must not print the same location: the anchor
+/// has to be the workspace root, or the two would be indistinguishable.
+#[test]
+fn locations_from_different_crates_do_not_collide() {
+    let (_dir, manifest) = writable_fixture_copy("arch_violation_workspace");
+    let root = manifest.parent().unwrap();
+
+    // Only the two forbidden-dependency rules: the fixture's `layers` rule
+    // would flag the same edges again under its own block, which is a second
+    // report of one violation, not a second violation.
+    let rules_path = root.join("arc-rules.toml");
+    std::fs::write(
+        &rules_path,
+        "[config]\n\
+         version = 1\n\
+         \n\
+         [[rules]]\n\
+         type = \"forbidden-dependency\"\n\
+         name = \"no infra in domain\"\n\
+         from = \"domain\"\n\
+         to = \"infra::**\"\n\
+         severity = \"error\"\n\
+         \n\
+         [[rules]]\n\
+         type = \"forbidden-dependency\"\n\
+         name = \"no infra in application\"\n\
+         from = \"application\"\n\
+         to = \"infra::**\"\n\
+         severity = \"error\"\n",
+    )
+    .unwrap();
+
+    // Both crate roots gain the same forbidden import on the same line, so a
+    // path relative to the crate itself would read identically for both.
+    for member in ["application", "domain"] {
+        let lib = root.join(member).join("src/lib.rs");
+        let existing = std::fs::read_to_string(&lib).unwrap();
+        std::fs::write(&lib, format!("use infra::db;\n{existing}")).unwrap();
+    }
+
+    let rules_arg = format!("--rules={}", rules_path.display());
+    let (code, stderr) = cargo_arc_check_at(&manifest, &[&rules_arg]);
+    assert_eq!(code, 1, "should exit 1 on violations, stderr: {stderr}");
+
+    let locations: Vec<&str> = stderr
+        .lines()
+        .filter_map(|l| l.strip_prefix("    --> "))
+        .collect();
+    let unique: std::collections::HashSet<&str> = locations.iter().copied().collect();
+    assert_eq!(
+        locations.len(),
+        unique.len(),
+        "two violations from different crates must not print the same location, got: {locations:?}"
+    );
+    assert!(
+        locations.iter().any(|l| l.starts_with("domain/src/lib.rs")),
+        "expected a domain-prefixed location, got: {locations:?}"
+    );
+    assert!(
+        locations
+            .iter()
+            .any(|l| l.starts_with("application/src/lib.rs")),
+        "expected an application-prefixed location, got: {locations:?}"
+    );
+}
+
+/// The diagram side of the same anchor: a `UsageLocation.file` in
+/// `STATIC_DATA` carries the crate prefix too.
+#[test]
+fn static_data_usage_locations_carry_the_crate_prefix() {
+    let (temp, cmd) = fixture_args("arch_violation_workspace", false);
+
+    let result = run(cmd);
+    assert!(result.is_ok(), "run() should succeed: {result:?}");
+
+    let svg = std::fs::read_to_string(temp.path()).unwrap();
+    let data = parse_static_data(&svg);
+    let files: Vec<String> = data["arcs"]
+        .as_object()
+        .expect("arcs is object")
+        .values()
+        .flat_map(|a| a["usages"].as_array().into_iter().flatten())
+        .flat_map(|u| u["locations"].as_array().into_iter().flatten())
+        .filter_map(|l| l["file"].as_str().map(str::to_string))
+        .collect();
+    assert!(
+        files.iter().any(|f| f.starts_with("domain/src/")),
+        "a UsageLocation.file should carry the crate prefix, got: {files:?}"
+    );
+}
+
 /// Runs `check` on the transitive fixture (`a → b → c → d`, one dependency
 /// each) with one of its rules files. None of them positions `c`, so every
 /// dependency between two positioned crates runs through an unpositioned one.

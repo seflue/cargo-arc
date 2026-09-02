@@ -20,7 +20,7 @@ use super::use_parser::{
 /// Invariant parameters shared across the recursive re-export walk.
 struct CollectContext<'a> {
     crate_name: &'a str,
-    crate_root: &'a Path,
+    workspace_root: &'a Path,
     all_module_paths: &'a ModulePathMap,
     workspace_crates: &'a WorkspaceCrates,
     crate_exports: &'a CrateExportMap,
@@ -36,7 +36,7 @@ pub(crate) fn collect_crate_reexports(
     let crate_name = normalize_crate_name(&crate_info.name);
     let ctx = CollectContext {
         crate_name: &crate_name,
-        crate_root: &crate_info.path,
+        workspace_root: &crate_info.workspace_root,
         all_module_paths,
         workspace_crates,
         crate_exports,
@@ -177,7 +177,7 @@ fn walk_collect_reexports(
     };
 
     let source_file = file_path
-        .strip_prefix(ctx.crate_root)
+        .strip_prefix(ctx.workspace_root)
         .map_or_else(|_| file_path.to_path_buf(), Path::to_path_buf);
 
     let info = collect_module_info(ctx, &syntax, &source_file, module_path);

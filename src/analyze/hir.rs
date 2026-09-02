@@ -242,7 +242,7 @@ pub fn analyze_modules(
     let ctx = HirWalkContext {
         db,
         vfs,
-        crate_root: &crate_info.path,
+        workspace_root: &crate_info.workspace_root,
         crate_name,
         workspace_crates,
         all_module_paths,
@@ -259,7 +259,7 @@ pub fn analyze_modules(
 struct HirWalkContext<'a> {
     db: &'a ide::RootDatabase,
     vfs: &'a ra_ap_vfs::Vfs,
-    crate_root: &'a Path,
+    workspace_root: &'a Path,
     crate_name: &'a str,
     workspace_crates: &'a WorkspaceCrates,
     all_module_paths: &'a ModulePathMap,
@@ -315,10 +315,9 @@ fn extract_module_dependencies(
     let Some(abs_path) = vfs_path.as_path() else {
         return Vec::new();
     };
-    // Make path relative to crate root
     let abs_path_buf = PathBuf::from(abs_path.as_str());
     let source_file = abs_path_buf
-        .strip_prefix(ctx.crate_root)
+        .strip_prefix(ctx.workspace_root)
         .map(|p| p.to_path_buf())
         .unwrap_or(abs_path_buf);
     // Graceful degradation: rust-analyzer already parsed this file successfully,

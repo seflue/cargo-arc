@@ -13,6 +13,7 @@ pub(crate) fn conventional_crate(name: &str, path: impl Into<PathBuf>) -> CrateI
         name: name.to_string(),
         lib_root: existing(path.join("src/lib.rs")),
         bin_roots: existing(path.join("src/main.rs")).into_iter().collect(),
+        workspace_root: path.clone(),
         path,
         dependencies: Vec::new(),
         dev_dependencies: Vec::new(),

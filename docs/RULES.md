@@ -451,6 +451,8 @@ error[forbidden-dependency]: no services in storage
     --> storage/src/pool.rs:31
 ```
 
+Each `-->` line is a Location, defined in [GLOSSARY.md](GLOSSARY.md).
+
 Silenced violations are counted rather than listed:
 
 ```

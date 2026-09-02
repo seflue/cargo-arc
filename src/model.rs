@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct SourceLocation {
+    /// Relative to the workspace root; a file outside it stays absolute.
     pub file: PathBuf,
     pub line: usize,
     pub symbols: Vec<String>,
@@ -264,6 +265,7 @@ pub enum TestKind {
 pub struct CrateInfo {
     pub name: String,
     pub path: PathBuf,
+    pub workspace_root: PathBuf,
     /// `None` for binary-only crates. Cargo lets `[lib] path` point anywhere,
     /// so this is not always `src/lib.rs`.
     pub lib_root: Option<PathBuf>,
@@ -290,6 +292,7 @@ pub struct DependencyRef {
     pub target_crate: String,
     pub target_module: String,
     pub target_item: Option<String>,
+    /// Relative to the workspace root; a file outside it stays absolute.
     pub source_file: PathBuf,
     pub line: usize,
     pub context: EdgeContext,
