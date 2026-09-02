@@ -1283,6 +1283,41 @@ fn test_generate_baseline_then_check_reports_nothing() {
     );
 }
 
+/// A baseline recording a format version this build does not speak halts an
+/// ordinary run, but `--generate-baseline` rewrites it under its own version
+/// rather than getting stuck on the file it is meant to replace.
+#[test]
+fn checking_an_unsupported_baseline_version_is_refused_but_regeneration_rewrites_it() {
+    let (dir, rules_path) = isolated_rules_copy("arch_violation_workspace", "arc-rules.toml");
+    let rules_arg = format!("--rules={}", rules_path.display());
+    let baseline_path = dir.path().join("arc-baseline.toml");
+    std::fs::write(&baseline_path, "[config]\nversion = 2\n").unwrap();
+
+    let (code, stderr) = cargo_arc_check("arch_violation_workspace", &[&rules_arg]);
+    assert_eq!(
+        code, 2,
+        "an unsupported baseline version must halt the run, stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("unsupported baseline file"),
+        "stderr: {stderr}"
+    );
+
+    let (code, stderr) = cargo_arc_check(
+        "arch_violation_workspace",
+        &[&rules_arg, "--generate-baseline"],
+    );
+    assert_eq!(
+        code, 0,
+        "regeneration must rewrite the file, stderr: {stderr}"
+    );
+    let baseline_after = std::fs::read_to_string(&baseline_path).unwrap();
+    assert!(
+        baseline_after.contains("version = 1"),
+        "got:\n{baseline_after}"
+    );
+}
+
 /// A workspace without a rules file can freeze its cycle stock: the implicit
 /// rule carries the baseline, where the earlier fallback path had none.
 #[test]

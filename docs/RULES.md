@@ -175,7 +175,7 @@ version = 1
 default_severity = "error"
 ```
 
-`version` is the file format version and is `1`.
+`version` is the file format version and is `1`; a different number halts the run when the file loads.
 `default_severity` applies to every rule that does not carry a `severity` of its own; without the section it is `error`.
 
 Unknown keys are rejected rather than ignored, so a typo in a rule or a diagnostic name fails the run instead of switching something off silently.
@@ -413,6 +413,7 @@ to = "storage::pool"
 symbols = ["Pool"]
 ```
 
+`version` is the file format version and is `1`; a different number halts the run when the file loads.
 An entry freezes one dependency edge under one rule, plus the symbols observed crossing it.
 `bare = true` marks an edge that also carries a reference the resolver could not name.
 A cycle has no entry of its own: it is frozen when every one of its edges is.

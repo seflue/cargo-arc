@@ -8,6 +8,10 @@ use std::path::{Path, PathBuf};
 /// assertion it makes, like the names in a rules file.
 const IMPLICIT_RULE_NAME: &str = "no cycles";
 
+/// The `[config].version` this build accepts, documented in `docs/RULES.md`. A
+/// file naming a different number is refused rather than read as this one.
+const FORMAT_VERSION: u32 = 1;
+
 #[derive(Debug)]
 pub struct ArcConfig {
     pub rules: Vec<Rule>,
@@ -366,6 +370,7 @@ pub enum ConfigError {
     CatchAllNotAlone { path: PathBuf, name: String },
     MultipleCatchAllPositions { path: PathBuf, name: String },
     ExhaustiveWithCatchAll { path: PathBuf, name: String },
+    UnsupportedVersion { path: PathBuf, found: u32 },
 }
 
 impl std::fmt::Display for ConfigError {
@@ -406,6 +411,12 @@ impl std::fmt::Display for ConfigError {
                  `exhaustive = true`, or drop the catch-all",
                 path.display()
             ),
+            Self::UnsupportedVersion { path, found } => write!(
+                f,
+                "unsupported config file {}: format version {found}, this cargo-arc \
+                 supports version {FORMAT_VERSION}",
+                path.display()
+            ),
         }
     }
 }
@@ -415,10 +426,9 @@ impl std::error::Error for ConfigError {}
 impl ArcConfig {
     /// # Errors
     /// Returns `ConfigError::FileNotFound` if the path does not exist,
-    /// `ConfigError::IoError` for other I/O failures,
-    /// `ConfigError::ParseError` for invalid TOML,
-    /// `ConfigError::DuplicateRuleName` if two rules share a name, or
-    /// `ConfigError::ReservedRuleName` if one carries the implicit rule's name.
+    /// `ConfigError::IoError` for other I/O failures, or
+    /// `ConfigError::ParseError` for invalid TOML. Once the file parses, every
+    /// other variant reports a load-time check that failed on its content.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         let content = std::fs::read_to_string(path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -427,8 +437,16 @@ impl ArcConfig {
                 ConfigError::IoError(path.to_path_buf(), e)
             }
         })?;
-        let mut config = Self::from_toml(&content)
+        let (mut config, version) = Self::from_toml(&content)
             .map_err(|e| ConfigError::ParseError(path.to_path_buf(), e))?;
+        if let Some(found) = version
+            && found != FORMAT_VERSION
+        {
+            return Err(ConfigError::UnsupportedVersion {
+                path: path.to_path_buf(),
+                found,
+            });
+        }
         config.check_unique_rule_names(path)?;
         config.check_catch_all_layers(path)?;
         config.check_exhaustive_layers(path)?;
@@ -555,8 +573,11 @@ impl ArcConfig {
     }
 
     /// Fills in `config.default_severity` for rules that left `severity` unset.
-    fn from_toml(content: &str) -> Result<Self, toml::de::Error> {
+    /// The second element is the `[config].version` the file named, or `None`
+    /// for a file without a `[config]` section.
+    fn from_toml(content: &str) -> Result<(Self, Option<u32>), toml::de::Error> {
         let raw: RawConfig = toml::from_str(content)?;
+        let version = raw.config.as_ref().map(|meta| meta.version);
         let default = raw
             .config
             .map(|meta| meta.default_severity)
@@ -571,10 +592,13 @@ impl ArcConfig {
                 kind: rule.kind,
             })
             .collect();
-        Ok(Self {
-            rules,
-            diagnostics: raw.diagnostics,
-        })
+        Ok((
+            Self {
+                rules,
+                diagnostics: raw.diagnostics,
+            },
+            version,
+        ))
     }
 }
 
@@ -591,7 +615,7 @@ mod tests {
             from = "domain::**"
             to = "infra::**"
         "#;
-        let config = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = ArcConfig::from_toml(toml).unwrap();
         assert_eq!(config.rules.len(), 1);
         assert_eq!(config.rules[0].name, "no infra in domain");
         assert!(matches!(
@@ -609,7 +633,7 @@ mod tests {
             name = "domain acyclic"
             scope = "domain::**"
         "#;
-        let config = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = ArcConfig::from_toml(toml).unwrap();
         assert_eq!(config.rules[0].name, "domain acyclic");
         assert!(matches!(
             &config.rules[0].kind,
@@ -627,7 +651,7 @@ mod tests {
             layers = ["domain", "application", "infra"]
             direction = "top-down"
         "#;
-        let config = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = ArcConfig::from_toml(toml).unwrap();
         assert_eq!(config.rules[0].name, "architecture layers");
         let RuleKind::Layers(LayersRule {
             layers, direction, ..
@@ -655,7 +679,7 @@ mod tests {
             layers = ["domain", "infra"]
             direction = "top-down"
         "#;
-        let config = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = ArcConfig::from_toml(toml).unwrap();
         let RuleKind::Layers(LayersRule { exhaustive, .. }) = &config.rules[0].kind else {
             panic!("expected Layers, got {:?}", config.rules[0].kind);
         };
@@ -672,7 +696,7 @@ mod tests {
             direction = "top-down"
             exhaustive = true
         "#;
-        let config = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = ArcConfig::from_toml(toml).unwrap();
         let RuleKind::Layers(LayersRule { exhaustive, .. }) = &config.rules[0].kind else {
             panic!("expected Layers, got {:?}", config.rules[0].kind);
         };
@@ -706,7 +730,7 @@ mod tests {
             layers = ["domain", ["adapter_a", "adapter_b"], "runtime"]
             direction = "bottom-up"
         "#;
-        let config = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = ArcConfig::from_toml(toml).unwrap();
         let RuleKind::Layers(LayersRule { layers, .. }) = &config.rules[0].kind else {
             panic!("expected Layers, got {:?}", config.rules[0].kind);
         };
@@ -743,7 +767,7 @@ mod tests {
             layers = ["domain", ["adapter_a", "adapter_b"]]
             direction = "top-down"
         "#;
-        let config = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = ArcConfig::from_toml(toml).unwrap();
         let patterns: Vec<Vec<&str>> = config
             .rules
             .iter()
@@ -773,7 +797,7 @@ mod tests {
             name = "test"
             scope = "**"
         "#;
-        let config = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = ArcConfig::from_toml(toml).unwrap();
         assert_eq!(config.rules[0].severity, Severity::Error);
     }
 
@@ -789,7 +813,7 @@ mod tests {
             name = "test"
             scope = "**"
         "#;
-        let config = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = ArcConfig::from_toml(toml).unwrap();
         assert_eq!(config.rules[0].severity, Severity::Warn);
     }
 
@@ -804,7 +828,7 @@ mod tests {
             name = "test"
             scope = "**"
         "#;
-        let config = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = ArcConfig::from_toml(toml).unwrap();
         assert_eq!(config.rules[0].severity, Severity::Error);
     }
 
@@ -821,7 +845,7 @@ mod tests {
             scope = "**"
             severity = "error"
         "#;
-        let config = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = ArcConfig::from_toml(toml).unwrap();
         assert_eq!(config.rules[0].severity, Severity::Error);
     }
 
@@ -863,7 +887,7 @@ mod tests {
               { from = "app::router", to = "app::screens::**", reason = "router mediates" },
             ]
         "#;
-        let config = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = ArcConfig::from_toml(toml).unwrap();
         let except = &config.rules[0].except;
         assert_eq!(except.len(), 1);
         assert_eq!(except[0].from, "app::router");
@@ -882,7 +906,7 @@ mod tests {
               { from = "app::router", to = "app::screens::**" },
             ]
         "#;
-        let config = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = ArcConfig::from_toml(toml).unwrap();
         let except = &config.rules[0].except;
         assert_eq!(except.len(), 1);
         assert_eq!(except[0].reason, None);
@@ -896,7 +920,7 @@ mod tests {
             name = "app acyclic"
             scope = "app::**"
         "#;
-        let config = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = ArcConfig::from_toml(toml).unwrap();
         assert!(config.rules[0].except.is_empty());
     }
 
@@ -921,7 +945,7 @@ mod tests {
               { from = "infra::bridge", to = "domain::events" },
             ]
         "#;
-        let config = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = ArcConfig::from_toml(toml).unwrap();
         let except = &config.rules[0].except;
         assert_eq!(except.len(), 1);
         assert_eq!(except[0].from, "domain::legacy");
@@ -957,7 +981,7 @@ mod tests {
             direction = "top-down"
             severity = "error"
         "#;
-        let config = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = ArcConfig::from_toml(toml).unwrap();
         assert_eq!(config.rules.len(), 3);
         assert!(matches!(
             &config.rules[0].kind,
@@ -990,7 +1014,7 @@ mod tests {
             layers = ["domain", "application", "infra"]
             direction = "top-down"
         "#;
-        let config = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = ArcConfig::from_toml(toml).unwrap();
         let names: Vec<&str> = config.rules.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(
             names,
@@ -1067,7 +1091,7 @@ mod tests {
             name = "test"
             scope = "**"
         "#;
-        let config = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = ArcConfig::from_toml(toml).unwrap();
         let diagnostics = &config.diagnostics;
         assert_eq!(diagnostics.unlayered_node.level, DiagnosticLevel::Deny);
         assert!(diagnostics.unlayered_node.except.is_empty());
@@ -1084,7 +1108,7 @@ mod tests {
             [diagnostics]
             unmatched-except = "allow"
         "#;
-        let config = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = ArcConfig::from_toml(toml).unwrap();
         assert_eq!(config.diagnostics.unmatched_pattern, DiagnosticLevel::Deny);
     }
 
@@ -1096,7 +1120,7 @@ mod tests {
             [diagnostics]
             unmatched-except = "allow"
         "#;
-        let config = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = ArcConfig::from_toml(toml).unwrap();
         assert_eq!(
             config.diagnostics.unlayered_node.level,
             DiagnosticLevel::Deny
@@ -1109,7 +1133,7 @@ mod tests {
             [diagnostics]
             unmatched-pattern = "warn"
         "#;
-        let config = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = ArcConfig::from_toml(toml).unwrap();
         assert_eq!(config.diagnostics.unmatched_pattern, DiagnosticLevel::Warn);
     }
 
@@ -1121,7 +1145,7 @@ mod tests {
             unmatched-baseline-entry = "allow"
             unmatched-except = "warn"
         "#;
-        let config = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = ArcConfig::from_toml(toml).unwrap();
         let diagnostics = &config.diagnostics;
         assert_eq!(diagnostics.unlayered_node.level, DiagnosticLevel::Deny);
         assert!(
@@ -1138,7 +1162,7 @@ mod tests {
             [diagnostics]
             unlayered-node = { level = "deny", except = ["xtask", "benches"] }
         "#;
-        let config = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = ArcConfig::from_toml(toml).unwrap();
         let unlayered = &config.diagnostics.unlayered_node;
         assert_eq!(unlayered.level, DiagnosticLevel::Deny);
         assert_eq!(unlayered.except, ["xtask", "benches"]);
@@ -1150,7 +1174,7 @@ mod tests {
             [diagnostics]
             unlayered-node = { except = ["xtask"] }
         "#;
-        let config = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = ArcConfig::from_toml(toml).unwrap();
         let unlayered = &config.diagnostics.unlayered_node;
         assert_eq!(unlayered.level, DiagnosticLevel::Deny);
         assert_eq!(unlayered.except, ["xtask"]);
@@ -1310,7 +1334,7 @@ mod tests {
             from = "domain::**"
             to = "infra::**"
         "#;
-        let mut config = ArcConfig::from_toml(toml).unwrap();
+        let (mut config, _) = ArcConfig::from_toml(toml).unwrap();
         config
             .add_implicit_rule(Path::new("arc-rules.toml"))
             .unwrap();
@@ -1328,7 +1352,7 @@ mod tests {
             name = "domain acyclic"
             scope = "domain::**"
         "#;
-        let mut config = ArcConfig::from_toml(toml).unwrap();
+        let (mut config, _) = ArcConfig::from_toml(toml).unwrap();
         config
             .add_implicit_rule(Path::new("arc-rules.toml"))
             .unwrap();
@@ -1347,7 +1371,7 @@ mod tests {
             from = "domain::**"
             to = "infra::**"
         "#;
-        let mut config = ArcConfig::from_toml(toml).unwrap();
+        let (mut config, _) = ArcConfig::from_toml(toml).unwrap();
         let err = config
             .add_implicit_rule(Path::new("arc-rules.toml"))
             .unwrap_err();
@@ -1373,7 +1397,7 @@ mod tests {
             name = "domain acyclic"
             scope = "domain::**"
         "#;
-        let mut config = ArcConfig::from_toml(toml).unwrap();
+        let (mut config, _) = ArcConfig::from_toml(toml).unwrap();
         config
             .add_implicit_rule(Path::new("arc-rules.toml"))
             .unwrap();
@@ -1391,7 +1415,7 @@ mod tests {
             layers = ["*", "domain"]
             direction = "top-down"
         "#;
-        let config = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = ArcConfig::from_toml(toml).unwrap();
         let RuleKind::Layers(LayersRule { layers, .. }) = &config.rules[0].kind else {
             panic!("expected Layers, got {:?}", config.rules[0].kind);
         };
@@ -1408,7 +1432,7 @@ mod tests {
             layers = [["*"], "domain"]
             direction = "top-down"
         "#;
-        let config = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = ArcConfig::from_toml(toml).unwrap();
         let RuleKind::Layers(LayersRule { layers, .. }) = &config.rules[0].kind else {
             panic!("expected Layers, got {:?}", config.rules[0].kind);
         };
@@ -1497,5 +1521,23 @@ mod tests {
 
         let config = ArcConfig::load(&path).unwrap();
         assert_eq!(config.rules.len(), 2);
+    }
+    // ===== config format version =====
+
+    #[test]
+    fn load_rejects_unsupported_config_version() {
+        let toml = r"
+            [config]
+            version = 2
+        ";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("arc-rules.toml");
+        std::fs::write(&path, toml).unwrap();
+
+        let error = ArcConfig::load(&path).unwrap_err();
+        assert!(
+            matches!(&error, ConfigError::UnsupportedVersion { found, .. } if *found == 2),
+            "got: {error:?}"
+        );
     }
 }

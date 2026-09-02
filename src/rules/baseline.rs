@@ -5,6 +5,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
+/// The `[config].version` this build writes and accepts, documented in
+/// `docs/RULES.md`. A file naming a different number is refused rather than
+/// read as this one.
+const FORMAT_VERSION: u32 = 1;
+
 /// Identifies a violation independent of the rule wording that produced it: the
 /// edge it runs on, plus the symbols observed crossing it.
 ///
@@ -70,7 +75,9 @@ impl Baseline {
     ///
     /// # Errors
     /// Returns `BaselineError::Io` for I/O failures other than a missing file,
-    /// or `BaselineError::Parse` for invalid TOML.
+    /// `BaselineError::Parse` for invalid TOML, or
+    /// `BaselineError::UnsupportedVersion` for a `[config].version` this build
+    /// does not support.
     pub fn load(path: &Path) -> Result<Self, BaselineError> {
         let content = match std::fs::read_to_string(path) {
             Ok(content) => content,
@@ -79,6 +86,12 @@ impl Baseline {
         };
         let on_disk: OnDiskBaseline =
             toml::from_str(&content).map_err(|e| BaselineError::Parse(path.to_path_buf(), e))?;
+        if on_disk.config.version != FORMAT_VERSION {
+            return Err(BaselineError::UnsupportedVersion(
+                path.to_path_buf(),
+                on_disk.config.version,
+            ));
+        }
         let mut entries: HashMap<String, FrozenEdges> = HashMap::new();
         for violation in on_disk.violations {
             let entry = violation.into_entry();
@@ -169,7 +182,9 @@ impl Baseline {
                 .merge(&entry.key.symbols);
         }
         let on_disk = OnDiskBaseline {
-            config: OnDiskConfig { version: 1 },
+            config: OnDiskConfig {
+                version: FORMAT_VERSION,
+            },
             violations: merged
                 .into_iter()
                 .map(|((rule, edge), symbols)| OnDiskViolation {
@@ -238,6 +253,7 @@ pub enum BaselineError {
     Io(PathBuf, std::io::Error),
     Parse(PathBuf, toml::de::Error),
     Serialize(toml::ser::Error),
+    UnsupportedVersion(PathBuf, u32),
 }
 
 impl std::fmt::Display for BaselineError {
@@ -254,6 +270,12 @@ impl std::fmt::Display for BaselineError {
                 )
             }
             Self::Serialize(err) => write!(f, "cannot serialize baseline: {err}"),
+            Self::UnsupportedVersion(path, found) => write!(
+                f,
+                "unsupported baseline file {}: format version {found}, this cargo-arc \
+                 supports version {FORMAT_VERSION}\nregenerate with: cargo arc check --generate-baseline",
+                path.display()
+            ),
         }
     }
 }
@@ -561,5 +583,26 @@ mod tests {
         let (_tmp_1, one_way) = baseline_of(&[a.clone(), b.clone()]);
         let (_tmp_2, other_way) = baseline_of(&[b, a]);
         assert_eq!(one_way.unmatched(&[]), other_way.unmatched(&[]));
+    }
+
+    #[test]
+    fn load_rejects_unsupported_baseline_version() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("arc-baseline.toml");
+        std::fs::write(
+            &path,
+            r"
+            [config]
+            version = 2
+            ",
+        )
+        .unwrap();
+
+        let message = Baseline::load(&path).unwrap_err().to_string();
+        assert!(message.contains("unsupported baseline file"), "{message}");
+        assert!(
+            message.contains("cargo arc check --generate-baseline"),
+            "{message}"
+        );
     }
 }

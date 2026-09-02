@@ -30,6 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   findings; the frozen cycles stay, and with them the tangle.
 - Rule names must now be unique across all rule types; `arc-rules.toml` is
   rejected when two rules share a name.
+- `arc-rules.toml` and `arc-baseline.toml` are rejected when their
+  `[config].version` names a format this build does not support, naming the
+  version found and the one supported.
 - A `[diagnostics]` section in `arc-rules.toml` reports gaps in the
   configuration itself: `unlayered-node` for a node an `exhaustive` `layers`
   rule leaves in no position (the rule never asks where it belongs),
