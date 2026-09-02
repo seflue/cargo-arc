@@ -6,7 +6,10 @@
 use crate::model::{Edge, EdgeSymbols};
 use crate::rules::config::{DiagnosticLevel, Severity};
 use crate::rules::diagnostics::{Diagnostic, DiagnosticKind};
-use crate::rules::engine::{CheckResult, CycleCluster, Violation, ViolationDetail, ViolationState};
+use crate::rules::engine::{
+    CheckResult, ClusterShape, CycleCluster, CycleClusterEdge, Violation, ViolationDetail,
+    ViolationState,
+};
 use std::fmt::Write;
 
 /// Format all violations as compiler-style output.
@@ -320,14 +323,18 @@ fn state_mark(state: ViolationState) -> &'static str {
     }
 }
 
-/// Render one cluster: header, then either a single-cycle body (the cycle plus
-/// the edge carrying the fewest symbols) or a tangle body (the ranked feedback
-/// edges). `indent` prefixes the header; the body indents further relative to
-/// it, as before. `mark` is the silenced-state suffix from [`state_mark`],
-/// placed on the position rather than after the counts, so it does not read
-/// as part of them.
+/// Render one cluster: header, then either a single-cycle body (the cycle
+/// plus every one of its edges) or a tangle body (the ranked feedback edges).
+/// `indent` prefixes the header; the body indents further relative to it, as
+/// before. `mark` is the silenced-state suffix from [`state_mark`], placed on
+/// the position rather than after the counts, so it does not read as part of
+/// them.
 fn cluster_block(cluster: &CycleCluster, indent: &str, mark: &str) -> String {
     let mut out = String::new();
+    let cycles = match &cluster.shape {
+        ClusterShape::SingleCycle { .. } => 1,
+        ClusterShape::MultiCycle { cycles, .. } => *cycles,
+    };
     let _ = writeln!(
         out,
         "{indent}tangle {}/{}{mark}: {} ({}, {})",
@@ -335,81 +342,92 @@ fn cluster_block(cluster: &CycleCluster, indent: &str, mark: &str) -> String {
         cluster.total,
         cluster.place,
         plural(cluster.modules, "module"),
-        plural(cluster.cycles, "cycle"),
+        plural(cycles, "cycle"),
     );
 
-    if let Some(names) = &cluster.cycle {
+    match &cluster.shape {
+        ClusterShape::SingleCycle { members, edges } => {
+            let _ = writeln!(
+                out,
+                "{indent}  cycle: {} -> {}",
+                members.join(" -> "),
+                members[0]
+            );
+            // No closing sentence here: `paired_off` doesn't apply to a
+            // single cycle, where the edge count and the cycle count of one
+            // rarely coincide.
+            out.push_str(&edge_table(edges, indent));
+        }
+        ClusterShape::MultiCycle {
+            cycles,
+            feedback_edges,
+            counts_every_cycle,
+        } => {
+            out.push_str(&edge_table(feedback_edges, indent));
+            let count = feedback_edges.len();
+            if *counts_every_cycle {
+                // Closes with a property of the cycles (the listed edges are
+                // a hitting set), not with an instruction to remove them.
+                // Dropped when edges and cycles pair off one to one: there
+                // the sentence only restates the counts already in the list.
+                let paired_off =
+                    count == *cycles && feedback_edges.iter().all(|edge| edge.cycles == 1);
+                if !paired_off {
+                    let _ = if count == 1 {
+                        writeln!(
+                            out,
+                            "{indent}  every circular dependency contains this edge"
+                        )
+                    } else {
+                        writeln!(
+                            out,
+                            "{indent}  every circular dependency contains at least one of these {count} edges"
+                        )
+                    };
+                }
+            } else {
+                // A mixed cluster: `feedback_edges` covers only the counted
+                // cycles, and a tolerated cycle's own edges stay in the
+                // graph, so a hitting-set claim over the listed edges alone
+                // would be false.
+                let _ = writeln!(
+                    out,
+                    "{indent}  an unlisted cycle running through these edges can still stand once every listed edge is gone"
+                );
+            }
+        }
+    }
+    out
+}
+
+/// Ranked edge table shared by both [`ClusterShape`] arms of [`cluster_block`]:
+/// heading, then one row per edge with its share of the cluster's cycles.
+fn edge_table(edges: &[CycleClusterEdge], indent: &str) -> String {
+    let mut out = String::new();
+    let from_width = edges.iter().map(|edge| edge.from.len()).max().unwrap_or(0);
+    let to_width = edges.iter().map(|edge| edge.to.len()).max().unwrap_or(0);
+    let cycles_width = edges
+        .iter()
+        .map(|edge| edge.cycles.to_string().len())
+        .max()
+        .unwrap_or(0);
+    // Only claim an order when the cycle counts actually differ.
+    let counts = || edges.iter().map(|edge| edge.cycles);
+    let heading = if counts().min() == counts().max() {
+        "edges:"
+    } else {
+        "edges, most cycles first:"
+    };
+    let _ = writeln!(out, "{indent}  {heading}");
+    for edge in edges {
+        let cycle_word = if edge.cycles == 1 { "cycle" } else { "cycles" };
+        let cycles = edge.cycles;
+        let symbols = plural(edge.symbols, "symbol");
+        let (from, to) = (&edge.from, &edge.to);
         let _ = writeln!(
             out,
-            "{indent}  cycle: {} -> {}",
-            names.join(" -> "),
-            names[0]
+            "{indent}    {from:<from_width$} -> {to:<to_width$} (on {cycles:>cycles_width$} {cycle_word}, {symbols})"
         );
-        if let Some(edge) = cluster.feedback_edges.first() {
-            let _ = writeln!(
-                out,
-                "{indent}  fewest symbols: {} -> {} ({})",
-                edge.from,
-                edge.to,
-                plural(edge.symbols, "symbol"),
-            );
-        }
-    } else {
-        let from_width = cluster
-            .feedback_edges
-            .iter()
-            .map(|edge| edge.from.len())
-            .max()
-            .unwrap_or(0);
-        let to_width = cluster
-            .feedback_edges
-            .iter()
-            .map(|edge| edge.to.len())
-            .max()
-            .unwrap_or(0);
-        let cycles_width = cluster
-            .feedback_edges
-            .iter()
-            .map(|edge| edge.cycles.to_string().len())
-            .max()
-            .unwrap_or(0);
-        // Only claim an order when the cycle counts actually differ.
-        let counts = || cluster.feedback_edges.iter().map(|edge| edge.cycles);
-        let heading = if counts().min() == counts().max() {
-            "edges:"
-        } else {
-            "edges, most cycles first:"
-        };
-        let _ = writeln!(out, "{indent}  {heading}");
-        for edge in &cluster.feedback_edges {
-            let cycle_word = if edge.cycles == 1 { "cycle" } else { "cycles" };
-            let cycles = edge.cycles;
-            let symbols = plural(edge.symbols, "symbol");
-            let (from, to) = (&edge.from, &edge.to);
-            let _ = writeln!(
-                out,
-                "{indent}    {from:<from_width$} -> {to:<to_width$} (on {cycles:>cycles_width$} {cycle_word}, {symbols})"
-            );
-        }
-        // Closes with a property of the cycles (the listed edges are a
-        // hitting set), not with an instruction to remove them. Dropped
-        // when edges and cycles pair off one to one: there the sentence
-        // only restates the counts already in the list.
-        let count = cluster.feedback_edges.len();
-        let paired_off = count == cluster.cycles && counts().all(|c| c == 1);
-        if !paired_off {
-            let _ = if count == 1 {
-                writeln!(
-                    out,
-                    "{indent}  every circular dependency contains this edge"
-                )
-            } else {
-                writeln!(
-                    out,
-                    "{indent}  every circular dependency contains at least one of these {count} edges"
-                )
-            };
-        }
     }
     out
 }
@@ -435,14 +453,15 @@ mod tests {
             crate_name: "app".into(),
             place: "app".into(),
             modules: 2,
-            cycles: 1,
-            cycle: Some(vec![from.into(), to.into()]),
-            feedback_edges: vec![CycleClusterEdge {
-                from: from.into(),
-                to: to.into(),
-                cycles: 1,
-                symbols: 1,
-            }],
+            shape: ClusterShape::SingleCycle {
+                members: vec![from.into(), to.into()],
+                edges: vec![CycleClusterEdge {
+                    from: from.into(),
+                    to: to.into(),
+                    cycles: 1,
+                    symbols: 1,
+                }],
+            },
         }
     }
 
@@ -1428,14 +1447,15 @@ mod tests {
             crate_name: "app".into(),
             place: "app".into(),
             modules: 2,
-            cycles: 1,
-            cycle: Some(vec!["a".into(), "b".into()]),
-            feedback_edges: vec![CycleClusterEdge {
-                from: "a".into(),
-                to: "b".into(),
-                cycles: 1,
-                symbols: 1,
-            }],
+            shape: ClusterShape::SingleCycle {
+                members: vec!["a".into(), "b".into()],
+                edges: vec![CycleClusterEdge {
+                    from: "a".into(),
+                    to: "b".into(),
+                    cycles: 1,
+                    symbols: 1,
+                }],
+            },
         };
         let result = CheckResult {
             violations: vec![Violation {
@@ -1527,10 +1547,14 @@ mod tests {
             "got:\n{out}"
         );
         assert!(out.contains("cycle: a -> b -> a"), "got:\n{out}");
-        assert!(
-            out.contains("fewest symbols: a -> b (1 symbol)"),
-            "got:\n{out}"
+        assert!(out.contains("edges:"), "got:\n{out}");
+        assert_eq!(
+            out.matches("on 1 cycle,").count(),
+            2,
+            "both edges of the single cycle should be listed, got:\n{out}"
         );
+        assert!(!out.contains("fewest symbols:"), "got:\n{out}");
+        assert!(!out.contains("every circular dependency"), "got:\n{out}");
     }
 
     #[test]
@@ -1591,6 +1615,48 @@ mod tests {
         let out = cluster_block(&clusters[0], "", "");
         assert!(
             out.contains("every circular dependency contains this edge"),
+            "got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn cluster_report_mixed_tangle_names_the_frozen_risk_instead_of_the_hitting_set() {
+        // Same fixture as `cluster_report_tangle_block`: two triangles share
+        // a->b, plus a separate a<->e cycle on the same node. Tolerating only
+        // the 2-node a<->e cycle leaves the other two counted: a mixed
+        // regime, where `feedback_edges` covers just the counted cycles and
+        // the frozen one's own edges stay in the graph.
+        let g = cyc_graph(
+            &["a", "b", "c", "d", "e"],
+            &[
+                (0, 1, 1),
+                (1, 2, 1),
+                (2, 0, 1),
+                (1, 3, 1),
+                (3, 0, 1),
+                (0, 4, 1),
+                (4, 0, 2),
+            ],
+        );
+        let sub = g.production_subgraph(Reexports::Included);
+        let analysis = sub.representative_cycles();
+        let report = g.cluster_report(&sub, &analysis, |cycle| cycle.nodes.len() == 2);
+        let total = report.clusters.len();
+        let clusters: Vec<CycleCluster> = report
+            .clusters
+            .iter()
+            .enumerate()
+            .map(|(i, cluster)| CycleCluster::from_cluster(&g, &analysis, cluster, i + 1, total))
+            .collect();
+        let out = cluster_block(&clusters[0], "", "");
+        assert!(
+            !out.contains("every circular dependency contains"),
+            "got:\n{out}"
+        );
+        assert!(
+            out.contains(
+                "an unlisted cycle running through these edges can still stand once every listed edge is gone"
+            ),
             "got:\n{out}"
         );
     }

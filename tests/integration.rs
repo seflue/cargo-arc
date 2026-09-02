@@ -1008,6 +1008,25 @@ fn test_check_without_a_rules_file_reports_under_the_implicit_rule() {
         stderr.contains("error[no-cycles]: no cycles"),
         "report should name the implicit rule, stderr: {stderr}"
     );
+    // The single logic cycle gamma <-> delta gets the edge table, not one
+    // edge singled out as the fewest-symbols pick.
+    assert!(
+        stderr.contains("cycle: delta -> gamma -> delta")
+            || stderr.contains("cycle: gamma -> delta -> gamma"),
+        "report should print the cycle line, stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("edges:"),
+        "report should head the edge table, stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("gamma -> delta (on 1 cycle, 1 symbol)"),
+        "report should list the gamma -> delta edge, stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("delta -> gamma (on 1 cycle, 1 symbol)"),
+        "report should list the delta -> gamma edge, stderr: {stderr}"
+    );
 }
 
 /// Without this line a clean run is silent, and so is a run that never

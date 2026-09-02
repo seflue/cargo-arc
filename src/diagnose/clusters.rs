@@ -2,12 +2,13 @@
 //!
 //! Aggregates the representative cycles ([`CycleAnalysis`]) into
 //! strongly-connected clusters and, per cluster, computes a feedback arc set
-//! (an edge set whose removal leaves no reported cycle standing): greedy
+//! (an edge set whose removal leaves no counted cycle standing): greedy
 //! set-cover over the representative cycles, then a single `tarjan_scc`
 //! verification with a residual re-cover loop.
 //!
 //! The caller names the cycles it tolerates and the set breaks the rest, so
-//! tolerating nothing makes the cluster acyclic.
+//! tolerating nothing makes the cluster acyclic; something tolerated can
+//! leave an unlisted cycle standing.
 
 use super::cycles::{Cycle, CycleAnalysis, RepresentativeCycles};
 use crate::graph::{ArcGraph, EdgeWeight};
@@ -39,6 +40,11 @@ pub struct Cluster {
     pub cycles: Vec<usize>,
     /// Set when the cluster has no untolerated cycle of its own.
     pub tolerated: bool,
+    /// Set when `feedback_edges` breaks every cycle of the cluster, tolerated
+    /// or not. Unset in a mixed cluster, where a tolerated cycle's own edges
+    /// stay in the graph and `feedback_edges` covers only the untolerated
+    /// ones.
+    pub counts_every_cycle: bool,
     /// Edge set whose removal breaks every cycle in `cycles`, ranked traffic
     /// desc, symbols asc, name asc.
     pub feedback_edges: Vec<CyclicEdge>,
@@ -75,7 +81,7 @@ impl ArcGraph {
     ///
     /// `tolerated` names the cycles a caller accepts. A cluster with an
     /// untolerated cycle of its own carries only those: an edge pulled in by a
-    /// tolerated cycle would carry none of the reported ones and read as work
+    /// tolerated cycle would carry none of the counted ones and read as work
     /// on something the caller has decided to keep. A cluster whose cycles are
     /// all tolerated stays in the report, with a feedback set over its own
     /// cycles. Callers with nothing to tolerate pass `|_| false`.
@@ -121,16 +127,15 @@ impl ArcGraph {
                 .filter(|&idx| !tolerated(&analysis.cycles[idx]))
                 .collect();
             let cluster_tolerated = untolerated.is_empty();
+            // A wholly tolerated cluster's set exists to shrink its own debt, so
+            // none of its cycles counts as tolerated while the set is computed.
+            let counts_every_cycle = cluster_tolerated || untolerated.len() == all.len();
             let cycles = if cluster_tolerated { all } else { untolerated };
             let node_set: HashSet<NodeIndex> = nodes.iter().copied().collect();
             let in_cluster: HashSet<usize> = cycles.iter().copied().collect();
             let edge_cycles = cluster_edge_cycles(analysis, &in_cluster);
-            // A wholly tolerated cluster's set exists to shrink its own debt, so
-            // none of its cycles counts as tolerated while the set is computed.
             let feedback_edges =
-                self.feedback_edges(sub, &node_set, &edge_cycles, in_cluster, |cycle: &Cycle| {
-                    !cluster_tolerated && tolerated(cycle)
-                });
+                self.feedback_edges(sub, &node_set, &edge_cycles, in_cluster, counts_every_cycle);
             let edges = self.cluster_edges(sub, &node_set, &edge_cycles);
             let crate_idx = self.owning_crate(nodes[0]);
             clusters.push(Cluster {
@@ -138,6 +143,7 @@ impl ArcGraph {
                 nodes,
                 cycles,
                 tolerated: cluster_tolerated,
+                counts_every_cycle,
                 feedback_edges,
                 edges,
             });
@@ -151,48 +157,47 @@ impl ArcGraph {
 
     /// Greedy set-cover feedback arc set for one cluster, ranked best-first.
     ///
-    /// The cover breaks every cycle in `open`; the `tarjan_scc` pass then
-    /// re-covers whatever the residual enumeration still finds untolerated. With
-    /// nothing tolerated that pass runs until the cluster is acyclic. With
-    /// something tolerated it stops at the enumeration's reach, and
-    /// `representative_cycles` does not promise that is every cycle.
+    /// The cover breaks every cycle in `open`. With `counts_every_cycle` set, a
+    /// `tarjan_scc` guard then re-covers whatever the residual enumeration
+    /// still finds, until the cluster is acyclic. With it unset, the cover
+    /// stops at `open`: the cluster is mixed, and chasing the residual could
+    /// pull in an edge that carries none of its own cycles.
     fn feedback_edges(
         &self,
         sub: &DiGraph<NodeIndex, ()>,
         node_set: &HashSet<NodeIndex>,
         edge_cycles: &HashMap<(NodeIndex, NodeIndex), HashSet<usize>>,
         mut open: HashSet<usize>,
-        tolerated: impl Fn(&Cycle) -> bool,
+        counts_every_cycle: bool,
     ) -> Vec<CyclicEdge> {
         let mut chosen: Vec<(NodeIndex, NodeIndex)> = Vec::new();
         self.greedy_cover(edge_cycles, &mut open, &mut chosen);
 
-        // The representative-cycle cover alone does not guarantee acyclicity:
-        // `representative_cycles` lists a shortest cycle per edge, not every cycle. So
-        // keep a `tarjan_scc` guard and re-cover what it finds, minus the cycles
-        // `tolerated` accepts: those are still in `sub`, and breaking them is not
-        // this set's job.
-        let mut removed: HashSet<(NodeIndex, NodeIndex)> = chosen.iter().copied().collect();
-        loop {
-            let pruned = restricted_subgraph(sub, node_set, &removed);
-            if tarjan_scc(&pruned).iter().all(|scc| scc.len() <= 1) {
-                break;
-            }
-            let mut residual = pruned.representative_cycles();
-            residual.retain_cycles(|cycle| !tolerated(cycle));
-            if residual.cycles.is_empty() {
-                break;
-            }
-            let residual_edges: HashMap<(NodeIndex, NodeIndex), HashSet<usize>> = residual
-                .edge_cycles
-                .iter()
-                .map(|(&e, cs)| (e, cs.iter().copied().collect()))
-                .collect();
-            let mut residual_open: HashSet<usize> = (0..residual.cycles.len()).collect();
-            let before = chosen.len();
-            self.greedy_cover(&residual_edges, &mut residual_open, &mut chosen);
-            for &e in &chosen[before..] {
-                removed.insert(e);
+        if counts_every_cycle {
+            // The representative-cycle cover alone does not guarantee acyclicity:
+            // `representative_cycles` lists a shortest cycle per edge, not every cycle. So
+            // keep a `tarjan_scc` guard and re-cover what it finds.
+            let mut removed: HashSet<(NodeIndex, NodeIndex)> = chosen.iter().copied().collect();
+            loop {
+                let pruned = restricted_subgraph(sub, node_set, &removed);
+                if tarjan_scc(&pruned).iter().all(|scc| scc.len() <= 1) {
+                    break;
+                }
+                let residual = pruned.representative_cycles();
+                if residual.cycles.is_empty() {
+                    break;
+                }
+                let residual_edges: HashMap<(NodeIndex, NodeIndex), HashSet<usize>> = residual
+                    .edge_cycles
+                    .iter()
+                    .map(|(&e, cs)| (e, cs.iter().copied().collect()))
+                    .collect();
+                let mut residual_open: HashSet<usize> = (0..residual.cycles.len()).collect();
+                let before = chosen.len();
+                self.greedy_cover(&residual_edges, &mut residual_open, &mut chosen);
+                for &e in &chosen[before..] {
+                    removed.insert(e);
+                }
             }
         }
 
@@ -459,7 +464,9 @@ mod tests {
 
     /// Assert that removing `feedback` leaves the cluster `nodes` with no cycle
     /// beyond those `tolerated` accepts. With a predicate that tolerates
-    /// nothing this is the plain acyclicity check.
+    /// nothing this is the plain acyclicity check; with one that tolerates
+    /// something, it checks a property of the fixture, not a guarantee the
+    /// code makes.
     fn assert_only_tolerated_cycles_remain(
         g: &ArcGraph,
         nodes: &[NodeIndex],
@@ -796,7 +803,7 @@ mod tests {
     ];
 
     #[test]
-    fn every_reported_cycle_gets_an_edge_when_nothing_is_tolerated() {
+    fn every_counted_cycle_gets_an_edge_when_nothing_is_tolerated() {
         let (g, idx) = graph_with(HUB_MODULES, HUB_DEPS);
         let r = report(&g);
         assert_eq!(r.clusters.len(), 1);
@@ -814,7 +821,7 @@ mod tests {
     fn a_tolerated_cycle_pulls_no_edge_into_the_feedback_set() {
         // hub<->a is tolerated, so it is out of the analysis while its edges
         // stay in the subgraph. Breaking it is not this report's job: the two
-        // reported cycles need one edge each, and neither of them may be an
+        // counted cycles need one edge each, and neither of them may be an
         // edge of the tolerated cycle.
         let (g, idx) = graph_with(HUB_MODULES, HUB_DEPS);
         let tolerated = |cycle: &Cycle| cycle.nodes.len() == 2 && cycle.nodes.contains(&idx[1]);
@@ -824,12 +831,58 @@ mod tests {
         let c = &r.clusters[0];
         assert_eq!(c.cycles.len(), 2);
         assert_eq!(c.feedback_edges.len(), 2);
-        // No edge carrying zero reported cycles: that is what a feedback set
-        // reaching past the reported cycles looks like in the output.
+        // No edge carrying zero counted cycles: that is what a feedback set
+        // reaching past the counted cycles looks like in the output.
         assert!(c.feedback_edges.iter().all(|e| e.cycles > 0));
         let picked: Vec<_> = c.feedback_edges.iter().map(|e| (e.from, e.to)).collect();
         assert_eq!(picked, vec![(idx[2], idx[0]), (idx[3], idx[0])]);
         assert_only_tolerated_cycles_remain(&g, &c.nodes, &c.feedback_edges, tolerated);
+    }
+
+    #[test]
+    fn a_partly_tolerated_cluster_pulls_no_edge_into_the_feedback_set() {
+        // a->b->d->a is tolerated; b<->c and c<->d stay open, so the cluster
+        // is mixed, not wholly tolerated. Covering the two open cycles leaves
+        // a->b->d->a's edges standing, and with them a residual cycle through
+        // b, c and d (see the `becomes_acyclic` test below for why that cycle
+        // exists) — chasing it with the `tarjan_scc` guard would pull in an
+        // edge carrying none of this cluster's own cycles, so a mixed cluster
+        // does not chase it.
+        let (g, idx) = graph_with(
+            &["a", "b", "c", "d"],
+            &[
+                (0, 1, 1), // a->b
+                (1, 2, 1), // b->c
+                (1, 3, 1), // b->d
+                (2, 1, 1), // c->b
+                (2, 3, 1), // c->d
+                (3, 0, 1), // d->a
+                (3, 2, 1), // d->c
+            ],
+        );
+        let tolerated = |cycle: &Cycle| cycle.nodes.len() == 3 && cycle.nodes.contains(&idx[0]);
+        let r = report_tolerating(&g, tolerated);
+
+        assert_eq!(r.clusters.len(), 1);
+        let c = &r.clusters[0];
+        assert!(!c.tolerated);
+        let picked: Vec<_> = c.feedback_edges.iter().map(|e| (e.from, e.to)).collect();
+        assert_eq!(picked, vec![(idx[1], idx[2]), (idx[2], idx[3])]);
+        assert!(c.feedback_edges.iter().all(|e| e.cycles > 0));
+
+        // The cluster does not chase the residual: the b->c->d->b cycle this
+        // leaves standing is untolerated, and that is the deliberate trade,
+        // not a bug — see the doc comment on `feedback_edges`.
+        let sub = g.production_subgraph(Reexports::Included);
+        let node_set: HashSet<NodeIndex> = c.nodes.iter().copied().collect();
+        let removed: HashSet<(NodeIndex, NodeIndex)> =
+            c.feedback_edges.iter().map(|e| (e.from, e.to)).collect();
+        let left = restricted_subgraph(&sub, &node_set, &removed).representative_cycles();
+        assert!(
+            left.cycles.iter().any(|cycle| !tolerated(cycle)),
+            "expected an untolerated cycle left standing, got: {:?}",
+            left.cycles
+        );
     }
 
     #[test]

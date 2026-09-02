@@ -25,9 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   outlives a refactor that reshapes the cycle around it, and an edge that gains
   a symbol is reported again. Generation is refused while an `except` pattern
   matches no module, and `--show-silenced` lists frozen violations alongside
-  allowed ones. When a tangle holds both frozen and reported cycles, its ranked
-  edge list covers only the reported ones, so no listed edge stands for a cycle
-  the baseline froze.
+  allowed ones. When a tangle holds both frozen and counted cycles, its ranked
+  edge list covers only the counted ones. Clearing the list ends the tangle's
+  findings; the frozen cycles stay, and with them the tangle.
 - Rule names must now be unique across all rule types; `arc-rules.toml` is
   rejected when two rules share a name.
 - A `[diagnostics]` section in `arc-rules.toml` reports gaps in the
@@ -128,6 +128,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   baseline key and `except` both address the pair, so an entry stays valid when
   the dependency later runs over another node. The diagnostic for an unsorted
   node now says its own place goes unchecked, which is what is left.
+- A tangle holding exactly one cycle now shows every one of its edges, ranked
+  the same way a multi-cycle tangle's feedback edges are, instead of naming a
+  single edge picked by symbol count.
 
 ### Fixed
 

@@ -19,7 +19,9 @@ A workspace without an `arc-rules.toml` is not unchecked.
 error[no-cycles]: no cycles
     tangle 1/1: core (2 modules, 1 cycle)
       cycle: model -> ids -> model
-      fewest symbols: ids -> model (1 symbol)
+      edges:
+        ids   -> model (on 1 cycle, 1 symbol)
+        model -> ids   (on 1 cycle, 2 symbols)
 ```
 
 The report goes to stderr, one status line per rule to stdout:
@@ -295,11 +297,13 @@ scope = "**"
 
 `scope` is the pattern the search runs inside; only dependencies between two nodes in scope take part.
 Violations are reported per tangle.
-A tangle holding exactly one cycle is written out in full, and the edge carrying the fewest symbols is named below it.
-A tangle holding several gets the ranked feedback arcs, stated in prose as "every cycle contains at least one of these edges".
-An edge appears with every reported cycle it lies on, not only with the shortest one it stands in for.
+A tangle holding exactly one cycle is written out in full, with every one of its edges listed below it; removing any single one of them breaks the cycle.
+A tangle holding several gets the ranked feedback arcs, stated in prose as "every circular dependency contains at least one of these N edges" (N being the edge count; "contains this edge" when N is 1).
+An edge appears with every counted cycle it lies on, not only with the shortest one it stands in for.
 
-A tangle whose edges are all frozen keeps its block, feedback arc set included, marked `(frozen)` on the tangle line (`tangle 1/1 (frozen): ...`); it only shows up under `--show-silenced`.
+A tangle whose edges are all frozen keeps its whole block, marked `(frozen)` on the tangle line (`tangle 1/1 (frozen): ...`); it only shows up under `--show-silenced`.
+
+A tangle mixing a frozen cycle with counted ones lists only the counted feedback edges: the frozen cycle's own edges stay in the graph, so an unlisted cycle running through them can still stand once every listed edge is gone. Clearing the list ends the tangle's findings, not the tangle.
 
 Crate-level dependencies never take part in the search: a cycle between crates is a thing Cargo already refuses, and what is left runs between modules.
 A dependency whose imports are all `pub use` counts only under `--include-reexports`: republishing a name is not a dependency on it, and the idiomatic re-export cycles that arise from it are not violations.
@@ -322,6 +326,7 @@ None of the three is a cost estimate, and the arc count least of all.
 Greedy cover makes it an upper bound rather than the minimum, and the edges are not equal.
 Dropping a re-export that only forwards is close to free; inverting a dependency is not.
 It says how many places have to be touched, not how much work that is.
+With a frozen cycle in the mix, the cycle count covers only the counted ones.
 
 ### Severity
 

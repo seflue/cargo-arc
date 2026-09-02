@@ -2,7 +2,7 @@
 //!
 //! Checks architecture rules against the dependency graph and collects violations.
 
-use crate::diagnose::{Cluster, Cycle, CycleAnalysis, RepresentativeCycles};
+use crate::diagnose::{Cluster, Cycle, CycleAnalysis, CyclicEdge, RepresentativeCycles};
 use crate::graph::{ArcGraph, EdgeWeight};
 use crate::model::{Edge, EdgeSymbols, SourceLocation};
 use crate::rules::baseline::{Baseline, BaselineEntry, ViolationKey};
@@ -140,11 +140,28 @@ pub struct CycleCluster {
     /// is never the argument of a command, only a location for one.
     pub place: String,
     pub modules: usize,
-    pub cycles: usize,
-    /// Crate-relative member names, set when the cluster holds exactly one cycle.
-    pub cycle: Option<Vec<String>>,
-    /// Feedback edges, crate-relative names, ranked as `Cluster::feedback_edges`.
-    pub feedback_edges: Vec<CycleClusterEdge>,
+    pub shape: ClusterShape,
+}
+
+/// What a [`CycleCluster`] holds: exactly one cycle, named in full with every
+/// one of its edges, or several, reduced to a feedback edge set.
+#[derive(Debug)]
+pub enum ClusterShape {
+    SingleCycle {
+        /// Crate-relative member names.
+        members: Vec<String>,
+        /// Every edge of the cycle, crate-relative names, ranked as
+        /// `Cluster::edges`.
+        edges: Vec<CycleClusterEdge>,
+    },
+    MultiCycle {
+        cycles: usize,
+        /// Feedback edges, crate-relative names, ranked as `Cluster::feedback_edges`.
+        feedback_edges: Vec<CycleClusterEdge>,
+        /// Carries `Cluster::counts_every_cycle`: set when `feedback_edges`
+        /// breaks every cycle of the cluster, unset in a mixed cluster.
+        counts_every_cycle: bool,
+    },
 }
 
 /// One feedback edge of a [`CycleCluster`], names already resolved.
@@ -168,32 +185,54 @@ impl CycleCluster {
     ) -> Self {
         let crate_name = graph[cluster.crate_idx].name().to_string();
         let place = common_place(graph, &cluster.nodes);
-        let cycle = (cluster.cycles.len() == 1).then(|| {
-            analysis.cycles[cluster.cycles[0]]
+        let resolve_edges = |edges: &[CyclicEdge]| {
+            edges
+                .iter()
+                .map(|edge| CycleClusterEdge {
+                    from: rel_name(graph, edge.from, &crate_name),
+                    to: rel_name(graph, edge.to, &crate_name),
+                    cycles: edge.cycles,
+                    symbols: edge.symbols,
+                })
+                .collect()
+        };
+        let shape = if cluster.cycles.len() == 1 {
+            let named_cycle = &analysis.cycles[cluster.cycles[0]];
+            let members = named_cycle
                 .nodes
                 .iter()
                 .map(|&idx| rel_name(graph, idx, &crate_name))
-                .collect()
-        });
-        let feedback_edges = cluster
-            .feedback_edges
-            .iter()
-            .map(|edge| CycleClusterEdge {
-                from: rel_name(graph, edge.from, &crate_name),
-                to: rel_name(graph, edge.to, &crate_name),
-                cycles: edge.cycles,
-                symbols: edge.symbols,
-            })
-            .collect();
+                .collect();
+            // `cluster.edges` holds every SCC-internal edge, which can run
+            // through a frozen cycle sharing the SCC with this one. Keep only
+            // the edges of the cycle named above.
+            let on_cycle: HashSet<(NodeIndex, NodeIndex)> = named_cycle.edges().collect();
+            let edges = cluster
+                .edges
+                .iter()
+                .filter(|edge| on_cycle.contains(&(edge.from, edge.to)))
+                .map(|edge| CycleClusterEdge {
+                    from: rel_name(graph, edge.from, &crate_name),
+                    to: rel_name(graph, edge.to, &crate_name),
+                    cycles: edge.cycles,
+                    symbols: edge.symbols,
+                })
+                .collect();
+            ClusterShape::SingleCycle { members, edges }
+        } else {
+            ClusterShape::MultiCycle {
+                cycles: cluster.cycles.len(),
+                feedback_edges: resolve_edges(&cluster.feedback_edges),
+                counts_every_cycle: cluster.counts_every_cycle,
+            }
+        };
         Self {
             position,
             total,
             crate_name,
             place,
             modules: cluster.nodes.len(),
-            cycles: cluster.cycles.len(),
-            cycle,
-            feedback_edges,
+            shape,
         }
     }
 }
@@ -1452,8 +1491,7 @@ mod tests {
         let ViolationDetail::Cluster(cluster) = &reported[0].detail else {
             panic!("expected a cluster detail");
         };
-        assert_eq!(cluster.cycles, 1);
-        assert!(cluster.cycle.is_some());
+        assert!(matches!(cluster.shape, ClusterShape::SingleCycle { .. }));
     }
 
     #[test]
@@ -1551,8 +1589,10 @@ mod tests {
         let ViolationDetail::Cluster(cluster) = &reported[0].detail else {
             panic!("expected a cluster detail");
         };
-        assert_eq!(cluster.cycles, 2);
-        assert!(cluster.cycle.is_none());
+        let ClusterShape::MultiCycle { cycles, .. } = &cluster.shape else {
+            panic!("expected a multi-cycle shape, got: {:?}", cluster.shape);
+        };
+        assert_eq!(*cycles, 2);
     }
 
     #[test]
@@ -2447,8 +2487,16 @@ mod tests {
         let ViolationDetail::Cluster(cluster) = &result.frozen().next().unwrap().detail else {
             panic!("expected a cluster detail");
         };
-        assert_eq!(cluster.cycles, 2);
-        assert!(!cluster.feedback_edges.is_empty());
+        let ClusterShape::MultiCycle {
+            cycles,
+            feedback_edges,
+            ..
+        } = &cluster.shape
+        else {
+            panic!("expected a multi-cycle shape, got: {:?}", cluster.shape);
+        };
+        assert_eq!(*cycles, 2);
+        assert!(!feedback_edges.is_empty());
         assert!(!result.has_negative_judgment());
     }
 
@@ -2488,10 +2536,60 @@ mod tests {
         let ViolationDetail::Cluster(cluster) = &reported[0].detail else {
             panic!("expected a cluster detail");
         };
-        assert_eq!(cluster.cycles, 1);
-        let cycle = cluster.cycle.as_ref().expect("single remaining cycle");
-        assert!(cycle.iter().any(|m| m == "d"), "got: {cycle:?}");
-        assert!(!cycle.iter().any(|m| m == "c"), "got: {cycle:?}");
+        let ClusterShape::SingleCycle { members, edges } = &cluster.shape else {
+            panic!("expected a single-cycle shape, got: {:?}", cluster.shape);
+        };
+        assert!(members.iter().any(|m| m == "d"), "got: {members:?}");
+        assert!(!members.iter().any(|m| m == "c"), "got: {members:?}");
+        assert!(!edges.is_empty(), "got: {edges:?}");
+        assert!(
+            edges.iter().all(|e| e.cycles > 0),
+            "the block must list only edges of the reported cycle, not every \
+             SCC-internal edge; got: {edges:?}"
+        );
+    }
+
+    #[test]
+    fn test_freezing_one_cycle_leaves_a_lean_feedback_set_for_the_mixed_rest() {
+        let (mut graph, crate_idx) = test_crate_graph();
+        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
+        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
+        let c = add_module(&mut graph, "c", crate_idx, crate_idx);
+        let d = add_module(&mut graph, "d", crate_idx, crate_idx);
+        // a->b->d->a shares edge b->d with the two open cycles b<->c and c<->d.
+        add_production_dep(&mut graph, a, b);
+        add_production_dep(&mut graph, b, c);
+        add_production_dep(&mut graph, b, d);
+        add_production_dep(&mut graph, c, b);
+        add_production_dep(&mut graph, c, d);
+        add_production_dep(&mut graph, d, a);
+        add_production_dep(&mut graph, d, c);
+
+        let rule = no_cycles_rule("no cycles in test", "test::**", vec![]);
+        let baseline = baseline_of(&[
+            frozen_edge(&rule.name, "test::a", "test::b"),
+            frozen_edge(&rule.name, "test::b", "test::d"),
+            frozen_edge(&rule.name, "test::d", "test::a"),
+        ]);
+        let result = check_rule_with_baseline(&graph, &rule, false, &baseline);
+        assert_eq!(
+            result.frozen().count(),
+            0,
+            "the cluster is mixed, so it is reported; a mixed cluster has no frozen twin"
+        );
+        let reported: Vec<_> = result.reported().collect();
+        assert_eq!(reported.len(), 1);
+        let ViolationDetail::Cluster(cluster) = &reported[0].detail else {
+            panic!("expected a cluster detail");
+        };
+        let ClusterShape::MultiCycle { feedback_edges, .. } = &cluster.shape else {
+            panic!("expected a multi-cycle shape, got: {:?}", cluster.shape);
+        };
+        assert_eq!(feedback_edges.len(), 2);
+        assert!(
+            feedback_edges.iter().all(|e| e.cycles > 0),
+            "no edge should carry zero of this cluster's own cycles, got: {feedback_edges:?}"
+        );
     }
 
     #[test]

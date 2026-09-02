@@ -16,6 +16,8 @@ A word listed there stays correct in its own place: `RepresentativeCycles` repla
 |------|------------|-------|
 | **Cycle** | A circular dependency between modules, `a -> b -> c -> a`. A closed sequence of nodes. | elementary cycle |
 | **Representative cycle** | The cycle that stands in for one edge: the shortest cycle through it, kept once per distinct arc set. Every cycle cargo-arc reports is one of these. | minimal cycle, base cycle |
+| **Counted cycle** | A representative cycle, named for the role it plays: it counts toward a tangle's numbers and is what a feedback arc set is measured against. | reported cycle |
+| **Unlisted cycle** | A cycle the enumeration never names, because a shorter cycle runs through every one of its edges and is listed in its place. | reported cycle |
 | **Cyclic edge** | An edge lying on at least one representative cycle; equivalently, an edge whose endpoints share a non-trivial strongly connected component. The unit the diagram highlights. | back edge |
 | **Cluster** | A strongly connected component of the module graph: the maximal set of modules that all reach each other. At least two modules, one or more cycles, never spans crates. | — |
 | **Tangle** | The same set as a cluster, named for what a reader sees rather than for its graph property. Structure101: "a set of items that form a cyclic dependency graph at any scope". | — |
@@ -41,6 +43,12 @@ This one is neither: shortest relative to one edge, and free to carry a chord, b
 A cycle basis generates every cycle of the graph and is smaller than one cycle per edge, so the word promises a completeness that is not there.
 [ADR-021](adr/021-minimal-cycle-per-edge.md) keeps *minimal cycle* in its title; a decision record states the wording of its own day and is not rewritten.
 
+*Counted cycle* names the role a representative cycle plays once a caller starts tolerating some of them: the cycles a tangle's numbers add up, and the target a feedback arc set is measured against.
+*Reported cycle* fits it worse than it looks: a counted cycle can be frozen, and a frozen cycle counts without ever being reported as a violation.
+
+*Unlisted cycle* sits outside the representative-cycle enumeration itself: a shorter cycle runs through every one of its edges and is listed in its place, so the enumeration never names it.
+*Reported cycle* fits an unlisted cycle no better — unlisted, it can never be reported at all.
+
 *Cluster* and *tangle* are two registers for one set, the same way *cycle* and *circular dependency* are.
 *Cluster* is the graph property and belongs to the analysis, where the underlying term is strongly connected component; *tangle* says how the modules are wound together and is the term for anything a user reads.
 
@@ -53,8 +61,8 @@ Which dependencies the search takes in, and what it prints, is in [RULES.md](RUL
 | Term | Definition | Avoid |
 |------|------------|-------|
 | **Feedback arc** | An edge whose removal breaks cycles. In a single-cycle tangle every edge is one and removing any of them suffices; in a multi-cycle tangle they come as a set to be removed together. | cut |
-| **Feedback arc set** | The edge set whose joint removal makes the tangle acyclic. Not unique. | cut set |
-| **Traffic** | How many cycles run through one edge. Removing it removes all of them. Order-independent, and the basis for ranking feedback arcs. | edge betweenness |
+| **Feedback arc set** | The edge set whose joint removal breaks every counted cycle. With nothing tolerated it reaches past the enumeration to make the tangle acyclic; with a tolerated cycle it stops at the counted ones. Not unique. | cut set |
+| **Traffic** | How many counted cycles run through one edge. Removing it removes all of them. Order-independent, and the basis for ranking feedback arcs. | edge betweenness |
 | **Symbol count** | How many distinct symbols cross one edge, each counted once however many import lines carry it. Breaks ties in the traffic ranking, and decides it alone in a single-cycle tangle, where every edge carries the same traffic. | — |
 
 Every feedback arc is a cyclic edge, not the other way round.
