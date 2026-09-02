@@ -257,8 +257,8 @@ struct Dependency {
 
 /// What carries a dependency from its source to its target.
 enum Carrier {
-    /// The pair is an edge of the graph. Holds the imports that write it, none
-    /// for a crate dependency, which is written in a manifest.
+    /// The pair is written between its two ends. Holds every import that
+    /// writes it; a manifest edge contributes none.
     Written(Vec<SourceLocation>),
     /// The pair is reached over other nodes. Holds the edges from source to
     /// target, in order.
@@ -864,33 +864,42 @@ impl<'graph> CheckRun<'graph> {
         found
     }
 
-    /// The production edges `is_violation` rejects, one dependency each.
+    /// The pairs `is_violation` rejects, one dependency per pair, carrying
+    /// the imports of every edge between them.
     fn written_dependencies(
         &self,
         is_violation: &impl Fn(NodeIndex, NodeIndex) -> bool,
     ) -> Vec<Dependency> {
         let graph = self.graph();
-        graph
-            .edge_indices()
-            .filter_map(|edge_idx| {
-                let weight = &graph[edge_idx];
-                if !weight.is_production() {
-                    return None;
+        let mut dependencies: Vec<Dependency> = Vec::new();
+        let mut positions: HashMap<(NodeIndex, NodeIndex), usize> = HashMap::new();
+        for edge_idx in graph.edge_indices() {
+            let weight = &graph[edge_idx];
+            if !weight.is_production() {
+                continue;
+            }
+            let (source, target) = graph.edge_endpoints(edge_idx).expect("edge should exist");
+            if !is_violation(source, target) {
+                continue;
+            }
+            let locations = match weight {
+                EdgeWeight::ModuleDep { locations, .. } => locations.clone(),
+                _ => Vec::new(),
+            };
+            if let Some(&pos) = positions.get(&(source, target)) {
+                if let Carrier::Written(existing) = &mut dependencies[pos].carrier {
+                    existing.extend(locations);
                 }
-                let (source, target) = graph.edge_endpoints(edge_idx).expect("edge should exist");
-                if !is_violation(source, target) {
-                    return None;
-                }
-                Some(Dependency {
+            } else {
+                positions.insert((source, target), dependencies.len());
+                dependencies.push(Dependency {
                     source,
                     target,
-                    carrier: Carrier::Written(match weight {
-                        EdgeWeight::ModuleDep { locations, .. } => locations.clone(),
-                        _ => Vec::new(),
-                    }),
-                })
-            })
-            .collect()
+                    carrier: Carrier::Written(locations),
+                });
+            }
+        }
+        dependencies
     }
 
     /// Shared by all edge-predicate rule checks (forbidden-dependency, layers);
@@ -899,7 +908,8 @@ impl<'graph> CheckRun<'graph> {
     /// `Violation`, but lands in the allowed side. A baseline check runs only
     /// after that: `except` is a permanent allowance, the baseline a frozen
     /// one. Both are keyed on the pair, so a dependency running over
-    /// intermediate nodes is silenced the same way a written edge is.
+    /// intermediate nodes is silenced the same way a written edge is. A pair
+    /// yields one violation per rule.
     fn check_dependency_violations(
         &self,
         rule: &Rule,
@@ -1179,6 +1189,18 @@ mod tests {
                     module_path: String::new(),
                     via_reexport: false,
                 }],
+                context: EdgeContext::production(),
+            },
+        );
+    }
+
+    /// A production `CrateDep` edge, as a `Cargo.toml` entry writes it: no
+    /// locations, because a manifest entry is not an import.
+    fn add_crate_dep(graph: &mut ArcGraph, from: NodeIndex, to: NodeIndex) {
+        graph.add_edge(
+            from,
+            to,
+            EdgeWeight::CrateDep {
                 context: EdgeContext::production(),
             },
         );
@@ -1905,6 +1927,79 @@ mod tests {
             !reported[0].locations.is_empty(),
             "the written edge brings its locations"
         );
+    }
+
+    /// A `Cargo.toml` entry and an import between the same two crates: one
+    /// dependency, not two. [ca-0476]
+    #[test]
+    fn test_a_crate_dep_and_a_named_dep_between_the_same_pair_are_one_violation() {
+        let mut graph = crate_graph(&["a", "b"], &[]);
+        let a = graph
+            .node_indices()
+            .find(|&i| graph[i].name() == "a")
+            .unwrap();
+        let b = graph
+            .node_indices()
+            .find(|&i| graph[i].name() == "b")
+            .unwrap();
+        add_crate_dep(&mut graph, a, b);
+        add_named_dep(&mut graph, a, b, &["Thing"]);
+        let rule = Rule {
+            name: "no b in a".into(),
+            severity: Severity::Error,
+            except: vec![],
+            kind: RuleKind::ForbiddenDependency(ForbiddenDependencyRule {
+                from: "a".into(),
+                to: "b".into(),
+            }),
+        };
+
+        let result = check_rule(&graph, &rule, false);
+        let reported: Vec<_> = result.reported().collect();
+        assert_eq!(reported.len(), 1, "one pair, one violation: {reported:?}");
+        assert_eq!(
+            reported[0].locations.len(),
+            1,
+            "the manifest entry contributes no location of its own"
+        );
+        assert_eq!(reported[0].locations[0].symbols, vec!["Thing".to_string()]);
+        assert_eq!(
+            result.baseline_entries,
+            vec![named_frozen_edge(&rule.name, "a", "b", &["Thing"])]
+        );
+    }
+
+    /// The same pair as above, but the baseline only tolerates a different
+    /// symbol: the merged dependency is still reported once, not split into a
+    /// covered manifest half and an uncovered import half. [ca-0476]
+    #[test]
+    fn test_a_crate_dep_and_a_named_dep_stay_reported_when_the_baseline_holds_a_different_symbol() {
+        let mut graph = crate_graph(&["a", "b"], &[]);
+        let a = graph
+            .node_indices()
+            .find(|&i| graph[i].name() == "a")
+            .unwrap();
+        let b = graph
+            .node_indices()
+            .find(|&i| graph[i].name() == "b")
+            .unwrap();
+        add_crate_dep(&mut graph, a, b);
+        add_named_dep(&mut graph, a, b, &["Thing"]);
+        let rule = Rule {
+            name: "no b in a".into(),
+            severity: Severity::Error,
+            except: vec![],
+            kind: RuleKind::ForbiddenDependency(ForbiddenDependencyRule {
+                from: "a".into(),
+                to: "b".into(),
+            }),
+        };
+        let baseline = baseline_of(&[named_frozen_edge(&rule.name, "a", "b", &["Other"])]);
+
+        let result = check_rule_with_baseline(&graph, &rule, false, &baseline);
+        let reported: Vec<_> = result.reported().collect();
+        assert_eq!(reported.len(), 1, "one pair, one violation: {reported:?}");
+        assert!(result.frozen().next().is_none());
     }
 
     /// A "domain" crate plus two crates that do not match `*domain*`.

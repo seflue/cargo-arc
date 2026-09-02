@@ -888,17 +888,12 @@ fn layers_report_a_dependency_running_through_an_unpositioned_crate() {
 }
 
 /// The written edge keeps its own report. `a → b` stands against the order,
-/// `b → d` runs downward under it. The pair appears twice because the crates
-/// are connected twice, by the manifest and by the `use` in `lib.rs`, which
-/// the crate node carries as its own module dependency.
+/// `b → d` runs downward under it.
 #[test]
 fn layers_report_a_written_edge_as_before() {
     let (code, edges) = transitive_layers_check("layers-b-a-d.toml");
     assert_eq!(code, 1, "b above a contradicts a → b, edges: {edges:?}");
-    assert!(
-        !edges.is_empty() && edges.iter().all(|edge| edge == "a → b"),
-        "only the written edge stands against this order, got: {edges:?}"
-    );
+    assert_eq!(edges, ["a → b"]);
 }
 
 /// The baseline key is the pair, so a generated entry names `b` and `d` and

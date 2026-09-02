@@ -147,6 +147,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its dependency altogether when the import came from another crate. A rule over
   such an edge then passed because the edge was missing, not because the code
   kept it.
+- A crate dependency written by both a `Cargo.toml` entry and an import in the
+  crate's root file was reported twice and counted twice. It is now one
+  violation, carrying the import's locations.
 
 ### Removed
 

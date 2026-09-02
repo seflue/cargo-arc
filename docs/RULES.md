@@ -458,6 +458,8 @@ error[forbidden-dependency]: no services in storage
 
 Each `-->` line is a Location, defined in [GLOSSARY.md](GLOSSARY.md).
 
+A pair appears once in a rule's block: where `Cargo.toml` and an import in the crate's root file write the same dependency, that is one violation, one line, counted once, with the import's locations underneath.
+
 Silenced violations are counted rather than listed:
 
 ```
