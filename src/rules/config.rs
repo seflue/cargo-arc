@@ -370,6 +370,8 @@ pub enum ConfigError {
     CatchAllNotAlone { path: PathBuf, name: String },
     MultipleCatchAllPositions { path: PathBuf, name: String },
     ExhaustiveWithCatchAll { path: PathBuf, name: String },
+    EmptyPosition { path: PathBuf, name: String },
+    TooFewPositions { path: PathBuf, name: String },
     UnsupportedVersion { path: PathBuf, found: u32 },
 }
 
@@ -411,6 +413,18 @@ impl std::fmt::Display for ConfigError {
                  `exhaustive = true`, or drop the catch-all",
                 path.display()
             ),
+            Self::EmptyPosition { path, name } => write!(
+                f,
+                "rule {name:?} in {}: every position must hold at least one pattern, \
+                 and one holds none",
+                path.display()
+            ),
+            Self::TooFewPositions { path, name } => write!(
+                f,
+                "rule {name:?} in {}: a layers rule orders its positions against each \
+                 other and needs at least two",
+                path.display()
+            ),
             Self::UnsupportedVersion { path, found } => write!(
                 f,
                 "unsupported config file {}: format version {found}, this cargo-arc \
@@ -449,6 +463,7 @@ impl ArcConfig {
         }
         config.check_unique_rule_names(path)?;
         config.check_catch_all_layers(path)?;
+        config.check_layers_arity(path)?;
         config.check_exhaustive_layers(path)?;
         config.add_implicit_rule(path)?;
         Ok(config)
@@ -556,6 +571,32 @@ impl ArcConfig {
             }
             if catch_alls > 1 {
                 return Err(ConfigError::MultipleCatchAllPositions {
+                    path: path.to_path_buf(),
+                    name: rule.name.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Reject a `layers` rule with fewer than two positions, or with a
+    /// position holding no patterns. One position orders nothing against
+    /// another, and a position without a pattern holds no node to place.
+    fn check_layers_arity(&self, path: &Path) -> Result<(), ConfigError> {
+        for rule in &self.rules {
+            let RuleKind::Layers(params) = &rule.kind else {
+                continue;
+            };
+            for layer in &params.layers {
+                if layer.patterns().is_some_and(<[String]>::is_empty) {
+                    return Err(ConfigError::EmptyPosition {
+                        path: path.to_path_buf(),
+                        name: rule.name.clone(),
+                    });
+                }
+            }
+            if params.layers.len() < 2 {
+                return Err(ConfigError::TooFewPositions {
                     path: path.to_path_buf(),
                     name: rule.name.clone(),
                 });
@@ -1532,6 +1573,91 @@ mod tests {
         let config = ArcConfig::load(&path).unwrap();
         assert_eq!(config.rules.len(), 2);
     }
+
+    // ===== layers arity =====
+
+    #[test]
+    fn test_a_layer_position_without_patterns_fails_to_load() {
+        let toml = r#"
+            [[rules]]
+            type = "layers"
+            name = "architecture layers"
+            layers = [[], "domain"]
+            direction = "top-down"
+        "#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("arc-rules.toml");
+        std::fs::write(&path, toml).unwrap();
+
+        let error = ArcConfig::load(&path).unwrap_err();
+        assert!(
+            matches!(&error, ConfigError::EmptyPosition { name, .. } if name == "architecture layers"),
+            "got: {error:?}"
+        );
+        assert!(error.to_string().contains("architecture layers"));
+    }
+
+    #[test]
+    fn test_a_single_layer_position_fails_to_load() {
+        let toml = r#"
+            [[rules]]
+            type = "layers"
+            name = "architecture layers"
+            layers = ["domain"]
+            direction = "top-down"
+        "#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("arc-rules.toml");
+        std::fs::write(&path, toml).unwrap();
+
+        let error = ArcConfig::load(&path).unwrap_err();
+        assert!(
+            matches!(&error, ConfigError::TooFewPositions { name, .. } if name == "architecture layers"),
+            "got: {error:?}"
+        );
+        assert!(error.to_string().contains("architecture layers"));
+    }
+
+    #[test]
+    fn test_an_empty_layers_list_fails_to_load() {
+        let toml = r#"
+            [[rules]]
+            type = "layers"
+            name = "architecture layers"
+            layers = []
+            direction = "top-down"
+        "#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("arc-rules.toml");
+        std::fs::write(&path, toml).unwrap();
+
+        let error = ArcConfig::load(&path).unwrap_err();
+        assert!(
+            matches!(&error, ConfigError::TooFewPositions { name, .. } if name == "architecture layers"),
+            "got: {error:?}"
+        );
+    }
+
+    #[test]
+    fn test_a_lone_catch_all_position_fails_to_load() {
+        let toml = r#"
+            [[rules]]
+            type = "layers"
+            name = "architecture layers"
+            layers = ["*"]
+            direction = "top-down"
+        "#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("arc-rules.toml");
+        std::fs::write(&path, toml).unwrap();
+
+        let error = ArcConfig::load(&path).unwrap_err();
+        assert!(
+            matches!(&error, ConfigError::TooFewPositions { name, .. } if name == "architecture layers"),
+            "got: {error:?}"
+        );
+    }
+
     // ===== config format version =====
 
     #[test]

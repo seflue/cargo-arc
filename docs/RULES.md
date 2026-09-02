@@ -256,6 +256,9 @@ Both are refused when the rules file loads.
 A catch-all whose rest is empty, because the rule's other positions already cover the whole workspace, is reported as `unmatched-pattern`, the same as a pattern matching nothing.
 A rule carrying a catch-all may not also be `exhaustive`: both together are refused when the file loads, because the catch-all would already satisfy the claim and check nothing.
 
+A `layers` rule orders positions against each other and needs at least two; with fewer, it is refused when the file loads.
+Each position needs at least one pattern to hold; an empty one is refused too.
+
 Two ordinary positions of one rule matching the same node fail the run outright, naming the node and both positions, instead of silently keeping whichever position resolved it last.
 
 The shortest useful `layers` rule states a single boundary without sorting the rest of the workspace first:

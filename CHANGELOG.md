@@ -57,7 +57,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as `["adapter_a", "adapter_b"]` in place of `"adapter_a"`. Crates of equal
   rank share one entry, so the order they are listed in no longer forbids edges
   between them. Edges leaving the rank still follow the rule's direction. A
-  plain string is a rank of one, so existing rules are unaffected.
+  plain string is a rank of one, so existing rules are unaffected; an empty
+  list is refused when the file loads.
 - A `layers` rule takes `exhaustive = true` (default `false`) to declare itself
   complete over what it addresses: its crate patterns claim every workspace
   crate, its module patterns every module of the crates those patterns reach.
@@ -122,6 +123,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   being a typo and becomes the ordinary case, so it has to be said out loud. The
   catch-all layer `*` is exempt: holding what the other positions leave is what
   it is for.
+- A `layers` rule with fewer than two positions, or with a position holding no
+  patterns, now fails to load, naming the rule and the rules file. Before, it
+  loaded and checked nothing.
 - A `layers` rule now checks dependencies rather than written edges: one that
   reaches its target over nodes the rule sorts into no position counts like a
   direct one and is reported under the pair at its ends, with the edges it runs
