@@ -400,7 +400,7 @@ config FAILED: 1 errors, 1 warnings
 
 ### The baseline
 
-`arc-baseline.toml` is written only by `--generate-baseline`, which rewrites it from scratch from the current violations:
+`arc-baseline.toml` is written only by `--generate-baseline`, which rewrites every entry from the current violations, except those under a rule at `severity = "ignore"`, which it carries over as they are:
 
 ```toml
 [config]
@@ -431,6 +431,7 @@ The price is that renaming a frozen symbol turns the entry red, and the answer i
 Shrinking is reported the other way round, as an `unmatched-baseline-entry`, so the file can be narrowed as the debt goes down.
 
 Regenerating over a rules file whose rules were renamed drops every entry that named the old rule.
+Entries under a rule at `severity = "ignore"` stay as they are until the rule is checked again; from then on, an ordinary run reports each one it no longer confirms as `unmatched-baseline-entry`.
 
 ### What a run prints
 
@@ -497,7 +498,7 @@ There is no bitset.
 | Flag | Effect |
 |------|--------|
 | `--rules <path>` | rules file to use, and where the baseline is looked up |
-| `--generate-baseline` | rewrite `arc-baseline.toml` from the current violations instead of checking |
+| `--generate-baseline` | rewrite `arc-baseline.toml` instead of checking |
 | `--show-silenced` | list the allowed and frozen violations instead of counting them |
 
 The flags that shape the analysis are shared with the diagram and are written before the subcommand: `--manifest-path`, `--features`, `--all-features`, `--no-default-features`, `--include-tests`, `--include-reexports` and `--debug`.

@@ -155,6 +155,29 @@ impl Baseline {
         stale
     }
 
+    /// Every entry held under one of `rules`. Empty for a rule this baseline
+    /// froze nothing under, and empty as a whole when none of `rules` are
+    /// held here.
+    #[must_use]
+    pub fn entries_under<'a>(
+        &self,
+        rules: impl IntoIterator<Item = &'a str>,
+    ) -> Vec<BaselineEntry> {
+        rules
+            .into_iter()
+            .filter_map(|rule| self.entries.get(rule).map(|edges| (rule, edges)))
+            .flat_map(|(rule, edges)| {
+                edges.iter().map(move |(edge, symbols)| BaselineEntry {
+                    rule: rule.to_string(),
+                    key: ViolationKey {
+                        edge: edge.clone(),
+                        symbols: symbols.clone(),
+                    },
+                })
+            })
+            .collect()
+    }
+
     /// Number of frozen edges across all rules.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -168,12 +191,13 @@ impl Baseline {
 
     /// Writes the file from scratch, entries sorted deterministically. Two
     /// records of the same edge under the same rule become one entry
-    /// tolerating both symbol sets.
+    /// tolerating both symbol sets. Returns the number of entries actually
+    /// written, i.e. after that merge.
     ///
     /// # Errors
     /// Returns `BaselineError::Serialize` if encoding fails, or
     /// `BaselineError::Io` if the file cannot be written.
-    pub fn write(path: &Path, entries: &[BaselineEntry]) -> Result<(), BaselineError> {
+    pub fn write(path: &Path, entries: &[BaselineEntry]) -> Result<usize, BaselineError> {
         let mut merged: BTreeMap<(&str, &Edge), EdgeSymbols> = BTreeMap::new();
         for entry in entries {
             merged
@@ -181,6 +205,7 @@ impl Baseline {
                 .or_default()
                 .merge(&entry.key.symbols);
         }
+        let written = merged.len();
         let on_disk = OnDiskBaseline {
             config: OnDiskConfig {
                 version: FORMAT_VERSION,
@@ -198,7 +223,8 @@ impl Baseline {
         };
         let content = toml::to_string_pretty(&on_disk).map_err(BaselineError::Serialize)?;
         std::fs::write(path, format!("{HEADER}{content}"))
-            .map_err(|e| BaselineError::Io(path.to_path_buf(), e))
+            .map_err(|e| BaselineError::Io(path.to_path_buf(), e))?;
+        Ok(written)
     }
 }
 
@@ -466,6 +492,24 @@ mod tests {
     }
 
     #[test]
+    fn write_returns_the_written_count_after_merging() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("arc-baseline.toml");
+        let written = Baseline::write(
+            &path,
+            &[
+                entry("a rule", "a", "b", symbols(&["One"])),
+                entry("a rule", "a", "b", symbols(&["Two"])),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            written, 1,
+            "two records of the same edge under the same rule merge into one"
+        );
+    }
+
+    #[test]
     fn two_records_of_one_edge_become_one_entry_tolerating_both() {
         let (_tmp, baseline) = baseline_of(&[
             entry("a rule", "a", "b", symbols(&["One"])),
@@ -583,6 +627,21 @@ mod tests {
         let (_tmp_1, one_way) = baseline_of(&[a.clone(), b.clone()]);
         let (_tmp_2, other_way) = baseline_of(&[b, a]);
         assert_eq!(one_way.unmatched(&[]), other_way.unmatched(&[]));
+    }
+
+    #[test]
+    fn entries_under_is_empty_for_a_rule_with_nothing_held() {
+        let held = entry("held rule", "a", "b", symbols(&["One"]));
+        let (_tmp, baseline) = baseline_of(&[held]);
+        assert_eq!(baseline.entries_under(["some other rule"]), Vec::new());
+    }
+
+    #[test]
+    fn entries_under_returns_a_held_rules_entries() {
+        let held = entry("held rule", "a", "b", symbols(&["One"]));
+        let other = entry("other rule", "c", "d", symbols(&["Two"]));
+        let (_tmp, baseline) = baseline_of(&[held.clone(), other]);
+        assert_eq!(baseline.entries_under(["held rule"]), vec![held]);
     }
 
     #[test]

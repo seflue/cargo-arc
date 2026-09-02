@@ -16,7 +16,7 @@ use crate::graph::{ArcGraph, Reexports};
 use crate::layout::{LayoutIR, build_layout};
 use crate::model::{CrateExportMap, ModulePathMap, WorkspaceCrates};
 use crate::render::{RenderConfig, render};
-use crate::rules::baseline::Baseline;
+use crate::rules::baseline::{Baseline, BaselineError};
 use crate::rules::config::{ArcConfig, ConfigError};
 use crate::rules::engine::{CheckRun, check_rules};
 use crate::rules::format::{format_status, format_violations, plural};
@@ -99,7 +99,7 @@ pub struct CheckArgs {
     #[arg(long)]
     pub show_silenced: bool,
 
-    /// Rewrite `arc-baseline.toml` from the current violations instead of checking
+    /// Rewrite `arc-baseline.toml` instead of checking
     #[arg(long)]
     pub generate_baseline: bool,
 }
@@ -287,7 +287,8 @@ fn run_check(check_args: &CheckArgs, common: &CommonArgs) -> Result<Judgment> {
 
 /// `--generate-baseline`: refuse to write when an `except` pattern matches no
 /// module (it would silently freeze violations that pattern should instead be
-/// allowing), otherwise rewrite `baseline_path` from the current violations.
+/// allowing), otherwise rewrite `baseline_path` from the current violations,
+/// carrying over the entries of a rule at `Severity::Ignore` as they are.
 fn run_generate_baseline(
     graph: &ArcGraph,
     config: &ArcConfig,
@@ -311,13 +312,30 @@ fn run_generate_baseline(
         anyhow::bail!(message);
     }
 
-    let result = run
+    let mut result = run
         .check_all(config)
         .map_err(|overlap| overlap.in_file(rules_path))?;
-    Baseline::write(baseline_path, &result.baseline_entries)?;
+
+    let previous = match Baseline::load(baseline_path) {
+        Ok(baseline) => baseline,
+        Err(
+            err @ (BaselineError::Parse(..)
+            | BaselineError::Io(..)
+            | BaselineError::UnsupportedVersion(..)),
+        ) => {
+            eprintln!("cannot read the existing baseline, regenerating without it: {err}");
+            Baseline::empty()
+        }
+        Err(err) => return Err(err.into()),
+    };
+    result
+        .baseline_entries
+        .extend(previous.entries_under(config.ignored_rules()));
+
+    let written = Baseline::write(baseline_path, &result.baseline_entries)?;
     eprintln!(
         "wrote {} to {}",
-        plural(result.baseline_entries.len(), "violation"),
+        plural(written, "violation"),
         baseline_path.display()
     );
     Ok(())

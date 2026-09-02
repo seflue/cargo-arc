@@ -464,6 +464,16 @@ impl ArcConfig {
         }
     }
 
+    /// Names of the rules at `Severity::Ignore`: a run skips them, but a
+    /// baseline may still hold entries frozen under one from before it was
+    /// turned off.
+    pub fn ignored_rules(&self) -> impl Iterator<Item = &str> {
+        self.rules
+            .iter()
+            .filter(|rule| rule.severity == Severity::Ignore)
+            .map(|rule| rule.name.as_str())
+    }
+
     fn implicit_rule() -> Rule {
         Rule {
             name: IMPLICIT_RULE_NAME.to_owned(),

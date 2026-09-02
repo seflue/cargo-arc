@@ -1318,6 +1318,68 @@ fn checking_an_unsupported_baseline_version_is_refused_but_regeneration_rewrites
     );
 }
 
+/// Turning a rule to `ignore` takes it out of the checked run, but a
+/// regeneration must still keep what it had already frozen: the entries are
+/// only stale once the rule is checked again and does not confirm them.
+#[test]
+fn regenerating_after_a_rule_turns_to_ignore_keeps_its_frozen_entries() {
+    let (dir, rules_path) = isolated_rules_copy("arch_violation_workspace", "arc-rules.toml");
+    let rules_arg = format!("--rules={}", rules_path.display());
+    let baseline_path = dir.path().join("arc-baseline.toml");
+
+    let (code, stderr) = cargo_arc_check(
+        "arch_violation_workspace",
+        &[&rules_arg, "--generate-baseline"],
+    );
+    assert_eq!(code, 0, "generate should exit 0, stderr: {stderr}");
+    let baseline_before = std::fs::read_to_string(&baseline_path).unwrap();
+    assert!(
+        baseline_before.contains("no cycles in domain"),
+        "precondition: the cycle rule must have frozen something, baseline:\n{baseline_before}"
+    );
+
+    let rules_content = std::fs::read_to_string(&rules_path).unwrap();
+    std::fs::write(
+        &rules_path,
+        rules_content.replace(
+            "name = \"no cycles in domain\"\nscope = \"domain::**\"\nseverity = \"error\"",
+            "name = \"no cycles in domain\"\nscope = \"domain::**\"\nseverity = \"ignore\"",
+        ),
+    )
+    .unwrap();
+
+    let (code, stderr) = cargo_arc_check(
+        "arch_violation_workspace",
+        &[&rules_arg, "--generate-baseline"],
+    );
+    assert_eq!(
+        code, 0,
+        "the second generate should exit 0, stderr: {stderr}"
+    );
+    let baseline_after = std::fs::read_to_string(&baseline_path).unwrap();
+
+    assert_eq!(
+        baseline_before, baseline_after,
+        "an ignored rule's frozen entries must survive regeneration"
+    );
+
+    let entries_written = baseline_after.matches("[[violations]]").count();
+    let wrote_line = stderr
+        .lines()
+        .find(|line| line.starts_with("wrote "))
+        .unwrap_or_else(|| panic!("expected a wrote line in stderr:\n{stderr}"));
+    let wrote_count: usize = wrote_line
+        .strip_prefix("wrote ")
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("could not parse the wrote line: {wrote_line:?}"));
+    assert_eq!(
+        wrote_count, entries_written,
+        "the wrote line must count the entries actually written to the file, not the \
+         violations the run collected before merging"
+    );
+}
+
 /// A workspace without a rules file can freeze its cycle stock: the implicit
 /// rule carries the baseline, where the earlier fallback path had none.
 #[test]
@@ -1447,6 +1509,49 @@ fn test_a_frozen_edge_turns_red_when_it_gains_a_symbol() {
     drop(dir);
 }
 
+/// A fixed violation must drop out of the next regeneration, and the entries
+/// untouched by the fix must stay exactly as they were.
+#[test]
+fn regenerating_after_a_fix_drops_only_what_the_fix_touched() {
+    let (_dir, manifest) = writable_fixture_copy("arch_violation_workspace");
+    let root = manifest.parent().unwrap();
+    let rules_arg = format!("--rules={}", root.join("arc-rules.toml").display());
+    let baseline_path = root.join("arc-baseline.toml");
+
+    let (code, stderr) = cargo_arc_check_at(&manifest, &[&rules_arg, "--generate-baseline"]);
+    assert_eq!(code, 0, "generate should exit 0, stderr: {stderr}");
+    let baseline_before = std::fs::read_to_string(&baseline_path).unwrap();
+    assert!(
+        baseline_before.contains("from = \"domain::service\"\nto = \"infra::db\""),
+        "precondition: the fixed edge must start out frozen, baseline:\n{baseline_before}"
+    );
+
+    let service = root.join("domain/src/service.rs");
+    let source = std::fs::read_to_string(&service).unwrap();
+    std::fs::write(&service, source.replace("use infra::db;\n", "")).unwrap();
+
+    let (code, stderr) = cargo_arc_check_at(&manifest, &[&rules_arg, "--generate-baseline"]);
+    assert_eq!(
+        code, 0,
+        "the second generate should exit 0, stderr: {stderr}"
+    );
+    let baseline_after = std::fs::read_to_string(&baseline_path).unwrap();
+
+    assert!(
+        !baseline_after.contains("from = \"domain::service\"\nto = \"infra::db\""),
+        "the fixed edge must be gone, baseline:\n{baseline_after}"
+    );
+    for line in baseline_before
+        .lines()
+        .filter(|l| l.contains("cycle_a") || l.contains("cycle_b"))
+    {
+        assert!(
+            baseline_after.contains(line),
+            "untouched cycle entry {line:?} must survive unchanged, baseline:\n{baseline_after}"
+        );
+    }
+}
+
 #[test]
 fn test_generate_baseline_refuses_dead_except() {
     let dir = tempfile::tempdir().unwrap();
@@ -1486,6 +1591,51 @@ except = [
     assert!(
         !baseline_path.exists(),
         "no baseline file should be written when generation is refused"
+    );
+}
+
+/// [[id:ca-0460]] gave up on halting the run over an unreadable baseline;
+/// `--generate-baseline` writing over it must not reintroduce that halt.
+#[test]
+fn generate_baseline_tolerates_an_unreadable_existing_baseline() {
+    let dir = tempfile::tempdir().unwrap();
+    let rules_path = dir.path().join("arc-rules.toml");
+    std::fs::write(
+        &rules_path,
+        r#"
+[config]
+version = 1
+
+[[rules]]
+type = "forbidden-dependency"
+name = "no infra in domain"
+from = "domain::**"
+to = "infra::**"
+severity = "ignore"
+"#,
+    )
+    .unwrap();
+    let rules_arg = format!("--rules={}", rules_path.display());
+    let baseline_path = dir.path().join("arc-baseline.toml");
+    std::fs::write(&baseline_path, "this is not valid { toml [").unwrap();
+
+    let (code, stderr) = cargo_arc_check(
+        "arch_violation_workspace",
+        &[&rules_arg, "--generate-baseline"],
+    );
+    assert_eq!(
+        code, 0,
+        "an unreadable existing baseline must not stop regeneration, stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains(&baseline_path.display().to_string()),
+        "stderr should name the unreadable baseline, stderr: {stderr}"
+    );
+
+    let (code, stderr) = cargo_arc_check("arch_violation_workspace", &[&rules_arg]);
+    assert_ne!(
+        code, 2,
+        "the ordinary run afterwards must still be able to judge, stderr: {stderr}"
     );
 }
 
