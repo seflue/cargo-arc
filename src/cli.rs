@@ -90,6 +90,9 @@ pub enum Command {
 }
 
 #[derive(Parser)]
+// The shared flags sit on `arc`, so clap's own usage line for a misplaced one
+// would send the reader looking for it under `check`.
+#[command(override_usage = "cargo arc [SHARED OPTIONS] check [OPTIONS]")]
 pub struct CheckArgs {
     /// Path to rules file (default: arc-rules.toml next to the manifest)
     #[arg(long)]

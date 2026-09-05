@@ -38,6 +38,7 @@ cargo arc check --generate-baseline
 ```
 
 This writes `arc-baseline.toml` beside the rules file (or, without one, beside `Cargo.toml`) and judges nothing.
+It prints one line to stderr saying how many violations it froze, and nothing to stdout.
 Commit it, put `cargo arc check` in CI, and every new cycle is a red build.
 Nothing here needs a rules file.
 
@@ -168,6 +169,13 @@ The baseline says the opposite of a warning: this much exists, it is expected to
 `--rules <path>` points it elsewhere, and `arc-baseline.toml` is then looked up beside that file.
 A missing rules file is the implicit run described above; a path given with `--rules` that does not exist is an error.
 A missing baseline file means nothing is frozen.
+
+Neither file has to sit in the workspace under test.
+`--rules /tmp/probe.toml` reads the rules from there, `--generate-baseline` writes `/tmp/arc-baseline.toml` beside them, and the workspace keeps neither file.
+Two rules files in one directory share the one `arc-baseline.toml` there, so a copy made to try a rule out reads the entries of the original and reports its own violations as frozen.
+
+`--manifest-path` selects the workspace, not a part of it.
+Pointed at a member crate's `Cargo.toml`, it analyses the whole workspace that crate belongs to.
 
 ```toml
 [config]
@@ -493,6 +501,10 @@ Exit codes are flat:
 | 1 | a rule reported an error, or a diagnostic was denied |
 | 2 | the run reached no judgment (bad rules file, analysis failure) |
 
+A denied diagnostic is a judgment and exits 1, although its block is headed `configuration` and its status line reads `config FAILED`.
+Code 2 is for the run that never got that far: a rules file that does not parse, a `--rules` path that does not exist, a `cargo metadata` that fails.
+`--generate-baseline` exits 0 whatever it froze.
+
 If you want separate red builds for separate concerns, use two CI steps with a rules file each.
 There is no bitset.
 
@@ -504,11 +516,31 @@ There is no bitset.
 | `--generate-baseline` | rewrite `arc-baseline.toml` instead of checking |
 | `--show-silenced` | list the allowed and frozen violations instead of counting them |
 
-The flags that shape the analysis are shared with the diagram and are written before the subcommand: `--manifest-path`, `--features`, `--all-features`, `--no-default-features`, `--include-tests`, `--include-reexports` and `--debug`.
+The subcommand has no others.
+The flags `check` shares with the diagram are written before it: `--manifest-path`, `--features`, `--all-features`, `--no-default-features`, `--include-tests`, `--include-reexports` and `--debug`.
 
 ```bash
 cargo arc --manifest-path crates/Cargo.toml --include-reexports check
 ```
+
+The rest of what `cargo arc --help` lists belongs to the diagram.
+`check` accepts them and ignores them.
+`--externals` before `check` prints the same report as a run without it.
+
+#### What the feature flags change
+
+`--features`, `--all-features` and `--no-default-features` decide which optional dependencies cargo resolves.
+An optional dependency whose feature is off is not resolved, and no rule sees it.
+
+They do not decide which source is read.
+An import counts whatever `#[cfg(feature = "…")]` stands over it, so `--no-default-features` leaves the imports of a default feature in the graph.
+A workspace whose features exclude one another carries the imports of all of them at once.
+
+`--features` does one thing more.
+Only the workspace members that declare one of the named features are analysed, together with the members those reach through their dependencies.
+A rule whose pattern names one of the crates left out reports `unmatched-pattern`.
+A feature name no crate in the workspace declares ends the run at exit 2, refused by `cargo metadata`.
+`--all-features` and `--no-default-features` leave the set of analysed crates alone.
 
 ## In CI
 
