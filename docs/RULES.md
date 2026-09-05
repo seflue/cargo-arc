@@ -1,19 +1,44 @@
 # Architecture rules
 
-`cargo arc check` holds a workspace against rules you write down in `arc-rules.toml`: which crate may depend on which, where circular dependencies are unacceptable, which single dependency must never appear.
-It reports what it finds and exits non-zero on a violation, so it belongs in CI next to the test suite.
+<!-- TOC -->
+
+- [Adopting rules](#adopting-rules)
+  - [The run before you have a file](#the-run-before-you-have-a-file)
+  - [Your first rule](#your-first-rule)
+  - [Nodes a rule leaves out](#nodes-a-rule-leaves-out)
+  - [Introducing a rule the workspace already breaks](#introducing-a-rule-the-workspace-already-breaks)
+- [Reference](#reference)
+  - [Where the files live](#where-the-files-live)
+  - [The `[config]` table](#the-config-table)
+  - [Patterns](#patterns)
+  - [`layers`](#layers)
+  - [`forbidden-dependency`](#forbidden-dependency)
+  - [`no-cycles`](#no-cycles)
+    - [How bad a tangle is](#how-bad-a-tangle-is)
+  - [Severity](#severity)
+  - [`except`](#except)
+  - [Diagnostics](#diagnostics)
+  - [The baseline](#the-baseline)
+  - [What a run prints](#what-a-run-prints)
+  - [Flags](#flags)
+    - [What the feature flags change](#what-the-feature-flags-change)
+
+<!-- /TOC -->
+`cargo arc check` evaluates a workspace against the rules you write in `arc-rules.toml`.
+Rules sort your crates and modules into layers, forbid circular dependencies between modules, or ban a dependency you name.
+`check` reports the violations it finds and exits non-zero on any you have not accepted, so you can run it in CI next to the test suite.
 
 ```bash
 cargo arc check
 ```
 
-Terms used here are defined in [GLOSSARY.md](GLOSSARY.md).
-The rules file this document quotes from is [`arc-rules.example.toml`](arc-rules.example.toml), complete and ready to copy once the crate names in it are yours.
+## Adopting rules
 
-## The run before you have a file
+[`arc-rules.example.toml`](arc-rules.example.toml) is the file this section arrives at.
 
-A workspace without an `arc-rules.toml` is not unchecked.
-`cargo arc check` falls back to a single implicit rule named `no cycles` that forbids circular dependencies anywhere:
+### The run before you have a file
+
+By default `cargo arc` forbids circular dependencies between modules anywhere in the workspace:
 
 ```
 error[no-cycles]: no cycles
@@ -31,24 +56,23 @@ no cycles FAILED: 1 errors, 0 warnings, 0 allowed, 0 frozen
 config ok: 0 errors, 0 warnings
 ```
 
-A workspace that has grown for years is unlikely to come out clean, and that is what the baseline is for: it freezes what exists today so the run turns green, and reports everything added after it.
+An existing workspace might have circular dependencies, and some of those will not be removed in the foreseeable future.
+The baseline freezes the violations that exist today, so a check succeeds and reports only what is added after it.
 
 ```bash
 cargo arc check --generate-baseline
 ```
 
-This writes `arc-baseline.toml` beside the rules file (or, without one, beside `Cargo.toml`) and judges nothing.
-It prints one line to stderr saying how many violations it froze, and nothing to stdout.
-Commit it, put `cargo arc check` in CI, and every new cycle is a red build.
-Nothing here needs a rules file.
+This writes an `arc-baseline.toml` beside the rules file (or, without one, beside `Cargo.toml`).
+It only reports how many violations it froze.
+Every new cycle is reported.
 
-## Your first own rule
+### Your first rule
 
 Write one rule, run, read what it says, freeze what you accept, then write the next one.
-The point of the round is the reading: a run that generates a baseline over five rules at once freezes a pile nobody has looked at, and a pile nobody has looked at does not shrink.
+A run that generates a baseline over several rules at once freezes their violations before anyone has decided about any of them, and a baseline nobody has read does not shrink.
 
-Start with the shape of the workspace.
-A `layers` rule states the order of your crates and gets one line per position:
+A `layers` rule states the order of your crates, one entry in `layers` per position:
 
 ```toml
 [[rules]]
@@ -58,11 +82,11 @@ layers = [["cli", "storage"], "services", "core"]
 direction = "top-down"
 ```
 
-The list runs from the top layer to the bottom one, so a dependency may only point at a later entry.
+`direction = "top-down"` makes the first entry the top layer, so a dependency may only point at a later one.
 `cli` and `storage` share a position because neither sits above the other, and the rule then says nothing about dependencies between them.
 
-That order is your assertion about the architecture, and it is the part no generator can supply.
-Run it and read what comes back:
+`cargo arc` works out no order of its own, so the list is yours to write.
+Run it:
 
 ```
 error[layers]: architecture layers
@@ -70,8 +94,8 @@ error[layers]: architecture layers
     --> core/src/model.rs:8
 ```
 
-Two things can be true of a finding: it is a mistake in the code, or it is a mistake in the rule.
-Fixing the rule is the honest answer whenever the code is right, and it happens most often in the first round.
+A reported violation means either the code is wrong or the rule is.
+Where the code is right, change the rule.
 What is left is debt.
 Freeze it:
 
@@ -80,8 +104,8 @@ cargo arc check --generate-baseline
 ```
 
 Then the next rule.
-`layers` alone does not finish the job: a dependency that points downward passes it, however wrong it is.
-Here `storage` is allowed to reach into `services` by layer order, and must not:
+A `layers` rule permits every dependency that points downward, including the ones you do not want.
+Here the layer order allows `storage` to depend on `services`, and it must not:
 
 ```toml
 [[rules]]
@@ -91,9 +115,7 @@ from = "storage"
 to = "services"
 ```
 
-A rules file that stops after `layers` is the file an architect tends to consider complete, and it is not.
-
-The last rule replaces the implicit one you started with:
+The last rule replaces the one you started with by default:
 
 ```toml
 [[rules]]
@@ -102,17 +124,17 @@ name = "no cycles"
 scope = "**"
 ```
 
-As soon as the file states a `no-cycles` rule of its own, the implicit rule is gone, including the wide scope it carried.
-Keeping the name `no cycles` also keeps the baseline entries written under the implicit rule: they are keyed by rule name.
+As soon as the file states a `no-cycles` rule of its own, the default rule is gone.
+Keeping the name `no cycles` also keeps the baseline entries written under the default rule, because entries are keyed by rule name.
 
-## Saying that a rule is complete
+### Nodes a rule leaves out
 
 A `layers` rule judges the nodes its positions name, and nothing else.
-Where such a node belongs is never asked, and a dependency between two of them is skipped without a word, so the run stays green over both.
+A node no position names is not sorted, and a dependency between two such nodes passes unreported.
 A dependency that only runs over such a node is checked, under the pair at its ends.
 
-Sometimes the silence is a mistake rather than a statement: a position was meant to catch that node, and it was left out by accident.
-Say so with `exhaustive = true`, and the same silence becomes a report:
+A position may have been meant to catch that node and left it out by accident.
+Say so with `exhaustive = true`, and the run names the node instead:
 
 ```toml
 [[rules]]
@@ -129,14 +151,14 @@ error: configuration
     in rule "architecture layers", in no layer, so its own place goes unchecked
 ```
 
-What the claim covers follows what the rule addresses, not the whole workspace by default.
-A pattern without `::` names a crate, and a rule carrying one claims every workspace crate: the rule above sorts `cli`, `storage`, `services` and `core`, and now anything else is a gap.
+A pattern without `::` names a crate, and a rule carrying one claims every workspace crate.
+The rule above sorts `cli`, `storage`, `services` and `core`, so anything else is a gap.
 A pattern with `::` names a module, and a rule carrying one claims every module of the crates its module patterns reach, saying nothing about the other crates and nothing about the crate nodes themselves.
 A rule that mixes both kinds of pattern makes both claims side by side.
 
-Only the topmost unsorted node of a containment chain is reported: a crate left out entirely is one gap, not one per module underneath it.
-And each rule is judged on its own.
-A crate one exhaustive rule places is still reported against a second exhaustive rule that leaves it out, because nothing pools the rules together.
+Only the topmost unsorted node of a containment chain is reported.
+A crate left out entirely is one gap, not one per module underneath it.
+A crate one exhaustive rule places is still reported against a second exhaustive rule that leaves it out.
 
 If the node was forgotten, put it in a layer.
 If it is outside the architecture on purpose (build tooling, examples, benchmarks), say so in the diagnostic:
@@ -147,19 +169,20 @@ unlayered-node = { level = "deny", except = ["xtask"] }
 ```
 
 The `except` on a rule does not reach the diagnostics, which is why this list exists separately.
-What does not work is inventing a layer for `xtask`: that sorts it into an order it has no place in, and the rule then asserts something about it.
-The names here are qualified node names, and an excepted node takes the modules below it with it, the way a pattern does.
+Inventing a layer for `xtask` does not work.
+It puts the crate in the order, and every dependency between it and a node in another position is then judged against that order.
+The names here are patterns like any other, so an excepted node takes the modules below it with it.
 
-`exhaustive` and the catch-all layer `*` are refused together when the file loads: the catch-all already holds every node the rule's other positions leave, so the claim would be satisfied by construction and check nothing.
-
-## Debt goes in the baseline, not on `warn`
+### Introducing a rule the workspace already breaks
 
 `severity = "warn"` looks like the way to introduce a rule gently, and it is the wrong tool.
-A warning freezes nothing, so nothing can shrink; it does not stop new violations either, it just collects them quietly.
-And `warn` already means something: a rule the architect wants to advise rather than block.
-Using it as an introduction stage gives one word two meanings, and afterwards no status line can tell an intended `WARN` from an unfinished rollout.
+A warning freezes nothing, so there is no recorded amount to shrink.
+It does not stop new violations either.
+They are printed beside the old ones and the check still succeeds.
+`warn` marks a rule the architect wants to advise rather than block.
+Using it as an introduction stage gives one word two meanings, and a `WARN` line then no longer says whether the rule is advice or a rule you are still introducing.
 
-The baseline says the opposite of a warning: this much exists, it is expected to shrink, and anything beyond it is red today.
+The baseline records how much exists, expects it to shrink, and reports anything beyond it as an error.
 
 ## Reference
 
@@ -176,6 +199,11 @@ Two rules files in one directory share the one `arc-baseline.toml` there, so a c
 
 `--manifest-path` selects the workspace, not a part of it.
 Pointed at a member crate's `Cargo.toml`, it analyses the whole workspace that crate belongs to.
+Without `--rules`, both files are looked up beside the manifest the flag names, so pointing at a member crate looks for `arc-rules.toml` in that crate's directory and not in the workspace root.
+Most member crates have no rules file there, and the run then falls back to the implicit check over the whole workspace: the rules in the workspace root are not read.
+Pass `--rules` to keep them.
+
+### The `[config]` table
 
 ```toml
 [config]
@@ -201,21 +229,25 @@ A pattern names crates and modules by their path:
 | `core*` | every crate starting with `core`, and every module in each |
 | `**` | everything in the workspace |
 
-A crate name and a module path both cover what they name and every module in it.
-`::**` drops the name itself and keeps the modules in it.
-`::*` keeps only the direct children.
+There is no pattern for a crate on its own.
+`core` takes its modules with it, and `core::**` leaves the crate out.
+An `except` on a crate name therefore covers every dependency between the modules inside it.
 Inside one segment, `*` stands for any run of characters, including none.
 It may sit anywhere in the segment and appear more than once, but never crosses a `::`.
 So `core*` names every crate that starts with `core`, and `*_test` every one that ends with `_test`.
+Any segment of a path may hold one, so `core::*::error` matches `core::model::error` and `core::api::error`.
 A pattern always starts at a crate name; there is no `crate::` prefix, because a rules file applies to the workspace and not from inside one crate.
-A `*` anywhere outside a `layers` position is an ordinary pattern and matches every crate, together with its modules.
-Only a whole `layers` position consisting of `*` is the catch-all layer, described under [`layers`](#layers).
+That first segment is the package name as `Cargo.toml` writes it, so a crate named `data-store` is `data-store` in a pattern and not `data_store`.
+Outside a `layers` position, `*` is an ordinary pattern and matches every crate together with its modules.
+A `layers` position may hold `*` only alone, and it is then the catch-all layer, described under [`layers`](#layers).
+
+A pattern reaches the crates under analysis and the modules in them, and nothing else.
+A crate the workspace depends on lies outside that reach, so `to = "tokio"` matches nothing.
 
 A crate has the dependencies its `Cargo.toml` declares, and a module has the imports written in its own file.
 `storage` covers those, and `storage::**` does not, because it leaves out `storage` itself.
-Both cover the modules in it.
-The same distinction holds for a wildcard pattern.
-`storage*` covers the dependencies of every crate it matches, and `storage*::**` does not.
+Both cover the modules of `storage`.
+`storage*` and `storage*::**` divide the same way.
 
 A pattern that matches nothing fails the run by default (`unmatched-pattern`, see [Diagnostics](#diagnostics)).
 A rule built from it checks nothing and would otherwise leave the workspace green.
@@ -236,12 +268,13 @@ Every entry in `layers` is one position, holding either a pattern or a list of p
 - `top-down`: the list starts at the top layer, dependencies point at later entries.
 - `bottom-up`: the list starts at the bottom layer, dependencies point at earlier entries.
 
-`exhaustive` is optional and defaults to `false`; setting it makes the rule claim to sort everything it addresses, described under [Saying that a rule is complete](#saying-that-a-rule-is-complete).
+`exhaustive` is optional and defaults to `false`; setting it makes the rule claim to sort everything it addresses, described under [Nodes a rule leaves out](#nodes-a-rule-leaves-out).
 
 Two nodes sharing a position are unordered, so a dependency between them passes.
 
-What the rule holds against the order is the dependency, whether it is written as one edge or runs over other nodes.
-A node no layer matches does not break it: if `services` reaches `core` through an unlayered `util`, that is the dependency `services → core`, reported under the pair with the edges it runs through below it.
+What the rule judges against the order is the dependency, whether it is written as one edge or runs over other nodes.
+A node no layer matches does not break the rule.
+If `services` reaches `core` through an unlayered `util`, the rule reports the dependency `services → core` and lists the edges it runs through underneath it.
 
 ```
 error[layers]: architecture layers
@@ -252,8 +285,9 @@ error[layers]: architecture layers
       --> util/src/lib.rs:7
 ```
 
-The pair is also what silences it: an `except` or a baseline entry on `services → core` covers the dependency however it runs today, and it stays covered when tomorrow it runs over a different node.
-The walk stops at every layered node, because the order already answers that pair, and an edge that `except` or the baseline covers connects two layered nodes and is therefore never one of the edges such a dependency runs through.
+An `except` or a baseline entry names the pair `services → core`, and that covers the dependency however it runs, including when it later runs over a different node.
+The walk stops at every layered node, because the order judges that pair on its own.
+Such an entry names two layered nodes, so a silenced edge is never a step of a longer route.
 A dependency with an endpoint no layer matches is still not checked, and neither is the place of that node itself; without `exhaustive = true` nothing says which nodes those are.
 
 A position written as the bare string `"*"`, or the single-element list `["*"]`, is the catch-all layer.
@@ -262,12 +296,13 @@ Its place in the list is its rank like any other position.
 A rule may carry at most one catch-all, and it must stand alone in its position.
 Both are refused when the rules file loads.
 A catch-all whose rest is empty, because the rule's other positions already cover the whole workspace, is reported as `unmatched-pattern`, the same as a pattern matching nothing.
-A rule carrying a catch-all may not also be `exhaustive`: both together are refused when the file loads, because the catch-all would already satisfy the claim and check nothing.
+A rule carrying a catch-all may not also be `exhaustive`, and the file is refused when it loads.
+The catch-all holds every node the other positions leave, so the claim would check nothing.
 
 A `layers` rule orders positions against each other and needs at least two; with fewer, it is refused when the file loads.
 Each position needs at least one pattern to hold; an empty one is refused too.
 
-Two ordinary positions of one rule matching the same node fail the run outright, naming the node and both positions, instead of silently keeping whichever position resolved it last.
+Two ordinary positions of one rule matching the same node fail the run, naming the node and both positions.
 
 The shortest useful `layers` rule states a single boundary without sorting the rest of the workspace first:
 
@@ -284,6 +319,26 @@ A dependency the other way, or between any two crates that share the catch-all, 
 
 ### `forbidden-dependency`
 
+Say `storage::pool` imports from `services::worker`:
+
+```
+storage::pool ──► services::worker
+```
+
+This rule stays quiet:
+
+```toml
+[[rules]]
+type = "forbidden-dependency"
+name = "no services in the cache"
+from = "storage::cache"
+to = "services"
+```
+
+`storage::cache` covers that module and the modules below it, and `storage::pool` is neither.
+
+This rule reports the dependency:
+
 ```toml
 [[rules]]
 type = "forbidden-dependency"
@@ -292,7 +347,15 @@ from = "storage"
 to = "services"
 ```
 
-Every dependency from a node matching `from` to a node matching `to` is a violation, whether or not any layer rule would allow it.
+A crate name covers every module in the crate, so `storage::pool` matches `from` while `services::worker` matches `to`.
+
+A node matching `from` that depends directly on a node matching `to` is a violation, whether or not a `layers` rule would allow it.
+Every import and manifest entry between the same two nodes belongs to that one violation.
+A dependency that reaches `services` over a module in between is not reported, and `layers` is the only rule that follows a route like that.
+
+`from` and `to` hold one pattern each, and a node may match both.
+`from = "**"` matches every node in the workspace, the crate named in `to` and its modules included.
+Its own modules match `from`, so the rule also reports dependencies from one module of that crate to another.
 
 Like every rule, it judges production dependencies only.
 An import written under `#[cfg(test)]` or in a build script is not one, and neither is a dev-dependency.
@@ -306,17 +369,40 @@ name = "no cycles"
 scope = "**"
 ```
 
-`scope` is the pattern the search runs inside; only dependencies between two nodes in scope take part.
+`scope` is the pattern the search runs inside.
+An edge takes part when the pattern matches both of its ends.
+A cycle running through a module the pattern leaves out is therefore never found.
+`scope` holds one pattern and a pattern has no negation, so a scope over the whole workspace except one crate cannot be written.
+An [`except`](#except) naming that crate on both sides does that job instead, because it takes every dependency inside the crate out before the search.
+
 Violations are reported per tangle.
-A tangle holding exactly one cycle is written out in full, with every one of its edges listed below it; removing any single one of them breaks the cycle.
-A tangle holding several gets the ranked feedback arcs, stated in prose as "every circular dependency contains at least one of these N edges" (N being the edge count; "contains this edge" when N is 1).
-An edge appears with every counted cycle it lies on, not only with the shortest one it stands in for.
+A tangle holding one cycle prints a `cycle:` line naming its modules in order, then one row per edge on it.
+Removing any one of those edges breaks the cycle.
+
+A tangle holding more than one cycle prints no `cycle:` line.
+It prints its feedback arcs, the edges to remove together, one row each:
+
+```
+error[no-cycles]: no cycles
+    tangle 1/1: core (5 modules, 3 cycles)
+      edges, most cycles first:
+        model -> ids  (on 2 cycles, 1 symbol)
+        model -> text (on 1 cycle, 1 symbol)
+      every circular dependency contains at least one of these 2 edges
+```
+
+Where no cycle in the tangle is frozen, removing every edge in the list leaves no circular dependency at all, counted or not.
+The closing sentence reads `every circular dependency contains this edge` for a list of one.
+It is left out where every listed edge lies on exactly one cycle and the list is as long as the cycle count, because the rows already say it; the heading then reads `edges:` instead.
+The cycle count on a row is every counted cycle running through that edge, not only the one the edge itself contributed to the count.
 
 A tangle whose edges are all frozen keeps its whole block, marked `(frozen)` on the tangle line (`tangle 1/1 (frozen): ...`); it only shows up under `--show-silenced`.
 
-A tangle mixing a frozen cycle with counted ones lists only the counted feedback edges: the frozen cycle's own edges stay in the graph, so an unlisted cycle running through them can still stand once every listed edge is gone. Clearing the list ends the tangle's findings, not the tangle.
+A tangle mixing a frozen cycle with counted ones lists only the arcs that break the counted cycles.
+The frozen cycle's edges stay in the graph, so the block closes with `an unlisted cycle running through these edges can still stand once every listed edge is gone` in place of the closing sentence above.
+Remove every listed edge and run again to see whether an unlisted cycle is left.
 
-Crate-level dependencies never take part in the search: a cycle between crates is a thing Cargo already refuses, and what is left runs between modules.
+The search reads module edges only, so a dependency declared in a `Cargo.toml` is never part of a reported tangle.
 A dependency whose imports are all `pub use` counts only under `--include-reexports`: republishing a name is not a dependency on it, and the idiomatic re-export cycles that arise from it are not violations.
 
 A file without a `no-cycles` rule is checked by an implicit one named `no cycles` with scope `**`.
@@ -325,18 +411,18 @@ While the implicit rule is in play its name is reserved: a rule of another type 
 
 #### How bad a tangle is
 
-The numbers a tangle is reported with run along three axes, and no single one of them carries the other two:
+A tangle is reported with three numbers, and none of them follows from the other two:
 
-| Axis | Number | Question |
-|------|--------|----------|
-| Extent | modules | how much code is stuck in it |
-| Intensity | cycles | how tightly it is woven |
-| Feedback arcs | set size | how many edges have to go |
+| Number | Question |
+|--------|----------|
+| modules | how much code is stuck in it |
+| cycles | how many circular dependencies run inside it |
+| edges in the list | how many places have to change |
 
 None of the three is a cost estimate, and the arc count least of all.
-Greedy cover makes it an upper bound rather than the minimum, and the edges are not equal.
+The edges it counts are not equal.
 Dropping a re-export that only forwards is close to free; inverting a dependency is not.
-It says how many places have to be touched, not how much work that is.
+The count says how many places have to be touched, not how much work that is.
 With a frozen cycle in the mix, the cycle count covers only the counted ones.
 
 ### Severity
@@ -345,8 +431,6 @@ With a frozen cycle in the mix, the cycle count covers only the counted ones.
 
 A reported violation of an `error` rule fails the run; under `warn` it is reported and counted but the run stays green.
 `ignore` switches the rule off entirely: it is never checked, gets no status line, and its baseline entries are left alone.
-
-Rule names are unique across all types, because a baseline entry names its rule and not its type.
 
 ### `except`
 
@@ -365,16 +449,38 @@ except = [
 
 Both sides are patterns, so the entry allows every dependency from one side to the other.
 Here that is any module in `storage::migrations` reaching any module in `services::schema`.
-Widening one costs more than widening a rule.
-The allowance stays, and `unmatched-except` reports only an entry that matches no module at all.
+An entry allows the one direction it names, and the dependency back needs its own entry.
+The two sides may hold the same pattern, and the entry then allows every dependency between the modules it matches, in either direction.
+With a crate name on both sides that is every dependency inside the crate, and under `no-cycles` no cycle within it is left to find.
+An entry wider than the dependency you meant to allow is never reported.
+`unmatched-except` fires when one of the two patterns matches no module, and says nothing about how much an entry that does match allows.
+An entry may also name modules the rule never reaches, outside a `no-cycles` rule's `scope` or outside the `from` and `to` of a `forbidden-dependency`.
+It allows nothing there and is not reported, because the diagnostic asks whether the pattern matches a module in the workspace, not whether the rule ever asks about that module.
 `reason` is documentation and is never evaluated.
 Exceptions belong to the rule they are written on; there is no shared list.
 
 Under `no-cycles` an excepted dependency is removed before the search, so a cycle running through it never forms in the first place.
 Under the other rule types the violation is found and then allowed.
-Either way it counts as *allowed*, not as *frozen*: an exception is meant to stay, a baseline entry is meant to go.
+Both count as *allowed* rather than *frozen*, because an exception is meant to stay and a baseline entry is meant to go.
+Under `no-cycles` only an excepted edge that lay inside a tangle is counted, and one removed elsewhere raises no count at all.
 
-An `except` whose pattern matches no module is reported (`unmatched-except`), and `--generate-baseline` refuses to write while one exists: it would freeze the very violations that entry is supposed to allow.
+The entry takes the same form on a `no-cycles` rule:
+
+```toml
+[[rules]]
+type = "no-cycles"
+name = "no cycles"
+scope = "**"
+except = [
+  { from = "core::keywords", to = "core::writer", reason = "the table is generated from the writer" },
+]
+```
+
+Excepting either edge of a mutual pair ends the cycle between the two modules, so one entry is enough, and the one you write is the dependency you mean to keep.
+Writing both directions takes both edges out of the search, and the status line then counts two allowed instead of one.
+Deleting either entry leaves the pair acyclic all the same.
+
+`--generate-baseline` refuses to write while an `unmatched-except` stands, even at level `allow`, because it would freeze the very violations that entry is supposed to allow.
 
 ### Diagnostics
 
@@ -396,12 +502,12 @@ unmatched-pattern = "deny"
 | `unmatched-except` | `warn` | an `except` pattern matching no module |
 | `unmatched-pattern` | `deny` | a rule pattern matching no module, or a catch-all layer whose rest is empty |
 
-`unlayered-node` and `unmatched-pattern` deny where the others warn because of what their failure looks like: a rule whose pattern misses checks nothing, and an unsorted node is never asked where it belongs; both leave the run green.
-`unlayered-node` also only ever fires for a rule that asked for it.
+`unlayered-node` and `unmatched-pattern` deny where the others warn because both failures leave the run green: a rule whose pattern misses checks nothing, and an unsorted node is never asked where it belongs.
+`unlayered-node` also fires only for a rule that carries `exhaustive = true`.
 A dead `except` only allows too much, and the violation it should have allowed shows up on its own.
 
 Only `unlayered-node` takes the table form with `except`; the others are written as a level alone.
-The names listed there are qualified node names, deliberately outside the architecture, and each takes the modules below it with it.
+The names listed there are patterns like any other, so each takes the modules below it with it and a wildcard in one reaches the same nodes it would in a rule.
 
 Diagnostics do not belong to any single rule and are counted on their own status line:
 
@@ -426,27 +532,36 @@ symbols = ["Pool"]
 
 `version` is the file format version and is `1`; a different number halts the run when the file loads.
 An entry freezes one dependency edge under one rule, plus the symbols observed crossing it.
-`bare = true` marks an edge that also carries a reference the resolver could not name.
+Rule names are unique across all types, because an entry names its rule and not its type.
+`bare = true` marks an edge that also carries an import naming no symbol.
 A cycle has no entry of its own: it is frozen when every one of its edges is.
 A tangle frozen this way is still reported as a tangle: freezing every one of its edges silences its block, it does not remove it.
 
-Freezing the symbols is what keeps a frozen edge from becoming a licence.
-Once the edge carries something new, it is reported again:
+An entry tolerates only the symbols it names, so a frozen edge does not permit whatever crosses it later.
+Once the edge carries a symbol the entry does not name, it is reported again:
 
 ```
   = core::writer → core::keywords
     frozen for RESERVED, TYPES; now also carries MODIFIERS
 ```
 
-The price is that renaming a frozen symbol turns the entry red, and the answer is to regenerate.
-Shrinking is reported the other way round, as an `unmatched-baseline-entry`, so the file can be narrowed as the debt goes down.
+Renaming a frozen symbol makes the run report the edge again, and the fix is to regenerate the baseline.
+An edge that carries fewer symbols than its entry names is reported as an `unmatched-baseline-entry`, so the file can be narrowed as the debt goes down.
+
+Moving an edge from the baseline into an `except` means deleting its entry.
+Left standing, the entry freezes the same edge as before, so removing the `except` again leaves the run green: the edge falls back to *frozen* instead of being reported.
+The entry confirms nothing any more and comes back as an `unmatched-baseline-entry`.
+That diagnostic is `warn`, so the run stays green and the line sits among the other warnings.
+Those warnings are the cleanup list, one decision each: kept as an exception, or fixed in the code.
+Regenerating then drops the entry, and under `no-cycles` it can drop more entries than the edges you excepted, because an excepted edge is gone before the search, so a node it held in a tangle leaves with it and that node's own entries are no longer confirmed either.
+With the exception as the only change, regenerating never adds an entry, because it writes one per violation the run still finds and an exception only takes violations away.
 
 Regenerating over a rules file whose rules were renamed drops every entry that named the old rule.
 Entries under a rule at `severity = "ignore"` stay as they are until the rule is checked again; from then on, an ordinary run reports each one it no longer confirms as `unmatched-baseline-entry`.
 
 ### What a run prints
 
-stdout carries the judgment, stderr carries the report.
+stdout carries the status lines, stderr carries the report.
 One status line per rule and one for the configuration, printed whether or not anything fired:
 
 ```
@@ -457,8 +572,7 @@ config ok: 0 errors, 0 warnings
 ```
 
 `ok`, `WARN` and `FAILED` are the three outcomes.
-A rule of severity `error` whose violations are all frozen is `ok`: the status says how the run came out, not how the rule is configured.
-`allowed` and `frozen` stay apart because one is meant to stay and the other to shrink.
+A rule of severity `error` whose violations are all frozen is `ok`.
 
 The report on stderr is one block per rule that fired, headed once by the rule type and name, with the violations underneath:
 
@@ -469,11 +583,17 @@ error[forbidden-dependency]: no services in storage
     --> storage/src/pool.rs:31
 ```
 
-Each `-->` line is a Location, defined in [GLOSSARY.md](GLOSSARY.md).
-
 A pair appears once in a rule's block: where `Cargo.toml` and an import in the crate's root file write the same dependency, that is one violation, one line, counted once, with the import's locations underneath.
 
-Silenced violations are counted rather than listed:
+A manifest edge has no line of source behind it, so it is reported without a `-->` underneath and freezes without symbols:
+
+```
+  = storage → services
+```
+
+An import naming no symbol is written as *an unnamed reference*, so an edge carrying one is never mistaken for an edge carrying nothing.
+
+Without `--show-silenced` the report gives the number of silenced violations instead of listing them:
 
 ```
 6 violations frozen in the baseline, not counted
@@ -491,22 +611,24 @@ error[forbidden-dependency]: no services in storage
     --> storage/src/pool.rs:31
 ```
 
-A rule with nothing reported is headed `silenced` instead of `error` or `warning`.
+Under the flag, a rule with nothing reported is headed `silenced` instead of `error` or `warning`.
 
-Exit codes are flat:
+`check` exits with one of three codes:
 
 | Code | Meaning |
 |------|---------|
-| 0 | nothing reported |
+| 0 | no error reported, warnings included |
 | 1 | a rule reported an error, or a diagnostic was denied |
 | 2 | the run reached no judgment (bad rules file, analysis failure) |
+
+An exit code of 0 covers the modules the analysis walked, and [the README](../README.md#what-the-run-does-not-see) names what it does not reach.
 
 A denied diagnostic is a judgment and exits 1, although its block is headed `configuration` and its status line reads `config FAILED`.
 Code 2 is for the run that never got that far: a rules file that does not parse, a `--rules` path that does not exist, a `cargo metadata` that fails.
 `--generate-baseline` exits 0 whatever it froze.
 
-If you want separate red builds for separate concerns, use two CI steps with a rules file each.
-There is no bitset.
+The exit code does not say which rule failed.
+For separate red builds per concern, use two CI steps with a rules file each.
 
 ### Flags
 
@@ -525,7 +647,7 @@ cargo arc --manifest-path crates/Cargo.toml --include-reexports check
 
 The rest of what `cargo arc --help` lists belongs to the diagram.
 `check` accepts them and ignores them.
-`--externals` before `check` prints the same report as a run without it.
+`--externals` before `check` changes nothing, because no rule pattern ever matches a crate outside the workspace.
 
 #### What the feature flags change
 
@@ -533,7 +655,7 @@ The rest of what `cargo arc --help` lists belongs to the diagram.
 An optional dependency whose feature is off is not resolved, and no rule sees it.
 
 They do not decide which source is read.
-An import counts whatever `#[cfg(feature = "…")]` stands over it, so `--no-default-features` leaves the imports of a default feature in the graph.
+An import counts no matter which `#[cfg(feature = "…")]` stands over it, so `--no-default-features` leaves the imports of a default feature in the graph.
 A workspace whose features exclude one another carries the imports of all of them at once.
 
 `--features` does one thing more.
@@ -542,12 +664,3 @@ A rule whose pattern names one of the crates left out reports `unmatched-pattern
 A feature name no crate in the workspace declares ends the run at exit 2, refused by `cargo metadata`.
 `--all-features` and `--no-default-features` leave the set of analysed crates alone.
 
-## In CI
-
-```yaml
-- name: Architecture rules
-  run: cargo arc check
-```
-
-A `warn` rule never fails the build; a reported `error` violation, a denied diagnostic, or a run that reaches no judgment at all does.
-The report stands on stderr.

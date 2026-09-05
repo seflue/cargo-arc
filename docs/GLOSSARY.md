@@ -10,6 +10,19 @@ What the tool does with these things is written elsewhere: checking in [RULES.md
 The column holds only words that compete with ours because they are established elsewhere, either in the literature or in another entry of this file, and each of them is taken up in the prose under its table with the reason it does not fit.
 A word listed there stays correct in its own place: `RepresentativeCycles` replaced an exhaustive elementary-cycle enumeration, and that sentence does not break the column.
 
+## Nodes and edges
+
+| Term | Definition | Avoid |
+|------|------------|-------|
+| **Node** | One crate of the workspace, or one module in it. Patterns match nodes, and dependencies run between them. A crate the workspace only depends on is not one. | vertex |
+| **Edge** | One node depending directly on another. A dependency may also run over nodes in between, and it then holds between its two ends without an edge joining them. | — |
+| **Qualified node name** | A node written from its crate down: `storage` is the crate, `storage::pool` a module in it. Both ends of a reported dependency are written this way. | — |
+| **Manifest edge** | The dependency one crate's `Cargo.toml` declares on another. No line of source writes it. | — |
+| **Bare import** | An import naming no symbol, `use storage::pool;`. | — |
+
+*Vertex* is the graph-theoretic name for the same thing.
+A node here is a crate or a module, and everywhere a user reads one it is named as what it is, so the graph word stays in the analysis.
+
 ## Cycles and clusters
 
 | Term | Definition | Avoid |

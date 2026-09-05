@@ -38,17 +38,32 @@ Arcs between nodes show where dependencies exist.
 ## Architecture Rules
 
 Circular dependencies are forbidden by default, and a workspace without a rules file is checked against that one rule.
-`arc-rules.toml` states which crate may depend on which, which single dependency must never appear, and where circular dependencies are permitted after all.
-`cargo arc check` reports what it finds and exits non-zero on a violation, so it belongs in CI next to the test suite.
+`arc-rules.toml` states which crate may depend on which, which modules or crates may never depend directly on which, and where circular dependencies are permitted after all.
+`cargo arc check` reports what it finds, and a reported error makes it exit non-zero, so it belongs in CI next to the test suite.
 
 A workspace that has grown for years rarely comes out clean on the first run.
 `cargo arc check --generate-baseline` freezes what exists today, so the run turns green and reports everything added after it.
+
+## What the Run Does Not See
+
+`cfg` attributes are currently not evaluated, so the graph is the union over all configurations.
+A module under `#[cfg(feature = "hydrate")]` or `#[cfg(target_os = "windows")]` is walked on any machine and under any feature set.
+Two modules whose attributes exclude each other are currently reported as one tangle, although the reported circular dependency exists in no build.
+Modules under `#[cfg(test)]` are the exception and stay out unless `--include-tests` is passed.
+
+A `mod` declaration inside a macro invocation is not analysed.
+Where a crate writes `feature_gate! { pub mod runtime; }`, `runtime` and every module below it are missing from the graph, and a rule naming it reports `unmatched-pattern`.
+
+A pattern reaches the crates under analysis and the modules in them.
+A crate the workspace only depends on is not a node, so a rule about a third-party crate matches nothing.
+
+A green run says the rules held over the modules the run walked, and a module a macro declares is not one of them.
 
 ## Documentation
 
 - [docs/DIAGRAM.md](docs/DIAGRAM.md) — the diagram: what it draws, interaction, filters, flags
 - [docs/RULES.md](docs/RULES.md) — the rules: how to start, the baseline, the file format
-- [docs/GLOSSARY.md](docs/GLOSSARY.md) — the terms both documents use
+- [docs/GLOSSARY.md](docs/GLOSSARY.md) — the terms of the domain
 
 ## Similar Projects
 

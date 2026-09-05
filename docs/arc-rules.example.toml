@@ -10,12 +10,15 @@ version = 1
 
 # The list runs from the top layer to the bottom one, so a dependency may only
 # point at a later entry. `cli` and `storage` share a position, which leaves
-# dependencies between them unconstrained.
+# dependencies between them unconstrained. `exhaustive` claims that these
+# positions sort every crate of the workspace, so one they miss is reported
+# instead of skipped in silence.
 [[rules]]
 type = "layers"
 name = "architecture layers"
 layers = [["cli", "storage"], "services", "core"]
 direction = "top-down"
+exhaustive = true
 
 # `storage` sits above `services`, so the layer rule lets it reach down there.
 # It still must not: the database adapter takes its types from `core` and is
@@ -32,3 +35,14 @@ to = "services"
 type = "no-cycles"
 name = "no cycles"
 scope = "**"
+
+# A diagnostic reports a gap in this file rather than in the architecture. All
+# four stand at their default level here, so the section changes nothing until
+# you edit it. `unlayered-node` also takes an `except` list, and a crate that
+# is outside the architecture on purpose goes in it: build tooling, examples,
+# benchmarks. The `except` of a rule does not reach here.
+[diagnostics]
+unlayered-node = { level = "deny", except = [] }
+unmatched-baseline-entry = "warn"
+unmatched-except = "warn"
+unmatched-pattern = "deny"
