@@ -524,7 +524,7 @@ impl GraphBuilder {
 
     fn add_module_deps(&mut self) {
         // Clone to avoid borrow conflict (self.module_deps read vs self.resolve_node)
-        let module_deps: Vec<_> = self.module_deps.drain(..).collect();
+        let module_deps = std::mem::take(&mut self.module_deps);
 
         for (from_path, deps) in &module_deps {
             let Some(from_idx) = self.resolve_node(from_path) else {
