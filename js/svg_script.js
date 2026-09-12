@@ -1,5 +1,5 @@
 // @module SvgScript
-// @deps ArcLogic, StaticData, AppState, Selectors, DomAdapter, LayerManager, TreeLogic, DerivedState, HighlightRenderer, VirtualEdgeLogic, TextMeasure, SidebarLogic, SearchLogic, Jump
+// @deps ArcLogic, StaticData, AppState, Selectors, DomAdapter, LayerManager, TreeLogic, DerivedState, HighlightRenderer, VirtualEdgeLogic, TextMeasure, SidebarLogic, SearchLogic, Jump, JumpIcons
 // @config ROW_HEIGHT, MARGIN, TOOLBAR_HEIGHT, SIDEBAR_SHADOW_PAD
 // svg_script.js - DOM code for interactive SVG
 // ArcLogic is loaded from arc_logic.js before this file
@@ -49,8 +49,7 @@ function createHoverKeyTracker() {
 }
 
 // Resolve a jump id from a sidebar click: the closest row carrying
-// data-jump, or null when the click landed elsewhere. Extracted out of the
-// sidebarEl click listener so it is testable without a DOM.
+// data-jump, or null when the click landed elsewhere.
 function jumpIdFromClick(target) {
   const el = target.closest('.sidebar-location[data-jump]');
   return el ? Number(el.dataset.jump) : null;
@@ -579,6 +578,10 @@ if (typeof document !== 'undefined') {
       });
 
       recalculateVirtualEdges();
+
+      // Node positions just changed; a group built from the old rect would
+      // point at the wrong spot.
+      jumpIcons.hide();
 
       // Resize SVG to fit visible content
       updateSvgViewport(currentY, visiblePositionY);
@@ -1364,21 +1367,50 @@ if (typeof document !== 'undefined') {
       }).observe(toolbarRoot);
     }
 
+    function showJumpStatus(text) {
+      const statusEl = DomAdapter.getElementById('jump-status');
+      if (statusEl) statusEl.textContent = text;
+    }
+    const jumper = Jump.createJump((url) => fetch(url), showJumpStatus);
+
+    // Jump popover shown next to a hovered node; positioned from the node
+    // rect's live attributes, so it tracks collapse-driven moves.
+    const jumpIcons = JumpIcons.createJumpIcons({
+      layer: /** @type {Element} */ (
+        DomAdapter.getElementById('jump-popover-layer')
+      ),
+      defsHost: /** @type {Element} */ (DomAdapter.getSvgRoot()),
+      onJump: (id) => jumper.jump(id),
+      onEnter: (nodeId) => handleMouseEnter('node', nodeId),
+      onLeave: handleMouseLeave,
+      setTimeout,
+      clearTimeout,
+      grace: HOVER_HIDE_GRACE,
+    });
+
     // === Event handlers ===
     // Iterate via StaticData instead of DOM query
     StaticData.getAllNodeIds().forEach((nodeId) => {
       const node = DomAdapter.getNode(nodeId);
       if (!node) return;
+      const targets = StaticData.getNode(nodeId)?.targets;
+      const hasTargets = targets && targets.length > 0;
 
       node.addEventListener('click', (e) => {
         e.stopPropagation();
         highlightNode(nodeId);
       });
 
-      node.addEventListener('mouseenter', () =>
-        handleMouseEnter('node', nodeId),
-      );
-      node.addEventListener('mouseleave', handleMouseLeave);
+      node.addEventListener('mouseenter', () => {
+        handleMouseEnter('node', nodeId);
+        if (hasTargets) jumpIcons.show(nodeId, node, targets);
+      });
+      node.addEventListener('mouseleave', () => {
+        handleMouseLeave();
+        // Own timer: handleMouseLeave returns early while a selection is
+        // pinned, so the popover cannot ride on the highlight grace.
+        if (hasTargets) jumpIcons.scheduleHide();
+      });
 
       // Double-click to toggle collapse (only for parents)
       if (StaticData.hasChildren(nodeId)) {
@@ -1494,13 +1526,6 @@ if (typeof document !== 'undefined') {
         syncToolbarHeight();
       }
     });
-
-    // Reports a jump's outcome in the toolbar's jump-status span.
-    function showJumpStatus(text) {
-      const statusEl = DomAdapter.getElementById('jump-status');
-      if (statusEl) statusEl.textContent = text;
-    }
-    const jumper = Jump.createJump((url) => fetch(url), showJumpStatus);
 
     // Close-button and click isolation for sidebar foreignObject
     const sidebarEl = DomAdapter.getElementById('relation-sidebar');

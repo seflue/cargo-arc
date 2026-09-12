@@ -10,6 +10,7 @@ declare const DerivedState: typeof import('./derived_state.js').DerivedState;
 declare const HighlightLogic: typeof import('./highlight_logic.js').HighlightLogic;
 declare const HighlightRenderer: typeof import('./highlight_renderer.js').HighlightRenderer;
 declare const Jump: typeof import('./jump.js').Jump;
+declare const JumpIcons: typeof import('./jump_icons.js').JumpIcons;
 declare const LayerManager: typeof import('./layer_manager.js').LayerManager;
 declare const SearchLogic: typeof import('./search.js').SearchLogic;
 declare const Selectors: typeof import('./selectors.js').Selectors;
@@ -38,6 +39,7 @@ interface StaticNodeData {
   nesting: number;
   version?: string;
   sccId?: number;
+  targets?: { kind: string; name: string; jump: number }[];
 }
 interface StaticArcData {
   from: string;
@@ -47,7 +49,7 @@ interface StaticArcData {
     symbol: string;
     modulePath?: string | null;
     viaReexport?: boolean;
-    locations: { file: string; line: number }[];
+    locations: { file: string; line: number; jump?: number }[];
   }[];
   cycleIds?: number[];
   sccId?: number;

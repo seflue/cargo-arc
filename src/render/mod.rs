@@ -89,6 +89,9 @@ pub fn render(ir: &LayoutIR, config: &RenderConfig) -> String {
         config.row_height,
         visible_nodes.as_ref(),
     ));
+    // Above every arc and hit-area layer so the hover popover js/jump_icons.js
+    // builds there stays under the pointer; empty unless `arc ui` serves the page.
+    svg.push_str("  <g id=\"jump-popover-layer\"></g>\n");
     svg.push_str("  </g>\n");
     let has_externals = ir
         .items
@@ -387,6 +390,28 @@ mod tests {
         assert!(
             svg.contains(r#"<g id="hitareas-layer">"#),
             "SVG should contain hitareas-layer"
+        );
+    }
+
+    #[test]
+    fn test_jump_popover_layer_is_the_last_layer_in_graph_content() {
+        let mut ir = LayoutIR::new();
+        ir.add_item(ItemKind::Crate, "c".into());
+        let svg = render(&ir, &RenderConfig::default());
+
+        let popover = svg
+            .find(r#"<g id="jump-popover-layer"></g>"#)
+            .expect("SVG should contain jump-popover-layer");
+        let hitareas = svg
+            .find(r#"<g id="highlight-hitareas-layer">"#)
+            .expect("SVG should contain highlight-hitareas-layer");
+        let content_end = svg[popover..]
+            .find("</g>\n  </g>")
+            .map(|i| popover + i)
+            .expect("graph-content should close right after the popover layer");
+        assert!(
+            hitareas < popover && popover < content_end,
+            "jump-popover-layer must be the last child of graph-content"
         );
     }
 

@@ -468,9 +468,16 @@ const SidebarLogic = {
    * @returns {string}
    */
   _locationRow(loc) {
-    const jumpAttr =
-      typeof loc.jump === 'number' ? ` data-jump="${loc.jump}"` : '';
-    return `<div class="sidebar-location"${jumpAttr}>${loc.file}<span class="sidebar-line-badge">:${loc.line}</span></div>`;
+    const hasJump = typeof loc.jump === 'number';
+    const jumpAttr = hasJump ? ` data-jump="${loc.jump}"` : '';
+    // Same symbol the node icons use; JumpIcons defines it in the SVG root
+    // at page load, so the <use> resolves whenever a jump id exists. The
+    // xmlns is required: this HTML lands in an XML document via innerHTML,
+    // where an unprefixed <svg> would stay in the XHTML namespace.
+    const jumpIcon = hasJump
+      ? '<svg class="sidebar-jump" xmlns="http://www.w3.org/2000/svg"><use href="#jump-icon"></use></svg>'
+      : '';
+    return `<div class="sidebar-location"${jumpAttr}>${loc.file}<span class="sidebar-line-badge">:${loc.line}</span>${jumpIcon}</div>`;
   },
 
   /**

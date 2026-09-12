@@ -274,6 +274,9 @@ describe('SidebarLogic', () => {
       };
       const html = SidebarLogic.buildContent('jump-id', override);
       expect(html).toContain('class="sidebar-location" data-jump="3"');
+      expect(html).toContain(
+        '<svg class="sidebar-jump" xmlns="http://www.w3.org/2000/svg"><use href="#jump-icon"></use></svg>',
+      );
     });
 
     test('location row omits data-jump when loc.jump is absent', () => {
@@ -290,6 +293,7 @@ describe('SidebarLogic', () => {
       };
       const html = SidebarLogic.buildContent('no-jump-id', override);
       expect(html).not.toContain('data-jump');
+      expect(html).not.toContain('sidebar-jump');
     });
 
     test('empty usages shows Cargo.toml dependency', () => {

@@ -199,10 +199,11 @@ fn build_css_rules() -> Vec<CssRule> {
             ),
             &[("fill", r.dimmed)],
         ),
-        // CSS-only dimming via has-highlight on SVG root (leaf elements only)
+        // CSS-only dimming via has-highlight on SVG root (leaf elements only).
+        // jump-popover is a JS-owned class (js/jump_icons.js), hence the literal.
         CssRule::new(
             &format!(
-                "svg.{} rect:not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{})",
+                "svg.{} rect:not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.jump-popover)",
                 c.relation.has_highlight,
                 c.node_selection.selected_crate,
                 c.node_selection.selected_module,
@@ -213,7 +214,7 @@ fn build_css_rules() -> Vec<CssRule> {
                 c.relation.dep_node,
                 c.relation.dependent_node,
                 c.toolbar.btn,
-                c.labels.arc_count_bg
+                c.labels.arc_count_bg,
             ),
             &[("opacity", "0.3"), ("pointer-events", "none")],
         ),
@@ -221,7 +222,7 @@ fn build_css_rules() -> Vec<CssRule> {
         // a different node while one is pinned works (same exclusions as dimming rule)
         CssRule::new(
             &format!(
-                "svg.{} rect:not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{})",
+                "svg.{} rect:not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.jump-popover)",
                 c.relation.has_pinned,
                 c.node_selection.selected_crate,
                 c.node_selection.selected_module,
@@ -232,7 +233,7 @@ fn build_css_rules() -> Vec<CssRule> {
                 c.relation.dep_node,
                 c.relation.dependent_node,
                 c.toolbar.btn,
-                c.labels.arc_count_bg
+                c.labels.arc_count_bg,
             ),
             &[("pointer-events", "auto"), ("cursor", "pointer")],
         ),
@@ -769,11 +770,69 @@ fn build_css_rules() -> Vec<CssRule> {
                 ("white-space", "nowrap"),
             ],
         ),
-        // Jump-capable locations only (RenderConfig::with_jump_ids, i.e. `arc
-        // ui`); a plain image from `cargo arc -o` never sets data-jump.
+        // Rows with data-jump (see js/sidebar.js _locationRow) are click
+        // targets only while a selection is pinned, so the cursor and the icon
+        // follow the root's has-pinned class.
         CssRule::new(
-            &format!(".{}[data-jump]", c.sidebar.location),
-            &[("cursor", "pointer"), ("text-decoration", "underline")],
+            &format!(
+                "svg.{} .{}[data-jump]",
+                c.relation.has_pinned, c.sidebar.location
+            ),
+            &[("cursor", "pointer")],
+        ),
+        // Inline <svg class="sidebar-jump"> at the end of a jump-capable row,
+        // reusing the #jump-icon symbol; built by js/sidebar.js. Hidden, not
+        // removed, until the row is hovered, so the row keeps its width.
+        CssRule::class(
+            "sidebar-jump",
+            &[
+                ("width", "12px"),
+                ("height", "12px"),
+                ("margin-left", "6px"),
+                ("vertical-align", "-2px"),
+                ("fill", "currentColor"),
+                ("visibility", "hidden"),
+            ],
+        ),
+        CssRule::new(
+            &format!(
+                "svg.{} .{}:hover .sidebar-jump",
+                c.relation.has_pinned, c.sidebar.location
+            ),
+            &[("visibility", "visible")],
+        ),
+        // Jump popover: js/jump_icons.js builds it next to a hovered node; no
+        // Rust markup emits these classes. The bridge is the transparent strip
+        // between node and popover that keeps the pointer inside the group.
+        CssRule::class("jump-popover-bridge", &[("fill", "transparent")]),
+        CssRule::class(
+            "jump-popover-bg",
+            &[
+                ("fill", "#fff"),
+                ("stroke", GRAY_300),
+                ("stroke-width", "1"),
+                ("rx", "4px"),
+            ],
+        ),
+        CssRule::class("jump-chip", &[("cursor", "pointer")]),
+        CssRule::class(
+            "jump-chip-bg",
+            &[("fill", GRAY_100), ("stroke", GRAY_300), ("rx", "3px")],
+        ),
+        CssRule::new(
+            ".jump-chip:hover .jump-chip-bg",
+            &[("fill", BLUE_100), ("stroke", BLUE_300)],
+        ),
+        CssRule::class(
+            "jump-chip-label",
+            &[
+                ("font-family", "monospace"),
+                ("font-size", "10px"),
+                ("fill", GRAY_600),
+                ("text-anchor", "middle"),
+                ("dominant-baseline", "central"),
+                ("pointer-events", "none"),
+            ],
         ),
         CssRule::class(
             c.sidebar.toggle,
@@ -1352,18 +1411,83 @@ mod tests {
     #[test]
     fn test_css_contains_sidebar_location_jump_rule() {
         let css = render_styles();
-        let selector = format!(".{}[data-jump]", CSS.sidebar.location);
+        let selector = format!(
+            "svg.{} .{}[data-jump]",
+            CSS.relation.has_pinned, CSS.sidebar.location
+        );
         let idx = css
             .find(&format!("{selector} {{"))
             .unwrap_or_else(|| panic!("CSS should contain a rule for {selector}"));
         let section = &css[idx..idx + 120];
         assert!(
             section.contains("cursor: pointer"),
-            "sidebar-location[data-jump] should set cursor: pointer, got: {section}"
+            "pinned sidebar-location[data-jump] should set cursor: pointer, got: {section}"
         );
         assert!(
-            section.contains("text-decoration: underline"),
-            "sidebar-location[data-jump] should set text-decoration: underline, got: {section}"
+            !section.contains("text-decoration"),
+            "sidebar-location[data-jump] marks the row with an icon, not an underline, got: {section}"
+        );
+        assert!(
+            !css.contains(&format!("\n.{}[data-jump]", CSS.sidebar.location)),
+            "an unpinned row must not look clickable"
+        );
+    }
+
+    #[test]
+    fn test_css_contains_jump_popover_and_sidebar_icon_rules() {
+        let css = render_styles();
+        let rule_body = |selector: &str| -> String {
+            let idx = css
+                .find(&format!("{selector} {{"))
+                .unwrap_or_else(|| panic!("CSS should contain a rule for {selector}"));
+            let end = css[idx..].find('}').map_or(css.len(), |i| idx + i);
+            css[idx..end].to_string()
+        };
+        let bg = rule_body(".jump-popover-bg");
+        assert!(
+            bg.contains("fill: #fff") && bg.contains("stroke:") && bg.contains("rx:"),
+            "popover background should be a white outlined rounded box, got: {bg}"
+        );
+        let bridge = rule_body(".jump-popover-bridge");
+        assert!(
+            bridge.contains("fill: transparent"),
+            "bridge must catch pointer events without painting, got: {bridge}"
+        );
+        let chip = rule_body(".jump-chip");
+        assert!(
+            chip.contains("cursor: pointer"),
+            "chips are click targets, got: {chip}"
+        );
+        let label = rule_body(".jump-chip-label");
+        assert!(
+            label.contains("text-anchor: middle")
+                && label.contains("dominant-baseline: central")
+                && label.contains("pointer-events: none"),
+            "chip label is centred and lets clicks through to the chip, got: {label}"
+        );
+        let dimming = format!("svg.{} rect:not(", CSS.relation.has_highlight);
+        let dim_idx = css
+            .find(&dimming)
+            .expect("CSS should contain the has-highlight rect dimming rule");
+        let dim_rule = &css[dim_idx..css[dim_idx..].find('{').map_or(css.len(), |i| dim_idx + i)];
+        assert!(
+            dim_rule.contains(":not(.jump-popover)"),
+            "dimming rule must exclude the popover rects, got: {dim_rule}"
+        );
+        let sidebar_icon = rule_body(".sidebar-jump");
+        assert!(
+            sidebar_icon.contains("width: 12px")
+                && sidebar_icon.contains("height: 12px")
+                && sidebar_icon.contains("visibility: hidden"),
+            "sidebar-jump should size the inline icon and hide it until hover, got: {sidebar_icon}"
+        );
+        let hovered = rule_body(&format!(
+            "svg.{} .{}:hover .sidebar-jump",
+            CSS.relation.has_pinned, CSS.sidebar.location
+        ));
+        assert!(
+            hovered.contains("visibility: visible"),
+            "hovering the row must reveal its icon, got: {hovered}"
         );
     }
 
