@@ -98,7 +98,7 @@ pub(crate) fn collect_syn_module_paths(
     include_tests: bool,
 ) -> HashSet<String> {
     let mut paths = HashSet::new();
-    for root_file in crate_info.root_files() {
+    for root_file in crate_info.target_roots.files() {
         walk_modules_for_paths(root_file, "", &mut paths, include_tests);
     }
     paths
@@ -143,7 +143,7 @@ fn is_pub(vis: &syn::Visibility) -> bool {
 /// Returns an empty set on any error (no library target, parse failure).
 pub(crate) fn collect_crate_exports(crate_info: &CrateInfo) -> HashSet<String> {
     // Binary targets export nothing.
-    let Some(root_file) = crate_info.lib_root.as_ref() else {
+    let Some(root_file) = crate_info.target_roots.lib_root.as_ref() else {
         return HashSet::new();
     };
 
@@ -231,6 +231,7 @@ fn walk_module_syn(
             return ModuleInfo {
                 name: module_name.to_string(),
                 full_path,
+                file: Some(file_path.to_path_buf()),
                 children: Vec::new(),
                 dependencies: Vec::new(),
             };
@@ -243,6 +244,7 @@ fn walk_module_syn(
             return ModuleInfo {
                 name: module_name.to_string(),
                 full_path,
+                file: Some(file_path.to_path_buf()),
                 children: Vec::new(),
                 dependencies: Vec::new(),
             };
@@ -310,6 +312,7 @@ fn walk_module_syn(
     ModuleInfo {
         name: module_name.to_string(),
         full_path,
+        file: Some(file_path.to_path_buf()),
         children,
         dependencies,
     }
@@ -341,7 +344,7 @@ pub(crate) fn analyze_modules_syn(
     };
 
     let mut root: Option<ModuleInfo> = None;
-    for root_file in crate_info.root_files() {
+    for root_file in crate_info.target_roots.files() {
         let tree = walk_module_syn(
             &ctx,
             root_file,
@@ -374,6 +377,7 @@ pub(crate) fn analyze_modules_syn(
         root = Some(ModuleInfo {
             name: normalized.clone(),
             full_path: normalized.clone(),
+            file: None,
             children: Vec::new(),
             dependencies: Vec::new(),
         });
@@ -844,6 +848,34 @@ mod tests {
             assert!(
                 child_names.contains(&"cli"),
                 "should contain 'cli', found: {child_names:?}"
+            );
+        }
+
+        #[test]
+        fn test_module_carries_the_file_it_was_read_from() {
+            let tmp = TestProject::new()
+                .file("src/lib.rs", "pub mod store;")
+                .file("src/store/mod.rs", "pub mod disk;")
+                .file("src/store/disk.rs", "")
+                .build();
+
+            let crate_info = conventional_crate("fixture", tmp.path());
+            let tree = analyze_modules_syn(
+                &crate_info,
+                &WorkspaceCrates::default(),
+                &ModulePathMap::default(),
+                &CrateExportMap::default(),
+                &ReExportMap::default(),
+                &std::collections::HashMap::new(),
+                false,
+            );
+
+            assert_eq!(tree.root.file, Some(tmp.path().join("src/lib.rs")));
+            let store = &tree.root.children[0];
+            assert_eq!(store.file, Some(tmp.path().join("src/store/mod.rs")));
+            assert_eq!(
+                store.children[0].file,
+                Some(tmp.path().join("src/store/disk.rs"))
             );
         }
 

@@ -43,7 +43,7 @@ pub(crate) fn collect_crate_reexports(
     };
     let mut result = HashMap::new();
 
-    for root_file in crate_info.root_files() {
+    for root_file in crate_info.target_roots.files() {
         walk_collect_reexports(&ctx, root_file, "", &mut result);
     }
 

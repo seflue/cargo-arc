@@ -404,24 +404,19 @@ fn restricted_subgraph(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::{ArcGraph, EdgeWeight, Node, Reexports};
+    use crate::graph::{ArcGraph, EdgeWeight, Reexports};
     use crate::model::{EdgeContext, SourceLocation};
+    use crate::test_support::{crate_node, module_node};
 
     /// Single-crate graph: `modules` by name, production `ModuleDep` edges
     /// `(from, to, ref_count)`. Returns the graph and the module node indices.
     fn graph_with(modules: &[&str], deps: &[(usize, usize, usize)]) -> (ArcGraph, Vec<NodeIndex>) {
         let mut g = ArcGraph::new();
-        let crate_idx = g.add_node(Node::Crate {
-            name: "app".into(),
-            path: "/app".into(),
-        });
+        let crate_idx = g.add_node(crate_node("app"));
         let idx: Vec<_> = modules
             .iter()
             .map(|m| {
-                let n = g.add_node(Node::Module {
-                    name: (*m).into(),
-                    crate_idx,
-                });
+                let n = g.add_node(module_node(m, crate_idx));
                 g.add_edge(crate_idx, n, EdgeWeight::Contains);
                 n
             })
@@ -509,18 +504,9 @@ mod tests {
         // `grouped -> split` imports three symbols in one `use` group: one
         // line, one site. `split -> grouped` imports two, one per line.
         let mut graph = ArcGraph::new();
-        let crate_idx = graph.add_node(Node::Crate {
-            name: "app".into(),
-            path: "/app".into(),
-        });
-        let grouped = graph.add_node(Node::Module {
-            name: "a".into(),
-            crate_idx,
-        });
-        let split = graph.add_node(Node::Module {
-            name: "b".into(),
-            crate_idx,
-        });
+        let crate_idx = graph.add_node(crate_node("app"));
+        let grouped = graph.add_node(module_node("a", crate_idx));
+        let split = graph.add_node(module_node("b", crate_idx));
         graph.add_edge(crate_idx, grouped, EdgeWeight::Contains);
         graph.add_edge(crate_idx, split, EdgeWeight::Contains);
         graph.add_edge(
@@ -581,18 +567,9 @@ mod tests {
         // removal bias outranks the symbol count, so `child -> parent` is
         // picked despite carrying more.
         let mut graph = ArcGraph::new();
-        let crate_idx = graph.add_node(Node::Crate {
-            name: "app".into(),
-            path: "/app".into(),
-        });
-        let parent = graph.add_node(Node::Module {
-            name: "a".into(),
-            crate_idx,
-        });
-        let child = graph.add_node(Node::Module {
-            name: "b".into(),
-            crate_idx,
-        });
+        let crate_idx = graph.add_node(crate_node("app"));
+        let parent = graph.add_node(module_node("a", crate_idx));
+        let child = graph.add_node(module_node("b", crate_idx));
         graph.add_edge(crate_idx, parent, EdgeWeight::Contains);
         graph.add_edge(parent, child, EdgeWeight::Contains);
 
@@ -655,22 +632,10 @@ mod tests {
         // The bias never favours it and the pick goes to the cheapest neutral
         // edge, even though the re-export carries the fewest symbols.
         let mut graph = ArcGraph::new();
-        let crate_idx = graph.add_node(Node::Crate {
-            name: "app".into(),
-            path: "/app".into(),
-        });
-        let parent = graph.add_node(Node::Module {
-            name: "a".into(),
-            crate_idx,
-        });
-        let child = graph.add_node(Node::Module {
-            name: "b".into(),
-            crate_idx,
-        });
-        let unrelated = graph.add_node(Node::Module {
-            name: "c".into(),
-            crate_idx,
-        });
+        let crate_idx = graph.add_node(crate_node("app"));
+        let parent = graph.add_node(module_node("a", crate_idx));
+        let child = graph.add_node(module_node("b", crate_idx));
+        let unrelated = graph.add_node(module_node("c", crate_idx));
         graph.add_edge(crate_idx, parent, EdgeWeight::Contains);
         graph.add_edge(parent, child, EdgeWeight::Contains);
         graph.add_edge(crate_idx, unrelated, EdgeWeight::Contains);

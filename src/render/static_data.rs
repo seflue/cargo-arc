@@ -503,6 +503,7 @@ mod tests {
     use crate::graph::{ArcGraph, EdgeWeight, Node, Reexports};
     use crate::layout::{LayoutEdge, build_layout};
     use crate::model::{EdgeContext, SourceLocation};
+    use crate::test_support::{crate_node, module_node};
 
     // === format_source_locations_by_symbol Tests ===
 
@@ -1914,17 +1915,11 @@ mod tests {
         // desc, then symbols asc) is decided by the symbol count, not by name —
         // b->a (1 symbol) must rank before c->a (2 symbols).
         let mut graph = ArcGraph::new();
-        let crate_idx = graph.add_node(Node::Crate {
-            name: "app".into(),
-            path: "/app".into(),
-        });
+        let crate_idx = graph.add_node(crate_node("app"));
         let mods: Vec<_> = ["a", "b", "c"]
             .iter()
             .map(|&name| {
-                let idx = graph.add_node(Node::Module {
-                    name: name.into(),
-                    crate_idx,
-                });
+                let idx = graph.add_node(module_node(name, crate_idx));
                 graph.add_edge(crate_idx, idx, EdgeWeight::Contains);
                 idx
             })
@@ -2054,15 +2049,9 @@ mod tests {
     /// Build a flat `app` crate with the given child modules; returns the graph.
     fn crate_with(modules: &[&str]) -> ArcGraph {
         let mut graph = ArcGraph::new();
-        let crate_idx = graph.add_node(Node::Crate {
-            name: "app".into(),
-            path: "/app".into(),
-        });
+        let crate_idx = graph.add_node(crate_node("app"));
         for &name in modules {
-            let idx = graph.add_node(Node::Module {
-                name: name.into(),
-                crate_idx,
-            });
+            let idx = graph.add_node(module_node(name, crate_idx));
             graph.add_edge(crate_idx, idx, EdgeWeight::Contains);
         }
         graph
@@ -2122,10 +2111,7 @@ mod tests {
             Node::Module { crate_idx, .. } => *crate_idx,
             _ => parent_idx,
         };
-        let child_idx = graph.add_node(Node::Module {
-            name: child.into(),
-            crate_idx,
-        });
+        let child_idx = graph.add_node(module_node(child, crate_idx));
         graph.add_edge(parent_idx, child_idx, EdgeWeight::Contains);
     }
 

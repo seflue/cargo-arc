@@ -13,6 +13,15 @@ fn is_relevant_dep(dep: &cargo_metadata::NodeDep) -> bool {
     })
 }
 
+fn build_external_crate_info(pkg: &cargo_metadata::Package) -> ExternalCrateInfo {
+    ExternalCrateInfo {
+        name: pkg.name.to_string(),
+        version: pkg.version.to_string(),
+        package_id: pkg.id.repr.clone(),
+        target_roots: super::workspace::target_roots(pkg),
+    }
+}
+
 fn collect_dep_kinds(dep: &cargo_metadata::NodeDep) -> Vec<DependencyKind> {
     dep.dep_kinds
         .iter()
@@ -69,14 +78,7 @@ fn collect_reachable_externals(
             }
 
             if !seen.contains_key(dep_id) {
-                seen.insert(
-                    dep_id.to_string(),
-                    ExternalCrateInfo {
-                        name: dep_pkg.name.to_string(),
-                        version: dep_pkg.version.to_string(),
-                        package_id: dep_id.to_string(),
-                    },
-                );
+                seen.insert(dep_id.to_string(), build_external_crate_info(dep_pkg));
                 if transitive {
                     bfs_queue.push_back(dep_id.to_string());
                 }
@@ -105,14 +107,7 @@ fn collect_reachable_externals(
                 continue;
             }
             if !seen.contains_key(dep_id) {
-                seen.insert(
-                    dep_id.to_string(),
-                    ExternalCrateInfo {
-                        name: dep_pkg.name.to_string(),
-                        version: dep_pkg.version.to_string(),
-                        package_id: dep_id.to_string(),
-                    },
-                );
+                seen.insert(dep_id.to_string(), build_external_crate_info(dep_pkg));
                 bfs_queue.push_back(dep_id.to_string());
             }
         }
@@ -202,6 +197,7 @@ pub(crate) fn analyze_externals(metadata: &Metadata, transitive: bool) -> Extern
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::TargetRoots;
     use cargo_metadata::MetadataCommand;
     use std::path::Path;
 
@@ -219,6 +215,7 @@ mod tests {
                 name: "serde".to_string(),
                 version: "1.0.0".to_string(),
                 package_id: "serde 1.0.0 (registry+...)".to_string(),
+                target_roots: TargetRoots::default(),
             }],
             external_deps: vec![ExternalDep {
                 from_pkg_id: "serde 1.0.0".to_string(),
@@ -291,6 +288,30 @@ mod tests {
             crate_names.contains(&"clap"),
             "should find clap, got: {crate_names:?}"
         );
+    }
+
+    #[test]
+    fn test_external_crate_keeps_its_targets() {
+        let metadata = own_metadata();
+        let result = analyze_externals(&metadata, false);
+
+        let petgraph = result
+            .crates
+            .iter()
+            .find(|c| c.name == "petgraph")
+            .expect("petgraph is a dependency");
+        let lib_root = petgraph
+            .target_roots
+            .lib_root
+            .as_ref()
+            .expect("petgraph has a lib target");
+        assert!(lib_root.is_absolute(), "got {}", lib_root.display());
+        assert!(
+            lib_root.ends_with("src/lib.rs"),
+            "got {}",
+            lib_root.display()
+        );
+        assert!(petgraph.target_roots.bin_roots.is_empty());
     }
 
     #[test]

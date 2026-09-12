@@ -266,20 +266,27 @@ pub struct CrateInfo {
     pub name: String,
     pub path: PathBuf,
     pub workspace_root: PathBuf,
-    /// `None` for binary-only crates. Cargo lets `[lib] path` point anywhere,
-    /// so this is not always `src/lib.rs`.
-    pub lib_root: Option<PathBuf>,
-    /// Likewise not always `src/main.rs`.
-    pub bin_roots: Vec<PathBuf>,
+    pub target_roots: TargetRoots,
     pub dependencies: Vec<String>,
     /// Populated regardless of `--include-tests`. Reachability needs to know
     /// who is pulled in by tests even when the view does not show it.
     pub dev_dependencies: Vec<String>,
 }
 
-impl CrateInfo {
-    /// Entry points for module walking, library target first.
-    pub fn root_files(&self) -> impl Iterator<Item = &Path> {
+/// Source files of a package's lib and bin targets, absolute, as Cargo
+/// resolved them. Workspace crates and external packages share the shape.
+#[derive(Debug, Clone, Default)]
+pub struct TargetRoots {
+    /// `None` for binary-only crates. Cargo lets `[lib] path` point anywhere,
+    /// so this is not always `src/lib.rs`.
+    pub lib_root: Option<PathBuf>,
+    /// Likewise not always `src/main.rs`.
+    pub bin_roots: Vec<PathBuf>,
+}
+
+impl TargetRoots {
+    /// Iterate the entry points for module walking, library target first.
+    pub fn files(&self) -> impl Iterator<Item = &Path> {
         self.lib_root
             .iter()
             .chain(&self.bin_roots)
@@ -359,6 +366,10 @@ impl DependencyRef {
 pub struct ModuleInfo {
     pub name: String,
     pub full_path: String,
+    /// Absolute path of the file that declares this module. `None` for the
+    /// root of a crate without a lib or bin target, which has no file, and
+    /// under the `hir` backend for a module whose VFS path is not on disk.
+    pub file: Option<PathBuf>,
     pub children: Vec<ModuleInfo>,
     pub dependencies: Vec<DependencyRef>,
 }
@@ -374,6 +385,8 @@ pub(crate) struct ExternalCrateInfo {
     pub(crate) name: String,
     pub(crate) version: String,
     pub(crate) package_id: String,
+    /// Inside the registry or vendor directory.
+    pub(crate) target_roots: TargetRoots,
 }
 
 /// Dependency edge between two external crates.
@@ -669,6 +682,7 @@ mod tests {
         let module = ModuleInfo {
             name: "cli".to_string(),
             full_path: "crate::cli".to_string(),
+            file: None,
             children: vec![],
             dependencies: vec![DependencyRef {
                 target_crate: "crate".to_string(),

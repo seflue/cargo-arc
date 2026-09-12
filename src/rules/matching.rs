@@ -181,17 +181,13 @@ fn segment_matches(pattern: &str, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::Node;
-    use std::path::PathBuf;
+    use crate::test_support::{crate_node, module_node};
 
     /// Build a test graph with a crate "test" and modules beneath it.
     /// Returns (graph, `crate_idx`).
     fn test_crate_graph() -> (ArcGraph, NodeIndex) {
         let mut graph = ArcGraph::new();
-        let crate_idx = graph.add_node(Node::Crate {
-            name: "test".into(),
-            path: PathBuf::from("/test"),
-        });
+        let crate_idx = graph.add_node(crate_node("test"));
         (graph, crate_idx)
     }
 
@@ -201,10 +197,7 @@ mod tests {
         crate_idx: NodeIndex,
         parent: NodeIndex,
     ) -> NodeIndex {
-        let idx = graph.add_node(Node::Module {
-            name: name.into(),
-            crate_idx,
-        });
+        let idx = graph.add_node(module_node(name, crate_idx));
         graph.add_edge(parent, idx, EdgeWeight::Contains);
         idx
     }
@@ -271,10 +264,7 @@ mod tests {
     }
 
     fn add_crate(graph: &mut ArcGraph, name: &str) -> NodeIndex {
-        graph.add_node(Node::Crate {
-            name: name.into(),
-            path: PathBuf::from(format!("/{name}")),
-        })
+        graph.add_node(crate_node(name))
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 use super::filtering::{DependencyInfo, collect_reachable_crates, find_seed_crates};
 use super::hir::FeatureConfig;
-use crate::model::{CrateInfo, WorkspaceCrates, normalize_crate_name};
+use crate::model::{CrateInfo, TargetRoots, WorkspaceCrates, normalize_crate_name};
 use anyhow::{Context, Result};
 use cargo_metadata::MetadataCommand;
 use std::collections::HashSet;
@@ -162,28 +162,32 @@ fn build_crate_info(
     let dependencies = prod_deps.get(&normalized_name).cloned().unwrap_or_default();
     let dev_dependencies = dev_deps.get(&normalized_name).cloned().unwrap_or_default();
 
-    // Cargo resolves `[lib] path` / `[[bin]] path` for us; test, bench,
-    // example and build-script targets are not module tree roots.
-    let lib_root = pkg
-        .targets
-        .iter()
-        .find(|t| is_lib_target(t))
-        .map(|t| t.src_path.clone().into());
-    let bin_roots = pkg
-        .targets
-        .iter()
-        .filter(|t| t.is_bin())
-        .map(|t| t.src_path.clone().into())
-        .collect();
-
     CrateInfo {
         name: pkg.name.to_string(),
         path: pkg.manifest_path.parent().unwrap().into(),
         workspace_root: workspace_root.to_path_buf(),
-        lib_root,
-        bin_roots,
+        target_roots: target_roots(pkg),
         dependencies,
         dev_dependencies,
+    }
+}
+
+/// Pick the lib and bin targets out of a package's target list. Cargo has
+/// already resolved `[lib] path` / `[[bin]] path`; test, bench, example and
+/// build-script targets are not module tree roots and are skipped.
+pub(crate) fn target_roots(pkg: &cargo_metadata::Package) -> TargetRoots {
+    TargetRoots {
+        lib_root: pkg
+            .targets
+            .iter()
+            .find(|t| is_lib_target(t))
+            .map(|t| t.src_path.clone().into()),
+        bin_roots: pkg
+            .targets
+            .iter()
+            .filter(|t| t.is_bin())
+            .map(|t| t.src_path.clone().into())
+            .collect(),
     }
 }
 
@@ -335,7 +339,8 @@ mod tests {
 
         fn root_names(krate: &CrateInfo) -> Vec<String> {
             krate
-                .root_files()
+                .target_roots
+                .files()
                 .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
                 .collect()
         }
@@ -351,7 +356,11 @@ mod tests {
         fn test_lib_root_outside_src_directory() {
             let crates = crates();
             let krate = crates.iter().find(|c| c.name == "outside-src").unwrap();
-            let lib_root = krate.lib_root.as_ref().expect("should have a lib target");
+            let lib_root = krate
+                .target_roots
+                .lib_root
+                .as_ref()
+                .expect("should have a lib target");
             assert!(
                 lib_root.ends_with("bindings/lib.rs"),
                 "got: {}",
@@ -370,7 +379,10 @@ mod tests {
         fn test_bin_root_follows_bin_path_attribute() {
             let crates = crates();
             let krate = crates.iter().find(|c| c.name == "custom-bin").unwrap();
-            assert!(krate.lib_root.is_none(), "binary-only crate has no lib");
+            assert!(
+                krate.target_roots.lib_root.is_none(),
+                "binary-only crate has no lib"
+            );
             assert_eq!(root_names(krate), vec!["tool.rs"]);
         }
     }

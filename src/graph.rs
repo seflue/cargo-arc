@@ -2,7 +2,7 @@
 
 use crate::model::{
     CrateInfo, DependencyRef, EdgeContext, ExternalsResult, ModuleInfo, ModuleTree, SourceLocation,
-    TestKind, UsageKind, normalize_crate_name,
+    TargetRoots, TestKind, UsageKind, normalize_crate_name,
 };
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
@@ -14,16 +14,20 @@ pub enum Node {
     Crate {
         name: String,
         path: PathBuf,
+        target_roots: TargetRoots,
     },
     Module {
         name: String,
         crate_idx: NodeIndex,
+        /// Absolute path of the declaring file, see `ModuleInfo::file`.
+        file: Option<PathBuf>,
     },
     ExternalCrate {
         name: String,
         version: String,
         package_id: String,
         is_direct_dependency: bool,
+        target_roots: TargetRoots,
     },
 }
 
@@ -441,6 +445,7 @@ impl GraphBuilder {
                 let idx = self.graph.add_node(Node::Crate {
                     name: crate_.name.clone(),
                     path: crate_.path.clone(),
+                    target_roots: crate_.target_roots.clone(),
                 });
                 (normalize_crate_name(&crate_.name), idx)
             })
@@ -476,6 +481,7 @@ impl GraphBuilder {
         let module_idx = self.graph.add_node(Node::Module {
             name: module.name.clone(),
             crate_idx,
+            file: module.file.clone(),
         });
         self.graph
             .add_edge(parent_idx, module_idx, EdgeWeight::Contains);
@@ -592,6 +598,7 @@ impl GraphBuilder {
                 version: info.version.clone(),
                 package_id: info.package_id.clone(),
                 is_direct_dependency: direct_pkg_ids.contains(info.package_id.as_str()),
+                target_roots: info.target_roots.clone(),
             });
             pkg_index.insert(&info.package_id, idx);
             self.external_map.insert(info.name.clone(), idx);
@@ -682,8 +689,8 @@ fn aggregate_context(deps: &[&DependencyRef]) -> EdgeContext {
 mod tests {
     use super::*;
     use crate::model::{CrateInfo, DependencyRef, ModuleInfo, ModuleTree};
-    use crate::test_support::conventional_crate;
-    use std::path::PathBuf;
+    use crate::test_support::{conventional_crate, crate_node, module_node};
+    use std::path::{Path, PathBuf};
 
     // -- Construction helpers --
 
@@ -702,6 +709,7 @@ mod tests {
         ModuleInfo {
             name: name.into(),
             full_path: full_path.into(),
+            file: None,
             children: vec![],
             dependencies: vec![],
         }
@@ -792,6 +800,26 @@ mod tests {
         assert_eq!(graph.node_count(), 3);
         let (cd, md, c) = count_edges(&graph);
         assert_eq!((cd, md, c), (0, 0, 2));
+    }
+
+    #[test]
+    fn test_module_node_carries_the_module_file() {
+        let modules = vec![tree(ModuleInfo {
+            children: vec![ModuleInfo {
+                file: Some("/ws/my_crate/src/foo.rs".into()),
+                ..module("foo", "crate::foo")
+            }],
+            ..module("my_crate", "crate")
+        })];
+        let graph = ArcGraph::build(&[crate_("my_crate")], &modules, None, false);
+        let foo = graph
+            .node_indices()
+            .find(|&idx| graph[idx].name() == "foo")
+            .expect("module node");
+        assert!(matches!(
+            &graph[foo],
+            Node::Module { file: Some(file), .. } if file == Path::new("/ws/my_crate/src/foo.rs")
+        ));
     }
 
     #[test]
@@ -1029,6 +1057,7 @@ mod tests {
             version: "1.0.0".into(),
             package_id: "serde 1.0.0 (registry+...)".into(),
             is_direct_dependency: true,
+            target_roots: TargetRoots::default(),
         };
         assert!(!node.is_crate());
         assert!(node.is_external());
@@ -1038,20 +1067,15 @@ mod tests {
     #[test]
     fn test_production_reachable_excludes_external() {
         let mut graph = ArcGraph::new();
-        let crate_idx = graph.add_node(Node::Crate {
-            name: "my_crate".into(),
-            path: "/path".into(),
-        });
-        let mod_idx = graph.add_node(Node::Module {
-            name: "foo".into(),
-            crate_idx,
-        });
+        let crate_idx = graph.add_node(crate_node("my_crate"));
+        let mod_idx = graph.add_node(module_node("foo", crate_idx));
         graph.add_edge(crate_idx, mod_idx, EdgeWeight::Contains);
         let ext_idx = graph.add_node(Node::ExternalCrate {
             name: "serde".into(),
             version: "1.0.0".into(),
             package_id: "serde-pkg".into(),
             is_direct_dependency: true,
+            target_roots: TargetRoots::default(),
         });
         graph.add_edge(
             crate_idx,
@@ -1071,14 +1095,8 @@ mod tests {
     #[test]
     fn test_production_reachable_crates_without_submodules() {
         let mut graph = ArcGraph::new();
-        let a = graph.add_node(Node::Crate {
-            name: "alpha".into(),
-            path: "/path".into(),
-        });
-        let b = graph.add_node(Node::Crate {
-            name: "beta".into(),
-            path: "/path".into(),
-        });
+        let a = graph.add_node(crate_node("alpha"));
+        let b = graph.add_node(crate_node("beta"));
         graph.add_edge(
             a,
             b,
@@ -1097,24 +1115,12 @@ mod tests {
     /// itself, so only the incoming edges tell the two module-less crates apart.
     fn mixed_graph_with_leaf_and_helper() -> (ArcGraph, NodeIndex, NodeIndex) {
         let mut graph = ArcGraph::new();
-        let lib = graph.add_node(Node::Crate {
-            name: "lib".into(),
-            path: "/path".into(),
-        });
-        let module = graph.add_node(Node::Module {
-            name: "engine".into(),
-            crate_idx: lib,
-        });
+        let lib = graph.add_node(crate_node("lib"));
+        let module = graph.add_node(module_node("engine", lib));
         graph.add_edge(lib, module, EdgeWeight::Contains);
 
-        let binary = graph.add_node(Node::Crate {
-            name: "binary".into(),
-            path: "/path".into(),
-        });
-        let helper = graph.add_node(Node::Crate {
-            name: "helper".into(),
-            path: "/path".into(),
-        });
+        let binary = graph.add_node(crate_node("binary"));
+        let helper = graph.add_node(crate_node("helper"));
         for source in [binary, helper] {
             graph.add_edge(
                 source,
@@ -1154,6 +1160,7 @@ mod tests {
             version: "1.0.0".into(),
             package_id: "serde-pkg".into(),
             is_direct_dependency: true,
+            target_roots: TargetRoots::default(),
         });
         assert_eq!(graph.owning_crate(ext_idx), ext_idx);
     }
@@ -1161,24 +1168,12 @@ mod tests {
     #[test]
     fn test_qualified_name_disambiguates_same_leaf() {
         let mut graph = ArcGraph::new();
-        let crate_idx = graph.add_node(Node::Crate {
-            name: "my-crate".into(),
-            path: "/my-crate".into(),
-        });
-        let top_store = graph.add_node(Node::Module {
-            name: "store".into(),
-            crate_idx,
-        });
+        let crate_idx = graph.add_node(crate_node("my-crate"));
+        let top_store = graph.add_node(module_node("store", crate_idx));
         graph.add_edge(crate_idx, top_store, EdgeWeight::Contains);
-        let core = graph.add_node(Node::Module {
-            name: "core".into(),
-            crate_idx,
-        });
+        let core = graph.add_node(module_node("core", crate_idx));
         graph.add_edge(crate_idx, core, EdgeWeight::Contains);
-        let core_store = graph.add_node(Node::Module {
-            name: "store".into(),
-            crate_idx,
-        });
+        let core_store = graph.add_node(module_node("store", crate_idx));
         graph.add_edge(core, core_store, EdgeWeight::Contains);
 
         assert_eq!(graph.qualified_name(top_store), "my-crate::store");
@@ -1188,20 +1183,14 @@ mod tests {
     #[test]
     fn test_qualified_name_orphan_falls_back_to_leaf() {
         let mut graph = ArcGraph::new();
-        let idx = graph.add_node(Node::Module {
-            name: "lonely".into(),
-            crate_idx: NodeIndex::new(0),
-        });
+        let idx = graph.add_node(module_node("lonely", NodeIndex::new(0)));
         assert_eq!(graph.qualified_name(idx), "lonely");
     }
 
     #[test]
     fn test_qualified_name_crate_returns_bare_name() {
         let mut graph = ArcGraph::new();
-        let crate_idx = graph.add_node(Node::Crate {
-            name: "my-crate".into(),
-            path: "/my-crate".into(),
-        });
+        let crate_idx = graph.add_node(crate_node("my-crate"));
         assert_eq!(graph.qualified_name(crate_idx), "my-crate");
     }
 
@@ -1217,11 +1206,13 @@ mod tests {
                     name: "serde".into(),
                     version: "1.0.0".into(),
                     package_id: "serde-pkg".into(),
+                    target_roots: TargetRoots::default(),
                 },
                 ExternalCrateInfo {
                     name: "tokio".into(),
                     version: "1.0.0".into(),
                     package_id: "tokio-pkg".into(),
+                    target_roots: TargetRoots::default(),
                 },
             ],
             workspace_deps: vec![WorkspaceExternalDep {
@@ -1245,6 +1236,54 @@ mod tests {
     }
 
     #[test]
+    fn test_crate_nodes_carry_their_target_roots() {
+        use crate::model::ExternalCrateInfo;
+
+        let crates = vec![CrateInfo {
+            target_roots: TargetRoots {
+                lib_root: Some("/ws/app/src/lib.rs".into()),
+                bin_roots: vec!["/ws/app/src/main.rs".into()],
+            },
+            ..crate_("app")
+        }];
+        let externals = ExternalsResult {
+            crates: vec![ExternalCrateInfo {
+                name: "serde".into(),
+                version: "1.0.0".into(),
+                package_id: "serde-pkg".into(),
+                target_roots: TargetRoots {
+                    lib_root: Some("/reg/serde-1.0.0/src/lib.rs".into()),
+                    bin_roots: vec![],
+                },
+            }],
+            workspace_deps: vec![],
+            external_deps: vec![],
+            crate_name_map: std::collections::HashMap::new(),
+        };
+        let graph = ArcGraph::build(&crates, &[], Some(&externals), false);
+
+        let node = |name: &str| {
+            let idx = graph
+                .node_indices()
+                .find(|&idx| graph[idx].name() == name)
+                .expect("node");
+            &graph[idx]
+        };
+        assert!(matches!(
+            node("app"),
+            Node::Crate { target_roots, .. }
+                if target_roots.lib_root.as_deref() == Some(Path::new("/ws/app/src/lib.rs"))
+                    && target_roots.bin_roots == [PathBuf::from("/ws/app/src/main.rs")]
+        ));
+        assert!(matches!(
+            node("serde"),
+            Node::ExternalCrate { target_roots, .. }
+                if target_roots.lib_root.as_deref() == Some(Path::new("/reg/serde-1.0.0/src/lib.rs"))
+                    && target_roots.bin_roots.is_empty()
+        ));
+    }
+
+    #[test]
     fn test_external_is_direct_dependency_flag() {
         use crate::model::{ExternalCrateInfo, ExternalDep, WorkspaceExternalDep};
         use cargo_metadata::DependencyKind as DK;
@@ -1256,11 +1295,13 @@ mod tests {
                     name: "serde".into(),
                     version: "1.0.0".into(),
                     package_id: "serde-pkg".into(),
+                    target_roots: TargetRoots::default(),
                 },
                 ExternalCrateInfo {
                     name: "tokio".into(),
                     version: "1.0.0".into(),
                     package_id: "tokio-pkg".into(),
+                    target_roots: TargetRoots::default(),
                 },
             ],
             workspace_deps: vec![WorkspaceExternalDep {
@@ -1329,6 +1370,7 @@ mod tests {
                 name: "serde".into(),
                 version: "1.0.0".into(),
                 package_id: "serde-pkg".into(),
+                target_roots: TargetRoots::default(),
             }],
             workspace_deps: vec![],
             external_deps: vec![],

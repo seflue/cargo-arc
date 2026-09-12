@@ -277,6 +277,7 @@ fn walk_module(module: hir::Module, parent_path: &str, ctx: &HirWalkContext) -> 
         .unwrap_or("");
 
     let dependencies = extract_module_dependencies(module, current_module_path, ctx);
+    let file = module_file(module, ctx);
 
     let children: Vec<ModuleInfo> = module
         .declarations(ctx.db)
@@ -293,9 +294,23 @@ fn walk_module(module: hir::Module, parent_path: &str, ctx: &HirWalkContext) -> 
     ModuleInfo {
         name,
         full_path,
+        file,
         children,
         dependencies,
     }
+}
+
+/// Resolve the absolute path of the file that declares the module; `None`
+/// when the VFS holds it under a non-filesystem path.
+#[cfg(feature = "hir")]
+fn module_file(module: hir::Module, ctx: &HirWalkContext) -> Option<PathBuf> {
+    let source = module.definition_source(ctx.db);
+    let editioned_file_id = source.file_id.original_file(ctx.db);
+    let file_id = editioned_file_id.file_id(ctx.db);
+    let vfs_path = ctx.vfs.file_path(file_id);
+    vfs_path
+        .as_path()
+        .map(|abs_path| PathBuf::from(abs_path.as_str()))
 }
 
 /// Extract module-level dependencies by parsing use statements from source
@@ -305,28 +320,20 @@ fn extract_module_dependencies(
     current_module_path: &str,
     ctx: &HirWalkContext,
 ) -> Vec<DependencyRef> {
-    // Get the source file for this module
-    let source = module.definition_source(ctx.db);
-    let editioned_file_id = source.file_id.original_file(ctx.db);
-    let file_id = editioned_file_id.file_id(ctx.db);
-
-    // Get file path from VFS and read from disk
-    let vfs_path = ctx.vfs.file_path(file_id);
-    let Some(abs_path) = vfs_path.as_path() else {
+    let Some(abs_path_buf) = module_file(module, ctx) else {
         return Vec::new();
     };
-    let abs_path_buf = PathBuf::from(abs_path.as_str());
+    // Graceful degradation: rust-analyzer already parsed this file successfully,
+    // so read errors here are rare edge cases (file deleted mid-run, permissions).
+    // Missing deps are acceptable - the module still appears, just without edges.
+    let source_text = match std::fs::read_to_string(&abs_path_buf) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
     let source_file = abs_path_buf
         .strip_prefix(ctx.workspace_root)
         .map(|p| p.to_path_buf())
         .unwrap_or(abs_path_buf);
-    // Graceful degradation: rust-analyzer already parsed this file successfully,
-    // so read errors here are rare edge cases (file deleted mid-run, permissions).
-    // Missing deps are acceptable - the module still appears, just without edges.
-    let source_text = match std::fs::read_to_string(abs_path.as_str()) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
 
     let empty_reexport_map = super::use_parser::ReExportMap::default();
     let res_ctx = ResolutionContext {

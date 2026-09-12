@@ -319,7 +319,7 @@ fn dead_catch_alls(index: &PatternIndex, config: &ArcConfig) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use crate::graph::{ArcGraph, EdgeWeight, Node};
+    use crate::graph::{ArcGraph, EdgeWeight};
     use crate::model::{Edge, EdgeSymbols};
     use crate::rules::baseline::{Baseline, BaselineEntry, ViolationKey};
     use crate::rules::config::{
@@ -328,32 +328,23 @@ mod tests {
     };
     use crate::rules::diagnostics::{Diagnostic, DiagnosticKind, collect, dead_excepts};
     use crate::rules::matching::PatternIndex;
+    use crate::test_support::{crate_node, module_node};
     use petgraph::graph::NodeIndex;
-    use std::path::PathBuf;
 
     /// Workspace graph with one module per named crate, so that a crate
     /// pattern and a module pattern both have something to resolve to.
     fn workspace(crates: &[&str]) -> ArcGraph {
         let mut graph = ArcGraph::new();
         for name in crates {
-            let crate_idx = graph.add_node(Node::Crate {
-                name: (*name).into(),
-                path: PathBuf::from(format!("/{name}")),
-            });
-            let module = graph.add_node(Node::Module {
-                name: "service".into(),
-                crate_idx,
-            });
+            let crate_idx = graph.add_node(crate_node(name));
+            let module = graph.add_node(module_node("service", crate_idx));
             graph.add_edge(crate_idx, module, EdgeWeight::Contains);
         }
         graph
     }
 
     fn add_crate(graph: &mut ArcGraph, name: &str) -> NodeIndex {
-        graph.add_node(Node::Crate {
-            name: name.into(),
-            path: PathBuf::from(format!("/{name}")),
-        })
+        graph.add_node(crate_node(name))
     }
 
     fn add_module(
@@ -362,10 +353,7 @@ mod tests {
         crate_idx: NodeIndex,
         parent: NodeIndex,
     ) -> NodeIndex {
-        let idx = graph.add_node(Node::Module {
-            name: name.into(),
-            crate_idx,
-        });
+        let idx = graph.add_node(module_node(name, crate_idx));
         graph.add_edge(parent, idx, EdgeWeight::Contains);
         idx
     }

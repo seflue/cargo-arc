@@ -442,6 +442,7 @@ mod tests {
     use super::*;
     use crate::model::SourceLocation;
     use crate::rules::engine::{CycleClusterEdge, Violation, WrittenEdge};
+    use crate::test_support::{crate_node, module_node};
     use std::path::PathBuf;
 
     /// Single-cycle, single-edge `CycleCluster` fixture for tests that only
@@ -1474,7 +1475,7 @@ mod tests {
         assert!(output.contains("    cycle: a -> b -> a"));
     }
 
-    use crate::graph::{ArcGraph, EdgeWeight, Node, Reexports};
+    use crate::graph::{ArcGraph, EdgeWeight, Reexports};
 
     // ===== cluster_block tests =====
 
@@ -1485,17 +1486,11 @@ mod tests {
     /// edges `(from, to, ref_count)`.
     fn cyc_graph(modules: &[&str], deps: &[(usize, usize, usize)]) -> ArcGraph {
         let mut g = ArcGraph::new();
-        let crate_idx = g.add_node(Node::Crate {
-            name: "app".into(),
-            path: "/app".into(),
-        });
+        let crate_idx = g.add_node(crate_node("app"));
         let idx: Vec<_> = modules
             .iter()
             .map(|m| {
-                let n = g.add_node(Node::Module {
-                    name: (*m).into(),
-                    crate_idx,
-                });
+                let n = g.add_node(module_node(m, crate_idx));
                 g.add_edge(crate_idx, n, EdgeWeight::Contains);
                 n
             })

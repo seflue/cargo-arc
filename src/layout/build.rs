@@ -721,7 +721,8 @@ mod tests {
     use super::*;
     use crate::diagnose::RepresentativeCycles;
     use crate::graph::{ArcGraph, EdgeWeight, Node};
-    use crate::model::{EdgeContext, SourceLocation, TestKind, UsageKind};
+    use crate::model::{EdgeContext, SourceLocation, TargetRoots, TestKind, UsageKind};
+    use crate::test_support::{crate_node, module_node};
     use assert2::check;
     use petgraph::graph::NodeIndex;
     use rstest::rstest;
@@ -753,16 +754,10 @@ mod tests {
         /// Add a crate with child modules and Contains edges.
         /// Path is auto-generated as "/<`crate_name`>".
         fn crate_with_modules(&mut self, crate_name: &str, module_names: &[&str]) -> &mut Self {
-            let crate_idx = self.graph.add_node(Node::Crate {
-                name: crate_name.to_string(),
-                path: PathBuf::from(format!("/{crate_name}")),
-            });
+            let crate_idx = self.graph.add_node(crate_node(crate_name));
             self.names.insert(crate_name.to_string(), crate_idx);
             for &mod_name in module_names {
-                let mod_idx = self.graph.add_node(Node::Module {
-                    name: mod_name.to_string(),
-                    crate_idx,
-                });
+                let mod_idx = self.graph.add_node(module_node(mod_name, crate_idx));
                 self.names.insert(mod_name.to_string(), mod_idx);
                 self.graph
                     .add_edge(crate_idx, mod_idx, EdgeWeight::Contains);
@@ -772,10 +767,7 @@ mod tests {
 
         /// Add a module not attached to any crate (uses `NodeIndex::new(0)` as `crate_idx`).
         fn orphan_module(&mut self, name: &str) -> &mut Self {
-            let idx = self.graph.add_node(Node::Module {
-                name: name.to_string(),
-                crate_idx: NodeIndex::new(0),
-            });
+            let idx = self.graph.add_node(module_node(name, NodeIndex::new(0)));
             self.names.insert(name.to_string(), idx);
             self
         }
@@ -787,10 +779,7 @@ mod tests {
                 Node::Module { crate_idx, .. } => *crate_idx,
                 Node::Crate { .. } | Node::ExternalCrate { .. } => parent_idx,
             };
-            let child_idx = self.graph.add_node(Node::Module {
-                name: child.to_string(),
-                crate_idx,
-            });
+            let child_idx = self.graph.add_node(module_node(child, crate_idx));
             self.names.insert(child.to_string(), child_idx);
             self.graph
                 .add_edge(parent_idx, child_idx, EdgeWeight::Contains);
@@ -862,6 +851,7 @@ mod tests {
                 version: version.to_string(),
                 package_id: format!("{name}-pkg"),
                 is_direct_dependency: true,
+                target_roots: TargetRoots::default(),
             });
             self.names.insert(name.to_string(), idx);
             self

@@ -1122,10 +1122,10 @@ fn module_dep_locations(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::Node;
     use crate::model::EdgeContext;
     use crate::rules::config::Diagnostics;
     use crate::rules::diagnostics::{DiagnosticKind, UnsortedNode};
+    use crate::test_support::{crate_node, module_node};
     use std::path::PathBuf;
 
     // -- Test graph helpers --
@@ -1156,10 +1156,7 @@ mod tests {
 
     fn test_crate_graph() -> (ArcGraph, NodeIndex) {
         let mut graph = ArcGraph::new();
-        let crate_idx = graph.add_node(Node::Crate {
-            name: "test".into(),
-            path: PathBuf::from("/test"),
-        });
+        let crate_idx = graph.add_node(crate_node("test"));
         (graph, crate_idx)
     }
 
@@ -1169,10 +1166,7 @@ mod tests {
         crate_idx: NodeIndex,
         parent: NodeIndex,
     ) -> NodeIndex {
-        let idx = graph.add_node(Node::Module {
-            name: name.into(),
-            crate_idx,
-        });
+        let idx = graph.add_node(module_node(name, crate_idx));
         graph.add_edge(parent, idx, EdgeWeight::Contains);
         idx
     }
@@ -1301,24 +1295,15 @@ mod tests {
     ) {
         let mut graph = ArcGraph::new();
 
-        let domain = graph.add_node(Node::Crate {
-            name: "domain".into(),
-            path: PathBuf::from("/domain"),
-        });
+        let domain = graph.add_node(crate_node("domain"));
         let service = add_module(&mut graph, "service", domain, domain);
         let model = add_module(&mut graph, "model", domain, domain);
 
-        let infra = graph.add_node(Node::Crate {
-            name: "infra".into(),
-            path: PathBuf::from("/infra"),
-        });
+        let infra = graph.add_node(crate_node("infra"));
         let db = add_module(&mut graph, "db", infra, infra);
         let api = add_module(&mut graph, "api", infra, infra);
 
-        let application = graph.add_node(Node::Crate {
-            name: "application".into(),
-            path: PathBuf::from("/application"),
-        });
+        let application = graph.add_node(crate_node("application"));
         let handler = add_module(&mut graph, "handler", application, application);
 
         (
@@ -1822,10 +1807,7 @@ mod tests {
         let mut graph = ArcGraph::new();
         let mut index: HashMap<&str, NodeIndex> = HashMap::new();
         for &name in crates {
-            let node = graph.add_node(Node::Crate {
-                name: name.into(),
-                path: PathBuf::from(format!("/{name}")),
-            });
+            let node = graph.add_node(crate_node(name));
             index.insert(name, node);
         }
         for &(from, to) in deps {
@@ -2005,18 +1987,9 @@ mod tests {
     /// A "domain" crate plus two crates that do not match `*domain*`.
     fn domain_and_others_graph() -> (ArcGraph, NodeIndex, NodeIndex, NodeIndex) {
         let mut graph = ArcGraph::new();
-        let domain = graph.add_node(Node::Crate {
-            name: "domain".into(),
-            path: PathBuf::from("/domain"),
-        });
-        let svc_orders = graph.add_node(Node::Crate {
-            name: "svc_orders".into(),
-            path: PathBuf::from("/svc_orders"),
-        });
-        let svc_billing = graph.add_node(Node::Crate {
-            name: "svc_billing".into(),
-            path: PathBuf::from("/svc_billing"),
-        });
+        let domain = graph.add_node(crate_node("domain"));
+        let svc_orders = graph.add_node(crate_node("svc_orders"));
+        let svc_billing = graph.add_node(crate_node("svc_billing"));
         (graph, domain, svc_orders, svc_billing)
     }
 
@@ -2058,14 +2031,8 @@ mod tests {
         let rule = catch_all_above_domain_rule();
 
         let mut before = ArcGraph::new();
-        let domain = before.add_node(Node::Crate {
-            name: "domain".into(),
-            path: PathBuf::from("/domain"),
-        });
-        let svc_orders = before.add_node(Node::Crate {
-            name: "svc_orders".into(),
-            path: PathBuf::from("/svc_orders"),
-        });
+        let domain = before.add_node(crate_node("domain"));
+        let svc_orders = before.add_node(crate_node("svc_orders"));
         add_production_dep(&mut before, domain, svc_orders);
         assert_eq!(check_rule(&before, &rule, false).reported().count(), 1);
 
@@ -2102,10 +2069,7 @@ mod tests {
     #[test]
     fn test_layers_overlapping_ordinary_positions_fail_the_run() {
         let mut graph = ArcGraph::new();
-        let crate_idx = graph.add_node(Node::Crate {
-            name: "svc_application_orders".into(),
-            path: PathBuf::from("/svc_application_orders"),
-        });
+        let crate_idx = graph.add_node(crate_node("svc_application_orders"));
         add_module(&mut graph, "alpha", crate_idx, crate_idx);
         add_module(&mut graph, "beta", crate_idx, crate_idx);
 
