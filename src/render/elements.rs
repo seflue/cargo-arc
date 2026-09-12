@@ -124,6 +124,7 @@ pub(super) fn render_toolbar(
             "        </div>\n",
             "        <span id=\"search-result-count\" class=\"{}\"></span>\n",
             "      </div>\n",
+            "      <span id=\"jump-status\" class=\"{}\"></span>\n",
             "    </div>\n",
             "  </foreignObject>\n",
         ),
@@ -164,6 +165,7 @@ pub(super) fn render_toolbar(
         ct.scope_btn,    // module scope btn
         ct.scope_btn,    // symbol scope btn
         ct.result_count, // .toolbar-result-count
+        ct.jump_status,  // .toolbar-jump-status
     )
 }
 
@@ -903,6 +905,10 @@ mod tests {
         assert!(
             output.contains(r#"id="search-result-count""#),
             "Should have search result count"
+        );
+        assert!(
+            output.contains(r#"id="jump-status""#),
+            "Should have jump status span"
         );
         assert!(
             output.contains("xmlns=\"http://www.w3.org/1999/xhtml\""),

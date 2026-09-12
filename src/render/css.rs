@@ -560,6 +560,16 @@ fn build_css_rules() -> Vec<CssRule> {
                 ("min-width", "60px"),
             ],
         ),
+        CssRule::class(
+            c.toolbar.jump_status,
+            &[("font-size", "11px"), ("color", "#888")],
+        ),
+        // Empty flex children still count for .toolbar-root's gap; hide the
+        // span so it takes no space while there is no message to show.
+        CssRule::new(
+            &format!(".{}:empty", c.toolbar.jump_status),
+            &[("display", "none")],
+        ),
         // CSS-only search dimming via search-active on SVG root
         // Rects: dim all except search matches, toolbar buttons, and arc-count backgrounds
         CssRule::new(
@@ -1330,6 +1340,26 @@ mod tests {
         assert!(
             css.contains(&format!(".{}", CSS.sidebar.header_actions)),
             "CSS should contain .sidebar-header-actions"
+        );
+    }
+
+    #[test]
+    fn test_css_contains_jump_status_rule() {
+        let css = render_styles();
+
+        assert!(
+            css.contains(&format!(".{}", CSS.toolbar.jump_status)),
+            "CSS should contain a rule for .toolbar-jump-status"
+        );
+    }
+
+    #[test]
+    fn test_css_hides_empty_jump_status_span() {
+        let css = render_styles();
+
+        assert!(
+            css.contains(&format!(".{}:empty", CSS.toolbar.jump_status)),
+            "an empty jump-status span should take no space in the flex toolbar"
         );
     }
 
