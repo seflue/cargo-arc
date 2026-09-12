@@ -190,11 +190,14 @@ impl LayoutIR {
 /// `CrateDep` edges are skipped when `ModuleDep` edges exist between the same crates.
 /// `reexports` must match the subgraph `analysis` was computed from.
 /// Target ids are assigned in item order, so runs on the same graph are deterministic.
+/// Target names are the paths relative to `workspace_root`; without a root, or
+/// for a path outside it, the absolute path.
 #[must_use]
 pub(crate) fn build_layout(
     graph: &ArcGraph,
     analysis: &CycleAnalysis,
     reexports: Reexports,
+    workspace_root: Option<&Path>,
 ) -> (LayoutIR, JumpTable) {
     let mut ir = LayoutIR::new();
     let mut table = JumpTable::new();
@@ -223,10 +226,18 @@ pub(crate) fn build_layout(
         &parent_map,
         &analysis.node_scc,
         &mut table,
+        workspace_root,
     );
 
     if !external_indices.is_empty() {
-        populate_external_items(&mut ir, graph, &external_indices, &mut node_map, &mut table);
+        populate_external_items(
+            &mut ir,
+            graph,
+            &external_indices,
+            &mut node_map,
+            &mut table,
+            workspace_root,
+        );
     }
 
     let suppressed = graph.suppressed_crate_pairs();
@@ -245,40 +256,59 @@ pub(crate) fn build_layout(
     (ir, table)
 }
 
+/// Return the path shown in the UI for a jump target: relative to
+/// `workspace_root` when it lies inside, otherwise as given.
+fn target_name(path: &Path, workspace_root: Option<&Path>) -> String {
+    workspace_root
+        .and_then(|root| path.strip_prefix(root).ok())
+        .unwrap_or(path)
+        .display()
+        .to_string()
+}
+
 /// Insert a crate's (or external crate's) jump targets: its lib root, then
 /// each bin root, then its manifest, all at line 1.
 fn crate_targets(
     table: &mut JumpTable,
     target_roots: &TargetRoots,
     manifest: &Path,
+    workspace_root: Option<&Path>,
 ) -> Vec<JumpTarget> {
     let mut targets = Vec::new();
     if let Some(lib_root) = &target_roots.lib_root {
         targets.push(JumpTarget {
             kind: TargetKind::Lib,
+            name: target_name(lib_root, workspace_root),
             id: table.insert(lib_root.clone(), 1),
         });
     }
     for bin_root in &target_roots.bin_roots {
         targets.push(JumpTarget {
             kind: TargetKind::Bin,
+            name: target_name(bin_root, workspace_root),
             id: table.insert(bin_root.clone(), 1),
         });
     }
     targets.push(JumpTarget {
         kind: TargetKind::Manifest,
+        name: target_name(manifest, workspace_root),
         id: table.insert(manifest.to_path_buf(), 1),
     });
     targets
 }
 
 /// Insert a module's declaring file as its jump target, when known.
-fn module_targets(table: &mut JumpTable, file: Option<&Path>) -> Vec<JumpTarget> {
+fn module_targets(
+    table: &mut JumpTable,
+    file: Option<&Path>,
+    workspace_root: Option<&Path>,
+) -> Vec<JumpTarget> {
     let Some(file) = file else {
         return Vec::new();
     };
     vec![JumpTarget {
         kind: TargetKind::Module,
+        name: target_name(file, workspace_root),
         id: table.insert(file.to_path_buf(), 1),
     }]
 }
@@ -422,6 +452,7 @@ fn populate_items(
     parent_map: &HashMap<NodeIndex, NodeIndex>,
     node_scc: &HashMap<NodeIndex, usize>,
     table: &mut JumpTable,
+    workspace_root: Option<&Path>,
 ) -> HashMap<NodeIndex, NodeId> {
     let mut node_map = HashMap::new();
     for &idx in ordered {
@@ -435,7 +466,7 @@ fn populate_items(
                 ItemKind::Crate,
                 name.clone(),
                 None,
-                crate_targets(table, target_roots, manifest),
+                crate_targets(table, target_roots, manifest, workspace_root),
             ),
             Node::Module { name, file, .. } => {
                 let nesting = nesting_depth(idx, parent_map);
@@ -451,7 +482,7 @@ fn populate_items(
                     },
                     name.clone(),
                     module_source_path(graph, idx),
-                    module_targets(table, file.as_deref()),
+                    module_targets(table, file.as_deref(), workspace_root),
                 )
             }
             Node::ExternalCrate { .. } => continue, // handled by populate_external_items
@@ -477,6 +508,7 @@ fn populate_external_items(
     external_indices: &[NodeIndex],
     node_map: &mut HashMap<NodeIndex, NodeId>,
     table: &mut JumpTable,
+    workspace_root: Option<&Path>,
 ) {
     let section_id = ir.add_item(
         ItemKind::ExternalSection,
@@ -538,7 +570,8 @@ fn populate_external_items(
                 name.clone(),
             );
             ir.items[layout_id].version = Some(version.clone());
-            ir.items[layout_id].targets = crate_targets(table, target_roots, manifest);
+            ir.items[layout_id].targets =
+                crate_targets(table, target_roots, manifest, workspace_root);
             node_map.insert(idx, layout_id);
         }
     }
@@ -1130,7 +1163,7 @@ mod tests {
         b.crate_with_modules("my_crate", &["mod_a", "mod_b"])
             .prod_dep("mod_a", "mod_b");
         let (graph, _) = b.build();
-        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded);
+        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
 
         // Should have 3 items (1 crate + 2 modules)
         assert_eq!(ir.items.len(), 3);
@@ -1152,7 +1185,7 @@ mod tests {
         let analysis = graph
             .production_subgraph(Reexports::Included)
             .representative_cycles();
-        let (ir, _) = build_layout(&graph, &analysis, Reexports::Excluded);
+        let (ir, _) = build_layout(&graph, &analysis, Reexports::Excluded, None);
 
         // Should have 2 items
         assert_eq!(ir.items.len(), 2);
@@ -1182,7 +1215,7 @@ mod tests {
         let analysis = graph
             .production_subgraph(Reexports::Included)
             .representative_cycles();
-        let (ir, _) = build_layout(&graph, &analysis, Reexports::Excluded);
+        let (ir, _) = build_layout(&graph, &analysis, Reexports::Excluded, None);
 
         // Should have at least 5 cycle edges (3 from cycle 1 + 2 from cycle 2)
         let cycle_edges: Vec<_> = ir.edges.iter().filter(|e| e.cycle.is_some()).collect();
@@ -1227,7 +1260,7 @@ mod tests {
         let mut b = TestGraphBuilder::new();
         b.crate_with_modules("test", &["a", "b"]).prod_dep("a", "b"); // a depends on b
         let (graph, _) = b.build();
-        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded);
+        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
 
         // There should be exactly one edge
         assert_eq!(ir.edges.len(), 1);
@@ -1251,7 +1284,7 @@ mod tests {
             .crate_with_modules("crate_b", &["mod_b1", "mod_b2"])
             .crate_dep("crate_a", "crate_b");
         let (graph, _) = b.build();
-        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded);
+        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
         let la = LayoutAssert::new(ir);
 
         check!(la.ir.items.len() == 6);
@@ -1353,7 +1386,7 @@ mod tests {
         b.crate_with_targets("app", target_roots, "/ws/app/Cargo.toml")
             .module_with_file("app", "mod_a", "/ws/app/src/mod_a.rs");
         let (graph, _) = b.build();
-        let (ir, table) = build_layout(&graph, &no_cycles(), Reexports::Excluded);
+        let (ir, table) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
 
         let la = LayoutAssert::new(ir);
         let app_targets = &la.ir.items[la.pos("app")].targets;
@@ -1406,6 +1439,73 @@ mod tests {
         assert_eq!(ids.len(), 4, "all four ids should be distinct");
     }
 
+    fn target_names(la: &LayoutAssert, label: &str) -> Vec<String> {
+        la.ir.items[la.pos(label)]
+            .targets
+            .iter()
+            .map(|t| t.name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn target_names_are_relative_to_the_workspace_root() {
+        let target_roots = TargetRoots {
+            lib_root: Some(PathBuf::from("/ws/app/src/lib.rs")),
+            bin_roots: vec![PathBuf::from("/ws/app/src/bin/tool.rs")],
+        };
+        let mut b = TestGraphBuilder::new();
+        b.crate_with_targets("app", target_roots, "/ws/app/Cargo.toml")
+            .module_with_file("app", "mod_a", "/ws/app/src/foo/mod.rs");
+        let (graph, _) = b.build();
+        let (ir, _) = build_layout(
+            &graph,
+            &no_cycles(),
+            Reexports::Excluded,
+            Some(Path::new("/ws")),
+        );
+        let la = LayoutAssert::new(ir);
+
+        assert_eq!(
+            target_names(&la, "app"),
+            vec!["app/src/lib.rs", "app/src/bin/tool.rs", "app/Cargo.toml"]
+        );
+        assert_eq!(target_names(&la, "mod_a"), vec!["app/src/foo/mod.rs"]);
+    }
+
+    #[test]
+    fn target_names_stay_absolute_outside_the_workspace_or_without_a_root() {
+        let target_roots = TargetRoots {
+            lib_root: Some(PathBuf::from("/registry/dep-1.0/src/lib.rs")),
+            bin_roots: vec![],
+        };
+        let mut b = TestGraphBuilder::new();
+        b.crate_with_targets("dep", target_roots, "/registry/dep-1.0/Cargo.toml");
+        let (graph, _) = b.build();
+
+        let (ir, _) = build_layout(
+            &graph,
+            &no_cycles(),
+            Reexports::Excluded,
+            Some(Path::new("/ws")),
+        );
+        assert_eq!(
+            target_names(&LayoutAssert::new(ir), "dep"),
+            vec![
+                "/registry/dep-1.0/src/lib.rs",
+                "/registry/dep-1.0/Cargo.toml"
+            ]
+        );
+
+        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
+        assert_eq!(
+            target_names(&LayoutAssert::new(ir), "dep"),
+            vec![
+                "/registry/dep-1.0/src/lib.rs",
+                "/registry/dep-1.0/Cargo.toml"
+            ]
+        );
+    }
+
     #[test]
     fn build_layout_assigns_ids_to_edge_source_locations_without_orphans() {
         let target_roots = TargetRoots {
@@ -1437,7 +1537,7 @@ mod tests {
                 ],
             );
         let (graph, _) = b.build();
-        let (ir, table) = build_layout(&graph, &no_cycles(), Reexports::Excluded);
+        let (ir, table) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
 
         let la = LayoutAssert::new(ir);
         let edge = la
@@ -1512,7 +1612,7 @@ mod tests {
             .nested_module("parent", "alpha_child")
             .nested_module("parent", "zebra_child");
         let (graph, _) = b.build();
-        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded);
+        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
         let la = LayoutAssert::new(ir);
 
         let pos_parent = la.pos("parent");
@@ -1561,7 +1661,7 @@ mod tests {
             b.prod_dep(from, to);
         }
         let (graph, _) = b.build();
-        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded);
+        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
         let la = LayoutAssert::new(ir);
 
         la.assert_top_level_order(expected_order);
@@ -1576,7 +1676,7 @@ mod tests {
             // Test: beta depends on alpha (reverse direction) → must NOT affect order
             .test_dep("beta", "alpha", TestKind::Unit);
         let (graph, _) = b.build();
-        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded);
+        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
         let la = LayoutAssert::new(ir);
 
         la.assert_order("alpha", "beta");
@@ -1592,7 +1692,7 @@ mod tests {
             // Test: bbb depends on aaa (reverse) → must NOT affect order
             .test_crate_dep("bbb", "aaa", TestKind::Unit);
         let (graph, _) = b.build();
-        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded);
+        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
         let la = LayoutAssert::new(ir);
 
         la.assert_order("aaa", "bbb");
@@ -1619,7 +1719,7 @@ mod tests {
                 .crate_dep("crate_a", "crate_b")
                 .prod_dep_located(self.dep_from, self.dep_to);
             let (graph, _) = b.build();
-            super::build_layout(&graph, &no_cycles(), Reexports::Excluded).0
+            super::build_layout(&graph, &no_cycles(), Reexports::Excluded, None).0
         }
     }
 
@@ -1662,7 +1762,7 @@ mod tests {
             .nested_module("parent_b", "child_b")
             .prod_dep("child_a", "child_b");
         let (graph, _) = b.build();
-        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded);
+        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
         let la = LayoutAssert::new(ir);
 
         la.assert_order("parent_a", "parent_b");
@@ -1680,7 +1780,7 @@ mod tests {
             .crate_with_modules("crate_a", &["mod_a"])
             .prod_dep("mod_a", "mod_b"); // no CrateDep edge!
         let (graph, _) = b.build();
-        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded);
+        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
         let la = LayoutAssert::new(ir);
 
         la.assert_order("crate_a", "crate_b");
@@ -1746,7 +1846,7 @@ mod tests {
             .prod_dep("d1", "b2")
             .prod_dep("d3", "c");
         let (graph, _) = b.build();
-        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded);
+        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
 
         let labels: Vec<&str> = ir.items.iter().map(|i| i.label.as_str()).collect();
         let top_level: Vec<&str> = labels
@@ -1783,7 +1883,7 @@ mod tests {
             .prod_dep("a", "d")
             .prod_dep("b", "c");
         let (graph, _) = b.build();
-        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded);
+        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
         let la = LayoutAssert::new(ir);
 
         la.assert_order("d", "c");
@@ -1800,7 +1900,7 @@ mod tests {
             .prod_dep("b", "c")
             .prod_dep("b", "d");
         let (graph, _) = b.build();
-        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded);
+        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
         let la = LayoutAssert::new(ir);
 
         la.assert_order("a", "c");
@@ -1824,7 +1924,7 @@ mod tests {
             // serde depends on proc-macro2 (transitive external dep)
             .crate_dep("serde", "proc-macro2");
         let (graph, _) = b.build();
-        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded);
+        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
 
         // All CrateDep edges between external crates should be Downward
         for edge in &ir.edges {
@@ -1866,7 +1966,7 @@ mod tests {
         let analysis = graph
             .production_subgraph(Reexports::Excluded)
             .representative_cycles();
-        let (ir, _) = build_layout(&graph, &analysis, Reexports::Excluded);
+        let (ir, _) = build_layout(&graph, &analysis, Reexports::Excluded, None);
 
         assert_eq!(ir.clusters.len(), 1, "one cyclic cluster expected");
         let cluster = ir.clusters.values().next().unwrap();
@@ -1910,7 +2010,7 @@ mod tests {
             .crate_dep("app_b", "tokio")
             .crate_dep("app_a", "alpha_crate");
         let (graph, _) = b.build();
-        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded);
+        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
         let la = LayoutAssert::new(ir);
 
         // tokio (2 incoming) should appear before alpha_crate (1 incoming),

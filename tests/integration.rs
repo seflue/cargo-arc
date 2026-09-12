@@ -1956,6 +1956,14 @@ fn ui_serves_the_page_and_resolves_a_jump_id_over_http() {
     assert_eq!(status, 200);
     let static_data = parse_static_data(&body);
     let id = first_jump_id(&static_data).expect("STATIC_DATA carries a jump target");
+    for node in static_data["nodes"].as_object().unwrap().values() {
+        for target in node["targets"].as_array().into_iter().flatten() {
+            assert!(
+                target["name"].as_str().is_some_and(|n| !n.is_empty()),
+                "target should carry a non-empty name: {target:?}"
+            );
+        }
+    }
 
     let (status, _) = http_get(port, &format!("/jump?id={id}"));
     assert_eq!(status, 200);

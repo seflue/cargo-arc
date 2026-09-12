@@ -33,10 +33,13 @@ pub(crate) struct Location {
     pub line: usize,
 }
 
-/// One jump target on a layout item: its kind and the id it resolves through.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// One jump target on a layout item: its kind, the path shown in the UI
+/// (workspace-relative where the target lies inside the workspace), and the
+/// id it resolves through.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct JumpTarget {
     pub kind: TargetKind,
+    pub name: String,
     pub id: LocationId,
 }
 

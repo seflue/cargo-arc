@@ -45,12 +45,14 @@ struct NodeData {
     targets: Vec<TargetData>,
 }
 
-/// One jump target of a node: the target's kind and the id it resolves
-/// through, in the `JumpTable` `build_layout` returns.
+/// One jump target of a node: the target's kind, the path shown in the UI
+/// (workspace-relative where the target lies inside the workspace), and the
+/// id it resolves through, in the `JumpTable` `build_layout` returns.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TargetData {
     kind: TargetKind,
+    name: String,
     jump: LocationId,
 }
 
@@ -294,6 +296,7 @@ fn generate_static_data(
                 .iter()
                 .map(|target| TargetData {
                     kind: target.kind,
+                    name: target.name.clone(),
                     jump: target.id,
                 })
                 .collect()
@@ -854,19 +857,23 @@ mod tests {
         ir.items[c].targets = vec![
             JumpTarget {
                 kind: TargetKind::Lib,
+                name: "lib.rs".to_string(),
                 id: table.insert(PathBuf::from("/ws/app/src/lib.rs"), 1),
             },
             JumpTarget {
                 kind: TargetKind::Bin,
+                name: "main.rs".to_string(),
                 id: table.insert(PathBuf::from("/ws/app/src/main.rs"), 1),
             },
             JumpTarget {
                 kind: TargetKind::Manifest,
+                name: "Cargo.toml".to_string(),
                 id: table.insert(PathBuf::from("/ws/app/Cargo.toml"), 1),
             },
         ];
         ir.items[m].targets = vec![JumpTarget {
             kind: TargetKind::Module,
+            name: "m.rs".to_string(),
             id: table.insert(PathBuf::from("/ws/app/src/m.rs"), 1),
         }];
         ir.edges.push(
@@ -917,10 +924,16 @@ mod tests {
             .map(|t| t["kind"].as_str().unwrap())
             .collect();
         assert_eq!(kinds, vec!["lib", "bin", "manifest"]);
+        let names: Vec<&str> = crate_targets
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["lib.rs", "main.rs", "Cargo.toml"]);
 
         let module_targets = data["nodes"][m.to_string()]["targets"].as_array().unwrap();
         assert_eq!(module_targets.len(), 1);
         assert_eq!(module_targets[0]["kind"], "module");
+        assert_eq!(module_targets[0]["name"], "m.rs");
 
         let jump_id_of = |v: &serde_json::Value| -> LocationId {
             serde_json::from_value(v["jump"].clone()).expect("value has a jump id")
@@ -2171,7 +2184,7 @@ mod tests {
         let analysis = graph
             .production_subgraph(Reexports::Excluded)
             .representative_cycles();
-        let (ir, _) = build_layout(&graph, &analysis, Reexports::Excluded);
+        let (ir, _) = build_layout(&graph, &analysis, Reexports::Excluded, None);
 
         assert_eq!(ir.clusters.len(), 1, "expected exactly one tangle cluster");
 
@@ -2312,7 +2325,7 @@ mod tests {
         let analysis = graph
             .production_subgraph(Reexports::Excluded)
             .representative_cycles();
-        let (ir, _) = build_layout(&graph, &analysis, Reexports::Excluded);
+        let (ir, _) = build_layout(&graph, &analysis, Reexports::Excluded, None);
         let id_of = |name: &str| ir.items.iter().find(|it| it.label == name).unwrap().id;
         let (model_id, user_id) = (id_of("model"), id_of("user"));
 
@@ -2356,7 +2369,7 @@ mod tests {
         let analysis = graph
             .production_subgraph(Reexports::Excluded)
             .representative_cycles();
-        let (ir, _) = build_layout(&graph, &analysis, Reexports::Excluded);
+        let (ir, _) = build_layout(&graph, &analysis, Reexports::Excluded, None);
         let id_of = |name: &str| ir.items.iter().find(|it| it.label == name).unwrap().id;
         let model_id = id_of("model");
 
@@ -2382,7 +2395,7 @@ mod tests {
         let analysis = graph
             .production_subgraph(Reexports::Excluded)
             .representative_cycles();
-        let (ir, _) = build_layout(&graph, &analysis, Reexports::Excluded);
+        let (ir, _) = build_layout(&graph, &analysis, Reexports::Excluded, None);
         let id_of = |name: &str| ir.items.iter().find(|it| it.label == name).unwrap().id;
 
         let data = static_data_json(&ir);
@@ -2420,7 +2433,7 @@ mod tests {
         let analysis = graph
             .production_subgraph(Reexports::Excluded)
             .representative_cycles();
-        let (ir, _) = build_layout(&graph, &analysis, Reexports::Excluded);
+        let (ir, _) = build_layout(&graph, &analysis, Reexports::Excluded, None);
         let data = static_data_json(&ir);
         assert!(data["symbolLocalities"].as_object().unwrap().is_empty());
     }

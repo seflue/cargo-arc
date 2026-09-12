@@ -242,7 +242,8 @@ fn analyze_for_diagram(args: &ArcCommand) -> Result<DiagramAnalysis> {
         "phase: cycle detection done ({} cycles)",
         analysis.cycles.len()
     );
-    let (mut layout, jump_table) = build_layout(&graph, &analysis, reexports);
+    let (mut layout, jump_table) =
+        build_layout(&graph, &analysis, reexports, workspace_root.as_deref());
     tracing::debug!("phase: layout built ({} items)", layout.items.len());
 
     if !args.no_volatility {
