@@ -207,7 +207,7 @@ pub fn run(args: ArcCommand) -> Result<Judgment> {
         "phase: cycle detection done ({} cycles)",
         analysis.cycles.len()
     );
-    let mut layout = build_layout(&graph, &analysis, reexports);
+    let (mut layout, _jump_table) = build_layout(&graph, &analysis, reexports);
     tracing::debug!("phase: layout built ({} items)", layout.items.len());
 
     if !args.no_volatility {

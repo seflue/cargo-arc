@@ -1,8 +1,7 @@
 use super::constants::{CSS, LAYOUT, RenderConfig};
 use super::positioning::PositionedItem;
 use crate::diagnose::ConsumerLocality;
-use crate::layout::{CyclicEdgeInfo, ItemKind, LayoutIR, NodeId};
-use crate::model::SourceLocation;
+use crate::layout::{CyclicEdgeInfo, ItemKind, LayoutIR, LocatedSource, NodeId};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
@@ -161,14 +160,14 @@ struct CycleAccum {
 /// Returns a Vec of `SymbolUsageGroup` objects. Bare locations (without symbols)
 /// are returned with symbol="". Groups are ordered: bare locations first, then
 /// symbol groups alphabetically.
-fn format_source_locations_by_symbol(locs: &[SourceLocation]) -> Vec<SymbolUsageGroup> {
+fn format_source_locations_by_symbol(locs: &[LocatedSource]) -> Vec<SymbolUsageGroup> {
     if locs.is_empty() {
         return Vec::new();
     }
 
     let module_path = locs
         .first()
-        .map(|l| l.module_path.clone())
+        .map(|l| l.location.module_path.clone())
         .unwrap_or_default();
     let module_path_opt = if module_path.is_empty() {
         None
@@ -185,18 +184,19 @@ fn format_source_locations_by_symbol(locs: &[SourceLocation]) -> Vec<SymbolUsage
     let mut reexport_by_symbol: BTreeMap<String, bool> = BTreeMap::new();
 
     for loc in locs {
-        let file_str = loc.file.display().to_string();
-        if loc.symbols.is_empty() {
+        let location = &loc.location;
+        let file_str = location.file.display().to_string();
+        if location.symbols.is_empty() {
             // Location without symbols - collect separately
-            bare_locations.push((file_str, loc.line));
+            bare_locations.push((file_str, location.line));
         } else {
-            for symbol in &loc.symbols {
+            for symbol in &location.symbols {
                 by_symbol
                     .entry(symbol.clone())
                     .or_default()
-                    .push((file_str.clone(), loc.line));
+                    .push((file_str.clone(), location.line));
                 let flag = reexport_by_symbol.entry(symbol.clone()).or_insert(true);
-                *flag &= loc.via_reexport;
+                *flag &= location.via_reexport;
             }
         }
     }
@@ -501,16 +501,29 @@ mod tests {
     use super::*;
     use crate::diagnose::RepresentativeCycles;
     use crate::graph::{ArcGraph, EdgeWeight, Node, Reexports};
-    use crate::layout::{LayoutEdge, build_layout};
+    use crate::layout::{JumpTable, LayoutEdge, build_layout};
     use crate::model::{EdgeContext, SourceLocation};
     use crate::test_support::{crate_node, module_node};
 
     // === format_source_locations_by_symbol Tests ===
 
+    /// Pair each location with a fresh id from a throwaway table, for tests
+    /// that only care about the formatted groups, not the ids.
+    fn located(locations: Vec<SourceLocation>) -> Vec<LocatedSource> {
+        let mut table = JumpTable::new();
+        locations
+            .into_iter()
+            .map(|location| {
+                let id = table.insert(location.file.clone(), location.line);
+                LocatedSource { location, id }
+            })
+            .collect()
+    }
+
     #[test]
     fn test_format_source_locations_by_symbol_empty() {
         let locs: Vec<SourceLocation> = vec![];
-        let groups = format_source_locations_by_symbol(&locs);
+        let groups = format_source_locations_by_symbol(&located(locs));
         assert_eq!(groups.len(), 0);
     }
 
@@ -525,7 +538,7 @@ mod tests {
             module_path: String::new(),
             via_reexport: false,
         }];
-        let groups = format_source_locations_by_symbol(&locs);
+        let groups = format_source_locations_by_symbol(&located(locs));
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].symbol, "");
         assert_eq!(groups[0].locations.len(), 1);
@@ -544,7 +557,7 @@ mod tests {
             module_path: String::new(),
             via_reexport: false,
         }];
-        let groups = format_source_locations_by_symbol(&locs);
+        let groups = format_source_locations_by_symbol(&located(locs));
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].symbol, "ModuleInfo");
         assert_eq!(groups[0].locations.len(), 1);
@@ -573,7 +586,7 @@ mod tests {
                 via_reexport: false,
             },
         ];
-        let groups = format_source_locations_by_symbol(&locs);
+        let groups = format_source_locations_by_symbol(&located(locs));
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].symbol, "ModuleInfo");
         assert_eq!(groups[0].locations.len(), 2);
@@ -596,7 +609,7 @@ mod tests {
             module_path: String::new(),
             via_reexport: false,
         }];
-        let groups = format_source_locations_by_symbol(&locs);
+        let groups = format_source_locations_by_symbol(&located(locs));
         assert_eq!(groups.len(), 2);
         // Symbols in alphabetical order
         assert_eq!(groups[0].symbol, "ModuleInfo");
@@ -641,7 +654,7 @@ mod tests {
                 via_reexport: false,
             },
         ];
-        let groups = format_source_locations_by_symbol(&locs);
+        let groups = format_source_locations_by_symbol(&located(locs));
         let group = |name: &str| groups.iter().find(|g| g.symbol == name).unwrap();
         assert!(group("Foo").via_reexport, "all-reexport symbol is flagged");
         assert!(
@@ -670,23 +683,27 @@ mod tests {
             },
             "b".into(),
         );
+        let mut table = JumpTable::new();
         ir.edges.push(
-            LayoutEdge::new(a, b, EdgeContext::production()).with_source_locations(vec![
-                SourceLocation {
-                    file: PathBuf::from("src/a.rs"),
-                    line: 5,
-                    symbols: vec!["Reexported".to_string()],
-                    module_path: String::new(),
-                    via_reexport: true,
-                },
-                SourceLocation {
-                    file: PathBuf::from("src/a.rs"),
-                    line: 6,
-                    symbols: vec!["Coupled".to_string()],
-                    module_path: String::new(),
-                    via_reexport: false,
-                },
-            ]),
+            LayoutEdge::new(a, b, EdgeContext::production()).with_source_locations(
+                &mut table,
+                vec![
+                    SourceLocation {
+                        file: PathBuf::from("src/a.rs"),
+                        line: 5,
+                        symbols: vec!["Reexported".to_string()],
+                        module_path: String::new(),
+                        via_reexport: true,
+                    },
+                    SourceLocation {
+                        file: PathBuf::from("src/a.rs"),
+                        line: 6,
+                        symbols: vec!["Coupled".to_string()],
+                        module_path: String::new(),
+                        via_reexport: false,
+                    },
+                ],
+            ),
         );
 
         let config = RenderConfig::default();
@@ -736,7 +753,7 @@ mod tests {
                 via_reexport: false,
             },
         ];
-        let groups = format_source_locations_by_symbol(&locs);
+        let groups = format_source_locations_by_symbol(&located(locs));
         assert_eq!(groups.len(), 2);
         // ModuleInfo: 2 locations
         assert_eq!(groups[0].symbol, "ModuleInfo");
@@ -929,16 +946,18 @@ mod tests {
             },
             "b".into(),
         );
+        let mut table = JumpTable::new();
         ir.edges.push(
-            LayoutEdge::new(a, b, EdgeContext::production()).with_source_locations(vec![
-                SourceLocation {
+            LayoutEdge::new(a, b, EdgeContext::production()).with_source_locations(
+                &mut table,
+                vec![SourceLocation {
                     file: PathBuf::from("src/a.rs"),
                     line: 5,
                     symbols: vec!["MyStruct".to_string()],
                     module_path: String::new(),
                     via_reexport: false,
-                },
-            ]),
+                }],
+            ),
         );
 
         let config = RenderConfig::default();
@@ -1071,23 +1090,27 @@ mod tests {
             },
             "b".into(),
         );
+        let mut table = JumpTable::new();
         ir.edges.push(
-            LayoutEdge::new(a, b, EdgeContext::production()).with_source_locations(vec![
-                SourceLocation {
-                    file: PathBuf::from("src/a.rs"),
-                    line: 5,
-                    symbols: vec!["Symbol1".to_string()],
-                    module_path: String::new(),
-                    via_reexport: false,
-                },
-                SourceLocation {
-                    file: PathBuf::from("src/b.rs"),
-                    line: 10,
-                    symbols: vec!["Symbol1".to_string()],
-                    module_path: String::new(),
-                    via_reexport: false,
-                },
-            ]),
+            LayoutEdge::new(a, b, EdgeContext::production()).with_source_locations(
+                &mut table,
+                vec![
+                    SourceLocation {
+                        file: PathBuf::from("src/a.rs"),
+                        line: 5,
+                        symbols: vec!["Symbol1".to_string()],
+                        module_path: String::new(),
+                        via_reexport: false,
+                    },
+                    SourceLocation {
+                        file: PathBuf::from("src/b.rs"),
+                        line: 10,
+                        symbols: vec!["Symbol1".to_string()],
+                        module_path: String::new(),
+                        via_reexport: false,
+                    },
+                ],
+            ),
         );
 
         let config = RenderConfig::default();
@@ -1206,16 +1229,18 @@ mod tests {
             },
             "b".into(),
         );
+        let mut table = JumpTable::new();
         ir.edges.push(
-            LayoutEdge::new(a, b, EdgeContext::production()).with_source_locations(vec![
-                SourceLocation {
+            LayoutEdge::new(a, b, EdgeContext::production()).with_source_locations(
+                &mut table,
+                vec![SourceLocation {
                     file: PathBuf::from("src/a.rs"),
                     line: 5,
                     symbols: vec!["Test\"Quote".to_string()],
                     module_path: String::new(),
                     via_reexport: false,
-                },
-            ]),
+                }],
+            ),
         );
 
         let config = RenderConfig::default();
@@ -1427,7 +1452,7 @@ mod tests {
             },
         ];
 
-        let groups = format_source_locations_by_symbol(&locs);
+        let groups = format_source_locations_by_symbol(&located(locs));
 
         // Should have 3 groups: 1 bare (symbol=""), 2 named symbols
         assert_eq!(groups.len(), 3);
@@ -1534,16 +1559,18 @@ mod tests {
             },
             "b".into(),
         );
+        let mut table = JumpTable::new();
         ir.edges.push(
-            LayoutEdge::new(a, b, EdgeContext::production()).with_source_locations(vec![
-                SourceLocation {
+            LayoutEdge::new(a, b, EdgeContext::production()).with_source_locations(
+                &mut table,
+                vec![SourceLocation {
                     file: PathBuf::from("src/a.rs"),
                     line: 5,
                     symbols: vec![],
                     module_path: String::new(),
                     via_reexport: false,
-                },
-            ]),
+                }],
+            ),
         );
         let config = RenderConfig::default();
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
@@ -1952,7 +1979,7 @@ mod tests {
         let analysis = graph
             .production_subgraph(Reexports::Excluded)
             .representative_cycles();
-        let ir = build_layout(&graph, &analysis, Reexports::Excluded);
+        let (ir, _) = build_layout(&graph, &analysis, Reexports::Excluded);
 
         assert_eq!(ir.clusters.len(), 1, "expected exactly one tangle cluster");
 
@@ -2093,7 +2120,7 @@ mod tests {
         let analysis = graph
             .production_subgraph(Reexports::Excluded)
             .representative_cycles();
-        let ir = build_layout(&graph, &analysis, Reexports::Excluded);
+        let (ir, _) = build_layout(&graph, &analysis, Reexports::Excluded);
         let id_of = |name: &str| ir.items.iter().find(|it| it.label == name).unwrap().id;
         let (model_id, user_id) = (id_of("model"), id_of("user"));
 
@@ -2137,7 +2164,7 @@ mod tests {
         let analysis = graph
             .production_subgraph(Reexports::Excluded)
             .representative_cycles();
-        let ir = build_layout(&graph, &analysis, Reexports::Excluded);
+        let (ir, _) = build_layout(&graph, &analysis, Reexports::Excluded);
         let id_of = |name: &str| ir.items.iter().find(|it| it.label == name).unwrap().id;
         let model_id = id_of("model");
 
@@ -2163,7 +2190,7 @@ mod tests {
         let analysis = graph
             .production_subgraph(Reexports::Excluded)
             .representative_cycles();
-        let ir = build_layout(&graph, &analysis, Reexports::Excluded);
+        let (ir, _) = build_layout(&graph, &analysis, Reexports::Excluded);
         let id_of = |name: &str| ir.items.iter().find(|it| it.label == name).unwrap().id;
 
         let data = static_data_json(&ir);
@@ -2201,7 +2228,7 @@ mod tests {
         let analysis = graph
             .production_subgraph(Reexports::Excluded)
             .representative_cycles();
-        let ir = build_layout(&graph, &analysis, Reexports::Excluded);
+        let (ir, _) = build_layout(&graph, &analysis, Reexports::Excluded);
         let data = static_data_json(&ir);
         assert!(data["symbolLocalities"].as_object().unwrap().is_empty());
     }

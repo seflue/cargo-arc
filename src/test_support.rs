@@ -25,6 +25,33 @@ pub(crate) fn module_node(name: &str, crate_idx: NodeIndex) -> Node {
     }
 }
 
+/// A crate node at `/<name>` with the given target roots and manifest.
+pub(crate) fn crate_node_with_targets(
+    name: &str,
+    target_roots: TargetRoots,
+    manifest: impl Into<PathBuf>,
+) -> Node {
+    Node::Crate {
+        name: name.to_string(),
+        path: PathBuf::from(format!("/{name}")),
+        target_roots,
+        manifest: manifest.into(),
+    }
+}
+
+/// A module node with the given declaring file.
+pub(crate) fn module_node_with_file(
+    name: &str,
+    crate_idx: NodeIndex,
+    file: impl Into<PathBuf>,
+) -> Node {
+    Node::Module {
+        name: name.to_string(),
+        crate_idx,
+        file: Some(file.into()),
+    }
+}
+
 /// A crate laid out by Cargo's default convention, with its roots probed from
 /// disk. Hand-built fixtures carry no manifest, so there is no cargo metadata
 /// to resolve targets from.
