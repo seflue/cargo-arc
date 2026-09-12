@@ -114,9 +114,14 @@ fn respond_page(request: Request, page: &str) {
             .parse()
             .expect("static content-type header is well-formed")
     });
+    // tiny_http switches to chunked encoding above 32 KiB by default; the
+    // page is larger, and a Content-Length body is what a raw reader (the
+    // tests, an editor plugin) can take as-is.
     respond(
         request,
-        Response::from_string(page).with_header(content_type.clone()),
+        Response::from_string(page)
+            .with_header(content_type.clone())
+            .with_chunked_threshold(usize::MAX),
     );
 }
 
@@ -193,6 +198,9 @@ mod tests {
             let (status, body) = send("GET", "/");
             assert_eq!(status, 200);
             assert!(body.contains("STATIC_DATA"));
+            // Sent with Content-Length, never chunked: the page must arrive
+            // byte-for-byte for a raw reader like this one.
+            assert_eq!(body, service.page());
 
             let (status, _) = send("GET", "/jump?id=1");
             assert_eq!(status, 200);
