@@ -6,6 +6,7 @@ pub mod layout;
 pub mod model;
 pub mod render;
 pub mod rules;
+mod ui;
 pub mod volatility;
 
 pub use cli::{ArcCommand, Cargo, Judgment, run};

@@ -10,6 +10,7 @@ pub use build::{
     LayoutItem, NodeId, SymbolLocality,
 };
 #[allow(dead_code, unused_imports)]
-// ui resolves ids through these once it exists, Phase 5.
-pub(crate) use jump::{JumpTable, JumpTarget, Location};
+// render's tests build these directly, nothing else reads them.
+pub(crate) use jump::JumpTarget;
+pub(crate) use jump::{JumpTable, Location};
 pub(crate) use jump::{LocatedSource, LocationId, TargetKind};

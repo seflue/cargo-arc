@@ -9,12 +9,14 @@ version = 1
 # `cli` drives a run, `render` and `rules` are the two things a run produces,
 # and they rest on the analysis layer. `diagnose`, `layout` and `analyze` share
 # a position: the layout builder reads the cycle and order analysis, and that is
-# how the diagram gets its shape.
+# how the diagram gets its shape. `ui` serves the page and reads the jump table
+# out of `layout`; `cli` starts it.
 [[rules]]
 type = "layers"
 name = "architecture layers"
 layers = [
   ["cargo-arc::cli"],
+  ["cargo-arc::ui"],
   ["cargo-arc::render", "cargo-arc::rules"],
   ["cargo-arc::diagnose", "cargo-arc::layout", "cargo-arc::analyze"],
   ["cargo-arc::graph"],

@@ -67,7 +67,6 @@ impl JumpTable {
     }
 
     /// Look up a previously inserted target's location.
-    #[allow(dead_code)] // ui::service resolves ids from the query string, Phase 5.
     pub(crate) fn resolve(&self, id: LocationId) -> Option<&Location> {
         self.entries.get(id.0)
     }

@@ -42,6 +42,7 @@ ra_ap_cfg = { version = "=0.0.320", optional = true }
 dunce = "1.0.4"
 syn = { version = "2", features = ["full", "visit"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
+tiny_http = "0.12"
 
 [features]
 hir = [
