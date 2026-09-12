@@ -144,7 +144,7 @@ const SidebarLogic = {
         }
         html += `<div class="sidebar-locations">`;
         for (const loc of group.locations) {
-          html += `<div class="sidebar-location">${loc.file}<span class="sidebar-line-badge">:${loc.line}</span></div>`;
+          html += this._locationRow(loc);
         }
         html += `</div>`;
         html += `</div>`;
@@ -353,7 +353,7 @@ const SidebarLogic = {
       }
       html += `<div class="sidebar-locations">`;
       for (const loc of group.locations) {
-        html += `<div class="sidebar-location">${loc.file}<span class="sidebar-line-badge">:${loc.line}</span></div>`;
+        html += this._locationRow(loc);
       }
       html += `</div>`;
       html += `</div>`;
@@ -458,6 +458,19 @@ const SidebarLogic = {
       return '';
     }
     return `<span class="sidebar-locality sidebar-locality-${sl.locality}">${label}</span>`;
+  },
+
+  /**
+   * One usage-location row. Carries `data-jump` only when the location has a
+   * jump id (RenderConfig::with_jump_ids, i.e. `arc ui`); an image from
+   * `cargo arc -o` never sets it, so the row stays inert there.
+   * @param {{ file: string, line: number, jump?: number }} loc
+   * @returns {string}
+   */
+  _locationRow(loc) {
+    const jumpAttr =
+      typeof loc.jump === 'number' ? ` data-jump="${loc.jump}"` : '';
+    return `<div class="sidebar-location"${jumpAttr}>${loc.file}<span class="sidebar-line-badge">:${loc.line}</span></div>`;
   },
 
   /**

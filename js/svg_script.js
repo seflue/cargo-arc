@@ -1,5 +1,5 @@
 // @module SvgScript
-// @deps ArcLogic, StaticData, AppState, Selectors, DomAdapter, LayerManager, TreeLogic, DerivedState, HighlightRenderer, VirtualEdgeLogic, TextMeasure, SidebarLogic, SearchLogic
+// @deps ArcLogic, StaticData, AppState, Selectors, DomAdapter, LayerManager, TreeLogic, DerivedState, HighlightRenderer, VirtualEdgeLogic, TextMeasure, SidebarLogic, SearchLogic, Jump
 // @config ROW_HEIGHT, MARGIN, TOOLBAR_HEIGHT, SIDEBAR_SHADOW_PAD
 // svg_script.js - DOM code for interactive SVG
 // ArcLogic is loaded from arc_logic.js before this file
@@ -48,12 +48,21 @@ function createHoverKeyTracker() {
   };
 }
 
+// Resolve a jump id from a sidebar click: the closest row carrying
+// data-jump, or null when the click landed elsewhere. Extracted out of the
+// sidebarEl click listener so it is testable without a DOM.
+function jumpIdFromClick(target) {
+  const el = target.closest('.sidebar-location[data-jump]');
+  return el ? Number(el.dataset.jump) : null;
+}
+
 if (typeof module !== 'undefined') {
   module.exports = {
     createHighlightDebouncer,
     createPinnedSidebarRefresher,
     deriveHoverKey,
     createHoverKeyTracker,
+    jumpIdFromClick,
   };
 }
 
@@ -1486,6 +1495,13 @@ if (typeof document !== 'undefined') {
       }
     });
 
+    // Reports a jump's outcome in the toolbar's jump-status span.
+    function showJumpStatus(text) {
+      const statusEl = DomAdapter.getElementById('jump-status');
+      if (statusEl) statusEl.textContent = text;
+    }
+    const jumper = Jump.createJump((url) => fetch(url), showJumpStatus);
+
     // Close-button and click isolation for sidebar foreignObject
     const sidebarEl = DomAdapter.getElementById('relation-sidebar');
     if (sidebarEl) {
@@ -1496,6 +1512,12 @@ if (typeof document !== 'undefined') {
           AppState.clickEmpty(appState);
           highlightTiming.immediate();
           SidebarLogic.hide();
+        }
+        // Sidebar rows are only clickable while pinned; the transient
+        // sidebar closes on its own hover-leave grace period.
+        if (AppState.getPinned(appState)) {
+          const jumpId = jumpIdFromClick(target);
+          if (jumpId !== null) jumper.jump(jumpId);
         }
       });
     }

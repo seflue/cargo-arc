@@ -1,5 +1,23 @@
 import { describe, expect, test } from 'bun:test';
 import { ArcLogic } from './arc_logic.js';
+import { jumpIdFromClick } from './svg_script.js';
+
+describe('jumpIdFromClick', () => {
+  test('returns the numeric jump id from the closest row with data-jump', () => {
+    const target = {
+      closest: (sel) =>
+        sel === '.sidebar-location[data-jump]'
+          ? { dataset: { jump: '5' } }
+          : null,
+    };
+    expect(jumpIdFromClick(target)).toBe(5);
+  });
+
+  test('returns null when no ancestor row has data-jump', () => {
+    const target = { closest: () => null };
+    expect(jumpIdFromClick(target)).toBeNull();
+  });
+});
 
 describe('ArcLogic', () => {
   describe('getArcOffset', () => {

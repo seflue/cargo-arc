@@ -260,6 +260,38 @@ describe('SidebarLogic', () => {
       expect(html).toContain(':12');
     });
 
+    test('location row carries data-jump when loc.jump is a number', () => {
+      const override = {
+        from: 'a',
+        to: 'b',
+        usages: [
+          {
+            symbol: 'Foo',
+            modulePath: null,
+            locations: [{ file: 'src/lib.rs', line: 3, jump: 3 }],
+          },
+        ],
+      };
+      const html = SidebarLogic.buildContent('jump-id', override);
+      expect(html).toContain('class="sidebar-location" data-jump="3"');
+    });
+
+    test('location row omits data-jump when loc.jump is absent', () => {
+      const override = {
+        from: 'a',
+        to: 'b',
+        usages: [
+          {
+            symbol: 'Foo',
+            modulePath: null,
+            locations: [{ file: 'src/lib.rs', line: 3 }],
+          },
+        ],
+      };
+      const html = SidebarLogic.buildContent('no-jump-id', override);
+      expect(html).not.toContain('data-jump');
+    });
+
     test('empty usages shows Cargo.toml dependency', () => {
       const html = SidebarLogic.buildContent('empty_arc');
       expect(html).toContain('sidebar-header');

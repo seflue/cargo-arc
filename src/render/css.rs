@@ -769,6 +769,12 @@ fn build_css_rules() -> Vec<CssRule> {
                 ("white-space", "nowrap"),
             ],
         ),
+        // Jump-capable locations only (RenderConfig::with_jump_ids, i.e. `arc
+        // ui`); a plain image from `cargo arc -o` never sets data-jump.
+        CssRule::new(
+            &format!(".{}[data-jump]", c.sidebar.location),
+            &[("cursor", "pointer"), ("text-decoration", "underline")],
+        ),
         CssRule::class(
             c.sidebar.toggle,
             &[
@@ -1340,6 +1346,24 @@ mod tests {
         assert!(
             css.contains(&format!(".{}", CSS.sidebar.header_actions)),
             "CSS should contain .sidebar-header-actions"
+        );
+    }
+
+    #[test]
+    fn test_css_contains_sidebar_location_jump_rule() {
+        let css = render_styles();
+        let selector = format!(".{}[data-jump]", CSS.sidebar.location);
+        let idx = css
+            .find(&format!("{selector} {{"))
+            .unwrap_or_else(|| panic!("CSS should contain a rule for {selector}"));
+        let section = &css[idx..idx + 120];
+        assert!(
+            section.contains("cursor: pointer"),
+            "sidebar-location[data-jump] should set cursor: pointer, got: {section}"
+        );
+        assert!(
+            section.contains("text-decoration: underline"),
+            "sidebar-location[data-jump] should set text-decoration: underline, got: {section}"
         );
     }
 
