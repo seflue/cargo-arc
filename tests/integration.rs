@@ -556,6 +556,28 @@ fn test_dev_dep_crate_visible_with_include_tests() {
     );
 }
 
+/// Success criterion: a default run's `STATIC_DATA` carries neither `targets`
+/// (crate/module jump targets) nor `jump` (usage-location jump ids).
+#[test]
+fn default_static_data_carries_no_jump_fields() {
+    let (temp, cmd) = fixture_args("multi_crate", false);
+
+    let result = run(cmd);
+    assert!(result.is_ok(), "run() should succeed: {result:?}");
+
+    let svg = std::fs::read_to_string(temp.path()).unwrap();
+    let json = serde_json::to_string(&parse_static_data(&svg)).unwrap();
+
+    assert!(
+        !json.contains("\"targets\""),
+        "default STATIC_DATA should not carry jump targets, got: {json}"
+    );
+    assert!(
+        !json.contains("\"jump\""),
+        "default STATIC_DATA should not carry jump ids, got: {json}"
+    );
+}
+
 // ===== Phase 4: check subcommand integration tests =====
 
 /// Copies `<fixture>/<rules_file>` into a fresh tempdir as `arc-rules.toml`,

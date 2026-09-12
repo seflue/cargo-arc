@@ -532,6 +532,10 @@ pub struct RenderConfig {
     pub margin: f32,
     /// Initial expand level. `None` = all expanded (default), `Some(0)` = crates only.
     pub expand_level: Option<usize>,
+    /// Whether `STATIC_DATA` writes `targets` and `jump` fields. The ids
+    /// exist on the layout either way; this only gates whether render
+    /// serializes them.
+    pub with_jump_ids: bool,
 }
 
 impl Default for RenderConfig {
@@ -541,6 +545,7 @@ impl Default for RenderConfig {
             indent_size: 20.0,
             margin: 20.0,
             expand_level: None,
+            with_jump_ids: false,
         }
     }
 }

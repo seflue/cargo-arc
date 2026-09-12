@@ -44,7 +44,6 @@ pub(crate) struct JumpTarget {
 #[derive(Debug, Clone)]
 pub(crate) struct LocatedSource {
     pub location: SourceLocation,
-    #[allow(dead_code)] // render reads it once RenderConfig's jump switch exists.
     pub id: LocationId,
 }
 

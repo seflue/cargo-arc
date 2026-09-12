@@ -10,5 +10,6 @@ pub use build::{
     LayoutItem, NodeId, SymbolLocality,
 };
 #[allow(dead_code, unused_imports)]
-// render and ui consume this re-export in later phases.
-pub(crate) use jump::{JumpTable, JumpTarget, LocatedSource, Location, LocationId, TargetKind};
+// ui resolves ids through these once it exists, Phase 5.
+pub(crate) use jump::{JumpTable, JumpTarget, Location};
+pub(crate) use jump::{LocatedSource, LocationId, TargetKind};

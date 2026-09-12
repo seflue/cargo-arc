@@ -1,7 +1,9 @@
 use super::constants::{CSS, LAYOUT, RenderConfig};
 use super::positioning::PositionedItem;
 use crate::diagnose::ConsumerLocality;
-use crate::layout::{CyclicEdgeInfo, ItemKind, LayoutIR, LocatedSource, NodeId};
+use crate::layout::{
+    CyclicEdgeInfo, ItemKind, LayoutIR, LocatedSource, LocationId, NodeId, TargetKind,
+};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
@@ -39,6 +41,17 @@ struct NodeData {
     version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     scc_id: Option<usize>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    targets: Vec<TargetData>,
+}
+
+/// One jump target of a node: the target's kind and the id it resolves
+/// through, in the `JumpTable` `build_layout` returns.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TargetData {
+    kind: TargetKind,
+    jump: LocationId,
 }
 
 #[derive(Serialize)]
@@ -92,10 +105,12 @@ fn is_false(b: &bool) -> bool {
 }
 
 /// A single usage location (file + line number)
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct UsageLocation {
     file: String,
     line: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    jump: Option<LocationId>,
 }
 
 #[derive(Serialize)]
@@ -160,7 +175,10 @@ struct CycleAccum {
 /// Returns a Vec of `SymbolUsageGroup` objects. Bare locations (without symbols)
 /// are returned with symbol="". Groups are ordered: bare locations first, then
 /// symbol groups alphabetically.
-fn format_source_locations_by_symbol(locs: &[LocatedSource]) -> Vec<SymbolUsageGroup> {
+fn format_source_locations_by_symbol(
+    locs: &[LocatedSource],
+    config: &RenderConfig,
+) -> Vec<SymbolUsageGroup> {
     if locs.is_empty() {
         return Vec::new();
     }
@@ -175,9 +193,9 @@ fn format_source_locations_by_symbol(locs: &[LocatedSource]) -> Vec<SymbolUsageG
         Some(module_path)
     };
 
-    // Invert: Symbol -> Vec<(file, line)>
-    let mut by_symbol: BTreeMap<String, Vec<(String, usize)>> = BTreeMap::new();
-    let mut bare_locations: Vec<(String, usize)> = Vec::new();
+    // Invert: Symbol -> Vec<UsageLocation>
+    let mut by_symbol: BTreeMap<String, Vec<UsageLocation>> = BTreeMap::new();
+    let mut bare_locations: Vec<UsageLocation> = Vec::new();
     // A symbol counts as re-exported only when every location carrying it is a
     // `pub use`; a single real import makes it coupling. Mirrors the edge-level
     // `all(via_reexport)` rule (graph.rs `is_reexport_module_dep`).
@@ -185,40 +203,45 @@ fn format_source_locations_by_symbol(locs: &[LocatedSource]) -> Vec<SymbolUsageG
 
     for loc in locs {
         let location = &loc.location;
-        let file_str = location.file.display().to_string();
+        let usage = UsageLocation {
+            file: location.file.display().to_string(),
+            line: location.line,
+            jump: config.with_jump_ids.then_some(loc.id),
+        };
         if location.symbols.is_empty() {
             // Location without symbols - collect separately
-            bare_locations.push((file_str, location.line));
+            bare_locations.push(usage);
         } else {
             for symbol in &location.symbols {
                 by_symbol
                     .entry(symbol.clone())
                     .or_default()
-                    .push((file_str.clone(), location.line));
+                    .push(usage.clone());
                 let flag = reexport_by_symbol.entry(symbol.clone()).or_insert(true);
                 *flag &= location.via_reexport;
             }
         }
     }
 
+    let by_file_line_jump = |a: &UsageLocation, b: &UsageLocation| {
+        (&a.file, a.line, a.jump).cmp(&(&b.file, b.line, b.jump))
+    };
+
     // Sort locations within each symbol alphabetically
     for locations in by_symbol.values_mut() {
-        locations.sort();
+        locations.sort_by(by_file_line_jump);
     }
 
     let mut groups = Vec::new();
 
     // First: bare locations (symbol = "")
     if !bare_locations.is_empty() {
-        bare_locations.sort();
+        bare_locations.sort_by(by_file_line_jump);
         groups.push(SymbolUsageGroup {
             symbol: String::new(),
             module_path: module_path_opt.clone(),
             via_reexport: false,
-            locations: bare_locations
-                .into_iter()
-                .map(|(file, line)| UsageLocation { file, line })
-                .collect(),
+            locations: bare_locations,
         });
     }
 
@@ -229,10 +252,7 @@ fn format_source_locations_by_symbol(locs: &[LocatedSource]) -> Vec<SymbolUsageG
             symbol,
             module_path: module_path_opt.clone(),
             via_reexport,
-            locations: locations
-                .into_iter()
-                .map(|(file, line)| UsageLocation { file, line })
-                .collect(),
+            locations,
         });
     }
 
@@ -269,6 +289,17 @@ fn generate_static_data(
                 Some(parent.to_string())
             }
         };
+        let targets = if config.with_jump_ids {
+            item.targets
+                .iter()
+                .map(|target| TargetData {
+                    kind: target.kind,
+                    jump: target.id,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         nodes.insert(
             pos.id.to_string(),
             NodeData {
@@ -283,6 +314,7 @@ fn generate_static_data(
                 nesting: super::positioning::item_nesting(&item.kind),
                 version: item.version.clone(),
                 scc_id: item.scc_id,
+                targets,
             },
         );
     }
@@ -290,7 +322,7 @@ fn generate_static_data(
     let mut arcs = BTreeMap::new();
     for edge in &ir.edges {
         let arc_id = format!("{}-{}", edge.from, edge.to);
-        let usages = format_source_locations_by_symbol(&edge.source_locations);
+        let usages = format_source_locations_by_symbol(&edge.source_locations, config);
         arcs.insert(
             arc_id,
             ArcData {
@@ -501,7 +533,7 @@ mod tests {
     use super::*;
     use crate::diagnose::RepresentativeCycles;
     use crate::graph::{ArcGraph, EdgeWeight, Node, Reexports};
-    use crate::layout::{JumpTable, LayoutEdge, build_layout};
+    use crate::layout::{JumpTable, JumpTarget, LayoutEdge, build_layout};
     use crate::model::{EdgeContext, SourceLocation};
     use crate::test_support::{crate_node, module_node};
 
@@ -523,7 +555,7 @@ mod tests {
     #[test]
     fn test_format_source_locations_by_symbol_empty() {
         let locs: Vec<SourceLocation> = vec![];
-        let groups = format_source_locations_by_symbol(&located(locs));
+        let groups = format_source_locations_by_symbol(&located(locs), &RenderConfig::default());
         assert_eq!(groups.len(), 0);
     }
 
@@ -538,7 +570,7 @@ mod tests {
             module_path: String::new(),
             via_reexport: false,
         }];
-        let groups = format_source_locations_by_symbol(&located(locs));
+        let groups = format_source_locations_by_symbol(&located(locs), &RenderConfig::default());
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].symbol, "");
         assert_eq!(groups[0].locations.len(), 1);
@@ -557,7 +589,7 @@ mod tests {
             module_path: String::new(),
             via_reexport: false,
         }];
-        let groups = format_source_locations_by_symbol(&located(locs));
+        let groups = format_source_locations_by_symbol(&located(locs), &RenderConfig::default());
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].symbol, "ModuleInfo");
         assert_eq!(groups[0].locations.len(), 1);
@@ -586,7 +618,7 @@ mod tests {
                 via_reexport: false,
             },
         ];
-        let groups = format_source_locations_by_symbol(&located(locs));
+        let groups = format_source_locations_by_symbol(&located(locs), &RenderConfig::default());
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].symbol, "ModuleInfo");
         assert_eq!(groups[0].locations.len(), 2);
@@ -609,7 +641,7 @@ mod tests {
             module_path: String::new(),
             via_reexport: false,
         }];
-        let groups = format_source_locations_by_symbol(&located(locs));
+        let groups = format_source_locations_by_symbol(&located(locs), &RenderConfig::default());
         assert_eq!(groups.len(), 2);
         // Symbols in alphabetical order
         assert_eq!(groups[0].symbol, "ModuleInfo");
@@ -654,7 +686,7 @@ mod tests {
                 via_reexport: false,
             },
         ];
-        let groups = format_source_locations_by_symbol(&located(locs));
+        let groups = format_source_locations_by_symbol(&located(locs), &RenderConfig::default());
         let group = |name: &str| groups.iter().find(|g| g.symbol == name).unwrap();
         assert!(group("Foo").via_reexport, "all-reexport symbol is flagged");
         assert!(
@@ -753,7 +785,7 @@ mod tests {
                 via_reexport: false,
             },
         ];
-        let groups = format_source_locations_by_symbol(&located(locs));
+        let groups = format_source_locations_by_symbol(&located(locs), &RenderConfig::default());
         assert_eq!(groups.len(), 2);
         // ModuleInfo: 2 locations
         assert_eq!(groups[0].symbol, "ModuleInfo");
@@ -764,6 +796,164 @@ mod tests {
         assert_eq!(groups[1].symbol, "analyze_module");
         assert_eq!(groups[1].locations.len(), 1);
         assert_eq!(groups[1].locations[0].file, "src/cli.rs");
+    }
+
+    #[test]
+    fn test_format_source_locations_shares_jump_id_across_symbols() {
+        use std::path::PathBuf;
+
+        let locs = vec![SourceLocation {
+            file: PathBuf::from("src/lib.rs"),
+            line: 10,
+            symbols: vec!["Foo".to_string(), "Bar".to_string()],
+            module_path: String::new(),
+            via_reexport: false,
+        }];
+        let config = RenderConfig {
+            with_jump_ids: true,
+            ..RenderConfig::default()
+        };
+        let groups = format_source_locations_by_symbol(&located(locs), &config);
+
+        let jump_of = |symbol: &str| -> Option<LocationId> {
+            groups
+                .iter()
+                .find(|g| g.symbol == symbol)
+                .unwrap()
+                .locations[0]
+                .jump
+        };
+        let foo_jump = jump_of("Foo");
+        let bar_jump = jump_of("Bar");
+        assert!(foo_jump.is_some(), "the location gets a jump id");
+        assert_eq!(
+            foo_jump, bar_jump,
+            "one source location shares its jump id across every symbol it carries"
+        );
+    }
+
+    // === RenderConfig jump switch in STATIC_DATA ===
+
+    /// A crate item (lib, bin, manifest targets), a module item (one target),
+    /// and one edge between them carrying a source location, each already
+    /// bearing the id `build_layout` would have assigned it.
+    fn ir_with_jump_targets() -> (LayoutIR, NodeId, NodeId) {
+        use std::path::PathBuf;
+
+        let mut ir = LayoutIR::new();
+        let c = ir.add_item(ItemKind::Crate, "app".into());
+        let m = ir.add_item(
+            ItemKind::Module {
+                nesting: 1,
+                parent: c,
+            },
+            "m".into(),
+        );
+
+        let mut table = JumpTable::new();
+        ir.items[c].targets = vec![
+            JumpTarget {
+                kind: TargetKind::Lib,
+                id: table.insert(PathBuf::from("/ws/app/src/lib.rs"), 1),
+            },
+            JumpTarget {
+                kind: TargetKind::Bin,
+                id: table.insert(PathBuf::from("/ws/app/src/main.rs"), 1),
+            },
+            JumpTarget {
+                kind: TargetKind::Manifest,
+                id: table.insert(PathBuf::from("/ws/app/Cargo.toml"), 1),
+            },
+        ];
+        ir.items[m].targets = vec![JumpTarget {
+            kind: TargetKind::Module,
+            id: table.insert(PathBuf::from("/ws/app/src/m.rs"), 1),
+        }];
+        ir.edges.push(
+            LayoutEdge::new(c, m, EdgeContext::production()).with_source_locations(
+                &mut table,
+                vec![SourceLocation {
+                    file: PathBuf::from("src/m.rs"),
+                    line: 1,
+                    symbols: vec!["Foo".to_string()],
+                    module_path: String::new(),
+                    via_reexport: false,
+                }],
+            ),
+        );
+        (ir, c, m)
+    }
+
+    #[test]
+    fn test_static_data_carries_targets_and_jump_when_switch_is_on() {
+        let (ir, c, m) = ir_with_jump_targets();
+        let layout_target_ids: Vec<LocationId> = ir.items[c]
+            .targets
+            .iter()
+            .chain(ir.items[m].targets.iter())
+            .map(|t| t.id)
+            .collect();
+        let layout_location_id = ir.edges[0].source_locations[0].id;
+
+        let config = RenderConfig {
+            with_jump_ids: true,
+            ..RenderConfig::default()
+        };
+        let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
+        let parents: HashSet<NodeId> = HashSet::from([c]);
+        let script = render_script(&config, &ir, &positioned, &parents);
+        let json_str = script
+            .split("const STATIC_DATA = ")
+            .nth(1)
+            .unwrap()
+            .split(";\n")
+            .next()
+            .unwrap();
+        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
+
+        let crate_targets = data["nodes"][c.to_string()]["targets"].as_array().unwrap();
+        let kinds: Vec<&str> = crate_targets
+            .iter()
+            .map(|t| t["kind"].as_str().unwrap())
+            .collect();
+        assert_eq!(kinds, vec!["lib", "bin", "manifest"]);
+
+        let module_targets = data["nodes"][m.to_string()]["targets"].as_array().unwrap();
+        assert_eq!(module_targets.len(), 1);
+        assert_eq!(module_targets[0]["kind"], "module");
+
+        let jump_id_of = |v: &serde_json::Value| -> LocationId {
+            serde_json::from_value(v["jump"].clone()).expect("value has a jump id")
+        };
+        let json_target_ids: Vec<LocationId> = crate_targets
+            .iter()
+            .chain(module_targets.iter())
+            .map(jump_id_of)
+            .collect();
+        assert_eq!(
+            json_target_ids, layout_target_ids,
+            "targets carry the ids already on the layout"
+        );
+
+        let arc = &data["arcs"][format!("{c}-{m}")];
+        let usage_id = jump_id_of(&arc["usages"][0]["locations"][0]);
+        assert_eq!(
+            usage_id, layout_location_id,
+            "usage location carries the id already on the layout"
+        );
+    }
+
+    #[test]
+    fn test_static_data_omits_targets_and_jump_when_switch_is_off() {
+        let (ir, c, _m) = ir_with_jump_targets();
+
+        let config = RenderConfig::default();
+        let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
+        let parents: HashSet<NodeId> = HashSet::from([c]);
+        let script = render_script(&config, &ir, &positioned, &parents);
+
+        assert!(!script.contains("\"targets\""));
+        assert!(!script.contains("\"jump\""));
     }
 
     // === Registry / Module Order Tests ===
@@ -1404,10 +1594,12 @@ mod tests {
                 UsageLocation {
                     file: "src/main.rs".to_string(),
                     line: 42,
+                    jump: None,
                 },
                 UsageLocation {
                     file: "src/lib.rs".to_string(),
                     line: 100,
+                    jump: None,
                 },
             ],
         };
@@ -1452,7 +1644,7 @@ mod tests {
             },
         ];
 
-        let groups = format_source_locations_by_symbol(&located(locs));
+        let groups = format_source_locations_by_symbol(&located(locs), &RenderConfig::default());
 
         // Should have 3 groups: 1 bare (symbol=""), 2 named symbols
         assert_eq!(groups.len(), 3);
