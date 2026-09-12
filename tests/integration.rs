@@ -1,8 +1,10 @@
 use cargo_arc::cli::CommonArgs;
 use cargo_arc::{ArcCommand, run};
 use serde_json::Value;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpStream;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
 
 /// Helper: build `ArcCommand` for a fixture with common defaults.
 fn fixture_args(fixture: &str, include_tests: bool) -> (tempfile::NamedTempFile, ArcCommand) {
@@ -1878,4 +1880,147 @@ fn test_import_from_outside_does_not_cycle_through_a_same_named_module() {
         code, 0,
         "neither import is a dependency on the module beside the file, stderr: {stderr}"
     );
+}
+
+// ===== ui subcommand integration test =====
+
+/// Kills and reaps the spawned `ui` process on drop, so a failed assertion
+/// still frees the port instead of leaking the process past the test.
+struct ChildGuard(Child);
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// The first jump id under any node's `targets`, to exercise `/jump?id=`
+/// against a real entry from a live service's own page.
+fn first_jump_id(static_data: &Value) -> Option<u64> {
+    static_data["nodes"]
+        .as_object()?
+        .values()
+        .find_map(|node| node["targets"].as_array()?.first()?["jump"].as_u64())
+}
+
+/// Sends a raw HTTP/1.1 GET over `TcpStream` and returns the status code and
+/// body, mirroring `ui::server`'s own test helper of the same shape.
+fn http_get(port: u16, path: &str) -> (u16, String) {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    let status = response
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse().ok())
+        .unwrap_or_else(|| panic!("no status line in response: {response:?}"));
+    let body = response.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+    (status, body)
+}
+
+#[test]
+fn ui_serves_the_page_and_resolves_a_jump_id_over_http() {
+    let manifest =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multi_crate/Cargo.toml");
+    let fixture_dir = manifest.parent().unwrap();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cargo-arc"))
+        .arg("arc")
+        .arg("--manifest-path")
+        .arg(&manifest)
+        .arg("ui")
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn cargo-arc ui");
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let guard = ChildGuard(child);
+
+    let mut ready_line = String::new();
+    stdout.read_line(&mut ready_line).unwrap();
+    let ready: Vec<&str> = ready_line.trim_end().split(' ').collect();
+    assert_eq!(
+        ready[..3],
+        ["arc", "ready", env!("CARGO_PKG_VERSION")],
+        "unexpected ready line: {ready_line:?}"
+    );
+    let port: u16 = ready[3].parse().expect("ready line carries a port");
+
+    let (status, body) = http_get(port, "/");
+    assert_eq!(status, 200);
+    let static_data = parse_static_data(&body);
+    let id = first_jump_id(&static_data).expect("STATIC_DATA carries a jump target");
+
+    let (status, _) = http_get(port, &format!("/jump?id={id}"));
+    assert_eq!(status, 200);
+
+    let mut jump_line = String::new();
+    stdout.read_line(&mut jump_line).unwrap();
+    let jump: Vec<&str> = jump_line.trim_end().splitn(4, ' ').collect();
+    assert_eq!(
+        jump[..2],
+        ["arc", "jump"],
+        "unexpected jump line: {jump_line:?}"
+    );
+    let path = PathBuf::from(jump[3]);
+    assert!(path.is_absolute(), "jump path is not absolute: {path:?}");
+    assert!(
+        path.starts_with(fixture_dir),
+        "jump path {path:?} is not under the fixture directory {fixture_dir:?}"
+    );
+
+    let (status, _) = http_get(port, "/jump?id=999999");
+    assert_eq!(status, 404);
+
+    drop(guard);
+    let mut rest = String::new();
+    stdout.read_to_string(&mut rest).unwrap();
+    assert!(
+        rest.is_empty(),
+        "an unknown id must not write to stdout, got: {rest:?}"
+    );
+}
+
+/// `Command::Ui`'s help text promises that only `--output` has no effect on
+/// the served page, so `--expand-level` must reach the same `STATIC_DATA`
+/// field it reaches on the default (non-`ui`) path.
+#[test]
+fn ui_forwards_expand_level_into_static_data() {
+    let manifest =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multi_crate/Cargo.toml");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cargo-arc"))
+        .arg("arc")
+        .arg("--manifest-path")
+        .arg(&manifest)
+        .arg("--expand-level")
+        .arg("0")
+        .arg("ui")
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn cargo-arc ui");
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let guard = ChildGuard(child);
+
+    let mut ready_line = String::new();
+    stdout.read_line(&mut ready_line).unwrap();
+    let ready: Vec<&str> = ready_line.trim_end().split(' ').collect();
+    let port: u16 = ready[3].parse().expect("ready line carries a port");
+
+    let (status, body) = http_get(port, "/");
+    assert_eq!(status, 200);
+    let static_data = parse_static_data(&body);
+    assert_eq!(
+        static_data["expandLevel"],
+        serde_json::json!(0),
+        "--expand-level did not reach the ui page's STATIC_DATA"
+    );
+
+    drop(guard);
 }

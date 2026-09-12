@@ -14,7 +14,6 @@ pub(crate) struct JumpService {
 }
 
 impl JumpService {
-    #[allow(dead_code)] // nothing in the crate calls this yet; tests build a JumpService directly.
     pub(crate) fn new(page: String, table: JumpTable, root: PathBuf) -> Self {
         Self { page, table, root }
     }

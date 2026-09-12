@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::fmt::Write as _;
 use std::fs;
@@ -13,13 +13,14 @@ use crate::analyze::{
 };
 use crate::diagnose::RepresentativeCycles;
 use crate::graph::{ArcGraph, Reexports};
-use crate::layout::{LayoutIR, build_layout};
-use crate::model::{CrateExportMap, ModulePathMap, WorkspaceCrates};
+use crate::layout::{JumpTable, LayoutIR, build_layout};
+use crate::model::{CrateExportMap, CrateInfo, ModulePathMap, WorkspaceCrates};
 use crate::render::{RenderConfig, render};
 use crate::rules::baseline::{Baseline, BaselineError};
 use crate::rules::config::{ArcConfig, ConfigError};
 use crate::rules::engine::{CheckRun, check_rules};
 use crate::rules::format::{format_status, format_violations, plural};
+use crate::ui;
 use crate::volatility::{VolatilityAnalyzer, VolatilityConfig};
 use std::path::Path;
 
@@ -87,6 +88,9 @@ pub struct ArcCommand {
 pub enum Command {
     /// Check architecture rules against dependency graph
     Check(CheckArgs),
+    /// Serve the diagram over HTTP and resolve jump targets for an editor
+    /// plugin; `--output` has no effect.
+    Ui,
 }
 
 #[derive(Parser)]
@@ -175,6 +179,10 @@ pub fn run(args: ArcCommand) -> Result<Judgment> {
         return run_check(&check_args, &args.common);
     }
 
+    if let Some(Command::Ui) = args.command {
+        return run_ui(&args);
+    }
+
     let vol_config = VolatilityConfig {
         months: args.volatility_months,
         low_threshold: args.volatility_low,
@@ -186,6 +194,33 @@ pub fn run(args: ArcCommand) -> Result<Judgment> {
         return Ok(Judgment::Clean);
     }
 
+    let analysis = analyze_for_diagram(&args)?;
+
+    let config = RenderConfig {
+        expand_level: args.expand_level,
+        ..RenderConfig::default()
+    };
+    let svg = render(&analysis.layout, &config);
+    tracing::debug!("phase: render done ({} bytes)", svg.len());
+    write_output(&svg, args.output.as_ref())?;
+    // The diagram judges nothing, so it can only ever be clean or an error.
+    Ok(Judgment::Clean)
+}
+
+/// A workspace laid out for a diagram: the layout itself, the jump table
+/// [`JumpTable`] assigned while building it, and the workspace root the
+/// analysis ran against (`None` when the workspace has no crates).
+struct DiagramAnalysis {
+    layout: LayoutIR,
+    jump_table: JumpTable,
+    workspace_root: Option<PathBuf>,
+}
+
+/// Analyze the workspace behind `args`: build the dependency graph, lay it
+/// out, and enrich it with volatility. Rendering is the caller's job: the
+/// callers (`run`, `run_ui`) build their own [`RenderConfig`] and render
+/// `analysis.layout` with it.
+fn analyze_for_diagram(args: &ArcCommand) -> Result<DiagramAnalysis> {
     let feature_config = build_feature_config(&args.common);
 
     #[cfg(feature = "hir")]
@@ -193,7 +228,7 @@ pub fn run(args: ArcCommand) -> Result<Judgment> {
     #[cfg(not(feature = "hir"))]
     let use_hir = false;
 
-    let graph = build_dependency_graph(
+    let (graph, workspace_root) = build_dependency_graph(
         &args.common.manifest_path,
         &feature_config,
         use_hir,
@@ -207,21 +242,40 @@ pub fn run(args: ArcCommand) -> Result<Judgment> {
         "phase: cycle detection done ({} cycles)",
         analysis.cycles.len()
     );
-    let (mut layout, _jump_table) = build_layout(&graph, &analysis, reexports);
+    let (mut layout, jump_table) = build_layout(&graph, &analysis, reexports);
     tracing::debug!("phase: layout built ({} items)", layout.items.len());
 
     if !args.no_volatility {
+        let vol_config = VolatilityConfig {
+            months: args.volatility_months,
+            low_threshold: args.volatility_low,
+            high_threshold: args.volatility_high,
+        };
         enrich_volatility(&mut layout, &args.common.manifest_path, vol_config);
     }
 
+    Ok(DiagramAnalysis {
+        layout,
+        jump_table,
+        workspace_root,
+    })
+}
+
+/// Run the `ui` subcommand: analyze once with jump ids, then serve the page
+/// and resolve jump ids until the process ends.
+fn run_ui(args: &ArcCommand) -> Result<Judgment> {
+    let analysis = analyze_for_diagram(args)?;
     let config = RenderConfig {
         expand_level: args.expand_level,
+        with_jump_ids: true,
         ..RenderConfig::default()
     };
-    let svg = render(&layout, &config);
-    tracing::debug!("phase: render done ({} bytes)", svg.len());
-    write_output(&svg, args.output.as_ref())?;
-    // The diagram judges nothing, so it can only ever be clean or an error.
+    let svg = render(&analysis.layout, &config);
+    let workspace_root = analysis
+        .workspace_root
+        .context("workspace has no crates to determine its root")?;
+    let service = ui::JumpService::new(svg, analysis.jump_table, workspace_root);
+    ui::serve(&service, &mut io::stdout().lock())?;
     Ok(Judgment::Clean)
 }
 
@@ -234,7 +288,7 @@ fn run_check(check_args: &CheckArgs, common: &CommonArgs) -> Result<Judgment> {
     #[cfg(not(feature = "hir"))]
     let use_hir = false;
 
-    let graph = build_dependency_graph(
+    let (graph, _workspace_root) = build_dependency_graph(
         &common.manifest_path,
         &feature_config,
         use_hir,
@@ -381,15 +435,22 @@ fn run_volatility_report(
     write_output(&report, output)
 }
 
+/// Reads the workspace root off `crates`, all of whose members share it.
+/// `None` when the workspace has no crates to determine it from.
+fn workspace_root_of(crates: &[CrateInfo]) -> Option<PathBuf> {
+    crates.first().map(|krate| krate.workspace_root.clone())
+}
+
 fn build_dependency_graph(
     manifest_path: &Path,
     feature_config: &FeatureConfig,
     use_hir: bool,
     externals: bool,
     transitive_deps: bool,
-) -> Result<ArcGraph> {
+) -> Result<(ArcGraph, Option<PathBuf>)> {
     let crates = analyze_workspace(manifest_path, feature_config)?;
     tracing::debug!("phase: workspace analyzed ({} crates)", crates.len());
+    let workspace_root = workspace_root_of(&crates);
     let workspace_crates: WorkspaceCrates = crates.iter().map(|krate| krate.name.clone()).collect();
     let backend = AnalysisBackend::new(manifest_path, feature_config, use_hir)?;
 
@@ -477,7 +538,7 @@ fn build_dependency_graph(
         graph.node_count(),
         graph.edge_count()
     );
-    Ok(graph)
+    Ok((graph, workspace_root))
 }
 
 fn enrich_volatility(layout: &mut LayoutIR, manifest_path: &Path, vol_config: VolatilityConfig) {
@@ -550,6 +611,18 @@ mod tests {
     fn test_parse_diagram_default() {
         let cmd = parse_args(&["cargo", "arc"]);
         assert!(cmd.command.is_none());
+    }
+
+    #[test]
+    fn test_parse_ui_subcommand() {
+        let cmd = parse_args(&["cargo", "arc", "ui"]);
+        assert!(matches!(cmd.command, Some(Command::Ui)));
+    }
+
+    #[test]
+    fn test_parse_ui_subcommand_after_common_args() {
+        let cmd = parse_args(&["cargo", "arc", "--manifest-path", "x", "ui"]);
+        assert!(matches!(cmd.command, Some(Command::Ui)));
     }
 
     #[test]
@@ -708,5 +781,78 @@ mod tests {
         assert!(result.is_ok());
         let content = std::fs::read_to_string(temp.path()).unwrap();
         assert!(content.contains("<svg"));
+    }
+
+    // ===== workspace root beside the graph =====
+
+    #[test]
+    fn build_dependency_graph_returns_the_workspace_root() {
+        let manifest =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multi_crate/Cargo.toml");
+        let (_graph, workspace_root) =
+            build_dependency_graph(&manifest, &FeatureConfig::default(), false, false, false)
+                .unwrap();
+        assert_eq!(
+            workspace_root,
+            Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multi_crate"))
+        );
+    }
+
+    #[test]
+    fn workspace_root_is_none_for_a_workspace_without_crates() {
+        assert_eq!(workspace_root_of(&[]), None);
+    }
+
+    #[test]
+    fn workspace_root_of_reads_the_first_crates_root() {
+        use crate::model::{CrateInfo, TargetRoots};
+
+        let krate = CrateInfo {
+            name: "a".into(),
+            path: PathBuf::from("/ws/a"),
+            workspace_root: PathBuf::from("/ws"),
+            target_roots: TargetRoots::default(),
+            manifest: PathBuf::from("/ws/a/Cargo.toml"),
+            dependencies: vec![],
+            dev_dependencies: vec![],
+        };
+        assert_eq!(workspace_root_of(&[krate]), Some(PathBuf::from("/ws")));
+    }
+
+    // ===== analyze_for_diagram =====
+
+    #[test]
+    fn analyze_for_diagram_returns_the_jump_table_and_root() {
+        use crate::layout::LocationId;
+
+        let manifest =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multi_crate/Cargo.toml");
+        let cmd = parse_args(&[
+            "cargo",
+            "arc",
+            "--manifest-path",
+            manifest.to_str().unwrap(),
+        ]);
+
+        let analysis = analyze_for_diagram(&cmd).unwrap();
+
+        assert!(
+            analysis.jump_table.resolve(LocationId::from(0)).is_some(),
+            "a workspace with crates assigns at least one jump target"
+        );
+        assert_eq!(
+            analysis.workspace_root,
+            Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multi_crate"))
+        );
+
+        let default_svg = render(&analysis.layout, &RenderConfig::default());
+        assert!(!default_svg.contains("\"jump\""));
+
+        let jump_config = RenderConfig {
+            with_jump_ids: true,
+            ..RenderConfig::default()
+        };
+        let jump_svg = render(&analysis.layout, &jump_config);
+        assert!(jump_svg.contains("\"jump\""));
     }
 }

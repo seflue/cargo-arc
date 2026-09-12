@@ -5,8 +5,5 @@
 mod server;
 mod service;
 
-// nothing in the crate calls these yet.
-#[allow(dead_code, unused_imports)]
 pub(crate) use server::serve;
-#[allow(dead_code, unused_imports)]
 pub(crate) use service::JumpService;
