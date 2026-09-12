@@ -852,6 +852,7 @@ mod tests {
                 package_id: format!("{name}-pkg"),
                 is_direct_dependency: true,
                 target_roots: TargetRoots::default(),
+                manifest: format!("/reg/{name}/Cargo.toml").into(),
             });
             self.names.insert(name.to_string(), idx);
             self

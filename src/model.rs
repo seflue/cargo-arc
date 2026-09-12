@@ -267,6 +267,7 @@ pub struct CrateInfo {
     pub path: PathBuf,
     pub workspace_root: PathBuf,
     pub target_roots: TargetRoots,
+    pub manifest: PathBuf,
     pub dependencies: Vec<String>,
     /// Populated regardless of `--include-tests`. Reachability needs to know
     /// who is pulled in by tests even when the view does not show it.
@@ -387,6 +388,7 @@ pub(crate) struct ExternalCrateInfo {
     pub(crate) package_id: String,
     /// Inside the registry or vendor directory.
     pub(crate) target_roots: TargetRoots,
+    pub(crate) manifest: PathBuf,
 }
 
 /// Dependency edge between two external crates.

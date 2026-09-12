@@ -12,6 +12,7 @@ pub(crate) fn crate_node(name: &str) -> Node {
         name: name.to_string(),
         path: PathBuf::from(format!("/{name}")),
         target_roots: TargetRoots::default(),
+        manifest: PathBuf::from(format!("/{name}/Cargo.toml")),
     }
 }
 
@@ -36,6 +37,7 @@ pub(crate) fn conventional_crate(name: &str, path: impl Into<PathBuf>) -> CrateI
             lib_root: existing(path.join("src/lib.rs")),
             bin_roots: existing(path.join("src/main.rs")).into_iter().collect(),
         },
+        manifest: path.join("Cargo.toml"),
         workspace_root: path.clone(),
         path,
         dependencies: Vec::new(),

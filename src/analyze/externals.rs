@@ -19,6 +19,7 @@ fn build_external_crate_info(pkg: &cargo_metadata::Package) -> ExternalCrateInfo
         version: pkg.version.to_string(),
         package_id: pkg.id.repr.clone(),
         target_roots: super::workspace::target_roots(pkg),
+        manifest: pkg.manifest_path.clone().into(),
     }
 }
 
@@ -216,6 +217,7 @@ mod tests {
                 version: "1.0.0".to_string(),
                 package_id: "serde 1.0.0 (registry+...)".to_string(),
                 target_roots: TargetRoots::default(),
+                manifest: "/reg/serde-1.0.0/Cargo.toml".into(),
             }],
             external_deps: vec![ExternalDep {
                 from_pkg_id: "serde 1.0.0".to_string(),
@@ -312,6 +314,16 @@ mod tests {
             lib_root.display()
         );
         assert!(petgraph.target_roots.bin_roots.is_empty());
+        assert!(
+            petgraph.manifest.is_absolute(),
+            "got {}",
+            petgraph.manifest.display()
+        );
+        assert!(
+            petgraph.manifest.ends_with("Cargo.toml"),
+            "got {}",
+            petgraph.manifest.display()
+        );
     }
 
     #[test]

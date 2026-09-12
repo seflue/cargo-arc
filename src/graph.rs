@@ -15,6 +15,7 @@ pub enum Node {
         name: String,
         path: PathBuf,
         target_roots: TargetRoots,
+        manifest: PathBuf,
     },
     Module {
         name: String,
@@ -28,6 +29,7 @@ pub enum Node {
         package_id: String,
         is_direct_dependency: bool,
         target_roots: TargetRoots,
+        manifest: PathBuf,
     },
 }
 
@@ -446,6 +448,7 @@ impl GraphBuilder {
                     name: crate_.name.clone(),
                     path: crate_.path.clone(),
                     target_roots: crate_.target_roots.clone(),
+                    manifest: crate_.manifest.clone(),
                 });
                 (normalize_crate_name(&crate_.name), idx)
             })
@@ -599,6 +602,7 @@ impl GraphBuilder {
                 package_id: info.package_id.clone(),
                 is_direct_dependency: direct_pkg_ids.contains(info.package_id.as_str()),
                 target_roots: info.target_roots.clone(),
+                manifest: info.manifest.clone(),
             });
             pkg_index.insert(&info.package_id, idx);
             self.external_map.insert(info.name.clone(), idx);
@@ -1058,6 +1062,7 @@ mod tests {
             package_id: "serde 1.0.0 (registry+...)".into(),
             is_direct_dependency: true,
             target_roots: TargetRoots::default(),
+            manifest: "/reg/serde/Cargo.toml".into(),
         };
         assert!(!node.is_crate());
         assert!(node.is_external());
@@ -1076,6 +1081,7 @@ mod tests {
             package_id: "serde-pkg".into(),
             is_direct_dependency: true,
             target_roots: TargetRoots::default(),
+            manifest: "/reg/serde/Cargo.toml".into(),
         });
         graph.add_edge(
             crate_idx,
@@ -1161,6 +1167,7 @@ mod tests {
             package_id: "serde-pkg".into(),
             is_direct_dependency: true,
             target_roots: TargetRoots::default(),
+            manifest: "/reg/serde/Cargo.toml".into(),
         });
         assert_eq!(graph.owning_crate(ext_idx), ext_idx);
     }
@@ -1207,12 +1214,14 @@ mod tests {
                     version: "1.0.0".into(),
                     package_id: "serde-pkg".into(),
                     target_roots: TargetRoots::default(),
+                    manifest: "/reg/serde/Cargo.toml".into(),
                 },
                 ExternalCrateInfo {
                     name: "tokio".into(),
                     version: "1.0.0".into(),
                     package_id: "tokio-pkg".into(),
                     target_roots: TargetRoots::default(),
+                    manifest: "/reg/tokio/Cargo.toml".into(),
                 },
             ],
             workspace_deps: vec![WorkspaceExternalDep {
@@ -1244,6 +1253,7 @@ mod tests {
                 lib_root: Some("/ws/app/src/lib.rs".into()),
                 bin_roots: vec!["/ws/app/src/main.rs".into()],
             },
+            manifest: "/ws/app/Cargo.toml".into(),
             ..crate_("app")
         }];
         let externals = ExternalsResult {
@@ -1255,6 +1265,7 @@ mod tests {
                     lib_root: Some("/reg/serde-1.0.0/src/lib.rs".into()),
                     bin_roots: vec![],
                 },
+                manifest: "/reg/serde-1.0.0/Cargo.toml".into(),
             }],
             workspace_deps: vec![],
             external_deps: vec![],
@@ -1271,15 +1282,17 @@ mod tests {
         };
         assert!(matches!(
             node("app"),
-            Node::Crate { target_roots, .. }
+            Node::Crate { target_roots, manifest, .. }
                 if target_roots.lib_root.as_deref() == Some(Path::new("/ws/app/src/lib.rs"))
                     && target_roots.bin_roots == [PathBuf::from("/ws/app/src/main.rs")]
+                    && manifest == Path::new("/ws/app/Cargo.toml")
         ));
         assert!(matches!(
             node("serde"),
-            Node::ExternalCrate { target_roots, .. }
+            Node::ExternalCrate { target_roots, manifest, .. }
                 if target_roots.lib_root.as_deref() == Some(Path::new("/reg/serde-1.0.0/src/lib.rs"))
                     && target_roots.bin_roots.is_empty()
+                    && manifest == Path::new("/reg/serde-1.0.0/Cargo.toml")
         ));
     }
 
@@ -1296,12 +1309,14 @@ mod tests {
                     version: "1.0.0".into(),
                     package_id: "serde-pkg".into(),
                     target_roots: TargetRoots::default(),
+                    manifest: "/reg/serde/Cargo.toml".into(),
                 },
                 ExternalCrateInfo {
                     name: "tokio".into(),
                     version: "1.0.0".into(),
                     package_id: "tokio-pkg".into(),
                     target_roots: TargetRoots::default(),
+                    manifest: "/reg/tokio/Cargo.toml".into(),
                 },
             ],
             workspace_deps: vec![WorkspaceExternalDep {
@@ -1371,6 +1386,7 @@ mod tests {
                 version: "1.0.0".into(),
                 package_id: "serde-pkg".into(),
                 target_roots: TargetRoots::default(),
+                manifest: "/reg/serde/Cargo.toml".into(),
             }],
             workspace_deps: vec![],
             external_deps: vec![],

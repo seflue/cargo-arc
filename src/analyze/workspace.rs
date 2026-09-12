@@ -167,6 +167,7 @@ fn build_crate_info(
         path: pkg.manifest_path.parent().unwrap().into(),
         workspace_root: workspace_root.to_path_buf(),
         target_roots: target_roots(pkg),
+        manifest: pkg.manifest_path.clone().into(),
         dependencies,
         dev_dependencies,
     }
@@ -325,6 +326,7 @@ mod tests {
 
             let cargo_arc = crates.iter().find(|c| c.name == "cargo-arc").unwrap();
             assert!(cargo_arc.path.exists(), "path should exist");
+            assert_eq!(cargo_arc.manifest, manifest);
         }
     }
 
