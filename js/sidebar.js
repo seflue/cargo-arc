@@ -934,6 +934,9 @@ const SidebarLogic = {
         html += `<span class="sidebar-symbol-name">${u.symbol}</span>`;
         html += this._renderLocalityTag(edge.toId, u.symbol);
         html += `</div>`;
+        for (const loc of u.locations || []) {
+          html += this._locationRow(loc);
+        }
       }
       html += `</div>`;
     }
@@ -1029,6 +1032,9 @@ const SidebarLogic = {
     const content = root.querySelector('.sidebar-content');
     if (!content) return;
     content.addEventListener('click', (e) => {
+      // A location row's click is a jump, handled on the document; the row
+      // around it keeps its pin and expansion state.
+      if (e.target.closest?.('.sidebar-location[data-jump]')) return;
       // Cluster rows couple pin and expansion; the state machine decides.
       const edgeRow = e.target.closest?.('.sidebar-edge-row');
       if (edgeRow) {

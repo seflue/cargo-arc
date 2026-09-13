@@ -2775,6 +2775,23 @@ describe('SidebarLogic', () => {
       expect(btn.innerHTML).toBe('+');
     });
 
+    test('a symbol in an edge row lists its locations with their jump ids', () => {
+      globalThis.STATIC_DATA.arcs['a-b'].usages[0].locations = [
+        { file: 'a.rs', line: 1, jump: 7 },
+        { file: 'a.rs', line: 9, jump: 8 },
+      ];
+      const html = SidebarLogic._buildClusterContent('0');
+      const symbolAt = html.indexOf('class="sidebar-symbol-name">Foo<');
+      expect(symbolAt).toBeGreaterThan(-1);
+      const afterSymbol = html.slice(symbolAt);
+      expect(afterSymbol).toContain(
+        '<div class="sidebar-location" data-jump="7">a.rs<span class="sidebar-line-badge">:1</span>',
+      );
+      expect(afterSymbol).toContain(
+        'data-jump="8">a.rs<span class="sidebar-line-badge">:9</span>',
+      );
+    });
+
     test('button glyph syncs when a block is opened manually', () => {
       const html = SidebarLogic._buildClusterContent('0');
       const root = parseFragment(`<div class="sidebar-root">${html}</div>`);
@@ -2950,6 +2967,41 @@ describe('SidebarLogic', () => {
 
       SidebarLogic.updatePosition = origUP;
       SidebarLogic._onEdgeClick = null;
+    });
+
+    test('a click on a location row inside an edge row does not pin or toggle the row', () => {
+      globalThis.STATIC_DATA.arcs['a-b'] = {
+        from: 'a',
+        to: 'b',
+        usages: [
+          {
+            symbol: 'Foo',
+            modulePath: null,
+            locations: [{ file: 'a.rs', line: 1, jump: 7 }],
+          },
+        ],
+      };
+      const html = SidebarLogic._buildClusterContent('0');
+      const root = parseFragment(`<div class="sidebar-root">${html}</div>`);
+      const content = root.querySelector('.sidebar-content');
+      const origUP = SidebarLogic.updatePosition;
+      SidebarLogic.updatePosition = () => {};
+      let called = false;
+      SidebarLogic._onEdgeClick = () => {
+        called = true;
+        return true;
+      };
+      SidebarLogic._setupCollapseHandlers(root);
+
+      const location = content.querySelector('.sidebar-location[data-jump]');
+      expect(location).not.toBeNull();
+      content._fire('click', { target: location });
+
+      expect(called).toBe(false);
+
+      SidebarLogic.updatePosition = origUP;
+      SidebarLogic._onEdgeClick = null;
+      delete globalThis.STATIC_DATA.arcs['a-b'];
     });
   });
 
