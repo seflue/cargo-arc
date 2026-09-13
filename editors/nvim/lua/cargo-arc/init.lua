@@ -1,0 +1,217 @@
+local M = {}
+
+local defaults = {
+  --- The cargo-arc binary; a bare name is looked up in PATH.
+  binary = 'cargo-arc',
+  --- Manifest to analyze, relative to Neovim's working directory; nil for
+  --- the service's own default, `Cargo.toml` in that directory.
+  manifest_path = nil,
+  --- Cargo features to activate.
+  features = {},
+  --- Include test code in the analysis.
+  include_tests = false,
+  --- Include external crate dependencies.
+  externals = false,
+}
+
+M.config = vim.deepcopy(defaults)
+
+--- @param opts table|nil overrides for the fields of `defaults`
+function M.setup(opts)
+  M.config = vim.tbl_deep_extend('force', defaults, opts or {})
+end
+
+--- The running service: its process, once it has announced itself the
+--- version and port from its ready line, the port of the service it
+--- replaces, and whether its exit was asked for and whether a restart waits
+--- for it.
+--- @type { process: vim.SystemObj, version: string|nil, port: integer|nil, replaces: integer|nil, stopping: boolean|nil, restart: boolean|nil }|nil
+local service = nil
+
+--- Version, port and pid of a service that has announced itself; nil
+--- before that and while none runs.
+--- @return { version: string, port: integer, pid: integer }|nil
+function M.status()
+  if not service or not service.port then
+    return nil
+  end
+  return { version = service.version, port = service.port, pid = service.process.pid }
+end
+
+--- @param port integer
+local function open_page(port)
+  vim.ui.open('http://127.0.0.1:' .. port .. '/')
+end
+
+--- The command line that starts the service: the shared flags sit on `arc`,
+--- before the subcommand, the port after it.
+--- @param port integer|nil port to serve on; nil lets the OS pick one
+--- @return string[]
+function M.argv(port)
+  local config = M.config
+  local argv = { config.binary, 'arc' }
+  if config.manifest_path then
+    vim.list_extend(argv, { '--manifest-path', config.manifest_path })
+  end
+  if #config.features > 0 then
+    vim.list_extend(argv, { '--features', table.concat(config.features, ',') })
+  end
+  if config.include_tests then
+    table.insert(argv, '--include-tests')
+  end
+  if config.externals then
+    table.insert(argv, '--externals')
+  end
+  table.insert(argv, 'ui')
+  if port then
+    vim.list_extend(argv, { '--port', tostring(port) })
+  end
+  return argv
+end
+
+--- Feeds `line_handler` complete lines from a stream that arrives in
+--- arbitrary chunks.
+--- @param line_handler fun(line: string)
+--- @return fun(err: string|nil, data: string|nil)
+local function line_splitter(line_handler)
+  local pending = ''
+  return function(_, data)
+    if data == nil then
+      return
+    end
+    pending = pending .. data
+    while true do
+      local newline = pending:find('\n', 1, true)
+      if not newline then
+        break
+      end
+      local line = pending:sub(1, newline - 1)
+      pending = pending:sub(newline + 1)
+      vim.schedule(function()
+        line_handler(line)
+      end)
+    end
+  end
+end
+
+--- Starts the service for the current working directory. With `replaces`,
+--- the port of the service that just exited, the new one takes that port
+--- and the page that shows it stays open.
+--- @param replaces integer|nil
+local function start(replaces)
+  local started = { replaces = replaces }
+  local ok, process = pcall(vim.system, M.argv(replaces), {
+    cwd = vim.fn.getcwd(),
+    text = true,
+    stdout = line_splitter(M.handle_line),
+  }, function(result)
+    vim.schedule(function()
+      service = nil
+      if not started.port and not started.stopping then
+        vim.notify(
+          'cargo-arc ended with exit code ' .. result.code .. ' before announcing a port\n' .. result.stderr,
+          vim.log.levels.ERROR
+        )
+      end
+      if started.restart then
+        start(started.port)
+      end
+    end)
+  end)
+  if not ok then
+    vim.notify('cargo-arc: cannot start ' .. M.config.binary .. ': ' .. process, vim.log.levels.ERROR)
+    return
+  end
+  started.process = process
+  service = started
+end
+
+--- Starts the service for the current working directory, or reopens the
+--- page when it is already running.
+function M.open()
+  if service then
+    if service.port then
+      open_page(service.port)
+    else
+      vim.notify('cargo-arc is still starting', vim.log.levels.INFO)
+    end
+    return
+  end
+  start(nil)
+end
+
+--- Ends the service. Its exit callback clears the state.
+function M.stop()
+  if service then
+    service.stopping = true
+    service.process:kill('sigterm')
+  end
+end
+
+--- Ends the service and starts a new one on the same port once it has
+--- exited, so a reload of the open page shows the code as it is now.
+function M.restart()
+  if not service then
+    M.open()
+    return
+  end
+  service.restart = true
+  M.stop()
+end
+
+--- The window in the current tabpage that shows `file`, if any.
+--- @param file string absolute path
+--- @return integer|nil
+local function window_showing(file)
+  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    if vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(win)) == file then
+      return win
+    end
+  end
+end
+
+--- Puts the cursor on `line` of `file`: in the window that already shows
+--- the file, otherwise in the current window after opening it there. A line
+--- that was not on screen is centered; one that was keeps the scroll.
+--- @param file string absolute path
+--- @param line integer
+function M.jump(file, line)
+  local win = window_showing(file)
+  if win then
+    vim.api.nvim_set_current_win(win)
+  else
+    vim.cmd.edit(vim.fn.fnameescape(file))
+  end
+  -- The file may have grown shorter since the service analyzed it.
+  line = math.min(line, vim.api.nvim_buf_line_count(0))
+  local was_visible = vim.fn.line('w0') <= line and line <= vim.fn.line('w$')
+  vim.api.nvim_win_set_cursor(0, { line, 0 })
+  if not was_visible then
+    vim.cmd('normal! zz')
+  end
+end
+
+--- Handles one line of the service's stdout.
+--- @param line string
+function M.handle_line(line)
+  local version, port = line:match('^arc ready (%S+) (%d+)$')
+  if port then
+    port = tonumber(port)
+    if service then
+      service.version = version
+      service.port = port
+    end
+    if service and service.replaces then
+      vim.notify('cargo-arc ' .. version .. ' restarted on port ' .. port .. '; reload the page', vim.log.levels.INFO)
+    else
+      open_page(port)
+    end
+    return
+  end
+  local lnum, file = line:match('^arc jump (%d+) (.+)$')
+  if file then
+    M.jump(file, tonumber(lnum))
+  end
+end
+
+return M

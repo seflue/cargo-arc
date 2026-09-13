@@ -3,3 +3,4 @@
 .worktrees/
 *.svg
 node_modules/
+/editors/nvim/deps/

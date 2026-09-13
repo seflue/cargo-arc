@@ -15,6 +15,14 @@ test-js:
 # Rust + JS
 test: test-rust test-js
 
+nvim_dir := "editors/nvim"
+
+# Neovim plugin: fetches mini.nvim into deps/ once, needs the release binary
+test-nvim:
+    test -d {{nvim_dir}}/deps/mini.nvim || git clone --depth 1 https://github.com/echasnovski/mini.nvim {{nvim_dir}}/deps/mini.nvim
+    cargo build --release
+    cd {{nvim_dir}} && nvim --headless --noplugin -u scripts/minimal_init.lua -c "lua MiniTest.run()"
+
 # clippy + biome + tsc typecheck + format check + cycle detection
 lint:
     cargo clippy --all-targets -- -D warnings

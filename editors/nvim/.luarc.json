@@ -1,0 +1,5 @@
+{
+  "runtime.version": "LuaJIT",
+  "diagnostics.globals": ["vim", "MiniTest"],
+  "workspace.library": ["$VIMRUNTIME/lua", "deps/mini.nvim/lua"]
+}
