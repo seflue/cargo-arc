@@ -121,11 +121,43 @@ pub fn render(ir: &LayoutIR, config: &RenderConfig) -> String {
     svg
 }
 
+/// The diagram as an XHTML document with the SVG inline. An SVG document
+/// shown in a frame (an editor's webview) is shrunk to the frame; an inline
+/// `<svg>` keeps its pixel size and the body scrolls. The XML declaration of
+/// `svg` moves ahead of the wrapping document, and the rest is already
+/// well-formed XML. The body is white because the SVG has no background of
+/// its own and a webview would otherwise show the editor theme through it.
+#[must_use]
+pub fn html_page(svg: &str) -> String {
+    let (declaration, svg) = match svg.split_once('\n') {
+        Some((first, rest)) if first.starts_with("<?xml") => (first, rest),
+        _ => ("<?xml version=\"1.0\" encoding=\"UTF-8\"?>", svg),
+    };
+    format!(
+        "{declaration}\n\
+         <html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>cargo-arc</title></head><body style=\"margin:0;background:#fff\">\n\
+         {svg}\n\
+         </body></html>\n"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::layout::{CycleKind, LayoutEdge};
     use crate::model::EdgeContext;
+
+    #[test]
+    fn html_page_inlines_the_svg_after_its_declaration() {
+        let svg = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"20\"/>";
+        assert_eq!(
+            html_page(svg),
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+             <html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>cargo-arc</title></head><body style=\"margin:0;background:#fff\">\n\
+             <svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"20\"/>\n\
+             </body></html>\n"
+        );
+    }
 
     #[test]
     fn test_render_expand_level_zero() {

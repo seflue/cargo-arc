@@ -15,7 +15,7 @@ use crate::diagnose::RepresentativeCycles;
 use crate::graph::{ArcGraph, Reexports};
 use crate::layout::{JumpTable, LayoutIR, build_layout};
 use crate::model::{CrateExportMap, CrateInfo, ModulePathMap, WorkspaceCrates};
-use crate::render::{RenderConfig, render};
+use crate::render::{RenderConfig, html_page, render};
 use crate::rules::baseline::{Baseline, BaselineError};
 use crate::rules::config::{ArcConfig, ConfigError};
 use crate::rules::engine::{CheckRun, check_rules};
@@ -211,7 +211,8 @@ pub fn run(args: ArcCommand) -> Result<Judgment> {
     };
     let svg = render(&analysis.layout, &config);
     tracing::debug!("phase: render done ({} bytes)", svg.len());
-    write_output(&svg, args.output.as_ref())?;
+    let document = diagram_document(svg, args.output.as_deref());
+    write_output(&document, args.output.as_ref())?;
     // The diagram judges nothing, so it can only ever be clean or an error.
     Ok(Judgment::Clean)
 }
@@ -425,6 +426,16 @@ fn resolve_repo_path(manifest_path: &Path) -> &Path {
         .unwrap_or(Path::new("."))
 }
 
+/// The bytes `-o` writes: the SVG itself, or for an `.html` / `.xhtml` name
+/// the page `arc ui` serves, so the file opens in a browser tab or a
+/// webview at its own size.
+fn diagram_document(svg: String, output: Option<&Path>) -> String {
+    let wants_html = output
+        .and_then(Path::extension)
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("html") || ext.eq_ignore_ascii_case("xhtml"));
+    if wants_html { html_page(&svg) } else { svg }
+}
+
 fn write_output(content: &str, output: Option<&PathBuf>) -> Result<()> {
     match output {
         Some(path) => fs::write(path, content)?,
@@ -578,6 +589,26 @@ mod tests {
     fn parse_args(args: &[&str]) -> ArcCommand {
         let Cargo::Arc(cmd) = Cargo::parse_from(args);
         cmd
+    }
+
+    #[test]
+    fn html_output_name_wraps_the_svg_in_a_page() {
+        let svg = "<svg/>".to_string();
+        for name in ["deps.html", "deps.xhtml", "deps.HTML"] {
+            let page = diagram_document(svg.clone(), Some(Path::new(name)));
+            assert!(page.contains("<html"), "{name}: {page}");
+            assert!(page.contains("<svg/>"), "{name}: {page}");
+        }
+    }
+
+    #[test]
+    fn other_output_names_and_stdout_keep_the_svg() {
+        let svg = "<svg/>".to_string();
+        assert_eq!(
+            diagram_document(svg.clone(), Some(Path::new("deps.svg"))),
+            svg
+        );
+        assert_eq!(diagram_document(svg.clone(), None), svg);
     }
 
     // ===== Task 3.2: check subcommand parsing tests =====

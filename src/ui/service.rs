@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 
 use crate::layout::{JumpTable, Location, LocationId};
+use crate::render::html_page;
 
 /// Serves the diagram page and resolves jump ids against the workspace root
 /// that produced them.
@@ -17,16 +18,14 @@ impl JumpService {
     /// `svg` is the rendered diagram as `cargo arc -o` would write it.
     pub(crate) fn new(svg: &str, table: JumpTable, root: PathBuf) -> Self {
         Self {
-            page: inline_in_xhtml(svg),
+            page: html_page(svg),
             table,
             root,
         }
     }
 
-    /// The diagram as an XHTML document with the SVG inline. An SVG document
-    /// shown in a frame (an editor's webview) is sized to the frame and its
-    /// content scaled to fit; an inline `<svg>` keeps its pixel size and the
-    /// body scrolls.
+    /// The diagram as the page from [`html_page`]: a webview shrinks a bare
+    /// SVG document to its frame, an inline one keeps its size.
     pub(crate) fn page(&self) -> &str {
         &self.page
     }
@@ -50,23 +49,6 @@ impl JumpService {
     pub(crate) fn jump_line(location: &Location) -> String {
         format!("arc jump {} {}\n", location.line, location.file.display())
     }
-}
-
-/// Moves the XML declaration of `svg` ahead of the wrapping document: it
-/// must stay first, and the rest of the SVG is already well-formed XML. The
-/// body is white because the SVG has no background of its own and a webview
-/// would otherwise show the editor theme through it.
-fn inline_in_xhtml(svg: &str) -> String {
-    let (declaration, svg) = match svg.split_once('\n') {
-        Some((first, rest)) if first.starts_with("<?xml") => (first, rest),
-        _ => ("<?xml version=\"1.0\" encoding=\"UTF-8\"?>", svg),
-    };
-    format!(
-        "{declaration}\n\
-         <html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>cargo-arc</title></head><body style=\"margin:0;background:#fff\">\n\
-         {svg}\n\
-         </body></html>\n"
-    )
 }
 
 #[cfg(test)]
@@ -115,16 +97,10 @@ mod tests {
     }
 
     #[test]
-    fn page_inlines_the_svg_in_an_xhtml_document() {
-        let svg = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"20\"/>";
+    fn page_is_the_html_page_of_the_svg() {
+        let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
         let service = JumpService::new(svg, JumpTable::new(), PathBuf::from("/ws"));
-        assert_eq!(
-            service.page(),
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
-             <html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>cargo-arc</title></head><body style=\"margin:0;background:#fff\">\n\
-             <svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"20\"/>\n\
-             </body></html>\n"
-        );
+        assert_eq!(service.page(), html_page(svg));
     }
 
     #[test]

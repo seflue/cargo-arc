@@ -9,6 +9,7 @@ cargo arc -o deps.svg
 ```
 
 Without `-o` the SVG goes to stdout.
+An output name ending in `.html` or `.xhtml` writes the same diagram as an HTML page with the SVG inline; it behaves the same in a browser and keeps its size where a bare SVG document would be scaled to fit, such as an editor's webview.
 
 Terms used here are defined in [GLOSSARY.md](GLOSSARY.md).
 
