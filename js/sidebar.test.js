@@ -1265,7 +1265,10 @@ describe('SidebarLogic', () => {
       const content = {
         querySelectorAll(sel) {
           if (sel === '.sidebar-symbol') return symbolEls;
-          if (sel === ':scope .sidebar-symbol[data-collapsible]')
+          if (
+            sel ===
+            ':scope > .sidebar-usage-group > .sidebar-symbol[data-collapsible]'
+          )
             return symbolEls;
           return [];
         },
@@ -1349,7 +1352,11 @@ describe('SidebarLogic', () => {
       const content = {
         querySelectorAll(sel) {
           if (sel === '.sidebar-symbol') return allEls;
-          if (sel === ':scope .sidebar-symbol[data-collapsible]') return l1Els;
+          if (
+            sel ===
+            ':scope > .sidebar-usage-group > .sidebar-symbol[data-collapsible]'
+          )
+            return l1Els;
           return [];
         },
         addEventListener(_evt, fn) {
@@ -1489,7 +1496,10 @@ describe('SidebarLogic', () => {
         querySelectorAll(sel) {
           if (sel === ':scope > .sidebar-usage-group > .sidebar-symbol')
             return l1Els;
-          if (sel === ':scope .sidebar-symbol[data-collapsible]')
+          if (
+            sel ===
+            ':scope > .sidebar-usage-group > .sidebar-symbol[data-collapsible]'
+          )
             return collapsibleEls;
           return [];
         },
@@ -2779,6 +2789,68 @@ describe('SidebarLogic', () => {
     });
   });
 
+  describe('collapse-all on the node sidebar', () => {
+    // Two relation rows, each with one symbol row nested inside. The symbol
+    // rows render expanded inside their collapsed relation rows. Both rows
+    // are incoming: the divider between directions is a void tag the test
+    // parser cannot read.
+    function nodeSidebar() {
+      const usage = (symbol) => ({
+        symbol,
+        modulePath: 'm',
+        locations: [{ file: 'src/a.rs', line: 1 }],
+      });
+      const relations = {
+        incoming: [
+          {
+            targetId: 'crate_b',
+            weight: 1,
+            arcId: 'crate_b-crate_a',
+            usages: [usage('Foo')],
+          },
+          {
+            targetId: 'y',
+            weight: 1,
+            arcId: 'y-crate_a',
+            usages: [usage('Bar')],
+          },
+        ],
+        outgoing: [],
+      };
+      const html = SidebarLogic.buildNodeContent('crate_a', relations);
+      const root = parseFragment(`<div class="sidebar-root">${html}</div>`);
+      const relationRows = root.querySelectorAll(
+        '.sidebar-content > .sidebar-usage-group > .sidebar-symbol',
+      );
+      return { root, relationRows };
+    }
+
+    let origUpdatePosition;
+    beforeEach(() => {
+      origUpdatePosition = SidebarLogic.updatePosition;
+      SidebarLogic.updatePosition = () => {};
+    });
+    afterEach(() => {
+      SidebarLogic.updatePosition = origUpdatePosition;
+    });
+
+    test('the first click expands every relation row', () => {
+      const { root, relationRows } = nodeSidebar();
+      expect(relationRows.length).toBe(2);
+      expect(
+        relationRows.every((r) => r.getAttribute('data-collapsed') === 'true'),
+      ).toBe(true);
+
+      SidebarLogic._setupCollapseHandlers(root);
+      root.querySelector('.sidebar-collapse-all')._fire('click');
+
+      expect(relationRows.some((r) => r.hasAttribute('data-collapsed'))).toBe(
+        false,
+      );
+      expect(root.querySelector('.sidebar-collapse-all').innerHTML).toBe('−');
+    });
+  });
+
   describe('cluster row interaction across duplicate arc ids', () => {
     let savedClusters;
     let savedNodes;
@@ -3040,7 +3112,11 @@ describe('SidebarLogic', () => {
       const contentListeners = new Map();
       const content = {
         querySelectorAll(sel) {
-          if (sel === ':scope .sidebar-symbol[data-collapsible]') return [];
+          if (
+            sel ===
+            ':scope > .sidebar-usage-group > .sidebar-symbol[data-collapsible]'
+          )
+            return [];
           if (sel === '.sidebar-symbol') return [];
           return [];
         },
@@ -3280,7 +3356,11 @@ describe('SidebarLogic', () => {
       const contentListeners = new Map();
       const content = {
         querySelectorAll(sel) {
-          if (sel === ':scope .sidebar-symbol[data-collapsible]') return [];
+          if (
+            sel ===
+            ':scope > .sidebar-usage-group > .sidebar-symbol[data-collapsible]'
+          )
+            return [];
           return [];
         },
         addEventListener(evt, fn) {

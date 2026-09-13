@@ -21,9 +21,13 @@ const SIDEBAR_MIN_WIDTH = 280;
 // long labels; below this budget the second node stays, above it the header drops
 // to head + closing edge so the CSS net never has to cut the closing edge itself.
 const CYCLE_HEADER_MAX_CHARS = 48;
-// data-collapsible only ever appears on .sidebar-symbol, which never nests,
-// so a plain descendant lookup covers both flat groups and cycle-block rows.
-const COLLAPSIBLE_SYMBOL_SELECTOR = ':scope .sidebar-symbol[data-collapsible]';
+// The rows the collapse-all button drives: the relation rows of a node
+// sidebar and the symbol rows of an arc sidebar, both direct children of
+// the content's usage groups. A node sidebar nests a second level of
+// collapsible symbol rows inside each relation row; those start expanded and
+// must not count, or the first click would collapse instead of expand.
+const COLLAPSIBLE_SYMBOL_SELECTOR =
+  ':scope > .sidebar-usage-group > .sidebar-symbol[data-collapsible]';
 
 const SidebarLogic = {
   _isTransient: false,
