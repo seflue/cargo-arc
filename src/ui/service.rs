@@ -14,10 +14,19 @@ pub(crate) struct JumpService {
 }
 
 impl JumpService {
-    pub(crate) fn new(page: String, table: JumpTable, root: PathBuf) -> Self {
-        Self { page, table, root }
+    /// `svg` is the rendered diagram as `cargo arc -o` would write it.
+    pub(crate) fn new(svg: &str, table: JumpTable, root: PathBuf) -> Self {
+        Self {
+            page: inline_in_xhtml(svg),
+            table,
+            root,
+        }
     }
 
+    /// The diagram as an XHTML document with the SVG inline. An SVG document
+    /// shown in a frame (an editor's webview) is sized to the frame and its
+    /// content scaled to fit; an inline `<svg>` keeps its pixel size and the
+    /// body scrolls.
     pub(crate) fn page(&self) -> &str {
         &self.page
     }
@@ -43,6 +52,23 @@ impl JumpService {
     }
 }
 
+/// Moves the XML declaration of `svg` ahead of the wrapping document: it
+/// must stay first, and the rest of the SVG is already well-formed XML. The
+/// body is white because the SVG has no background of its own and a webview
+/// would otherwise show the editor theme through it.
+fn inline_in_xhtml(svg: &str) -> String {
+    let (declaration, svg) = match svg.split_once('\n') {
+        Some((first, rest)) if first.starts_with("<?xml") => (first, rest),
+        _ => ("<?xml version=\"1.0\" encoding=\"UTF-8\"?>", svg),
+    };
+    format!(
+        "{declaration}\n\
+         <html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>cargo-arc</title></head><body style=\"margin:0;background:#fff\">\n\
+         {svg}\n\
+         </body></html>\n"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -55,7 +81,7 @@ mod tests {
         table.insert(PathBuf::from("/ws/my_crate/Cargo.toml"), 1);
         table.insert(PathBuf::from("/ws/other/Cargo.toml"), 1);
         table.insert(PathBuf::from("src/lib.rs"), 3);
-        JumpService::new(String::new(), table, PathBuf::from(root))
+        JumpService::new("", table, PathBuf::from(root))
     }
 
     #[test]
@@ -86,6 +112,19 @@ mod tests {
     fn jump_returns_none_for_an_unknown_id() {
         let service = service_over_root("/ws");
         assert_eq!(service.jump(99), None);
+    }
+
+    #[test]
+    fn page_inlines_the_svg_in_an_xhtml_document() {
+        let svg = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"20\"/>";
+        let service = JumpService::new(svg, JumpTable::new(), PathBuf::from("/ws"));
+        assert_eq!(
+            service.page(),
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+             <html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>cargo-arc</title></head><body style=\"margin:0;background:#fff\">\n\
+             <svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"20\"/>\n\
+             </body></html>\n"
+        );
     }
 
     #[test]

@@ -1,0 +1,6 @@
+{
+  "folders": [{ "path": "../.." }],
+  "settings": {
+    "cargoArc.binary": "target/release/cargo-arc"
+  }
+}

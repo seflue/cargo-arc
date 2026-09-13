@@ -114,7 +114,7 @@ fn parse_id(query: &str) -> Option<usize> {
 fn respond_page(request: Request, page: &str) {
     static CONTENT_TYPE: OnceLock<tiny_http::Header> = OnceLock::new();
     let content_type = CONTENT_TYPE.get_or_init(|| {
-        "Content-Type: image/svg+xml"
+        "Content-Type: application/xhtml+xml; charset=utf-8"
             .parse()
             .expect("static content-type header is well-formed")
     });
@@ -167,7 +167,7 @@ mod tests {
         table.insert(PathBuf::from("/ws/a/Cargo.toml"), 1);
         table.insert(PathBuf::from("/ws/b/Cargo.toml"), 1);
 
-        JumpService::new(svg, table, PathBuf::from("/ws"))
+        JumpService::new(&svg, table, PathBuf::from("/ws"))
     }
 
     #[test]
@@ -179,8 +179,9 @@ mod tests {
         thread::scope(|scope| {
             let handle = scope.spawn(|| server.run(&mut out));
 
-            // Sends a raw HTTP/1.1 request and returns the status code and body.
-            let send = |method: &str, path: &str| -> (u16, String) {
+            // Sends a raw HTTP/1.1 request and returns the status code, the
+            // header block and the body.
+            let send = |method: &str, path: &str| -> (u16, String, String) {
                 let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
                 write!(
                     stream,
@@ -195,33 +196,37 @@ mod tests {
                     .and_then(|line| line.split_whitespace().nth(1))
                     .and_then(|code| code.parse().ok())
                     .unwrap_or_else(|| panic!("no status line in response: {response:?}"));
-                let body = response.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
-                (status, body)
+                let (head, body) = response.split_once("\r\n\r\n").unwrap_or((&response, ""));
+                (status, head.to_string(), body.to_string())
             };
 
-            let (status, body) = send("GET", "/");
+            let (status, head, body) = send("GET", "/");
             assert_eq!(status, 200);
+            assert!(
+                head.contains("Content-Type: application/xhtml+xml"),
+                "{head}"
+            );
             assert!(body.contains("STATIC_DATA"));
             // Sent with Content-Length, never chunked: the page must arrive
             // byte-for-byte for a raw reader like this one.
             assert_eq!(body, service.page());
 
-            let (status, _) = send("GET", "/jump?id=1");
+            let (status, _, _) = send("GET", "/jump?id=1");
             assert_eq!(status, 200);
 
-            let (status, _) = send("POST", "/");
+            let (status, _, _) = send("POST", "/");
             assert_eq!(status, 404);
 
-            let (status, _) = send("GET", "/jump");
+            let (status, _, _) = send("GET", "/jump");
             assert_eq!(status, 404);
 
-            let (status, _) = send("GET", "/jump?id=abc");
+            let (status, _, _) = send("GET", "/jump?id=abc");
             assert_eq!(status, 404);
 
-            let (status, _) = send("GET", "/jump?id=99");
+            let (status, _, _) = send("GET", "/jump?id=99");
             assert_eq!(status, 404);
 
-            let (status, _) = send("GET", "/nope");
+            let (status, _, _) = send("GET", "/nope");
             assert_eq!(status, 404);
 
             server.unblock();

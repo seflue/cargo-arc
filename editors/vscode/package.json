@@ -1,0 +1,70 @@
+{
+  "name": "cargo-arc",
+  "displayName": "cargo-arc",
+  "description": "Shows the cargo-arc dependency diagram of the workspace and jumps from it into the code",
+  "version": "0.0.0",
+  "private": true,
+  "publisher": "cargo-arc",
+  "license": "MIT OR Apache-2.0",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "cargoArc.open",
+        "category": "cargo-arc",
+        "title": "Open Diagram"
+      },
+      {
+        "command": "cargoArc.openInBrowser",
+        "category": "cargo-arc",
+        "title": "Open Diagram in Browser"
+      },
+      {
+        "command": "cargoArc.restart",
+        "category": "cargo-arc",
+        "title": "Restart Service"
+      },
+      {
+        "command": "cargoArc.stop",
+        "category": "cargo-arc",
+        "title": "Stop Service"
+      }
+    ],
+    "configuration": {
+      "title": "cargo-arc",
+      "properties": {
+        "cargoArc.binary": {
+          "type": "string",
+          "default": "cargo-arc",
+          "description": "The cargo-arc binary. A bare name is looked up in PATH; a path is resolved against the workspace folder, after ~ and $VAR are expanded."
+        },
+        "cargoArc.manifestPath": {
+          "type": "string",
+          "default": "",
+          "description": "Manifest to analyze, relative to the workspace folder (--manifest-path). Empty for Cargo.toml in the workspace folder."
+        },
+        "cargoArc.features": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Cargo features to activate (--features)."
+        },
+        "cargoArc.includeTests": {
+          "type": "boolean",
+          "default": false,
+          "description": "Include test code in the analysis (--include-tests)."
+        },
+        "cargoArc.externals": {
+          "type": "boolean",
+          "default": false,
+          "description": "Include external crate dependencies (--externals)."
+        }
+      }
+    }
+  }
+}
