@@ -418,6 +418,9 @@ fn generate_static_data(
         ("externalCrate", CSS.nodes.external_crate),
         ("externalTransitive", CSS.nodes.external_transitive),
         ("label", CSS.nodes.label),
+        ("cycleNode", CSS.nodes.cycle_node),
+        ("hidesCycle", CSS.nodes.hides_cycle),
+        ("cycleMarker", CSS.nodes.cycle_marker),
         ("treeLine", CSS.nodes.tree_line),
         ("collapseToggle", CSS.nodes.collapse_toggle),
         ("collapsed", CSS.nodes.collapsed),
@@ -1690,6 +1693,9 @@ mod tests {
             CSS.node_selection.selected_external
         );
         assert_eq!(data["classes"]["collapsed"], CSS.nodes.collapsed);
+        assert_eq!(data["classes"]["cycleNode"], CSS.nodes.cycle_node);
+        assert_eq!(data["classes"]["hidesCycle"], CSS.nodes.hides_cycle);
+        assert_eq!(data["classes"]["cycleMarker"], CSS.nodes.cycle_marker);
         assert_eq!(data["classes"]["virtualArc"], CSS.direction.virtual_arc);
         assert_eq!(
             data["classes"]["externalSection"],

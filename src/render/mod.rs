@@ -11,7 +11,8 @@ mod static_data;
 pub use constants::RenderConfig;
 use css::render_styles;
 use elements::{
-    render_edges, render_header, render_nodes, render_sidebar, render_toolbar, render_tree_lines,
+    CycleMarks, render_edges, render_header, render_nodes, render_sidebar, render_toolbar,
+    render_tree_lines,
 };
 use positioning::{
     PositionedItem, calculate_box_width, calculate_canvas_size, calculate_max_arc_width,
@@ -82,6 +83,7 @@ pub fn render(ir: &LayoutIR, config: &RenderConfig) -> String {
         visible_nodes.as_ref(),
         &collapsed_parents,
         &positioned_vis_index,
+        &CycleMarks::from_ir(ir),
     ));
     svg.push_str(&render_edges(
         &positioned_vis_index,

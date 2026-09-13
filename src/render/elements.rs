@@ -208,12 +208,55 @@ pub(super) fn render_tree_lines(
     lines
 }
 
+/// Glyph a collapsed parent shows while it hides a cycle node; the same
+/// loop-closer the sidebar puts before a closing edge (js/sidebar.js).
+pub(super) const CYCLE_MARKER: &str = "\u{21ba}";
+
+/// Which nodes a cycle touches, for the label styling under cluster mode.
+pub(super) struct CycleMarks {
+    /// Nodes with an edge on a counted cycle.
+    pub on_cycle: HashSet<NodeId>,
+    /// Ancestors of an `on_cycle` node: collapsed, they hide the cycle.
+    pub above_cycle: HashSet<NodeId>,
+}
+
+impl CycleMarks {
+    pub(super) fn from_ir(ir: &LayoutIR) -> Self {
+        let on_cycle: HashSet<NodeId> = ir
+            .edges
+            .iter()
+            .filter(|edge| !edge.cycle_ids.is_empty())
+            .flat_map(|edge| [edge.from, edge.to])
+            .collect();
+        let mut above_cycle = HashSet::new();
+        for &node in &on_cycle {
+            let mut current = node;
+            while let Some(parent) = item_parent(&ir.items[current].kind) {
+                above_cycle.insert(parent);
+                current = parent;
+            }
+        }
+        Self {
+            on_cycle,
+            above_cycle,
+        }
+    }
+}
+
+fn item_parent(kind: &ItemKind) -> Option<NodeId> {
+    match kind {
+        ItemKind::Module { parent, .. } | ItemKind::ExternalCrate { parent, .. } => Some(*parent),
+        ItemKind::Crate | ItemKind::ExternalSection => None,
+    }
+}
+
 pub(super) fn render_nodes(
     positioned: &[PositionedItem],
     parents: &HashSet<NodeId>,
     visible_nodes: Option<&HashSet<NodeId>>,
     collapsed_parents: &HashSet<NodeId>,
     visible_index: &HashMap<NodeId, &PositionedItem>,
+    cycle_marks: &CycleMarks,
 ) -> String {
     let mut nodes = String::new();
     nodes.push_str("  <g id=\"nodes\">\n");
@@ -281,13 +324,13 @@ pub(super) fn render_nodes(
         );
 
         // Label with optional child-count tspan for parents
-        let lbl = CSS.nodes.label;
         let cc = CSS.nodes.child_count;
-        let label_class = if is_hidden {
-            format!("{lbl} {collapsed_cls}")
-        } else {
-            lbl.to_string()
-        };
+        let hides_cycle = is_collapsed_parent && cycle_marks.above_cycle.contains(&item.id);
+        let label_class = label_classes(
+            is_hidden,
+            cycle_marks.on_cycle.contains(&item.id),
+            hides_cycle,
+        );
         if parents.contains(&item.id) {
             // Show child count for collapsed parents
             let count_text = if is_collapsed_parent {
@@ -295,10 +338,16 @@ pub(super) fn render_nodes(
             } else {
                 String::new()
             };
+            let marker_text = if hides_cycle {
+                format!(" {CYCLE_MARKER}")
+            } else {
+                String::new()
+            };
+            let cm = CSS.nodes.cycle_marker;
             let _ = writeln!(
                 nodes,
-                "    <text class=\"{label_class}\" x=\"{text_x}\" y=\"{text_y}\">{label}<tspan id=\"count-{}\" class=\"{cc}\">{count_text}</tspan></text>",
-                item.id
+                "    <text class=\"{label_class}\" x=\"{text_x}\" y=\"{text_y}\">{label}<tspan id=\"cycle-marker-{}\" class=\"{cm}\">{marker_text}</tspan><tspan id=\"count-{}\" class=\"{cc}\">{count_text}</tspan></text>",
+                item.id, item.id
             );
         } else {
             let _ = writeln!(
@@ -321,6 +370,21 @@ pub(super) fn render_nodes(
 
     nodes.push_str("  </g>\n");
     nodes
+}
+
+fn label_classes(is_hidden: bool, on_cycle: bool, hides_cycle: bool) -> String {
+    let mut classes = CSS.nodes.label.to_string();
+    for (applies, class) in [
+        (is_hidden, CSS.nodes.collapsed),
+        (on_cycle, CSS.nodes.cycle_node),
+        (hides_cycle, CSS.nodes.hides_cycle),
+    ] {
+        if applies {
+            classes.push(' ');
+            classes.push_str(class);
+        }
+    }
+    classes
 }
 
 fn child_count(positioned: &[PositionedItem], parent_id: NodeId) -> usize {
@@ -683,6 +747,7 @@ mod tests {
             None,
             &HashSet::new(),
             &positioned_index,
+            &CycleMarks::from_ir(&ir),
         );
         assert!(output.contains(r#"id="node-0""#), "Crate should have id");
         assert!(output.contains(r#"id="node-1""#), "Module should have id");
@@ -711,6 +776,7 @@ mod tests {
             None,
             &HashSet::new(),
             &positioned_index,
+            &CycleMarks::from_ir(&ir),
         );
         assert!(
             output.contains(r#"data-parent="0""#),
@@ -741,6 +807,7 @@ mod tests {
             None,
             &HashSet::new(),
             &positioned_index,
+            &CycleMarks::from_ir(&ir),
         );
         assert!(
             output.contains(r#"data-has-children="true""#),
@@ -771,6 +838,7 @@ mod tests {
             None,
             &HashSet::new(),
             &positioned_index,
+            &CycleMarks::from_ir(&ir),
         );
         assert!(
             output.contains(r#"class="collapse-toggle""#),
@@ -805,6 +873,7 @@ mod tests {
             None,
             &HashSet::new(),
             &positioned_index,
+            &CycleMarks::from_ir(&ir),
         );
         assert!(
             output.contains(r#"id="count-0""#),
@@ -836,7 +905,14 @@ mod tests {
         let collapsed: HashSet<NodeId> = [c].into();
         let positioned_index: HashMap<NodeId, &PositionedItem> =
             positioned.iter().map(|p| (p.id, p)).collect();
-        let output = render_nodes(&positioned, &parents, None, &collapsed, &positioned_index);
+        let output = render_nodes(
+            &positioned,
+            &parents,
+            None,
+            &collapsed,
+            &positioned_index,
+            &CycleMarks::from_ir(&ir),
+        );
         assert!(
             output.contains(r#"class="child-count"> (+2)</tspan>"#),
             "Collapsed parent should report how many children it hides"
@@ -845,6 +921,148 @@ mod tests {
             output.contains(">+</text>"),
             "Collapsed parent should show the expand icon"
         );
+    }
+
+    /// Crate `root` holding `alpha` and `beta` (a cycle between them) and
+    /// `plain` (off any cycle), plus parent `outer` under `root` holding
+    /// `inner`, which closes a second cycle with `alpha`.
+    struct CycleFixture {
+        ir: LayoutIR,
+        root: NodeId,
+        alpha: NodeId,
+        beta: NodeId,
+        plain: NodeId,
+        outer: NodeId,
+        inner: NodeId,
+    }
+
+    fn cycle_fixture() -> CycleFixture {
+        let mut ir = LayoutIR::new();
+        let root = ir.add_item(ItemKind::Crate, "root".into());
+        let module = |ir: &mut LayoutIR, name: &str, nesting: u32, parent: NodeId| {
+            ir.add_item(ItemKind::Module { nesting, parent }, name.into())
+        };
+        let alpha = module(&mut ir, "alpha", 1, root);
+        let beta = module(&mut ir, "beta", 1, root);
+        let plain = module(&mut ir, "plain", 1, root);
+        let outer = module(&mut ir, "outer", 1, root);
+        let inner = module(&mut ir, "inner", 2, outer);
+        for (from, to, cycle) in [
+            (alpha, beta, 0),
+            (beta, alpha, 0),
+            (alpha, inner, 1),
+            (inner, alpha, 1),
+        ] {
+            ir.edges.push(
+                LayoutEdge::new(from, to, EdgeContext::production()).with_cycle(
+                    CycleKind::Direct,
+                    vec![cycle],
+                    0,
+                ),
+            );
+        }
+        ir.edges
+            .push(LayoutEdge::new(plain, alpha, EdgeContext::production()));
+        CycleFixture {
+            ir,
+            root,
+            alpha,
+            beta,
+            plain,
+            outer,
+            inner,
+        }
+    }
+
+    #[test]
+    fn test_cycle_marks_cover_cycle_nodes_and_their_ancestors() {
+        let fx = cycle_fixture();
+        let marks = CycleMarks::from_ir(&fx.ir);
+        assert_eq!(marks.on_cycle, [fx.alpha, fx.beta, fx.inner].into());
+        assert_eq!(marks.above_cycle, [fx.root, fx.outer].into());
+        assert!(!marks.on_cycle.contains(&fx.plain));
+    }
+
+    fn label_line(output: &str, name: &str) -> String {
+        output
+            .lines()
+            .find(|line| line.contains(&format!(">{name}<")))
+            .unwrap_or_else(|| panic!("label {name} should be rendered"))
+            .to_string()
+    }
+
+    #[test]
+    fn test_render_marks_cycle_node_labels() {
+        let fx = cycle_fixture();
+        let config = RenderConfig::default();
+        let box_width = calculate_box_width(&fx.ir);
+        let positioned = calculate_positions(&fx.ir, &config, box_width);
+        let parents: HashSet<NodeId> = [fx.root, fx.outer].into();
+        let positioned_index: HashMap<NodeId, &PositionedItem> =
+            positioned.iter().map(|item| (item.id, item)).collect();
+        let output = render_nodes(
+            &positioned,
+            &parents,
+            None,
+            &HashSet::new(),
+            &positioned_index,
+            &CycleMarks::from_ir(&fx.ir),
+        );
+        let cycle_node = CSS.nodes.cycle_node;
+        assert!(label_line(&output, "alpha").contains(&format!("class=\"label {cycle_node}\"")));
+        assert!(label_line(&output, "inner").contains(&format!("class=\"label {cycle_node}\"")));
+        assert!(!label_line(&output, "plain").contains(cycle_node));
+        // Every parent carries the marker slot, empty while expanded.
+        assert!(
+            output.contains(&format!(
+                "<tspan id=\"cycle-marker-{}\" class=\"{}\"></tspan>",
+                fx.outer, CSS.nodes.cycle_marker
+            )),
+            "expanded parent should render an empty marker slot, got: {output}"
+        );
+        assert!(!output.contains(CSS.nodes.hides_cycle));
+    }
+
+    #[test]
+    fn test_render_collapsed_parent_marks_hidden_cycle() {
+        let fx = cycle_fixture();
+        let config = RenderConfig::default();
+        let box_width = calculate_box_width(&fx.ir);
+        let positioned = calculate_positions(&fx.ir, &config, box_width);
+        let parents: HashSet<NodeId> = [fx.root, fx.outer].into();
+        let collapsed: HashSet<NodeId> = [fx.outer].into();
+        let visible: HashSet<NodeId> = positioned
+            .iter()
+            .map(|item| item.id)
+            .filter(|id| *id != fx.inner)
+            .collect();
+        let positioned_index: HashMap<NodeId, &PositionedItem> =
+            positioned.iter().map(|item| (item.id, item)).collect();
+        let output = render_nodes(
+            &positioned,
+            &parents,
+            Some(&visible),
+            &collapsed,
+            &positioned_index,
+            &CycleMarks::from_ir(&fx.ir),
+        );
+        let outer_label = label_line(&output, "outer");
+        assert!(
+            outer_label.contains(&format!("class=\"label {}\"", CSS.nodes.hides_cycle)),
+            "collapsed parent above a cycle should carry the hides-cycle class, got: {outer_label}"
+        );
+        assert!(
+            outer_label.contains(&format!(
+                "<tspan id=\"cycle-marker-{}\" class=\"{}\"> {CYCLE_MARKER}</tspan>",
+                fx.outer, CSS.nodes.cycle_marker
+            )),
+            "collapsed parent above a cycle should show the marker, got: {outer_label}"
+        );
+        // The crate is expanded, so its slot stays empty even though it is above a cycle.
+        assert!(label_line(&output, "root").contains(&format!(
+            "id=\"cycle-marker-{}\" class=\"{}\"></tspan>",
+            fx.root, CSS.nodes.cycle_marker
+        )));
     }
 
     #[test]

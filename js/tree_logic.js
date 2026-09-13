@@ -34,6 +34,19 @@ const TreeLogic = {
   },
 
   /**
+   * Whether any descendant (not the node itself) lies on a cycle.
+   * @param {string} nodeId
+   * @param {Map<string, string>} parentMap
+   * @param {Set<string>} cycleNodeIds - Nodes lying on a cycle
+   * @returns {boolean}
+   */
+  hasCycleDescendant(nodeId, parentMap, cycleNodeIds) {
+    return this.getDescendants(nodeId, parentMap).some((id) =>
+      cycleNodeIds.has(id),
+    );
+  },
+
+  /**
    * Find visible ancestor (or self if visible)
    * A node is hidden if ANY ancestor is collapsed.
    * @param {string} nodeId

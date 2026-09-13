@@ -383,6 +383,25 @@ fn build_css_rules() -> Vec<CssRule> {
             c.nodes.child_count,
             &[("font-size", "10px"), ("fill", n.child_count)],
         ),
+        // Labels on a cycle, and collapsed parents hiding one, share the cycle
+        // color; both are gated on the container state like cycle-arc. The
+        // marker glyph is always in the DOM (JS fills it on collapse) and only
+        // shows under the same state.
+        CssRule::new(
+            &format!(
+                ".{} .{}, .{} .{}",
+                c.relation.cluster_mode_on,
+                c.nodes.cycle_node,
+                c.relation.cluster_mode_on,
+                c.nodes.hides_cycle
+            ),
+            &[("fill", d.cycle)],
+        ),
+        CssRule::class(c.nodes.cycle_marker, &[("display", "none")]),
+        CssRule::new(
+            &format!(".{} .{}", c.relation.cluster_mode_on, c.nodes.cycle_marker),
+            &[("display", "inline")],
+        ),
         // Shadow path
         CssRule::class(
             c.relation.shadow_path,
@@ -1293,6 +1312,32 @@ mod tests {
                 d.cycle_arrow
             )),
             "cycle-arrow color should be gated behind .cluster-mode-on"
+        );
+    }
+
+    #[test]
+    fn test_cycle_label_marks_gated_by_cluster_mode() {
+        // Node labels on a cycle, and collapsed parents hiding one, turn red only
+        // under the .cluster-mode-on container state; the marker glyph shows
+        // only there too.
+        let css = render_styles();
+        let n = &CSS.nodes;
+        let state = CSS.relation.cluster_mode_on;
+        let cycle_color = COLORS.direction.cycle;
+        assert!(
+            css.contains(&format!(
+                ".{state} .{}, .{state} .{} {{ fill: {cycle_color}",
+                n.cycle_node, n.hides_cycle
+            )),
+            "cycle label color should be gated behind .cluster-mode-on"
+        );
+        assert!(
+            css.contains(&format!(".{} {{ display: none", n.cycle_marker)),
+            "cycle marker should be hidden outside cluster mode"
+        );
+        assert!(
+            css.contains(&format!(".{state} .{} {{ display: inline", n.cycle_marker)),
+            "cycle marker should show under .cluster-mode-on"
         );
     }
 

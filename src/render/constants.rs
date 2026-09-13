@@ -253,6 +253,14 @@ pub(super) struct NodeClasses {
     pub external_transitive: &'static str,
     pub label: &'static str,
     pub child_count: &'static str,
+    /// Label of a node lying on a cycle. Red under [`RelationClasses::cluster_mode_on`].
+    pub cycle_node: &'static str,
+    /// Label of a collapsed parent with a cycle node among its descendants.
+    /// Set by JS on collapse, by the renderer for the initial expand level.
+    pub hides_cycle: &'static str,
+    /// The tspan inside a parent label that shows the cycle glyph while
+    /// [`hides_cycle`](Self::hides_cycle) applies; empty otherwise, like `child_count`.
+    pub cycle_marker: &'static str,
     pub tree_line: &'static str,
     pub collapse_toggle: &'static str,
     pub collapsed: &'static str,
@@ -408,6 +416,9 @@ pub(super) static CSS: CssClassNames = CssClassNames {
         external_transitive: "external-transitive",
         label: "label",
         child_count: "child-count",
+        cycle_node: "cycle-node",
+        hides_cycle: "hides-cycle",
+        cycle_marker: "cycle-marker",
         tree_line: "tree-line",
         collapse_toggle: "collapse-toggle",
         collapsed: "collapsed",

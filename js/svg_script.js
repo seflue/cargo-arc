@@ -1062,6 +1062,19 @@ if (typeof document !== 'undefined') {
           nodeRect.getAttribute('width'),
         );
       }
+      // A collapsed parent hiding a cycle node shows the marker glyph (same
+      // loop-closer as the sidebar's closing edge); CSS reveals it and turns
+      // the label red only under cluster mode.
+      const hidesCycle =
+        collapsed &&
+        TreeLogic.hasCycleDescendant(
+          nodeId,
+          parentMap,
+          StaticData.getCycleNodeIds(),
+        );
+      const cycleMarker = DomAdapter.getCycleMarker(nodeId);
+      if (cycleMarker) cycleMarker.textContent = hidesCycle ? ' ↺' : '';
+      countLabel.parentElement?.classList.toggle(C.hidesCycle, hidesCycle);
       if (collapsed) {
         countLabel.textContent = ` (+${countDescendants(nodeId)})`;
         const labelText = countLabel.parentElement;

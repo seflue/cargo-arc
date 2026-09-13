@@ -118,6 +118,9 @@ function createConvenienceMethods() {
     getCountLabel(nodeId) {
       return this.getElementById(Selectors.countId(nodeId));
     },
+    getCycleMarker(nodeId) {
+      return this.getElementById(Selectors.cycleMarkerId(nodeId));
+    },
     getTreeLines(nodeId, role) {
       const sel =
         role === 'child'

@@ -8,6 +8,7 @@
 const Selectors = {
   nodeId: (id) => `node-${id}`,
   countId: (id) => `count-${id}`,
+  cycleMarkerId: (id) => `cycle-marker-${id}`,
 
   baseArc: (arcId) => {
     const c = STATIC_DATA.classes;

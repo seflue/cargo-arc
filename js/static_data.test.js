@@ -78,6 +78,7 @@ const TEST_STATIC_DATA = {
       from: 'fn_1',
       to: 'crate',
       context: { kind: 'production', subKind: null, features: [] },
+      cycleIds: [0],
       usages: [
         {
           symbol: 'use_root',
@@ -93,6 +94,7 @@ const TEST_STATIC_DATA = {
       from: 'crate',
       to: 'fn_1',
       context: { kind: 'production', subKind: null, features: [] },
+      cycleIds: [0],
       usages: [
         {
           symbol: 'call_fn1',
@@ -177,6 +179,17 @@ describe('StaticData', () => {
       const ids = StaticData.getAllArcIds();
       expect(ids).toContain('fn_1-fn_2');
       expect(ids).toContain('mod_a-crate');
+    });
+  });
+
+  describe('getCycleNodeIds', () => {
+    test('collects both endpoints of every arc carrying cycleIds', () => {
+      const ids = StaticData.getCycleNodeIds();
+      expect(ids).toEqual(new Set(['crate', 'fn_1']));
+    });
+
+    test('returns the same set on repeated calls', () => {
+      expect(StaticData.getCycleNodeIds()).toBe(StaticData.getCycleNodeIds());
     });
   });
 

@@ -62,6 +62,40 @@ describe('TreeLogic', () => {
     });
   });
 
+  describe('hasCycleDescendant', () => {
+    // Tree: root -> a -> a1, a2
+    //            -> b
+    const parentMap = buildParentMap({
+      root: ['a', 'b'],
+      a: ['a1', 'a2'],
+    });
+    const cycleNodes = new Set(['a2', 'b']);
+
+    test('true when a nested descendant lies on a cycle', () => {
+      expect(TreeLogic.hasCycleDescendant('a', parentMap, cycleNodes)).toBe(
+        true,
+      );
+      expect(TreeLogic.hasCycleDescendant('root', parentMap, cycleNodes)).toBe(
+        true,
+      );
+    });
+
+    test('false for a leaf, even one on a cycle itself', () => {
+      expect(TreeLogic.hasCycleDescendant('b', parentMap, cycleNodes)).toBe(
+        false,
+      );
+      expect(TreeLogic.hasCycleDescendant('a1', parentMap, cycleNodes)).toBe(
+        false,
+      );
+    });
+
+    test('false when no descendant is on a cycle', () => {
+      expect(TreeLogic.hasCycleDescendant('a', parentMap, new Set(['b']))).toBe(
+        false,
+      );
+    });
+  });
+
   describe('getVisibleAncestor', () => {
     test('returns self when node is visible (parent not collapsed)', () => {
       const parentMap = buildParentMap({ root: ['child'] });

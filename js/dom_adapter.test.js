@@ -161,6 +161,16 @@ describe('Convenience methods', () => {
     ]);
   });
 
+  test('getCycleMarker uses Selectors.cycleMarkerId', () => {
+    const mock = createMockDomAdapter();
+    const el = createFakeElement('tspan');
+    mock._registerElement(Selectors.cycleMarkerId('node1'), el);
+    expect(mock.getCycleMarker('node1')).toBe(el);
+    expect(mock._getCalls('getElementById')).toContainEqual([
+      Selectors.cycleMarkerId('node1'),
+    ]);
+  });
+
   test('getTreeLines with role=child uses Selectors.treeLineChild', () => {
     const mock = createMockDomAdapter();
     const lines = [createFakeElement('line'), createFakeElement('line')];

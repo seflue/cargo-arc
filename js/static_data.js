@@ -6,6 +6,9 @@
 // Eliminates DOM reads for static properties (positions, parents, arc weights)
 
 const StaticData = {
+  /** @type {Set<string>|null} */
+  _cycleNodeIds: null,
+
   /**
    * Get node data by ID
    * @param {string} id - Node ID
@@ -72,6 +75,23 @@ const StaticData = {
    */
   getCluster(sccId) {
     return STATIC_DATA.clusters ? STATIC_DATA.clusters[sccId] : undefined;
+  },
+
+  /**
+   * Nodes lying on a cycle: both endpoints of every arc that carries
+   * cycleIds. Derived once from the arcs, since STATIC_DATA never changes.
+   * @returns {Set<string>}
+   */
+  getCycleNodeIds() {
+    if (!this._cycleNodeIds) {
+      this._cycleNodeIds = new Set();
+      for (const arc of Object.values(STATIC_DATA.arcs)) {
+        if (!arc.cycleIds?.length) continue;
+        this._cycleNodeIds.add(arc.from);
+        this._cycleNodeIds.add(arc.to);
+      }
+    }
+    return this._cycleNodeIds;
   },
 
   /**
