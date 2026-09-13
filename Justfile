@@ -3,8 +3,9 @@
 default:
     @just --list
 
-build:
-    cargo build
+# extra arguments go to cargo: `just build --release`
+build *args:
+    cargo build {{ args }}
 
 test-rust:
     cargo test
