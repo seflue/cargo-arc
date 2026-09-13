@@ -11,7 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Code navigation from the diagram into the editor: the code file can be opened from a node or a reference. `cargo arc ui` serves the diagram for an editor plugin.
+- Plugins for Neovim, VS Code and RustRover under `editors/`.
 - `-o deps.html` writes the diagram as an HTML page with the SVG inline.
+
+### Fixed
+
+- A collapsed sidebar expands on the first click.
+- A collapsed node that contains a cycle keeps its cycle marker while the circular-dependency overlay is active.
+- The sidebar no longer extends under the vertical scrollbar.
 
 ## [0.4.0] - 2026-09-11
 
