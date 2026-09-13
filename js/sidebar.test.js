@@ -335,9 +335,12 @@ describe('SidebarLogic', () => {
         '<span class="sidebar-definition" data-jump="9" title="src/m.rs:7">' +
         '<svg class="sidebar-jump" xmlns="http://www.w3.org/2000/svg"><use href="#jump-icon"></use></svg></span>';
       expect(html).toContain(chip);
-      // The chip sits on the symbol row, before its locations.
+      // The chip follows the symbol name directly, ahead of the count.
+      expect(html.indexOf(chip)).toBeGreaterThan(
+        html.indexOf('sidebar-symbol-name'),
+      );
       expect(html.indexOf(chip)).toBeLessThan(
-        html.indexOf('sidebar-locations'),
+        html.indexOf('sidebar-ref-count'),
       );
     });
 
@@ -2301,6 +2304,9 @@ describe('SidebarLogic', () => {
     });
 
     test('an expanded edge row shows the definition chip on its symbols', () => {
+      globalThis.STATIC_DATA.symbolLocalities = {
+        b: { Foo: { locality: 'crateWide', consumers: ['a'] } },
+      };
       const html = SidebarLogic._buildEdgeRow(
         { fromId: 'a', toId: 'b', symbols: 1 },
         [
@@ -2314,9 +2320,15 @@ describe('SidebarLogic', () => {
         undefined,
         [],
       );
-      expect(html).toContain(
-        '<span class="sidebar-definition" data-jump="9" title="src/m.rs:7">',
+      delete globalThis.STATIC_DATA.symbolLocalities;
+      const chip =
+        '<span class="sidebar-definition" data-jump="9" title="src/m.rs:7">';
+      expect(html).toContain(chip);
+      // Directly after the symbol name, ahead of the locality tag.
+      expect(html.indexOf(chip)).toBeGreaterThan(
+        html.indexOf('sidebar-symbol-name'),
       );
+      expect(html.indexOf(chip)).toBeLessThan(html.indexOf('sidebar-locality'));
     });
 
     test('rows reuse _buildEdgeRow: symbol expand and data-arc-id present', () => {

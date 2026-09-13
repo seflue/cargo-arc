@@ -143,9 +143,9 @@ const SidebarLogic = {
             html += `<span class="sidebar-ns">${group.modulePath}::</span>`;
           }
           html += `<span class="sidebar-symbol-name">${group.symbol}</span>`;
+          html += this._definitionChip(group);
           html += this._renderLocalityTag(arc.to, group.symbol);
           html += `<span class="sidebar-ref-count">${group.locations.length}</span>`;
-          html += this._definitionChip(group);
           html += `</div>`;
         }
         html += `<div class="sidebar-locations">`;
@@ -354,8 +354,8 @@ const SidebarLogic = {
           html += `<span class="sidebar-ns">${group.modulePath}::</span>`;
         }
         html += `<span class="sidebar-symbol-name">${group.symbol}</span>`;
-        html += `<span class="sidebar-ref-count">${group.locations.length}</span>`;
         html += this._definitionChip(group);
+        html += `<span class="sidebar-ref-count">${group.locations.length}</span>`;
         html += `</div>`;
       }
       html += `<div class="sidebar-locations">`;
@@ -952,8 +952,8 @@ const SidebarLogic = {
           html += `<span class="sidebar-ns">${u.modulePath}::</span>`;
         }
         html += `<span class="sidebar-symbol-name">${u.symbol}</span>`;
-        html += this._renderLocalityTag(edge.toId, u.symbol);
         html += this._definitionChip(u);
+        html += this._renderLocalityTag(edge.toId, u.symbol);
         html += `</div>`;
         for (const loc of u.locations || []) {
           html += this._locationRow(loc);
