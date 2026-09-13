@@ -1,7 +1,7 @@
 //! Syn-based use statement parsing for workspace dependency extraction.
 
 use crate::model::{
-    CrateExportMap, DefKind, DependencyRef, EdgeContext, ModulePathMap, TestKind, UsageKind,
+    CrateExportMap, Definition, DependencyRef, EdgeContext, ModulePathMap, TestKind, UsageKind,
     WorkspaceCrates, normalize_crate_name,
 };
 use std::borrow::Cow;
@@ -41,8 +41,8 @@ pub(crate) struct ReExportTarget {
 /// Export and re-export information for a single module.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct ModuleExportInfo {
-    /// Own public definitions: name → item kind at the definition site
-    pub(crate) definitions: HashMap<String, DefKind>,
+    /// Own public definitions: name → kind and line at the definition site
+    pub(crate) definitions: HashMap<String, Definition>,
     /// Explicit re-exports: alias/name → source target
     pub(crate) explicit_reexports: HashMap<String, ReExportTarget>,
     /// Private `use` bindings this module holds. Rust makes them visible to

@@ -158,6 +158,27 @@ describe('SidebarLogic', () => {
       expect(result[0].locations).toContainEqual({ file: 'c.rs', line: 3 });
     });
 
+    test('keeps the definition of a merged symbol', () => {
+      const definition = { file: 'm.rs', line: 7, jump: 9 };
+      const groups = [
+        {
+          symbol: 'Foo',
+          modulePath: 'm',
+          locations: [{ file: 'a.rs', line: 1 }],
+          definition,
+        },
+        {
+          symbol: 'Foo',
+          modulePath: 'm',
+          locations: [{ file: 'b.rs', line: 2 }],
+          definition,
+        },
+      ];
+      const result = SidebarLogic.mergeSymbolGroups(groups);
+      expect(result.length).toBe(1);
+      expect(result[0].definition).toEqual(definition);
+    });
+
     test('deduplicates locations with same file+line', () => {
       const groups = [
         {
@@ -294,6 +315,46 @@ describe('SidebarLogic', () => {
       const html = SidebarLogic.buildContent('no-jump-id', override);
       expect(html).not.toContain('data-jump');
       expect(html).not.toContain('sidebar-jump');
+    });
+
+    test('symbol row carries a definition chip when the group has a definition', () => {
+      const override = {
+        from: 'a',
+        to: 'b',
+        usages: [
+          {
+            symbol: 'Foo',
+            modulePath: 'm',
+            locations: [{ file: 'src/lib.rs', line: 3, jump: 3 }],
+            definition: { file: 'src/m.rs', line: 7, jump: 9 },
+          },
+        ],
+      };
+      const html = SidebarLogic.buildContent('definition', override);
+      const chip =
+        '<span class="sidebar-definition" data-jump="9" title="src/m.rs:7">' +
+        '<svg class="sidebar-jump" xmlns="http://www.w3.org/2000/svg"><use href="#jump-icon"></use></svg></span>';
+      expect(html).toContain(chip);
+      // The chip sits on the symbol row, before its locations.
+      expect(html.indexOf(chip)).toBeLessThan(
+        html.indexOf('sidebar-locations'),
+      );
+    });
+
+    test('symbol row omits the definition chip without a definition', () => {
+      const override = {
+        from: 'a',
+        to: 'b',
+        usages: [
+          {
+            symbol: 'Foo',
+            modulePath: 'm',
+            locations: [{ file: 'src/lib.rs', line: 3, jump: 3 }],
+          },
+        ],
+      };
+      const html = SidebarLogic.buildContent('no-definition', override);
+      expect(html).not.toContain('sidebar-definition');
     });
 
     test('empty usages shows Cargo.toml dependency', () => {
@@ -1419,6 +1480,25 @@ describe('SidebarLogic', () => {
       expect(dom.collapseAllBtn.innerHTML).toBe('+');
     });
 
+    test('a click on the definition chip leaves the row state alone', () => {
+      const dom = makeHandlerDom([{ collapsed: false }]);
+      SidebarLogic._setupCollapseHandlers(dom.root);
+      const contentHandler = dom.listeners.get('content')[0];
+      const symbolEl = dom.symbols[0].symbolEl;
+      const chip = { dataset: { jump: '9' } };
+      contentHandler({
+        target: {
+          closest(sel) {
+            if (sel === '.sidebar-definition[data-jump]') return chip;
+            if (sel === '.sidebar-symbol') return symbolEl;
+            return null;
+          },
+        },
+      });
+      expect(symbolEl.getAttribute('data-collapsed')).toBeNull();
+      expect(dom.symbols[0].locsEl.style.display).toBe('');
+    });
+
     test('no crash when no collapse-all button', () => {
       const content = {
         querySelectorAll() {
@@ -2218,6 +2298,25 @@ describe('SidebarLogic', () => {
         [],
       );
       expect(plain).not.toContain('sidebar-edge-closing-marker');
+    });
+
+    test('an expanded edge row shows the definition chip on its symbols', () => {
+      const html = SidebarLogic._buildEdgeRow(
+        { fromId: 'a', toId: 'b', symbols: 1 },
+        [
+          {
+            symbol: 'Foo',
+            modulePath: 'm',
+            locations: [{ file: 'a.rs', line: 1, jump: 3 }],
+            definition: { file: 'src/m.rs', line: 7, jump: 9 },
+          },
+        ],
+        undefined,
+        [],
+      );
+      expect(html).toContain(
+        '<span class="sidebar-definition" data-jump="9" title="src/m.rs:7">',
+      );
     });
 
     test('rows reuse _buildEdgeRow: symbol expand and data-arc-id present', () => {

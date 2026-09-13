@@ -99,6 +99,19 @@ struct SymbolUsageGroup {
     #[serde(skip_serializing_if = "is_false")]
     via_reexport: bool,
     locations: Vec<UsageLocation>,
+    /// Where the provider defines the symbol. Present only with jump ids
+    /// (`RenderConfig::with_jump_ids`) and only when the definition is known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    definition: Option<DefinitionData>,
+}
+
+/// A symbol's definition site: the provider's module target name, the line,
+/// and the id it resolves through.
+#[derive(Clone, Serialize)]
+struct DefinitionData {
+    file: String,
+    line: usize,
+    jump: LocationId,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)] // serde skip_serializing_if signature
@@ -244,6 +257,7 @@ fn format_source_locations_by_symbol(
             module_path: module_path_opt.clone(),
             via_reexport: false,
             locations: bare_locations,
+            definition: None,
         });
     }
 
@@ -255,10 +269,44 @@ fn format_source_locations_by_symbol(
             module_path: module_path_opt.clone(),
             via_reexport,
             locations,
+            definition: None,
         });
     }
 
     groups
+}
+
+/// Attach each symbol group's definition at the provider, when the layout
+/// knows one. The file is the provider's own module target.
+fn attach_definitions(
+    groups: &mut [SymbolUsageGroup],
+    ir: &LayoutIR,
+    provider: NodeId,
+    config: &RenderConfig,
+) {
+    if !config.with_jump_ids {
+        return;
+    }
+    let Some(definitions) = ir.symbol_definitions.get(&provider) else {
+        return;
+    };
+    let Some(file) = ir.items[provider]
+        .targets
+        .iter()
+        .find(|target| target.kind == TargetKind::Module)
+        .map(|target| target.name.clone())
+    else {
+        return;
+    };
+    for group in groups {
+        group.definition = definitions
+            .get(&group.symbol)
+            .map(|definition| DefinitionData {
+                file: file.clone(),
+                line: definition.line,
+                jump: definition.id,
+            });
+    }
 }
 
 /// Generate `STATIC_DATA` JavaScript constant from layout data
@@ -325,7 +373,8 @@ fn generate_static_data(
     let mut arcs = BTreeMap::new();
     for edge in &ir.edges {
         let arc_id = format!("{}-{}", edge.from, edge.to);
-        let usages = format_source_locations_by_symbol(&edge.source_locations, config);
+        let mut usages = format_source_locations_by_symbol(&edge.source_locations, config);
+        attach_definitions(&mut usages, ir, edge.to, config);
         arcs.insert(
             arc_id,
             ArcData {
@@ -536,7 +585,7 @@ mod tests {
     use super::*;
     use crate::diagnose::RepresentativeCycles;
     use crate::graph::{ArcGraph, EdgeWeight, Node, Reexports};
-    use crate::layout::{JumpTable, JumpTarget, LayoutEdge, build_layout};
+    use crate::layout::{JumpTable, JumpTarget, LayoutEdge, LocatedDefinition, build_layout};
     use crate::model::{EdgeContext, SourceLocation};
     use crate::test_support::{crate_node, module_node};
 
@@ -838,8 +887,9 @@ mod tests {
     // === RenderConfig jump switch in STATIC_DATA ===
 
     /// A crate item (lib, bin, manifest targets), a module item (one target),
-    /// and one edge between them carrying a source location, each already
-    /// bearing the id `build_layout` would have assigned it.
+    /// one edge between them carrying a source location, and the module's
+    /// definition of the crossing symbol `Foo`, each already bearing the id
+    /// `build_layout` would have assigned it.
     fn ir_with_jump_targets() -> (LayoutIR, NodeId, NodeId) {
         use std::path::PathBuf;
 
@@ -888,7 +938,74 @@ mod tests {
                 }],
             ),
         );
+        ir.symbol_definitions.insert(
+            m,
+            BTreeMap::from([(
+                "Foo".to_string(),
+                LocatedDefinition {
+                    line: 7,
+                    id: table.insert(PathBuf::from("/ws/app/src/m.rs"), 7),
+                },
+            )]),
+        );
         (ir, c, m)
+    }
+
+    #[test]
+    fn test_static_data_carries_the_symbol_definition_when_switch_is_on() {
+        let (ir, c, m) = ir_with_jump_targets();
+        let layout_definition_id = ir.symbol_definitions[&m]["Foo"].id;
+
+        let config = RenderConfig {
+            with_jump_ids: true,
+            ..RenderConfig::default()
+        };
+        let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
+        let parents: HashSet<NodeId> = HashSet::from([c]);
+        let script = render_script(&config, &ir, &positioned, &parents);
+        let json_str = script
+            .split("const STATIC_DATA = ")
+            .nth(1)
+            .unwrap()
+            .split(";\n")
+            .next()
+            .unwrap();
+        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
+
+        let definition = &data["arcs"][format!("{c}-{m}")]["usages"][0]["definition"];
+        assert_eq!(
+            definition["file"], "m.rs",
+            "the provider's module target name"
+        );
+        assert_eq!(definition["line"], 7);
+        let jump: LocationId =
+            serde_json::from_value(definition["jump"].clone()).expect("definition has a jump id");
+        assert_eq!(jump, layout_definition_id);
+    }
+
+    #[test]
+    fn test_static_data_omits_the_definition_of_an_undefined_symbol() {
+        let (mut ir, c, m) = ir_with_jump_targets();
+        ir.symbol_definitions.clear();
+
+        let config = RenderConfig {
+            with_jump_ids: true,
+            ..RenderConfig::default()
+        };
+        let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
+        let parents: HashSet<NodeId> = HashSet::from([c]);
+        let script = render_script(&config, &ir, &positioned, &parents);
+        let json_str = script
+            .split("const STATIC_DATA = ")
+            .nth(1)
+            .unwrap()
+            .split(";\n")
+            .next()
+            .unwrap();
+        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
+
+        let usage = &data["arcs"][format!("{c}-{m}")]["usages"][0];
+        assert!(usage.get("definition").is_none(), "{usage}");
     }
 
     #[test]
@@ -967,6 +1084,7 @@ mod tests {
 
         assert!(!script.contains("\"targets\""));
         assert!(!script.contains("\"jump\""));
+        assert!(!script.contains("\"definition\""));
     }
 
     // === Registry / Module Order Tests ===
@@ -1594,6 +1712,7 @@ mod tests {
             module_path: None,
             via_reexport: false,
             locations: vec![],
+            definition: None,
         };
         assert_eq!(group.symbol, "TestSymbol");
         assert_eq!(group.locations.len(), 0);
@@ -1603,6 +1722,7 @@ mod tests {
             symbol: "AnotherSymbol".to_string(),
             module_path: None,
             via_reexport: false,
+            definition: None,
             locations: vec![
                 UsageLocation {
                     file: "src/main.rs".to_string(),

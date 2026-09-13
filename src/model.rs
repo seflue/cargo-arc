@@ -96,7 +96,7 @@ impl EdgeSymbols {
 ///
 /// Named apart from `layout::ItemKind`, which classifies graph nodes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DefKind {
+pub enum DefKind {
     Fn,
     Struct,
     Enum,
@@ -104,6 +104,14 @@ pub(crate) enum DefKind {
     Const,
     Static,
     Type,
+}
+
+/// A symbol's definition site: the item kind and the line the item starts on
+/// (attributes included), in the file of the module that defines it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Definition {
+    pub kind: DefKind,
+    pub line: usize,
 }
 
 /// Workspace crate names, stored in normalized form (hyphens → underscores).
@@ -373,6 +381,8 @@ pub struct ModuleInfo {
     pub file: Option<PathBuf>,
     pub children: Vec<ModuleInfo>,
     pub dependencies: Vec<DependencyRef>,
+    /// The module's own public definitions, by symbol name.
+    pub definitions: HashMap<String, Definition>,
 }
 
 #[derive(Debug, Clone)]
@@ -686,6 +696,7 @@ mod tests {
             full_path: "crate::cli".to_string(),
             file: None,
             children: vec![],
+            definitions: HashMap::new(),
             dependencies: vec![DependencyRef {
                 target_crate: "crate".to_string(),
                 target_module: "graph".to_string(),

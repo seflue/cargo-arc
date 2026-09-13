@@ -801,6 +801,23 @@ fn build_css_rules() -> Vec<CssRule> {
             ),
             &[("visibility", "visible")],
         ),
+        // The definition chip on a symbol row (js/sidebar.js _definitionChip)
+        // follows the location rows: a click target only while pinned, its
+        // icon shown only while the row is hovered.
+        CssRule::new(
+            &format!(
+                "svg.{} .sidebar-definition[data-jump]",
+                c.relation.has_pinned
+            ),
+            &[("cursor", "pointer")],
+        ),
+        CssRule::new(
+            &format!(
+                "svg.{} .{}:hover .sidebar-jump, svg.{} .sidebar-edge-symbol:hover .sidebar-jump",
+                c.relation.has_pinned, c.sidebar.symbol, c.relation.has_pinned
+            ),
+            &[("visibility", "visible")],
+        ),
         // Jump popover: js/jump_icons.js builds it next to a hovered node; no
         // Rust markup emits these classes. The bridge is the transparent strip
         // between node and popover that keeps the pointer inside the group.
@@ -1430,6 +1447,35 @@ mod tests {
         assert!(
             !css.contains(&format!("\n.{}[data-jump]", CSS.sidebar.location)),
             "an unpinned row must not look clickable"
+        );
+    }
+
+    /// The definition chip on a symbol row (js/sidebar.js _definitionChip)
+    /// follows the location rows: pointer and icon only while pinned, the
+    /// icon only while its row is hovered.
+    #[test]
+    fn test_css_contains_sidebar_definition_chip_rules() {
+        let css = render_styles();
+        let rule_body = |selector: &str| -> String {
+            let idx = css
+                .find(&format!("{selector} {{"))
+                .unwrap_or_else(|| panic!("CSS should contain a rule for {selector}"));
+            let end = css[idx..].find('}').map_or(css.len(), |i| idx + i);
+            css[idx..end].to_string()
+        };
+        let pinned = rule_body(&format!(
+            "svg.{} .sidebar-definition[data-jump]",
+            CSS.relation.has_pinned
+        ));
+        assert!(pinned.contains("cursor: pointer"), "got: {pinned}");
+        let hovered = rule_body(&format!(
+            "svg.{} .{}:hover .sidebar-jump, svg.{} .sidebar-edge-symbol:hover .sidebar-jump",
+            CSS.relation.has_pinned, CSS.sidebar.symbol, CSS.relation.has_pinned
+        ));
+        assert!(hovered.contains("visibility: visible"), "got: {hovered}");
+        assert!(
+            !css.contains("\n.sidebar-definition[data-jump]"),
+            "an unpinned chip must not look clickable"
         );
     }
 

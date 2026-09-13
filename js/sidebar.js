@@ -51,8 +51,8 @@ const SidebarLogic = {
   _onEdgeClick: null,
   /**
    * Merge symbol groups: combine groups with same symbol, deduplicate locations by file+line.
-   * @param {Array<{symbol: string, modulePath: string|null, locations: Array<{file: string, line: number}>}>} groups
-   * @returns {Array<{symbol: string, modulePath: string|null, locations: Array<{file: string, line: number}>}>}
+   * @param {Array<{symbol: string, modulePath: string|null, locations: Array<{file: string, line: number}>, definition?: {file: string, line: number, jump: number}}>} groups
+   * @returns {Array<{symbol: string, modulePath: string|null, locations: Array<{file: string, line: number}>, definition?: {file: string, line: number, jump: number}}>}
    */
   mergeSymbolGroups(groups) {
     const bySymbol = new Map();
@@ -71,6 +71,7 @@ const SidebarLogic = {
           symbol: g.symbol,
           modulePath: g.modulePath,
           locations: [...g.locations],
+          ...(g.definition ? { definition: g.definition } : {}),
         });
       }
     }
@@ -144,6 +145,7 @@ const SidebarLogic = {
           html += `<span class="sidebar-symbol-name">${group.symbol}</span>`;
           html += this._renderLocalityTag(arc.to, group.symbol);
           html += `<span class="sidebar-ref-count">${group.locations.length}</span>`;
+          html += this._definitionChip(group);
           html += `</div>`;
         }
         html += `<div class="sidebar-locations">`;
@@ -353,6 +355,7 @@ const SidebarLogic = {
         }
         html += `<span class="sidebar-symbol-name">${group.symbol}</span>`;
         html += `<span class="sidebar-ref-count">${group.locations.length}</span>`;
+        html += this._definitionChip(group);
         html += `</div>`;
       }
       html += `<div class="sidebar-locations">`;
@@ -462,6 +465,23 @@ const SidebarLogic = {
       return '';
     }
     return `<span class="sidebar-locality sidebar-locality-${sl.locality}">${label}</span>`;
+  },
+
+  /**
+   * The jump chip on a symbol row, opening the symbol's definition. Empty
+   * unless the group carries a definition (RenderConfig::with_jump_ids and a
+   * definer the analysis could see). Hidden until the row is hovered, like
+   * the location rows' icon; the click is a jump handled on the document.
+   * @param {{ definition?: { file: string, line: number, jump: number } }} group
+   * @returns {string}
+   */
+  _definitionChip(group) {
+    const definition = group.definition;
+    if (!definition) return '';
+    return (
+      `<span class="sidebar-definition" data-jump="${definition.jump}" title="${definition.file}:${definition.line}">` +
+      '<svg class="sidebar-jump" xmlns="http://www.w3.org/2000/svg"><use href="#jump-icon"></use></svg></span>'
+    );
   },
 
   /**
@@ -933,6 +953,7 @@ const SidebarLogic = {
         }
         html += `<span class="sidebar-symbol-name">${u.symbol}</span>`;
         html += this._renderLocalityTag(edge.toId, u.symbol);
+        html += this._definitionChip(u);
         html += `</div>`;
         for (const loc of u.locations || []) {
           html += this._locationRow(loc);
@@ -1032,9 +1053,10 @@ const SidebarLogic = {
     const content = root.querySelector('.sidebar-content');
     if (!content) return;
     content.addEventListener('click', (e) => {
-      // A location row's click is a jump, handled on the document; the row
-      // around it keeps its pin and expansion state.
+      // A location row's or definition chip's click is a jump, handled on
+      // the document; the row around it keeps its pin and expansion state.
       if (e.target.closest?.('.sidebar-location[data-jump]')) return;
+      if (e.target.closest?.('.sidebar-definition[data-jump]')) return;
       // Cluster rows couple pin and expansion; the state machine decides.
       const edgeRow = e.target.closest?.('.sidebar-edge-row');
       if (edgeRow) {

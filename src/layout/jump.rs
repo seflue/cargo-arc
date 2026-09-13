@@ -50,6 +50,14 @@ pub(crate) struct LocatedSource {
     pub id: LocationId,
 }
 
+/// A symbol's definition site in its provider's file, paired with the id it
+/// resolves through. The file is the provider's own module target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LocatedDefinition {
+    pub line: usize,
+    pub id: LocationId,
+}
+
 /// Assigns `LocationId`s to jump targets as a running counter, and remembers
 /// each target as a [`Location`].
 #[derive(Debug, Default)]

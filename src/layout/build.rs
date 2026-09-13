@@ -1,6 +1,6 @@
 //! Build layout IR from graph and cycle information.
 
-use super::jump::{JumpTable, JumpTarget, LocatedSource, TargetKind};
+use super::jump::{JumpTable, JumpTarget, LocatedDefinition, LocatedSource, TargetKind};
 use super::toposort::stable_toposort;
 use crate::diagnose::{
     Cluster, ConsumerLocality, Cycle, CycleAnalysis, CyclicEdge, order_cycle_blocks,
@@ -168,6 +168,9 @@ pub struct LayoutIR {
     /// Provider `NodeId` → symbol → consumer locality. Providers with only
     /// re-export/test usage carry no entry.
     pub symbol_localities: BTreeMap<NodeId, BTreeMap<String, SymbolLocality>>,
+    /// Provider `NodeId` → symbol → its definition site, for the symbols that
+    /// cross an edge into the provider and that it defines.
+    pub(crate) symbol_definitions: BTreeMap<NodeId, BTreeMap<String, LocatedDefinition>>,
 }
 
 impl LayoutIR {
@@ -253,6 +256,7 @@ pub(crate) fn build_layout(
 
     attach_clusters(&mut ir, graph, analysis, &node_map, reexports);
     attach_symbol_localities(&mut ir, graph, &node_map);
+    attach_symbol_definitions(&mut ir, graph, &node_map, &mut table);
     (ir, table)
 }
 
@@ -323,6 +327,46 @@ fn locate_sources(table: &mut JumpTable, locations: Vec<SourceLocation>) -> Vec<
             LocatedSource { location, id }
         })
         .collect()
+}
+
+/// Insert one jump target per `(provider, symbol)` for the symbols that cross
+/// an edge into a module that defines them, in edge order. Ids are assigned
+/// after the edges' own, so a run on the same graph stays deterministic.
+fn attach_symbol_definitions(
+    ir: &mut LayoutIR,
+    graph: &ArcGraph,
+    node_map: &HashMap<NodeIndex, NodeId>,
+    table: &mut JumpTable,
+) {
+    let graph_index: HashMap<NodeId, NodeIndex> =
+        node_map.iter().map(|(&idx, &id)| (id, idx)).collect();
+    for edge in &ir.edges {
+        let Some(Node::Module {
+            file: Some(file),
+            definitions,
+            ..
+        }) = graph_index.get(&edge.to).map(|&idx| &graph[idx])
+        else {
+            continue;
+        };
+        for symbol in edge
+            .source_locations
+            .iter()
+            .flat_map(|source| &source.location.symbols)
+        {
+            let Some(definition) = definitions.get(symbol) else {
+                continue;
+            };
+            ir.symbol_definitions
+                .entry(edge.to)
+                .or_default()
+                .entry(symbol.clone())
+                .or_insert_with(|| LocatedDefinition {
+                    line: definition.line,
+                    id: table.insert(file.clone(), definition.line),
+                });
+        }
+    }
 }
 
 /// Translate `importer_partition` into layout `NodeId` space and attach it as a
@@ -851,7 +895,9 @@ mod tests {
     use super::*;
     use crate::diagnose::RepresentativeCycles;
     use crate::graph::{ArcGraph, EdgeWeight, Node};
-    use crate::model::{EdgeContext, SourceLocation, TargetRoots, TestKind, UsageKind};
+    use crate::model::{
+        DefKind, Definition, EdgeContext, SourceLocation, TargetRoots, TestKind, UsageKind,
+    };
     use crate::test_support::{
         crate_node, crate_node_with_targets, module_node, module_node_with_file,
     };
@@ -942,6 +988,42 @@ mod tests {
             let idx = self
                 .graph
                 .add_node(module_node_with_file(name, crate_idx, file));
+            self.names.insert(name.to_string(), idx);
+            self.graph.add_edge(parent_idx, idx, EdgeWeight::Contains);
+            self
+        }
+
+        /// Add a module node with a declaring file and public definitions.
+        fn module_with_definitions(
+            &mut self,
+            parent: &str,
+            name: &str,
+            file: &str,
+            definitions: &[(&str, usize)],
+        ) -> &mut Self {
+            let parent_idx = self.names[parent];
+            let crate_idx = match &self.graph[parent_idx] {
+                Node::Module { crate_idx, .. } => *crate_idx,
+                Node::Crate { .. } | Node::ExternalCrate { .. } => parent_idx,
+            };
+            let definitions = definitions
+                .iter()
+                .map(|&(symbol, line)| {
+                    (
+                        symbol.to_string(),
+                        Definition {
+                            kind: DefKind::Struct,
+                            line,
+                        },
+                    )
+                })
+                .collect();
+            let idx = self.graph.add_node(Node::Module {
+                name: name.to_string(),
+                crate_idx,
+                file: Some(PathBuf::from(file)),
+                definitions,
+            });
             self.names.insert(name.to_string(), idx);
             self.graph.add_edge(parent_idx, idx, EdgeWeight::Contains);
             self
@@ -1437,6 +1519,39 @@ mod tests {
             .map(|t| t.id)
             .collect();
         assert_eq!(ids.len(), 4, "all four ids should be distinct");
+    }
+
+    /// A symbol crossing an edge gets one jump id at the provider when the
+    /// provider defines it; a symbol the provider does not define gets none.
+    #[test]
+    fn build_layout_assigns_jump_ids_to_symbol_definitions() {
+        let mut b = TestGraphBuilder::new();
+        b.crate_with_modules("app", &[])
+            .module_with_definitions("app", "mod_a", "/ws/app/src/mod_a.rs", &[("Widget", 7)])
+            .module_with_file("app", "mod_b", "/ws/app/src/mod_b.rs")
+            .prod_dep_with_location(
+                "mod_b",
+                "mod_a",
+                "src/mod_b.rs",
+                3,
+                &["Widget", "Other"],
+                "mod_a",
+            );
+        let (graph, _) = b.build();
+        let (ir, table) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
+        let la = LayoutAssert::new(ir);
+
+        let definitions = &la.ir.symbol_definitions[&la.pos("mod_a")];
+        let widget = definitions.get("Widget").expect("Widget is defined");
+        assert_eq!(widget.line, 7);
+        assert_eq!(
+            table.resolve(widget.id),
+            Some(&Location {
+                file: PathBuf::from("/ws/app/src/mod_a.rs"),
+                line: 7
+            })
+        );
+        assert!(!definitions.contains_key("Other"));
     }
 
     fn target_names(la: &LayoutAssert, label: &str) -> Vec<String> {

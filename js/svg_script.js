@@ -48,10 +48,12 @@ function createHoverKeyTracker() {
   };
 }
 
-// Resolve a jump id from a sidebar click: the closest row carrying
-// data-jump, or null when the click landed elsewhere.
+// Resolve a jump id from a sidebar click: the closest location row or
+// definition chip carrying data-jump, or null when the click landed elsewhere.
 function jumpIdFromClick(target) {
-  const el = target.closest('.sidebar-location[data-jump]');
+  const el = target.closest(
+    '.sidebar-location[data-jump], .sidebar-definition[data-jump]',
+  );
   return el ? Number(el.dataset.jump) : null;
 }
 

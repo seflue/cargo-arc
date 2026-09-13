@@ -1,7 +1,7 @@
 //! Module discovery via syn + filesystem walk.
 
 use anyhow::{Context, Result};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use super::mod_resolver::{ModDecl, child_resolve_dir, extract_mod_declarations, resolve_mod_path};
@@ -234,6 +234,7 @@ fn walk_module_syn(
                 file: Some(file_path.to_path_buf()),
                 children: Vec::new(),
                 dependencies: Vec::new(),
+                definitions: HashMap::new(),
             };
         }
     };
@@ -247,6 +248,7 @@ fn walk_module_syn(
                 file: Some(file_path.to_path_buf()),
                 children: Vec::new(),
                 dependencies: Vec::new(),
+                definitions: HashMap::new(),
             };
         }
     };
@@ -309,12 +311,20 @@ fn walk_module_syn(
         })
         .collect();
 
+    let definitions = ctx
+        .reexport_map
+        .get(ctx.crate_name)
+        .and_then(|modules| modules.get(current_module_path))
+        .map(|info| info.definitions.clone())
+        .unwrap_or_default();
+
     ModuleInfo {
         name: module_name.to_string(),
         full_path,
         file: Some(file_path.to_path_buf()),
         children,
         dependencies,
+        definitions,
     }
 }
 
@@ -380,6 +390,7 @@ pub(crate) fn analyze_modules_syn(
             file: None,
             children: Vec::new(),
             dependencies: Vec::new(),
+            definitions: HashMap::new(),
         });
     }
 
@@ -414,6 +425,8 @@ pub(crate) fn analyze_modules_syn(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analyze::use_parser::ModuleExportInfo;
+    use crate::model::{DefKind, Definition};
     use crate::test_support::conventional_crate;
     use tempfile::TempDir;
 
@@ -808,6 +821,59 @@ mod tests {
                 "graph should depend on model, found: {:?}",
                 graph_mod.dependencies
             );
+        }
+
+        /// A module takes its definitions from the re-export map entry at its
+        /// own crate-relative path; the crate root reads the `""` entry.
+        #[test]
+        fn test_analyze_modules_syn_attaches_definitions_by_module_path() {
+            let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+            let crate_info = conventional_crate("cargo-arc", crate_root);
+            let workspace_crates: WorkspaceCrates = ["cargo-arc"].into_iter().collect();
+            let definition = |line| Definition {
+                kind: DefKind::Struct,
+                line,
+            };
+            let module_info = |name: &str, line| {
+                let mut info = ModuleExportInfo::default();
+                info.definitions.insert(name.to_string(), definition(line));
+                info
+            };
+            let reexport_map: ReExportMap = [(
+                "cargo_arc".to_string(),
+                std::collections::HashMap::from([
+                    (String::new(), module_info("Root", 3)),
+                    ("graph".to_string(), module_info("ArcGraph", 9)),
+                ]),
+            )]
+            .into_iter()
+            .collect();
+
+            let tree = analyze_modules_syn(
+                &crate_info,
+                &workspace_crates,
+                &ModulePathMap::default(),
+                &CrateExportMap::default(),
+                &reexport_map,
+                &std::collections::HashMap::new(),
+                false,
+            );
+
+            assert_eq!(tree.root.definitions.get("Root"), Some(&definition(3)));
+            let graph_mod = tree
+                .root
+                .children
+                .iter()
+                .find(|m| m.name == "graph")
+                .unwrap();
+            assert_eq!(graph_mod.definitions.get("ArcGraph"), Some(&definition(9)));
+            let model_mod = tree
+                .root
+                .children
+                .iter()
+                .find(|m| m.name == "model")
+                .unwrap();
+            assert!(model_mod.definitions.is_empty());
         }
 
         #[test]

@@ -50,6 +50,7 @@ interface StaticArcData {
     modulePath?: string | null;
     viaReexport?: boolean;
     locations: { file: string; line: number; jump?: number }[];
+    definition?: { file: string; line: number; jump: number };
   }[];
   cycleIds?: number[];
   sccId?: number;

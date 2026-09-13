@@ -6,11 +6,21 @@ describe('jumpIdFromClick', () => {
   test('returns the numeric jump id from the closest row with data-jump', () => {
     const target = {
       closest: (sel) =>
-        sel === '.sidebar-location[data-jump]'
+        sel.includes('.sidebar-location[data-jump]')
           ? { dataset: { jump: '5' } }
           : null,
     };
     expect(jumpIdFromClick(target)).toBe(5);
+  });
+
+  test('returns the jump id of a definition chip', () => {
+    const target = {
+      closest: (sel) =>
+        sel.includes('.sidebar-definition[data-jump]')
+          ? { dataset: { jump: '9' } }
+          : null,
+    };
+    expect(jumpIdFromClick(target)).toBe(9);
   });
 
   test('returns null when no ancestor row has data-jump', () => {

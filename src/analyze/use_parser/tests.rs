@@ -1,6 +1,6 @@
 use super::ReExportMap;
 use super::*;
-use crate::model::DefKind;
+use crate::model::{DefKind, Definition};
 use std::path::Path;
 use std::sync::LazyLock;
 
@@ -522,12 +522,20 @@ use crate::graph;
     #[test]
     fn test_process_use_glob_expands_to_payload() {
         let mut analyze_info = ModuleExportInfo::default();
-        analyze_info
-            .definitions
-            .insert("Walker".to_string(), DefKind::Struct);
-        analyze_info
-            .definitions
-            .insert("analyze_module".to_string(), DefKind::Fn);
+        analyze_info.definitions.insert(
+            "Walker".to_string(),
+            Definition {
+                kind: DefKind::Struct,
+                line: 1,
+            },
+        );
+        analyze_info.definitions.insert(
+            "analyze_module".to_string(),
+            Definition {
+                kind: DefKind::Fn,
+                line: 1,
+            },
+        );
         let map: ReExportMap = [(
             "my_crate".to_string(),
             [("analyze".to_string(), analyze_info)]
@@ -564,9 +572,13 @@ use crate::graph;
             },
         );
         let mut origin_info = ModuleExportInfo::default();
-        origin_info
-            .definitions
-            .insert("Widget".to_string(), DefKind::Struct);
+        origin_info.definitions.insert(
+            "Widget".to_string(),
+            Definition {
+                kind: DefKind::Struct,
+                line: 1,
+            },
+        );
         let map: ReExportMap = [(
             "my_crate".to_string(),
             [
@@ -2131,9 +2143,13 @@ mod reexport_resolution_tests {
             },
         );
         let mut sibling_info = ModuleExportInfo::default();
-        sibling_info
-            .definitions
-            .insert("Item".to_string(), DefKind::Struct);
+        sibling_info.definitions.insert(
+            "Item".to_string(),
+            Definition {
+                kind: DefKind::Struct,
+                line: 1,
+            },
+        );
         let mut crate_exports = HashMap::new();
         crate_exports.insert("parent".to_string(), parent_info);
         crate_exports.insert("parent::sibling".to_string(), sibling_info);
@@ -2173,9 +2189,13 @@ mod reexport_resolution_tests {
             },
         );
         let mut child_info = ModuleExportInfo::default();
-        child_info
-            .definitions
-            .insert("Config".to_string(), DefKind::Struct);
+        child_info.definitions.insert(
+            "Config".to_string(),
+            Definition {
+                kind: DefKind::Struct,
+                line: 1,
+            },
+        );
         let mut crate_exports = HashMap::new();
         crate_exports.insert("parent".to_string(), parent_info);
         crate_exports.insert("parent::child".to_string(), child_info);
@@ -2214,9 +2234,13 @@ mod reexport_resolution_tests {
             },
         );
         let mut child_info = ModuleExportInfo::default();
-        child_info
-            .definitions
-            .insert("Config".to_string(), DefKind::Struct);
+        child_info.definitions.insert(
+            "Config".to_string(),
+            Definition {
+                kind: DefKind::Struct,
+                line: 1,
+            },
+        );
         let mut crate_exports = HashMap::new();
         crate_exports.insert("parent".to_string(), parent_info);
         crate_exports.insert("parent::child".to_string(), child_info);
@@ -2246,7 +2270,7 @@ mod reexport_resolution_tests {
 
 mod resolve_reexport_tests {
     use super::super::{ModuleExportInfo, ReExportMap, ReExportTarget, resolve_reexport};
-    use crate::model::{DefKind, DependencyRef, EdgeContext};
+    use crate::model::{DefKind, Definition, DependencyRef, EdgeContext};
     use std::collections::HashMap;
     use std::path::PathBuf;
 
@@ -2287,9 +2311,13 @@ mod resolve_reexport_tests {
     #[test]
     fn resolve_noop_when_own_definition() {
         let mut module_info = ModuleExportInfo::default();
-        module_info
-            .definitions
-            .insert("Widget".to_string(), DefKind::Struct);
+        module_info.definitions.insert(
+            "Widget".to_string(),
+            Definition {
+                kind: DefKind::Struct,
+                line: 1,
+            },
+        );
         let mut crate_exports = HashMap::new();
         crate_exports.insert("render".to_string(), module_info);
         let map: ReExportMap = [("my_crate".to_string(), crate_exports)]
@@ -2314,9 +2342,13 @@ mod resolve_reexport_tests {
             },
         );
         let mut n_info = ModuleExportInfo::default();
-        n_info
-            .definitions
-            .insert("Widget".to_string(), DefKind::Struct);
+        n_info.definitions.insert(
+            "Widget".to_string(),
+            Definition {
+                kind: DefKind::Struct,
+                line: 1,
+            },
+        );
 
         let mut crate_exports = HashMap::new();
         crate_exports.insert("render".to_string(), m_info);
@@ -2351,9 +2383,13 @@ mod resolve_reexport_tests {
             },
         );
         let mut o_info = ModuleExportInfo::default();
-        o_info
-            .definitions
-            .insert("Widget".to_string(), DefKind::Struct);
+        o_info.definitions.insert(
+            "Widget".to_string(),
+            Definition {
+                kind: DefKind::Struct,
+                line: 1,
+            },
+        );
 
         let mut crate_exports = HashMap::new();
         crate_exports.insert("root".to_string(), m_info);
@@ -2381,9 +2417,13 @@ mod resolve_reexport_tests {
             },
         );
         let mut o_info = ModuleExportInfo::default();
-        o_info
-            .definitions
-            .insert("Original".to_string(), DefKind::Struct);
+        o_info.definitions.insert(
+            "Original".to_string(),
+            Definition {
+                kind: DefKind::Struct,
+                line: 1,
+            },
+        );
 
         let mut crate_exports = HashMap::new();
         crate_exports.insert("facade".to_string(), m_info);
@@ -2404,9 +2444,13 @@ mod resolve_reexport_tests {
         let mut m_info = ModuleExportInfo::default();
         m_info.glob_sources.push("elements".to_string());
         let mut n_info = ModuleExportInfo::default();
-        n_info
-            .definitions
-            .insert("Widget".to_string(), DefKind::Struct);
+        n_info.definitions.insert(
+            "Widget".to_string(),
+            Definition {
+                kind: DefKind::Struct,
+                line: 1,
+            },
+        );
 
         let mut crate_exports = HashMap::new();
         crate_exports.insert("render".to_string(), m_info);
@@ -2435,9 +2479,13 @@ mod resolve_reexport_tests {
             },
         );
         let mut o_info = ModuleExportInfo::default();
-        o_info
-            .definitions
-            .insert("Widget".to_string(), DefKind::Struct);
+        o_info.definitions.insert(
+            "Widget".to_string(),
+            Definition {
+                kind: DefKind::Struct,
+                line: 1,
+            },
+        );
 
         let mut crate_exports = HashMap::new();
         crate_exports.insert("facade".to_string(), m_info);
@@ -2499,9 +2547,13 @@ mod resolve_reexport_tests {
             },
         );
         let mut settings_info = ModuleExportInfo::default();
-        settings_info
-            .definitions
-            .insert("Config".to_string(), DefKind::Struct);
+        settings_info.definitions.insert(
+            "Config".to_string(),
+            Definition {
+                kind: DefKind::Struct,
+                line: 1,
+            },
+        );
 
         let mut crate_exports = HashMap::new();
         crate_exports.insert(String::new(), root_info);
@@ -2530,9 +2582,13 @@ mod resolve_reexport_tests {
             },
         );
         let mut error_info = ModuleExportInfo::default();
-        error_info
-            .definitions
-            .insert("Error".to_string(), DefKind::Enum);
+        error_info.definitions.insert(
+            "Error".to_string(),
+            Definition {
+                kind: DefKind::Enum,
+                line: 1,
+            },
+        );
 
         let mut crate_exports = HashMap::new();
         crate_exports.insert("front::wgsl".to_string(), wgsl_info);

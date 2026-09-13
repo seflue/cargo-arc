@@ -1,8 +1,8 @@
 //! Graph Types & Builder
 
 use crate::model::{
-    CrateInfo, DependencyRef, EdgeContext, ExternalsResult, ModuleInfo, ModuleTree, SourceLocation,
-    TargetRoots, TestKind, UsageKind, normalize_crate_name,
+    CrateInfo, Definition, DependencyRef, EdgeContext, ExternalsResult, ModuleInfo, ModuleTree,
+    SourceLocation, TargetRoots, TestKind, UsageKind, normalize_crate_name,
 };
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
@@ -22,6 +22,8 @@ pub enum Node {
         crate_idx: NodeIndex,
         /// Absolute path of the declaring file, see `ModuleInfo::file`.
         file: Option<PathBuf>,
+        /// The module's own public definitions, see `ModuleInfo::definitions`.
+        definitions: HashMap<String, Definition>,
     },
     ExternalCrate {
         name: String,
@@ -485,6 +487,7 @@ impl GraphBuilder {
             name: module.name.clone(),
             crate_idx,
             file: module.file.clone(),
+            definitions: module.definitions.clone(),
         });
         self.graph
             .add_edge(parent_idx, module_idx, EdgeWeight::Contains);
@@ -692,7 +695,7 @@ fn aggregate_context(deps: &[&DependencyRef]) -> EdgeContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{CrateInfo, DependencyRef, ModuleInfo, ModuleTree};
+    use crate::model::{CrateInfo, DefKind, Definition, DependencyRef, ModuleInfo, ModuleTree};
     use crate::test_support::{conventional_crate, crate_node, module_node};
     use std::path::{Path, PathBuf};
 
@@ -716,6 +719,7 @@ mod tests {
             file: None,
             children: vec![],
             dependencies: vec![],
+            definitions: HashMap::new(),
         }
     }
 
@@ -823,6 +827,30 @@ mod tests {
         assert!(matches!(
             &graph[foo],
             Node::Module { file: Some(file), .. } if file == Path::new("/ws/my_crate/src/foo.rs")
+        ));
+    }
+
+    #[test]
+    fn test_module_node_carries_the_module_definitions() {
+        let widget = Definition {
+            kind: DefKind::Struct,
+            line: 7,
+        };
+        let modules = vec![tree(ModuleInfo {
+            children: vec![ModuleInfo {
+                definitions: HashMap::from([("Widget".to_string(), widget)]),
+                ..module("foo", "crate::foo")
+            }],
+            ..module("my_crate", "crate")
+        })];
+        let graph = ArcGraph::build(&[crate_("my_crate")], &modules, None, false);
+        let foo = graph
+            .node_indices()
+            .find(|&idx| graph[idx].name() == "foo")
+            .expect("module node");
+        assert!(matches!(
+            &graph[foo],
+            Node::Module { definitions, .. } if definitions.get("Widget") == Some(&widget)
         ));
     }
 

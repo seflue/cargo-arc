@@ -5,9 +5,10 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use syn::spanned::Spanned;
 
 use crate::model::{
-    CrateExportMap, CrateInfo, DefKind, EdgeContext, ModulePathMap, WorkspaceCrates,
+    CrateExportMap, CrateInfo, DefKind, Definition, EdgeContext, ModulePathMap, WorkspaceCrates,
     normalize_crate_name,
 };
 
@@ -60,38 +61,36 @@ fn collect_module_info(
     let mut info = ModuleExportInfo::default();
 
     for item in &syntax.items {
-        match item {
+        let defined = match item {
             syn::Item::Use(use_item) if is_reexport_visibility(&use_item.vis) => {
                 collect_use_reexports(ctx, use_item, source_file, module_path, &mut info, false);
+                None
             }
             syn::Item::Use(use_item) if matches!(use_item.vis, syn::Visibility::Inherited) => {
                 collect_use_reexports(ctx, use_item, source_file, module_path, &mut info, true);
+                None
             }
-            syn::Item::Fn(i) if is_reexport_visibility(&i.vis) => {
-                info.definitions
-                    .insert(i.sig.ident.to_string(), DefKind::Fn);
-            }
+            syn::Item::Fn(i) if is_reexport_visibility(&i.vis) => Some((&i.sig.ident, DefKind::Fn)),
             syn::Item::Struct(i) if is_reexport_visibility(&i.vis) => {
-                info.definitions
-                    .insert(i.ident.to_string(), DefKind::Struct);
+                Some((&i.ident, DefKind::Struct))
             }
-            syn::Item::Enum(i) if is_reexport_visibility(&i.vis) => {
-                info.definitions.insert(i.ident.to_string(), DefKind::Enum);
-            }
+            syn::Item::Enum(i) if is_reexport_visibility(&i.vis) => Some((&i.ident, DefKind::Enum)),
             syn::Item::Trait(i) if is_reexport_visibility(&i.vis) => {
-                info.definitions.insert(i.ident.to_string(), DefKind::Trait);
+                Some((&i.ident, DefKind::Trait))
             }
             syn::Item::Const(i) if is_reexport_visibility(&i.vis) => {
-                info.definitions.insert(i.ident.to_string(), DefKind::Const);
+                Some((&i.ident, DefKind::Const))
             }
             syn::Item::Static(i) if is_reexport_visibility(&i.vis) => {
-                info.definitions
-                    .insert(i.ident.to_string(), DefKind::Static);
+                Some((&i.ident, DefKind::Static))
             }
-            syn::Item::Type(i) if is_reexport_visibility(&i.vis) => {
-                info.definitions.insert(i.ident.to_string(), DefKind::Type);
-            }
-            _ => {}
+            syn::Item::Type(i) if is_reexport_visibility(&i.vis) => Some((&i.ident, DefKind::Type)),
+            _ => None,
+        };
+        if let Some((ident, kind)) = defined {
+            let line = item.span().start().line;
+            info.definitions
+                .insert(ident.to_string(), Definition { kind, line });
         }
     }
 
@@ -583,7 +582,11 @@ impl AStruct { pub fn method(&self) {} }
             ("CrateStruct", DefKind::Struct),
             ("SuperStruct", DefKind::Struct),
         ] {
-            assert_eq!(defs.get(name), Some(&kind), "wrong kind for {name}");
+            assert_eq!(
+                defs.get(name).map(|d| d.kind),
+                Some(kind),
+                "wrong kind for {name}"
+            );
         }
         for name in [
             "AUnion",
@@ -595,6 +598,34 @@ impl AStruct { pub fn method(&self) {} }
         ] {
             assert!(!defs.contains_key(name), "unexpected {name} in {defs:?}");
         }
+    }
+
+    /// Each definition records the line its item starts on, attributes
+    /// included, so a jump lands on the item as the reader sees it.
+    #[test]
+    fn definitions_carry_the_line_of_the_defining_item() {
+        let tmp = test_crate(&[
+            ("src/lib.rs", "pub mod module;"),
+            (
+                "src/module.rs",
+                "//! Module doc\n\npub fn a_fn() {}\n\n#[derive(Debug)]\npub struct AStruct;\n",
+            ),
+        ]);
+        let crate_info = make_crate_info(&tmp, "test_crate");
+        let mp: ModulePathMap = [("test_crate".to_string(), HashSet::from(["module".into()]))]
+            .into_iter()
+            .collect();
+
+        let result = collect_crate_reexports(
+            &crate_info,
+            &mp,
+            &WorkspaceCrates::default(),
+            &CrateExportMap::default(),
+        );
+
+        let defs = &result.get("module").expect("module info").definitions;
+        assert_eq!(defs.get("a_fn").map(|d| d.line), Some(3));
+        assert_eq!(defs.get("AStruct").map(|d| d.line), Some(5));
     }
 
     /// Characterization: `definitions` is top-level only — items inside an

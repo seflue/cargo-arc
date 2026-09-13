@@ -3,6 +3,7 @@
 use crate::graph::Node;
 use crate::model::{CrateInfo, TargetRoots};
 use petgraph::graph::NodeIndex;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// A crate node at `/<name>` with no target roots, for tests that only need
@@ -22,6 +23,7 @@ pub(crate) fn module_node(name: &str, crate_idx: NodeIndex) -> Node {
         name: name.to_string(),
         crate_idx,
         file: None,
+        definitions: HashMap::new(),
     }
 }
 
@@ -49,6 +51,7 @@ pub(crate) fn module_node_with_file(
         name: name.to_string(),
         crate_idx,
         file: Some(file.into()),
+        definitions: HashMap::new(),
     }
 }
 

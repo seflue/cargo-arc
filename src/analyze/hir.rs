@@ -297,6 +297,9 @@ fn walk_module(module: hir::Module, parent_path: &str, ctx: &HirWalkContext) -> 
         file,
         children,
         dependencies,
+        // The syn re-export walk is the only definition source; this backend
+        // resolves through rust-analyzer and records none.
+        definitions: HashMap::new(),
     }
 }
 

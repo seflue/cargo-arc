@@ -877,4 +877,41 @@ mod tests {
         let jump_svg = render(&analysis.layout, &jump_config);
         assert!(jump_svg.contains("\"jump\""));
     }
+
+    /// A function called through its module (`use crate::beta;` then
+    /// `beta::helper()`) is a symbol of the edge like an imported item, and
+    /// its definition line reaches the layout.
+    #[test]
+    fn analyze_for_diagram_locates_the_definition_of_a_called_function() {
+        let manifest =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multi_crate/Cargo.toml");
+        let cmd = parse_args(&[
+            "cargo",
+            "arc",
+            "--manifest-path",
+            manifest.to_str().unwrap(),
+        ]);
+
+        let analysis = analyze_for_diagram(&cmd).unwrap();
+
+        let beta = analysis
+            .layout
+            .items
+            .iter()
+            .find(|item| item.label == "beta")
+            .expect("beta module item")
+            .id;
+        let helper = analysis
+            .layout
+            .symbol_definitions
+            .get(&beta)
+            .and_then(|symbols| symbols.get("helper"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "beta::helper has a definition, got {:?}",
+                    analysis.layout.symbol_definitions
+                )
+            });
+        assert_eq!(helper.line, 3);
+    }
 }
