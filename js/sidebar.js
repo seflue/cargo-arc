@@ -29,6 +29,17 @@ const CYCLE_HEADER_MAX_CHARS = 48;
 const COLLAPSIBLE_SYMBOL_SELECTOR =
   ':scope > .sidebar-usage-group > .sidebar-symbol[data-collapsible]';
 
+/**
+ * The visible page area in CSS pixels. `window.innerWidth`/`innerHeight`
+ * include the scrollbars, so a sidebar clamped to them ends under the
+ * vertical scrollbar whenever the page scrolls, as it does in an editor pane.
+ * @returns {{ width: number, height: number }}
+ */
+function visibleArea() {
+  const root = document.documentElement;
+  return { width: root.clientWidth, height: root.clientHeight };
+}
+
 const SidebarLogic = {
   _isTransient: false,
   /** @type {number | null} */
@@ -573,7 +584,7 @@ const SidebarLogic = {
     const maxArcRight = this._getMaxArcRightX();
     let x = maxArcRight + SIDEBAR_GAP_X;
 
-    const viewportRight = (window.innerWidth - rect.left) * scaleX;
+    const viewportRight = (visibleArea().width - rect.left) * scaleX;
     if (x + SIDEBAR_MIN_WIDTH > viewportRight) {
       x = viewportRight - SIDEBAR_MIN_WIDTH - SIDEBAR_MARGIN_RIGHT;
     }
@@ -593,7 +604,7 @@ const SidebarLogic = {
 
     const scrollTop = Math.max(0, -rect.top) * scaleY;
     const y = scrollTop + TOOLBAR_HEIGHT + SIDEBAR_GAP_TOP;
-    const vpHeight = window.innerHeight * scaleY;
+    const vpHeight = visibleArea().height * scaleY;
 
     return {
       y: Math.round(y),
@@ -1267,7 +1278,7 @@ const SidebarLogic = {
     const effectiveH =
       naturalH > 0 ? Math.min(naturalH, pos.height) : pos.height;
 
-    const vpWidth = window.innerWidth;
+    const vpWidth = visibleArea().width;
     const width = Math.max(
       SIDEBAR_MIN_WIDTH,
       Math.min(naturalW, vpWidth * 0.5),
@@ -1281,7 +1292,7 @@ const SidebarLogic = {
       const svgRect = svg.getBoundingClientRect();
       const vb = svg.viewBox.baseVal;
       const scaleX = vb.width / svgRect.width;
-      const viewportRight = (window.innerWidth - svgRect.left) * scaleX;
+      const viewportRight = (vpWidth - svgRect.left) * scaleX;
       if (x + width + SIDEBAR_MARGIN_RIGHT > viewportRight) {
         x = Math.max(
           0,

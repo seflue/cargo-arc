@@ -130,6 +130,20 @@ globalThis.StaticData = {
   },
 };
 
+// sidebar.js measures the visible area on document.documentElement. Tests set
+// the viewport through window.innerWidth/innerHeight; with no scrollbar the
+// visible area is the same, so the mock mirrors those values.
+globalThis.document = {
+  documentElement: {
+    get clientWidth() {
+      return globalThis.window.innerWidth;
+    },
+    get clientHeight() {
+      return globalThis.window.innerHeight;
+    },
+  },
+};
+
 describe('SidebarLogic', () => {
   describe('mergeSymbolGroups', () => {
     test('merges groups with same symbol and combines locations', () => {
@@ -956,6 +970,62 @@ describe('SidebarLogic', () => {
       // viewportRight = (1000-0)*2 = 2000, 1924+280=2204 > 2000
       // fallback: x = 2000-280-16 = 1704
       expect(fakeEl.getAttribute('x')).toBe('1704');
+    });
+
+    test('clamps to the visible width, not to the layout viewport', () => {
+      const fakeEl = createFakeElement('foreignObject');
+      const innerDiv = createFakeElement('div');
+      Object.defineProperty(innerDiv, 'innerHTML', {
+        get() {
+          return this._innerHTML || '';
+        },
+        set(v) {
+          this._innerHTML = v;
+        },
+      });
+      fakeEl.querySelector = () => innerDiv;
+      const svgMock = {
+        getBoundingClientRect() {
+          return { left: 0, top: 0, width: 1000, height: 800 };
+        },
+        viewBox: { baseVal: { width: 2000, height: 1600 } },
+        setAttribute() {},
+      };
+      const fakeArc = {
+        style: { display: '' },
+        getBBox() {
+          return { x: 1800, width: 100 };
+        },
+      };
+      globalThis.DomAdapter = {
+        getElementById(id) {
+          if (id === 'relation-sidebar') return fakeEl;
+          return null;
+        },
+        getSvgRoot() {
+          return svgMock;
+        },
+        querySelectorAll() {
+          return [fakeArc];
+        },
+      };
+      // window.innerWidth counts the vertical scrollbar; the visible width
+      // (clientWidth) is 15 px narrower, as in a scrolling editor pane.
+      globalThis.window = globalThis.window || {};
+      globalThis.window.innerWidth = 1000;
+      globalThis.window.innerHeight = 800;
+      const mirrored = globalThis.document.documentElement;
+      globalThis.document.documentElement = {
+        clientWidth: 985,
+        clientHeight: 800,
+      };
+      try {
+        SidebarLogic.show('crate_a-crate_b');
+        // viewportRight = (985-0)*2 = 1970; x = 1970-280-16 = 1674
+        expect(fakeEl.getAttribute('x')).toBe('1674');
+      } finally {
+        globalThis.document.documentElement = mirrored;
+      }
     });
 
     test('re-clamps X with actual width when wider than SIDEBAR_MIN_WIDTH', () => {
