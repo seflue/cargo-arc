@@ -90,7 +90,16 @@ pub enum Command {
     Check(CheckArgs),
     /// Serve the diagram over HTTP and resolve jump targets for an editor
     /// plugin; `--output` has no effect.
-    Ui,
+    Ui(UiArgs),
+}
+
+#[derive(Parser)]
+#[command(override_usage = "cargo arc [SHARED OPTIONS] ui [OPTIONS]")]
+pub struct UiArgs {
+    /// Port to serve on (default: a free port chosen by the OS). A restarted
+    /// service passes the port it had, so an open page only needs a reload.
+    #[arg(long)]
+    pub port: Option<u16>,
 }
 
 #[derive(Parser)]
@@ -179,8 +188,8 @@ pub fn run(args: ArcCommand) -> Result<Judgment> {
         return run_check(&check_args, &args.common);
     }
 
-    if let Some(Command::Ui) = args.command {
-        return run_ui(&args);
+    if let Some(Command::Ui(ref ui_args)) = args.command {
+        return run_ui(&args, ui_args);
     }
 
     let vol_config = VolatilityConfig {
@@ -264,7 +273,7 @@ fn analyze_for_diagram(args: &ArcCommand) -> Result<DiagramAnalysis> {
 
 /// Run the `ui` subcommand: analyze once with jump ids, then serve the page
 /// and resolve jump ids until the process ends.
-fn run_ui(args: &ArcCommand) -> Result<Judgment> {
+fn run_ui(args: &ArcCommand, ui_args: &UiArgs) -> Result<Judgment> {
     let analysis = analyze_for_diagram(args)?;
     let config = RenderConfig {
         expand_level: args.expand_level,
@@ -276,7 +285,7 @@ fn run_ui(args: &ArcCommand) -> Result<Judgment> {
         .workspace_root
         .context("workspace has no crates to determine its root")?;
     let service = ui::JumpService::new(svg, analysis.jump_table, workspace_root);
-    ui::serve(&service, &mut io::stdout().lock())?;
+    ui::serve(&service, ui_args.port, &mut io::stdout().lock())?;
     Ok(Judgment::Clean)
 }
 
@@ -617,13 +626,25 @@ mod tests {
     #[test]
     fn test_parse_ui_subcommand() {
         let cmd = parse_args(&["cargo", "arc", "ui"]);
-        assert!(matches!(cmd.command, Some(Command::Ui)));
+        assert!(matches!(
+            cmd.command,
+            Some(Command::Ui(UiArgs { port: None }))
+        ));
     }
 
     #[test]
     fn test_parse_ui_subcommand_after_common_args() {
         let cmd = parse_args(&["cargo", "arc", "--manifest-path", "x", "ui"]);
-        assert!(matches!(cmd.command, Some(Command::Ui)));
+        assert!(matches!(cmd.command, Some(Command::Ui(..))));
+    }
+
+    #[test]
+    fn test_parse_ui_port() {
+        let cmd = parse_args(&["cargo", "arc", "ui", "--port", "4321"]);
+        assert!(matches!(
+            cmd.command,
+            Some(Command::Ui(UiArgs { port: Some(4321) }))
+        ));
     }
 
     #[test]

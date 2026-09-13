@@ -9,10 +9,10 @@ use tiny_http::{Method, Request, Response};
 
 use super::service::JumpService;
 
-/// Binds `service` to an OS-assigned port, announces it on `out`, then
-/// serves requests until the process ends.
-pub(crate) fn serve(service: &JumpService, out: &mut impl Write) -> Result<()> {
-    let (server, port) = Server::bind(service)?;
+/// Binds `service` to `port`, or to an OS-assigned one without it, announces
+/// the port on `out`, then serves requests until the process ends.
+pub(crate) fn serve(service: &JumpService, port: Option<u16>, out: &mut impl Write) -> Result<()> {
+    let (server, port) = Server::bind(service, port)?;
     write!(out, "{}", JumpService::ready_line(port)).context("failed to write the ready line")?;
     out.flush().context("failed to flush stdout")?;
     server.run(out)
@@ -27,10 +27,14 @@ struct Server<'a> {
 }
 
 impl<'a> Server<'a> {
-    fn bind(service: &'a JumpService) -> Result<(Self, u16)> {
-        let inner = tiny_http::Server::http("127.0.0.1:0")
+    fn bind(service: &'a JumpService, port: Option<u16>) -> Result<(Self, u16)> {
+        let port = port.unwrap_or(0);
+        let inner = tiny_http::Server::http(("127.0.0.1", port))
             .map_err(|err| anyhow::anyhow!("{err}"))
-            .context("failed to bind the jump service to a port")?;
+            .with_context(|| match port {
+                0 => "failed to bind the jump service to a port".to_string(),
+                _ => format!("failed to bind the jump service to port {port}"),
+            })?;
         let port = inner
             .server_addr()
             .to_ip()
@@ -169,7 +173,7 @@ mod tests {
     #[test]
     fn serves_the_page_and_resolves_a_jump_id() {
         let service = two_entry_service();
-        let (server, port) = Server::bind(&service).unwrap();
+        let (server, port) = Server::bind(&service, None).unwrap();
         let mut out = Vec::new();
 
         thread::scope(|scope| {
@@ -225,5 +229,19 @@ mod tests {
         });
 
         assert_eq!(out, b"arc jump 1 /ws/b/Cargo.toml\n");
+    }
+
+    #[test]
+    fn binds_the_requested_port() {
+        let service = two_entry_service();
+        // A free port from the OS, released before the bind by name. A plain
+        // listener closes on drop; a tiny_http server closes on its worker
+        // thread, and the rebind would race it.
+        let port = {
+            let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            probe.local_addr().unwrap().port()
+        };
+        let (_server, bound) = Server::bind(&service, Some(port)).unwrap();
+        assert_eq!(bound, port);
     }
 }
