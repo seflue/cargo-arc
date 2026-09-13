@@ -1,0 +1,29 @@
+<idea-plugin>
+  <id>com.github.seflue.cargoarc</id>
+  <name>cargo-arc</name>
+  <vendor url="https://github.com/seflue/cargo-arc">Sebastian Flügge</vendor>
+
+  <depends>com.intellij.modules.platform</depends>
+
+  <extensions defaultExtensionNs="com.intellij">
+    <toolWindow id="cargo-arc" anchor="right" factoryClass="com.github.seflue.cargoarc.ArcToolWindowFactory"/>
+    <notificationGroup id="cargo-arc" displayType="BALLOON"/>
+    <projectConfigurable parentId="tools" instance="com.github.seflue.cargoarc.ArcConfigurable"
+                          id="com.github.seflue.cargoarc.ArcConfigurable" displayName="cargo-arc"/>
+  </extensions>
+
+  <actions>
+    <action id="com.github.seflue.cargoarc.OpenAction" class="com.github.seflue.cargoarc.OpenAction"
+            text="cargo-arc: Open">
+      <add-to-group group-id="ToolsMenu" anchor="last"/>
+    </action>
+    <action id="com.github.seflue.cargoarc.RestartAction" class="com.github.seflue.cargoarc.RestartAction"
+            text="cargo-arc: Restart" icon="AllIcons.Actions.Restart">
+      <add-to-group group-id="ToolsMenu" anchor="last"/>
+    </action>
+    <action id="com.github.seflue.cargoarc.StopAction" class="com.github.seflue.cargoarc.StopAction"
+            text="cargo-arc: Stop" icon="AllIcons.Actions.Suspend">
+      <add-to-group group-id="ToolsMenu" anchor="last"/>
+    </action>
+  </actions>
+</idea-plugin>

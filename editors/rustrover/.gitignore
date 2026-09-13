@@ -1,0 +1,12 @@
+build/
+.gradle/
+.intellijPlatform/
+.idea/
+*.iml
+.kotlin/
+
+# Eclipse-style project files written by a Java language server (jdtls)
+.classpath
+.project
+.settings/
+bin/

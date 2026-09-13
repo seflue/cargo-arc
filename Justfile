@@ -24,6 +24,12 @@ test-nvim:
     cargo build --release
     cd {{nvim_dir}} && nvim --headless --noplugin -u scripts/minimal_init.lua -c "lua MiniTest.run()"
 
+rustrover_dir := "editors/rustrover"
+
+# RustRover plugin: JUnit tests, no platform test framework
+test-rustrover:
+    cd {{rustrover_dir}} && ./gradlew test
+
 # clippy + biome + tsc typecheck + format check + cycle detection
 lint:
     cargo clippy --all-targets -- -D warnings
