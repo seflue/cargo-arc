@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-14
+
 ### Added
 
 - Code navigation from the diagram into the editor: the code file can be opened from a node or a reference. `cargo arc ui` serves the diagram for an editor plugin.
@@ -168,7 +170,8 @@ Initial public release.
 - HTML report generation (single self-contained file)
 
 <!-- next-url -->
-[Unreleased]: https://github.com/seflue/cargo-arc/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/seflue/cargo-arc/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/seflue/cargo-arc/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/seflue/cargo-arc/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/seflue/cargo-arc/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/seflue/cargo-arc/compare/v0.2.2...v0.3.0
