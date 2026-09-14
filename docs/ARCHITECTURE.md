@@ -59,3 +59,4 @@ What that means for a reader of the diagram is in [DIAGRAM.md](DIAGRAM.md#filter
 | 020 | [Resolve Re-Exports to Determine True Dependencies](adr/020-resolve-reexports-for-true-dependencies.md) | Active | 2026-02-23 |
 | 021 | [Detect Cycles via the Minimal Cycle per Edge](adr/021-minimal-cycle-per-edge.md) | Active | 2026-07-10 |
 | 022 | [Tag Re-Export Edges, Don't Drop Them](adr/022-reexport-edges-tagged-not-dropped.md) | Active | 2026-07-14 |
+| 027 | [Editor Plugins Own a Service Process and Read Its stdout](adr/027-editor-plugins-own-a-service-and-read-its-stdout.md) | Active | 2026-08-28 |

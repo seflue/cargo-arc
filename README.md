@@ -35,6 +35,12 @@ Arcs between nodes show where dependencies exist.
 - **Select** a node or arc to highlight its relationships
 - **Cycles** — circular dependencies are detected and highlighted
 
+## In the Editor
+
+The diagram can live beside the code.
+`cargo arc ui` serves it for an editor plugin, and a click on a node or a reference opens the file in the editor.
+Plugins exist for [Neovim](editors/nvim/README.md), [VS Code](editors/vscode/README.md) and [RustRover](editors/rustrover/README.md).
+
 ## Architecture Rules
 
 Circular dependencies are forbidden by default, and a workspace without a rules file is checked against that one rule.
