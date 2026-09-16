@@ -340,7 +340,7 @@ Everything below overrides the baseline. Delete the rows that do not apply.
 |---|---|
 | Error handling | `anyhow` on the application path (`cli.rs`, `analyze/*`). `thiserror` only where a typed error crosses an API boundary — currently `volatility.rs` alone. |
 | Crate structure | One crate, `lib.rs` plus `main.rs`, modules by concern (`analyze`, `diagnose`, `layout`, `render`, `rules`). The `ra_ap_*` backend sits behind the optional `hir` feature. |
-| Concurrency | None. Single-threaded, no async runtime. |
+| Concurrency | None on the analysis and request path, no async runtime. `ui/server.rs` alone starts threads (see the deviation below). |
 | Build and test commands | `just test` (cargo test + bun test), `just lint`, `just fmt`. |
 | Lint configuration | `[lints.clippy] pedantic = "warn"`; CI runs `cargo clippy --all-targets -- -D warnings`. |
 
@@ -348,3 +348,10 @@ Everything below overrides the baseline. Delete the rows that do not apply.
 
 State the rule, the deviation, and why. A deviation without a reason will be
 re-litigated by the next reader.
+
+**Threads in `ui/server.rs`.** The overlay rules out concurrency; the jump
+service's transport uses `std::thread::scope` for the editor's stdin reader and
+for each open event stream. The request loop stays sequential on the calling
+thread. A blocking `tiny_http` request loop cannot also read stdin or hold a
+stream open, and an async runtime for two blocking readers would be the larger
+dependency. The module is the only one in the crate that starts a thread.

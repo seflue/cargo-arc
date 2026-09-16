@@ -2,7 +2,8 @@
 
 use crate::model::SourceLocation;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 /// Identifies one entry in a [`JumpTable`]. Serialized as a plain number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -59,10 +60,13 @@ pub(crate) struct LocatedDefinition {
 }
 
 /// Assigns `LocationId`s to jump targets as a running counter, and remembers
-/// each target as a [`Location`].
+/// each target as a [`Location`]. Also keeps the reverse direction for the
+/// editor: which node a file belongs to, keyed the way `STATIC_DATA` keys its
+/// `nodes`.
 #[derive(Debug, Default)]
 pub(crate) struct JumpTable {
     entries: Vec<Location>,
+    node_files: HashMap<PathBuf, String>,
 }
 
 impl JumpTable {
@@ -81,12 +85,43 @@ impl JumpTable {
     pub(crate) fn resolve(&self, id: LocationId) -> Option<&Location> {
         self.entries.get(id.0)
     }
+
+    /// Record that the files behind `ids` belong to the node keyed `node`, so
+    /// a file the editor shows resolves to its node. An id past the end
+    /// registers nothing.
+    pub(crate) fn insert_node_files(
+        &mut self,
+        node: &str,
+        ids: impl IntoIterator<Item = LocationId>,
+    ) {
+        for id in ids {
+            if let Some(location) = self.entries.get(id.0) {
+                self.node_files
+                    .insert(location.file.clone(), node.to_string());
+            }
+        }
+    }
+
+    /// The key of the node `file` belongs to, as registered.
+    pub(crate) fn node_at(&self, file: &Path) -> Option<&str> {
+        self.node_files.get(file).map(String::as_str)
+    }
+
+    /// Every id whose target is `line` of `file`, in insertion order.
+    pub(crate) fn ids_at(&self, file: &Path, line: usize) -> Vec<LocationId> {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter(|(_, location)| location.line == line && location.file == file)
+            .map(|(index, _)| LocationId(index))
+            .collect()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn table_assigns_sequential_ids_and_resolves_them() {
@@ -121,5 +156,39 @@ mod tests {
 
         assert_eq!(table.resolve(LocationId::from(1)), table.resolve(b));
         assert_eq!(table.resolve(LocationId::from(usize::MAX)), None);
+    }
+
+    #[test]
+    fn node_at_finds_the_node_whose_targets_a_file_was_registered_under() {
+        let mut table = JumpTable::new();
+        let lib = table.insert(PathBuf::from("/ws/app/src/lib.rs"), 1);
+        let manifest = table.insert(PathBuf::from("/ws/app/Cargo.toml"), 1);
+        let module = table.insert(PathBuf::from("src/mod_a.rs"), 1);
+        table.insert_node_files("0", [lib, manifest]);
+        table.insert_node_files("1", [module, LocationId(9)]);
+
+        assert_eq!(table.node_at(Path::new("/ws/app/src/lib.rs")), Some("0"));
+        assert_eq!(table.node_at(Path::new("/ws/app/Cargo.toml")), Some("0"));
+        assert_eq!(table.node_at(Path::new("src/mod_a.rs")), Some("1"));
+        assert_eq!(table.node_at(Path::new("src/other.rs")), None);
+    }
+
+    #[test]
+    fn ids_at_lists_every_entry_on_a_line_in_insertion_order() {
+        let mut table = JumpTable::new();
+        let first = table.insert(PathBuf::from("src/lib.rs"), 3);
+        table.insert(PathBuf::from("src/lib.rs"), 4);
+        let third = table.insert(PathBuf::from("src/lib.rs"), 3);
+        table.insert(PathBuf::from("src/main.rs"), 3);
+
+        assert_eq!(table.ids_at(Path::new("src/lib.rs"), 3), vec![first, third]);
+        assert_eq!(
+            table.ids_at(Path::new("src/lib.rs"), 9),
+            Vec::<LocationId>::new()
+        );
+        assert_eq!(
+            table.ids_at(Path::new("src/nope.rs"), 3),
+            Vec::<LocationId>::new()
+        );
     }
 }

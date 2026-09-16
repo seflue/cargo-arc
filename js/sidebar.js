@@ -1020,6 +1020,45 @@ const SidebarLogic = {
   },
 
   /**
+   * Open every collapsed section above the rows carrying the given jump ids,
+   * so the editor's cursor line is in view in the pinned sidebar. Ids without
+   * a row, and rows whose sections are already open, change nothing.
+   * @param {number[]} jumpIds
+   */
+  expandLocations(jumpIds) {
+    const root = this._getElement();
+    const content = /** @type {HTMLElement|null} */ (
+      root?.querySelector('.sidebar-content')
+    );
+    if (!root || !content) return;
+    const wanted = new Set(jumpIds.map(String));
+    const rows = [...content.querySelectorAll('[data-jump]')].filter((row) =>
+      wanted.has(row.getAttribute('data-jump') ?? ''),
+    );
+    let opened = false;
+    for (const row of rows) {
+      // A row sits in a `.sidebar-locations` list whose head is the element
+      // before it; lists nest, so walk up through every enclosing one.
+      let list = row.closest('.sidebar-locations');
+      while (list) {
+        const head = list.previousElementSibling;
+        if (
+          head?.hasAttribute('data-collapsible') &&
+          head.getAttribute('data-collapsed') === 'true'
+        ) {
+          this._setEdgeRowExpanded(head, true);
+          opened = true;
+        }
+        const parent = /** @type {Element|null} */ (list.parentNode);
+        list = parent?.closest('.sidebar-locations') ?? null;
+      }
+    }
+    if (!opened) return;
+    this._syncCollapseAllButton(root, content);
+    this.updatePosition();
+  },
+
+  /**
    * Mark the row of the resolved focus edge, clearing the others. Keeps the
    * sidebar in sync with the graph without a rebuild.
    * @param {HTMLElement} content

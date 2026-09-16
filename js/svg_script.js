@@ -1,5 +1,5 @@
 // @module SvgScript
-// @deps ArcLogic, StaticData, AppState, Selectors, DomAdapter, LayerManager, TreeLogic, DerivedState, HighlightRenderer, VirtualEdgeLogic, TextMeasure, SidebarLogic, SearchLogic, Jump, JumpIcons
+// @deps ArcLogic, StaticData, AppState, Selectors, DomAdapter, LayerManager, TreeLogic, DerivedState, HighlightRenderer, VirtualEdgeLogic, TextMeasure, SidebarLogic, SearchLogic, Jump, JumpIcons, Follow
 // @config ROW_HEIGHT, MARGIN, TOOLBAR_HEIGHT, SIDEBAR_SHADOW_PAD
 // svg_script.js - DOM code for interactive SVG
 // ArcLogic is loaded from arc_logic.js before this file
@@ -57,6 +57,16 @@ function jumpIdFromClick(target) {
   return el ? Number(el.dataset.jump) : null;
 }
 
+// The vertical middle of the span covered by the given rects, in their own
+// coordinates; null without rects.
+/** @param {{ y: number, height: number }[]} rects */
+function spanCenter(rects) {
+  if (rects.length === 0) return null;
+  const top = Math.min(...rects.map((r) => r.y));
+  const bottom = Math.max(...rects.map((r) => r.y + r.height));
+  return (top + bottom) / 2;
+}
+
 if (typeof module !== 'undefined') {
   module.exports = {
     createHighlightDebouncer,
@@ -64,6 +74,7 @@ if (typeof module !== 'undefined') {
     deriveHoverKey,
     createHoverKeyTracker,
     jumpIdFromClick,
+    spanCenter,
   };
 }
 
@@ -197,6 +208,39 @@ if (typeof document !== 'undefined') {
       });
     }
 
+    // Expands every collapsed ancestor of the node, so the node itself is
+    // on screen.
+    function expandTo(nodeId) {
+      for (
+        let ancestor = parentMap.get(nodeId);
+        ancestor !== undefined;
+        ancestor = parentMap.get(ancestor)
+      ) {
+        if (AppState.isCollapsed(appState, ancestor)) toggleCollapse(ancestor);
+      }
+    }
+
+    // The editor's cursor moved into a node: select it as a click would,
+    // without the click's toggle, and bring it and its relations into view.
+    // A node already selected keeps the view where the user left it; only
+    // the sidebar rows of the cursor line open.
+    function focusNode(nodeId, jumps) {
+      if (!DomAdapter.getNode(nodeId)) return;
+      if (!AppState.isSelected(appState, 'node', nodeId)) {
+        expandTo(nodeId);
+        AppState.setSelection(appState, 'node', nodeId);
+        highlightTiming.immediate();
+        const relations = collectNodeRelations(nodeId);
+        SidebarLogic.showNode(nodeId, relations);
+        scrollToSpan([
+          nodeId,
+          ...relations.incoming.map((r) => r.targetId),
+          ...relations.outgoing.map((r) => r.targetId),
+        ]);
+      }
+      SidebarLogic.expandLocations(jumps);
+    }
+
     function collectNodeRelations(nodeId) {
       const base = StaticData.getNodeRelations(nodeId);
       // Filter base arcs to hidden nodes — virtual arcs already represent them
@@ -240,19 +284,28 @@ if (typeof document !== 'undefined') {
     let _isNavigating = false;
 
     function scrollToNode(nodeId) {
-      const nodeRect = DomAdapter.getNode(nodeId);
-      if (!nodeRect) return;
+      scrollToSpan([nodeId]);
+    }
+
+    // Scrolls the window so the middle of the span the nodes cover sits at
+    // the middle of the viewport, as far as the page allows.
+    function scrollToSpan(nodeIds) {
+      const rects = nodeIds
+        .map((id) => DomAdapter.getNode(id))
+        .filter((rect) => rect !== null)
+        .map((rect) => ({
+          y: parseFloat(rect.getAttribute('y')),
+          height: parseFloat(rect.getAttribute('height')),
+        }));
+      const centerSvg = spanCenter(rects);
+      if (centerSvg === null) return;
       const svg = DomAdapter.getSvgRoot();
       if (!svg) return;
       const svgRect = svg.getBoundingClientRect();
       const vb = svg.viewBox.baseVal;
       const scaleY = vb.height / svgRect.height;
-      const nodeY = parseFloat(nodeRect.getAttribute('y'));
-      const nodeH = parseFloat(nodeRect.getAttribute('height'));
-      const nodeCenterSvg = nodeY + nodeH / 2;
-      const nodeCenterPage =
-        nodeCenterSvg / scaleY + svgRect.top + window.scrollY;
-      const targetScroll = nodeCenterPage - window.innerHeight / 2;
+      const centerPage = centerSvg / scaleY + svgRect.top + window.scrollY;
+      const targetScroll = centerPage - window.innerHeight / 2;
       const maxScroll =
         document.documentElement.scrollHeight - window.innerHeight;
       const clampedTarget = Math.max(0, Math.min(targetScroll, maxScroll));
@@ -1387,6 +1440,23 @@ if (typeof document !== 'undefined') {
       if (statusEl) statusEl.textContent = text;
     }
     const jumper = Jump.createJump((url) => fetch(url), showJumpStatus);
+
+    // The follow toggle is rendered only for a page served by `cargo arc
+    // ui`; a file written by `cargo arc -o` has no event stream to open.
+    const followToggle = DomAdapter.getElementById('follow-toggle');
+    if (followToggle) {
+      const follow = Follow.createFollow({
+        connect: Follow.connectEventSource,
+        apply: focusNode,
+        showState: (on) =>
+          followToggle.setAttribute('aria-pressed', String(on)),
+      });
+      followToggle.addEventListener('click', (e) => {
+        e.stopPropagation();
+        follow.setEnabled(!follow.isEnabled());
+      });
+      follow.start();
+    }
 
     // Jump popover shown next to a hovered node; positioned from the node
     // rect's live attributes, so it tracks collapse-driven moves.

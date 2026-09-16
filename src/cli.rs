@@ -286,7 +286,12 @@ fn run_ui(args: &ArcCommand, ui_args: &UiArgs) -> Result<Judgment> {
         .workspace_root
         .context("workspace has no crates to determine its root")?;
     let service = ui::JumpService::new(&svg, analysis.jump_table, workspace_root);
-    ui::serve(&service, ui_args.port, &mut io::stdout().lock())?;
+    ui::serve(
+        &service,
+        ui_args.port,
+        io::BufReader::new(io::stdin()),
+        &mut io::stdout().lock(),
+    )?;
     Ok(Judgment::Clean)
 }
 

@@ -114,6 +114,7 @@ pub fn render(ir: &LayoutIR, config: &RenderConfig) -> String {
         has_externals,
         has_transitive_externals,
         initial_collapsed,
+        config,
     ));
     svg.push_str(&render_sidebar(width));
     svg.push_str(&render_script(config, ir, &positioned_all, &parents));

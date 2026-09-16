@@ -590,6 +590,16 @@ fn build_css_rules() -> Vec<CssRule> {
             &format!(".{}:empty", c.toolbar.jump_status),
             &[("display", "none")],
         ),
+        // The follow toggle carries its state in aria-pressed, written by
+        // js/svg_script.js; pressed reads as switched on.
+        CssRule::new(
+            &format!(".{}[aria-pressed=\"true\"]", c.toolbar.follow_toggle),
+            &[
+                ("background", "#dbeafe"),
+                ("border-color", "#60a5fa"),
+                ("color", "#1e3a8a"),
+            ],
+        ),
         // CSS-only search dimming via search-active on SVG root
         // Rects: dim all except search matches, toolbar buttons, and arc-count backgrounds
         CssRule::new(
@@ -1579,6 +1589,19 @@ mod tests {
         assert!(
             hovered.contains("visibility: visible"),
             "hovering the row must reveal its icon, got: {hovered}"
+        );
+    }
+
+    #[test]
+    fn test_css_marks_the_pressed_follow_toggle() {
+        let css = render_styles();
+
+        assert!(
+            css.contains(&format!(
+                ".{}[aria-pressed=\"true\"]",
+                CSS.toolbar.follow_toggle
+            )),
+            "CSS should style the pressed follow toggle apart from the released one"
         );
     }
 

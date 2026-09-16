@@ -2795,6 +2795,11 @@ describe('SidebarLogic', () => {
         const idx = node.parentNode.children.indexOf(node);
         return node.parentNode.children[idx + 1] ?? null;
       },
+      get previousElementSibling() {
+        if (!node.parentNode) return null;
+        const idx = node.parentNode.children.indexOf(node);
+        return node.parentNode.children[idx - 1] ?? null;
+      },
       getAttribute: (name) => (Object.hasOwn(attrs, name) ? attrs[name] : null),
       hasAttribute: (name) => Object.hasOwn(attrs, name),
       setAttribute: (name, v) => {
@@ -3046,6 +3051,94 @@ describe('SidebarLogic', () => {
         false,
       );
       expect(root.querySelector('.sidebar-collapse-all').innerHTML).toBe('−');
+    });
+  });
+
+  describe('expandLocations', () => {
+    // One collapsed relation row holding one symbol row, whose locations
+    // carry jump ids 7 and 8; a second relation row stays untouched.
+    function jumpSidebar() {
+      const relations = {
+        incoming: [
+          {
+            targetId: 'crate_b',
+            weight: 2,
+            arcId: 'crate_b-crate_a',
+            usages: [
+              {
+                symbol: 'Foo',
+                modulePath: 'm',
+                locations: [
+                  { file: 'src/a.rs', line: 1, jump: 7 },
+                  { file: 'src/a.rs', line: 9, jump: 8 },
+                ],
+              },
+            ],
+          },
+          {
+            targetId: 'y',
+            weight: 1,
+            arcId: 'y-crate_a',
+            usages: [
+              {
+                symbol: 'Bar',
+                modulePath: 'm',
+                locations: [{ file: 'src/b.rs', line: 3, jump: 9 }],
+              },
+            ],
+          },
+        ],
+        outgoing: [],
+      };
+      const html = SidebarLogic.buildNodeContent('crate_a', relations);
+      const root = parseFragment(`<div class="sidebar-root">${html}</div>`);
+      const [first, second] = root.querySelectorAll(
+        '.sidebar-content > .sidebar-usage-group > .sidebar-symbol',
+      );
+      return { root, first, second };
+    }
+
+    let origUpdatePosition;
+    let origGetElement;
+    let positioned;
+    beforeEach(() => {
+      origUpdatePosition = SidebarLogic.updatePosition;
+      origGetElement = SidebarLogic._getElement;
+      positioned = 0;
+      SidebarLogic.updatePosition = () => {
+        positioned += 1;
+      };
+    });
+    afterEach(() => {
+      SidebarLogic.updatePosition = origUpdatePosition;
+      SidebarLogic._getElement = origGetElement;
+    });
+
+    test('opens the collapsed rows above a jump id and repositions once', () => {
+      const { root, first, second } = jumpSidebar();
+      SidebarLogic._getElement = () => root;
+      expect(first.getAttribute('data-collapsed')).toBe('true');
+
+      SidebarLogic.expandLocations([8]);
+
+      expect(first.hasAttribute('data-collapsed')).toBe(false);
+      expect(first.nextElementSibling.style.display).toBe('');
+      expect(second.getAttribute('data-collapsed')).toBe('true');
+      expect(positioned).toBe(1);
+    });
+
+    test('leaves everything alone for unknown ids or no sidebar', () => {
+      const { root, first, second } = jumpSidebar();
+      SidebarLogic._getElement = () => root;
+
+      SidebarLogic.expandLocations([42]);
+      expect(first.getAttribute('data-collapsed')).toBe('true');
+      expect(second.getAttribute('data-collapsed')).toBe('true');
+      expect(positioned).toBe(0);
+
+      SidebarLogic._getElement = () => null;
+      expect(() => SidebarLogic.expandLocations([7])).not.toThrow();
+      expect(positioned).toBe(0);
     });
   });
 

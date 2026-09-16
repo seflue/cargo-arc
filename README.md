@@ -39,6 +39,7 @@ Arcs between nodes show where dependencies exist.
 
 The diagram can live beside the code.
 `cargo arc ui` serves it for an editor plugin, and a click on a node or a reference opens the file in the editor.
+In the other direction, the diagram selects the node of the file the editor shows.
 Plugins exist for [Neovim](editors/nvim/README.md), [VS Code](editors/vscode/README.md) and [RustRover](editors/rustrover/README.md).
 
 ## Architecture Rules

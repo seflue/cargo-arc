@@ -94,6 +94,43 @@ local function line_splitter(line_handler)
   end
 end
 
+--- Writes one line to the service's stdin. A service that was asked to
+--- stop still exists until its exit callback runs; it gets nothing more.
+--- @param line string
+local function send(line)
+  if not service or service.stopping then
+    return
+  end
+  service.process:write(line .. '\n')
+end
+
+--- Tells the service where the cursor is, if the current buffer is a file.
+--- The service decides whether the file has a node; nothing is filtered
+--- here beyond buffers that are no file at all.
+local function send_focus()
+  if vim.bo.buftype ~= '' then
+    return
+  end
+  local name = vim.api.nvim_buf_get_name(0)
+  if name == '' then
+    return
+  end
+  local line = vim.api.nvim_win_get_cursor(0)[1]
+  send('arc focus ' .. line .. ' ' .. vim.fn.fnamemodify(name, ':p'))
+end
+
+local follow_group = 'cargo-arc-follow'
+
+--- Reports the cursor's file whenever it can have changed: on entering a
+--- buffer and on the editor regaining focus.
+local function watch_cursor()
+  local group = vim.api.nvim_create_augroup(follow_group, {})
+  vim.api.nvim_create_autocmd({ 'BufEnter', 'FocusGained' }, {
+    group = group,
+    callback = send_focus,
+  })
+end
+
 --- Starts the service for the current working directory. With `replaces`,
 --- the port of the service that just exited, the new one takes that port
 --- and the page that shows it stays open.
@@ -103,10 +140,12 @@ local function start(replaces)
   local ok, process = pcall(vim.system, M.argv(replaces), {
     cwd = vim.fn.getcwd(),
     text = true,
+    stdin = true,
     stdout = line_splitter(M.handle_line),
   }, function(result)
     vim.schedule(function()
       service = nil
+      pcall(vim.api.nvim_del_augroup_by_name, follow_group)
       if not started.port and not started.stopping then
         vim.notify(
           'cargo-arc ended with exit code ' .. result.code .. ' before announcing a port\n' .. result.stderr,
@@ -124,6 +163,7 @@ local function start(replaces)
   end
   started.process = process
   service = started
+  watch_cursor()
 end
 
 --- Starts the service for the current working directory, or reopens the
@@ -157,6 +197,17 @@ function M.restart()
   end
   service.restart = true
   M.stop()
+end
+
+--- Switches whether the page follows the cursor. The service passes the
+--- state through; the page holds it.
+--- @param on boolean
+function M.follow(on)
+  if not service then
+    vim.notify('cargo-arc is not running', vim.log.levels.INFO)
+    return
+  end
+  send(on and 'arc follow on' or 'arc follow off')
 end
 
 --- The window in the current tabpage that shows `file`, if any.

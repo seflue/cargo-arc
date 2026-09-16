@@ -536,6 +536,13 @@ fn populate_items(
         node_map.insert(idx, layout_id);
         ir.items[layout_id].source_path = source_path;
         ir.items[layout_id].scc_id = node_scc.get(&idx).copied();
+        // Under the key `STATIC_DATA` writes for the node. Workspace nodes
+        // only: an external crate's files lie outside the root the editor's
+        // paths are resolved against.
+        table.insert_node_files(
+            &layout_id.to_string(),
+            targets.iter().map(|target| target.id),
+        );
         ir.items[layout_id].targets = targets;
     }
     node_map
@@ -1519,6 +1526,42 @@ mod tests {
             .map(|t| t.id)
             .collect();
         assert_eq!(ids.len(), 4, "all four ids should be distinct");
+    }
+
+    /// Every file a node's jump targets point at maps back to that node,
+    /// under the key `STATIC_DATA` uses for it.
+    #[test]
+    fn build_layout_maps_target_files_back_to_their_node() {
+        let target_roots = TargetRoots {
+            lib_root: Some(PathBuf::from("/ws/app/src/lib.rs")),
+            bin_roots: vec![PathBuf::from("/ws/app/src/main.rs")],
+        };
+        let mut b = TestGraphBuilder::new();
+        b.crate_with_targets("app", target_roots, "/ws/app/Cargo.toml")
+            .module_with_file("app", "mod_a", "/ws/app/src/mod_a.rs");
+        let (graph, _) = b.build();
+        let (ir, table) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
+
+        let la = LayoutAssert::new(ir);
+        let app_key = la.pos("app").to_string();
+        let mod_a_key = la.pos("mod_a").to_string();
+
+        assert_eq!(
+            table.node_at(Path::new("/ws/app/src/lib.rs")),
+            Some(app_key.as_str())
+        );
+        assert_eq!(
+            table.node_at(Path::new("/ws/app/src/main.rs")),
+            Some(app_key.as_str())
+        );
+        assert_eq!(
+            table.node_at(Path::new("/ws/app/Cargo.toml")),
+            Some(app_key.as_str())
+        );
+        assert_eq!(
+            table.node_at(Path::new("/ws/app/src/mod_a.rs")),
+            Some(mod_a_key.as_str())
+        );
     }
 
     /// A symbol crossing an edge gets one jump id at the provider when the

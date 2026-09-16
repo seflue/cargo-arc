@@ -9,6 +9,7 @@ declare const DomAdapter: typeof import('./dom_adapter.js').DomAdapter;
 declare const DerivedState: typeof import('./derived_state.js').DerivedState;
 declare const HighlightLogic: typeof import('./highlight_logic.js').HighlightLogic;
 declare const HighlightRenderer: typeof import('./highlight_renderer.js').HighlightRenderer;
+declare const Follow: typeof import('./follow.js').Follow;
 declare const Jump: typeof import('./jump.js').Jump;
 declare const JumpIcons: typeof import('./jump_icons.js').JumpIcons;
 declare const LayerManager: typeof import('./layer_manager.js').LayerManager;

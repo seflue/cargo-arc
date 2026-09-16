@@ -1,6 +1,25 @@
 import { describe, expect, test } from 'bun:test';
 import { ArcLogic } from './arc_logic.js';
-import { jumpIdFromClick } from './svg_script.js';
+import { jumpIdFromClick, spanCenter } from './svg_script.js';
+
+describe('spanCenter', () => {
+  test('is the middle between the topmost top and the lowest bottom', () => {
+    const rects = [
+      { y: 100, height: 20 },
+      { y: 40, height: 20 },
+      { y: 200, height: 30 },
+    ];
+    expect(spanCenter(rects)).toBe((40 + 230) / 2);
+  });
+
+  test('is the center of a single rect', () => {
+    expect(spanCenter([{ y: 10, height: 30 }])).toBe(25);
+  });
+
+  test('is null without rects', () => {
+    expect(spanCenter([])).toBeNull();
+  });
+});
 
 describe('jumpIdFromClick', () => {
   test('returns the numeric jump id from the closest row with data-jump', () => {

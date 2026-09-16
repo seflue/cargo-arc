@@ -36,6 +36,17 @@ Selecting either one highlights its relationships in the diagram.
 Double-clicking a node with children collapses or expands it, as does its toggle handle.
 The toolbar button does the same for the whole tree and flips between **Collapse All** and **Expand All**.
 
+### Following the editor
+
+A page served by `cargo arc ui` carries a **Follow editor** button in the toolbar, pressed by default.
+While it is pressed, the diagram selects the node of the file the editor shows, as a click on it would, and scrolls until the node and its relations are centred.
+A node inside a collapsed module is expanded into view first.
+When the cursor stands on a line that appears as a location in the sidebar, that entry is expanded; otherwise the sidebar keeps its expansion state.
+For a node that is already selected the page does not scroll; the sidebar entry of the cursor line still expands.
+While the button is released, the diagram ignores the editor and the selection stays as it is.
+The editor plugin can release and press the button too; the Neovim plugin does so with `:Arc follow off` and `:Arc follow on`.
+A click in the diagram never scrolls the page.
+
 ### The sidebar for a node
 
 The sidebar is divided into two sections.

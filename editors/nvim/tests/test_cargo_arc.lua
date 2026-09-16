@@ -236,14 +236,96 @@ T['service'][':Arc open, stop and restart drive the service'] = function()
 end
 
 T['service'][':Arc completes its subcommands and refuses others'] = function()
-  eq(child.fn.getcompletion('Arc ', 'cmdline'), { 'open', 'restart', 'stop' })
+  eq(child.fn.getcompletion('Arc ', 'cmdline'), { 'open', 'restart', 'stop', 'follow' })
   eq(child.fn.getcompletion('Arc re', 'cmdline'), { 'restart' })
+  eq(child.fn.getcompletion('Arc follow ', 'cmdline'), { 'on', 'off' })
   child.cmd('Arc bogus')
+  child.cmd('Arc open extra')
+  local notified = child.lua_get('_G.notified')
+  eq(#notified, 2)
+  eq(notified[1].level, child.lua_get('vim.log.levels.ERROR'))
+  eq(notified[1].message:find('bogus', 1, true) ~= nil, true)
+  eq(notified[2].level, child.lua_get('vim.log.levels.ERROR'))
+  eq(notified[2].message:find('open', 1, true) ~= nil, true)
+  eq(child.lua_get('require("cargo-arc").status()'), vim.NIL)
+end
+
+--- The lines the fake has received on stdin so far, once at least
+--- `count` have arrived.
+--- @param log string
+--- @param count integer
+--- @return string[]
+local function stdin_lines(log, count)
+  local lines
+  wait_for(function()
+    lines = vim.fn.filereadable(log) == 1 and vim.fn.readfile(log) or {}
+    return #lines >= count
+  end)
+  return lines
+end
+
+T['arc focus'] = MiniTest.new_set({
+  hooks = {
+    pre_case = function()
+      local log = vim.fn.tempname()
+      child.lua(([[vim.env.ARC_FAKE_STDIN_LOG = '%s']]):format(log))
+      child.lua(([[require('cargo-arc').setup({ binary = '%s' })]]):format(fake_service))
+      _G.stdin_log = log
+    end,
+  },
+})
+
+T['arc focus']['entering a file buffer writes its line and absolute path'] = function()
+  open_and_wait()
+  local path = numbered_file(20)
+  child.cmd('edit ' .. path)
+  child.api.nvim_win_set_cursor(0, { 7, 0 })
+  child.cmd('new')
+  child.cmd('wincmd p')
+  local lines = stdin_lines(_G.stdin_log, 2)
+  eq(lines[#lines], 'arc focus 7 ' .. path)
+end
+
+T['arc focus']['a buffer without a name writes nothing'] = function()
+  open_and_wait()
+  child.cmd('enew')
+  child.cmd('new')
+  child.cmd('wincmd p')
+  vim.wait(300)
+  eq(vim.fn.filereadable(_G.stdin_log), 0)
+end
+
+T['arc focus']['a buffer with a buftype writes nothing'] = function()
+  open_and_wait()
+  child.cmd('help')
+  vim.wait(300)
+  eq(vim.fn.filereadable(_G.stdin_log), 0)
+end
+
+T['arc focus'][':Arc follow off and on write the follow lines'] = function()
+  open_and_wait()
+  child.cmd('Arc follow off')
+  eq(stdin_lines(_G.stdin_log, 1)[1], 'arc follow off')
+  child.cmd('Arc follow on')
+  eq(stdin_lines(_G.stdin_log, 2)[2], 'arc follow on')
+end
+
+T['arc focus'][':Arc follow with another argument reports and writes nothing'] = function()
+  open_and_wait()
+  child.cmd('Arc follow maybe')
   local notified = child.lua_get('_G.notified')
   eq(#notified, 1)
   eq(notified[1].level, child.lua_get('vim.log.levels.ERROR'))
-  eq(notified[1].message:find('bogus', 1, true) ~= nil, true)
-  eq(child.lua_get('require("cargo-arc").status()'), vim.NIL)
+  eq(notified[1].message:find('maybe', 1, true) ~= nil, true)
+  vim.wait(300)
+  eq(vim.fn.filereadable(_G.stdin_log), 0)
+end
+
+T['arc focus'][':Arc follow without a service reports it'] = function()
+  child.cmd('Arc follow off')
+  local notified = child.lua_get('_G.notified')
+  eq(#notified, 1)
+  eq(notified[1].level, child.lua_get('vim.log.levels.INFO'))
 end
 
 T['service']['leaving Neovim ends the process'] = function()
