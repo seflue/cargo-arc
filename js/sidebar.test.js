@@ -2942,23 +2942,59 @@ describe('SidebarLogic', () => {
       SidebarLogic._isClusterMode = null;
     });
 
-    test('clicking collapse-all opens then closes every cycle block', () => {
+    test('clicking collapse-all opens then closes every cycle block and its edge rows', () => {
       const html = SidebarLogic._buildClusterContent('0');
       const root = parseFragment(`<div class="sidebar-root">${html}</div>`);
       const blocks = root.querySelectorAll('.cycle-block');
+      const heads = root.querySelectorAll(
+        '.sidebar-edge-head[data-collapsible]',
+      );
       expect(blocks.length).toBeGreaterThan(0); // sanity: blocks exist
+      expect(heads.length).toBeGreaterThan(0); // sanity: expandable rows exist
       expect(blocks.every((b) => b.hasAttribute('open'))).toBe(false); // start closed
+      expect(
+        heads.every((h) => h.getAttribute('data-collapsed') === 'true'),
+      ).toBe(true);
 
       SidebarLogic._setupCollapseHandlers(root);
       const btn = root.querySelector('.sidebar-collapse-all');
 
       btn._fire('click'); // any closed → open all
       expect(blocks.every((b) => b.hasAttribute('open'))).toBe(true);
+      expect(
+        heads.some((h) => h.getAttribute('data-collapsed') === 'true'),
+      ).toBe(false);
+      expect(
+        heads.every((h) => h.nextElementSibling.style.display === ''),
+      ).toBe(true);
       expect(btn.innerHTML).toBe('−');
 
       btn._fire('click'); // all open → close all
       expect(blocks.some((b) => b.hasAttribute('open'))).toBe(false);
+      expect(
+        heads.every((h) => h.getAttribute('data-collapsed') === 'true'),
+      ).toBe(true);
+      expect(
+        heads.every((h) => h.nextElementSibling.style.display === 'none'),
+      ).toBe(true);
       expect(btn.innerHTML).toBe('+');
+    });
+
+    test('the glyph shows + while any edge row is still collapsed', () => {
+      const html = SidebarLogic._buildClusterContent('0');
+      const root = parseFragment(`<div class="sidebar-root">${html}</div>`);
+      SidebarLogic._setupCollapseHandlers(root);
+      const content = root.querySelector('.sidebar-content');
+      const btn = root.querySelector('.sidebar-collapse-all');
+
+      for (const block of root.querySelectorAll('.cycle-block')) {
+        block.setAttribute('open', '');
+      }
+      SidebarLogic._syncCollapseAllButton(root, content);
+      expect(btn.innerHTML).toBe('+'); // blocks open, rows still collapsed
+
+      btn._fire('click'); // rows collapsed → open everything
+      expect(btn.innerHTML).toBe('−');
     });
 
     test('a symbol in an edge row lists its locations with their jump ids', () => {
@@ -2978,7 +3014,7 @@ describe('SidebarLogic', () => {
       );
     });
 
-    test('button glyph syncs when a block is opened manually', () => {
+    test('button glyph syncs when a block and its rows are opened manually', () => {
       const html = SidebarLogic._buildClusterContent('0');
       const root = parseFragment(`<div class="sidebar-root">${html}</div>`);
       SidebarLogic._setupCollapseHandlers(root);
@@ -2987,8 +3023,11 @@ describe('SidebarLogic', () => {
       const block = root.querySelectorAll('.cycle-block')[0];
 
       block.setAttribute('open', ''); // the only block is now open
+      for (const head of root.querySelectorAll('.sidebar-edge-head')) {
+        head.removeAttribute('data-collapsed');
+      }
       SidebarLogic._syncCollapseAllButton(root, content);
-      expect(btn.innerHTML).toBe('−'); // all blocks open
+      expect(btn.innerHTML).toBe('−'); // nothing left to open
     });
   });
 

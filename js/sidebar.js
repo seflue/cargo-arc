@@ -1020,6 +1020,30 @@ const SidebarLogic = {
   },
 
   /**
+   * Collect the edge-row heads of a cluster sidebar that have symbols to show.
+   * @param {HTMLElement} content
+   * @returns {Element[]}
+   */
+  _expandableEdgeHeads(content) {
+    return [
+      ...content.querySelectorAll('.sidebar-edge-head[data-collapsible]'),
+    ];
+  },
+
+  /**
+   * Tell whether any cycle block or expandable edge row is still closed.
+   * @param {Element[]} blocks
+   * @param {Element[]} heads
+   * @returns {boolean}
+   */
+  _anyClusterSectionClosed(blocks, heads) {
+    return (
+      blocks.some((b) => !b.hasAttribute('open')) ||
+      heads.some((h) => h.getAttribute('data-collapsed') === 'true')
+    );
+  },
+
+  /**
    * Open every collapsed section above the rows carrying the given jump ids,
    * so the editor's cursor line is in view in the pinned sidebar. Ids without
    * a row, and rows whose sections are already open, change nothing.
@@ -1083,12 +1107,14 @@ const SidebarLogic = {
   _syncCollapseAllButton(root, content) {
     const allBtn = root.querySelector?.('.sidebar-collapse-all');
     if (!allBtn || !content.querySelectorAll) return;
-    // In cluster view the collapse unit is the cycle block; the button opens or
-    // closes them all. Symbol lists nested in rows keep their own per-row toggle.
+    // Cycle blocks exist only in cluster view.
     const blocks = [...content.querySelectorAll('.cycle-block')];
     if (blocks.length) {
-      const allOpen = blocks.every((b) => b.hasAttribute('open'));
-      allBtn.innerHTML = allOpen ? '−' : '+';
+      const anyClosed = this._anyClusterSectionClosed(
+        blocks,
+        this._expandableEdgeHeads(content),
+      );
+      allBtn.innerHTML = anyClosed ? '+' : '−';
       return;
     }
     const heads = [...content.querySelectorAll(COLLAPSIBLE_SYMBOL_SELECTOR)];
@@ -1180,10 +1206,16 @@ const SidebarLogic = {
     collapseAllBtn.addEventListener('click', () => {
       const blocks = [...content.querySelectorAll('.cycle-block')];
       if (blocks.length) {
-        const anyClosed = blocks.some((b) => !b.hasAttribute('open'));
+        const heads = SidebarLogic._expandableEdgeHeads(content);
+        const anyClosed = SidebarLogic._anyClusterSectionClosed(blocks, heads);
         for (const b of blocks) {
           if (anyClosed) b.setAttribute('open', '');
           else b.removeAttribute('open');
+        }
+        // Rows open without going through AppState.clickClusterRow. The pin
+        // holds one arc, so clicking every row would pin only the last one.
+        for (const head of heads) {
+          SidebarLogic._setEdgeRowExpanded(head, anyClosed);
         }
         SidebarLogic._syncCollapseAllButton(root, content);
         SidebarLogic.updatePosition();
