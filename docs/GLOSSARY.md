@@ -93,6 +93,10 @@ The report states the set in prose instead of naming it ([RULES.md](RULES.md#no-
 *Traffic* is a term of this project's own.
 *Edge betweenness*, the nearest established word, counts shortest paths rather than cycles.
 
+Removing a feedback arc moves code, and Lakos names the two directions it can go.
+*Escalation* moves the shared functionality into a component above both modules, an existing one or a new one; *demotion* moves it into one below both.
+cargo-arc names neither yet; a hint that proposes a move uses these words.
+
 Nothing calls an edge *thin* or *thick*.
 Width is geometry in this tool: an arc's width is how far it bulges, a stroke's width is how the highlight scales it.
 An edge carrying few symbols is described by that count, not by a shape.
@@ -186,6 +190,8 @@ Neither has anything to do with who imports a symbol.
 | **Arc type** | Which of three dependencies an arc draws: crate-dep, module-dep or re-export. Every arc has exactly one, and it is read off the arc's endpoints and its re-export flag rather than stored. | kind, level |
 | **Re-export** | One of the three arc types: an arc whose imports are all `pub use`, so it passes names on rather than depending on them. A single ordinary import behind it makes it a module dependency instead ([ADR-022](adr/022-reexport-edges-tagged-not-dropped.md)). | — |
 | **Filter** | One switch over what the diagram shows, offered as a toolbar checkbox. Four cover arcs (crate dependencies, module dependencies, re-exports, cycles), the others cover nodes. | layer |
+| **Reading order** | The top-to-bottom sequence of the nodes under one parent. A node comes before the nodes it depends on; inside a tangle, where no order can do that for every edge, the layout takes the one that leaves the least dependency weight pointing up. | level, layer |
+| **Upward edge** | An edge whose target sits above its source in the reading order. Inside a tangle some edge has to; outside one it occurs only where two subtrees each hold a module using the other's, a cycle between the subtrees with none between modules. Drawn in its own style. | back edge, reverse dependency |
 
 *Kind* is taken twice over and neither use is this one: it says whether a reference sits in production or in test source, and in cargo it classifies a manifest dependency as normal, dev or build.
 Both cut across the arc type, since one pair of crates can carry a production and a test edge of the same type.
@@ -206,3 +212,14 @@ A violation that was found and then hidden is *silenced*, never suppressed.
 
 *Cluster mode* is what the cycles filter's checkbox turns on in addition to filtering.
 It is not a filter and keeps its own name.
+
+The reading order is a levelization in Lakos's sense, and Structure101 calls an edge against it a *feedback (upward) dependency*.
+*Level* is not used for a position in it: a level number belongs to a node of an acyclic graph, which a tangle is not, and *diagnostic level* is already taken.
+*Layer* is a position in a `layers` rule.
+
+*Back edge* is relative to a traversal (see Cycles and clusters); an upward edge is relative to the reading order, which the layout fixes, so a reader can check it against the picture.
+*Reverse dependency* is taken by package managers, where it names the packages that depend on a given one.
+
+An upward edge inside a tangle is a cyclic edge.
+Whether it is also a feedback arc is not settled by definition today: the layout weighs module edges between sibling subtrees, the diagnosis covers cycles between modules, and the two can name different edges.
+Deriving the reading order from the feedback arc set is open work.
