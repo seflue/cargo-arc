@@ -1392,6 +1392,31 @@ fn main() {
         );
     }
 
+    #[rstest::rstest]
+    #[case("crate::environment")]
+    #[case("super::super")]
+    fn test_collect_path_refs_ignores_visibility_scope(#[case] scope: &str) {
+        let source = format!("pub struct Wrapper(pub(in {scope}) Inner);");
+        let syntax = syn::parse_file(&source).unwrap();
+        let refs = collect_all_path_refs(&syntax, EdgeContext::production());
+        // A visibility scope grants access; it uses nothing from that module
+        assert!(
+            !refs.iter().any(|r| r.path == scope),
+            "visibility scope should not be collected, found: {refs:?}"
+        );
+    }
+
+    #[test]
+    fn test_collect_path_refs_keeps_field_type_beside_visibility_scope() {
+        let source = "pub struct Wrapper(pub(in crate::environment) other::Inner);";
+        let syntax = syn::parse_file(source).unwrap();
+        let refs = collect_all_path_refs(&syntax, EdgeContext::production());
+        assert!(
+            refs.iter().any(|r| r.path == "other::Inner"),
+            "should collect other::Inner, found: {refs:?}"
+        );
+    }
+
     #[test]
     fn test_collect_path_refs_method_chain() {
         let source = r"
