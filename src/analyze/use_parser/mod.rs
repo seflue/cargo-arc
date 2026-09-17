@@ -446,6 +446,10 @@ pub(crate) fn collect_all_path_refs(
             syn::visit::visit_path(self, node);
         }
 
+        // `pub(in path)` names the scope that may see the item; nothing is used
+        // from that module, so its path is no dependency.
+        fn visit_vis_restricted(&mut self, _node: &'ast syn::VisRestricted) {}
+
         impl_binding_region_visits!();
     }
     let mut collector = PathRefCollector {
