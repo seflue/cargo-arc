@@ -135,6 +135,15 @@ impl EdgeWeight {
     pub fn is_test_package_dep(&self) -> bool {
         matches!(self, EdgeWeight::PackageDep { context } if matches!(context.kind, UsageKind::Test(_)))
     }
+
+    /// Whether this edge belongs to [`ArcGraph::production_subgraph`] under
+    /// `reexports`: a production `ModuleDep`, and not a pure re-export unless
+    /// those are included.
+    #[must_use]
+    pub fn in_production_subgraph(&self, reexports: Reexports) -> bool {
+        self.is_production_module_dep()
+            && (reexports == Reexports::Included || !self.is_reexport_module_dep())
+    }
 }
 
 /// Whether `pub use` re-export edges take part in cycle detection. Excluded by
@@ -203,11 +212,7 @@ impl ArcGraph {
     pub fn production_subgraph(&self, reexports: Reexports) -> DiGraph<NodeIndex, ()> {
         self.filter_map(
             |idx, _| Some(idx),
-            |_, edge| {
-                let keep = edge.is_production_module_dep()
-                    && (reexports == Reexports::Included || !edge.is_reexport_module_dep());
-                keep.then_some(())
-            },
+            |_, edge| edge.in_production_subgraph(reexports).then_some(()),
         )
     }
 

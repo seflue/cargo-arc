@@ -3,7 +3,7 @@
 use super::jump::{JumpTable, JumpTarget, LocatedDefinition, LocatedSource, TargetKind};
 use super::toposort::stable_toposort;
 use crate::diagnose::{
-    Cluster, ConsumerLocality, Cycle, CycleAnalysis, CyclicEdge, order_cycle_blocks,
+    Cluster, ClusterReport, ConsumerLocality, Cycle, CycleAnalysis, CyclicEdge, order_cycle_blocks,
 };
 use crate::graph::{ArcGraph, EdgeWeight, Node, Reexports};
 use crate::model::{EdgeContext, EntryFile, EntryKind, SourceLocation};
@@ -220,9 +220,24 @@ pub(crate) fn build_layout(
         }
     }
 
+    let sub = graph.production_subgraph(reexports);
+    // The diagram shows the graph as it is; rule config plays no part in it.
+    let report = graph.cluster_report(&sub, analysis, |_| false);
+    let feedback_arcs: HashSet<(NodeIndex, NodeIndex)> = report
+        .clusters
+        .iter()
+        .flat_map(|cluster| cluster.feedback_edges.iter().map(|e| (e.from, e.to)))
+        .collect();
+
     let package_indices = graph.order_packages(&package_indices);
     let reachable = graph.production_reachable();
-    let ordered = graph.order_items(&package_indices, &module_indices, &reachable);
+    let ordered = graph.order_items(
+        &package_indices,
+        &module_indices,
+        &reachable,
+        reexports,
+        &feedback_arcs,
+    );
     let mut node_map = populate_items(
         &mut ir,
         graph,
@@ -255,7 +270,7 @@ pub(crate) fn build_layout(
         &mut table,
     );
 
-    attach_clusters(&mut ir, graph, analysis, &node_map, reexports);
+    attach_clusters(&mut ir, graph, analysis, &node_map, report);
     attach_symbol_localities(&mut ir, graph, &node_map);
     attach_symbol_definitions(&mut ir, graph, &node_map, &mut table);
     (ir, table)
@@ -422,11 +437,8 @@ fn attach_clusters(
     graph: &ArcGraph,
     analysis: &CycleAnalysis,
     node_map: &HashMap<NodeIndex, NodeId>,
-    reexports: Reexports,
+    report: ClusterReport,
 ) {
-    let sub = graph.production_subgraph(reexports);
-    // The diagram shows the graph as it is; rule config plays no part in it.
-    let report = graph.cluster_report(&sub, analysis, |_| false);
     for cluster in report.clusters {
         let Some(&scc_id) = cluster.nodes.first().and_then(|n| analysis.node_scc.get(n)) else {
             continue;
@@ -767,9 +779,18 @@ fn add_soft_test_edges(
 }
 
 /// Build a mini dependency graph among sibling nodes based on cross-subtree dependencies.
-/// For each sibling, collects its full subtree and counts how many production `ModuleDep`
-/// edges cross from one sibling's subtree to another's.
-fn build_sibling_dep_graph(children: &[NodeIndex], graph: &ArcGraph) -> DiGraph<NodeIndex, usize> {
+/// For each sibling, collects its full subtree and counts how many edges of the
+/// production subgraph under `reexports` cross from one sibling's subtree to
+/// another's. A crossing edge in `feedback_arcs` counts in the reverse
+/// direction, so the order puts its target above its source and the arc is
+/// drawn upward; without that the rest of its cycle may run outside `children`
+/// and leave the two siblings unconstrained.
+fn build_sibling_dep_graph(
+    children: &[NodeIndex],
+    graph: &ArcGraph,
+    reexports: Reexports,
+    feedback_arcs: &HashSet<(NodeIndex, NodeIndex)>,
+) -> DiGraph<NodeIndex, usize> {
     // Collect subtrees for each sibling (child + all descendants)
     let subtrees: HashMap<NodeIndex, HashSet<NodeIndex>> = children
         .iter()
@@ -795,10 +816,18 @@ fn build_sibling_dep_graph(children: &[NodeIndex], graph: &ArcGraph) -> DiGraph<
         subtrees[&child]
             .iter()
             .flat_map(move |&node| graph.edges(node))
-            .filter(|e| e.weight().is_production_module_dep())
+            .filter(|e| e.weight().in_production_subgraph(reexports))
             .filter_map(move |e| {
                 let &sibling = node_to_sibling.get(&e.target())?;
-                (sibling != child).then_some((child, sibling))
+                if sibling == child {
+                    return None;
+                }
+                let reversed = feedback_arcs.contains(&(e.source(), e.target()));
+                Some(if reversed {
+                    (sibling, child)
+                } else {
+                    (child, sibling)
+                })
             })
     });
 
@@ -840,6 +869,8 @@ impl ArcGraph {
         parent: NodeIndex,
         module_indices: &[NodeIndex],
         added: &mut HashSet<NodeIndex>,
+        reexports: Reexports,
+        feedback_arcs: &HashSet<(NodeIndex, NodeIndex)>,
     ) -> Vec<NodeIndex> {
         // Find direct children of this parent (via Contains edge)
         let mut children: Vec<NodeIndex> = module_indices
@@ -851,7 +882,7 @@ impl ArcGraph {
         // FIRST: Sort alphabetically (provides stable base order for toposort)
         children.sort_unstable_by(|&a, &b| self[a].name().cmp(self[b].name()));
 
-        let sibling_deps = build_sibling_dep_graph(&children, self);
+        let sibling_deps = build_sibling_dep_graph(&children, self, reexports, feedback_arcs);
 
         // THEN: Stable topological sort using Kahn's algorithm
         // This preserves alphabetical order for independent nodes (tie-breaker)
@@ -866,7 +897,13 @@ impl ArcGraph {
             .into_iter()
             .flat_map(|child| {
                 added.insert(child);
-                std::iter::once(child).chain(self.ordered_children(child, module_indices, added))
+                std::iter::once(child).chain(self.ordered_children(
+                    child,
+                    module_indices,
+                    added,
+                    reexports,
+                    feedback_arcs,
+                ))
             })
             .collect()
     }
@@ -939,6 +976,8 @@ impl ArcGraph {
         package_indices: &[NodeIndex],
         module_indices: &[NodeIndex],
         reachable: &HashSet<NodeIndex>,
+        reexports: Reexports,
+        feedback_arcs: &HashSet<(NodeIndex, NodeIndex)>,
     ) -> Vec<NodeIndex> {
         let mut ordered = Vec::new();
         let mut added = HashSet::new();
@@ -947,7 +986,13 @@ impl ArcGraph {
                 continue;
             }
             ordered.push(ci);
-            ordered.extend(self.ordered_children(ci, module_indices, &mut added));
+            ordered.extend(self.ordered_children(
+                ci,
+                module_indices,
+                &mut added,
+                reexports,
+                feedback_arcs,
+            ));
         }
         // Orphans: modules not claimed by any reachable package
         for &mi in module_indices {
@@ -1206,6 +1251,22 @@ mod tests {
         /// Add a `ModuleDep` with a dummy source location (for suppression tests).
         fn prod_dep_located(&mut self, from: &str, to: &str) -> &mut Self {
             self.prod_dep_with_location(from, to, "src/dummy.rs", 1, &["Sym"], to)
+        }
+
+        /// Add a production `ModuleDep` whose only location is a `pub use`
+        /// re-export, so the edge is a pure re-export.
+        fn reexport_dep(&mut self, from: &str, to: &str, symbol: &str) -> &mut Self {
+            self.prod_dep_with_locations(
+                from,
+                to,
+                vec![SourceLocation {
+                    file: PathBuf::from("src/dummy.rs"),
+                    line: 1,
+                    symbols: vec![symbol.to_string()],
+                    module_path: to.to_string(),
+                    via_reexport: true,
+                }],
+            )
         }
 
         /// Add a `ModuleDep` carrying the given source locations, unmodified.
@@ -2148,6 +2209,77 @@ mod tests {
              w(D→C)=1 > w(C→D)=0 → D before C. \
              w(B→C)=1 = w(C→B)=1 → alphabetical tiebreak B before C."
         );
+    }
+
+    // === Feedback Arcs As Upward Edges ===
+
+    /// Layout over the analysis of the same subgraph, the way `cli` runs it.
+    fn layout_with_cycles(graph: &ArcGraph, reexports: Reexports) -> LayoutIR {
+        let analysis = graph.production_subgraph(reexports).representative_cycles();
+        build_layout(graph, &analysis, reexports, None).0
+    }
+
+    fn edge_direction(la: &LayoutAssert, from: &str, to: &str) -> EdgeDirection {
+        la.ir
+            .edges
+            .iter()
+            .find(|e| e.from == la.pos(from) && e.to == la.pos(to))
+            .unwrap_or_else(|| panic!("edge {from} -> {to} not found"))
+            .direction
+    }
+
+    #[test]
+    fn upward_edge_of_a_tangle_is_its_feedback_arc() {
+        // Cycle a → b → c → a. Every rotation leaves one edge pointing up, so
+        // the weighted permutation search settles on the alphabet (a, b, c)
+        // and c → a points up. The diagnosis picks the arc with the fewest
+        // symbols, a → b, so the order has to be b, c, a.
+        let mut b = TestGraphBuilder::new();
+        b.package_with_modules("test", &["a", "b", "c"])
+            .prod_dep_with_location("a", "b", "src/a.rs", 1, &["B1"], "b")
+            .prod_dep_with_location("b", "c", "src/b.rs", 1, &["C1", "C2"], "c")
+            .prod_dep_with_location("c", "a", "src/c.rs", 1, &["A1", "A2", "A3"], "a");
+        let (graph, _) = b.build();
+        let la = LayoutAssert::new(layout_with_cycles(&graph, Reexports::Excluded));
+
+        la.assert_top_level_order(&["b", "c", "a"]);
+        assert_eq!(edge_direction(&la, "a", "b"), EdgeDirection::Upward);
+        assert_eq!(edge_direction(&la, "c", "a"), EdgeDirection::Downward);
+    }
+
+    #[test]
+    fn feedback_arc_inside_a_subtree_points_up_when_the_cycle_leaves_it() {
+        // Cycle a::x → b::y → a::w → a::x, feedback arc w → x (fewest symbols).
+        // Under `a` the rest of the cycle is invisible, so nothing but the arc
+        // itself can put x above w.
+        let mut b = TestGraphBuilder::new();
+        b.package_with_modules("test", &["a", "b"])
+            .nested_module("a", "w")
+            .nested_module("a", "x")
+            .nested_module("b", "y")
+            .prod_dep_with_location("x", "y", "src/x.rs", 1, &["Y1", "Y2"], "y")
+            .prod_dep_with_location("y", "w", "src/y.rs", 1, &["W1", "W2", "W3"], "w")
+            .prod_dep_with_location("w", "x", "src/w.rs", 1, &["X1"], "x");
+        let (graph, _) = b.build();
+        let la = LayoutAssert::new(layout_with_cycles(&graph, Reexports::Excluded));
+
+        la.assert_order("x", "w");
+        assert_eq!(edge_direction(&la, "w", "x"), EdgeDirection::Upward);
+    }
+
+    #[test]
+    fn reexport_edge_has_no_say_in_the_order_when_the_analysis_drops_it() {
+        // a re-exports from b, b uses a. Under the default the analysis sees
+        // no cycle, so the layout must not draw the logic edge b → a upward.
+        let mut b = TestGraphBuilder::new();
+        b.package_with_modules("test", &["a", "b"])
+            .reexport_dep("a", "b", "X")
+            .prod_dep_with_location("b", "a", "src/b.rs", 1, &["Y"], "a");
+        let (graph, _) = b.build();
+        let la = LayoutAssert::new(layout_with_cycles(&graph, Reexports::Excluded));
+
+        la.assert_top_level_order(&["b", "a"]);
+        assert_eq!(edge_direction(&la, "b", "a"), EdgeDirection::Downward);
     }
 
     // === Barycenter Heuristic Tests ===
