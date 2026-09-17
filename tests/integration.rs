@@ -1108,15 +1108,19 @@ fn nested_cycle_carries_cycle_ids_and_direction() {
     assert_eq!(cycle_ids(&peer, &inner), serde_json::json!([0]));
     assert_eq!(cycle_ids(&inner, &util), Value::Null);
 
-    let peer_to_inner = format!("id=\"edge-{peer}-{inner}\"");
-    let element = svg
-        .split('<')
-        .find(|e| e.contains(&peer_to_inner))
-        .expect("peer -> inner should be rendered");
-    assert!(
-        element.contains("data-direction=\"upward\""),
-        "peer -> inner should point upward: {element}"
-    );
+    let direction = |from: &str, to: &str| {
+        let id = format!("id=\"edge-{from}-{to}\"");
+        let element = svg
+            .split('<')
+            .find(|e| e.contains(&id))
+            .unwrap_or_else(|| panic!("edge {from} -> {to} should be rendered"));
+        let start = element.find("data-direction=\"").expect("direction") + 16;
+        element[start..].split('"').next().unwrap().to_string()
+    };
+    // inner -> peer carries fewer symbols, so it is the feedback arc and
+    // points up.
+    assert_eq!(direction(&inner, &peer), "upward");
+    assert_eq!(direction(&peer, &inner), "downward");
 }
 
 /// A glob edge must carry the names it imports, not the `*` that spells them.
