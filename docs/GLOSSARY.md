@@ -243,8 +243,8 @@ In this file, a [cluster](#cluster) is a strongly connected component, and a [sc
 | **<a id="arc-type">Arc type</a>** | The category of dependency an arc draws: package-dep, module-dep or [re-export](#re-export). Every arc has exactly one arc type. cargo-arc derives it from the arc's endpoints and its re-export flag and does not store it. |
 | **<a id="re-export">Re-export</a>** | The [arc type](#arc-type) of an arc whose imports are all `pub use`, so that it passes names on without depending on them. A single ordinary import on the arc makes it a module-dep instead ([ADR-022](adr/022-reexport-edges-tagged-not-dropped.md)). |
 | **<a id="filter">Filter</a>** | A checkbox in the **View** menu that shows or hides part of the diagram. Four filters cover arcs: crate dependencies, module dependencies, [re-exports](#re-export) and circular dependencies. The others cover [nodes](#node). |
-| **<a id="reading-order">Reading order</a>** | The top-to-bottom sequence of the [nodes](#node) under one parent. A node comes before the nodes it depends on. Inside a [tangle](#tangle) no order can do that for every [edge](#edge), and the layout picks the order with the least dependency weight pointing up. A tangle of more than eight nodes under one parent is ordered alphabetically instead. |
-| **<a id="upward-edge">Upward edge</a>** | An [edge](#edge) whose target sits above its source in the [reading order](#reading-order). Inside a [tangle](#tangle) some edge must be upward. Outside a tangle, an upward edge occurs only where two subtrees each hold a module that uses a module of the other: a [cycle](#cycle) between the subtrees without a cycle between modules. The diagram draws upward edges in their own style. |
+| **<a id="reading-order">Reading order</a>** | The top-to-bottom sequence of the [nodes](#node) under one parent. A node comes before the nodes it depends on. Inside a [tangle](#tangle) no order can do that for every [edge](#edge), and the layout puts the [feedback arcs](#feedback-arc) upward as far as the [cycles](#cycle) between subtrees allow. A tangle of more than eight nodes under one parent is ordered alphabetically instead. |
+| **<a id="upward-edge">Upward edge</a>** | An [edge](#edge) whose target sits above its source in the [reading order](#reading-order). Inside a [tangle](#tangle) an upward edge is a [feedback arc](#feedback-arc) or an edge of a [cycle](#cycle) between two subtrees that each hold a module that uses a module of the other, without a cycle between modules. The layout breaks such a cycle by weight. Outside a tangle only the second case occurs. The diagram draws upward edges in their own style. |
 
 In this section and in [ARC_DIAGRAM.md](ARC_DIAGRAM.md), *diagram* alone means the [arc diagram](#arc-diagram).
 Where a text also covers the [hotspot map](#hotspot-map), say *arc diagram*.
@@ -274,6 +274,8 @@ Whether an [edge](#edge) is a *back edge* depends on where a depth-first search 
 Whether an edge is [upward](#upward-edge) depends only on the [reading order](#reading-order), which a reader can see in the diagram.
 In package managers, the *reverse dependencies* of a package are the packages that depend on it.
 
-An [upward edge](#upward-edge) inside a [tangle](#tangle) is a [cyclic edge](#cyclic-edge).
-It need not be a [feedback arc](#feedback-arc): the layout weighs module [edges](#edge) between sibling subtrees, the cycle search looks at [cycles](#cycle) between modules, and the two can pick different edges.
-Deriving the [reading order](#reading-order) from the [feedback arc set](#feedback-arc-set) is open work.
+The [reading order](#reading-order) is derived from the [feedback arc set](#feedback-arc-set) ([ADR-017](adr/017-scc-condensation-for-cycle-resolution.md)).
+A [feedback arc](#feedback-arc) between two sibling subtrees counts in the reverse direction, so the sort puts its target above its source.
+Where the siblings still form a [cycle](#cycle) after that, a cycle between subtrees without a cycle between modules, the weight decides, and a feedback arc can point down.
+In a tangle of more than eight nodes under one parent, the alphabet decides.
+The order counts the same [edges](#edge) as the cycle search, so a [re-export](#re-export) arc does not affect it unless re-exports are included, and it can point either way.
