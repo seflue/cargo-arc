@@ -634,7 +634,7 @@ fn render_arrow(x: f32, y: f32, class: &str, edge_id: &str) -> String {
     format!("    <polygon class=\"{class}\" data-edge=\"{edge_id}\" points=\"{p1} {p2} {p3}\"/>\n")
 }
 
-fn escape_xml(s: &str) -> String {
+pub(super) fn escape_xml(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
