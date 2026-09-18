@@ -226,7 +226,9 @@ const DerivedState = {
       arcHighlights: new Map(),
       shadowData: new Map(),
       promotedHitareas: new Set(),
-      isPinned: selection.mode === 'click',
+      // A selected SCC persists like a pin (see AppState.clickEdge), so the
+      // has-pinned affordances apply before any inner edge is pinned.
+      isPinned: selection.mode === 'click' || clusterActive,
     };
     const ctx = {
       maxRight: this.computeMaxRight(positions),
