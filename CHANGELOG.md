@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- External crates and test code can be switched on and off while `cargo arc ui` runs: two toolbar buttons on the served page, `:Arc externals on|off` and `:Arc tests on|off` in Neovim. The service recomputes in place and the page reloads with its view kept.
+
 ## [0.5.0] - 2026-09-14
 
 ### Added

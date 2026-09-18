@@ -38,6 +38,13 @@ For development against this repository, point at the release build:
 - `:Arc stop` ends the service.
 - `:Arc follow off` stops the page from following the editor; `:Arc follow
   on` resumes it. The page's own "Follow editor" button does the same.
+- `:Arc externals on|off` and `:Arc tests on|off` take external crates or
+  test code into the analysis or leave them out. The service recomputes in
+  place and the page reloads with its view kept; the page's "External
+  crates" and "Test code" buttons do the same. A notice names the state
+  reached, or the error if the analysis failed. `:Arc restart` starts the
+  new service with the state last reached, not with the options below;
+  `:Arc stop` and `:Arc open` start from the options again.
 
 ## Options
 
@@ -50,6 +57,10 @@ For development against this repository, point at the release build:
 | `features`      | `{}`          | `--features a,b`         |
 | `include_tests` | `false`       | `--include-tests`        |
 | `externals`     | `false`       | `--externals`            |
+
+`include_tests` and `externals` set the state a service starts with; `:Arc
+externals` and `:Arc tests` change it while the service runs, and `:Arc
+restart` carries it over.
 
 ## Tests
 

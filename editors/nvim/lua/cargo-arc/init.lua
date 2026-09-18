@@ -21,21 +21,23 @@ function M.setup(opts)
   M.config = vim.tbl_deep_extend('force', defaults, opts or {})
 end
 
+--- @alias cargo-arc.Switches { externals: boolean, tests: boolean }
+
 --- The running service: its process, once it has announced itself the
---- version and port from its ready line, the port of the service it
---- replaces, and whether its exit was asked for and whether a restart waits
---- for it.
---- @type { process: vim.SystemObj, version: string|nil, port: integer|nil, replaces: integer|nil, stopping: boolean|nil, restart: boolean|nil }|nil
+--- version and port from its ready line, the analysis switches it last
+--- reported, the port of the service it replaces, and whether its exit was
+--- asked for and whether a restart waits for it.
+--- @type { process: vim.SystemObj, version: string|nil, port: integer|nil, switches: cargo-arc.Switches|nil, replaces: integer|nil, stopping: boolean|nil, restart: boolean|nil }|nil
 local service = nil
 
---- Version, port and pid of a service that has announced itself; nil
---- before that and while none runs.
---- @return { version: string, port: integer, pid: integer }|nil
+--- Version, port and pid of a service that has announced itself, and the
+--- switches it last reported; nil before that and while none runs.
+--- @return { version: string, port: integer, pid: integer, switches: cargo-arc.Switches|nil }|nil
 function M.status()
   if not service or not service.port then
     return nil
   end
-  return { version = service.version, port = service.port, pid = service.process.pid }
+  return { version = service.version, port = service.port, pid = service.process.pid, switches = service.switches }
 end
 
 --- @param port integer
@@ -46,8 +48,10 @@ end
 --- The command line that starts the service: the shared flags sit on `arc`,
 --- before the subcommand, the port after it.
 --- @param port integer|nil port to serve on; nil lets the OS pick one
+--- @param switches cargo-arc.Switches|nil the analysis switches to start
+--- with; nil for the configuration's
 --- @return string[]
-function M.argv(port)
+function M.argv(port, switches)
   local config = M.config
   local argv = { config.binary, 'arc' }
   if config.manifest_path then
@@ -56,10 +60,11 @@ function M.argv(port)
   if #config.features > 0 then
     vim.list_extend(argv, { '--features', table.concat(config.features, ',') })
   end
-  if config.include_tests then
+  local wanted = switches or { externals = config.externals, tests = config.include_tests }
+  if wanted.tests then
     table.insert(argv, '--include-tests')
   end
-  if config.externals then
+  if wanted.externals then
     table.insert(argv, '--externals')
   end
   table.insert(argv, 'ui')
@@ -133,11 +138,13 @@ end
 
 --- Starts the service for the current working directory. With `replaces`,
 --- the port of the service that just exited, the new one takes that port
---- and the page that shows it stays open.
+--- and the page that shows it stays open; with `switches`, the state that
+--- service last reached, it starts with that state.
 --- @param replaces integer|nil
-local function start(replaces)
+--- @param switches cargo-arc.Switches|nil
+local function start(replaces, switches)
   local started = { replaces = replaces }
-  local ok, process = pcall(vim.system, M.argv(replaces), {
+  local ok, process = pcall(vim.system, M.argv(replaces, switches), {
     cwd = vim.fn.getcwd(),
     text = true,
     stdin = true,
@@ -153,7 +160,7 @@ local function start(replaces)
         )
       end
       if started.restart then
-        start(started.port)
+        start(started.port, started.switches)
       end
     end)
   end)
@@ -199,15 +206,35 @@ function M.restart()
   M.stop()
 end
 
---- Switches whether the page follows the cursor. The service passes the
---- state through; the page holds it.
+--- Writes `arc <name> on|off`, the line every switch is spelled as.
+--- @param name string
 --- @param on boolean
-function M.follow(on)
+local function send_switch(name, on)
   if not service then
     vim.notify('cargo-arc is not running', vim.log.levels.INFO)
     return
   end
-  send(on and 'arc follow on' or 'arc follow off')
+  send('arc ' .. name .. (on and ' on' or ' off'))
+end
+
+--- Switches whether the page follows the cursor. The service passes the
+--- state through; the page holds it.
+--- @param on boolean
+function M.follow(on)
+  send_switch('follow', on)
+end
+
+--- Asks the service to take external crates into the analysis or leave
+--- them out; it recomputes and reports the state it reached.
+--- @param on boolean
+function M.externals(on)
+  send_switch('externals', on)
+end
+
+--- Asks the service to take test code into the analysis or leave it out.
+--- @param on boolean
+function M.tests(on)
+  send_switch('tests', on)
 end
 
 --- The window in the current tabpage that shows `file`, if any.
@@ -262,6 +289,27 @@ function M.handle_line(line)
   local lnum, file = line:match('^arc jump (%d+) (.+)$')
   if file then
     M.jump(file, tonumber(lnum))
+    return
+  end
+  local externals, tests = line:match('^arc analysis externals=(%a+) tests=(%a+)$')
+  if externals then
+    local reached = { externals = externals == 'on', tests = tests == 'on' }
+    -- The first report only tells the plugin the state; a later one that
+    -- differs is the outcome of a switch and worth a notice.
+    if service and service.switches and not vim.deep_equal(service.switches, reached) then
+      vim.notify(
+        'cargo-arc: external crates ' .. externals .. ', test code ' .. tests,
+        vim.log.levels.INFO
+      )
+    end
+    if service then
+      service.switches = reached
+    end
+    return
+  end
+  local error_text = line:match('^arc analysis%-error (.+)$')
+  if error_text then
+    vim.notify('cargo-arc: the analysis failed: ' .. error_text, vim.log.levels.ERROR)
   end
 end
 
