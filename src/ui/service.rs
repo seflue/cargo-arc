@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use crate::layout::{JumpTable, Location, LocationId};
-use crate::render::html_page;
+use crate::render::{html_page, project_name};
 
 /// Whether the page follows the editor's cursor. Passed through from stdin
 /// to the page; the service holds no state of its own.
@@ -67,7 +67,7 @@ impl JumpService {
     /// `svg` is the rendered diagram as `cargo arc -o` would write it.
     pub(crate) fn new(svg: &str, table: JumpTable, root: PathBuf) -> Self {
         Self {
-            page: html_page(svg),
+            page: html_page(svg, project_name(&root)),
             table,
             root,
         }
@@ -184,7 +184,7 @@ mod tests {
     fn page_is_the_html_page_of_the_svg() {
         let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
         let service = JumpService::new(svg, JumpTable::new(), PathBuf::from("/ws"));
-        assert_eq!(service.page(), html_page(svg));
+        assert_eq!(service.page(), html_page(svg, Some("ws")));
     }
 
     #[test]

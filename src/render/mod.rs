@@ -2,6 +2,7 @@
 
 use crate::layout::{ItemKind, LayoutIR, NodeId};
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 mod constants;
 mod css;
@@ -11,8 +12,8 @@ mod static_data;
 pub use constants::RenderConfig;
 use css::render_styles;
 use elements::{
-    CycleMarks, render_edges, render_header, render_nodes, render_sidebar, render_toolbar,
-    render_tree_lines,
+    CycleMarks, escape_xml, render_edges, render_header, render_nodes, render_sidebar,
+    render_toolbar, render_tree_lines,
 };
 use positioning::{
     PositionedItem, calculate_box_width, calculate_canvas_size, calculate_max_arc_width,
@@ -128,18 +129,32 @@ pub fn render(ir: &LayoutIR, config: &RenderConfig) -> String {
 /// `svg` moves ahead of the wrapping document, and the rest is already
 /// well-formed XML. The body is white because the SVG has no background of
 /// its own and a webview would otherwise show the editor theme through it.
+/// `project` leads the title so that browser tabs, which truncate on the
+/// right, differ per project.
 #[must_use]
-pub fn html_page(svg: &str) -> String {
+pub fn html_page(svg: &str, project: Option<&str>) -> String {
     let (declaration, svg) = match svg.split_once('\n') {
         Some((first, rest)) if first.starts_with("<?xml") => (first, rest),
         _ => ("<?xml version=\"1.0\" encoding=\"UTF-8\"?>", svg),
     };
+    let title = match project {
+        Some(project) => format!("{} · cargo-arc", escape_xml(project)),
+        None => "cargo-arc".to_string(),
+    };
     format!(
         "{declaration}\n\
-         <html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>cargo-arc</title></head><body style=\"margin:0;background:#fff\">\n\
+         <html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>{title}</title></head><body style=\"margin:0;background:#fff\">\n\
          {svg}\n\
          </body></html>\n"
     )
+}
+
+/// The name a page is titled with: the workspace root's directory name.
+/// Cargo has no workspace name, and the directory is what an editor shows
+/// as the workspace.
+#[must_use]
+pub fn project_name(workspace_root: &Path) -> Option<&str> {
+    workspace_root.file_name()?.to_str()
 }
 
 #[cfg(test)]
@@ -152,12 +167,32 @@ mod tests {
     fn html_page_inlines_the_svg_after_its_declaration() {
         let svg = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"20\"/>";
         assert_eq!(
-            html_page(svg),
+            html_page(svg, None),
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
              <html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>cargo-arc</title></head><body style=\"margin:0;background:#fff\">\n\
              <svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"20\"/>\n\
              </body></html>\n"
         );
+    }
+
+    #[test]
+    fn html_page_titles_the_tab_with_the_project_first() {
+        let page = html_page("<svg/>", Some("my-ws"));
+        assert!(page.contains("<title>my-ws · cargo-arc</title>"), "{page}");
+    }
+
+    #[test]
+    fn html_page_escapes_the_project_name() {
+        let page = html_page("<svg/>", Some("a&b"));
+        assert!(
+            page.contains("<title>a&amp;b · cargo-arc</title>"),
+            "{page}"
+        );
+    }
+
+    #[test]
+    fn project_name_is_the_workspace_root_directory() {
+        assert_eq!(project_name(Path::new("/home/u/my-ws")), Some("my-ws"));
     }
 
     #[test]
