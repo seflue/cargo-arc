@@ -1,13 +1,14 @@
 //! The jump service's HTTP-independent logic: the page, the table, the two
-//! lines it writes to stdout, the two it reads from stdin, and the two
+//! lines it writes to stdout, the three it reads from stdin, and the three
 //! events it pushes to the page.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 
 use serde::Serialize;
 
 use crate::layout::{JumpTable, Location, LocationId};
-use crate::render::{html_page, project_name};
+use crate::render::{Appearance, Mode, Theme, html_page, project_name};
 
 /// Whether the page follows the editor's cursor. Passed through from stdin
 /// to the page; the service holds no state of its own.
@@ -26,6 +27,8 @@ pub(crate) enum StdinCommand {
         file: PathBuf,
     },
     Follow(FollowState),
+    /// The editor's colour mode; it sends no colours of its own.
+    Theme(Mode),
 }
 
 /// What the page needs to select the node the editor is in: the node's
@@ -37,8 +40,9 @@ pub(crate) struct FocusEvent {
     pub jumps: Vec<LocationId>,
 }
 
-/// Parses one stdin line. Anything but the two known forms is `None`: stdin
-/// is a protocol, not a shell, and a stray line is dropped without notice.
+/// Parses one stdin line. Anything but the three known forms is `None`:
+/// stdin is a protocol, not a shell, and a stray line is dropped without
+/// notice.
 pub(crate) fn parse_stdin(line: &str) -> Option<StdinCommand> {
     if let Some(rest) = line.strip_prefix("arc focus ") {
         let (line, file) = rest.split_once(' ')?;
@@ -48,35 +52,67 @@ pub(crate) fn parse_stdin(line: &str) -> Option<StdinCommand> {
             file: PathBuf::from(file),
         });
     }
-    match line.strip_prefix("arc follow ")? {
-        "on" => Some(StdinCommand::Follow(FollowState::On)),
-        "off" => Some(StdinCommand::Follow(FollowState::Off)),
-        _ => None,
+    if let Some(rest) = line.strip_prefix("arc follow ") {
+        return match rest {
+            "on" => Some(StdinCommand::Follow(FollowState::On)),
+            "off" => Some(StdinCommand::Follow(FollowState::Off)),
+            _ => None,
+        };
     }
+    let mode = Mode::parse(line.strip_prefix("arc theme ")?)?;
+    Some(StdinCommand::Theme(mode))
 }
 
 /// Serves the diagram page and resolves jump ids against the workspace root
 /// that produced them.
 pub(crate) struct JumpService {
-    page: String,
+    svg: String,
     table: JumpTable,
     root: PathBuf,
+    /// The theme `--theme` pinned, if any.
+    theme: Option<&'static Theme>,
+    /// The last mode the editor sent. Held so that a page loaded after the
+    /// line, or reloaded, starts in the editor's mode.
+    editor_mode: Mutex<Option<Mode>>,
 }
 
 impl JumpService {
     /// `svg` is the rendered diagram as `cargo arc -o` would write it.
-    pub(crate) fn new(svg: &str, table: JumpTable, root: PathBuf) -> Self {
+    pub(crate) fn new(
+        svg: String,
+        table: JumpTable,
+        root: PathBuf,
+        theme: Option<&'static Theme>,
+    ) -> Self {
         Self {
-            page: html_page(svg, project_name(&root)),
+            svg,
             table,
             root,
+            theme,
+            editor_mode: Mutex::new(None),
         }
     }
 
     /// The diagram as the page from [`html_page`]: a webview shrinks a bare
-    /// SVG document to its frame, an inline one keeps its size.
-    pub(crate) fn page(&self) -> &str {
-        &self.page
+    /// SVG document to its frame, an inline one keeps its size. The root
+    /// carries the editor's mode and the pinned theme.
+    pub(crate) fn page(&self) -> String {
+        let appearance = Appearance {
+            theme: self.theme,
+            mode: *self.editor_mode(),
+        };
+        html_page(&self.svg, project_name(&self.root), appearance)
+    }
+
+    /// Records the editor's mode; `true` when it differs from the last one.
+    pub(crate) fn set_editor_mode(&self, mode: Mode) -> bool {
+        self.editor_mode().replace(mode) != Some(mode)
+    }
+
+    fn editor_mode(&self) -> std::sync::MutexGuard<'_, Option<Mode>> {
+        self.editor_mode
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Resolves `id` against the table and anchors the result at the
@@ -132,6 +168,11 @@ impl JumpService {
         };
         format!("event: follow\ndata: {data}\n\n")
     }
+
+    /// The `theme` event as one complete SSE block.
+    pub(crate) fn theme_event(mode: Mode) -> String {
+        format!("event: theme\ndata: {}\n\n", mode.as_str())
+    }
 }
 
 #[cfg(test)]
@@ -147,7 +188,7 @@ mod tests {
         table.insert(PathBuf::from("/ws/my_crate/Cargo.toml"), 1);
         table.insert(PathBuf::from("/ws/other/Cargo.toml"), 1);
         table.insert(PathBuf::from("src/lib.rs"), 3);
-        JumpService::new("", table, PathBuf::from(root))
+        JumpService::new(String::new(), table, PathBuf::from(root), None)
     }
 
     #[test]
@@ -183,8 +224,16 @@ mod tests {
     #[test]
     fn page_is_the_html_page_of_the_svg() {
         let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
-        let service = JumpService::new(svg, JumpTable::new(), PathBuf::from("/ws"));
-        assert_eq!(service.page(), html_page(svg, Some("ws")));
+        let service = JumpService::new(
+            svg.to_string(),
+            JumpTable::new(),
+            PathBuf::from("/ws"),
+            None,
+        );
+        assert_eq!(
+            service.page(),
+            html_page(svg, Some("ws"), Appearance::default())
+        );
     }
 
     #[test]
@@ -212,7 +261,7 @@ mod tests {
         table.insert(PathBuf::from("my_crate/Cargo.toml"), 1);
         let member = table.insert(PathBuf::from("/elsewhere/member/Cargo.toml"), 1);
         table.insert_node_files("2", [member]);
-        JumpService::new("", table, PathBuf::from("/ws"))
+        JumpService::new(String::new(), table, PathBuf::from("/ws"), None)
     }
 
     /// The node is registered under one spelling of the file and a location
@@ -298,10 +347,66 @@ mod tests {
     }
 
     #[test]
+    fn parse_stdin_reads_theme_lines() {
+        assert_eq!(
+            parse_stdin("arc theme light"),
+            Some(StdinCommand::Theme(Mode::Light))
+        );
+        assert_eq!(
+            parse_stdin("arc theme dark"),
+            Some(StdinCommand::Theme(Mode::Dark))
+        );
+    }
+
+    #[test]
+    fn theme_event_formats_as_an_sse_block() {
+        assert_eq!(
+            JumpService::theme_event(Mode::Dark),
+            "event: theme\ndata: dark\n\n"
+        );
+    }
+
+    /// The editor's mode goes on the page root as data-mode, where the
+    /// stylesheet picks the mode's default theme before any script runs.
+    #[test]
+    fn page_carries_the_editor_mode_once_set() {
+        let service = service_over_root("/ws");
+        assert!(!service.page().contains("data-mode"));
+        service.set_editor_mode(Mode::Dark);
+        assert!(
+            service
+                .page()
+                .contains("<html xmlns=\"http://www.w3.org/1999/xhtml\" data-mode=\"dark\">"),
+            "{}",
+            service.page()
+        );
+    }
+
+    /// A theme pinned by --theme keeps its name on the root only while the
+    /// editor's mode agrees with it: the editor decides the mode.
+    #[test]
+    fn editor_mode_drops_a_pinned_theme_of_the_other_mode() {
+        let mut table = JumpTable::new();
+        table.insert(PathBuf::from("src/lib.rs"), 3);
+        let service = JumpService::new(
+            String::new(),
+            table,
+            PathBuf::from("/ws"),
+            Theme::named("mocha"),
+        );
+        assert!(service.page().contains("data-theme=\"mocha\""));
+        service.set_editor_mode(Mode::Dark);
+        assert!(service.page().contains("data-theme=\"mocha\""));
+        service.set_editor_mode(Mode::Light);
+        assert!(!service.page().contains("data-theme"), "{}", service.page());
+    }
+
+    #[test]
     fn parse_stdin_ignores_malformed_and_foreign_lines() {
         assert_eq!(parse_stdin("arc focus x /p"), None);
         assert_eq!(parse_stdin("arc focus 3"), None);
         assert_eq!(parse_stdin("arc follow maybe"), None);
+        assert_eq!(parse_stdin("arc theme blue"), None);
         assert_eq!(parse_stdin("arc jump 3 /p"), None);
         assert_eq!(parse_stdin("hello"), None);
         assert_eq!(parse_stdin(""), None);

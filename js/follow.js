@@ -69,12 +69,13 @@ function createFollow({ connect, apply, showState }) {
 
 /**
  * Connects to the service's event stream, relative to the page so the port
- * is never spelled out. `EventSource` reconnects by itself.
+ * is never spelled out, and forwards every event the service sends, the
+ * theme event included. `EventSource` reconnects by itself.
  * @param {(eventName: string, data: string) => void} handler
  */
 function connectEventSource(handler) {
   const source = new EventSource('events');
-  for (const name of ['focus', 'follow']) {
+  for (const name of ['focus', 'follow', 'theme']) {
     source.addEventListener(name, (event) => {
       handler(name, /** @type {MessageEvent} */ (event).data);
     });

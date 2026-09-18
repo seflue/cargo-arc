@@ -355,3 +355,9 @@ for each open event stream. The request loop stays sequential on the calling
 thread. A blocking `tiny_http` request loop cannot also read stdin or hold a
 stream open, and an async runtime for two blocking readers would be the larger
 dependency. The module is the only one in the crate that starts a thread.
+
+**A lock in `ui/service.rs`.** The service holds the editor's colour mode
+behind a `std::sync::Mutex`, written by the stdin thread and read when a page
+is served. It is the one piece of shared state on the request path: a page
+loaded after the editor's line has to start in that mode, and the value is a
+two-variant enum with no contention worth a channel.
