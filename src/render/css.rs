@@ -797,6 +797,8 @@ fn build_css_rules() -> Vec<CssRule> {
                 ("padding-left", "12px"),
                 ("font-size", "11px"),
                 ("white-space", "nowrap"),
+                ("display", "flex"),
+                ("align-items", "center"),
             ],
         ),
         // Rows with data-jump (see js/sidebar.js _locationRow) are click
@@ -922,7 +924,29 @@ fn build_css_rules() -> Vec<CssRule> {
             &format!(".{}.{}", c.sidebar.symbol, c.sidebar.symbol_stacked),
             &[("align-items", "flex-start")],
         ),
-        CssRule::class(c.sidebar.ns, &[("color", GRAY_400), ("font-size", "10px")]),
+        // Path spans are the only row children that shrink; js/sidebar.js
+        // fitPaths cuts their text on segment boundaries once they overflow,
+        // the ellipsis covers whatever that pass leaves over.
+        CssRule::class(
+            c.sidebar.ns,
+            &[
+                ("color", GRAY_400),
+                ("font-size", "10px"),
+                ("flex", "0 1 auto"),
+                ("min-width", "0"),
+                ("overflow", "hidden"),
+                ("text-overflow", "ellipsis"),
+            ],
+        ),
+        CssRule::class(
+            c.sidebar.file,
+            &[
+                ("flex", "0 1 auto"),
+                ("min-width", "0"),
+                ("overflow", "hidden"),
+                ("text-overflow", "ellipsis"),
+            ],
+        ),
         CssRule::class(
             c.sidebar.ref_count,
             &[
@@ -1502,6 +1526,37 @@ mod tests {
         assert!(
             !css.contains(&format!("\n.{}[data-jump]", CSS.sidebar.location)),
             "an unpinned row must not look clickable"
+        );
+    }
+
+    /// The path spans shrink inside their flex row so the sidebar's width
+    /// limit cuts the path, not the symbol name or the line badge.
+    #[test]
+    fn test_css_path_spans_shrink_with_ellipsis() {
+        let css = render_styles();
+        for class in [CSS.sidebar.ns, CSS.sidebar.file] {
+            let idx = css
+                .find(&format!(" .{class} {{"))
+                .unwrap_or_else(|| panic!("CSS should contain a rule for .{class}"));
+            let section = &css[idx..idx + 160];
+            for decl in [
+                "min-width: 0",
+                "overflow: hidden",
+                "text-overflow: ellipsis",
+            ] {
+                assert!(
+                    section.contains(decl),
+                    ".{class} should set {decl}, got: {section}"
+                );
+            }
+        }
+        let idx = css
+            .find(&format!(" .{} {{", CSS.sidebar.location))
+            .expect("CSS should contain a rule for .sidebar-location");
+        let section = &css[idx..idx + 160];
+        assert!(
+            section.contains("display: flex"),
+            ".sidebar-location must be a flex row so its path span can shrink, got: {section}"
         );
     }
 

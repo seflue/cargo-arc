@@ -148,12 +148,9 @@ const SidebarLogic = {
       for (const group of sorted) {
         html += `<div class="sidebar-usage-group">`;
         if (group.symbol) {
-          html += `<div class="sidebar-symbol" data-collapsible="">`;
+          html += `<div class="sidebar-symbol" data-collapsible="" title="${this._symbolTitle(group)}">`;
           html += `<span class="sidebar-toggle">&#x25BE;</span>`;
-          if (group.modulePath) {
-            html += `<span class="sidebar-ns">${group.modulePath}::</span>`;
-          }
-          html += `<span class="sidebar-symbol-name">${group.symbol}</span>`;
+          html += this._symbolLabel(group);
           html += this._definitionChip(group);
           html += this._renderLocalityTag(arc.to, group.symbol);
           html += `<span class="sidebar-ref-count">${group.locations.length}</span>`;
@@ -359,12 +356,9 @@ const SidebarLogic = {
     for (const group of sorted) {
       html += `<div class="sidebar-usage-group">`;
       if (group.symbol) {
-        html += `<div class="sidebar-symbol" data-collapsible="">`;
+        html += `<div class="sidebar-symbol" data-collapsible="" title="${this._symbolTitle(group)}">`;
         html += `<span class="sidebar-toggle">&#x25BE;</span>`;
-        if (group.modulePath) {
-          html += `<span class="sidebar-ns">${group.modulePath}::</span>`;
-        }
-        html += `<span class="sidebar-symbol-name">${group.symbol}</span>`;
+        html += this._symbolLabel(group);
         html += this._definitionChip(group);
         html += `<span class="sidebar-ref-count">${group.locations.length}</span>`;
         html += `</div>`;
@@ -496,6 +490,33 @@ const SidebarLogic = {
   },
 
   /**
+   * Full `modulePath::symbol` for the row's `title`.
+   * @param {{ symbol: string, modulePath?: string | null }} group
+   * @returns {string}
+   */
+  _symbolTitle(group) {
+    return group.modulePath
+      ? `${group.modulePath}::${group.symbol}`
+      : group.symbol;
+  },
+
+  /**
+   * Module path and symbol name spans. The path span carries its full text
+   * in `data-full` because `fitPaths` rewrites the visible text.
+   * @param {{ symbol: string, modulePath?: string | null }} group
+   * @returns {string}
+   */
+  _symbolLabel(group) {
+    let html = '';
+    if (group.modulePath) {
+      const ns = `${group.modulePath}::`;
+      html += `<span class="sidebar-ns" data-full="${ns}">${ns}</span>`;
+    }
+    html += `<span class="sidebar-symbol-name">${group.symbol}</span>`;
+    return html;
+  },
+
+  /**
    * One usage-location row. Carries `data-jump` only when the location has a
    * jump id (RenderConfig::with_jump_ids, i.e. `arc ui`); an image from
    * `cargo arc -o` never sets it, so the row stays inert there.
@@ -512,7 +533,11 @@ const SidebarLogic = {
     const jumpIcon = hasJump
       ? '<svg class="sidebar-jump" xmlns="http://www.w3.org/2000/svg"><use href="#jump-icon"></use></svg>'
       : '';
-    return `<div class="sidebar-location"${jumpAttr}>${loc.file}<span class="sidebar-line-badge">:${loc.line}</span>${jumpIcon}</div>`;
+    return (
+      `<div class="sidebar-location"${jumpAttr} title="${loc.file}:${loc.line}">` +
+      `<span class="sidebar-file" data-full="${loc.file}">${loc.file}</span>` +
+      `<span class="sidebar-line-badge">:${loc.line}</span>${jumpIcon}</div>`
+    );
   },
 
   /**
@@ -900,6 +925,84 @@ const SidebarLogic = {
   },
 
   /**
+   * Shortens a path by replacing `dropCount` segments with `…`, taken from
+   * the end of the prefix backwards. The part after the last separator is
+   * never dropped: for a module path `a::b::` that is the empty tail, so the
+   * result still ends in `::`; for a file path it is the file name.
+   * @param {string} full
+   * @param {string} separator
+   * @param {number} dropCount
+   * @returns {string}
+   */
+  elidePath(full, separator, dropCount) {
+    if (dropCount <= 0) return full;
+    const parts = full.split(separator);
+    const tail = parts.pop();
+    const kept = parts.slice(0, Math.max(0, parts.length - dropCount));
+    return [...kept, '…', tail].join(separator);
+  },
+
+  /**
+   * Path spans under `root`, each with the separator its kind is cut on.
+   * @param {Element} root
+   * @returns {Array<{ span: HTMLElement, separator: string }>}
+   */
+  _pathSpans(root) {
+    if (!root || !root.querySelectorAll) return [];
+    const kinds = [
+      { selector: '.sidebar-ns[data-full]', separator: '::' },
+      { selector: '.sidebar-file[data-full]', separator: '/' },
+    ];
+    return kinds.flatMap(({ selector, separator }) =>
+      [...root.querySelectorAll(selector)].map((span) => ({
+        span: /** @type {HTMLElement} */ (span),
+        separator,
+      })),
+    );
+  },
+
+  /**
+   * Puts the full text back into every path span. Must run before the
+   * sidebar measures its natural width, or the measurement sees the cut
+   * text, the sidebar narrows, and the next pass cuts more.
+   * @param {Element} root
+   */
+  resetPaths(root) {
+    for (const { span } of this._pathSpans(root)) {
+      span.textContent = span.dataset.full ?? '';
+      span.style.flexShrink = '';
+    }
+  },
+
+  /**
+   * Rewrites every path span under `root` so it fits its box: the text is
+   * reset to `data-full`, then segments are dropped one at a time while
+   * `overflows(span)` holds. Runs after the sidebar width is final; the reset
+   * happens again on every call, so a span that has more room than last time
+   * gets its segments back. A span that overflows even at its shortest form
+   * sits in a row whose other children are wider than the sidebar; it stops
+   * shrinking there so the `…` stays visible and the row scrolls instead.
+   * @param {Element} root
+   * @param {(span: HTMLElement) => boolean} [overflows] - defaults to the DOM
+   *   overflow test; tests pass a text-length predicate instead.
+   */
+  fitPaths(root, overflows = (span) => span.scrollWidth > span.clientWidth) {
+    for (const { span, separator } of this._pathSpans(root)) {
+      const full = span.dataset.full ?? '';
+      span.textContent = full;
+      span.style.flexShrink = '';
+      for (let drop = 1; overflows(span); drop++) {
+        const shorter = this.elidePath(full, separator, drop);
+        if (shorter === span.textContent) {
+          span.style.flexShrink = '0';
+          break;
+        }
+        span.textContent = shorter;
+      }
+    }
+  },
+
+  /**
    * Crossing symbols for a cluster edge, real imports only. `pub use`
    * re-exports ride the same edge but are not part of the cycle (ADR-022).
    * @param {StaticCycleArcData} edge
@@ -958,11 +1061,8 @@ const SidebarLogic = {
     if (expandable) {
       html += `<div class="sidebar-locations" style="display:none">`;
       for (const u of symbols) {
-        html += `<div class="sidebar-edge-symbol">`;
-        if (u.modulePath) {
-          html += `<span class="sidebar-ns">${u.modulePath}::</span>`;
-        }
-        html += `<span class="sidebar-symbol-name">${u.symbol}</span>`;
+        html += `<div class="sidebar-edge-symbol" title="${this._symbolTitle(u)}">`;
+        html += this._symbolLabel(u);
         html += this._definitionChip(u);
         html += this._renderLocalityTag(edge.toId, u.symbol);
         html += `</div>`;
@@ -1337,6 +1437,7 @@ const SidebarLogic = {
     // propagate scrollWidth reliably in foreignObject context.
     /** @type {HTMLElement|null} */
     const innerDiv = el.querySelector('.sidebar-root');
+    if (innerDiv) this.resetPaths(innerDiv);
     el.setAttribute('width', '9999');
     if (innerDiv) innerDiv.style.width = 'max-content';
     const naturalW = innerDiv ? innerDiv.offsetWidth : 0;
@@ -1377,7 +1478,10 @@ const SidebarLogic = {
     el.setAttribute('x', String(x));
     el.setAttribute('y', String(pos.y));
     el.setAttribute('height', String(effectiveH + SIDEBAR_SHADOW_PAD));
-    if (innerDiv) innerDiv.style.height = `${effectiveH}px`;
+    if (innerDiv) {
+      innerDiv.style.height = `${effectiveH}px`;
+      this.fitPaths(innerDiv);
+    }
 
     // Expand SVG canvas if sidebar extends beyond viewBox
     if (svg) {
