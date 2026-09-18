@@ -314,6 +314,26 @@ describe('SidebarLogic', () => {
       );
     });
 
+    test('location row carries file:line as title and the file in a data-full span', () => {
+      const override = {
+        from: 'a',
+        to: 'b',
+        usages: [
+          {
+            symbol: 'Foo',
+            modulePath: null,
+            locations: [{ file: 'src/render/lib.rs', line: 3 }],
+          },
+        ],
+      };
+      const html = SidebarLogic.buildContent('loc-id', override);
+      expect(html).toContain(
+        '<div class="sidebar-location" title="src/render/lib.rs:3">' +
+          '<span class="sidebar-file" data-full="src/render/lib.rs">src/render/lib.rs</span>' +
+          '<span class="sidebar-line-badge">:3</span></div>',
+      );
+    });
+
     test('location row omits data-jump when loc.jump is absent', () => {
       const override = {
         from: 'a',
@@ -446,10 +466,46 @@ describe('SidebarLogic', () => {
       };
       const html = SidebarLogic.buildContent('ns-id', override);
       expect(html).toContain(
-        '<span class="sidebar-ns">render::sidebar::</span>',
+        '<span class="sidebar-ns" data-full="render::sidebar::">render::sidebar::</span>',
       );
       expect(html).toContain(
         '<span class="sidebar-symbol-name">ModuleInfo</span>',
+      );
+    });
+
+    test('symbol row carries the full path as title', () => {
+      const override = {
+        from: 'a',
+        to: 'b',
+        usages: [
+          {
+            symbol: 'ModuleInfo',
+            modulePath: 'render::sidebar',
+            locations: [{ file: 'src/cli.rs', line: 7 }],
+          },
+        ],
+      };
+      const html = SidebarLogic.buildContent('ns-id', override);
+      expect(html).toContain(
+        '<div class="sidebar-symbol" data-collapsible="" title="render::sidebar::ModuleInfo">',
+      );
+    });
+
+    test('symbol row without modulePath has the bare symbol as title', () => {
+      const override = {
+        from: 'a',
+        to: 'b',
+        usages: [
+          {
+            symbol: 'SomeType',
+            modulePath: null,
+            locations: [{ file: 'src/lib.rs', line: 10 }],
+          },
+        ],
+      };
+      const html = SidebarLogic.buildContent('no-ns-id', override);
+      expect(html).toContain(
+        '<div class="sidebar-symbol" data-collapsible="" title="SomeType">',
       );
     });
 
@@ -922,6 +978,59 @@ describe('SidebarLogic', () => {
       // scaleY = 1600/800 = 2, scrollTop = max(0,300)*2 = 600
       // y = 600 + TOOLBAR_HEIGHT(0 in test) + GAP_TOP(20) = 620
       expect(fakeEl.getAttribute('y')).toBe('620');
+    });
+
+    test('restores path spans before measuring, cuts them after sizing', () => {
+      const fakeEl = createFakeElement('foreignObject');
+      const innerDiv = createFakeElement('div');
+      // A span cut by an earlier pass; overflows while wider than 40px at
+      // 6px per character.
+      const span = {
+        dataset: { full: 'a::b::c::' },
+        textContent: 'a::…::',
+        style: {},
+        clientWidth: 40,
+        get scrollWidth() {
+          return this.textContent.length * 6;
+        },
+      };
+      innerDiv.querySelectorAll = (sel) =>
+        sel === '.sidebar-ns[data-full]' ? [span] : [];
+      let textWhileMeasuring = null;
+      Object.defineProperty(innerDiv, 'offsetWidth', {
+        get() {
+          if (this.style.width === 'max-content') {
+            textWhileMeasuring = span.textContent;
+          }
+          return 100;
+        },
+      });
+      fakeEl.querySelector = () => innerDiv;
+      const svgMock = {
+        getBoundingClientRect() {
+          return { left: 0, top: 0, width: 1000, height: 800 };
+        },
+        viewBox: { baseVal: { width: 2000, height: 1600 } },
+        setAttribute() {},
+      };
+      globalThis.DomAdapter = {
+        getElementById(id) {
+          if (id === 'relation-sidebar') return fakeEl;
+          return null;
+        },
+        getSvgRoot() {
+          return svgMock;
+        },
+        querySelectorAll() {
+          return [];
+        },
+      };
+      globalThis.window = globalThis.window || {};
+      globalThis.window.innerWidth = 1000;
+      globalThis.window.innerHeight = 800;
+      SidebarLogic.updatePosition();
+      expect(textWhileMeasuring).toBe('a::b::c::');
+      expect(span.textContent).toBe('a::…::');
     });
 
     test('falls back to viewport edge when arcs are too wide', () => {
@@ -1920,6 +2029,16 @@ describe('SidebarLogic', () => {
       expect(level1Matches).toHaveLength(3);
     });
 
+    test('symbol rows carry the full path as title and data-full', () => {
+      const html = SidebarLogic.buildNodeContent('crate_a', makeRelations());
+      expect(html).toContain(
+        '<div class="sidebar-symbol" data-collapsible="" title="config::Config">',
+      );
+      expect(html).toContain(
+        '<span class="sidebar-ns" data-full="config::">config::</span>',
+      );
+    });
+
     test('incoming: selected node is on the right in From→To pair', () => {
       const html = SidebarLogic.buildNodeContent('crate_a', makeRelations());
       // For incoming: [source] → [selected]
@@ -2140,6 +2259,23 @@ describe('SidebarLogic', () => {
       expect(html).toContain('<span class="sidebar-symbol-name">Foo</span>');
       expect(html).toContain('sidebar-locality-singleConsumer');
       expect(html).toContain('only used by x');
+    });
+
+    test('edge symbol row carries the full path as title and data-full', () => {
+      globalThis.STATIC_DATA.arcs['x-y'].usages = [
+        {
+          symbol: 'Foo',
+          modulePath: 'inner::deep',
+          locations: [{ file: 'a.rs', line: 1 }],
+        },
+      ];
+      const html = SidebarLogic.buildContent('x-y');
+      expect(html).toContain(
+        '<div class="sidebar-edge-symbol" title="inner::deep::Foo">',
+      );
+      expect(html).toContain(
+        '<span class="sidebar-ns" data-full="inner::deep::">inner::deep::</span>',
+      );
     });
 
     test('edge row drops re-export-only symbols, counts coupling only', () => {
@@ -2531,6 +2667,34 @@ describe('SidebarLogic', () => {
     });
   });
 
+  describe('elidePath', () => {
+    test('drops segments from the end of the prefix, keeps the last part', () => {
+      expect(SidebarLogic.elidePath('a::b::c::', '::', 1)).toBe('a::b::…::');
+      expect(SidebarLogic.elidePath('a::b::c::', '::', 2)).toBe('a::…::');
+      expect(SidebarLogic.elidePath('a::b::c::', '::', 3)).toBe('…::');
+    });
+
+    test('keeps the file name of a file path', () => {
+      expect(SidebarLogic.elidePath('src/render/static.rs', '/', 1)).toBe(
+        'src/…/static.rs',
+      );
+      expect(SidebarLogic.elidePath('src/render/static.rs', '/', 2)).toBe(
+        '…/static.rs',
+      );
+    });
+
+    test('dropCount past the prefix stops at the last part', () => {
+      expect(SidebarLogic.elidePath('src/render/static.rs', '/', 9)).toBe(
+        '…/static.rs',
+      );
+    });
+
+    test('zero drops returns the path unchanged', () => {
+      expect(SidebarLogic.elidePath('a::b::', '::', 0)).toBe('a::b::');
+      expect(SidebarLogic.elidePath('lib.rs', '/', 0)).toBe('lib.rs');
+    });
+  });
+
   describe('cluster row hover wiring', () => {
     function makeRow(arcId) {
       const listeners = {};
@@ -2777,6 +2941,7 @@ describe('SidebarLogic', () => {
       children: [],
       parentNode: null,
       innerHTML: '',
+      textContent: '',
       style,
       get dataset() {
         const ds = {};
@@ -2871,6 +3036,71 @@ describe('SidebarLogic', () => {
     }
     return root;
   }
+
+  describe('fitPaths', () => {
+    // Stand-in for the DOM overflow test: a span overflows when its text is
+    // longer than `limit` characters.
+    const longerThan = (limit) => (span) => span.textContent.length > limit;
+
+    test('drops one segment at a time until the module path fits', () => {
+      const root = parseFragment(
+        '<div><span class="sidebar-ns" data-full="a::b::c::d::"></span></div>',
+      );
+      SidebarLogic.fitPaths(root, longerThan(8));
+      const span = root.querySelector('.sidebar-ns');
+      expect(span.textContent).toBe('a::…::');
+    });
+
+    test('cuts file paths on slashes and keeps the file name', () => {
+      const root = parseFragment(
+        '<div><span class="sidebar-file" data-full="src/render/layout/build.rs"></span></div>',
+      );
+      SidebarLogic.fitPaths(root, longerThan(14));
+      const span = root.querySelector('.sidebar-file');
+      expect(span.textContent).toBe('src/…/build.rs');
+    });
+
+    test('leaves a span alone that never overflows', () => {
+      const root = parseFragment(
+        '<div><span class="sidebar-ns" data-full="a::b::"></span></div>',
+      );
+      SidebarLogic.fitPaths(root, longerThan(80));
+      expect(root.querySelector('.sidebar-ns').textContent).toBe('a::b::');
+    });
+
+    test('restores a previously cut span before fitting again', () => {
+      const root = parseFragment(
+        '<div><span class="sidebar-ns" data-full="a::b::c::"></span></div>',
+      );
+      const span = root.querySelector('.sidebar-ns');
+      SidebarLogic.fitPaths(root, longerThan(6));
+      expect(span.textContent).toBe('a::…::');
+      SidebarLogic.fitPaths(root, longerThan(80));
+      expect(span.textContent).toBe('a::b::c::');
+    });
+
+    test('stops at the shortest form when nothing fits', () => {
+      const root = parseFragment(
+        '<div><span class="sidebar-file" data-full="src/render/build.rs"></span></div>',
+      );
+      SidebarLogic.fitPaths(root, longerThan(2));
+      expect(root.querySelector('.sidebar-file').textContent).toBe(
+        '…/build.rs',
+      );
+    });
+
+    test('a span that still overflows at the shortest form stops shrinking', () => {
+      const root = parseFragment(
+        '<div><span class="sidebar-ns" data-full="a::b::"></span></div>',
+      );
+      const span = root.querySelector('.sidebar-ns');
+      SidebarLogic.fitPaths(root, longerThan(2));
+      expect(span.textContent).toBe('…::');
+      expect(span.style.flexShrink).toBe('0');
+      SidebarLogic.fitPaths(root, longerThan(80));
+      expect(span.style.flexShrink).toBe('');
+    });
+  });
 
   describe('collapse-all controls cycle blocks', () => {
     let savedClusters;
@@ -3007,10 +3237,10 @@ describe('SidebarLogic', () => {
       expect(symbolAt).toBeGreaterThan(-1);
       const afterSymbol = html.slice(symbolAt);
       expect(afterSymbol).toContain(
-        '<div class="sidebar-location" data-jump="7">a.rs<span class="sidebar-line-badge">:1</span>',
+        '<div class="sidebar-location" data-jump="7" title="a.rs:1">',
       );
       expect(afterSymbol).toContain(
-        'data-jump="8">a.rs<span class="sidebar-line-badge">:9</span>',
+        '<div class="sidebar-location" data-jump="8" title="a.rs:9">',
       );
     });
 
