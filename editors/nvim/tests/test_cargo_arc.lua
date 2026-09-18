@@ -117,6 +117,24 @@ T['argv']['passes a port to the ui subcommand'] = function()
   eq(child.lua_get('require("cargo-arc").argv(4321)'), { 'cargo-arc', 'arc', 'ui', '--port', '4321' })
 end
 
+T['argv']['takes given switches over the configuration'] = function()
+  child.lua([[require('cargo-arc').setup({ include_tests = true })]])
+  eq(
+    child.lua_get('require("cargo-arc").argv(nil, { externals = true, tests = false })'),
+    { 'cargo-arc', 'arc', '--externals', 'ui' }
+  )
+end
+
+T['arc analysis'] = MiniTest.new_set()
+
+T['arc analysis']['an error is reported with its text'] = function()
+  child.lua([[require('cargo-arc').handle_line('arc analysis-error analysis failed: no such manifest')]])
+  local notified = child.lua_get('_G.notified')
+  eq(#notified, 1)
+  eq(notified[1].level, child.lua_get('vim.log.levels.ERROR'))
+  eq(notified[1].message:find('analysis failed: no such manifest', 1, true) ~= nil, true)
+end
+
 local fake_service = vim.fn.fnamemodify('tests/fake_service.lua', ':p')
 
 --- Fails unless `condition` becomes true within a few seconds.
@@ -236,9 +254,11 @@ T['service'][':Arc open, stop and restart drive the service'] = function()
 end
 
 T['service'][':Arc completes its subcommands and refuses others'] = function()
-  eq(child.fn.getcompletion('Arc ', 'cmdline'), { 'open', 'restart', 'stop', 'follow' })
+  eq(child.fn.getcompletion('Arc ', 'cmdline'), { 'open', 'restart', 'stop', 'follow', 'externals', 'tests' })
   eq(child.fn.getcompletion('Arc re', 'cmdline'), { 'restart' })
   eq(child.fn.getcompletion('Arc follow ', 'cmdline'), { 'on', 'off' })
+  eq(child.fn.getcompletion('Arc externals ', 'cmdline'), { 'on', 'off' })
+  eq(child.fn.getcompletion('Arc tests o', 'cmdline'), { 'on', 'off' })
   child.cmd('Arc bogus')
   child.cmd('Arc open extra')
   local notified = child.lua_get('_G.notified')
@@ -326,6 +346,68 @@ T['arc focus'][':Arc follow without a service reports it'] = function()
   local notified = child.lua_get('_G.notified')
   eq(#notified, 1)
   eq(notified[1].level, child.lua_get('vim.log.levels.INFO'))
+end
+
+T['arc focus'][':Arc externals and tests write the switch lines'] = function()
+  open_and_wait()
+  child.cmd('Arc externals on')
+  eq(stdin_lines(_G.stdin_log, 1)[1], 'arc externals on')
+  child.cmd('Arc tests off')
+  eq(stdin_lines(_G.stdin_log, 2)[2], 'arc tests off')
+  child.cmd('Arc tests maybe')
+  -- The fake reported the switched state in between, which is a notice of
+  -- its own; the refused argument is the last one.
+  local notified = child.lua_get('_G.notified')
+  local last = notified[#notified]
+  eq(last.level, child.lua_get('vim.log.levels.ERROR'))
+  eq(last.message:find('maybe', 1, true) ~= nil, true)
+end
+
+T['service']['the first report sets the state without a notice, a change is reported'] = function()
+  local status = open_and_wait()
+  wait_for(function()
+    status = child.lua_get('require("cargo-arc").status()')
+    return status.switches ~= nil
+  end)
+  eq(status.switches, { externals = false, tests = false })
+  eq(#child.lua_get('_G.notified'), 0)
+  child.cmd('Arc externals on')
+  wait_for(function()
+    return child.lua_get('require("cargo-arc").status()').switches.externals
+  end)
+  local notified = child.lua_get('_G.notified')
+  eq(#notified, 1)
+  eq(notified[1].level, child.lua_get('vim.log.levels.INFO'))
+  eq(notified[1].message, 'cargo-arc: external crates on, test code off')
+end
+
+T['service']['restart starts the new service with the switches last reached'] = function()
+  local first = open_and_wait()
+  child.cmd('Arc tests on')
+  wait_for(function()
+    local switches = child.lua_get('require("cargo-arc").status()').switches
+    return switches ~= vim.NIL and switches.tests
+  end)
+  child.lua([[require('cargo-arc').restart()]])
+  local second
+  wait_for(function()
+    second = child.lua_get('require("cargo-arc").status()')
+    return second ~= vim.NIL and second.pid ~= first.pid and second.switches ~= nil
+  end)
+  -- The fake announces the switches from its flags, so the plugin passed
+  -- `--include-tests` to the new process.
+  eq(second.switches, { externals = false, tests = true })
+  -- A stop and a fresh open start from the configuration again.
+  child.lua([[require('cargo-arc').stop()]])
+  wait_for(function()
+    return child.lua_get('require("cargo-arc").status()') == vim.NIL
+  end)
+  local third = open_and_wait()
+  wait_for(function()
+    third = child.lua_get('require("cargo-arc").status()')
+    return third.switches ~= vim.NIL
+  end)
+  eq(third.switches, { externals = false, tests = false })
 end
 
 T['service']['leaving Neovim ends the process'] = function()
