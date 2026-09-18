@@ -1,14 +1,15 @@
-//! The jump service's HTTP-independent logic: the page, the table, the two
-//! lines it writes to stdout, the three it reads from stdin, and the three
-//! events it pushes to the page.
+//! The jump service's HTTP-independent logic: the page, the table, the
+//! lines it writes to stdout, the commands it reads from stdin and the
+//! page, and the events it pushes to the page.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Mutex, PoisonError, RwLock};
 
+use anyhow::Result;
 use serde::Serialize;
 
 use crate::layout::{JumpTable, Location, LocationId};
-use crate::render::{Appearance, Mode, Theme, html_page, project_name};
+use crate::render::{AnalysisSwitches, Appearance, Mode, Theme, html_page, project_name};
 
 /// Whether the page follows the editor's cursor. Passed through from stdin
 /// to the page; the service holds no state of its own.
@@ -18,9 +19,35 @@ pub(crate) enum FollowState {
     Off,
 }
 
-/// One line the editor wrote to stdin.
+/// One of the two analysis inputs that can change while the service runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Switch {
+    /// External crates in the analysis (`--externals`).
+    Externals,
+    /// Test code in the analysis (`--include-tests`).
+    Tests,
+}
+
+impl Switch {
+    /// `switches` with this one set to `on`.
+    pub(crate) fn set(self, switches: AnalysisSwitches, on: bool) -> AnalysisSwitches {
+        match self {
+            Self::Externals => AnalysisSwitches {
+                externals: on,
+                ..switches
+            },
+            Self::Tests => AnalysisSwitches {
+                tests: on,
+                ..switches
+            },
+        }
+    }
+}
+
+/// One command line, from the editor on stdin or from the page as the body
+/// of `POST /command`; both spell it the same way.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum StdinCommand {
+pub(crate) enum Command {
     /// The cursor stands on `line` of `file` (absolute).
     Focus {
         line: usize,
@@ -29,6 +56,11 @@ pub(crate) enum StdinCommand {
     Follow(FollowState),
     /// The editor's colour mode; it sends no colours of its own.
     Theme(Mode),
+    /// Turn an analysis switch on or off; the service recomputes.
+    Switch {
+        switch: Switch,
+        on: bool,
+    },
 }
 
 /// What the page needs to select the node the editor is in: the node's
@@ -40,68 +72,112 @@ pub(crate) struct FocusEvent {
     pub jumps: Vec<LocationId>,
 }
 
-/// Parses one stdin line. Anything but the three known forms is `None`:
-/// stdin is a protocol, not a shell, and a stray line is dropped without
+/// Parses one command line. Anything but the known forms is `None`: the
+/// line is a protocol, not a shell, and a stray one is dropped without
 /// notice.
-pub(crate) fn parse_stdin(line: &str) -> Option<StdinCommand> {
+pub(crate) fn parse_command(line: &str) -> Option<Command> {
     if let Some(rest) = line.strip_prefix("arc focus ") {
         let (line, file) = rest.split_once(' ')?;
         let line = line.parse().ok()?;
-        return Some(StdinCommand::Focus {
+        return Some(Command::Focus {
             line,
             file: PathBuf::from(file),
         });
     }
-    if let Some(rest) = line.strip_prefix("arc follow ") {
-        return match rest {
-            "on" => Some(StdinCommand::Follow(FollowState::On)),
-            "off" => Some(StdinCommand::Follow(FollowState::Off)),
-            _ => None,
-        };
+    if let Some(rest) = line.strip_prefix("arc theme ") {
+        return Some(Command::Theme(Mode::parse(rest)?));
     }
-    let mode = Mode::parse(line.strip_prefix("arc theme ")?)?;
-    Some(StdinCommand::Theme(mode))
+    let (word, state) = line.strip_prefix("arc ")?.split_once(' ')?;
+    let on = match state {
+        "on" => true,
+        "off" => false,
+        _ => return None,
+    };
+    match word {
+        "follow" => Some(Command::Follow(if on {
+            FollowState::On
+        } else {
+            FollowState::Off
+        })),
+        "externals" => Some(Command::Switch {
+            switch: Switch::Externals,
+            on,
+        }),
+        "tests" => Some(Command::Switch {
+            switch: Switch::Tests,
+            on,
+        }),
+        _ => None,
+    }
 }
 
-/// Serves the diagram page and resolves jump ids against the workspace root
-/// that produced them.
-pub(crate) struct JumpService {
-    svg: String,
-    table: JumpTable,
+/// One analysis run's output: the diagram as `cargo arc -o` would write
+/// it, and the jump table that assigned the ids in it.
+pub(crate) struct Diagram {
+    pub svg: String,
+    pub table: JumpTable,
+}
+
+/// Runs the analysis with the given switches and renders it. The service
+/// gets it as a closure because the analysis lives in `cli`, which `ui`
+/// must not import.
+pub(crate) type Recompute<'a> = Box<dyn Fn(AnalysisSwitches) -> Result<Diagram> + Send + Sync + 'a>;
+
+/// What one run produced and the switches it ran with; replaced as a whole.
+struct Current {
+    diagram: Diagram,
+    switches: AnalysisSwitches,
+}
+
+/// Serves the diagram page, resolves jump ids against the workspace root
+/// that produced them, and recomputes both when a switch changes.
+pub(crate) struct JumpService<'a> {
+    /// Read by every request, written only by the swap after a run.
+    current: RwLock<Current>,
     root: PathBuf,
     /// The theme `--theme` pinned, if any.
     theme: Option<&'static Theme>,
     /// The last mode the editor sent. Held so that a page loaded after the
     /// line, or reloaded, starts in the editor's mode.
     editor_mode: Mutex<Option<Mode>>,
+    recompute: Recompute<'a>,
 }
 
-impl JumpService {
-    /// `svg` is the rendered diagram as `cargo arc -o` would write it.
+impl<'a> JumpService<'a> {
     pub(crate) fn new(
-        svg: String,
-        table: JumpTable,
+        diagram: Diagram,
+        switches: AnalysisSwitches,
         root: PathBuf,
         theme: Option<&'static Theme>,
+        recompute: Recompute<'a>,
     ) -> Self {
         Self {
-            svg,
-            table,
+            current: RwLock::new(Current { diagram, switches }),
             root,
             theme,
             editor_mode: Mutex::new(None),
+            recompute,
         }
+    }
+
+    fn current(&self) -> std::sync::RwLockReadGuard<'_, Current> {
+        self.current.read().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The diagram as the page from [`html_page`]: a webview shrinks a bare
     /// SVG document to its frame, an inline one keeps its size. The root
-    /// carries the editor's mode and the pinned theme.
+    /// carries the editor's mode and the pinned theme, so the page is
+    /// rendered per request rather than once per run.
     pub(crate) fn page(&self) -> String {
         let appearance = Appearance {
             theme: self.theme,
             mode: *self.editor_mode(),
         };
-        html_page(&self.svg, project_name(&self.root), appearance)
+        html_page(
+            &self.current().diagram.svg,
+            project_name(&self.root),
+            appearance,
+        )
     }
 
     /// Records the editor's mode; `true` when it differs from the last one.
@@ -115,12 +191,28 @@ impl JumpService {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// The switches the served page was computed with.
+    pub(crate) fn switches(&self) -> AnalysisSwitches {
+        self.current().switches
+    }
+
+    /// Runs the analysis for `switches` and swaps the result in. The lock
+    /// is taken for the swap only, not for the run; on an error nothing
+    /// changes.
+    pub(crate) fn recompute(&self, switches: AnalysisSwitches) -> Result<()> {
+        let diagram = (self.recompute)(switches)?;
+        let mut current = self.current.write().unwrap_or_else(PoisonError::into_inner);
+        *current = Current { diagram, switches };
+        Ok(())
+    }
+
     /// Resolves `id` against the table and anchors the result at the
     /// workspace root. A table entry that is already absolute is
     /// unaffected: `Path::join` on an absolute path replaces the base
     /// entirely.
     pub(crate) fn jump(&self, id: usize) -> Option<Location> {
-        let location = self.table.resolve(LocationId::from(id))?;
+        let current = self.current();
+        let location = current.diagram.table.resolve(LocationId::from(id))?;
         Some(Location {
             file: self.root.join(&location.file),
             line: location.line,
@@ -136,12 +228,15 @@ impl JumpService {
         let spellings: Vec<&Path> = std::iter::once(path)
             .chain(path.strip_prefix(&self.root).ok())
             .collect();
-        let node = spellings.iter().find_map(|file| self.table.node_at(file))?;
+        let current = self.current();
+        let node = spellings
+            .iter()
+            .find_map(|file| current.diagram.table.node_at(file))?;
         Some(FocusEvent {
             node: node.to_string(),
             jumps: spellings
                 .iter()
-                .flat_map(|file| self.table.ids_at(file, line))
+                .flat_map(|file| current.diagram.table.ids_at(file, line))
                 .collect(),
         })
     }
@@ -152,6 +247,26 @@ impl JumpService {
 
     pub(crate) fn jump_line(location: &Location) -> String {
         format!("arc jump {} {}\n", location.line, location.file.display())
+    }
+
+    /// The switches a finished run used, for the plugin.
+    pub(crate) fn analysis_line(switches: AnalysisSwitches) -> String {
+        format!("arc analysis {}\n", switches_data(switches))
+    }
+
+    /// A failed run, for the plugin.
+    pub(crate) fn analysis_error_line(err: &anyhow::Error) -> String {
+        format!("arc analysis-error {}\n", error_text(err))
+    }
+
+    /// The `analysis` event as one complete SSE block: a new page is ready.
+    pub(crate) fn analysis_event(switches: AnalysisSwitches) -> String {
+        format!("event: analysis\ndata: {}\n\n", switches_data(switches))
+    }
+
+    /// The `analysis-error` event as one complete SSE block.
+    pub(crate) fn analysis_error_event(err: &anyhow::Error) -> String {
+        format!("event: analysis-error\ndata: {}\n\n", error_text(err))
     }
 
     /// The `focus` event as one complete SSE block.
@@ -175,20 +290,187 @@ impl JumpService {
     }
 }
 
+/// `externals=on tests=off`: the same spelling on stdout and in the event.
+fn switches_data(switches: AnalysisSwitches) -> String {
+    let word = |on: bool| if on { "on" } else { "off" };
+    format!(
+        "externals={} tests={}",
+        word(switches.externals),
+        word(switches.tests)
+    )
+}
+
+/// The error with its context chain on one line, since both channels are
+/// line-based.
+fn error_text(err: &anyhow::Error) -> String {
+    format!("{err:#}").replace('\n', " ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::Path;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A service whose diagram never changes: the recomputation fails.
+    fn fixed(svg: &str, table: JumpTable, root: &str) -> JumpService<'static> {
+        pinned(svg, table, root, None)
+    }
+
+    /// [`fixed`] with a theme pinned as by `--theme`.
+    fn pinned(
+        svg: &str,
+        table: JumpTable,
+        root: &str,
+        theme: Option<&'static Theme>,
+    ) -> JumpService<'static> {
+        JumpService::new(
+            Diagram {
+                svg: svg.to_string(),
+                table,
+            },
+            AnalysisSwitches::default(),
+            PathBuf::from(root),
+            theme,
+            Box::new(|_| anyhow::bail!("this service does not recompute")),
+        )
+    }
 
     /// Two crates' manifests (`my_crate` at id 0, `other` at id 1) and one
     /// workspace-relative source location (id 2), the way `build_layout`
     /// would have assigned them.
-    fn service_over_root(root: &str) -> JumpService {
+    fn service_over_root(root: &str) -> JumpService<'static> {
         let mut table = JumpTable::new();
         table.insert(PathBuf::from("/ws/my_crate/Cargo.toml"), 1);
         table.insert(PathBuf::from("/ws/other/Cargo.toml"), 1);
         table.insert(PathBuf::from("src/lib.rs"), 3);
-        JumpService::new(String::new(), table, PathBuf::from(root), None)
+        fixed("", table, root)
+    }
+
+    /// A recomputation that renders the switches into the SVG and registers
+    /// one location (id 0) whose line is the number of runs so far.
+    fn counting_recompute() -> (Recompute<'static>, std::sync::Arc<AtomicUsize>) {
+        let runs = std::sync::Arc::new(AtomicUsize::new(0));
+        let counter = runs.clone();
+        let recompute = Box::new(move |switches: AnalysisSwitches| {
+            let run = counter.fetch_add(1, Ordering::SeqCst) + 1;
+            let mut table = JumpTable::new();
+            table.insert(PathBuf::from("src/lib.rs"), run);
+            Ok(Diagram {
+                svg: format!("<svg>{switches:?}</svg>"),
+                table,
+            })
+        });
+        (recompute, runs)
+    }
+
+    #[test]
+    fn recompute_swaps_page_table_and_switches() {
+        let (recompute, runs) = counting_recompute();
+        let service = JumpService::new(
+            Diagram {
+                svg: "<svg>old</svg>".to_string(),
+                table: JumpTable::new(),
+            },
+            AnalysisSwitches::default(),
+            PathBuf::from("/ws"),
+            None,
+            recompute,
+        );
+        assert_eq!(service.jump(0), None);
+
+        let wanted = AnalysisSwitches {
+            externals: true,
+            tests: false,
+        };
+        service.recompute(wanted).unwrap();
+
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+        assert_eq!(service.switches(), wanted);
+        assert_eq!(
+            service.page(),
+            html_page(
+                &format!("<svg>{wanted:?}</svg>"),
+                Some("ws"),
+                Appearance::default()
+            )
+        );
+        assert_eq!(
+            service.jump(0),
+            Some(Location {
+                file: PathBuf::from("/ws/src/lib.rs"),
+                line: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn a_failed_recompute_keeps_the_page_and_the_switches() {
+        let service = fixed("<svg>old</svg>", JumpTable::new(), "/ws");
+        let wanted = AnalysisSwitches {
+            externals: false,
+            tests: true,
+        };
+        let err = service.recompute(wanted).unwrap_err();
+        assert_eq!(err.to_string(), "this service does not recompute");
+        assert_eq!(service.switches(), AnalysisSwitches::default());
+        assert_eq!(
+            service.page(),
+            html_page("<svg>old</svg>", Some("ws"), Appearance::default())
+        );
+    }
+
+    #[test]
+    fn switch_set_changes_only_its_own_flag() {
+        let both = AnalysisSwitches {
+            externals: true,
+            tests: true,
+        };
+        assert_eq!(
+            Switch::Externals.set(both, false),
+            AnalysisSwitches {
+                externals: false,
+                tests: true,
+            }
+        );
+        assert_eq!(
+            Switch::Tests.set(AnalysisSwitches::default(), true),
+            AnalysisSwitches {
+                externals: false,
+                tests: true,
+            }
+        );
+    }
+
+    #[test]
+    fn analysis_line_and_event_spell_both_switches() {
+        let switches = AnalysisSwitches {
+            externals: true,
+            tests: false,
+        };
+        assert_eq!(
+            JumpService::analysis_line(switches),
+            "arc analysis externals=on tests=off\n"
+        );
+        assert_eq!(
+            JumpService::analysis_event(switches),
+            "event: analysis\ndata: externals=on tests=off\n\n"
+        );
+    }
+
+    /// The error arrives with its context chain and may span lines; both
+    /// channels carry one line.
+    #[test]
+    fn analysis_error_line_and_event_flatten_the_error_to_one_line() {
+        let err = anyhow::anyhow!("no such\nmanifest").context("failed to load the workspace");
+        assert_eq!(
+            JumpService::analysis_error_line(&err),
+            "arc analysis-error failed to load the workspace: no such manifest\n"
+        );
+        assert_eq!(
+            JumpService::analysis_error_event(&err),
+            "event: analysis-error\ndata: failed to load the workspace: no such manifest\n\n"
+        );
     }
 
     #[test]
@@ -224,12 +506,7 @@ mod tests {
     #[test]
     fn page_is_the_html_page_of_the_svg() {
         let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
-        let service = JumpService::new(
-            svg.to_string(),
-            JumpTable::new(),
-            PathBuf::from("/ws"),
-            None,
-        );
+        let service = fixed(svg, JumpTable::new(), "/ws");
         assert_eq!(
             service.page(),
             html_page(svg, Some("ws"), Appearance::default())
@@ -249,7 +526,7 @@ mod tests {
     /// two edge locations on `src/mod_a.rs`: ids 2 and 3 on line 5, id 4 on
     /// line 9; and one member outside the root, registered absolute (node
     /// "2", id 6).
-    fn focus_service() -> JumpService {
+    fn focus_service() -> JumpService<'static> {
         let mut table = JumpTable::new();
         let manifest = table.insert(PathBuf::from("/ws/my_crate/Cargo.toml"), 1);
         table.insert_node_files("0", [manifest]);
@@ -261,7 +538,7 @@ mod tests {
         table.insert(PathBuf::from("my_crate/Cargo.toml"), 1);
         let member = table.insert(PathBuf::from("/elsewhere/member/Cargo.toml"), 1);
         table.insert_node_files("2", [member]);
-        JumpService::new(String::new(), table, PathBuf::from("/ws"), None)
+        fixed("", table, "/ws")
     }
 
     /// The node is registered under one spelling of the file and a location
@@ -324,10 +601,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_stdin_reads_focus_lines_with_the_path_last() {
+    fn parse_command_reads_focus_lines_with_the_path_last() {
         assert_eq!(
-            parse_stdin("arc focus 12 /tmp/a b/lib.rs"),
-            Some(StdinCommand::Focus {
+            parse_command("arc focus 12 /tmp/a b/lib.rs"),
+            Some(Command::Focus {
                 line: 12,
                 file: PathBuf::from("/tmp/a b/lib.rs"),
             })
@@ -335,26 +612,26 @@ mod tests {
     }
 
     #[test]
-    fn parse_stdin_reads_follow_lines() {
+    fn parse_command_reads_follow_lines() {
         assert_eq!(
-            parse_stdin("arc follow on"),
-            Some(StdinCommand::Follow(FollowState::On))
+            parse_command("arc follow on"),
+            Some(Command::Follow(FollowState::On))
         );
         assert_eq!(
-            parse_stdin("arc follow off"),
-            Some(StdinCommand::Follow(FollowState::Off))
+            parse_command("arc follow off"),
+            Some(Command::Follow(FollowState::Off))
         );
     }
 
     #[test]
-    fn parse_stdin_reads_theme_lines() {
+    fn parse_command_reads_theme_lines() {
         assert_eq!(
-            parse_stdin("arc theme light"),
-            Some(StdinCommand::Theme(Mode::Light))
+            parse_command("arc theme light"),
+            Some(Command::Theme(Mode::Light))
         );
         assert_eq!(
-            parse_stdin("arc theme dark"),
-            Some(StdinCommand::Theme(Mode::Dark))
+            parse_command("arc theme dark"),
+            Some(Command::Theme(Mode::Dark))
         );
     }
 
@@ -388,12 +665,7 @@ mod tests {
     fn editor_mode_drops_a_pinned_theme_of_the_other_mode() {
         let mut table = JumpTable::new();
         table.insert(PathBuf::from("src/lib.rs"), 3);
-        let service = JumpService::new(
-            String::new(),
-            table,
-            PathBuf::from("/ws"),
-            Theme::named("mocha"),
-        );
+        let service = pinned("", table, "/ws", Theme::named("mocha"));
         assert!(service.page().contains("data-theme=\"mocha\""));
         service.set_editor_mode(Mode::Dark);
         assert!(service.page().contains("data-theme=\"mocha\""));
@@ -402,14 +674,51 @@ mod tests {
     }
 
     #[test]
-    fn parse_stdin_ignores_malformed_and_foreign_lines() {
-        assert_eq!(parse_stdin("arc focus x /p"), None);
-        assert_eq!(parse_stdin("arc focus 3"), None);
-        assert_eq!(parse_stdin("arc follow maybe"), None);
-        assert_eq!(parse_stdin("arc theme blue"), None);
-        assert_eq!(parse_stdin("arc jump 3 /p"), None);
-        assert_eq!(parse_stdin("hello"), None);
-        assert_eq!(parse_stdin(""), None);
+    fn parse_command_reads_the_analysis_switch_lines() {
+        assert_eq!(
+            parse_command("arc externals on"),
+            Some(Command::Switch {
+                switch: Switch::Externals,
+                on: true,
+            })
+        );
+        assert_eq!(
+            parse_command("arc externals off"),
+            Some(Command::Switch {
+                switch: Switch::Externals,
+                on: false,
+            })
+        );
+        assert_eq!(
+            parse_command("arc tests on"),
+            Some(Command::Switch {
+                switch: Switch::Tests,
+                on: true,
+            })
+        );
+        assert_eq!(
+            parse_command("arc tests off"),
+            Some(Command::Switch {
+                switch: Switch::Tests,
+                on: false,
+            })
+        );
+    }
+
+    /// The line is a protocol: spelling is exact, nothing is trimmed.
+    #[test]
+    fn parse_command_ignores_malformed_and_foreign_lines() {
+        assert_eq!(parse_command("arc focus x /p"), None);
+        assert_eq!(parse_command("arc focus 3"), None);
+        assert_eq!(parse_command("arc follow maybe"), None);
+        assert_eq!(parse_command("arc theme blue"), None);
+        assert_eq!(parse_command("arc externals ON"), None);
+        assert_eq!(parse_command("arc Tests on"), None);
+        assert_eq!(parse_command("arc externals"), None);
+        assert_eq!(parse_command("arc externals on "), None);
+        assert_eq!(parse_command("arc jump 3 /p"), None);
+        assert_eq!(parse_command("hello"), None);
+        assert_eq!(parse_command(""), None);
     }
 
     #[test]

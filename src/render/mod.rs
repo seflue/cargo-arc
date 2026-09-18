@@ -10,7 +10,7 @@ mod elements;
 mod positioning;
 mod static_data;
 mod theme;
-pub use constants::RenderConfig;
+pub use constants::{AnalysisSwitches, RenderConfig};
 use css::render_styles;
 use elements::{
     CycleMarks, escape_xml, render_edges, render_header, render_nodes, render_sidebar,
