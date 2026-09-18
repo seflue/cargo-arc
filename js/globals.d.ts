@@ -18,8 +18,10 @@ declare const Selectors: typeof import('./selectors.js').Selectors;
 declare const SidebarLogic: typeof import('./sidebar.js').SidebarLogic;
 declare const StaticData: typeof import('./static_data.js').StaticData;
 declare const Theme: typeof import('./theme.js').Theme;
+declare const SwitchToggles: typeof import('./switch_toggles.js').SwitchToggles;
 declare const TreeLogic: typeof import('./tree_logic.js').TreeLogic;
 declare const VirtualEdgeLogic: typeof import('./virtual_edge_logic.js').VirtualEdgeLogic;
+declare const ViewSnapshot: typeof import('./view_snapshot.js').ViewSnapshot;
 declare const TextMeasure: typeof import('./text_metrics.js').TextMeasure;
 
 // Runtime placeholders (replaced by Rust at render time)

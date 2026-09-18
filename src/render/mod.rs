@@ -13,8 +13,8 @@ mod theme;
 pub use constants::{AnalysisSwitches, RenderConfig};
 use css::render_styles;
 use elements::{
-    CycleMarks, escape_xml, render_edges, render_header, render_nodes, render_sidebar,
-    render_toolbar, render_tree_lines,
+    CycleMarks, ToolbarFacts, escape_xml, render_edges, render_header, render_nodes,
+    render_sidebar, render_toolbar, render_tree_lines,
 };
 use positioning::{
     PositionedItem, calculate_box_width, calculate_canvas_size, calculate_max_arc_width,
@@ -111,14 +111,12 @@ pub fn render(ir: &LayoutIR, config: &RenderConfig) -> String {
             }
         )
     });
-    let initial_collapsed = !collapsed_parents.is_empty();
-    svg.push_str(&render_toolbar(
-        width,
+    let facts = ToolbarFacts {
         has_externals,
         has_transitive_externals,
-        initial_collapsed,
-        config,
-    ));
+        initial_collapsed: !collapsed_parents.is_empty(),
+    };
+    svg.push_str(&render_toolbar(width, facts, config));
     svg.push_str(&render_sidebar(width));
     svg.push_str(&render_script(config, ir, &positioned_all, &parents));
     svg.push_str("</svg>\n");
