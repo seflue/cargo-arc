@@ -15,7 +15,9 @@ use crate::diagnose::RepresentativeCycles;
 use crate::graph::{ArcGraph, Reexports};
 use crate::layout::{JumpTable, LayoutIR, build_layout};
 use crate::model::{CrateExportMap, CrateInfo, ModulePathMap, WorkspaceCrates};
-use crate::render::{Appearance, RenderConfig, THEMES, Theme, html_page, project_name, render};
+use crate::render::{
+    AnalysisSwitches, Appearance, RenderConfig, THEMES, Theme, html_page, project_name, render,
+};
 use crate::rules::baseline::{Baseline, BaselineError};
 use crate::rules::config::{ArcConfig, ConfigError};
 use crate::rules::engine::{CheckRun, check_rules};
@@ -221,7 +223,7 @@ pub fn run(args: ArcCommand) -> Result<Judgment> {
         return Ok(Judgment::Clean);
     }
 
-    let analysis = analyze_for_diagram(&args)?;
+    let analysis = analyze_for_diagram(&args, args.switches())?;
 
     let config = RenderConfig {
         expand_level: args.expand_level,
@@ -250,12 +252,26 @@ struct DiagramAnalysis {
     workspace_root: Option<PathBuf>,
 }
 
-/// Analyze the workspace behind `args`: build the dependency graph, lay it
-/// out, and enrich it with volatility. Rendering is the caller's job: the
-/// callers (`run`, `run_ui`) build their own [`RenderConfig`] and render
-/// `analysis.layout` with it.
-fn analyze_for_diagram(args: &ArcCommand) -> Result<DiagramAnalysis> {
-    let feature_config = build_feature_config(&args.common);
+impl ArcCommand {
+    /// The analysis switches as the command line set them.
+    fn switches(&self) -> AnalysisSwitches {
+        AnalysisSwitches {
+            externals: self.externals,
+            tests: self.common.include_tests,
+        }
+    }
+}
+
+/// Analyze the workspace behind `args` with `switches` in place of the
+/// flags they stand for: build the dependency graph, lay it out, and enrich
+/// it with volatility. Rendering is the caller's job: the callers (`run`,
+/// `run_ui`) build their own [`RenderConfig`] and render `analysis.layout`
+/// with it.
+fn analyze_for_diagram(args: &ArcCommand, switches: AnalysisSwitches) -> Result<DiagramAnalysis> {
+    let feature_config = FeatureConfig {
+        include_tests: switches.tests,
+        ..build_feature_config(&args.common)
+    };
 
     #[cfg(feature = "hir")]
     let use_hir = args.hir;
@@ -266,7 +282,7 @@ fn analyze_for_diagram(args: &ArcCommand) -> Result<DiagramAnalysis> {
         &args.common.manifest_path,
         &feature_config,
         use_hir,
-        args.externals,
+        switches.externals,
         args.transitive_deps,
     )?;
     let reexports = Reexports::from(args.common.include_reexports);
@@ -296,26 +312,48 @@ fn analyze_for_diagram(args: &ArcCommand) -> Result<DiagramAnalysis> {
     })
 }
 
-/// Run the `ui` subcommand: analyze once with jump ids, then serve the page
-/// and resolve jump ids until the process ends.
+/// Run the `ui` subcommand: analyze with jump ids, then serve the page and
+/// resolve jump ids until the process ends. The service gets the analysis
+/// as a closure over `args`, so it can run it again with other switches.
 fn run_ui(args: &ArcCommand, ui_args: &UiArgs) -> Result<Judgment> {
-    let analysis = analyze_for_diagram(args)?;
-    let config = RenderConfig {
-        expand_level: args.expand_level,
-        with_jump_ids: true,
-        theme: args.theme,
-        ..RenderConfig::default()
+    let diagram = |switches: AnalysisSwitches| -> Result<(DiagramAnalysis, String)> {
+        let analysis = analyze_for_diagram(args, switches)?;
+        let config = RenderConfig {
+            expand_level: args.expand_level,
+            with_jump_ids: true,
+            theme: args.theme,
+            switches,
+            ..RenderConfig::default()
+        };
+        let svg = render(&analysis.layout, &config);
+        Ok((analysis, svg))
     };
-    let svg = render(&analysis.layout, &config);
+    let switches = args.switches();
+    let (analysis, svg) = diagram(switches)?;
     let workspace_root = analysis
         .workspace_root
         .context("workspace has no crates to determine its root")?;
-    let service = ui::JumpService::new(svg, analysis.jump_table, workspace_root, args.theme);
+    let service = ui::JumpService::new(
+        ui::Diagram {
+            svg,
+            table: analysis.jump_table,
+        },
+        switches,
+        workspace_root,
+        args.theme,
+        Box::new(move |switches| {
+            let (analysis, svg) = diagram(switches)?;
+            Ok(ui::Diagram {
+                svg,
+                table: analysis.jump_table,
+            })
+        }),
+    );
     ui::serve(
         &service,
         ui_args.port,
         io::BufReader::new(io::stdin()),
-        &mut io::stdout().lock(),
+        &mut io::stdout(),
     )?;
     Ok(Judgment::Clean)
 }
@@ -976,7 +1014,7 @@ mod tests {
             manifest.to_str().unwrap(),
         ]);
 
-        let analysis = analyze_for_diagram(&cmd).unwrap();
+        let analysis = analyze_for_diagram(&cmd, cmd.switches()).unwrap();
 
         assert!(
             analysis.jump_table.resolve(LocationId::from(0)).is_some(),
@@ -1012,7 +1050,7 @@ mod tests {
             manifest.to_str().unwrap(),
         ]);
 
-        let analysis = analyze_for_diagram(&cmd).unwrap();
+        let analysis = analyze_for_diagram(&cmd, cmd.switches()).unwrap();
 
         let beta = analysis
             .layout

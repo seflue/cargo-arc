@@ -1908,13 +1908,19 @@ fn first_jump_id(static_data: &Value) -> Option<u64> {
         .find_map(|node| node["targets"].as_array()?.first()?["jump"].as_u64())
 }
 
-/// Sends a raw HTTP/1.1 GET over `TcpStream` and returns the status code and
-/// body, mirroring `ui::server`'s own test helper of the same shape.
 fn http_get(port: u16, path: &str) -> (u16, String) {
+    http_send(port, "GET", path, "")
+}
+
+/// Sends a raw HTTP/1.1 request over `TcpStream` and returns the status
+/// code and body, mirroring `ui::server`'s own test helper of the same
+/// shape.
+fn http_send(port: u16, method: &str, path: &str, body: &str) -> (u16, String) {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
     write!(
         stream,
-        "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+        "{method} {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
     )
     .unwrap();
     let mut response = String::new();
@@ -1955,6 +1961,11 @@ fn ui_serves_the_page_and_resolves_a_jump_id_over_http() {
         "unexpected ready line: {ready_line:?}"
     );
     let port: u16 = ready[3].parse().expect("ready line carries a port");
+    // The switches the run used follow the ready line, so the plugin knows
+    // them without parsing its own command line.
+    let mut analysis_line = String::new();
+    stdout.read_line(&mut analysis_line).unwrap();
+    assert_eq!(analysis_line, "arc analysis externals=off tests=off\n");
 
     let (status, body) = http_get(port, "/");
     assert_eq!(status, 200);
@@ -1997,6 +2008,54 @@ fn ui_serves_the_page_and_resolves_a_jump_id_over_http() {
         rest.is_empty(),
         "an unknown id must not write to stdout, got: {rest:?}"
     );
+}
+
+/// A posted switch command runs the analysis again in the same process:
+/// the editor hears the new switches once the page is ready.
+#[test]
+fn ui_recomputes_on_a_posted_switch_command() {
+    let manifest =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multi_crate/Cargo.toml");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cargo-arc"))
+        .arg("arc")
+        .arg("--manifest-path")
+        .arg(&manifest)
+        .arg("--include-tests")
+        .arg("ui")
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn cargo-arc ui");
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let guard = ChildGuard(child);
+
+    let mut ready_line = String::new();
+    stdout.read_line(&mut ready_line).unwrap();
+    let port: u16 = ready_line
+        .trim_end()
+        .split(' ')
+        .nth(3)
+        .unwrap()
+        .parse()
+        .unwrap();
+    let mut analysis_line = String::new();
+    stdout.read_line(&mut analysis_line).unwrap();
+    assert_eq!(analysis_line, "arc analysis externals=off tests=on\n");
+
+    let (status, _) = http_send(port, "POST", "/command", "arc tests off\n");
+    assert_eq!(status, 202);
+    let mut analysis_line = String::new();
+    stdout.read_line(&mut analysis_line).unwrap();
+    assert_eq!(analysis_line, "arc analysis externals=off tests=off\n");
+
+    let (status, body) = http_get(port, "/");
+    assert_eq!(status, 200);
+    assert!(body.contains("STATIC_DATA"));
+
+    let (status, _) = http_send(port, "POST", "/command", "arc tests maybe\n");
+    assert_eq!(status, 400);
+
+    drop(guard);
 }
 
 /// `Command::Ui`'s help text promises that only `--output` has no effect on

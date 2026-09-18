@@ -1,28 +1,36 @@
 //! The HTTP transport for the jump service, and the only module in the crate
 //! that imports `tiny_http` or starts a thread. Requests are answered one
-//! after the other on the calling thread; the editor's stdin lines and each
-//! page's event stream get a thread of their own.
+//! after the other on the calling thread; the editor's stdin lines, the
+//! recomputation and each page's event stream get a thread of their own.
 
 use std::io::{BufRead, Write};
-use std::sync::{Mutex, OnceLock, PoisonError, mpsc};
+use std::sync::{Condvar, Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
 use std::thread;
 
 use anyhow::{Context, Result};
 use tiny_http::{Method, Request, Response};
 
-use super::service::{JumpService, StdinCommand, parse_stdin};
+use super::service::{Command, JumpService, parse_command};
+use crate::render::AnalysisSwitches;
 
 /// Binds `service` to `port`, or to an OS-assigned one without it, announces
-/// the port on `out`, then serves requests until the process ends. Lines on
-/// `stdin` become events for every page that holds `/events` open.
+/// the port and the switches on `out`, then serves requests until the
+/// process ends. Command lines arrive on `stdin` from the editor and as the
+/// body of `POST /command` from the page.
 pub(crate) fn serve(
-    service: &JumpService,
+    service: &JumpService<'_>,
     port: Option<u16>,
     stdin: impl BufRead + Send,
-    out: &mut impl Write,
+    out: &mut (impl Write + Send),
 ) -> Result<()> {
     let (server, port) = Server::bind(service, port)?;
-    write!(out, "{}", JumpService::ready_line(port)).context("failed to write the ready line")?;
+    write!(
+        out,
+        "{}{}",
+        JumpService::ready_line(port),
+        JumpService::analysis_line(service.switches())
+    )
+    .context("failed to write the ready and analysis lines")?;
     out.flush().context("failed to flush stdout")?;
     server.run(stdin, out)
 }
@@ -32,14 +40,30 @@ pub(crate) fn serve(
 /// worker thread and end the request loop with [`Server::unblock`].
 struct Server<'a> {
     inner: tiny_http::Server,
-    service: &'a JumpService,
+    service: &'a JumpService<'a>,
     /// One sender per open `/events` connection. A sender whose page has
     /// gone is dropped at the next event.
     subscribers: Mutex<Vec<mpsc::Sender<String>>>,
+    /// The switches the last command asked for; the recomputation thread
+    /// waits on `wanted_changed` for the next command.
+    wanted: Mutex<Wanted>,
+    wanted_changed: Condvar,
+}
+
+struct Wanted {
+    switches: AnalysisSwitches,
+    /// Counts the switch commands, so the recomputation thread sees a
+    /// command that repeats the switches it already tried: after a failed
+    /// run the page still shows the old state and sends the same command
+    /// again.
+    commands: u64,
+    /// Set when the request loop has ended, so the recomputation thread
+    /// returns instead of waiting for a next command.
+    stopped: bool,
 }
 
 impl<'a> Server<'a> {
-    fn bind(service: &'a JumpService, port: Option<u16>) -> Result<(Self, u16)> {
+    fn bind(service: &'a JumpService<'a>, port: Option<u16>) -> Result<(Self, u16)> {
         let port = port.unwrap_or(0);
         let inner = tiny_http::Server::http(("127.0.0.1", port))
             .map_err(|err| anyhow::anyhow!("{err}"))
@@ -57,20 +81,32 @@ impl<'a> Server<'a> {
                 inner,
                 service,
                 subscribers: Mutex::new(Vec::new()),
+                wanted: Mutex::new(Wanted {
+                    switches: service.switches(),
+                    commands: 0,
+                    stopped: false,
+                }),
+                wanted_changed: Condvar::new(),
             },
             port,
         ))
     }
 
     /// Serves requests until [`Server::unblock`] ends `incoming_requests`,
-    /// then ends the event streams; the stdin reader ends with its input.
-    fn run(&self, stdin: impl BufRead + Send, out: &mut impl Write) -> Result<()> {
+    /// then ends the recomputation and the event streams; the stdin reader
+    /// ends with its input. `out` is shared with the recomputation thread,
+    /// which writes its lines between the request loop's.
+    fn run(&self, stdin: impl BufRead + Send, out: &mut (impl Write + Send)) -> Result<()> {
+        let out = Mutex::new(out);
         thread::scope(|scope| {
             scope.spawn(|| self.forward_stdin(stdin));
+            scope.spawn(|| self.recompute_on_demand(&out));
             let result = self
                 .inner
                 .incoming_requests()
-                .try_for_each(|request| self.handle(request, out, scope));
+                .try_for_each(|request| self.handle(request, &out, scope));
+            self.wanted().stopped = true;
+            self.wanted_changed.notify_all();
             // Without a sender left, each stream's receiver ends its loop.
             self.subscribers().clear();
             result
@@ -82,67 +118,146 @@ impl<'a> Server<'a> {
         self.inner.unblock();
     }
 
-    fn subscribers(&self) -> std::sync::MutexGuard<'_, Vec<mpsc::Sender<String>>> {
+    fn subscribers(&self) -> MutexGuard<'_, Vec<mpsc::Sender<String>>> {
         self.subscribers
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Turns each stdin line into an event for every open stream. A line
-    /// that parses to nothing, names a file without a node, or repeats the
-    /// editor's mode is dropped.
+    fn wanted(&self) -> MutexGuard<'_, Wanted> {
+        self.wanted.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn broadcast(&self, event: &str) {
+        self.subscribers()
+            .retain(|subscriber| subscriber.send(event.to_string()).is_ok());
+    }
+
+    /// Runs each stdin line as a command. A line that parses to nothing is
+    /// dropped.
     fn forward_stdin(&self, stdin: impl BufRead) {
         for line in stdin.lines() {
             let Ok(line) = line else {
                 return;
             };
-            let event = match parse_stdin(&line) {
-                Some(StdinCommand::Focus { line, file }) => {
-                    let Some(focus) = self.service.focus(line, &file) else {
-                        continue;
-                    };
-                    JumpService::focus_event(&focus)
+            if let Some(command) = parse_command(&line) {
+                self.execute(command);
+            }
+        }
+    }
+
+    /// A focus, follow or theme command becomes an event for every open
+    /// stream (a focus on a file without a node or a repeat of the editor's
+    /// mode is dropped); a switch command changes what the recomputation
+    /// thread works toward.
+    fn execute(&self, command: Command) {
+        match command {
+            Command::Focus { line, file } => {
+                if let Some(focus) = self.service.focus(line, &file) {
+                    self.broadcast(&JumpService::focus_event(&focus));
                 }
-                Some(StdinCommand::Follow(state)) => JumpService::follow_event(state),
-                Some(StdinCommand::Theme(mode)) => {
-                    if !self.service.set_editor_mode(mode) {
-                        continue;
-                    }
-                    JumpService::theme_event(mode)
+            }
+            Command::Follow(state) => self.broadcast(&JumpService::follow_event(state)),
+            Command::Theme(mode) => {
+                if self.service.set_editor_mode(mode) {
+                    self.broadcast(&JumpService::theme_event(mode));
                 }
-                None => continue,
+            }
+            Command::Switch { switch, on } => {
+                let mut wanted = self.wanted();
+                wanted.switches = switch.set(wanted.switches, on);
+                wanted.commands += 1;
+                self.wanted_changed.notify_all();
+            }
+        }
+    }
+
+    /// Runs the analysis for the wanted switches after each command that
+    /// asks for something other than the served page, so commands that
+    /// arrive during a run cost one further run at most and the last one
+    /// wins. After each run the page hears `analysis` and the editor
+    /// `arc analysis`, or both hear the error; a failed run waits for the
+    /// next command.
+    fn recompute_on_demand(&self, out: &Mutex<&mut (impl Write + Send)>) {
+        let mut seen = 0;
+        loop {
+            let switches = {
+                let wanted = self
+                    .wanted_changed
+                    .wait_while(self.wanted(), |wanted| {
+                        !wanted.stopped && wanted.commands == seen
+                    })
+                    .unwrap_or_else(PoisonError::into_inner);
+                if wanted.stopped {
+                    return;
+                }
+                seen = wanted.commands;
+                wanted.switches
             };
-            self.subscribers()
-                .retain(|subscriber| subscriber.send(event.clone()).is_ok());
+            if switches == self.service.switches() {
+                continue;
+            }
+            let (event, line) = match self.service.recompute(switches) {
+                Ok(()) => (
+                    JumpService::analysis_event(switches),
+                    JumpService::analysis_line(switches),
+                ),
+                Err(err) => (
+                    JumpService::analysis_error_event(&err),
+                    JumpService::analysis_error_line(&err),
+                ),
+            };
+            self.broadcast(&event);
+            if let Err(err) = write_line(out, &line) {
+                tracing::debug!("failed to report the analysis: {err}");
+            }
         }
     }
 
     fn handle<'scope>(
         &'scope self,
         request: Request,
-        out: &mut impl Write,
+        out: &Mutex<&mut (impl Write + Send)>,
         scope: &'scope thread::Scope<'scope, '_>,
     ) -> Result<()> {
-        if *request.method() != Method::Get {
-            respond_not_found(request);
-            return Ok(());
-        }
         let url = request.url().to_string();
         let (path, query) = split_url(&url);
-        match path {
-            "/" => {
+        match (request.method(), path) {
+            (Method::Get, "/") => {
                 respond_page(request, &self.service.page());
                 Ok(())
             }
-            "/jump" => self.handle_jump(request, query, out),
-            "/events" => {
+            (Method::Get, "/jump") => self.handle_jump(request, query, out),
+            (Method::Get, "/events") => {
                 self.handle_events(request, scope);
+                Ok(())
+            }
+            (Method::Post, "/command") => {
+                self.handle_command(request);
                 Ok(())
             }
             _ => {
                 respond_not_found(request);
                 Ok(())
             }
+        }
+    }
+
+    /// Runs the body as one command line. The answer carries no state: that
+    /// arrives for every page alike over the event stream.
+    fn handle_command(&self, mut request: Request) {
+        let mut body = String::new();
+        if request.as_reader().read_to_string(&mut body).is_err() {
+            respond_empty(request, 400);
+            return;
+        }
+        let line = body.strip_suffix('\n').unwrap_or(&body);
+        match parse_command(line) {
+            Some(command) => {
+                self.execute(command);
+                respond_empty(request, 202);
+            }
+            None => respond_empty(request, 400),
         }
     }
 
@@ -162,7 +277,7 @@ impl<'a> Server<'a> {
         &self,
         request: Request,
         query: Option<&str>,
-        out: &mut impl Write,
+        out: &Mutex<&mut (impl Write + Send)>,
     ) -> Result<()> {
         let Some(id) = query.and_then(parse_id) else {
             respond_not_found(request);
@@ -172,11 +287,18 @@ impl<'a> Server<'a> {
             respond_not_found(request);
             return Ok(());
         };
-        write!(out, "{}", JumpService::jump_line(&location)).context("failed to write jump")?;
-        out.flush().context("failed to flush stdout")?;
+        write_line(out, &JumpService::jump_line(&location)).context("failed to write jump")?;
         respond_empty(request, 200);
         Ok(())
     }
+}
+
+/// Writes one line to the editor and flushes it, so the editor sees it at
+/// once. Both threads that write share the lock for the write itself.
+fn write_line(out: &Mutex<&mut (impl Write + Send)>, line: &str) -> std::io::Result<()> {
+    let mut out = out.lock().unwrap_or_else(PoisonError::into_inner);
+    out.write_all(line.as_bytes())?;
+    out.flush()
 }
 
 /// Writes the response head by hand and then every event as it arrives: a
@@ -253,16 +375,19 @@ fn respond<R: std::io::Read>(request: Request, response: Response<R>) {
 mod tests {
     use super::*;
     use crate::layout::{ItemKind, JumpTable, LayoutIR};
-    use crate::render::{RenderConfig, render};
+    use crate::render::{AnalysisSwitches, RenderConfig, render};
+    use crate::ui::service::Diagram;
     use std::io::{BufReader, Read as _};
     use std::net::TcpStream;
     use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::thread;
     use std::time::Duration;
 
     /// Two crates, each contributing only its manifest target: `a` at id 0,
-    /// `b` at id 1.
-    fn two_entry_service() -> JumpService {
+    /// `b` at id 1. The service never recomputes.
+    fn two_entry_service() -> JumpService<'static> {
         let mut ir = LayoutIR::new();
         ir.add_item(ItemKind::Crate, "a".into());
         ir.add_item(ItemKind::Crate, "b".into());
@@ -274,7 +399,13 @@ mod tests {
         let b = table.insert(PathBuf::from("/ws/b/Cargo.toml"), 1);
         table.insert_node_files("1", [b]);
 
-        JumpService::new(svg, table, PathBuf::from("/ws"), None)
+        JumpService::new(
+            Diagram { svg, table },
+            AnalysisSwitches::default(),
+            PathBuf::from("/ws"),
+            None,
+            Box::new(|_| anyhow::bail!("this service does not recompute")),
+        )
     }
 
     /// Opens the event stream and returns the connection once the response
@@ -289,6 +420,28 @@ mod tests {
         assert!(head.starts_with("HTTP/1.1 200"), "{head}");
         assert!(head.contains("Content-Type: text/event-stream"), "{head}");
         stream
+    }
+
+    /// Sends a raw HTTP/1.1 request and returns the status code, the header
+    /// block and the body.
+    fn send(port: u16, method: &str, path: &str, body: &str) -> (u16, String, String) {
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        write!(
+            stream,
+            "{method} {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        let status = response
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .and_then(|code| code.parse().ok())
+            .unwrap_or_else(|| panic!("no status line in response: {response:?}"));
+        let (head, body) = response.split_once("\r\n\r\n").unwrap_or((&response, ""));
+        (status, head.to_string(), body.to_string())
     }
 
     /// Reads until `terminator` has arrived and returns everything up to
@@ -421,26 +574,7 @@ mod tests {
         thread::scope(|scope| {
             let handle = scope.spawn(|| server.run(std::io::empty(), &mut out));
 
-            // Sends a raw HTTP/1.1 request and returns the status code, the
-            // header block and the body.
-            let send = |method: &str, path: &str| -> (u16, String, String) {
-                let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-                write!(
-                    stream,
-                    "{method} {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
-                )
-                .unwrap();
-                let mut response = String::new();
-                stream.read_to_string(&mut response).unwrap();
-                let status = response
-                    .lines()
-                    .next()
-                    .and_then(|line| line.split_whitespace().nth(1))
-                    .and_then(|code| code.parse().ok())
-                    .unwrap_or_else(|| panic!("no status line in response: {response:?}"));
-                let (head, body) = response.split_once("\r\n\r\n").unwrap_or((&response, ""));
-                (status, head.to_string(), body.to_string())
-            };
+            let send = |method: &str, path: &str| send(port, method, path, "");
 
             let (status, head, body) = send("GET", "/");
             assert_eq!(status, 200);
@@ -479,6 +613,327 @@ mod tests {
         });
 
         assert_eq!(out, b"arc jump 1 /ws/b/Cargo.toml\n");
+    }
+
+    /// A service whose recomputation renders the switches into the SVG,
+    /// counts its runs, and blocks each run until the test releases it:
+    /// `started` reports a run has begun, `release` lets it finish.
+    struct Recomputing {
+        service: JumpService<'static>,
+        runs: Arc<AtomicUsize>,
+        started: mpsc::Receiver<AnalysisSwitches>,
+        release: mpsc::Sender<()>,
+    }
+
+    fn recomputing_service() -> Recomputing {
+        let runs = Arc::new(AtomicUsize::new(0));
+        let (started_tx, started) = mpsc::channel();
+        let (release, release_rx) = mpsc::channel::<()>();
+        // A receiver is not `Sync`; the closure must be.
+        let release_rx = Mutex::new(release_rx);
+        let counter = runs.clone();
+        let service = JumpService::new(
+            Diagram {
+                svg: "<svg>initial</svg>".to_string(),
+                table: JumpTable::new(),
+            },
+            AnalysisSwitches::default(),
+            PathBuf::from("/ws"),
+            None,
+            Box::new(move |switches| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                started_tx.send(switches).unwrap();
+                release_rx.lock().unwrap().recv().unwrap();
+                Ok(Diagram {
+                    svg: format!("<svg>{switches:?}</svg>"),
+                    table: JumpTable::new(),
+                })
+            }),
+        );
+        Recomputing {
+            service,
+            runs,
+            started,
+            release,
+        }
+    }
+
+    fn page_for(switches: AnalysisSwitches) -> String {
+        crate::render::html_page(
+            &format!("<svg>{switches:?}</svg>"),
+            Some("ws"),
+            crate::render::Appearance::default(),
+        )
+    }
+
+    const EXTERNALS_ON: AnalysisSwitches = AnalysisSwitches {
+        externals: true,
+        tests: false,
+    };
+
+    #[test]
+    fn a_posted_command_recomputes_and_pushes_analysis_when_the_page_is_ready() {
+        let fake = recomputing_service();
+        let (server, port) = Server::bind(&fake.service, None).unwrap();
+        let mut out = Vec::new();
+
+        thread::scope(|scope| {
+            let handle = scope.spawn(|| server.run(std::io::empty(), &mut out));
+            let mut events = subscribe(port);
+
+            let (status, _, _) = send(port, "POST", "/command", "arc externals on\n");
+            assert_eq!(status, 202);
+            assert_eq!(
+                fake.started.recv_timeout(Duration::from_secs(5)).unwrap(),
+                EXTERNALS_ON
+            );
+            // The old page is served until the run is through.
+            assert_eq!(send(port, "GET", "/", "").2, fake.service.page());
+            assert_eq!(fake.service.switches(), AnalysisSwitches::default());
+
+            fake.release.send(()).unwrap();
+            assert_eq!(
+                read_until(&mut events, "\n\n"),
+                "event: analysis\ndata: externals=on tests=off\n\n"
+            );
+            assert_eq!(send(port, "GET", "/", "").2, page_for(EXTERNALS_ON));
+            assert_eq!(fake.service.switches(), EXTERNALS_ON);
+
+            server.unblock();
+            handle.join().unwrap().unwrap();
+        });
+
+        assert_eq!(fake.runs.load(Ordering::SeqCst), 1);
+        assert_eq!(out, b"arc analysis externals=on tests=off\n");
+    }
+
+    #[test]
+    fn a_switch_line_on_stdin_recomputes_too() {
+        let fake = recomputing_service();
+        let (server, port) = Server::bind(&fake.service, None).unwrap();
+        let (reader, mut stdin) = std::io::pipe().unwrap();
+        let mut out = Vec::new();
+
+        thread::scope(|scope| {
+            let handle = scope.spawn(|| server.run(BufReader::new(reader), &mut out));
+            let mut events = subscribe(port);
+
+            writeln!(stdin, "arc tests on").unwrap();
+            let wanted = AnalysisSwitches {
+                externals: false,
+                tests: true,
+            };
+            assert_eq!(
+                fake.started.recv_timeout(Duration::from_secs(5)).unwrap(),
+                wanted
+            );
+            fake.release.send(()).unwrap();
+            assert_eq!(
+                read_until(&mut events, "\n\n"),
+                "event: analysis\ndata: externals=off tests=on\n\n"
+            );
+
+            drop(stdin);
+            server.unblock();
+            handle.join().unwrap().unwrap();
+        });
+
+        assert_eq!(out, b"arc analysis externals=off tests=on\n");
+    }
+
+    #[test]
+    fn rejects_a_body_that_is_no_command_without_a_run() {
+        let fake = recomputing_service();
+        let (server, port) = Server::bind(&fake.service, None).unwrap();
+        let mut out = Vec::new();
+
+        thread::scope(|scope| {
+            let handle = scope.spawn(|| server.run(std::io::empty(), &mut out));
+
+            assert_eq!(send(port, "POST", "/command", "arc externals maybe").0, 400);
+            assert_eq!(send(port, "POST", "/command", "hello\n").0, 400);
+            assert_eq!(send(port, "POST", "/command", "").0, 400);
+            assert_eq!(send(port, "GET", "/command", "").0, 404);
+            assert_eq!(send(port, "POST", "/jump?id=1", "").0, 404);
+
+            server.unblock();
+            handle.join().unwrap().unwrap();
+        });
+
+        assert_eq!(fake.runs.load(Ordering::SeqCst), 0);
+        assert_eq!(out, b"");
+    }
+
+    #[test]
+    fn a_failed_run_keeps_the_page_and_reports_the_error_both_ways() {
+        let service = JumpService::new(
+            Diagram {
+                svg: "<svg>initial</svg>".to_string(),
+                table: JumpTable::new(),
+            },
+            AnalysisSwitches::default(),
+            PathBuf::from("/ws"),
+            None,
+            Box::new(|_| Err(anyhow::anyhow!("no such\nmanifest").context("analysis failed"))),
+        );
+        let (server, port) = Server::bind(&service, None).unwrap();
+        let mut out = Vec::new();
+
+        thread::scope(|scope| {
+            let handle = scope.spawn(|| server.run(std::io::empty(), &mut out));
+            let mut events = subscribe(port);
+
+            assert_eq!(send(port, "POST", "/command", "arc externals on").0, 202);
+            assert_eq!(
+                read_until(&mut events, "\n\n"),
+                "event: analysis-error\ndata: analysis failed: no such manifest\n\n"
+            );
+            assert_eq!(
+                send(port, "GET", "/", "").2,
+                crate::render::html_page(
+                    "<svg>initial</svg>",
+                    Some("ws"),
+                    crate::render::Appearance::default(),
+                )
+            );
+            assert_eq!(service.switches(), AnalysisSwitches::default());
+
+            server.unblock();
+            handle.join().unwrap().unwrap();
+        });
+
+        assert_eq!(
+            out,
+            b"arc analysis-error analysis failed: no such manifest\n"
+        );
+    }
+
+    /// The page still shows the old state after a failed run, so the same
+    /// command comes again; it must run again.
+    #[test]
+    fn the_same_command_after_a_failed_run_runs_again() {
+        let attempts = AtomicUsize::new(0);
+        let service = JumpService::new(
+            Diagram {
+                svg: "<svg>initial</svg>".to_string(),
+                table: JumpTable::new(),
+            },
+            AnalysisSwitches::default(),
+            PathBuf::from("/ws"),
+            None,
+            Box::new(|switches| {
+                if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    anyhow::bail!("the first run fails");
+                }
+                Ok(Diagram {
+                    svg: format!("<svg>{switches:?}</svg>"),
+                    table: JumpTable::new(),
+                })
+            }),
+        );
+        let (server, port) = Server::bind(&service, None).unwrap();
+        let mut out = Vec::new();
+
+        thread::scope(|scope| {
+            let handle = scope.spawn(|| server.run(std::io::empty(), &mut out));
+            let mut events = subscribe(port);
+
+            assert_eq!(send(port, "POST", "/command", "arc externals on").0, 202);
+            assert_eq!(
+                read_until(&mut events, "\n\n"),
+                "event: analysis-error\ndata: the first run fails\n\n"
+            );
+            assert_eq!(send(port, "POST", "/command", "arc externals on").0, 202);
+            assert_eq!(
+                read_until(&mut events, "\n\n"),
+                "event: analysis\ndata: externals=on tests=off\n\n"
+            );
+            assert_eq!(send(port, "GET", "/", "").2, page_for(EXTERNALS_ON));
+
+            server.unblock();
+            handle.join().unwrap().unwrap();
+        });
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    /// A command that names the state already served is nothing to run.
+    #[test]
+    fn a_command_for_the_served_state_runs_nothing() {
+        let fake = recomputing_service();
+        let (server, port) = Server::bind(&fake.service, None).unwrap();
+        let mut out = Vec::new();
+
+        thread::scope(|scope| {
+            let handle = scope.spawn(|| server.run(std::io::empty(), &mut out));
+            let mut events = subscribe(port);
+
+            assert_eq!(send(port, "POST", "/command", "arc externals off").0, 202);
+            assert_eq!(send(port, "POST", "/command", "arc tests off").0, 202);
+            // A follow event proves the two commands above were handled.
+            assert_eq!(send(port, "POST", "/command", "arc follow off").0, 202);
+            assert_eq!(
+                read_until(&mut events, "\n\n"),
+                "event: follow\ndata: off\n\n"
+            );
+
+            server.unblock();
+            handle.join().unwrap().unwrap();
+        });
+
+        assert_eq!(fake.runs.load(Ordering::SeqCst), 0);
+        assert_eq!(out, b"");
+    }
+
+    /// Two commands arriving during a run cost one further run, with the
+    /// state both of them together asked for.
+    #[test]
+    fn commands_during_a_run_end_in_the_last_state_with_one_further_run() {
+        let fake = recomputing_service();
+        let (server, port) = Server::bind(&fake.service, None).unwrap();
+        let mut out = Vec::new();
+
+        thread::scope(|scope| {
+            let handle = scope.spawn(|| server.run(std::io::empty(), &mut out));
+            let mut events = subscribe(port);
+
+            assert_eq!(send(port, "POST", "/command", "arc externals on").0, 202);
+            assert_eq!(
+                fake.started.recv_timeout(Duration::from_secs(5)).unwrap(),
+                EXTERNALS_ON
+            );
+            assert_eq!(send(port, "POST", "/command", "arc tests on").0, 202);
+            assert_eq!(send(port, "POST", "/command", "arc externals off").0, 202);
+
+            fake.release.send(()).unwrap();
+            assert_eq!(
+                read_until(&mut events, "\n\n"),
+                "event: analysis\ndata: externals=on tests=off\n\n"
+            );
+            let last = AnalysisSwitches {
+                externals: false,
+                tests: true,
+            };
+            assert_eq!(
+                fake.started.recv_timeout(Duration::from_secs(5)).unwrap(),
+                last
+            );
+            fake.release.send(()).unwrap();
+            assert_eq!(
+                read_until(&mut events, "\n\n"),
+                "event: analysis\ndata: externals=off tests=on\n\n"
+            );
+            assert_eq!(send(port, "GET", "/", "").2, page_for(last));
+
+            server.unblock();
+            handle.join().unwrap().unwrap();
+        });
+
+        assert_eq!(fake.runs.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            out,
+            b"arc analysis externals=on tests=off\narc analysis externals=off tests=on\n"
+        );
     }
 
     #[test]

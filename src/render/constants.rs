@@ -442,6 +442,15 @@ pub(super) static CSS: CssClassNames = CssClassNames {
     },
 };
 
+/// The two analysis inputs a served page can switch while the service runs:
+/// external crates (`--externals`) and test code (`--include-tests`). The
+/// toolbar shows them as the pressed state of two buttons.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AnalysisSwitches {
+    pub externals: bool,
+    pub tests: bool,
+}
+
 /// Configuration for SVG rendering
 #[derive(Debug, Clone)]
 pub struct RenderConfig {
@@ -457,6 +466,8 @@ pub struct RenderConfig {
     /// The theme pinned on the SVG root. `None` leaves the choice to the
     /// system setting and the page.
     pub theme: Option<&'static Theme>,
+    /// The switches the analysis ran with; only a served page shows them.
+    pub switches: AnalysisSwitches,
 }
 
 impl Default for RenderConfig {
@@ -468,6 +479,7 @@ impl Default for RenderConfig {
             expand_level: None,
             with_jump_ids: false,
             theme: None,
+            switches: AnalysisSwitches::default(),
         }
     }
 }

@@ -6,4 +6,4 @@ mod server;
 mod service;
 
 pub(crate) use server::serve;
-pub(crate) use service::JumpService;
+pub(crate) use service::{Diagram, JumpService};

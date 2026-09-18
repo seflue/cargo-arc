@@ -350,14 +350,18 @@ State the rule, the deviation, and why. A deviation without a reason will be
 re-litigated by the next reader.
 
 **Threads in `ui/server.rs`.** The overlay rules out concurrency; the jump
-service's transport uses `std::thread::scope` for the editor's stdin reader and
-for each open event stream. The request loop stays sequential on the calling
-thread. A blocking `tiny_http` request loop cannot also read stdin or hold a
-stream open, and an async runtime for two blocking readers would be the larger
-dependency. The module is the only one in the crate that starts a thread.
+service's transport uses `std::thread::scope` for the editor's stdin reader,
+for each open event stream, and for the recomputation a switch command asks
+for. The request loop stays sequential on the calling thread. A blocking
+`tiny_http` request loop cannot also read stdin or hold a stream open, an
+analysis that takes seconds cannot run on it without stalling every page, and
+an async runtime for the blocking readers would be the larger dependency. The
+module is the only one in the crate that starts a thread.
 
-**A lock in `ui/service.rs`.** The service holds the editor's colour mode
+**Locks in `ui/service.rs`.** The service holds the editor's colour mode
 behind a `std::sync::Mutex`, written by the stdin thread and read when a page
-is served. It is the one piece of shared state on the request path: a page
-loaded after the editor's line has to start in that mode, and the value is a
-two-variant enum with no contention worth a channel.
+is served: a page loaded after the editor's line has to start in that mode,
+and the value is a two-variant enum with no contention worth a channel. The
+current diagram sits behind a `std::sync::RwLock`, read by every request and
+replaced as a whole by the recomputation thread, so a request never sees half
+a swap.
