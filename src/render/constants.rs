@@ -233,6 +233,9 @@ pub(super) struct ToolbarClasses {
     pub result_count: &'static str,
     pub jump_status: &'static str,
     pub follow_toggle: &'static str,
+    /// The two buttons that switch an analysis input; pressed is on, busy
+    /// while the service recomputes.
+    pub switch_toggle: &'static str,
     pub dropdown: &'static str,
     pub dropdown_btn: &'static str,
     pub dropdown_panel: &'static str,
@@ -385,6 +388,7 @@ pub(super) static CSS: CssClassNames = CssClassNames {
         result_count: "toolbar-result-count",
         jump_status: "toolbar-jump-status",
         follow_toggle: "toolbar-follow-toggle",
+        switch_toggle: "toolbar-switch-toggle",
         dropdown: "toolbar-dropdown",
         dropdown_btn: "toolbar-dropdown-btn",
         dropdown_panel: "toolbar-dropdown-panel",

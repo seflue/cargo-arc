@@ -1,5 +1,5 @@
 // @module SvgScript
-// @deps ArcLogic, StaticData, AppState, Selectors, DomAdapter, LayerManager, TreeLogic, DerivedState, HighlightRenderer, VirtualEdgeLogic, TextMeasure, SidebarLogic, SearchLogic, Jump, JumpIcons, Follow, Theme
+// @deps ArcLogic, StaticData, AppState, Selectors, DomAdapter, LayerManager, TreeLogic, DerivedState, HighlightRenderer, VirtualEdgeLogic, TextMeasure, SidebarLogic, SearchLogic, Jump, JumpIcons, Follow, Theme, SwitchToggles, ViewSnapshot
 // @config ROW_HEIGHT, MARGIN, TOOLBAR_HEIGHT, SIDEBAR_SHADOW_PAD
 // svg_script.js - DOM code for interactive SVG
 // ArcLogic is loaded from arc_logic.js before this file
@@ -109,6 +109,23 @@ if (typeof document !== 'undefined') {
     // === Highlight functionality ===
     // Use AppState module for unified state management
     const appState = AppState.create();
+
+    // === View kept across the reload after a recomputation ===
+    // The page stores a snapshot under this key before it reloads and
+    // applies it once, at the end of this initialisation.
+    const VIEW_KEY = 'cargo-arc-view';
+    const restoredView = readStoredView();
+
+    function readStoredView() {
+      try {
+        const stored = sessionStorage.getItem(VIEW_KEY);
+        if (!stored) return null;
+        sessionStorage.removeItem(VIEW_KEY);
+        return ViewSnapshot.restore(JSON.parse(stored), STATIC_DATA.nodes);
+      } catch {
+        return null;
+      }
+    }
 
     // === Initial expand-level: populate collapsed state from Rust-rendered view ===
     const expandLevel = StaticData.getExpandLevel();
@@ -1166,17 +1183,21 @@ if (typeof document !== 'undefined') {
       }
     }
 
-    // Toggle collapse state
-    function toggleCollapse(nodeId) {
-      const collapsed = AppState.toggleCollapsed(appState, nodeId);
-
+    // Collapses or expands one node in state and DOM, without a relayout.
+    // A descendant under another collapsed ancestor stays hidden.
+    function setCollapsed(nodeId, collapsed) {
+      AppState.setCollapsed(appState, nodeId, collapsed);
       getDescendants(nodeId).forEach((descId) => {
         if (collapsed || !hasCollapsedAncestor(descId, nodeId)) {
           updateDescendantVisibility(descId, collapsed);
         }
       });
-
       updateParentNodeUI(nodeId, collapsed);
+    }
+
+    // Toggle collapse state
+    function toggleCollapse(nodeId) {
+      setCollapsed(nodeId, !AppState.isCollapsed(appState, nodeId));
       relayout();
       SearchLogic.refresh();
       refreshPinnedSidebar();
@@ -1494,25 +1515,153 @@ if (typeof document !== 'undefined') {
     }
     themeControl.start();
 
-    // The follow toggle is rendered only for a page served by `cargo arc
-    // ui`; a file written by `cargo arc -o` has no event stream to open.
+    // The view menu's checkboxes, in the order they are restored: the
+    // transitive one needs the external one on.
+    const CHECKBOXES = [
+      'crate-dep-checkbox',
+      'module-dep-checkbox',
+      'reexport-dep-checkbox',
+      'cycles-checkbox',
+      'external-dep-checkbox',
+      'transitive-dep-checkbox',
+    ];
+
+    function readChecks() {
+      /** @type {Record<string, boolean>} */
+      const checks = {};
+      for (const id of CHECKBOXES) {
+        const box = DomAdapter.getElementById(id);
+        if (box) checks[id] = box.classList.contains(C.checked);
+      }
+      return checks;
+    }
+
+    // Flips a checkbox through the same handler a click would use, so the
+    // arcs and nodes it governs follow.
+    function applyCheck(id, on) {
+      const box = DomAdapter.getElementById(id);
+      if (!box || box.classList.contains(C.checked) === on) return;
+      if (id === 'cycles-checkbox') toggleClusterMode();
+      else if (id === 'external-dep-checkbox') toggleExternalDepVisibility();
+      else if (id === 'transitive-dep-checkbox')
+        toggleTransitiveDepVisibility();
+      else toggleFilterCheckbox(`#${id}`);
+    }
+
+    /** @type {ReturnType<typeof Follow.createFollow> | null} */
+    let follow = null;
+
+    function captureView() {
+      const input = /** @type {HTMLInputElement | null} */ (
+        DomAdapter.getElementById('search-input')
+      );
+      const scope = /** @type {HTMLElement | null} */ (
+        DomAdapter.querySelector(`#scope-selector .${C.toolbarScopeActive}`)
+      );
+      return ViewSnapshot.capture(
+        {
+          collapsed: appState.collapsed,
+          selection: appState.clickSelection,
+          checks: readChecks(),
+          search: {
+            query: input?.value ?? '',
+            scope: scope?.dataset.scope ?? 'all',
+          },
+          follow: follow ? follow.isEnabled() : true,
+          scroll: { x: window.scrollX, y: window.scrollY },
+        },
+        STATIC_DATA.nodes,
+      );
+    }
+
+    // Applies a restored view on top of the freshly rendered page: the
+    // collapse state, one relayout, then the checkboxes, the pinned
+    // selection, the search and the scroll.
+    function applyRestoredView(view) {
+      const wanted = new Set(view.collapsed);
+      for (const nodeId of StaticData.getAllNodeIds()) {
+        if (!StaticData.hasChildren(nodeId)) continue;
+        const collapsed = wanted.has(nodeId);
+        if (AppState.isCollapsed(appState, nodeId) !== collapsed) {
+          setCollapsed(nodeId, collapsed);
+        }
+      }
+      relayout();
+      for (const id of CHECKBOXES) {
+        if (id in view.checks) applyCheck(id, view.checks[id]);
+      }
+      if (view.selection.type === 'node' && view.selection.id !== null) {
+        highlightNode(view.selection.id);
+      } else if (view.selection.type === 'arc' && view.selection.id !== null) {
+        const [from, to] = view.selection.id.split('-');
+        highlightEdge(from, to);
+      }
+      const input = /** @type {HTMLInputElement | null} */ (
+        DomAdapter.getElementById('search-input')
+      );
+      if (input && view.search.query) {
+        input.value = view.search.query;
+        const clearBtn = DomAdapter.getElementById('search-clear');
+        if (clearBtn) clearBtn.style.display = 'block';
+        SearchLogic.executeSearch(view.search.query, view.search.scope);
+      } else {
+        SearchLogic.setScope(view.search.scope);
+      }
+      window.scrollTo(view.scroll.x, view.scroll.y);
+    }
+
+    // The follow and switch toggles are rendered only for a page served by
+    // `cargo arc ui`; a file written by `cargo arc -o` has no event stream
+    // to open and no service to switch.
     const followToggle = DomAdapter.getElementById('follow-toggle');
     if (followToggle) {
-      const follow = Follow.createFollow({
-        // The theme event rides the same stream; it is the editor's, not
-        // the follow state's, so it is taken off here.
+      /** @type {Record<'externals' | 'tests', HTMLElement | null>} */
+      const switchButtons = {
+        externals: DomAdapter.getElementById('externals-toggle'),
+        tests: DomAdapter.getElementById('tests-toggle'),
+      };
+      const switches = SwitchToggles.createSwitchToggles({
+        post: SwitchToggles.postCommand,
+        reload: () => {
+          try {
+            sessionStorage.setItem(VIEW_KEY, JSON.stringify(captureView()));
+          } catch {
+            // The view is lost; the page still shows the new diagram.
+          }
+          location.reload();
+        },
+        showStatus: showJumpStatus,
+        showBusy: (name, busy) =>
+          switchButtons[name]?.setAttribute('aria-busy', String(busy)),
+        isOn: (name) =>
+          switchButtons[name]?.getAttribute('aria-pressed') === 'true',
+      });
+      for (const name of /** @type {const} */ (['externals', 'tests'])) {
+        switchButtons[name]?.addEventListener('click', (e) => {
+          e.stopPropagation();
+          switches.click(name);
+        });
+      }
+      follow = Follow.createFollow({
+        // One stream serves all three: the theme event is the editor's and
+        // goes to the theme control, the follow module takes its events,
+        // the switches take theirs.
         connect: (handler) =>
           Follow.connectEventSource((name, data) => {
             if (name === 'theme') themeControl.handleEditorMode(data);
-            else handler(name, data);
+            else {
+              handler(name, data);
+              switches.handleEvent(name, data);
+            }
           }),
         apply: focusNode,
         showState: (on) =>
           followToggle.setAttribute('aria-pressed', String(on)),
       });
+      if (restoredView) follow.setEnabled(restoredView.follow);
       followToggle.addEventListener('click', (e) => {
         e.stopPropagation();
-        follow.setEnabled(!follow.isEnabled());
+        if (follow) follow.setEnabled(!follow.isEnabled());
       });
       follow.start();
     }
@@ -1711,8 +1860,10 @@ if (typeof document !== 'undefined') {
     // Sync toolbar foreignObject height with actual content
     syncToolbarHeight();
 
-    // Bootstrap virtual arcs for initially collapsed nodes (expand-level)
-    if (expandLevel !== null) {
+    if (restoredView) {
+      applyRestoredView(restoredView);
+    } else if (expandLevel !== null) {
+      // Bootstrap virtual arcs for initially collapsed nodes (expand-level)
       relayout();
     }
   })();

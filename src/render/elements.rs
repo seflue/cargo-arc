@@ -43,33 +43,59 @@ pub(super) fn render_sidebar(width: f32) -> String {
     )
 }
 
+/// What the toolbar shows about this diagram, read off the IR and the
+/// layout by `render`; unlike [`RenderConfig`] nothing here is the
+/// caller's choice.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct ToolbarFacts {
+    /// The diagram has an external crates section.
+    pub has_externals: bool,
+    /// At least one external crate is a transitive dependency.
+    pub has_transitive_externals: bool,
+    /// Some nodes start collapsed (an expand level is set), so the button
+    /// offers to expand rather than collapse.
+    pub initial_collapsed: bool,
+}
+
+impl ToolbarFacts {
+    /// The transitive checkbox sits inside the external one and needs it.
+    fn shows_transitive_checkbox(self) -> bool {
+        self.has_externals && self.has_transitive_externals
+    }
+}
+
 #[allow(
     clippy::cast_possible_truncation,
     reason = "SVG pixel coordinates fit in i32"
 )]
 #[allow(clippy::too_many_lines, reason = "single cohesive markup template")]
-pub(super) fn render_toolbar(
-    width: f32,
-    has_externals: bool,
-    has_transitive_externals: bool,
-    initial_collapsed: bool,
-    config: &RenderConfig,
-) -> String {
+pub(super) fn render_toolbar(width: f32, facts: ToolbarFacts, config: &RenderConfig) -> String {
     let ct = &CSS.toolbar;
     let height = LAYOUT.toolbar.height as i32;
 
-    // Only a page served by `cargo arc ui` has an editor to follow; a file
-    // written by `cargo arc -o` has no service behind it.
-    let follow_toggle = if config.with_jump_ids {
+    // Only a page served by `cargo arc ui` has an editor to follow and a
+    // service to switch; a file written by `cargo arc -o` has neither.
+    let service_toggles = if config.with_jump_ids {
         format!(
-            "      <button id=\"follow-toggle\" class=\"{} {}\" aria-pressed=\"true\">Follow editor</button>\n",
-            ct.html_btn, ct.follow_toggle,
+            concat!(
+                "      <button id=\"follow-toggle\" class=\"{} {}\" aria-pressed=\"true\">Follow editor</button>\n",
+                "      <button id=\"externals-toggle\" class=\"{} {}\" aria-pressed=\"{}\">External crates</button>\n",
+                "      <button id=\"tests-toggle\" class=\"{} {}\" aria-pressed=\"{}\">Test code</button>\n",
+            ),
+            ct.html_btn,
+            ct.follow_toggle,
+            ct.html_btn,
+            ct.switch_toggle,
+            config.switches.externals,
+            ct.html_btn,
+            ct.switch_toggle,
+            config.switches.tests,
         )
     } else {
         String::new()
     };
 
-    let transitive_checkbox = if has_transitive_externals {
+    let transitive_checkbox = if facts.shows_transitive_checkbox() {
         format!(
             concat!(
                 "          <label class=\"{}\">\n",
@@ -83,7 +109,7 @@ pub(super) fn render_toolbar(
         String::new()
     };
 
-    let external_checkbox = if has_externals {
+    let external_checkbox = if facts.has_externals {
         format!(
             concat!(
                 "          <label class=\"{}\">\n",
@@ -168,7 +194,7 @@ pub(super) fn render_toolbar(
         height,      // foreignObject height
         ct.root,     // .toolbar-root
         ct.html_btn, // collapse button class
-        if initial_collapsed {
+        if facts.initial_collapsed {
             "Expand All"
         } else {
             "Collapse All"
@@ -205,7 +231,7 @@ pub(super) fn render_toolbar(
         ct.scope_btn,    // module scope btn
         ct.scope_btn,    // symbol scope btn
         ct.result_count, // .toolbar-result-count
-        follow_toggle,   // optional follow toggle button
+        service_toggles, // optional follow toggle button
         ct.jump_status,  // .toolbar-jump-status
     )
 }
@@ -671,11 +697,12 @@ pub(super) fn escape_xml(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::super::constants::RenderConfig;
+    use super::super::constants::{AnalysisSwitches, RenderConfig};
     use super::super::positioning::{calculate_box_width, calculate_positions};
     use super::*;
     use crate::layout::LayoutEdge;
     use crate::model::EdgeContext;
+    use rstest::rstest;
     use std::collections::HashMap;
 
     #[test]
@@ -701,7 +728,7 @@ mod tests {
 
     #[test]
     fn test_toolbar_has_cycles_checkbox_checked_by_default() {
-        let toolbar = render_toolbar(800.0, false, false, false, &RenderConfig::default());
+        let toolbar = render_toolbar(800.0, ToolbarFacts::default(), &RenderConfig::default());
         let idx = toolbar
             .find("id=\"cycles-checkbox\"")
             .expect("Toolbar should render the cycles checkbox");
@@ -1108,7 +1135,7 @@ mod tests {
 
     #[test]
     fn test_render_toolbar_contains_elements() {
-        let output = render_toolbar(800.0, false, false, false, &RenderConfig::default());
+        let output = render_toolbar(800.0, ToolbarFacts::default(), &RenderConfig::default());
         assert!(
             output.contains(r#"id="toolbar-fo""#),
             "Should have foreignObject with toolbar-fo id"
@@ -1175,25 +1202,44 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_render_toolbar_external_checkbox_when_externals_present() {
-        let output = render_toolbar(800.0, true, false, false, &RenderConfig::default());
-        assert!(
+    /// The external checkbox follows the externals section; the transitive
+    /// one sits inside it and needs both facts.
+    #[rstest]
+    #[case::no_externals(false, false, false, false)]
+    #[case::externals_only(true, false, true, false)]
+    #[case::externals_with_transitive(true, true, true, true)]
+    #[case::transitive_without_externals(false, true, false, false)]
+    fn toolbar_checkboxes_follow_the_facts(
+        #[case] has_externals: bool,
+        #[case] has_transitive_externals: bool,
+        #[case] external_checkbox: bool,
+        #[case] transitive_checkbox: bool,
+    ) {
+        let facts = ToolbarFacts {
+            has_externals,
+            has_transitive_externals,
+            ..ToolbarFacts::default()
+        };
+        let output = render_toolbar(800.0, facts, &RenderConfig::default());
+        assert_eq!(
             output.contains(r#"id="external-dep-checkbox""#),
-            "Should have external-dep checkbox when externals present"
+            external_checkbox,
+            "{output}"
         );
-        assert!(
+        assert_eq!(
             output.contains("External Dependencies"),
-            "Should have external dependency label"
+            external_checkbox,
+            "{output}"
         );
-    }
-
-    #[test]
-    fn test_render_toolbar_no_external_checkbox_without_externals() {
-        let output = render_toolbar(800.0, false, false, false, &RenderConfig::default());
-        assert!(
-            !output.contains(r#"id="external-dep-checkbox""#),
-            "Should NOT have external-dep checkbox without externals"
+        assert_eq!(
+            output.contains(r#"id="transitive-dep-checkbox""#),
+            transitive_checkbox,
+            "{output}"
+        );
+        assert_eq!(
+            output.contains("Transitive Dependencies"),
+            transitive_checkbox,
+            "{output}"
         );
     }
 
@@ -1203,7 +1249,7 @@ mod tests {
             with_jump_ids: true,
             ..RenderConfig::default()
         };
-        let served = render_toolbar(800.0, false, false, false, &with_jump_ids);
+        let served = render_toolbar(800.0, ToolbarFacts::default(), &with_jump_ids);
         assert!(
             served.contains(&format!(
                 r#"<button id="follow-toggle" class="{} {}" aria-pressed="true">Follow editor</button>"#,
@@ -1212,39 +1258,45 @@ mod tests {
             "{served}"
         );
 
-        let written = render_toolbar(800.0, false, false, false, &RenderConfig::default());
+        let written = render_toolbar(800.0, ToolbarFacts::default(), &RenderConfig::default());
         assert!(!written.contains("follow-toggle"), "{written}");
     }
 
+    /// The two switch buttons carry the switches the page was computed
+    /// with, and only a served page has a service to switch them.
     #[test]
-    fn test_render_toolbar_transitive_checkbox_when_transitive_present() {
-        let output = render_toolbar(800.0, true, true, false, &RenderConfig::default());
+    fn switch_toggles_show_the_switches_on_a_served_page_only() {
+        let served = render_toolbar(
+            800.0,
+            ToolbarFacts::default(),
+            &RenderConfig {
+                with_jump_ids: true,
+                switches: AnalysisSwitches {
+                    externals: true,
+                    tests: false,
+                },
+                ..RenderConfig::default()
+            },
+        );
+        let ct = &CSS.toolbar;
         assert!(
-            output.contains(r#"id="transitive-dep-checkbox""#),
-            "Should have transitive-dep checkbox when transitive externals present"
+            served.contains(&format!(
+                r#"<button id="externals-toggle" class="{} {}" aria-pressed="true">External crates</button>"#,
+                ct.html_btn, ct.switch_toggle
+            )),
+            "{served}"
         );
         assert!(
-            output.contains("Transitive Dependencies"),
-            "Should have transitive dependency label"
+            served.contains(&format!(
+                r#"<button id="tests-toggle" class="{} {}" aria-pressed="false">Test code</button>"#,
+                ct.html_btn, ct.switch_toggle
+            )),
+            "{served}"
         );
-    }
 
-    #[test]
-    fn test_render_toolbar_no_transitive_checkbox_without_transitive() {
-        let output = render_toolbar(800.0, true, false, false, &RenderConfig::default());
-        assert!(
-            !output.contains(r#"id="transitive-dep-checkbox""#),
-            "Should NOT have transitive-dep checkbox without transitive externals"
-        );
-    }
-
-    #[test]
-    fn test_render_toolbar_no_transitive_checkbox_without_externals() {
-        let output = render_toolbar(800.0, false, true, false, &RenderConfig::default());
-        assert!(
-            !output.contains(r#"id="transitive-dep-checkbox""#),
-            "Transitive checkbox should be nested inside external checkbox block"
-        );
+        let written = render_toolbar(800.0, ToolbarFacts::default(), &RenderConfig::default());
+        assert!(!written.contains("externals-toggle"), "{written}");
+        assert!(!written.contains("tests-toggle"), "{written}");
     }
 
     #[test]
@@ -1419,7 +1471,7 @@ mod tests {
 
     #[test]
     fn test_render_toolbar_has_reexport_checkbox_unchecked() {
-        let output = render_toolbar(800.0, false, false, false, &RenderConfig::default());
+        let output = render_toolbar(800.0, ToolbarFacts::default(), &RenderConfig::default());
         assert!(
             output.contains(r#"id="reexport-dep-checkbox""#),
             "Should have reexport-dep checkbox"

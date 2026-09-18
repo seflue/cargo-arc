@@ -638,15 +638,24 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
             &format!(".{}:empty", c.toolbar.jump_status),
             &[("display", "none")],
         ),
-        // The follow toggle carries its state in aria-pressed, written by
-        // js/svg_script.js; pressed reads as switched on.
+        // The follow and switch toggles carry their state in aria-pressed,
+        // written by js/svg_script.js; pressed reads as switched on.
         CssRule::new(
-            &format!(".{}[aria-pressed=\"true\"]", c.toolbar.follow_toggle),
+            &format!(
+                ".{}[aria-pressed=\"true\"], .{}[aria-pressed=\"true\"]",
+                c.toolbar.follow_toggle, c.toolbar.switch_toggle
+            ),
             &[
                 ("background", tb.pressed_bg),
                 ("border-color", tb.pressed_border),
                 ("color", tb.pressed_text),
             ],
+        ),
+        // A switch toggle is busy from the click until the service reports
+        // the new page or an error.
+        CssRule::new(
+            &format!(".{}[aria-busy=\"true\"]", c.toolbar.switch_toggle),
+            &[("opacity", "0.6"), ("cursor", "progress")],
         ),
         // CSS-only search dimming via search-active on SVG root
         // Rects: dim all except search matches, toolbar buttons, and arc-count backgrounds
@@ -1871,6 +1880,28 @@ mod tests {
                 CSS.toolbar.follow_toggle
             )),
             "CSS should style the pressed follow toggle apart from the released one"
+        );
+    }
+
+    /// A switch toggle reads like the follow toggle when pressed, and
+    /// shows that a run is under way while `aria-busy` is set.
+    #[test]
+    fn test_css_marks_the_pressed_and_the_busy_switch_toggle() {
+        let css = render_styles();
+
+        assert!(
+            css.contains(&format!(
+                ".{}[aria-pressed=\"true\"]",
+                CSS.toolbar.switch_toggle
+            )),
+            "{css}"
+        );
+        assert!(
+            css.contains(&format!(
+                ".{}[aria-busy=\"true\"]",
+                CSS.toolbar.switch_toggle
+            )),
+            "{css}"
         );
     }
 

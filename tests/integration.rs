@@ -2041,6 +2041,19 @@ fn ui_recomputes_on_a_posted_switch_command() {
     let mut analysis_line = String::new();
     stdout.read_line(&mut analysis_line).unwrap();
     assert_eq!(analysis_line, "arc analysis externals=off tests=on\n");
+    let (_, body) = http_get(port, "/");
+    let tests_toggle = |body: &str| {
+        body.lines()
+            .find(|line| line.contains("id=\"tests-toggle\""))
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_string()
+    };
+    assert!(
+        tests_toggle(&body).contains("aria-pressed=\"true\""),
+        "{}",
+        tests_toggle(&body)
+    );
 
     let (status, _) = http_send(port, "POST", "/command", "arc tests off\n");
     assert_eq!(status, 202);
@@ -2050,7 +2063,11 @@ fn ui_recomputes_on_a_posted_switch_command() {
 
     let (status, body) = http_get(port, "/");
     assert_eq!(status, 200);
-    assert!(body.contains("STATIC_DATA"));
+    assert!(
+        tests_toggle(&body).contains("aria-pressed=\"false\""),
+        "{}",
+        tests_toggle(&body)
+    );
 
     let (status, _) = http_send(port, "POST", "/command", "arc tests maybe\n");
     assert_eq!(status, 400);
