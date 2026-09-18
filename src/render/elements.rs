@@ -1,16 +1,22 @@
 use super::constants::{CSS, LAYOUT, RenderConfig};
 use super::positioning::PositionedItem;
+use super::theme::Theme;
 use crate::layout::{CycleKind, EdgeDirection, ItemKind, LayoutEdge, LayoutIR, NodeId};
 use crate::model::UsageKind;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
-pub(super) fn render_header(width: f32, height: f32) -> String {
+pub(super) fn render_header(width: f32, height: f32, theme: Option<&Theme>) -> String {
     // cluster-mode-on defaults on (cycles checkbox checked), matching the other
     // root state classes (has-highlight/has-pinned) that JS toggles on the SVG.
+    // A pinned theme sits on the root as data-theme, where the stylesheet's
+    // :root[data-theme] block reads it.
+    let pinned = theme.map_or(String::new(), |theme| {
+        format!(" data-theme=\"{}\"", theme.name)
+    });
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" class="{}" width="{width}" height="{height}" viewBox="0 0 {width} {height}">
+<svg xmlns="http://www.w3.org/2000/svg"{pinned} class="{}" width="{width}" height="{height}" viewBox="0 0 {width} {height}">
 "#,
         CSS.relation.cluster_mode_on
     )
@@ -119,6 +125,23 @@ pub(super) fn render_toolbar(
             "            Show Circular Dependencies\n",
             "          </label>\n",
             "{}",
+            "          <div class=\"{}\"></div>\n",
+            "          <label class=\"{}\">\n",
+            "            <span>Appearance</span>\n",
+            "            <select id=\"theme-mode\">",
+            "<option value=\"light\">Light</option>",
+            "<option value=\"dark\">Dark</option>",
+            "<option value=\"system\">System</option>",
+            "</select>\n",
+            "          </label>\n",
+            "          <label class=\"{}\">\n",
+            "            <span>Light theme</span>\n",
+            "            <select id=\"theme-light\"></select>\n",
+            "          </label>\n",
+            "          <label class=\"{}\">\n",
+            "            <span>Dark theme</span>\n",
+            "            <select id=\"theme-dark\"></select>\n",
+            "          </label>\n",
             "        </div>\n",
             "      </div>\n",
             "      <span class=\"{}\"></span>\n",
@@ -167,6 +190,10 @@ pub(super) fn render_toolbar(
         ct.checkbox,
         ct.checked,              // checkbox span (checked → cluster mode on)
         external_checkbox,       // optional external dep checkbox
+        ct.dropdown_divider,     // line between the filters and the appearance controls
+        ct.select,               // label.toolbar-select (mode switch)
+        ct.select,               // label.toolbar-select (light theme)
+        ct.select,               // label.toolbar-select (dark theme)
         ct.separator_v,          // separator
         ct.search_group,         // .toolbar-search-group
         ct.search_input_wrapper, // .toolbar-search-input-wrapper

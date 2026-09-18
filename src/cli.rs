@@ -15,7 +15,7 @@ use crate::diagnose::RepresentativeCycles;
 use crate::graph::{ArcGraph, Reexports};
 use crate::layout::{JumpTable, LayoutIR, build_layout};
 use crate::model::{CrateExportMap, CrateInfo, ModulePathMap, WorkspaceCrates};
-use crate::render::{RenderConfig, html_page, project_name, render};
+use crate::render::{Appearance, RenderConfig, THEMES, Theme, html_page, project_name, render};
 use crate::rules::baseline::{Baseline, BaselineError};
 use crate::rules::config::{ArcConfig, ConfigError};
 use crate::rules::engine::{CheckRun, check_rules};
@@ -77,6 +77,12 @@ pub struct ArcCommand {
     /// Initial expand level for SVG (0=crates only, 1=direct modules, etc.)
     #[arg(long)]
     pub expand_level: Option<usize>,
+
+    /// Pin the diagram to a theme by name; `light` and `dark` name the
+    /// default theme of that mode. Without it the diagram follows the
+    /// system setting, or the editor under `ui`.
+    #[arg(long, value_name = "NAME", value_parser = parse_theme)]
+    pub theme: Option<&'static Theme>,
 
     /// Use rust-analyzer HIR backend instead of syn (slower but may catch more)
     #[cfg(feature = "hir")]
@@ -154,6 +160,18 @@ pub struct CommonArgs {
     pub debug: bool,
 }
 
+/// The `--theme` value parser: a theme name or a mode alias, or an error
+/// that lists what would have been accepted.
+fn parse_theme(name: &str) -> Result<&'static Theme, String> {
+    Theme::named(name).ok_or_else(|| {
+        let names: Vec<&str> = THEMES.iter().map(|theme| theme.name).collect();
+        format!(
+            "unknown theme '{name}'; known themes: {}, or light / dark for a mode's default",
+            names.join(", ")
+        )
+    })
+}
+
 /// A run that errored never judged at all, so it arrives as `Err` instead and
 /// `main` maps that to exit 2.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -207,6 +225,7 @@ pub fn run(args: ArcCommand) -> Result<Judgment> {
 
     let config = RenderConfig {
         expand_level: args.expand_level,
+        theme: args.theme,
         ..RenderConfig::default()
     };
     let svg = render(&analysis.layout, &config);
@@ -215,6 +234,7 @@ pub fn run(args: ArcCommand) -> Result<Judgment> {
         svg,
         args.output.as_deref(),
         analysis.workspace_root.as_deref(),
+        args.theme,
     );
     write_output(&document, args.output.as_ref())?;
     // The diagram judges nothing, so it can only ever be clean or an error.
@@ -283,13 +303,14 @@ fn run_ui(args: &ArcCommand, ui_args: &UiArgs) -> Result<Judgment> {
     let config = RenderConfig {
         expand_level: args.expand_level,
         with_jump_ids: true,
+        theme: args.theme,
         ..RenderConfig::default()
     };
     let svg = render(&analysis.layout, &config);
     let workspace_root = analysis
         .workspace_root
         .context("workspace has no crates to determine its root")?;
-    let service = ui::JumpService::new(&svg, analysis.jump_table, workspace_root);
+    let service = ui::JumpService::new(svg, analysis.jump_table, workspace_root, args.theme);
     ui::serve(
         &service,
         ui_args.port,
@@ -437,13 +458,22 @@ fn resolve_repo_path(manifest_path: &Path) -> &Path {
 
 /// The bytes `-o` writes: the SVG itself, or for an `.html` / `.xhtml` name
 /// the page `arc ui` serves, so the file opens in a browser tab or a
-/// webview at its own size.
-fn diagram_document(svg: String, output: Option<&Path>, workspace_root: Option<&Path>) -> String {
+/// webview at its own size. The page root pins `theme` like the SVG root.
+fn diagram_document(
+    svg: String,
+    output: Option<&Path>,
+    workspace_root: Option<&Path>,
+    theme: Option<&'static Theme>,
+) -> String {
     let wants_html = output
         .and_then(Path::extension)
         .is_some_and(|ext| ext.eq_ignore_ascii_case("html") || ext.eq_ignore_ascii_case("xhtml"));
     if wants_html {
-        html_page(&svg, workspace_root.and_then(project_name))
+        html_page(
+            &svg,
+            workspace_root.and_then(project_name),
+            Appearance { theme, mode: None },
+        )
     } else {
         svg
     }
@@ -608,7 +638,7 @@ mod tests {
     fn html_output_name_wraps_the_svg_in_a_page() {
         let svg = "<svg/>".to_string();
         for name in ["deps.html", "deps.xhtml", "deps.HTML"] {
-            let page = diagram_document(svg.clone(), Some(Path::new(name)), None);
+            let page = diagram_document(svg.clone(), Some(Path::new(name)), None, None);
             assert!(page.contains("<html"), "{name}: {page}");
             assert!(page.contains("<svg/>"), "{name}: {page}");
         }
@@ -620,6 +650,7 @@ mod tests {
             "<svg/>".to_string(),
             Some(Path::new("deps.html")),
             Some(Path::new("/home/u/my-ws")),
+            None,
         );
         assert!(page.contains("<title>my-ws · cargo-arc</title>"), "{page}");
     }
@@ -628,10 +659,10 @@ mod tests {
     fn other_output_names_and_stdout_keep_the_svg() {
         let svg = "<svg/>".to_string();
         assert_eq!(
-            diagram_document(svg.clone(), Some(Path::new("deps.svg")), None),
+            diagram_document(svg.clone(), Some(Path::new("deps.svg")), None, None),
             svg
         );
-        assert_eq!(diagram_document(svg.clone(), None, None), svg);
+        assert_eq!(diagram_document(svg.clone(), None, None, None), svg);
     }
 
     // ===== Task 3.2: check subcommand parsing tests =====
@@ -800,6 +831,40 @@ mod tests {
     }
 
     #[test]
+    fn theme_flag_takes_a_name_or_a_mode_alias() {
+        let name = |args: &[&str]| parse_args(args).theme.map(|theme| theme.name);
+        assert_eq!(name(&["cargo", "arc", "--theme", "mocha"]), Some("mocha"));
+        assert_eq!(name(&["cargo", "arc", "--theme", "dark"]), Some("mocha"));
+        assert_eq!(name(&["cargo", "arc", "--theme", "light"]), Some("latte"));
+        assert_eq!(name(&["cargo", "arc"]), None);
+    }
+
+    #[test]
+    fn unknown_theme_is_an_error_listing_the_names() {
+        let err = Cargo::try_parse_from(["cargo", "arc", "--theme", "frappe"])
+            .err()
+            .expect("an unknown theme is rejected")
+            .to_string();
+        assert!(err.contains("frappe"), "{err}");
+        assert!(err.contains("latte") && err.contains("mocha"), "{err}");
+        assert!(err.contains("light") && err.contains("dark"), "{err}");
+    }
+
+    #[test]
+    fn html_output_pins_the_theme_on_the_page_root() {
+        let page = diagram_document(
+            "<svg/>".to_string(),
+            Some(Path::new("deps.html")),
+            None,
+            Theme::named("mocha"),
+        );
+        assert!(
+            page.contains("<html xmlns=\"http://www.w3.org/1999/xhtml\" data-theme=\"mocha\">"),
+            "{page}"
+        );
+    }
+
+    #[test]
     fn test_parse_expand_level() {
         let cmd = parse_args(&["cargo", "arc", "--expand-level", "0"]);
         assert_eq!(cmd.expand_level, Some(0));
@@ -850,6 +915,7 @@ mod tests {
             externals: false,
             transitive_deps: false,
             expand_level: None,
+            theme: None,
             #[cfg(feature = "hir")]
             hir: false,
         };

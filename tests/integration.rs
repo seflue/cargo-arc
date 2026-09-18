@@ -31,6 +31,7 @@ fn fixture_args(fixture: &str, include_tests: bool) -> (tempfile::NamedTempFile,
         externals: false,
         transitive_deps: false,
         expand_level: None,
+        theme: None,
         #[cfg(feature = "hir")]
         hir: false,
     };
@@ -60,6 +61,7 @@ fn self_args() -> (tempfile::NamedTempFile, ArcCommand) {
         externals: false,
         transitive_deps: false,
         expand_level: None,
+        theme: None,
         #[cfg(feature = "hir")]
         hir: false,
     };
@@ -327,6 +329,7 @@ fn test_cfg_test_included_with_flag() {
         externals: false,
         transitive_deps: false,
         expand_level: None,
+        theme: None,
         #[cfg(feature = "hir")]
         hir: false,
     };
@@ -369,6 +372,7 @@ fn test_entry_point_imports() {
         externals: false,
         transitive_deps: false,
         expand_level: None,
+        theme: None,
         #[cfg(feature = "hir")]
         hir: false,
     };

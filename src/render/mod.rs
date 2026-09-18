@@ -9,6 +9,7 @@ mod css;
 mod elements;
 mod positioning;
 mod static_data;
+mod theme;
 pub use constants::RenderConfig;
 use css::render_styles;
 use elements::{
@@ -20,6 +21,7 @@ use positioning::{
     calculate_positions, collapse_positions, item_nesting,
 };
 use static_data::render_script;
+pub use theme::{Mode, THEMES, Theme};
 
 /// Render `LayoutIR` to SVG string
 #[must_use]
@@ -74,7 +76,7 @@ pub fn render(ir: &LayoutIR, config: &RenderConfig) -> String {
     let (width, height) = calculate_canvas_size(&positioned_visible, config, max_arc_width);
 
     let mut svg = String::new();
-    svg.push_str(&render_header(width, height));
+    svg.push_str(&render_header(width, height, config.theme));
     svg.push_str(&render_styles());
     svg.push_str("  <g id=\"graph-content\">\n");
     svg.push_str(&render_tree_lines(&positioned_vis_index, ir));
@@ -127,12 +129,14 @@ pub fn render(ir: &LayoutIR, config: &RenderConfig) -> String {
 /// shown in a frame (an editor's webview) is shrunk to the frame; an inline
 /// `<svg>` keeps its pixel size and the body scrolls. The XML declaration of
 /// `svg` moves ahead of the wrapping document, and the rest is already
-/// well-formed XML. The body is white because the SVG has no background of
-/// its own and a webview would otherwise show the editor theme through it.
-/// `project` leads the title so that browser tabs, which truncate on the
-/// right, differ per project.
+/// well-formed XML. The body takes the theme's page colour, since the SVG
+/// has no background of its own and a webview would show the editor theme
+/// through it. The SVG's stylesheet applies to the whole document, so it
+/// declares that colour and reads `appearance` off the root. `project`
+/// leads the title so that browser tabs, which truncate on the right,
+/// differ per project.
 #[must_use]
-pub fn html_page(svg: &str, project: Option<&str>) -> String {
+pub fn html_page(svg: &str, project: Option<&str>, appearance: Appearance) -> String {
     let (declaration, svg) = match svg.split_once('\n') {
         Some((first, rest)) if first.starts_with("<?xml") => (first, rest),
         _ => ("<?xml version=\"1.0\" encoding=\"UTF-8\"?>", svg),
@@ -141,12 +145,36 @@ pub fn html_page(svg: &str, project: Option<&str>) -> String {
         Some(project) => format!("{} · cargo-arc", escape_xml(project)),
         None => "cargo-arc".to_string(),
     };
+    let root = appearance.root_attributes();
+    let background = theme::ColorPalette::VARS.page.bg;
     format!(
         "{declaration}\n\
-         <html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>{title}</title></head><body style=\"margin:0;background:#fff\">\n\
+         <html xmlns=\"http://www.w3.org/1999/xhtml\"{root}><head><title>{title}</title></head><body style=\"margin:0;background:{background}\">\n\
          {svg}\n\
          </body></html>\n"
     )
+}
+
+/// What the page root declares for the stylesheet: a theme pinned by name
+/// (`--theme`) and the mode the editor sent (`arc theme`). The editor
+/// decides the mode, so a pinned theme of the other mode is left off.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Appearance {
+    pub theme: Option<&'static Theme>,
+    pub mode: Option<Mode>,
+}
+
+impl Appearance {
+    fn root_attributes(self) -> String {
+        let mode = self
+            .mode
+            .map(|mode| format!(" data-mode=\"{}\"", mode.as_str()));
+        let theme = self
+            .theme
+            .filter(|theme| self.mode.is_none_or(|mode| mode == theme.mode))
+            .map(|theme| format!(" data-theme=\"{}\"", theme.name));
+        [mode, theme].into_iter().flatten().collect()
+    }
 }
 
 /// The name a page is titled with: the workspace root's directory name.
@@ -167,23 +195,127 @@ mod tests {
     fn html_page_inlines_the_svg_after_its_declaration() {
         let svg = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"20\"/>";
         assert_eq!(
-            html_page(svg, None),
+            html_page(svg, None, Appearance::default()),
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
-             <html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>cargo-arc</title></head><body style=\"margin:0;background:#fff\">\n\
+             <html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>cargo-arc</title></head><body style=\"margin:0;background:var(--arc-page-bg)\">\n\
              <svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"20\"/>\n\
              </body></html>\n"
         );
     }
 
+    /// The page root declares what the stylesheet reads: the editor's mode
+    /// and a theme pinned by name, the latter only while its mode is not
+    /// contradicted by the editor.
+    #[test]
+    fn html_page_declares_mode_and_pinned_theme_on_the_root() {
+        let root = |appearance: Appearance| {
+            let page = html_page("<svg/>", None, appearance);
+            page.lines().nth(1).unwrap().to_string()
+        };
+        assert!(
+            root(Appearance::default())
+                .starts_with("<html xmlns=\"http://www.w3.org/1999/xhtml\"><head>")
+        );
+        assert!(
+            root(Appearance {
+                theme: Some(&theme::MOCHA),
+                mode: None,
+            })
+            .contains("<html xmlns=\"http://www.w3.org/1999/xhtml\" data-theme=\"mocha\"><head>")
+        );
+        assert!(
+            root(Appearance {
+                theme: None,
+                mode: Some(Mode::Dark),
+            })
+            .contains("<html xmlns=\"http://www.w3.org/1999/xhtml\" data-mode=\"dark\"><head>")
+        );
+        assert!(
+            root(Appearance {
+                theme: Some(&theme::MOCHA),
+                mode: Some(Mode::Dark),
+            })
+            .contains("data-mode=\"dark\" data-theme=\"mocha\"")
+        );
+        let contradicted = root(Appearance {
+            theme: Some(&theme::MOCHA),
+            mode: Some(Mode::Light),
+        });
+        assert!(
+            contradicted.contains("data-mode=\"light\"") && !contradicted.contains("data-theme"),
+            "{contradicted}"
+        );
+    }
+
+    /// The View dropdown ends with the appearance controls: the mode switch
+    /// with its three fixed choices, and one theme select per mode that the
+    /// page fills from `STATIC_DATA.theme`.
+    #[test]
+    fn toolbar_offers_a_mode_switch_and_a_theme_select_per_mode() {
+        let svg = render(&LayoutIR::new(), &RenderConfig::default());
+        let panel_start = svg.find("class=\"toolbar-dropdown-panel\"").unwrap();
+        let panel_end = panel_start + svg[panel_start..].find("</div>\n      </div>").unwrap();
+        let panel = &svg[panel_start..panel_end];
+        let mode = panel
+            .find("<select id=\"theme-mode\">")
+            .expect("mode switch");
+        for option in [
+            "<option value=\"light\">Light</option>",
+            "<option value=\"dark\">Dark</option>",
+            "<option value=\"system\">System</option>",
+        ] {
+            assert!(
+                panel[mode..].contains(option),
+                "{option} missing in {panel}"
+            );
+        }
+        assert!(
+            panel.contains("<select id=\"theme-light\"></select>"),
+            "{panel}"
+        );
+        assert!(
+            panel.contains("<select id=\"theme-dark\"></select>"),
+            "{panel}"
+        );
+        let cycles = panel.find("cycles-checkbox").unwrap();
+        assert!(cycles < mode, "appearance controls come after the filters");
+    }
+
+    #[test]
+    fn render_pins_the_configured_theme_on_the_svg_root() {
+        let ir = LayoutIR::new();
+        let pinned = render(
+            &ir,
+            &RenderConfig {
+                theme: Some(&theme::MOCHA),
+                ..RenderConfig::default()
+            },
+        );
+        assert!(
+            pinned
+                .contains("<svg xmlns=\"http://www.w3.org/2000/svg\" data-theme=\"mocha\" class="),
+            "{pinned}"
+        );
+        let free = render(&ir, &RenderConfig::default());
+        let root = free
+            .lines()
+            .nth(1)
+            .expect("the root tag follows the declaration");
+        assert!(
+            root.starts_with("<svg ") && !root.contains("data-theme"),
+            "{root}"
+        );
+    }
+
     #[test]
     fn html_page_titles_the_tab_with_the_project_first() {
-        let page = html_page("<svg/>", Some("my-ws"));
+        let page = html_page("<svg/>", Some("my-ws"), Appearance::default());
         assert!(page.contains("<title>my-ws · cargo-arc</title>"), "{page}");
     }
 
     #[test]
     fn html_page_escapes_the_project_name() {
-        let page = html_page("<svg/>", Some("a&b"));
+        let page = html_page("<svg/>", Some("a&b"), Appearance::default());
         assert!(
             page.contains("<title>a&amp;b · cargo-arc</title>"),
             "{page}"

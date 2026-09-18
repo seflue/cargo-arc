@@ -167,3 +167,27 @@ cargo arc --expand-level 1 -o deps.svg
 
 Nodes beyond the given depth start collapsed.
 Click to expand interactively.
+
+## Themes
+
+The diagram ships two themes, Catppuccin Latte for a light surrounding and
+Catppuccin Mocha for a dark one. Without a choice it follows the system's
+colour scheme, in a browser and in an image viewer alike. `--theme` pins one:
+
+```bash
+# By name
+cargo arc --theme mocha -o deps.svg
+
+# The default theme of a mode
+cargo arc --theme dark -o deps.svg
+```
+
+An unknown name is an error that lists the known ones.
+
+In the page, the View dropdown holds an **Appearance** switch (light, dark or
+system) and a theme choice per mode; both are remembered by the browser.
+System means the diagram does not override: it follows the editor once the
+editor has sent its mode, otherwise a pinned theme, otherwise the system
+setting. An editor's mode resets the switch to system, at load and during a
+session; a choice made in the page afterwards wins until the next editor
+line.

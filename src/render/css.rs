@@ -1,7 +1,5 @@
-use super::constants::{
-    BLUE, BLUE_100, BLUE_300, COLORS, CSS, GRAY_50, GRAY_100, GRAY_200, GRAY_300, GRAY_400,
-    GRAY_600, GREEN, LAYOUT, ORANGE, ORANGE_100, ORANGE_300, PURPLE, TEAL,
-};
+use super::constants::{CSS, DRAWING, LAYOUT};
+use super::theme::{ColorPalette, LATTE, MOCHA, Mode, THEMES, Theme};
 use std::fmt::Write as _;
 
 struct CssRule {
@@ -26,11 +24,16 @@ impl CssRule {
 }
 
 #[allow(clippy::too_many_lines)] // single cohesive CSS rule list
-fn build_css_rules() -> Vec<CssRule> {
-    let n = &COLORS.nodes;
-    let d = &COLORS.direction;
-    let ns = &COLORS.node_selection;
-    let r = &COLORS.relation;
+fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
+    let n = &palette.nodes;
+    let d = &palette.direction;
+    let ns = &palette.node_selection;
+    let r = &palette.relation;
+    let glow = &palette.glow;
+    let tb = &palette.toolbar;
+    let sb = &palette.sidebar;
+    let pop = &palette.popover;
+    let draw = &DRAWING;
     let c = &CSS;
 
     vec![
@@ -80,6 +83,7 @@ fn build_css_rules() -> Vec<CssRule> {
             &[
                 ("font-family", "monospace"),
                 ("font-size", "12px"),
+                ("fill", n.text),
                 ("pointer-events", "none"),
             ],
         ),
@@ -94,7 +98,7 @@ fn build_css_rules() -> Vec<CssRule> {
         ),
         CssRule::class(
             c.direction.dep_arc,
-            &[("fill", "none"), ("stroke-width", "0.5")],
+            &[("fill", "none"), ("stroke-width", draw.dep_width)],
         ),
         CssRule::new(
             &format!(".{}.{}", c.direction.dep_arc, c.direction.downward),
@@ -115,7 +119,7 @@ fn build_css_rules() -> Vec<CssRule> {
             &[
                 ("fill", "none"),
                 ("stroke", d.cycle),
-                ("stroke-width", "1.0"),
+                ("stroke-width", draw.cycle_width),
             ],
         ),
         CssRule::new(
@@ -164,22 +168,28 @@ fn build_css_rules() -> Vec<CssRule> {
         // Highlighted arc (marker class)
         CssRule::class(c.relation.highlighted_arc, &[]),
         // Glow classes
-        CssRule::class(c.relation.glow_incoming, &[("stroke", r.dependency)]),
-        CssRule::class(c.relation.glow_outgoing, &[("stroke", r.dependent)]),
-        CssRule::class(c.relation.glow_cycle, &[("stroke", d.cycle)]),
+        CssRule::class(c.relation.glow_incoming, &[("stroke", glow.incoming)]),
+        CssRule::class(c.relation.glow_outgoing, &[("stroke", glow.outgoing)]),
+        CssRule::class(c.relation.glow_cycle, &[("stroke", glow.cycle)]),
         // Node borders (relation)
         CssRule::class(
             c.relation.dep_node,
-            &[("stroke", r.dependency), ("stroke-width", "2.5")],
+            &[
+                ("stroke", r.dependency),
+                ("stroke-width", draw.relation_border_width),
+            ],
         ),
         CssRule::class(
             c.relation.dependent_node,
-            &[("stroke", r.dependent), ("stroke-width", "2.5")],
+            &[
+                ("stroke", r.dependent),
+                ("stroke-width", draw.relation_border_width),
+            ],
         ),
         // Dimmed
         CssRule::class(
             c.relation.dimmed,
-            &[("opacity", "0.3"), ("pointer-events", "none")],
+            &[("opacity", draw.dimmed_opacity), ("pointer-events", "none")],
         ),
         CssRule::new(
             &format!(
@@ -216,7 +226,7 @@ fn build_css_rules() -> Vec<CssRule> {
                 c.toolbar.btn,
                 c.labels.arc_count_bg,
             ),
-            &[("opacity", "0.3"), ("pointer-events", "none")],
+            &[("opacity", draw.dimmed_opacity), ("pointer-events", "none")],
         ),
         // Pinned override: restore pointer-events on dimmed node rects so clicking
         // a different node while one is pinned works (same exclusions as dimming rule)
@@ -248,7 +258,7 @@ fn build_css_rules() -> Vec<CssRule> {
                 c.sidebar.cycle_arrow_path
             ),
             &[
-                ("opacity", "0.3"),
+                ("opacity", draw.dimmed_opacity),
                 ("pointer-events", "none"),
                 ("stroke", r.dimmed),
             ],
@@ -259,7 +269,7 @@ fn build_css_rules() -> Vec<CssRule> {
                 c.relation.has_highlight, c.relation.highlighted_arrow
             ),
             &[
-                ("opacity", "0.3"),
+                ("opacity", draw.dimmed_opacity),
                 ("pointer-events", "none"),
                 ("fill", r.dimmed),
             ],
@@ -269,11 +279,11 @@ fn build_css_rules() -> Vec<CssRule> {
                 "svg.{} text.{}:not(.{})",
                 c.relation.has_highlight, c.labels.arc_count, c.relation.highlighted_label
             ),
-            &[("opacity", "0.3"), ("fill", r.dimmed)],
+            &[("opacity", draw.dimmed_opacity), ("fill", r.dimmed)],
         ),
         CssRule::new(
             &format!("svg.{} line", c.relation.has_highlight),
-            &[("opacity", "0.3"), ("pointer-events", "none")],
+            &[("opacity", draw.dimmed_opacity), ("pointer-events", "none")],
         ),
         // Toolbar exception: elements inside .view-options never dim
         CssRule::new(
@@ -320,14 +330,14 @@ fn build_css_rules() -> Vec<CssRule> {
             c.direction.reexport_arc,
             &[
                 ("fill", "none"),
-                ("stroke", TEAL),
-                ("stroke-dasharray", "2 3"),
+                ("stroke", d.reexport),
+                ("stroke-dasharray", draw.reexport_dash),
             ],
         ),
         // Virtual arcs
         CssRule::class(
             c.direction.virtual_arc,
-            &[("fill", "none"), ("stroke-width", "0.5")],
+            &[("fill", "none"), ("stroke-width", draw.virtual_width)],
         ),
         CssRule::new(
             &format!(".{}.{}", c.direction.virtual_arc, c.direction.downward),
@@ -377,7 +387,7 @@ fn build_css_rules() -> Vec<CssRule> {
         ),
         CssRule::new(
             &format!(".{}.{}", c.labels.arc_count, c.relation.dimmed),
-            &[("opacity", "0.3"), ("fill", r.dimmed)],
+            &[("opacity", draw.dimmed_opacity), ("fill", r.dimmed)],
         ),
         CssRule::class(
             c.nodes.child_count,
@@ -417,8 +427,9 @@ fn build_css_rules() -> Vec<CssRule> {
                 ("gap", "8px"),
                 ("padding", "6px 10px"),
                 ("width", "100%"),
-                ("background", "#f8f8f8"),
-                ("border-bottom", "1px solid #e0e0e0"),
+                ("background", tb.bg),
+                ("color", tb.text),
+                ("border-bottom", &format!("1px solid {}", tb.border)),
                 ("font", "12px/1 system-ui, sans-serif"),
                 ("box-sizing", "border-box"),
                 ("min-height", "40px"),
@@ -428,16 +439,17 @@ fn build_css_rules() -> Vec<CssRule> {
             c.toolbar.html_btn,
             &[
                 ("padding", "4px 12px"),
-                ("border", "1px solid #ccc"),
+                ("border", &format!("1px solid {}", tb.control_border)),
                 ("border-radius", "3px"),
-                ("background", "#fff"),
+                ("background", tb.control_bg),
+                ("color", tb.text),
                 ("cursor", "pointer"),
                 ("font-size", "12px"),
             ],
         ),
         CssRule::new(
             &format!(".{}:hover", c.toolbar.html_btn),
-            &[("background", "#e8e8e8")],
+            &[("background", tb.btn_hover)],
         ),
         CssRule::class(c.toolbar.dropdown, &[("position", "relative")]),
         CssRule::class(
@@ -446,10 +458,10 @@ fn build_css_rules() -> Vec<CssRule> {
                 ("position", "absolute"),
                 ("top", "100%"),
                 ("left", "0"),
-                ("background", "#fff"),
-                ("border", "1px solid #ccc"),
+                ("background", tb.control_bg),
+                ("border", &format!("1px solid {}", tb.control_border)),
                 ("border-radius", "3px"),
-                ("box-shadow", "0 2px 8px rgba(0,0,0,0.12)"),
+                ("box-shadow", tb.panel_shadow),
                 ("padding", "4px 0"),
                 ("z-index", "10"),
                 ("min-width", "200px"),
@@ -461,7 +473,36 @@ fn build_css_rules() -> Vec<CssRule> {
         ),
         CssRule::new(
             &format!(".{} .{}:hover", c.toolbar.dropdown_panel, c.toolbar.toggle),
-            &[("background", "#f0f0f0")],
+            &[("background", tb.row_hover)],
+        ),
+        CssRule::class(
+            c.toolbar.dropdown_divider,
+            &[
+                ("border-top", &format!("1px solid {}", tb.border)),
+                ("margin", "4px 0"),
+            ],
+        ),
+        CssRule::class(
+            c.toolbar.select,
+            &[
+                ("display", "flex"),
+                ("align-items", "center"),
+                ("justify-content", "space-between"),
+                ("gap", "8px"),
+                ("padding", "4px 12px"),
+                ("font-size", "12px"),
+                ("white-space", "nowrap"),
+            ],
+        ),
+        CssRule::new(
+            &format!(".{} select", c.toolbar.select),
+            &[
+                ("border", &format!("1px solid {}", tb.control_border)),
+                ("border-radius", "3px"),
+                ("background", tb.control_bg),
+                ("color", tb.text),
+                ("font-size", "11px"),
+            ],
         ),
         CssRule::class(
             c.toolbar.toggle,
@@ -479,7 +520,7 @@ fn build_css_rules() -> Vec<CssRule> {
             &[
                 ("width", "14px"),
                 ("height", "14px"),
-                ("border", "1px solid #999"),
+                ("border", &format!("1px solid {}", tb.checkbox_border)),
                 ("border-radius", "2px"),
                 ("display", "inline-flex"),
                 ("align-items", "center"),
@@ -491,12 +532,16 @@ fn build_css_rules() -> Vec<CssRule> {
             &[
                 ("content", r#""\2713""#),
                 ("font-size", "11px"),
-                ("color", "#333"),
+                ("color", tb.text),
             ],
         ),
         CssRule::class(
             c.toolbar.separator_v,
-            &[("width", "1px"), ("height", "20px"), ("background", "#ccc")],
+            &[
+                ("width", "1px"),
+                ("height", "20px"),
+                ("background", tb.control_border),
+            ],
         ),
         // Search input group
         CssRule::class(
@@ -513,14 +558,16 @@ fn build_css_rules() -> Vec<CssRule> {
             &[
                 ("width", "160px"),
                 ("padding", "4px 24px 4px 8px"),
-                ("border", "1px solid #ccc"),
+                ("border", &format!("1px solid {}", tb.control_border)),
                 ("border-radius", "3px"),
+                ("background", tb.control_bg),
+                ("color", tb.text),
                 ("font-size", "12px"),
             ],
         ),
         CssRule::new(
             "#search-input:focus",
-            &[("border-color", "#4a90d9"), ("outline", "none")],
+            &[("border-color", tb.accent), ("outline", "none")],
         ),
         CssRule::class(
             c.toolbar.search_clear,
@@ -533,7 +580,7 @@ fn build_css_rules() -> Vec<CssRule> {
                 ("border", "none"),
                 ("cursor", "pointer"),
                 ("font-size", "12px"),
-                ("color", "#999"),
+                ("color", tb.text_faint),
             ],
         ),
         // Scope selector (segmented control)
@@ -541,7 +588,7 @@ fn build_css_rules() -> Vec<CssRule> {
             c.toolbar.scope,
             &[
                 ("display", "flex"),
-                ("border", "1px solid #ccc"),
+                ("border", &format!("1px solid {}", tb.control_border)),
                 ("border-radius", "3px"),
                 ("overflow", "hidden"),
             ],
@@ -551,8 +598,9 @@ fn build_css_rules() -> Vec<CssRule> {
             &[
                 ("padding", "4px 8px"),
                 ("border", "none"),
-                ("border-right", "1px solid #ccc"),
-                ("background", "#fff"),
+                ("border-right", &format!("1px solid {}", tb.control_border)),
+                ("background", tb.control_bg),
+                ("color", tb.text),
                 ("cursor", "pointer"),
                 ("font-size", "11px"),
             ],
@@ -563,26 +611,26 @@ fn build_css_rules() -> Vec<CssRule> {
         ),
         CssRule::new(
             &format!(".{}.{}", c.toolbar.scope_btn, c.toolbar.scope_active),
-            &[("background", "#4a90d9"), ("color", "#fff")],
+            &[("background", tb.accent), ("color", tb.on_accent)],
         ),
         CssRule::new(
             &format!(
                 ".{}:hover:not(.{})",
                 c.toolbar.scope_btn, c.toolbar.scope_active
             ),
-            &[("background", "#f0f0f0")],
+            &[("background", tb.row_hover)],
         ),
         CssRule::class(
             c.toolbar.result_count,
             &[
                 ("font-size", "11px"),
-                ("color", "#888"),
+                ("color", tb.text_muted),
                 ("min-width", "60px"),
             ],
         ),
         CssRule::class(
             c.toolbar.jump_status,
-            &[("font-size", "11px"), ("color", "#888")],
+            &[("font-size", "11px"), ("color", tb.text_muted)],
         ),
         // Empty flex children still count for .toolbar-root's gap; hide the
         // span so it takes no space while there is no message to show.
@@ -595,9 +643,9 @@ fn build_css_rules() -> Vec<CssRule> {
         CssRule::new(
             &format!(".{}[aria-pressed=\"true\"]", c.toolbar.follow_toggle),
             &[
-                ("background", "#dbeafe"),
-                ("border-color", "#60a5fa"),
-                ("color", "#1e3a8a"),
+                ("background", tb.pressed_bg),
+                ("border-color", tb.pressed_border),
+                ("color", tb.pressed_text),
             ],
         ),
         // CSS-only search dimming via search-active on SVG root
@@ -611,7 +659,7 @@ fn build_css_rules() -> Vec<CssRule> {
                 c.toolbar.btn,
                 c.labels.arc_count_bg
             ),
-            &[("opacity", "0.3")],
+            &[("opacity", draw.dimmed_opacity)],
         ),
         // Paths: dim all except search matches, hitareas, and shadow paths
         CssRule::new(
@@ -624,7 +672,7 @@ fn build_css_rules() -> Vec<CssRule> {
                 c.relation.shadow_path,
                 c.sidebar.cycle_arrow_path
             ),
-            &[("opacity", "0.3"), ("stroke", r.dimmed)],
+            &[("opacity", draw.dimmed_opacity), ("stroke", r.dimmed)],
         ),
         // Polygons (arrows): dim all except search matches
         CssRule::new(
@@ -632,7 +680,7 @@ fn build_css_rules() -> Vec<CssRule> {
                 "svg.{} polygon:not(.{})",
                 c.search.search_active, c.search.search_match
             ),
-            &[("opacity", "0.3"), ("fill", r.dimmed)],
+            &[("opacity", draw.dimmed_opacity), ("fill", r.dimmed)],
         ),
         // Arc count text: dim except search matches
         CssRule::new(
@@ -640,7 +688,7 @@ fn build_css_rules() -> Vec<CssRule> {
                 "svg.{} text.{}:not(.{})",
                 c.search.search_active, c.labels.arc_count, c.search.search_match
             ),
-            &[("opacity", "0.3"), ("fill", r.dimmed)],
+            &[("opacity", draw.dimmed_opacity), ("fill", r.dimmed)],
         ),
         // Arc count backgrounds: dim except search matches
         CssRule::new(
@@ -648,12 +696,12 @@ fn build_css_rules() -> Vec<CssRule> {
                 "svg.{} rect.{}:not(.{})",
                 c.search.search_active, c.labels.arc_count_bg, c.search.search_match
             ),
-            &[("opacity", "0.3")],
+            &[("opacity", draw.dimmed_opacity)],
         ),
         // Lines: dim all
         CssRule::new(
             &format!("svg.{} line", c.search.search_active),
-            &[("opacity", "0.3")],
+            &[("opacity", draw.dimmed_opacity)],
         ),
         // Toolbar exception: elements inside .view-options never dim during search
         CssRule::new(
@@ -672,7 +720,7 @@ fn build_css_rules() -> Vec<CssRule> {
             &format!("rect.{}", c.search.search_match_parent),
             &[
                 ("opacity", "0.8"),
-                ("stroke", "#4a90d9"),
+                ("stroke", tb.accent),
                 ("stroke-width", "2"),
                 ("stroke-dasharray", "4 2"),
             ],
@@ -683,13 +731,13 @@ fn build_css_rules() -> Vec<CssRule> {
         CssRule::class(
             c.sidebar.root,
             &[
-                ("background", GRAY_50),
-                ("border", &format!("1px solid {GRAY_200}")),
+                ("background", sb.bg),
+                ("border", &format!("1px solid {}", sb.border)),
                 ("border-radius", "8px"),
                 ("box-shadow", &LAYOUT.sidebar.box_shadow_css()),
                 ("font-family", "monospace"),
                 ("font-size", "12px"),
-                ("color", GRAY_600),
+                ("color", sb.text),
                 ("display", "flex"),
                 ("flex-direction", "column"),
                 ("overflow", "hidden"),
@@ -703,7 +751,7 @@ fn build_css_rules() -> Vec<CssRule> {
                 ("justify-content", "space-between"),
                 ("align-items", "center"),
                 ("padding", "8px 10px"),
-                ("border-bottom", &format!("1px solid {GRAY_200}")),
+                ("border-bottom", &format!("1px solid {}", sb.border)),
             ],
         ),
         CssRule::class(
@@ -720,12 +768,12 @@ fn build_css_rules() -> Vec<CssRule> {
         // literal class string from sidebar.js, no constants.rs entry (Phase 2).
         CssRule::class(
             "sidebar-subheader",
-            &[("color", GRAY_400), ("font-size", "11px")],
+            &[("color", sb.text_muted), ("font-size", "11px")],
         ),
         CssRule::class(
             c.sidebar.arrow,
             &[
-                ("color", GRAY_400),
+                ("color", sb.text_muted),
                 ("font-family", "sans-serif"),
                 ("font-size", "16px"),
                 ("font-weight", "normal"),
@@ -736,7 +784,7 @@ fn build_css_rules() -> Vec<CssRule> {
             &[
                 ("cursor", "pointer"),
                 ("font-size", "16px"),
-                ("color", GRAY_400),
+                ("color", sb.text_muted),
                 ("border", "none"),
                 ("background", "none"),
                 ("padding", "2px 6px"),
@@ -744,7 +792,7 @@ fn build_css_rules() -> Vec<CssRule> {
         ),
         CssRule::new(
             &format!(".{}:hover", c.sidebar.close),
-            &[("color", GRAY_600)],
+            &[("color", sb.text)],
         ),
         CssRule::class(
             c.sidebar.header_actions,
@@ -759,7 +807,7 @@ fn build_css_rules() -> Vec<CssRule> {
             &[
                 ("cursor", "pointer"),
                 ("font-size", "16px"),
-                ("color", GRAY_400),
+                ("color", sb.text_muted),
                 ("border", "none"),
                 ("background", "none"),
                 ("padding", "2px 6px"),
@@ -767,7 +815,7 @@ fn build_css_rules() -> Vec<CssRule> {
         ),
         CssRule::new(
             &format!(".{}:hover", c.sidebar.collapse_all),
-            &[("color", GRAY_600)],
+            &[("color", sb.text)],
         ),
         CssRule::class(
             c.sidebar.content,
@@ -793,7 +841,7 @@ fn build_css_rules() -> Vec<CssRule> {
         CssRule::class(
             c.sidebar.location,
             &[
-                ("color", GRAY_400),
+                ("color", sb.text_muted),
                 ("padding-left", "12px"),
                 ("font-size", "11px"),
                 ("white-space", "nowrap"),
@@ -856,8 +904,8 @@ fn build_css_rules() -> Vec<CssRule> {
         CssRule::class(
             "jump-popover-bg",
             &[
-                ("fill", "#fff"),
-                ("stroke", GRAY_300),
+                ("fill", pop.bg),
+                ("stroke", pop.border),
                 ("stroke-width", "1"),
                 ("rx", "4px"),
             ],
@@ -865,18 +913,25 @@ fn build_css_rules() -> Vec<CssRule> {
         CssRule::class("jump-chip", &[("cursor", "pointer")]),
         CssRule::class(
             "jump-chip-bg",
-            &[("fill", GRAY_100), ("stroke", GRAY_300), ("rx", "3px")],
+            &[
+                ("fill", pop.chip_bg),
+                ("stroke", pop.chip_border),
+                ("rx", "3px"),
+            ],
         ),
         CssRule::new(
             ".jump-chip:hover .jump-chip-bg",
-            &[("fill", BLUE_100), ("stroke", BLUE_300)],
+            &[
+                ("fill", pop.chip_hover_bg),
+                ("stroke", pop.chip_hover_border),
+            ],
         ),
         CssRule::class(
             "jump-chip-label",
             &[
                 ("font-family", "monospace"),
                 ("font-size", "10px"),
-                ("fill", GRAY_600),
+                ("fill", pop.chip_text),
                 ("text-anchor", "middle"),
                 ("dominant-baseline", "central"),
                 ("pointer-events", "none"),
@@ -886,7 +941,7 @@ fn build_css_rules() -> Vec<CssRule> {
             c.sidebar.toggle,
             &[
                 ("font-size", "10px"),
-                ("color", GRAY_400),
+                ("color", sb.text_muted),
                 ("width", "12px"),
                 ("user-select", "none"),
                 ("-webkit-user-select", "none"),
@@ -909,7 +964,7 @@ fn build_css_rules() -> Vec<CssRule> {
         ),
         CssRule::new(
             &format!(".{} path", c.sidebar.cycle_arrow),
-            &[("stroke", GRAY_600)],
+            &[("stroke", sb.text)],
         ),
         CssRule::class(
             c.sidebar.cycle_node,
@@ -930,7 +985,7 @@ fn build_css_rules() -> Vec<CssRule> {
         CssRule::class(
             c.sidebar.ns,
             &[
-                ("color", GRAY_400),
+                ("color", sb.text_muted),
                 ("font-size", "10px"),
                 ("flex", "0 1 auto"),
                 ("min-width", "0"),
@@ -950,7 +1005,7 @@ fn build_css_rules() -> Vec<CssRule> {
         CssRule::class(
             c.sidebar.ref_count,
             &[
-                ("color", GRAY_400),
+                ("color", sb.text_muted),
                 ("font-size", "10px"),
                 ("margin-left", "auto"),
                 ("user-select", "none"),
@@ -964,11 +1019,11 @@ fn build_css_rules() -> Vec<CssRule> {
         CssRule::class(
             "sidebar-locality",
             &[
-                ("color", GRAY_400),
+                ("color", sb.text_muted),
                 ("font-size", "9px"),
                 ("margin-left", "6px"),
                 ("padding", "0 4px"),
-                ("border", &format!("1px solid {GRAY_300}")),
+                ("border", &format!("1px solid {}", sb.tag_border)),
                 ("border-radius", "3px"),
                 ("flex-shrink", "0"),
                 ("user-select", "none"),
@@ -978,12 +1033,12 @@ fn build_css_rules() -> Vec<CssRule> {
         CssRule::class(
             c.sidebar.ext_info,
             &[
-                ("color", GRAY_400),
+                ("color", sb.text_muted),
                 ("font-size", "8px"),
                 ("font-style", "normal"),
                 ("margin-left", "auto"),
                 ("cursor", "help"),
-                ("border", &format!("1px solid {GRAY_300}")),
+                ("border", &format!("1px solid {}", sb.tag_border)),
                 ("border-radius", "50%"),
                 ("width", "12px"),
                 ("height", "12px"),
@@ -1007,7 +1062,7 @@ fn build_css_rules() -> Vec<CssRule> {
         CssRule::class(
             "sidebar-edge-row-focus",
             &[
-                ("background", GRAY_100),
+                ("background", sb.row_focus_bg),
                 ("border-left", &format!("2px solid {}", d.cycle)),
                 ("margin-left", "-2px"),
                 ("padding-left", "2px"),
@@ -1016,7 +1071,7 @@ fn build_css_rules() -> Vec<CssRule> {
         CssRule::class(
             "sidebar-edge-meta",
             &[
-                ("color", GRAY_400),
+                ("color", sb.text_muted),
                 ("font-size", "10px"),
                 ("flex-shrink", "0"),
                 ("white-space", "nowrap"),
@@ -1050,7 +1105,7 @@ fn build_css_rules() -> Vec<CssRule> {
                 ("flex-shrink", "0"),
                 ("width", "12px"),
                 ("font-size", "10px"),
-                ("color", GRAY_400),
+                ("color", sb.text_muted),
             ],
         ),
         // Rotates open; transition lives in the reduced-motion media query below.
@@ -1062,8 +1117,8 @@ fn build_css_rules() -> Vec<CssRule> {
             "block-ordinal",
             &[
                 ("flex-shrink", "0"),
-                ("background", GRAY_200),
-                ("color", GRAY_600),
+                ("background", sb.ordinal_bg),
+                ("color", sb.text),
                 ("font-size", "10px"),
                 ("padding", "0 4px"),
                 ("border-radius", "3px"),
@@ -1083,7 +1138,7 @@ fn build_css_rules() -> Vec<CssRule> {
             "block-module-count",
             &[
                 ("flex-shrink", "0"),
-                ("color", GRAY_400),
+                ("color", sb.text_muted),
                 ("font-size", "10px"),
             ],
         ),
@@ -1127,8 +1182,8 @@ fn build_css_rules() -> Vec<CssRule> {
         CssRule::class(
             c.sidebar.line_badge,
             &[
-                ("background", BLUE_100),
-                ("color", BLUE),
+                ("background", sb.badge_bg),
+                ("color", sb.badge_text),
                 ("padding", "1px 4px"),
                 ("border-radius", "3px"),
                 ("font-size", "10px"),
@@ -1138,7 +1193,7 @@ fn build_css_rules() -> Vec<CssRule> {
             c.sidebar.divider,
             &[
                 ("border", "none"),
-                ("border-top", &format!("1px solid {GRAY_200}")),
+                ("border-top", &format!("1px solid {}", sb.border)),
                 ("margin", "6px 0"),
             ],
         ),
@@ -1146,15 +1201,16 @@ fn build_css_rules() -> Vec<CssRule> {
             c.sidebar.footer,
             &[
                 ("padding", "6px 10px"),
-                ("border-top", &format!("1px solid {GRAY_200}")),
+                ("border-top", &format!("1px solid {}", sb.border)),
                 ("font-size", "10px"),
-                ("color", GRAY_400),
+                ("color", sb.text_muted),
             ],
         ),
+        // Node badges repeat the node's diagram colours.
         CssRule::class(
             c.sidebar.node_crate,
             &[
-                ("background", BLUE_100),
+                ("background", n.crate_fill),
                 ("padding", "1px 4px"),
                 ("border-radius", "3px"),
             ],
@@ -1162,37 +1218,37 @@ fn build_css_rules() -> Vec<CssRule> {
         CssRule::class(
             c.sidebar.node_module,
             &[
-                ("background", ORANGE_100),
+                ("background", n.module_fill),
                 ("padding", "1px 4px"),
                 ("border-radius", "3px"),
             ],
         ),
         CssRule::class(
             c.sidebar.node_from,
-            &[("border", &format!("2px solid {PURPLE}"))],
+            &[("border", &format!("2px solid {}", r.dependent))],
         ),
         CssRule::class(
             c.sidebar.node_to,
-            &[("border", &format!("2px solid {GREEN}"))],
+            &[("border", &format!("2px solid {}", r.dependency))],
         ),
         CssRule::new(
             &format!(".{}.{}", c.sidebar.node_crate, c.sidebar.node_selected),
             &[
-                ("background", BLUE_300),
-                ("border", &format!("2px solid {BLUE}")),
+                ("background", ns.crate_fill),
+                ("border", &format!("2px solid {}", n.crate_stroke)),
             ],
         ),
         CssRule::new(
             &format!(".{}.{}", c.sidebar.node_module, c.sidebar.node_selected),
             &[
-                ("background", ORANGE_300),
-                ("border", &format!("2px solid {ORANGE}")),
+                ("background", ns.module_fill),
+                ("border", &format!("2px solid {}", n.module_stroke)),
             ],
         ),
         CssRule::class(
             c.sidebar.node_external,
             &[
-                ("background", GRAY_200),
+                ("background", n.external_crate_fill),
                 ("padding", "1px 4px"),
                 ("border-radius", "3px"),
             ],
@@ -1200,7 +1256,7 @@ fn build_css_rules() -> Vec<CssRule> {
         CssRule::class(
             c.sidebar.node_external_transitive,
             &[
-                ("background", GRAY_100),
+                ("background", n.external_transitive_fill),
                 ("padding", "1px 4px"),
                 ("border-radius", "3px"),
             ],
@@ -1208,7 +1264,7 @@ fn build_css_rules() -> Vec<CssRule> {
         CssRule::class(
             c.sidebar.node_external_section,
             &[
-                ("background", GRAY_200),
+                ("background", n.external_section_fill),
                 ("padding", "1px 4px"),
                 ("border-radius", "3px"),
             ],
@@ -1216,8 +1272,8 @@ fn build_css_rules() -> Vec<CssRule> {
         CssRule::new(
             &format!(".{}.{}", c.sidebar.node_external, c.sidebar.node_selected),
             &[
-                ("background", GRAY_300),
-                ("border", &format!("2px solid {GRAY_600}")),
+                ("background", ns.external_fill),
+                ("border", &format!("2px solid {}", n.external_crate_stroke)),
             ],
         ),
         CssRule::new(
@@ -1226,8 +1282,11 @@ fn build_css_rules() -> Vec<CssRule> {
                 c.sidebar.node_external_transitive, c.sidebar.node_selected
             ),
             &[
-                ("background", GRAY_200),
-                ("border", &format!("2px solid {GRAY_400}")),
+                ("background", ns.external_transitive_fill),
+                (
+                    "border",
+                    &format!("2px solid {}", sb.node_external_transitive_selected_border),
+                ),
             ],
         ),
         // Badge navigation: clickable node badges
@@ -1292,9 +1351,43 @@ fn build_css_rules() -> Vec<CssRule> {
     ]
 }
 
+/// One block declaring every custom property of `theme` under `selector`.
+fn theme_block(selector: &str, theme: &Theme) -> String {
+    let mut block = format!("    {selector} {{");
+    for (name, value) in theme.palette.variables() {
+        let _ = write!(block, " {name}: {value};");
+    }
+    block.push_str(" }\n");
+    block
+}
+
+/// The rules read every colour through `var(--arc-…)`; the blocks ahead of
+/// them declare the values. `:root` carries the light default and the
+/// dark-scheme media query the dark default; `data-mode` on the root picks
+/// a mode's default regardless of the system, and `data-theme` a theme by
+/// name. The attribute selectors follow the media query in source order
+/// and outrank it by specificity, so a pinned root wins.
 pub(super) fn render_styles() -> String {
-    let rules = build_css_rules();
+    let rules = build_css_rules(&ColorPalette::VARS);
     let mut css = String::from("  <style>\n");
+    css.push_str(&theme_block(":root", &LATTE));
+    let _ = writeln!(
+        css,
+        "    @media (prefers-color-scheme: dark) {{ {}    }}",
+        theme_block(":root", &MOCHA).trim_start()
+    );
+    for mode in [Mode::Light, Mode::Dark] {
+        css.push_str(&theme_block(
+            &format!(":root[data-mode=\"{}\"]", mode.as_str()),
+            Theme::default_for(mode),
+        ));
+    }
+    for theme in THEMES {
+        css.push_str(&theme_block(
+            &format!(":root[data-theme=\"{}\"]", theme.name),
+            theme,
+        ));
+    }
     for rule in &rules {
         if rule.properties.is_empty() {
             let _ = writeln!(css, "    {} {{ }}", rule.selector);
@@ -1323,6 +1416,125 @@ pub(super) fn render_styles() -> String {
 mod tests {
     use super::*;
 
+    /// The stylesheet declares the light theme on `:root`, the dark theme
+    /// under the dark-scheme media query, and each theme by name under
+    /// `data-theme`, which outranks the media query by specificity.
+    #[test]
+    fn test_stylesheet_declares_every_theme_as_custom_properties() {
+        let css = render_styles();
+        let crate_fill = |theme: &Theme| {
+            format!(
+                "{{ --arc-node-crate-fill: {};",
+                theme.palette.nodes.crate_fill
+            )
+        };
+        assert!(
+            css.contains(&format!(":root {}", crate_fill(&LATTE))),
+            "light theme on :root, got: {css}"
+        );
+        assert!(
+            css.contains(&format!(
+                "@media (prefers-color-scheme: dark) {{ :root {}",
+                crate_fill(&MOCHA)
+            )),
+            "dark theme under the media query, got: {css}"
+        );
+        for theme in &THEMES {
+            assert!(
+                css.contains(&format!(
+                    ":root[data-theme=\"{}\"] {}",
+                    theme.name,
+                    crate_fill(theme)
+                )),
+                "{} pinned by data-theme, got: {css}",
+                theme.name
+            );
+        }
+        let media_query = css.find("@media (prefers-color-scheme").unwrap();
+        let pinned = css.find(":root[data-theme=").unwrap();
+        assert!(
+            media_query < pinned,
+            "a pinned theme must follow the media query"
+        );
+    }
+
+    /// Rules read their colours through `var(--arc-…)`, so the theme in
+    /// force decides them, and every variable a rule names is declared.
+    #[test]
+    fn test_rules_read_their_colors_through_variables() {
+        let css = render_styles();
+        assert!(
+            css.contains(&format!(
+                ".{} {{ fill: var(--arc-node-crate-fill);",
+                CSS.nodes.crate_node
+            )),
+            "got: {css}"
+        );
+        let declared: std::collections::BTreeSet<&str> =
+            LATTE.palette.variables().map(|(name, _)| name).collect();
+        let referenced = css.match_indices("var(--arc-").map(|(idx, _)| {
+            let start = idx + "var(".len();
+            let end = css[start..].find(')').expect("var( is closed") + start;
+            &css[start..end]
+        });
+        for name in referenced {
+            assert!(
+                declared.contains(name),
+                "{name} is referenced but not declared"
+            );
+        }
+    }
+
+    /// Text that used to rely on the browser's default black takes its
+    /// colour from the theme, or a dark theme would paint black on dark.
+    #[test]
+    fn test_text_colors_come_from_the_theme() {
+        let css = render_styles();
+        let rule_body = |selector: &str| -> String {
+            let idx = css
+                .find(&format!("{selector} {{"))
+                .unwrap_or_else(|| panic!("CSS should contain a rule for {selector}"));
+            let end = css[idx..].find('}').map_or(css.len(), |i| idx + i);
+            css[idx..end].to_string()
+        };
+        let vars = &ColorPalette::VARS;
+        assert!(
+            rule_body(&format!(".{}", CSS.nodes.label))
+                .contains(&format!("fill: {}", vars.nodes.text))
+        );
+        assert!(
+            rule_body(&format!(".{}", CSS.toolbar.root))
+                .contains(&format!("color: {}", vars.toolbar.text))
+        );
+        let input = rule_body("#search-input");
+        assert!(input.contains(&format!("background: {}", vars.toolbar.control_bg)));
+        assert!(input.contains(&format!("color: {}", vars.toolbar.text)));
+    }
+
+    /// A rule reads its colour from the palette it was built with, so a
+    /// second palette yields a second stylesheet.
+    #[test]
+    fn test_css_rules_take_their_colors_from_the_given_palette() {
+        let mut other = LATTE.palette;
+        other.nodes.crate_fill = "#123456";
+        other.toolbar.bg = "#654321";
+        other.sidebar.text_muted = "#abcdef";
+        let css = |palette: &ColorPalette| {
+            build_css_rules(palette)
+                .iter()
+                .flat_map(|rule| rule.properties.iter())
+                .map(|(_, value)| value.clone())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let default_css = css(&LATTE.palette);
+        let other_css = css(&other);
+        for color in ["#123456", "#654321", "#abcdef"] {
+            assert!(!default_css.contains(color), "{color} in default css");
+            assert!(other_css.contains(color), "{color} missing in other css");
+        }
+    }
+
     #[test]
     fn test_cycle_color_gated_by_cluster_mode() {
         // The cycle color must only apply under the .cluster-mode-on container
@@ -1330,7 +1542,7 @@ mod tests {
         let css = render_styles();
         let d = &CSS.direction;
         let state = CSS.relation.cluster_mode_on;
-        let cycle_color = COLORS.direction.cycle;
+        let cycle_color = ColorPalette::VARS.direction.cycle;
         // Gated cycle-arc rule carries the cycle stroke color.
         assert!(
             css.contains(&format!(
@@ -1357,7 +1569,7 @@ mod tests {
         let css = render_styles();
         let n = &CSS.nodes;
         let state = CSS.relation.cluster_mode_on;
-        let cycle_color = COLORS.direction.cycle;
+        let cycle_color = ColorPalette::VARS.direction.cycle;
         assert!(
             css.contains(&format!(
                 ".{state} .{}, .{state} .{} {{ fill: {cycle_color}",
@@ -1422,9 +1634,9 @@ mod tests {
         assert!(css.contains(&format!(".{}", CSS.labels.hidden_by_filter)));
 
         // Color values present
-        assert!(css.contains(COLORS.nodes.crate_fill));
-        assert!(css.contains(COLORS.direction.downward));
-        assert!(css.contains(COLORS.relation.dependency));
+        assert!(css.contains(LATTE.palette.nodes.crate_fill));
+        assert!(css.contains(LATTE.palette.direction.downward));
+        assert!(css.contains(LATTE.palette.relation.dependency));
     }
 
     #[test]
@@ -1601,8 +1813,10 @@ mod tests {
         };
         let bg = rule_body(".jump-popover-bg");
         assert!(
-            bg.contains("fill: #fff") && bg.contains("stroke:") && bg.contains("rx:"),
-            "popover background should be a white outlined rounded box, got: {bg}"
+            bg.contains(&format!("fill: {}", ColorPalette::VARS.popover.bg))
+                && bg.contains("stroke:")
+                && bg.contains("rx:"),
+            "popover background should be a filled, outlined, rounded box, got: {bg}"
         );
         let bridge = rule_body(".jump-popover-bridge");
         assert!(
@@ -1685,14 +1899,15 @@ mod tests {
         let css = render_styles();
 
         // The focused cycle edge (marked highlighted-arc + glow-cycle by
-        // DerivedState) gets a backing glow in the cycle color, same style as
-        // glow-incoming/glow-outgoing.
+        // DerivedState) gets a backing glow in the cycle glow color, same
+        // style as glow-incoming/glow-outgoing.
         assert!(
             css.contains(&format!(
                 ".{} {{ stroke: {};",
-                CSS.relation.glow_cycle, COLORS.direction.cycle
+                CSS.relation.glow_cycle,
+                ColorPalette::VARS.glow.cycle
             )),
-            "CSS should contain .glow-cycle styled in the cycle color"
+            "CSS should contain .glow-cycle styled in the cycle glow color"
         );
     }
 
@@ -1747,10 +1962,10 @@ mod tests {
         assert!(css.contains("cursor:pointer") || css.contains("cursor: pointer"));
         assert!(css.contains("display:flex") || css.contains("display: flex"));
 
-        // .sidebar-line-badge: background mit BLUE_100
+        // .sidebar-line-badge: background from the sidebar palette
         assert!(
-            css.contains(BLUE_100),
-            "CSS should contain BLUE_100 for line-badge background"
+            css.contains(ColorPalette::VARS.sidebar.badge_bg),
+            "CSS should contain the badge background for line-badge"
         );
 
         // .sidebar-footer: border-top
@@ -1795,31 +2010,31 @@ mod tests {
             css.contains(".sidebar-node-module.sidebar-node-selected"),
             "CSS should contain .sidebar-node-module.sidebar-node-selected"
         );
-        // Crate selected: BLUE_300 background + BLUE border
+        // Crate selected: selection fill + crate stroke as border
         let crate_rule_idx = css
             .find(".sidebar-node-crate.sidebar-node-selected")
             .unwrap();
         let crate_section = &css[crate_rule_idx..crate_rule_idx + 200];
         assert!(
-            crate_section.contains(BLUE_300),
-            "Crate selected should use BLUE_300 background"
+            crate_section.contains(ColorPalette::VARS.node_selection.crate_fill),
+            "Crate selected should use the crate selection fill"
         );
         assert!(
-            crate_section.contains(BLUE),
-            "Crate selected should use BLUE border"
+            crate_section.contains(ColorPalette::VARS.nodes.crate_stroke),
+            "Crate selected should use the crate stroke as border"
         );
-        // Module selected: ORANGE_300 background + ORANGE border
+        // Module selected: selection fill + module stroke as border
         let module_rule_idx = css
             .find(".sidebar-node-module.sidebar-node-selected")
             .unwrap();
         let module_section = &css[module_rule_idx..module_rule_idx + 200];
         assert!(
-            module_section.contains(ORANGE_300),
-            "Module selected should use ORANGE_300 background"
+            module_section.contains(ColorPalette::VARS.node_selection.module_fill),
+            "Module selected should use the module selection fill"
         );
         assert!(
-            module_section.contains(ORANGE),
-            "Module selected should use ORANGE border"
+            module_section.contains(ColorPalette::VARS.nodes.module_stroke),
+            "Module selected should use the module stroke as border"
         );
     }
 
@@ -1827,32 +2042,36 @@ mod tests {
     fn test_css_contains_sidebar_external_node_selected() {
         let css = render_styles();
 
-        // External selected: GRAY_300 background + GRAY_600 border
+        // External selected: selection fill + external crate stroke as border
         let ext_rule_idx = css
             .find(".sidebar-node-external.sidebar-node-selected")
             .unwrap();
         let ext_section = &css[ext_rule_idx..ext_rule_idx + 200];
         assert!(
-            ext_section.contains(GRAY_300),
-            "External selected should use GRAY_300 background"
+            ext_section.contains(ColorPalette::VARS.node_selection.external_fill),
+            "External selected should use the external selection fill"
         );
         assert!(
-            ext_section.contains(GRAY_600),
-            "External selected should use GRAY_600 border"
+            ext_section.contains(ColorPalette::VARS.nodes.external_crate_stroke),
+            "External selected should use the external crate stroke as border"
         );
 
-        // External-transitive selected: GRAY_200 background + GRAY_400 border
+        // External-transitive selected: selection fill + its own border
         let ext_t_rule_idx = css
             .find(".sidebar-node-external-transitive.sidebar-node-selected")
             .unwrap();
         let ext_t_section = &css[ext_t_rule_idx..ext_t_rule_idx + 200];
         assert!(
-            ext_t_section.contains(GRAY_200),
-            "External-transitive selected should use GRAY_200 background"
+            ext_t_section.contains(ColorPalette::VARS.node_selection.external_transitive_fill),
+            "External-transitive selected should use the transitive selection fill"
         );
         assert!(
-            ext_t_section.contains(GRAY_400),
-            "External-transitive selected should use GRAY_400 border"
+            ext_t_section.contains(
+                ColorPalette::VARS
+                    .sidebar
+                    .node_external_transitive_selected_border
+            ),
+            "External-transitive selected should use the sidebar border colour"
         );
     }
 
@@ -1912,7 +2131,8 @@ mod tests {
         assert!(
             css.contains(&format!(
                 ".{} {{ stroke: {};",
-                CSS.node_selection.cycle_member, COLORS.direction.cycle
+                CSS.node_selection.cycle_member,
+                ColorPalette::VARS.direction.cycle
             )),
             "cycle-member should use cycle color for stroke"
         );
@@ -1956,7 +2176,7 @@ mod tests {
 
     #[test]
     fn test_build_css_rules_count() {
-        let rules = build_css_rules();
+        let rules = build_css_rules(&ColorPalette::VARS);
         // We expect a substantial number of CSS rules (roughly 40+)
         assert!(
             rules.len() >= 35,
@@ -1967,7 +2187,7 @@ mod tests {
 
     #[test]
     fn test_css_rule_selectors_use_constants() {
-        let rules = build_css_rules();
+        let rules = build_css_rules(&ColorPalette::VARS);
         // Verify key selectors reference CSS constants
         let selectors: Vec<&str> = rules.iter().map(|r| r.selector.as_str()).collect();
         assert!(
@@ -2088,7 +2308,7 @@ mod tests {
         assert!(
             css.contains(&format!(
                 ".sidebar-edge-row.edge-closing .sidebar-arrow {{ color: {};",
-                COLORS.direction.cycle
+                ColorPalette::VARS.direction.cycle
             )),
             "edge-closing arrow should reuse the existing cycle color"
         );

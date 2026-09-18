@@ -1,9 +1,10 @@
 // highlight_renderer.test.js - Tests for HighlightRenderer (DOM application of highlight state)
 import { beforeEach, describe, expect, test } from 'bun:test';
 
-// Set up STATIC_DATA.classes (normally injected by render.rs)
+// Set up STATIC_DATA.classes and .theme (normally injected by render.rs)
 if (!globalThis.STATIC_DATA) globalThis.STATIC_DATA = {};
 if (!globalThis.STATIC_DATA.classes) globalThis.STATIC_DATA.classes = {};
+globalThis.STATIC_DATA.theme = { shadowOpacity: '0.42', light: [], dark: [] };
 Object.assign(globalThis.STATIC_DATA.classes, {
   depArc: 'dep-arc',
   cycleArc: 'cycle-arc',
@@ -397,6 +398,9 @@ describe('HighlightRenderer', () => {
 
       // Shadow should have shadowPath class
       expect(shadow.classList.contains(C.shadowPath)).toBe(true);
+
+      // The glow opacity is the renderer's, handed over in STATIC_DATA.theme
+      expect(shadow.getAttribute('opacity')).toBe('0.42');
     });
 
     test('dimming order: resetDimming before classes, activateDimming after', () => {

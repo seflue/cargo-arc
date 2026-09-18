@@ -89,7 +89,8 @@ impl<'a> Server<'a> {
     }
 
     /// Turns each stdin line into an event for every open stream. A line
-    /// that parses to nothing, or names a file without a node, is dropped.
+    /// that parses to nothing, names a file without a node, or repeats the
+    /// editor's mode is dropped.
     fn forward_stdin(&self, stdin: impl BufRead) {
         for line in stdin.lines() {
             let Ok(line) = line else {
@@ -103,6 +104,12 @@ impl<'a> Server<'a> {
                     JumpService::focus_event(&focus)
                 }
                 Some(StdinCommand::Follow(state)) => JumpService::follow_event(state),
+                Some(StdinCommand::Theme(mode)) => {
+                    if !self.service.set_editor_mode(mode) {
+                        continue;
+                    }
+                    JumpService::theme_event(mode)
+                }
                 None => continue,
             };
             self.subscribers()
@@ -124,7 +131,7 @@ impl<'a> Server<'a> {
         let (path, query) = split_url(&url);
         match path {
             "/" => {
-                respond_page(request, self.service.page());
+                respond_page(request, &self.service.page());
                 Ok(())
             }
             "/jump" => self.handle_jump(request, query, out),
@@ -267,7 +274,7 @@ mod tests {
         let b = table.insert(PathBuf::from("/ws/b/Cargo.toml"), 1);
         table.insert_node_files("1", [b]);
 
-        JumpService::new(&svg, table, PathBuf::from("/ws"))
+        JumpService::new(svg, table, PathBuf::from("/ws"), None)
     }
 
     /// Opens the event stream and returns the connection once the response
@@ -327,6 +334,51 @@ mod tests {
         });
 
         assert_eq!(out, b"");
+    }
+
+    /// A theme line reaches an open page as an event and a page loaded
+    /// afterwards through the root attribute.
+    #[test]
+    fn pushes_a_theme_line_and_serves_later_pages_in_that_mode() {
+        let service = two_entry_service();
+        let (server, port) = Server::bind(&service, None).unwrap();
+        let (reader, mut stdin) = std::io::pipe().unwrap();
+        let mut out = Vec::new();
+
+        thread::scope(|scope| {
+            let handle = scope.spawn(|| server.run(BufReader::new(reader), &mut out));
+
+            let mut events = subscribe(port);
+            writeln!(stdin, "arc theme dark").unwrap();
+            // A repeated mode is no change and sends nothing.
+            writeln!(stdin, "arc theme dark").unwrap();
+            writeln!(stdin, "arc follow on").unwrap();
+            assert_eq!(
+                read_until(&mut events, "\n\n"),
+                "event: theme\ndata: dark\n\n"
+            );
+            assert_eq!(
+                read_until(&mut events, "\n\n"),
+                "event: follow\ndata: on\n\n"
+            );
+
+            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            write!(
+                stream,
+                "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+            let mut response = String::new();
+            stream.read_to_string(&mut response).unwrap();
+            assert!(
+                response
+                    .contains("<html xmlns=\"http://www.w3.org/1999/xhtml\" data-mode=\"dark\">")
+            );
+
+            drop(stdin);
+            server.unblock();
+            handle.join().unwrap().unwrap();
+        });
     }
 
     #[test]

@@ -17,6 +17,7 @@ declare const SearchLogic: typeof import('./search.js').SearchLogic;
 declare const Selectors: typeof import('./selectors.js').Selectors;
 declare const SidebarLogic: typeof import('./sidebar.js').SidebarLogic;
 declare const StaticData: typeof import('./static_data.js').StaticData;
+declare const Theme: typeof import('./theme.js').Theme;
 declare const TreeLogic: typeof import('./tree_logic.js').TreeLogic;
 declare const VirtualEdgeLogic: typeof import('./virtual_edge_logic.js').VirtualEdgeLogic;
 declare const TextMeasure: typeof import('./text_metrics.js').TextMeasure;
@@ -77,6 +78,10 @@ interface StaticSymbolLocality {
   module?: string;
   consumers: string[];
 }
+interface StaticThemeName {
+  name: string;
+  label: string;
+}
 declare const STATIC_DATA: {
   nodes: Record<string, StaticNodeData>;
   arcs: Record<string, StaticArcData>;
@@ -85,6 +90,11 @@ declare const STATIC_DATA: {
   clusters?: Record<string, StaticClusterData>;
   symbolLocalities?: Record<string, Record<string, StaticSymbolLocality>>;
   expandLevel?: number | null;
+  theme: {
+    shadowOpacity: string;
+    light: StaticThemeName[];
+    dark: StaticThemeName[];
+  };
 };
 
 // Window augmentation

@@ -277,7 +277,7 @@ const HighlightRenderer = {
 
         const pathLength = ArcLogic.estimatePathLength(arc.getAttribute('d'));
         shadow.style.strokeWidth = `${shadowWidth}px`;
-        shadow.setAttribute('opacity', '0.25');
+        shadow.setAttribute('opacity', STATIC_DATA.theme.shadowOpacity);
         shadow.style.strokeLinecap = 'round';
         shadow.style.strokeDasharray = `${visibleLength} ${pathLength}`;
         shadow.style.strokeDashoffset = `${dashOffset}px`;

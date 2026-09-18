@@ -1,5 +1,6 @@
-use super::constants::{CSS, LAYOUT, RenderConfig};
+use super::constants::{CSS, DRAWING, LAYOUT, RenderConfig};
 use super::positioning::PositionedItem;
+use super::theme::{Mode, Theme};
 use crate::diagnose::ConsumerLocality;
 use crate::layout::{
     CyclicEdgeInfo, ItemKind, LayoutIR, LocatedSource, LocationId, NodeId, TargetKind,
@@ -22,6 +23,41 @@ struct StaticData {
     symbol_localities: BTreeMap<String, BTreeMap<String, SymbolLocalityData>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     expand_level: Option<usize>,
+    theme: ThemeData,
+}
+
+/// What the page needs to style and choose themes: the glow opacity it
+/// paints itself, and the themes per mode, each mode's default first.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ThemeData {
+    shadow_opacity: &'static str,
+    light: Vec<ThemeName>,
+    dark: Vec<ThemeName>,
+}
+
+#[derive(Serialize)]
+struct ThemeName {
+    name: &'static str,
+    label: &'static str,
+}
+
+impl ThemeData {
+    fn current() -> Self {
+        let of_mode = |mode: Mode| {
+            Theme::of_mode(mode)
+                .map(|theme| ThemeName {
+                    name: theme.name,
+                    label: theme.label,
+                })
+                .collect()
+        };
+        Self {
+            shadow_opacity: DRAWING.shadow_opacity,
+            light: of_mode(Mode::Light),
+            dark: of_mode(Mode::Dark),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -543,6 +579,7 @@ fn generate_static_data(
         clusters,
         symbol_localities,
         expand_level: config.expand_level,
+        theme: ThemeData::current(),
     };
     format!(
         "const STATIC_DATA = {};",
@@ -591,6 +628,31 @@ mod tests {
     use crate::layout::{JumpTable, JumpTarget, LayoutEdge, LocatedDefinition, build_layout};
     use crate::model::{EdgeContext, SourceLocation};
     use crate::test_support::{crate_node, module_node};
+
+    /// The page reads the shadow opacity and the theme names per mode, the
+    /// default first, from `STATIC_DATA.theme`.
+    #[test]
+    fn test_static_data_carries_the_theme_block() {
+        let ir = LayoutIR::new();
+        let config = RenderConfig::default();
+        let script = render_script(&config, &ir, &[], &HashSet::new());
+        let json_str = script
+            .split("const STATIC_DATA = ")
+            .nth(1)
+            .unwrap()
+            .split(";\n")
+            .next()
+            .unwrap();
+        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
+        assert_eq!(
+            data["theme"],
+            serde_json::json!({
+                "shadowOpacity": "0.25",
+                "light": [{ "name": "latte", "label": "Catppuccin Latte" }],
+                "dark": [{ "name": "mocha", "label": "Catppuccin Mocha" }],
+            })
+        );
+    }
 
     // === format_source_locations_by_symbol Tests ===
 

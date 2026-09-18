@@ -1,3 +1,5 @@
+use super::theme::Theme;
+
 /// All layout constants consolidated in one place.
 /// Use `static` (not `const`) so references like `let tb = &LAYOUT.toolbar` work.
 pub(super) struct LayoutConstants {
@@ -111,135 +113,29 @@ pub(super) static LAYOUT: LayoutConstants = LayoutConstants {
     },
 };
 
-// --- Color Palette (Catppuccin Latte + Tailwind + Neutrals) ---
-
-pub(super) const GREEN: &str = "#40a02b";
-pub(super) const YELLOW: &str = "#df8e1d";
-/// Cluster / cycle mass. A muted rose (Catppuccin Latte Flamingo), not a vivid
-/// red: it paints the whole strongly-connected cluster, so it must recede into
-/// context.
-pub(super) const RED: &str = "#dd7878";
-pub(super) const PURPLE: &str = "#8839ef";
-pub(super) const BLUE: &str = "#1e66f5";
-pub(super) const ORANGE: &str = "#fe640b";
-pub(super) const TEAL: &str = "#179299";
-
-pub(super) const BLUE_100: &str = "#dbeafe";
-pub(super) const BLUE_300: &str = "#93c5fd";
-pub(super) const ORANGE_100: &str = "#ffedd5";
-pub(super) const ORANGE_300: &str = "#fdba74";
-
-pub(super) const GRAY_600: &str = "#666";
-pub(super) const GRAY_400: &str = "#888";
-pub(super) const GRAY_300: &str = "#ccc";
-pub(super) const GRAY_200: &str = "#e0e0e0";
-pub(super) const GRAY_100: &str = "#f5f5f5";
-pub(super) const GRAY_50: &str = "#fafafa";
-const WHITE: &str = "#ffffff";
-
-pub(super) struct NodeColors {
-    pub crate_fill: &'static str,
-    pub crate_stroke: &'static str,
-    pub module_fill: &'static str,
-    pub module_stroke: &'static str,
-    pub external_section_fill: &'static str,
-    pub external_section_stroke: &'static str,
-    pub external_crate_fill: &'static str,
-    pub external_crate_stroke: &'static str,
-    pub external_transitive_fill: &'static str,
-    pub external_transitive_stroke: &'static str,
-    pub tree_line: &'static str,
-    pub child_count: &'static str,
-    pub collapse_toggle: &'static str,
-    pub collapse_hover: &'static str,
+/// Widths, dash patterns and opacities of the drawing: what the stylesheet
+/// sets besides colours, the same in every theme.
+pub(super) struct DrawingStyles {
+    pub dep_width: &'static str,
+    pub cycle_width: &'static str,
+    pub virtual_width: &'static str,
+    pub reexport_dash: &'static str,
+    pub dimmed_opacity: &'static str,
+    /// Border of a node related to the selection (dep-node, dependent-node).
+    pub relation_border_width: &'static str,
+    /// The glow the page paints behind a highlighted arc; handed to the
+    /// page through `STATIC_DATA.theme`.
+    pub shadow_opacity: &'static str,
 }
 
-pub(super) struct DirectionColors {
-    pub downward: &'static str,
-    pub upward: &'static str,
-    pub cycle: &'static str,
-    pub count_bg: &'static str,
-}
-
-#[allow(clippy::struct_field_names)] // "_fill" suffix groups related color values
-pub(super) struct NodeSelectionColors {
-    pub crate_fill: &'static str,
-    pub module_fill: &'static str,
-    pub external_fill: &'static str,
-    pub external_transitive_fill: &'static str,
-}
-
-pub(super) struct RelationColors {
-    pub dependency: &'static str,
-    pub dependent: &'static str,
-    pub dimmed: &'static str,
-}
-
-#[allow(dead_code)]
-pub(super) struct ToolbarColors {
-    pub bg: &'static str,
-    pub border: &'static str,
-    pub btn_fill: &'static str,
-    pub btn_hover: &'static str,
-    pub btn_stroke: &'static str,
-    pub checkbox: &'static str,
-    pub checkbox_checked: &'static str,
-    pub separator: &'static str,
-}
-
-#[allow(dead_code)]
-pub(super) struct ColorPalette {
-    pub nodes: NodeColors,
-    pub direction: DirectionColors,
-    pub node_selection: NodeSelectionColors,
-    pub relation: RelationColors,
-    pub toolbar: ToolbarColors,
-}
-
-pub(super) static COLORS: ColorPalette = ColorPalette {
-    nodes: NodeColors {
-        crate_fill: BLUE_100,
-        crate_stroke: BLUE,
-        module_fill: ORANGE_100,
-        module_stroke: ORANGE,
-        external_section_fill: GRAY_200,
-        external_section_stroke: GRAY_400,
-        external_crate_fill: GRAY_200,
-        external_crate_stroke: GRAY_600,
-        external_transitive_fill: GRAY_100,
-        external_transitive_stroke: "#bbb",
-        tree_line: GRAY_600,
-        child_count: GRAY_400,
-        collapse_toggle: GRAY_600,
-        collapse_hover: BLUE,
-    },
-    direction: DirectionColors {
-        downward: GREEN,
-        upward: YELLOW,
-        cycle: RED,
-        count_bg: WHITE,
-    },
-    node_selection: NodeSelectionColors {
-        crate_fill: BLUE_300,
-        module_fill: ORANGE_300,
-        external_fill: GRAY_300,
-        external_transitive_fill: GRAY_200,
-    },
-    relation: RelationColors {
-        dependency: GREEN,
-        dependent: PURPLE,
-        dimmed: GRAY_400,
-    },
-    toolbar: ToolbarColors {
-        bg: GRAY_50,
-        border: GRAY_200,
-        btn_fill: GRAY_100,
-        btn_hover: GRAY_200,
-        btn_stroke: GRAY_600,
-        checkbox: WHITE,
-        checkbox_checked: BLUE,
-        separator: GRAY_300,
-    },
+pub(super) static DRAWING: DrawingStyles = DrawingStyles {
+    dep_width: "0.5",
+    cycle_width: "1.0",
+    virtual_width: "0.5",
+    reexport_dash: "2 3",
+    dimmed_opacity: "0.3",
+    relation_border_width: "2.5",
+    shadow_opacity: "0.25",
 };
 
 // --- CSS Class Names (Single Source of Truth) ---
@@ -340,6 +236,9 @@ pub(super) struct ToolbarClasses {
     pub dropdown: &'static str,
     pub dropdown_btn: &'static str,
     pub dropdown_panel: &'static str,
+    pub dropdown_divider: &'static str,
+    /// A labelled `<select>` row in the dropdown panel.
+    pub select: &'static str,
 }
 
 #[allow(dead_code, clippy::struct_field_names)] // "search_" prefix groups related CSS classes
@@ -489,6 +388,8 @@ pub(super) static CSS: CssClassNames = CssClassNames {
         dropdown: "toolbar-dropdown",
         dropdown_btn: "toolbar-dropdown-btn",
         dropdown_panel: "toolbar-dropdown-panel",
+        dropdown_divider: "toolbar-dropdown-divider",
+        select: "toolbar-select",
     },
     labels: LabelClasses {
         arc_count: "arc-count",
@@ -553,6 +454,9 @@ pub struct RenderConfig {
     /// exist on the layout either way; this only gates whether render
     /// serializes them.
     pub with_jump_ids: bool,
+    /// The theme pinned on the SVG root. `None` leaves the choice to the
+    /// system setting and the page.
+    pub theme: Option<&'static Theme>,
 }
 
 impl Default for RenderConfig {
@@ -563,6 +467,7 @@ impl Default for RenderConfig {
             margin: 20.0,
             expand_level: None,
             with_jump_ids: false,
+            theme: None,
         }
     }
 }
@@ -570,15 +475,6 @@ impl Default for RenderConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_color_palette_has_expected_values() {
-        assert_eq!(COLORS.nodes.crate_fill, "#dbeafe");
-        assert_eq!(COLORS.direction.downward, "#40a02b");
-        assert_eq!(COLORS.toolbar.bg, "#fafafa");
-        assert_eq!(COLORS.node_selection.crate_fill, "#93c5fd");
-        assert_eq!(COLORS.relation.dependent, "#8839ef");
-    }
 
     #[test]
     fn test_group_member_class_exists() {

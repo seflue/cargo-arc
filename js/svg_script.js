@@ -1,5 +1,5 @@
 // @module SvgScript
-// @deps ArcLogic, StaticData, AppState, Selectors, DomAdapter, LayerManager, TreeLogic, DerivedState, HighlightRenderer, VirtualEdgeLogic, TextMeasure, SidebarLogic, SearchLogic, Jump, JumpIcons, Follow
+// @deps ArcLogic, StaticData, AppState, Selectors, DomAdapter, LayerManager, TreeLogic, DerivedState, HighlightRenderer, VirtualEdgeLogic, TextMeasure, SidebarLogic, SearchLogic, Jump, JumpIcons, Follow, Theme
 // @config ROW_HEIGHT, MARGIN, TOOLBAR_HEIGHT, SIDEBAR_SHADOW_PAD
 // svg_script.js - DOM code for interactive SVG
 // ArcLogic is loaded from arc_logic.js before this file
@@ -1441,12 +1441,71 @@ if (typeof document !== 'undefined') {
     }
     const jumper = Jump.createJump((url) => fetch(url), showJumpStatus);
 
+    // Theme: the root is the svg element in a file and the html element in
+    // the served page; both carry the attributes the stylesheet reads.
+    const modeSelect = /** @type {HTMLSelectElement | null} */ (
+      DomAdapter.getElementById('theme-mode')
+    );
+    const themeSelects = {
+      light: /** @type {HTMLSelectElement | null} */ (
+        DomAdapter.getElementById('theme-light')
+      ),
+      dark: /** @type {HTMLSelectElement | null} */ (
+        DomAdapter.getElementById('theme-dark')
+      ),
+    };
+    const darkScheme = window.matchMedia('(prefers-color-scheme: dark)');
+    const themeControl = Theme.createTheme({
+      themes: STATIC_DATA.theme,
+      storage: Theme.localStorageAdapter(),
+      systemDark: () => darkScheme.matches,
+      onSystemChange: (listener) =>
+        darkScheme.addEventListener('change', listener),
+      root: {
+        theme: document.documentElement.dataset.theme,
+        mode: document.documentElement.dataset.mode,
+      },
+      applyTheme: (name) => {
+        document.documentElement.dataset.theme = name;
+      },
+      showState: ({ mode, light, dark }) => {
+        if (modeSelect) modeSelect.value = mode;
+        if (themeSelects.light) themeSelects.light.value = light;
+        if (themeSelects.dark) themeSelects.dark.value = dark;
+      },
+    });
+    modeSelect?.addEventListener('change', () => {
+      themeControl.setMode(
+        /** @type {'light' | 'dark' | 'system'} */ (modeSelect.value),
+      );
+    });
+    for (const mode of /** @type {const} */ (['light', 'dark'])) {
+      const select = themeSelects[mode];
+      if (!select) continue;
+      for (const { name, label } of STATIC_DATA.theme[mode]) {
+        const option = document.createElement('option');
+        option.value = name;
+        option.textContent = label;
+        select.appendChild(option);
+      }
+      select.addEventListener('change', () => {
+        themeControl.setThemeFor(mode, select.value);
+      });
+    }
+    themeControl.start();
+
     // The follow toggle is rendered only for a page served by `cargo arc
     // ui`; a file written by `cargo arc -o` has no event stream to open.
     const followToggle = DomAdapter.getElementById('follow-toggle');
     if (followToggle) {
       const follow = Follow.createFollow({
-        connect: Follow.connectEventSource,
+        // The theme event rides the same stream; it is the editor's, not
+        // the follow state's, so it is taken off here.
+        connect: (handler) =>
+          Follow.connectEventSource((name, data) => {
+            if (name === 'theme') themeControl.handleEditorMode(data);
+            else handler(name, data);
+          }),
         apply: focusNode,
         showState: (on) =>
           followToggle.setAttribute('aria-pressed', String(on)),
