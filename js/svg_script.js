@@ -1623,9 +1623,10 @@ if (typeof document !== 'undefined') {
           highlightTiming.immediate();
           SidebarLogic.hide();
         }
-        // Sidebar rows are only clickable while pinned; the transient
-        // sidebar closes on its own hover-leave grace period.
-        if (AppState.getPinned(appState)) {
+        // Sidebar rows are only clickable while pinned, a selected SCC
+        // included; the transient sidebar closes on its own hover-leave
+        // grace period.
+        if (AppState.getPinned(appState) || clusterActive()) {
           const jumpId = jumpIdFromClick(target);
           if (jumpId !== null) jumper.jump(jumpId);
         }

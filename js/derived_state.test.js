@@ -1492,6 +1492,25 @@ describe('DerivedState', () => {
       expect(result.arcHighlights.has('C-A')).toBe(true);
     });
 
+    test('SCC selected, no focus: isPinned is true', () => {
+      const sd = createMockStaticData(CYCLE_DATA);
+      const state = AppState.create();
+      AppState.clickEdge(state, 'A-B', 0);
+
+      const result = DerivedState.deriveHighlightState(
+        state,
+        sd,
+        new Map(),
+        new Set(),
+        CYCLE_POSITIONS,
+        ROW_HEIGHT,
+      );
+
+      // The selection survives hover-leave like a pin, so the sidebar rows
+      // are jump targets before any inner edge is pinned.
+      expect(result.isPinned).toBe(true);
+    });
+
     test('SCC selected, no focus: cycle nodes get cycle-member role', () => {
       const sd = createMockStaticData(CYCLE_DATA);
       const state = AppState.create();
