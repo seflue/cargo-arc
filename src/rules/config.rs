@@ -1,6 +1,7 @@
 //! Config parsing for arc-rules.toml
 
 use serde::Deserialize;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
 /// Name of the implicit cycle rule. It reaches the user in every report block
@@ -224,6 +225,23 @@ pub struct ForbiddenDependencyRule {
 #[serde(deny_unknown_fields)]
 pub struct NoCyclesRule {
     pub scope: String,
+    #[serde(default, rename = "child-to-ancestor")]
+    pub child_to_ancestor: ChildToAncestor,
+    /// How far up an allowed edge may reach: `1` is the direct parent only,
+    /// `None` any ancestor. Zero levels would allow nothing and is rejected at
+    /// parse time.
+    #[serde(default, rename = "ancestor-levels")]
+    pub ancestor_levels: Option<NonZeroUsize>,
+}
+
+/// What a `no-cycles` rule does with an edge from a module to one of its
+/// ancestor modules.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChildToAncestor {
+    #[default]
+    Report,
+    Allow,
 }
 
 /// One rank in a `layers` rule: either the patterns whose nodes share that
@@ -370,6 +388,7 @@ pub enum ConfigError {
     CatchAllNotAlone { path: PathBuf, name: String },
     MultipleCatchAllPositions { path: PathBuf, name: String },
     ExhaustiveWithCatchAll { path: PathBuf, name: String },
+    AncestorLevelsWithoutAllow { path: PathBuf, name: String },
     EmptyPosition { path: PathBuf, name: String },
     TooFewPositions { path: PathBuf, name: String },
     UnsupportedVersion { path: PathBuf, found: u32 },
@@ -411,6 +430,13 @@ impl std::fmt::Display for ConfigError {
                 "rule {name:?} in {} claims to be exhaustive beside the catch-all layer `*`, \
                  which already holds every node its other positions leave: drop \
                  `exhaustive = true`, or drop the catch-all",
+                path.display()
+            ),
+            Self::AncestorLevelsWithoutAllow { path, name } => write!(
+                f,
+                "rule {name:?} in {} sets `ancestor-levels` while child-to-ancestor edges \
+                 are reported, so the levels bound nothing: add \
+                 `child-to-ancestor = \"allow\"`, or drop `ancestor-levels`",
                 path.display()
             ),
             Self::EmptyPosition { path, name } => write!(
@@ -465,6 +491,7 @@ impl ArcConfig {
         config.check_catch_all_layers(path)?;
         config.check_layers_arity(path)?;
         config.check_exhaustive_layers(path)?;
+        config.check_ancestor_levels(path)?;
         config.add_implicit_rule(path)?;
         Ok(config)
     }
@@ -496,6 +523,8 @@ impl ArcConfig {
             except: Vec::new(),
             kind: RuleKind::NoCycles(NoCyclesRule {
                 scope: "**".to_owned(),
+                child_to_ancestor: ChildToAncestor::Report,
+                ancestor_levels: None,
             }),
         }
     }
@@ -623,6 +652,26 @@ impl ArcConfig {
         Ok(())
     }
 
+    /// Reject a `no-cycles` rule that bounds `ancestor-levels` while it reports
+    /// child-to-ancestor edges: the bound applies to allowed edges only, so it
+    /// would limit nothing.
+    fn check_ancestor_levels(&self, path: &Path) -> Result<(), ConfigError> {
+        for rule in &self.rules {
+            let RuleKind::NoCycles(params) = &rule.kind else {
+                continue;
+            };
+            if params.ancestor_levels.is_some()
+                && params.child_to_ancestor == ChildToAncestor::Report
+            {
+                return Err(ConfigError::AncestorLevelsWithoutAllow {
+                    path: path.to_path_buf(),
+                    name: rule.name.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// Fills in `config.default_severity` for rules that left `severity` unset.
     /// The second element is the `[config].version` the file named, or `None`
     /// for a file without a `[config]` section.
@@ -688,9 +737,117 @@ mod tests {
         assert_eq!(config.rules[0].name, "domain acyclic");
         assert!(matches!(
             &config.rules[0].kind,
-            RuleKind::NoCycles(NoCyclesRule { scope })
+            RuleKind::NoCycles(NoCyclesRule { scope, .. })
             if scope == "domain::**"
         ));
+    }
+
+    fn no_cycles_params(toml: &str) -> NoCyclesRule {
+        let (config, _) = ArcConfig::from_toml(toml).unwrap();
+        let rules: [Rule; 1] = config.rules.try_into().unwrap();
+        let [
+            Rule {
+                kind: RuleKind::NoCycles(params),
+                ..
+            },
+        ] = rules
+        else {
+            panic!("expected one no-cycles rule");
+        };
+        params
+    }
+
+    #[test]
+    fn test_no_cycles_reports_child_to_ancestor_edges_by_default() {
+        let params = no_cycles_params(
+            r#"
+            [[rules]]
+            type = "no-cycles"
+            name = "no cycles"
+            scope = "**"
+        "#,
+        );
+        assert_eq!(params.child_to_ancestor, ChildToAncestor::Report);
+        assert_eq!(params.ancestor_levels, None);
+    }
+
+    #[test]
+    fn test_parse_no_cycles_allowing_child_to_ancestor_edges() {
+        let params = no_cycles_params(
+            r#"
+            [[rules]]
+            type = "no-cycles"
+            name = "no cycles"
+            scope = "**"
+            child-to-ancestor = "allow"
+        "#,
+        );
+        assert_eq!(params.child_to_ancestor, ChildToAncestor::Allow);
+        assert_eq!(params.ancestor_levels, None);
+    }
+
+    #[test]
+    fn test_parse_no_cycles_with_ancestor_levels() {
+        let params = no_cycles_params(
+            r#"
+            [[rules]]
+            type = "no-cycles"
+            name = "no cycles"
+            scope = "**"
+            child-to-ancestor = "allow"
+            ancestor-levels = 2
+        "#,
+        );
+        assert_eq!(params.ancestor_levels, NonZeroUsize::new(2));
+    }
+
+    #[test]
+    fn test_an_unknown_child_to_ancestor_value_fails_to_parse() {
+        let toml = r#"
+            [[rules]]
+            type = "no-cycles"
+            name = "no cycles"
+            scope = "**"
+            child-to-ancestor = "ignore"
+        "#;
+        let error = ArcConfig::from_toml(toml).unwrap_err();
+        assert!(error.to_string().contains("ignore"), "got: {error}");
+    }
+
+    #[test]
+    fn test_zero_ancestor_levels_fails_to_parse() {
+        let toml = r#"
+            [[rules]]
+            type = "no-cycles"
+            name = "no cycles"
+            scope = "**"
+            child-to-ancestor = "allow"
+            ancestor-levels = 0
+        "#;
+        assert!(ArcConfig::from_toml(toml).is_err());
+    }
+
+    #[test]
+    fn test_ancestor_levels_beside_report_fails_to_load() {
+        let toml = r#"
+            [[rules]]
+            type = "no-cycles"
+            name = "no cycles"
+            scope = "**"
+            ancestor-levels = 1
+        "#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("arc-rules.toml");
+        std::fs::write(&path, toml).unwrap();
+
+        let error = ArcConfig::load(&path).unwrap_err();
+        assert!(
+            matches!(&error, ConfigError::AncestorLevelsWithoutAllow { name, .. } if name == "no cycles"),
+            "got: {error:?}"
+        );
+        let message = error.to_string();
+        assert!(message.contains("no cycles"));
+        assert!(message.contains("ancestor-levels"));
     }
 
     #[test]
@@ -1372,7 +1529,7 @@ mod tests {
         assert_eq!(config.rules[0].severity, Severity::Error);
         assert!(matches!(
             &config.rules[0].kind,
-            RuleKind::NoCycles(NoCyclesRule { scope }) if scope == "**"
+            RuleKind::NoCycles(NoCyclesRule { scope, .. }) if scope == "**"
         ));
     }
 

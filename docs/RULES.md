@@ -405,6 +405,24 @@ Remove every listed edge and run again to see whether an unlisted cycle is left.
 The search reads module edges only, so a dependency declared in a `Cargo.toml` is never part of a reported tangle.
 A dependency whose imports are all `pub use` counts only under `--include-reexports`: republishing a name is not a dependency on it, and the idiomatic re-export cycles that arise from it are not violations.
 
+A module that uses names of the module containing it closes a cycle with the dependency back down, and the rule reports that cycle like any other.
+`child-to-ancestor = "allow"` removes every edge from a module to one of its ancestor modules before the search, the way an `except` entry removes the edge it names:
+
+```toml
+[[rules]]
+type = "no-cycles"
+name = "no cycles"
+scope = "**"
+child-to-ancestor = "allow"
+ancestor-levels = 1
+```
+
+The crate root is the outermost ancestor, so an edge from a module to its own crate is removed too, where `scope` takes the crate in at all.
+`ancestor-levels` bounds how far up a removed edge may reach; `1` is the parent module only, and without the key any ancestor qualifies.
+It is refused while `child-to-ancestor` is `"report"`, the default, because it would then bound nothing.
+A removed edge that lay on a cycle is counted as *allowed* and listed under `--show-silenced` as `(allowed by child-to-ancestor)`; one that lay on none raises no count.
+The dependency down from the ancestor stays in the search, and so does a cycle between two modules under the same parent.
+
 A file without a `no-cycles` rule is checked by an implicit one named `no cycles` with scope `**`.
 Because that rule would still forbid the cycles a narrower rule of yours deliberately permits, writing any `no-cycles` rule removes it.
 While the implicit rule is in play its name is reserved: a rule of another type may not be called `no cycles`.
@@ -610,6 +628,8 @@ error[forbidden-dependency]: no services in storage
     --> storage/src/pool.rs:12
     --> storage/src/pool.rs:31
 ```
+
+An allowed entry names what allowed it: `(allowed by except)`, or `(allowed by child-to-ancestor)` for an edge the [`no-cycles`](#no-cycles) option removed.
 
 Under the flag, a rule with nothing reported is headed `silenced` instead of `error` or `warning`.
 
