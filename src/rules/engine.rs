@@ -7,8 +7,8 @@ use crate::graph::{ArcGraph, EdgeWeight};
 use crate::model::{Edge, EdgeSymbols, SourceLocation};
 use crate::rules::baseline::{Baseline, BaselineEntry, ViolationKey};
 use crate::rules::config::{
-    ArcConfig, DiagnosticLevel, Direction, Except, ForbiddenDependencyRule, Layer, LayersRule,
-    NoCyclesRule, Rule, RuleKind, Severity,
+    ArcConfig, ChildToAncestor, DiagnosticLevel, Direction, Except, ForbiddenDependencyRule, Layer,
+    LayersRule, NoCyclesRule, Rule, RuleKind, Severity,
 };
 use crate::rules::diagnostics::{self, Diagnostic};
 use crate::rules::matching::PatternIndex;
@@ -16,14 +16,30 @@ use petgraph::algo::tarjan_scc;
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
 use std::collections::{HashMap, HashSet};
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
 /// Whether a violation counts, and if not, what silenced it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViolationState {
     Reported,
-    Allowed,
+    Allowed(AllowedBy),
     Frozen,
+}
+
+impl ViolationState {
+    fn is_allowed(self) -> bool {
+        matches!(self, Self::Allowed(_))
+    }
+}
+
+/// What allowed a violation: an `except` entry the user wrote for the edge, or
+/// the `child-to-ancestor = "allow"` option of a `no-cycles` rule. Kept on the
+/// violation so the `--show-silenced` listing can say which.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AllowedBy {
+    Except,
+    ChildToAncestor,
 }
 
 /// Two ordinary positions of one `layers` rule claim the same node. No
@@ -409,13 +425,11 @@ impl CheckResult {
             .filter(|v| v.state == ViolationState::Reported)
     }
 
-    /// Violations permitted by an `except` entry: they never affect
-    /// `has_errors`/`exit_code`, and are only printed under
+    /// Violations permitted by an `except` entry or a rule option: they never
+    /// affect `has_errors`/`exit_code`, and are only printed under
     /// `--show-silenced`.
     pub fn allowed(&self) -> impl Iterator<Item = &Violation> {
-        self.violations
-            .iter()
-            .filter(|v| v.state == ViolationState::Allowed)
+        self.violations.iter().filter(|v| v.state.is_allowed())
     }
 
     /// Violations an `arc-baseline.toml` entry covers: like `allowed`, they
@@ -516,7 +530,8 @@ impl<'graph> CheckRun<'graph> {
 
     /// Check a `no-cycles` rule: find the cycles within the scoped
     /// subgraph. Pure re-export cycles are excluded unless `include_reexports`
-    /// is set (ADR-022). An edge covered by `except` is removed before the
+    /// is set (ADR-022). An edge covered by `except`, or one from a module to
+    /// an ancestor under `child-to-ancestor = "allow"`, is removed before the
     /// search, so a cycle built through it never forms; if it lay on one, it is
     /// reported as allowed instead. The allowed side holds removed
     /// edges, not cycles: the two sides can have different SCC decompositions,
@@ -525,12 +540,14 @@ impl<'graph> CheckRun<'graph> {
         let graph = self.graph();
         let scope_set = self.resolve_set(&params.scope);
         let except = ResolvedExceptions::resolve(&rule.except, self);
-        let mut excepted: Vec<(NodeIndex, NodeIndex)> = Vec::new();
+        let ancestors = (params.child_to_ancestor == ChildToAncestor::Allow)
+            .then(|| AllowedAncestors::new(graph, params.ancestor_levels));
+        let mut allowed_edges: Vec<(NodeIndex, NodeIndex, AllowedBy)> = Vec::new();
 
         // Build a subgraph with only production module-dep edges between scope nodes.
         // Pure re-export edges are excluded by default (ADR-022): idiomatic
         // republishing is not a real cycle unless --include-reexports asks for it.
-        // Excepted edges are still in at this point, so the components below see
+        // Allowed edges are still in at this point, so the components below see
         // the graph each of them actually sits in.
         let mut subgraph = graph.filter_map(
             |idx, _| scope_set.contains(&idx).then_some(idx),
@@ -540,20 +557,27 @@ impl<'graph> CheckRun<'graph> {
                 {
                     return None;
                 }
-                if !except.is_empty() {
+                if !except.is_empty() || ancestors.is_some() {
                     let (source, target) =
                         graph.edge_endpoints(edge_idx).expect("edge should exist");
+                    // `except` names the edge outright, so it is the reason
+                    // even where the option would have removed it too.
                     if except.covers(source, target) {
-                        excepted.push((source, target));
+                        allowed_edges.push((source, target, AllowedBy::Except));
+                    } else if ancestors
+                        .as_ref()
+                        .is_some_and(|ancestors| ancestors.covers(source, target))
+                    {
+                        allowed_edges.push((source, target, AllowedBy::ChildToAncestor));
                     }
                 }
                 Some(())
             },
         );
 
-        let allowed: Vec<Violation> = drop_excepted_edges(&mut subgraph, excepted)
+        let allowed: Vec<Violation> = drop_allowed_edges(&mut subgraph, allowed_edges)
             .into_iter()
-            .map(|(source, target)| {
+            .map(|(source, target, reason)| {
                 let edge = Edge::new(graph.qualified_name(source), graph.qualified_name(target));
                 let locations = module_dep_locations(graph, source, target);
                 edge_violation(
@@ -561,7 +585,7 @@ impl<'graph> CheckRun<'graph> {
                     &edge,
                     Carrier::Written(locations),
                     None,
-                    ViolationState::Allowed,
+                    ViolationState::Allowed(reason),
                 )
             })
             .collect();
@@ -936,7 +960,7 @@ impl<'graph> CheckRun<'graph> {
                     &edge,
                     carrier,
                     None,
-                    ViolationState::Allowed,
+                    ViolationState::Allowed(AllowedBy::Except),
                 ));
                 continue;
             }
@@ -1064,16 +1088,48 @@ impl ResolvedExceptions {
     }
 }
 
-/// Remove the `excepted` edges from `subgraph`, keeping those that lay on a
-/// cycle. An edge `(u, v)` lies on one exactly when `u` and `v` share a
-/// strongly connected component of a graph that still holds the edge, so the
-/// components are taken before the removal. Node weights of `subgraph` are the
-/// original `NodeIndex` values, which is what the returned pairs use.
-fn drop_excepted_edges(
+/// Edges from a module to one of its ancestor modules, as far up as `levels`
+/// allows, resolved once per rule so a per-edge check walks the parent chain
+/// rather than the parent node's edge list.
+struct AllowedAncestors {
+    parent_of: HashMap<NodeIndex, NodeIndex>,
+    levels: Option<NonZeroUsize>,
+}
+
+impl AllowedAncestors {
+    fn new(graph: &ArcGraph, levels: Option<NonZeroUsize>) -> Self {
+        Self {
+            parent_of: graph.parent_map(),
+            levels,
+        }
+    }
+
+    /// Whether `target` is an ancestor of `source` within the level bound.
+    fn covers(&self, source: NodeIndex, target: NodeIndex) -> bool {
+        let bound = self.levels.map_or(usize::MAX, NonZeroUsize::get);
+        let mut node = source;
+        for _ in 0..bound {
+            match self.parent_of.get(&node) {
+                Some(&parent) if parent == target => return true,
+                Some(&parent) => node = parent,
+                None => return false,
+            }
+        }
+        false
+    }
+}
+
+/// Remove the `allowed` edges from `subgraph`, keeping those that lay on a
+/// cycle, each with the reason it was allowed. An edge `(u, v)` lies on one
+/// exactly when `u` and `v` share a strongly connected component of a graph
+/// that still holds the edge, so the components are taken before the removal.
+/// Node weights of `subgraph` are the original `NodeIndex` values, which is
+/// what the returned pairs use.
+fn drop_allowed_edges(
     subgraph: &mut DiGraph<NodeIndex, ()>,
-    excepted: Vec<(NodeIndex, NodeIndex)>,
-) -> Vec<(NodeIndex, NodeIndex)> {
-    if excepted.is_empty() {
+    allowed: Vec<(NodeIndex, NodeIndex, AllowedBy)>,
+) -> Vec<(NodeIndex, NodeIndex, AllowedBy)> {
+    if allowed.is_empty() {
         return Vec::new();
     }
 
@@ -1090,13 +1146,13 @@ fn drop_excepted_edges(
         .collect();
 
     let mut on_cycle = Vec::new();
-    for (source, target) in excepted {
+    for (source, target, reason) in allowed {
         let (sub_source, sub_target) = (sub_of[&source], sub_of[&target]);
         if let Some(edge_idx) = subgraph.find_edge(sub_source, sub_target) {
             subgraph.remove_edge(edge_idx);
         }
         if scc_of[sub_source.index()] == scc_of[sub_target.index()] {
-            on_cycle.push((source, target));
+            on_cycle.push((source, target, reason));
         }
     }
     on_cycle
@@ -1400,7 +1456,8 @@ mod tests {
         }
     }
 
-    /// `no-cycles` rule over `scope` with the given `except` entries.
+    /// `no-cycles` rule over `scope` with the given `except` entries, reporting
+    /// child-to-ancestor edges like any other.
     fn no_cycles_rule(name: &str, scope: &str, except: Vec<Except>) -> Rule {
         Rule {
             name: name.into(),
@@ -1408,6 +1465,8 @@ mod tests {
             except,
             kind: RuleKind::NoCycles(NoCyclesRule {
                 scope: scope.into(),
+                child_to_ancestor: ChildToAncestor::Report,
+                ancestor_levels: None,
             }),
         }
     }
@@ -1654,6 +1713,171 @@ mod tests {
             result.allowed().next().is_none(),
             "an edge that never lay on a cycle is not an allowed violation"
         );
+    }
+
+    /// `no-cycles` rule over `scope` that allows child-to-ancestor edges, up
+    /// to `levels` ancestors up or any ancestor for `None`.
+    fn no_cycles_allowing_ancestors(
+        scope: &str,
+        levels: Option<usize>,
+        except: Vec<Except>,
+    ) -> Rule {
+        Rule {
+            kind: RuleKind::NoCycles(NoCyclesRule {
+                scope: scope.into(),
+                child_to_ancestor: ChildToAncestor::Allow,
+                ancestor_levels: levels.map(|levels| NonZeroUsize::new(levels).unwrap()),
+            }),
+            ..no_cycles_rule("no cycles in test", scope, except)
+        }
+    }
+
+    /// Crate `test` holding `outer`, which holds `inner`, which holds `deep`,
+    /// beside a second top-level module `other`.
+    fn nested_module_graph() -> (ArcGraph, NodeIndex, NodeIndex, NodeIndex, NodeIndex) {
+        let (mut graph, crate_idx) = test_crate_graph();
+        let outer = add_module(&mut graph, "outer", crate_idx, crate_idx);
+        let inner = add_module(&mut graph, "inner", crate_idx, outer);
+        let deep = add_module(&mut graph, "deep", crate_idx, inner);
+        let other = add_module(&mut graph, "other", crate_idx, crate_idx);
+        (graph, outer, inner, deep, other)
+    }
+
+    #[test]
+    fn test_child_to_parent_edge_is_allowed_before_the_search() {
+        let (mut graph, outer, inner, _deep, _other) = nested_module_graph();
+        add_production_dep(&mut graph, outer, inner);
+        add_production_dep(&mut graph, inner, outer);
+
+        let result = check_rule(
+            &graph,
+            &no_cycles_allowing_ancestors("test::**", None, vec![]),
+            false,
+        );
+        assert!(
+            result.reported().next().is_none(),
+            "the cycle needs the child-to-parent edge"
+        );
+        let allowed: Vec<_> = result.allowed().collect();
+        assert_eq!(allowed.len(), 1);
+        assert_eq!(
+            allowed[0].state,
+            ViolationState::Allowed(AllowedBy::ChildToAncestor)
+        );
+        let ViolationDetail::Edge { edge, .. } = &allowed[0].detail else {
+            panic!("expected an edge detail");
+        };
+        assert_eq!(edge.from, "test::outer::inner");
+        assert_eq!(edge.to, "test::outer");
+    }
+
+    #[test]
+    fn test_module_to_crate_root_edge_is_allowed_as_an_ancestor_edge() {
+        let (mut graph, crate_idx) = test_crate_graph();
+        let outer = add_module(&mut graph, "outer", crate_idx, crate_idx);
+        add_production_dep(&mut graph, crate_idx, outer);
+        add_production_dep(&mut graph, outer, crate_idx);
+
+        // `test::**` leaves the crate node out; `**` takes it in.
+        let rule = no_cycles_allowing_ancestors("**", Some(1), vec![]);
+        let result = check_rule(&graph, &rule, false);
+        assert!(result.reported().next().is_none());
+        let allowed: Vec<_> = result.allowed().collect();
+        assert_eq!(allowed.len(), 1);
+        let ViolationDetail::Edge { edge, .. } = &allowed[0].detail else {
+            panic!("expected an edge detail");
+        };
+        assert_eq!(edge.from, "test::outer");
+        assert_eq!(edge.to, "test");
+    }
+
+    #[test]
+    fn test_child_to_parent_edge_is_reported_by_default() {
+        let (mut graph, outer, inner, _deep, _other) = nested_module_graph();
+        add_production_dep(&mut graph, outer, inner);
+        add_production_dep(&mut graph, inner, outer);
+
+        let rule = no_cycles_rule("no cycles in test", "test::**", vec![]);
+        let result = check_rule(&graph, &rule, false);
+        assert_eq!(result.reported().count(), 1);
+        assert!(result.allowed().next().is_none());
+    }
+
+    #[test]
+    fn test_grandchild_to_grandparent_edge_is_allowed_without_a_level_bound() {
+        let (mut graph, outer, _inner, deep, _other) = nested_module_graph();
+        add_production_dep(&mut graph, outer, deep);
+        add_production_dep(&mut graph, deep, outer);
+
+        let result = check_rule(
+            &graph,
+            &no_cycles_allowing_ancestors("test::**", None, vec![]),
+            false,
+        );
+        assert!(result.reported().next().is_none());
+        assert_eq!(result.allowed().count(), 1);
+    }
+
+    #[test]
+    fn test_grandchild_to_grandparent_edge_is_reported_beyond_the_level_bound() {
+        let (mut graph, outer, _inner, deep, _other) = nested_module_graph();
+        add_production_dep(&mut graph, outer, deep);
+        add_production_dep(&mut graph, deep, outer);
+
+        let result = check_rule(
+            &graph,
+            &no_cycles_allowing_ancestors("test::**", Some(1), vec![]),
+            false,
+        );
+        assert_eq!(result.reported().count(), 1);
+        assert!(result.allowed().next().is_none());
+    }
+
+    #[test]
+    fn test_sibling_cycle_stays_reported_under_child_to_ancestor_allow() {
+        let (mut graph, outer, _inner, _deep, other) = nested_module_graph();
+        add_production_dep(&mut graph, outer, other);
+        add_production_dep(&mut graph, other, outer);
+
+        let result = check_rule(
+            &graph,
+            &no_cycles_allowing_ancestors("test::**", None, vec![]),
+            false,
+        );
+        assert_eq!(result.reported().count(), 1);
+        assert!(result.allowed().next().is_none());
+    }
+
+    #[test]
+    fn test_child_to_parent_edge_under_both_except_and_allow_is_allowed_once_by_except() {
+        let (mut graph, outer, inner, _deep, _other) = nested_module_graph();
+        add_production_dep(&mut graph, outer, inner);
+        add_production_dep(&mut graph, inner, outer);
+
+        let rule = no_cycles_allowing_ancestors(
+            "test::**",
+            None,
+            vec![except_edge("test::outer::inner", "test::outer")],
+        );
+        let result = check_rule(&graph, &rule, false);
+        assert!(result.reported().next().is_none());
+        let allowed: Vec<_> = result.allowed().collect();
+        assert_eq!(allowed.len(), 1);
+        assert_eq!(allowed[0].state, ViolationState::Allowed(AllowedBy::Except));
+    }
+
+    #[test]
+    fn test_child_to_parent_edge_off_any_cycle_is_not_recorded_as_allowed() {
+        let (mut graph, outer, inner, _deep, _other) = nested_module_graph();
+        add_production_dep(&mut graph, inner, outer);
+
+        let result = check_rule(
+            &graph,
+            &no_cycles_allowing_ancestors("test::**", None, vec![]),
+            false,
+        );
+        assert!(result.reported().next().is_none());
+        assert!(result.allowed().next().is_none());
     }
 
     #[test]
@@ -2115,12 +2339,8 @@ mod tests {
         let config = config_of(vec![
             no_infra_in_domain(vec![]),
             Rule {
-                name: "no cycles in infra".into(),
                 severity: Severity::Warn,
-                except: vec![],
-                kind: RuleKind::NoCycles(NoCyclesRule {
-                    scope: "infra::**".into(),
-                }),
+                ..no_cycles_rule("no cycles in infra", "infra::**", vec![])
             },
         ]);
         let result = check_rules(&graph, &config, &Baseline::empty(), false).unwrap();
@@ -2211,7 +2431,7 @@ mod tests {
                 rule_name: "test".into(),
                 rule_type: "forbidden-dependency".into(),
                 severity: Severity::Error,
-                state: ViolationState::Allowed,
+                state: ViolationState::Allowed(AllowedBy::Except),
                 detail: ViolationDetail::Edge {
                     edge: Edge::new("a", "b"),
                     frozen_for: None,

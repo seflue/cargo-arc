@@ -323,8 +323,9 @@ mod tests {
     use crate::model::{Edge, EdgeSymbols};
     use crate::rules::baseline::{Baseline, BaselineEntry, ViolationKey};
     use crate::rules::config::{
-        ArcConfig, DiagnosticLevel, Diagnostics, Direction, Except, ForbiddenDependencyRule, Layer,
-        LayersRule, NoCyclesRule, Rule, RuleKind, Severity, UnlayeredNode,
+        ArcConfig, ChildToAncestor, DiagnosticLevel, Diagnostics, Direction, Except,
+        ForbiddenDependencyRule, Layer, LayersRule, NoCyclesRule, Rule, RuleKind, Severity,
+        UnlayeredNode,
     };
     use crate::rules::diagnostics::{Diagnostic, DiagnosticKind, collect, dead_excepts};
     use crate::rules::matching::PatternIndex;
@@ -389,6 +390,8 @@ mod tests {
             except: vec![],
             kind: RuleKind::NoCycles(NoCyclesRule {
                 scope: scope.into(),
+                child_to_ancestor: ChildToAncestor::Report,
+                ancestor_levels: None,
             }),
         }
     }

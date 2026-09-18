@@ -7,8 +7,8 @@ use crate::model::{Edge, EdgeSymbols};
 use crate::rules::config::{DiagnosticLevel, Severity};
 use crate::rules::diagnostics::{Diagnostic, DiagnosticKind};
 use crate::rules::engine::{
-    CheckResult, ClusterShape, CycleCluster, CycleClusterEdge, Violation, ViolationDetail,
-    ViolationState,
+    AllowedBy, CheckResult, ClusterShape, CycleCluster, CycleClusterEdge, Violation,
+    ViolationDetail, ViolationState,
 };
 use std::fmt::Write;
 
@@ -48,16 +48,12 @@ pub fn format_violations(result: &CheckResult, show_silenced: bool) -> String {
         rule_block(&mut output, &shown, level);
     }
 
-    let except_count = result.allowed().count();
+    let allowed_count = result.allowed().count();
     let baseline_count = result.frozen().count();
-    if !show_silenced && except_count + baseline_count > 0 {
-        match (except_count, baseline_count) {
+    if !show_silenced && allowed_count + baseline_count > 0 {
+        match (allowed_count, baseline_count) {
             (n, 0) => {
-                let _ = writeln!(
-                    output,
-                    "{} allowed by except, not counted",
-                    plural(n, "violation")
-                );
+                let _ = writeln!(output, "{} allowed, not counted", plural(n, "violation"));
             }
             (0, n) => {
                 let _ = writeln!(
@@ -69,7 +65,7 @@ pub fn format_violations(result: &CheckResult, show_silenced: bool) -> String {
             (a, b) => {
                 let _ = writeln!(
                     output,
-                    "{} silenced ({a} allowed by except, {b} frozen in the baseline)",
+                    "{} silenced ({a} allowed, {b} frozen in the baseline)",
                     plural(a + b, "violation"),
                 );
             }
@@ -318,7 +314,8 @@ fn violation_body(out: &mut String, violation: &Violation) {
 fn state_mark(state: ViolationState) -> &'static str {
     match state {
         ViolationState::Reported => "",
-        ViolationState::Allowed => " (allowed)",
+        ViolationState::Allowed(AllowedBy::Except) => " (allowed by except)",
+        ViolationState::Allowed(AllowedBy::ChildToAncestor) => " (allowed by child-to-ancestor)",
         ViolationState::Frozen => " (frozen)",
     }
 }
@@ -798,7 +795,7 @@ mod tests {
             rule_name: "no infra in domain".into(),
             rule_type: "forbidden-dependency".into(),
             severity: Severity::Error,
-            state: ViolationState::Allowed,
+            state: ViolationState::Allowed(AllowedBy::Except),
             detail: ViolationDetail::Edge {
                 edge: Edge::new("domain::service", "infra::db"),
                 frozen_for: None,
@@ -820,7 +817,7 @@ mod tests {
             "got:\n{output}"
         );
         assert!(
-            output.contains("1 violation allowed by except, not counted"),
+            output.contains("1 violation allowed, not counted"),
             "got:\n{output}"
         );
     }
@@ -1002,12 +999,16 @@ mod tests {
             violations: vec![
                 domain_violation("domain::a", "src/domain/a.rs"),
                 Violation {
-                    state: ViolationState::Allowed,
+                    state: ViolationState::Allowed(AllowedBy::Except),
                     ..domain_violation("domain::b", "src/domain/b.rs")
                 },
                 Violation {
                     state: ViolationState::Frozen,
                     ..domain_violation("domain::c", "src/domain/c.rs")
+                },
+                Violation {
+                    state: ViolationState::Allowed(AllowedBy::ChildToAncestor),
+                    ..domain_violation("domain::d", "src/domain/d.rs")
                 },
             ],
             ..Default::default()
@@ -1018,7 +1019,11 @@ mod tests {
             "got:\n{output}"
         );
         assert!(
-            output.contains("domain::b → infra::db (allowed)"),
+            output.contains("domain::b → infra::db (allowed by except)"),
+            "got:\n{output}"
+        );
+        assert!(
+            output.contains("domain::d → infra::db (allowed by child-to-ancestor)"),
             "got:\n{output}"
         );
         assert!(output.contains("domain::a → infra::db\n"), "got:\n{output}");
@@ -1032,8 +1037,7 @@ mod tests {
         };
         let output = format_violations(&result, false);
         assert!(
-            output
-                .contains("2 violations silenced (1 allowed by except, 1 frozen in the baseline)"),
+            output.contains("2 violations silenced (1 allowed, 1 frozen in the baseline)"),
             "got:\n{output}"
         );
     }
