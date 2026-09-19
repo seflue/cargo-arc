@@ -1,6 +1,7 @@
 //! Config parsing for arc-rules.toml
 
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
@@ -27,6 +28,10 @@ struct RawConfig {
     rules: Vec<RawRule>,
     #[serde(default)]
     diagnostics: Diagnostics,
+    /// `<name> = [entries]`: a definition is its entries and nothing else, so
+    /// a name maps to the list directly instead of a table with one key.
+    #[serde(default, rename = "dependency-patterns")]
+    dependency_patterns: HashMap<String, Vec<AllowEntry>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -140,24 +145,63 @@ impl<'de> Deserialize<'de> for UnlayeredNode {
 /// A mistyped name is rejected rather than ignored: a diagnostic that silently
 /// stays off is the state this section exists to end.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+#[serde(try_from = "RawDiagnostics")]
 pub struct Diagnostics {
-    #[serde(default)]
     pub unlayered_node: UnlayeredNode,
-    #[serde(default)]
     pub unmatched_baseline_entry: DiagnosticLevel,
-    #[serde(default)]
-    pub unmatched_except: DiagnosticLevel,
-    #[serde(default = "Diagnostics::unmatched_pattern_default")]
+    pub unmatched_allow: DiagnosticLevel,
     pub unmatched_pattern: DiagnosticLevel,
+    pub contradictory_allow: DiagnosticLevel,
+}
+
+/// `Diagnostics` as written, with the retired name declared so it reaches a
+/// message naming its replacement instead of "unknown field".
+#[derive(Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+struct RawDiagnostics {
+    #[serde(default)]
+    unlayered_node: UnlayeredNode,
+    #[serde(default)]
+    unmatched_baseline_entry: DiagnosticLevel,
+    #[serde(default)]
+    unmatched_allow: DiagnosticLevel,
+    #[serde(default = "Diagnostics::unmatched_pattern_default")]
+    unmatched_pattern: DiagnosticLevel,
+    #[serde(default = "Diagnostics::contradictory_allow_default")]
+    contradictory_allow: DiagnosticLevel,
+    #[serde(default)]
+    unmatched_except: Option<serde::de::IgnoredAny>,
+}
+
+impl TryFrom<RawDiagnostics> for Diagnostics {
+    type Error = String;
+
+    fn try_from(raw: RawDiagnostics) -> Result<Self, Self::Error> {
+        if raw.unmatched_except.is_some() {
+            return Err("`unmatched-except` no longer exists: write `unmatched-allow`".to_owned());
+        }
+        Ok(Self {
+            unlayered_node: raw.unlayered_node,
+            unmatched_baseline_entry: raw.unmatched_baseline_entry,
+            unmatched_allow: raw.unmatched_allow,
+            unmatched_pattern: raw.unmatched_pattern,
+            contradictory_allow: raw.contradictory_allow,
+        })
+    }
 }
 
 impl Diagnostics {
     /// A rule pattern that matches nothing constrains nothing, and the run
-    /// stays green over it; a dead `except` only allows too much and shows up
+    /// stays green over it; a dead `allow` only allows too much and shows up
     /// as a violation. That asymmetry is why this one denies where the others
     /// warn.
     fn unmatched_pattern_default() -> DiagnosticLevel {
+        DiagnosticLevel::Deny
+    }
+
+    /// Two entries that put a pair above each other declare no order at all,
+    /// and the rule would silently tolerate the cycle between them.
+    fn contradictory_allow_default() -> DiagnosticLevel {
         DiagnosticLevel::Deny
     }
 }
@@ -167,8 +211,9 @@ impl Default for Diagnostics {
         Self {
             unlayered_node: UnlayeredNode::default(),
             unmatched_baseline_entry: DiagnosticLevel::default(),
-            unmatched_except: DiagnosticLevel::default(),
+            unmatched_allow: DiagnosticLevel::default(),
             unmatched_pattern: Self::unmatched_pattern_default(),
+            contradictory_allow: Self::contradictory_allow_default(),
         }
     }
 }
@@ -180,37 +225,195 @@ pub enum Direction {
     BottomUp,
 }
 
-/// A permanently allowed edge for the rule it is declared on.
+/// Where an `allow` entry's `to` points: a module path pattern of its own, or
+/// a place relative to the node `from` matched. A relative target that
+/// resolves to nothing (the crate node has no `super`) matches nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AllowTarget {
+    Path(String),
+    /// `super`, `super::super`, ...: the ancestor that many levels up.
+    Ancestor(NonZeroUsize),
+    /// `crate`: the root of the crate `from` lies in.
+    Crate,
+    /// `self::*`: the direct children of `from`.
+    Children,
+    /// `self::**`: every module under `from`.
+    Descendants,
+}
+
+impl AllowTarget {
+    /// The module path pattern of an absolute target; `None` for a relative
+    /// one, which is resolved per matched `from` node and has no pattern to
+    /// check on its own.
+    #[must_use]
+    pub fn pattern(&self) -> Option<&str> {
+        match self {
+            Self::Path(pattern) => Some(pattern),
+            _ => None,
+        }
+    }
+}
+
+impl std::str::FromStr for AllowTarget {
+    type Err = String;
+
+    /// The relative forms are the reserved path keywords of Rust, and a
+    /// pattern never starts with one, so a string starting with `self`,
+    /// `super` or `crate` is either one of the offered forms or an error.
+    fn from_str(target: &str) -> Result<Self, Self::Err> {
+        let is_keyword_path =
+            |keyword: &str| target == keyword || target.starts_with(&format!("{keyword}::"));
+        if target == "crate" {
+            return Ok(Self::Crate);
+        }
+        if target == "self::*" {
+            return Ok(Self::Children);
+        }
+        if target == "self::**" {
+            return Ok(Self::Descendants);
+        }
+        if is_keyword_path("super") && target.split("::").all(|segment| segment == "super") {
+            let levels = target.split("::").count();
+            return Ok(Self::Ancestor(
+                NonZeroUsize::new(levels).expect("a split yields at least one segment"),
+            ));
+        }
+        if is_keyword_path("self") || is_keyword_path("super") || is_keyword_path("crate") {
+            return Err(format!(
+                "`to` is {target:?}; a relative target is `crate`, `super`, `super::super`, \
+                 `self::*` or `self::**`"
+            ));
+        }
+        Ok(Self::Path(target.to_owned()))
+    }
+}
+
+/// The target as written in the file, the inverse of `FromStr`.
+impl std::fmt::Display for AllowTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Path(pattern) => f.write_str(pattern),
+            Self::Ancestor(levels) => f.write_str(&vec!["super"; levels.get()].join("::")),
+            Self::Crate => f.write_str("crate"),
+            Self::Children => f.write_str("self::*"),
+            Self::Descendants => f.write_str("self::**"),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for AllowTarget {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+/// One item of an `allow` list as written: a reference to a
+/// `[dependency-patterns]` definition, or an edge of its own.
+#[derive(Debug)]
+enum AllowEntry {
+    DependencyPattern(String),
+    Edge {
+        from: String,
+        to: AllowTarget,
+        reason: Option<String>,
+    },
+}
+
+impl<'de> Deserialize<'de> for AllowEntry {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // One table with every key optional, checked by hand: `untagged` would
+        // only say "data did not match any variant" for a mixed entry.
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Table {
+            pattern: Option<String>,
+            from: Option<String>,
+            to: Option<AllowTarget>,
+            reason: Option<String>,
+        }
+        let table = Table::deserialize(deserializer)?;
+        match table {
+            Table {
+                pattern: Some(pattern),
+                from: None,
+                to: None,
+                reason: None,
+            } => Ok(Self::DependencyPattern(pattern)),
+            Table {
+                pattern: None,
+                from: Some(from),
+                to: Some(to),
+                reason,
+            } => Ok(Self::Edge { from, to, reason }),
+            _ => Err(serde::de::Error::custom(
+                "an allow entry is either `{ pattern = \"<name>\" }` or \
+                 `{ from = \"<pattern>\", to = \"<pattern>\", reason = \"...\" }`",
+            )),
+        }
+    }
+}
+
+/// A permanently allowed edge for the rule it is declared on, with its
+/// `[dependency-patterns]` reference already expanded.
 ///
-/// Scoped to its rule rather than a shared section: the exception lives and
-/// dies with the rule it applies to.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Except {
+/// Scoped to its rule rather than a shared section: the allowance lives and
+/// dies with the rule it applies to. An entry names the odd edge of a
+/// codebase's order, the one against the direction dependencies run by
+/// default, so the entries of a rule together declare that order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AllowedEdge {
     pub from: String,
-    pub to: String,
-    // Documentation only (cargo-deny style), never evaluated.
+    pub to: AllowTarget,
+    /// Documentation only (cargo-deny style), never evaluated.
     pub reason: Option<String>,
+    /// The `[dependency-patterns]` definition the entry came from; `None` for
+    /// an entry written on the rule itself.
+    pub dependency_pattern: Option<String>,
+}
+
+impl AllowedEdge {
+    /// The entry as written, for messages that point back at the file.
+    #[must_use]
+    pub fn written(&self) -> String {
+        format!("{} -> {}", self.from, self.to)
+    }
 }
 
 /// `flatten` hands every key this struct does not declare — `type` and the
 /// rule parameters — to `RuleKind`, whose variants reject the unknown ones.
+/// The retired key `except` is declared here so it reaches a message naming
+/// its replacement instead of `RuleKind`'s "unknown field".
 #[derive(Debug, Deserialize)]
 struct RawRule {
     name: String,
     #[serde(default, rename = "severity")]
     severity: Option<Severity>,
     #[serde(default)]
-    except: Vec<Except>,
+    allow: Vec<AllowEntry>,
+    #[serde(default)]
+    except: Option<serde::de::IgnoredAny>,
     #[serde(flatten)]
     kind: RuleKind,
+}
+
+impl RawRule {
+    /// The first retired key the rule still uses, with the `allow` form that
+    /// replaces it.
+    fn retired_key(&self) -> Option<(&'static str, &'static str)> {
+        if self.except.is_some() {
+            return Some(("except", "allow = [{ from = \"...\", to = \"...\" }]"));
+        }
+        None
+    }
 }
 
 #[derive(Debug)]
 pub struct Rule {
     pub name: String,
     pub severity: Severity,
-    pub except: Vec<Except>,
+    pub allow: Vec<AllowedEdge>,
     pub kind: RuleKind,
 }
 
@@ -225,23 +428,6 @@ pub struct ForbiddenDependencyRule {
 #[serde(deny_unknown_fields)]
 pub struct NoCyclesRule {
     pub scope: String,
-    #[serde(default, rename = "child-to-ancestor")]
-    pub child_to_ancestor: ChildToAncestor,
-    /// How far up an allowed edge may reach: `1` is the direct parent only,
-    /// `None` any ancestor. Zero levels would allow nothing and is rejected at
-    /// parse time.
-    #[serde(default, rename = "ancestor-levels")]
-    pub ancestor_levels: Option<NonZeroUsize>,
-}
-
-/// What a `no-cycles` rule does with an edge from a module to one of its
-/// ancestor modules.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ChildToAncestor {
-    #[default]
-    Report,
-    Allow,
 }
 
 /// One rank in a `layers` rule: either the patterns whose nodes share that
@@ -346,7 +532,7 @@ pub enum RuleKind {
 }
 
 impl RuleKind {
-    /// Every module path pattern the rule itself is written with. `except`
+    /// Every module path pattern the rule itself is written with. `allow`
     /// patterns are not among them: those state an allowance, not the reach of
     /// the rule, and have their own diagnostic.
     #[must_use]
@@ -383,15 +569,53 @@ pub enum ConfigError {
     FileNotFound(PathBuf),
     IoError(PathBuf, std::io::Error),
     ParseError(PathBuf, toml::de::Error),
-    DuplicateRuleName { path: PathBuf, name: String },
-    ReservedRuleName { path: PathBuf, name: String },
-    CatchAllNotAlone { path: PathBuf, name: String },
-    MultipleCatchAllPositions { path: PathBuf, name: String },
-    ExhaustiveWithCatchAll { path: PathBuf, name: String },
-    AncestorLevelsWithoutAllow { path: PathBuf, name: String },
-    EmptyPosition { path: PathBuf, name: String },
-    TooFewPositions { path: PathBuf, name: String },
-    UnsupportedVersion { path: PathBuf, found: u32 },
+    DuplicateRuleName {
+        path: PathBuf,
+        name: String,
+    },
+    ReservedRuleName {
+        path: PathBuf,
+        name: String,
+    },
+    CatchAllNotAlone {
+        path: PathBuf,
+        name: String,
+    },
+    MultipleCatchAllPositions {
+        path: PathBuf,
+        name: String,
+    },
+    ExhaustiveWithCatchAll {
+        path: PathBuf,
+        name: String,
+    },
+    RetiredKey {
+        path: PathBuf,
+        name: String,
+        key: &'static str,
+        replacement: &'static str,
+    },
+    UnknownDependencyPattern {
+        path: PathBuf,
+        name: String,
+        pattern: String,
+    },
+    ReferenceInDependencyPattern {
+        path: PathBuf,
+        pattern: String,
+    },
+    EmptyPosition {
+        path: PathBuf,
+        name: String,
+    },
+    TooFewPositions {
+        path: PathBuf,
+        name: String,
+    },
+    UnsupportedVersion {
+        path: PathBuf,
+        found: u32,
+    },
 }
 
 impl std::fmt::Display for ConfigError {
@@ -432,11 +656,30 @@ impl std::fmt::Display for ConfigError {
                  `exhaustive = true`, or drop the catch-all",
                 path.display()
             ),
-            Self::AncestorLevelsWithoutAllow { path, name } => write!(
+            Self::RetiredKey {
+                path,
+                name,
+                key,
+                replacement,
+            } => write!(
                 f,
-                "rule {name:?} in {} sets `ancestor-levels` while child-to-ancestor edges \
-                 are reported, so the levels bound nothing: add \
-                 `child-to-ancestor = \"allow\"`, or drop `ancestor-levels`",
+                "rule {name:?} in {} uses `{key}`, which no longer exists: write {replacement}",
+                path.display()
+            ),
+            Self::UnknownDependencyPattern {
+                path,
+                name,
+                pattern,
+            } => write!(
+                f,
+                "rule {name:?} in {} refers to dependency pattern {pattern:?}, and the file \
+                 defines no `{pattern}` under `[dependency-patterns]`",
+                path.display()
+            ),
+            Self::ReferenceInDependencyPattern { path, pattern } => write!(
+                f,
+                "dependency pattern `{pattern}` in {} refers to another one: a definition \
+                 holds entries only",
                 path.display()
             ),
             Self::EmptyPosition { path, name } => write!(
@@ -477,8 +720,7 @@ impl ArcConfig {
                 ConfigError::IoError(path.to_path_buf(), e)
             }
         })?;
-        let (mut config, version) = Self::from_toml(&content)
-            .map_err(|e| ConfigError::ParseError(path.to_path_buf(), e))?;
+        let (mut config, version) = Self::from_toml(&content, path)?;
         if let Some(found) = version
             && found != FORMAT_VERSION
         {
@@ -491,7 +733,6 @@ impl ArcConfig {
         config.check_catch_all_layers(path)?;
         config.check_layers_arity(path)?;
         config.check_exhaustive_layers(path)?;
-        config.check_ancestor_levels(path)?;
         config.add_implicit_rule(path)?;
         Ok(config)
     }
@@ -520,11 +761,9 @@ impl ArcConfig {
         Rule {
             name: IMPLICIT_RULE_NAME.to_owned(),
             severity: Severity::Error,
-            except: Vec::new(),
+            allow: Vec::new(),
             kind: RuleKind::NoCycles(NoCyclesRule {
                 scope: "**".to_owned(),
-                child_to_ancestor: ChildToAncestor::Report,
-                ancestor_levels: None,
             }),
         }
     }
@@ -652,46 +891,85 @@ impl ArcConfig {
         Ok(())
     }
 
-    /// Reject a `no-cycles` rule that bounds `ancestor-levels` while it reports
-    /// child-to-ancestor edges: the bound applies to allowed edges only, so it
-    /// would limit nothing.
-    fn check_ancestor_levels(&self, path: &Path) -> Result<(), ConfigError> {
-        for rule in &self.rules {
-            let RuleKind::NoCycles(params) = &rule.kind else {
-                continue;
-            };
-            if params.ancestor_levels.is_some()
-                && params.child_to_ancestor == ChildToAncestor::Report
-            {
-                return Err(ConfigError::AncestorLevelsWithoutAllow {
-                    path: path.to_path_buf(),
-                    name: rule.name.clone(),
-                });
-            }
-        }
-        Ok(())
-    }
-
-    /// Fills in `config.default_severity` for rules that left `severity` unset.
-    /// The second element is the `[config].version` the file named, or `None`
-    /// for a file without a `[config]` section.
-    fn from_toml(content: &str) -> Result<(Self, Option<u32>), toml::de::Error> {
-        let raw: RawConfig = toml::from_str(content)?;
+    /// Fills in `config.default_severity` for rules that left `severity`
+    /// unset and expands every `{ pattern = ... }` reference into the entries
+    /// of its definition. The second element is the `[config].version` the
+    /// file named, or `None` for a file without a `[config]` section.
+    ///
+    /// # Errors
+    /// `ConfigError::ParseError` for invalid TOML; `RetiredKey`,
+    /// `UnknownDependencyPattern` and `ReferenceInDependencyPattern` for
+    /// content the syntax no longer has or a reference that resolves to no
+    /// definition.
+    fn from_toml(content: &str, path: &Path) -> Result<(Self, Option<u32>), ConfigError> {
+        let raw: RawConfig =
+            toml::from_str(content).map_err(|e| ConfigError::ParseError(path.to_path_buf(), e))?;
         let version = raw.config.as_ref().map(|meta| meta.version);
         let default = raw
             .config
             .map(|meta| meta.default_severity)
             .unwrap_or_default();
-        let rules = raw
-            .rules
-            .into_iter()
-            .map(|rule| Rule {
+
+        let mut patterns: HashMap<String, Vec<AllowedEdge>> = HashMap::new();
+        for (name, entries) in raw.dependency_patterns {
+            let mut edges = Vec::new();
+            for entry in entries {
+                match entry {
+                    AllowEntry::DependencyPattern(_) => {
+                        return Err(ConfigError::ReferenceInDependencyPattern {
+                            path: path.to_path_buf(),
+                            pattern: name,
+                        });
+                    }
+                    AllowEntry::Edge { from, to, reason } => edges.push(AllowedEdge {
+                        from,
+                        to,
+                        reason,
+                        dependency_pattern: Some(name.clone()),
+                    }),
+                }
+            }
+            patterns.insert(name, edges);
+        }
+
+        let mut rules = Vec::new();
+        for rule in raw.rules {
+            if let Some((key, replacement)) = rule.retired_key() {
+                return Err(ConfigError::RetiredKey {
+                    path: path.to_path_buf(),
+                    name: rule.name,
+                    key,
+                    replacement,
+                });
+            }
+            let mut allow = Vec::new();
+            for entry in rule.allow {
+                match entry {
+                    AllowEntry::DependencyPattern(pattern) => {
+                        let Some(edges) = patterns.get(&pattern) else {
+                            return Err(ConfigError::UnknownDependencyPattern {
+                                path: path.to_path_buf(),
+                                name: rule.name,
+                                pattern,
+                            });
+                        };
+                        allow.extend(edges.iter().cloned());
+                    }
+                    AllowEntry::Edge { from, to, reason } => allow.push(AllowedEdge {
+                        from,
+                        to,
+                        reason,
+                        dependency_pattern: None,
+                    }),
+                }
+            }
+            rules.push(Rule {
                 name: rule.name,
                 severity: rule.severity.unwrap_or(default),
-                except: rule.except,
+                allow,
                 kind: rule.kind,
-            })
-            .collect();
+            });
+        }
         Ok((
             Self {
                 rules,
@@ -706,6 +984,10 @@ impl ArcConfig {
 mod tests {
     use super::*;
 
+    fn parse(toml: &str) -> Result<(ArcConfig, Option<u32>), ConfigError> {
+        ArcConfig::from_toml(toml, Path::new("arc-rules.toml"))
+    }
+
     #[test]
     fn test_parse_forbidden_dependency() {
         let toml = r#"
@@ -715,7 +997,7 @@ mod tests {
             from = "domain::**"
             to = "infra::**"
         "#;
-        let (config, _) = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = parse(toml).unwrap();
         assert_eq!(config.rules.len(), 1);
         assert_eq!(config.rules[0].name, "no infra in domain");
         assert!(matches!(
@@ -733,7 +1015,7 @@ mod tests {
             name = "domain acyclic"
             scope = "domain::**"
         "#;
-        let (config, _) = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = parse(toml).unwrap();
         assert_eq!(config.rules[0].name, "domain acyclic");
         assert!(matches!(
             &config.rules[0].kind,
@@ -742,112 +1024,171 @@ mod tests {
         ));
     }
 
-    fn no_cycles_params(toml: &str) -> NoCyclesRule {
-        let (config, _) = ArcConfig::from_toml(toml).unwrap();
-        let rules: [Rule; 1] = config.rules.try_into().unwrap();
-        let [
-            Rule {
-                kind: RuleKind::NoCycles(params),
-                ..
-            },
-        ] = rules
-        else {
-            panic!("expected one no-cycles rule");
-        };
-        params
-    }
-
-    #[test]
-    fn test_no_cycles_reports_child_to_ancestor_edges_by_default() {
-        let params = no_cycles_params(
-            r#"
-            [[rules]]
-            type = "no-cycles"
-            name = "no cycles"
-            scope = "**"
-        "#,
-        );
-        assert_eq!(params.child_to_ancestor, ChildToAncestor::Report);
-        assert_eq!(params.ancestor_levels, None);
-    }
-
-    #[test]
-    fn test_parse_no_cycles_allowing_child_to_ancestor_edges() {
-        let params = no_cycles_params(
-            r#"
-            [[rules]]
-            type = "no-cycles"
-            name = "no cycles"
-            scope = "**"
-            child-to-ancestor = "allow"
-        "#,
-        );
-        assert_eq!(params.child_to_ancestor, ChildToAncestor::Allow);
-        assert_eq!(params.ancestor_levels, None);
-    }
-
-    #[test]
-    fn test_parse_no_cycles_with_ancestor_levels() {
-        let params = no_cycles_params(
-            r#"
-            [[rules]]
-            type = "no-cycles"
-            name = "no cycles"
-            scope = "**"
-            child-to-ancestor = "allow"
-            ancestor-levels = 2
-        "#,
-        );
-        assert_eq!(params.ancestor_levels, NonZeroUsize::new(2));
-    }
-
-    #[test]
-    fn test_an_unknown_child_to_ancestor_value_fails_to_parse() {
-        let toml = r#"
-            [[rules]]
-            type = "no-cycles"
-            name = "no cycles"
-            scope = "**"
-            child-to-ancestor = "ignore"
-        "#;
-        let error = ArcConfig::from_toml(toml).unwrap_err();
-        assert!(error.to_string().contains("ignore"), "got: {error}");
-    }
-
-    #[test]
-    fn test_zero_ancestor_levels_fails_to_parse() {
-        let toml = r#"
-            [[rules]]
-            type = "no-cycles"
-            name = "no cycles"
-            scope = "**"
-            child-to-ancestor = "allow"
-            ancestor-levels = 0
-        "#;
-        assert!(ArcConfig::from_toml(toml).is_err());
-    }
-
-    #[test]
-    fn test_ancestor_levels_beside_report_fails_to_load() {
-        let toml = r#"
-            [[rules]]
-            type = "no-cycles"
-            name = "no cycles"
-            scope = "**"
-            ancestor-levels = 1
-        "#;
+    fn load(toml: &str) -> Result<ArcConfig, ConfigError> {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("arc-rules.toml");
         std::fs::write(&path, toml).unwrap();
+        ArcConfig::load(&path)
+    }
 
-        let error = ArcConfig::load(&path).unwrap_err();
+    fn relative_target(to: &str) -> AllowTarget {
+        let toml = format!(
+            r#"
+            [[rules]]
+            type = "no-cycles"
+            name = "no cycles"
+            scope = "**"
+            allow = [{{ from = "**", to = "{to}" }}]
+        "#
+        );
+        let (config, _) = parse(&toml).unwrap();
+        config.rules[0].allow[0].to.clone()
+    }
+
+    #[test]
+    fn test_parse_relative_targets() {
+        assert_eq!(
+            relative_target("super::super"),
+            AllowTarget::Ancestor(NonZeroUsize::new(2).unwrap())
+        );
+        assert_eq!(relative_target("crate"), AllowTarget::Crate);
+        assert_eq!(relative_target("self::*"), AllowTarget::Children);
+        assert_eq!(relative_target("self::**"), AllowTarget::Descendants);
+    }
+
+    #[test]
+    fn test_a_relative_target_outside_the_offered_forms_fails_to_parse() {
+        for to in ["super::sibling", "self", "crate::core", "super::*"] {
+            let toml = format!(
+                r#"
+                [[rules]]
+                type = "no-cycles"
+                name = "no cycles"
+                scope = "**"
+                allow = [{{ from = "**", to = "{to}" }}]
+            "#
+            );
+            let error = parse(&toml).unwrap_err();
+            let message = error.to_string();
+            assert!(message.contains(to), "{to}: got: {message}");
+            assert!(message.contains("self::**"), "{to}: got: {message}");
+        }
+    }
+
+    #[test]
+    fn test_an_entry_mixing_pattern_and_edge_fails_to_parse() {
+        let toml = r#"
+            [[rules]]
+            type = "no-cycles"
+            name = "no cycles"
+            scope = "**"
+            allow = [{ pattern = "vocabulary-parent", from = "**", to = "super" }]
+        "#;
+        let error = parse(toml).unwrap_err();
+        assert!(error.to_string().contains("either"), "got: {error}");
+    }
+
+    #[test]
+    fn test_a_reference_to_an_undefined_pattern_fails_to_load() {
+        let toml = r#"
+            [[rules]]
+            type = "no-cycles"
+            name = "no cycles"
+            scope = "**"
+            allow = [{ pattern = "vocabulary-parent" }]
+        "#;
+        let error = load(toml).unwrap_err();
         assert!(
-            matches!(&error, ConfigError::AncestorLevelsWithoutAllow { name, .. } if name == "no cycles"),
+            matches!(&error, ConfigError::UnknownDependencyPattern { name, pattern, .. }
+                if name == "no cycles" && pattern == "vocabulary-parent"),
+            "got: {error:?}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("`vocabulary-parent` under `[dependency-patterns]`"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn test_a_pattern_definition_referring_to_a_pattern_fails_to_load() {
+        let toml = r#"
+            [[rules]]
+            type = "no-cycles"
+            name = "no cycles"
+            scope = "**"
+
+            [dependency-patterns]
+            outer = [{ pattern = "inner" }]
+            inner = [{ from = "**", to = "super" }]
+        "#;
+        let error = load(toml).unwrap_err();
+        assert!(
+            matches!(&error, ConfigError::ReferenceInDependencyPattern { pattern, .. } if pattern == "outer"),
+            "got: {error:?}"
+        );
+    }
+
+    #[test]
+    fn test_a_pattern_definition_written_as_a_table_fails_to_parse() {
+        let toml = r#"
+            [dependency-patterns.vocabulary-parent]
+            allow = [{ from = "**", to = "super" }]
+        "#;
+        let error = parse(toml).unwrap_err();
+        assert!(error.to_string().contains("sequence"), "got: {error}");
+    }
+
+    #[test]
+    fn test_the_retired_except_key_fails_to_load_naming_allow() {
+        let toml = r#"
+            [[rules]]
+            type = "no-cycles"
+            name = "no cycles"
+            scope = "**"
+            except = [{ from = "core::a", to = "core::b" }]
+        "#;
+        let error = load(toml).unwrap_err();
+        assert!(
+            matches!(&error, ConfigError::RetiredKey { name, key: "except", .. }
+                if name == "no cycles"),
             "got: {error:?}"
         );
         let message = error.to_string();
-        assert!(message.contains("no cycles"));
-        assert!(message.contains("ancestor-levels"));
+        assert!(message.contains("allow = ["), "got: {message}");
+    }
+
+    #[test]
+    fn test_the_retired_diagnostic_name_fails_to_parse_naming_the_replacement() {
+        let toml = r#"
+            [diagnostics]
+            unmatched-except = "warn"
+        "#;
+        let error = parse(toml).unwrap_err();
+        assert!(
+            matches!(error, ConfigError::ParseError(..)),
+            "got: {error:?}"
+        );
+        let message = error.to_string();
+        assert!(message.contains("unmatched-allow"), "got: {message}");
+    }
+
+    #[test]
+    fn test_a_retired_key_is_refused_on_every_rule_type() {
+        let toml = r#"
+            [[rules]]
+            type = "layers"
+            name = "architecture layers"
+            layers = ["domain", "infra"]
+            direction = "top-down"
+            except = [{ from = "infra::bridge", to = "domain::events" }]
+        "#;
+        let error = load(toml).unwrap_err();
+        assert!(
+            matches!(&error, ConfigError::RetiredKey { key: "except", .. }),
+            "got: {error:?}"
+        );
     }
 
     #[test]
@@ -859,7 +1200,7 @@ mod tests {
             layers = ["domain", "application", "infra"]
             direction = "top-down"
         "#;
-        let (config, _) = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = parse(toml).unwrap();
         assert_eq!(config.rules[0].name, "architecture layers");
         let RuleKind::Layers(LayersRule {
             layers, direction, ..
@@ -887,7 +1228,7 @@ mod tests {
             layers = ["domain", "infra"]
             direction = "top-down"
         "#;
-        let (config, _) = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = parse(toml).unwrap();
         let RuleKind::Layers(LayersRule { exhaustive, .. }) = &config.rules[0].kind else {
             panic!("expected Layers, got {:?}", config.rules[0].kind);
         };
@@ -904,7 +1245,7 @@ mod tests {
             direction = "top-down"
             exhaustive = true
         "#;
-        let (config, _) = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = parse(toml).unwrap();
         let RuleKind::Layers(LayersRule { exhaustive, .. }) = &config.rules[0].kind else {
             panic!("expected Layers, got {:?}", config.rules[0].kind);
         };
@@ -938,7 +1279,7 @@ mod tests {
             layers = ["domain", ["adapter_a", "adapter_b"], "runtime"]
             direction = "bottom-up"
         "#;
-        let (config, _) = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = parse(toml).unwrap();
         let RuleKind::Layers(LayersRule { layers, .. }) = &config.rules[0].kind else {
             panic!("expected Layers, got {:?}", config.rules[0].kind);
         };
@@ -960,7 +1301,7 @@ mod tests {
             name = "no infra in domain"
             from = "domain::**"
             to = "infra::**"
-            except = [
+            allow = [
               { from = "domain::legacy", to = "infra::db" },
             ]
 
@@ -975,7 +1316,7 @@ mod tests {
             layers = ["domain", ["adapter_a", "adapter_b"]]
             direction = "top-down"
         "#;
-        let (config, _) = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = parse(toml).unwrap();
         let patterns: Vec<Vec<&str>> = config
             .rules
             .iter()
@@ -984,7 +1325,7 @@ mod tests {
         assert_eq!(
             patterns,
             [
-                // The `except` patterns are the other diagnostic's business.
+                // The `allow` patterns are the other diagnostic's business.
                 vec!["domain::**", "infra::**"],
                 vec!["domain::**"],
                 vec!["domain", "adapter_a", "adapter_b"],
@@ -1005,7 +1346,7 @@ mod tests {
             name = "test"
             scope = "**"
         "#;
-        let (config, _) = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = parse(toml).unwrap();
         assert_eq!(config.rules[0].severity, Severity::Error);
     }
 
@@ -1021,7 +1362,7 @@ mod tests {
             name = "test"
             scope = "**"
         "#;
-        let (config, _) = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = parse(toml).unwrap();
         assert_eq!(config.rules[0].severity, Severity::Warn);
     }
 
@@ -1036,7 +1377,7 @@ mod tests {
             name = "test"
             scope = "**"
         "#;
-        let (config, _) = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = parse(toml).unwrap();
         assert_eq!(config.rules[0].severity, Severity::Error);
     }
 
@@ -1053,7 +1394,7 @@ mod tests {
             scope = "**"
             severity = "error"
         "#;
-        let (config, _) = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = parse(toml).unwrap();
         assert_eq!(config.rules[0].severity, Severity::Error);
     }
 
@@ -1064,7 +1405,7 @@ mod tests {
             type = "unknown-rule"
             name = "test"
         "#;
-        let result = ArcConfig::from_toml(toml);
+        let result = parse(toml);
         assert!(result.is_err());
     }
 
@@ -1085,62 +1426,79 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_except() {
+    fn test_parse_allow_expands_a_pattern_reference_and_reads_a_relative_target() {
         let toml = r#"
             [[rules]]
             type = "no-cycles"
-            name = "app acyclic"
-            scope = "app::**"
-            except = [
-              { from = "app::router", to = "app::screens::**", reason = "router mediates" },
+            name = "no cycles"
+            scope = "**"
+            allow = [
+              { pattern = "vocabulary-parent" },
+              { from = "core::keywords", to = "core::writer", reason = "table generated from the writer" },
             ]
+
+            [dependency-patterns]
+            vocabulary-parent = [{ from = "**", to = "super", reason = "children read the parent's vocabulary" }]
         "#;
-        let (config, _) = ArcConfig::from_toml(toml).unwrap();
-        let except = &config.rules[0].except;
-        assert_eq!(except.len(), 1);
-        assert_eq!(except[0].from, "app::router");
-        assert_eq!(except[0].to, "app::screens::**");
-        assert_eq!(except[0].reason.as_deref(), Some("router mediates"));
+        let (config, _) = parse(toml).unwrap();
+        let allow = &config.rules[0].allow;
+        assert_eq!(allow.len(), 2);
+        assert_eq!(allow[0].from, "**");
+        assert_eq!(
+            allow[0].to,
+            AllowTarget::Ancestor(NonZeroUsize::new(1).unwrap())
+        );
+        assert_eq!(
+            allow[0].dependency_pattern.as_deref(),
+            Some("vocabulary-parent")
+        );
+        assert_eq!(allow[1].from, "core::keywords");
+        assert_eq!(allow[1].to, AllowTarget::Path("core::writer".into()));
+        assert_eq!(allow[1].dependency_pattern, None);
+        assert_eq!(
+            allow[1].reason.as_deref(),
+            Some("table generated from the writer")
+        );
     }
 
     #[test]
-    fn test_parse_except_without_reason() {
+    fn test_parse_allow_without_reason() {
         let toml = r#"
             [[rules]]
             type = "no-cycles"
             name = "app acyclic"
             scope = "app::**"
-            except = [
+            allow = [
               { from = "app::router", to = "app::screens::**" },
             ]
         "#;
-        let (config, _) = ArcConfig::from_toml(toml).unwrap();
-        let except = &config.rules[0].except;
-        assert_eq!(except.len(), 1);
-        assert_eq!(except[0].reason, None);
+        let (config, _) = parse(toml).unwrap();
+        let allow = &config.rules[0].allow;
+        assert_eq!(allow.len(), 1);
+        assert_eq!(allow[0].reason, None);
     }
 
     #[test]
-    fn test_parse_except_defaults_to_empty() {
+    fn test_parse_allow_defaults_to_empty() {
         let toml = r#"
             [[rules]]
             type = "no-cycles"
             name = "app acyclic"
             scope = "app::**"
         "#;
-        let (config, _) = ArcConfig::from_toml(toml).unwrap();
-        assert!(config.rules[0].except.is_empty());
+        let (config, _) = parse(toml).unwrap();
+        assert!(config.rules[0].allow.is_empty());
     }
 
     #[test]
-    fn test_parse_except_on_forbidden_dependency_and_layers() {
+    fn test_parse_allow_on_forbidden_dependency_and_layers() {
         let toml = r#"
             [[rules]]
             type = "forbidden-dependency"
             name = "no infra in domain"
             from = "domain::**"
             to = "infra::**"
-            except = [
+            allow = [
               { from = "domain::legacy", to = "infra::db", reason = "pending migration" },
             ]
 
@@ -1149,18 +1507,18 @@ mod tests {
             name = "architecture layers"
             layers = ["domain", "application", "infra"]
             direction = "top-down"
-            except = [
+            allow = [
               { from = "infra::bridge", to = "domain::events" },
             ]
         "#;
-        let (config, _) = ArcConfig::from_toml(toml).unwrap();
-        let except = &config.rules[0].except;
-        assert_eq!(except.len(), 1);
-        assert_eq!(except[0].from, "domain::legacy");
-        assert_eq!(except[0].to, "infra::db");
-        let except = &config.rules[1].except;
-        assert_eq!(except.len(), 1);
-        assert_eq!(except[0].from, "infra::bridge");
+        let (config, _) = parse(toml).unwrap();
+        let allow = &config.rules[0].allow;
+        assert_eq!(allow.len(), 1);
+        assert_eq!(allow[0].from, "domain::legacy");
+        assert_eq!(allow[0].to, AllowTarget::Path("infra::db".into()));
+        let allow = &config.rules[1].allow;
+        assert_eq!(allow.len(), 1);
+        assert_eq!(allow[0].from, "infra::bridge");
     }
 
     #[test]
@@ -1189,7 +1547,7 @@ mod tests {
             direction = "top-down"
             severity = "error"
         "#;
-        let (config, _) = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = parse(toml).unwrap();
         assert_eq!(config.rules.len(), 3);
         assert!(matches!(
             &config.rules[0].kind,
@@ -1200,14 +1558,14 @@ mod tests {
     }
 
     #[test]
-    fn test_name_and_except_readable_uniformly_across_rule_types() {
+    fn test_name_and_allow_readable_uniformly_across_rule_types() {
         let toml = r#"
             [[rules]]
             type = "forbidden-dependency"
             name = "no infra in domain"
             from = "domain::**"
             to = "infra::**"
-            except = [
+            allow = [
               { from = "domain::legacy", to = "infra::db" },
             ]
 
@@ -1222,7 +1580,7 @@ mod tests {
             layers = ["domain", "application", "infra"]
             direction = "top-down"
         "#;
-        let (config, _) = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = parse(toml).unwrap();
         let names: Vec<&str> = config.rules.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(
             names,
@@ -1232,8 +1590,8 @@ mod tests {
                 "architecture layers"
             ]
         );
-        let except_lens: Vec<usize> = config.rules.iter().map(|r| r.except.len()).collect();
-        assert_eq!(except_lens, [1, 0, 0]);
+        let allow_lens: Vec<usize> = config.rules.iter().map(|r| r.allow.len()).collect();
+        assert_eq!(allow_lens, [1, 0, 0]);
     }
 
     #[test]
@@ -1299,13 +1657,14 @@ mod tests {
             name = "test"
             scope = "**"
         "#;
-        let (config, _) = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = parse(toml).unwrap();
         let diagnostics = &config.diagnostics;
         assert_eq!(diagnostics.unlayered_node.level, DiagnosticLevel::Deny);
         assert!(diagnostics.unlayered_node.except.is_empty());
         assert_eq!(diagnostics.unmatched_baseline_entry, DiagnosticLevel::Warn);
-        assert_eq!(diagnostics.unmatched_except, DiagnosticLevel::Warn);
+        assert_eq!(diagnostics.unmatched_allow, DiagnosticLevel::Warn);
         assert_eq!(diagnostics.unmatched_pattern, DiagnosticLevel::Deny);
+        assert_eq!(diagnostics.contradictory_allow, DiagnosticLevel::Deny);
     }
 
     /// A section that sets other diagnostics must not pull this one down to the
@@ -1314,9 +1673,9 @@ mod tests {
     fn test_unmatched_pattern_stays_denied_when_the_section_omits_it() {
         let toml = r#"
             [diagnostics]
-            unmatched-except = "allow"
+            unmatched-allow = "allow"
         "#;
-        let (config, _) = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = parse(toml).unwrap();
         assert_eq!(config.diagnostics.unmatched_pattern, DiagnosticLevel::Deny);
     }
 
@@ -1326,9 +1685,9 @@ mod tests {
     fn test_unlayered_node_stays_denied_when_the_section_omits_it() {
         let toml = r#"
             [diagnostics]
-            unmatched-except = "allow"
+            unmatched-allow = "allow"
         "#;
-        let (config, _) = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = parse(toml).unwrap();
         assert_eq!(
             config.diagnostics.unlayered_node.level,
             DiagnosticLevel::Deny
@@ -1341,7 +1700,7 @@ mod tests {
             [diagnostics]
             unmatched-pattern = "warn"
         "#;
-        let (config, _) = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = parse(toml).unwrap();
         assert_eq!(config.diagnostics.unmatched_pattern, DiagnosticLevel::Warn);
     }
 
@@ -1351,9 +1710,9 @@ mod tests {
             [diagnostics]
             unlayered-node = "deny"
             unmatched-baseline-entry = "allow"
-            unmatched-except = "warn"
+            unmatched-allow = "warn"
         "#;
-        let (config, _) = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = parse(toml).unwrap();
         let diagnostics = &config.diagnostics;
         assert_eq!(diagnostics.unlayered_node.level, DiagnosticLevel::Deny);
         assert!(
@@ -1361,7 +1720,7 @@ mod tests {
             "the bare form names a level and nothing else"
         );
         assert_eq!(diagnostics.unmatched_baseline_entry, DiagnosticLevel::Allow);
-        assert_eq!(diagnostics.unmatched_except, DiagnosticLevel::Warn);
+        assert_eq!(diagnostics.unmatched_allow, DiagnosticLevel::Warn);
     }
 
     #[test]
@@ -1370,7 +1729,7 @@ mod tests {
             [diagnostics]
             unlayered-node = { level = "deny", except = ["xtask", "benches"] }
         "#;
-        let (config, _) = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = parse(toml).unwrap();
         let unlayered = &config.diagnostics.unlayered_node;
         assert_eq!(unlayered.level, DiagnosticLevel::Deny);
         assert_eq!(unlayered.except, ["xtask", "benches"]);
@@ -1382,7 +1741,7 @@ mod tests {
             [diagnostics]
             unlayered-node = { except = ["xtask"] }
         "#;
-        let (config, _) = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = parse(toml).unwrap();
         let unlayered = &config.diagnostics.unlayered_node;
         assert_eq!(unlayered.level, DiagnosticLevel::Deny);
         assert_eq!(unlayered.except, ["xtask"]);
@@ -1394,7 +1753,7 @@ mod tests {
             [diagnostics]
             unlayered-nodes = "warn"
         "#;
-        let result = ArcConfig::from_toml(toml);
+        let result = parse(toml);
         assert!(
             result.is_err(),
             "a mistyped diagnostic name would otherwise switch nothing on"
@@ -1405,16 +1764,16 @@ mod tests {
     fn test_diagnostics_reject_unknown_level() {
         let toml = r#"
             [diagnostics]
-            unmatched-except = "loud"
+            unmatched-allow = "loud"
         "#;
-        let result = ArcConfig::from_toml(toml);
+        let result = parse(toml);
         assert!(result.is_err(), "an unknown level is a config error");
     }
 
     /// Asserts that loading `toml` fails and that the error names `key`. An
     /// error without the key leaves the reader as stuck as the silent load did.
     fn assert_rejects_key(toml: &str, key: &str) {
-        let error = ArcConfig::from_toml(toml).unwrap_err().to_string();
+        let error = parse(toml).unwrap_err().to_string();
         assert!(
             error.contains(key),
             "expected {key} to be named, got: {error}"
@@ -1459,14 +1818,14 @@ mod tests {
     }
 
     #[test]
-    fn test_reject_unknown_except_key() {
+    fn test_reject_unknown_allow_key() {
         assert_rejects_key(
             r#"
             [[rules]]
             type = "no-cycles"
             name = "app acyclic"
             scope = "app::**"
-            except = [
+            allow = [
               { from = "app::router", to = "app::screens::**", resaon = "router mediates" },
             ]
         "#,
@@ -1493,7 +1852,7 @@ mod tests {
         assert_eq!(config.rules[0].name, "no infra in domain");
         assert_eq!(config.rules[1].name, "architecture layers");
         assert_eq!(config.rules[2].name, "no cycles in domain");
-        assert!(config.rules.iter().all(|r| r.except.is_empty()));
+        assert!(config.rules.iter().all(|r| r.allow.is_empty()));
         match &config.rules[1].kind {
             RuleKind::Layers(LayersRule { direction, .. }) => {
                 assert_eq!(*direction, Direction::TopDown);
@@ -1511,8 +1870,8 @@ mod tests {
         let kinds: Vec<&str> = config.rules.iter().map(Rule::rule_type).collect();
         assert_eq!(kinds, ["layers", "forbidden-dependency", "no-cycles"]);
         assert!(
-            config.rules.iter().all(|rule| rule.except.is_empty()),
-            "the example answers no finding yet, so it carries no except"
+            config.rules.iter().all(|rule| rule.allow.is_empty()),
+            "the example answers no finding yet, so it carries no allow entry"
         );
         assert_eq!(
             config.diagnostics,
@@ -1542,7 +1901,7 @@ mod tests {
             from = "domain::**"
             to = "infra::**"
         "#;
-        let (mut config, _) = ArcConfig::from_toml(toml).unwrap();
+        let (mut config, _) = parse(toml).unwrap();
         config
             .add_implicit_rule(Path::new("arc-rules.toml"))
             .unwrap();
@@ -1560,7 +1919,7 @@ mod tests {
             name = "domain acyclic"
             scope = "domain::**"
         "#;
-        let (mut config, _) = ArcConfig::from_toml(toml).unwrap();
+        let (mut config, _) = parse(toml).unwrap();
         config
             .add_implicit_rule(Path::new("arc-rules.toml"))
             .unwrap();
@@ -1579,7 +1938,7 @@ mod tests {
             from = "domain::**"
             to = "infra::**"
         "#;
-        let (mut config, _) = ArcConfig::from_toml(toml).unwrap();
+        let (mut config, _) = parse(toml).unwrap();
         let err = config
             .add_implicit_rule(Path::new("arc-rules.toml"))
             .unwrap_err();
@@ -1605,7 +1964,7 @@ mod tests {
             name = "domain acyclic"
             scope = "domain::**"
         "#;
-        let (mut config, _) = ArcConfig::from_toml(toml).unwrap();
+        let (mut config, _) = parse(toml).unwrap();
         config
             .add_implicit_rule(Path::new("arc-rules.toml"))
             .unwrap();
@@ -1623,7 +1982,7 @@ mod tests {
             layers = ["*", "domain"]
             direction = "top-down"
         "#;
-        let (config, _) = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = parse(toml).unwrap();
         let RuleKind::Layers(LayersRule { layers, .. }) = &config.rules[0].kind else {
             panic!("expected Layers, got {:?}", config.rules[0].kind);
         };
@@ -1640,7 +1999,7 @@ mod tests {
             layers = [["*"], "domain"]
             direction = "top-down"
         "#;
-        let (config, _) = ArcConfig::from_toml(toml).unwrap();
+        let (config, _) = parse(toml).unwrap();
         let RuleKind::Layers(LayersRule { layers, .. }) = &config.rules[0].kind else {
             panic!("expected Layers, got {:?}", config.rules[0].kind);
         };

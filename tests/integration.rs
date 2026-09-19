@@ -472,6 +472,37 @@ fn test_glob_import_carries_the_names_used() {
     );
 }
 
+/// A private glob in a parent module is visible to its children. A child that
+/// takes a name through `use super::*` depends on the module that defines it,
+/// not on the parent; the parent's own edge keeps the `*` it never uses.
+#[test]
+fn test_child_resolves_through_the_parents_private_glob() {
+    let (temp, cmd) = fixture_args("reexport_workspace", false);
+
+    let result = run(cmd);
+    assert!(result.is_ok(), "run() should succeed: {result:?}");
+
+    let svg = std::fs::read_to_string(temp.path()).unwrap();
+    let symbols = extract_arc_symbols(&svg);
+
+    let child = ("buffer".to_string(), "actions".to_string());
+    assert_eq!(
+        symbols.get(&child).map(Vec::as_slice),
+        Some(["Mapping".to_string()].as_slice()),
+        "buffer -> actions should carry the name buffer uses, found: {symbols:?}"
+    );
+    let parent = ("forwarder".to_string(), "actions".to_string());
+    assert_eq!(
+        symbols.get(&parent).map(Vec::as_slice),
+        Some(["*".to_string()].as_slice()),
+        "forwarder -> actions should keep the unused glob's `*`, found: {symbols:?}"
+    );
+    assert!(
+        !symbols.contains_key(&("buffer".to_string(), "forwarder".to_string())),
+        "buffer -> forwarder should not exist, found: {symbols:?}"
+    );
+}
+
 /// Every use on an edge, with its category, goes to stderr under `--debug`,
 /// so the walker's result can be read without a rule that consumes it.
 /// A subprocess, because `run` installs the debug log on the process's own
@@ -982,11 +1013,11 @@ fn a_transitive_dependency_freezes_on_its_pair() {
     assert_eq!(code, 0, "the frozen pair is not reported, stderr: {stderr}");
 }
 
-/// `except` works on the pair as well. `unmatched-except` asks whether the
+/// `allow` works on the pair as well. `unmatched-allow` asks whether the
 /// patterns resolve to nodes, not whether an edge is written between them, so
 /// an entry on a pair with no edge is not reported as dead.
 #[test]
-fn an_except_on_the_pair_allows_a_transitive_dependency() {
+fn an_allow_on_the_pair_allows_a_transitive_dependency() {
     let dir = tempfile::tempdir().unwrap();
     let rules_path = dir.path().join("arc-rules.toml");
     std::fs::write(
@@ -1000,20 +1031,20 @@ type = "layers"
 name = "architecture layers"
 layers = ["a", "d", "b"]
 direction = "top-down"
-except = [{ from = "b", to = "d" }]
+allow = [{ from = "b", to = "d" }]
 
 [diagnostics]
-unmatched-except = "deny"
+unmatched-allow = "deny"
 "#,
     )
     .unwrap();
     let rules_arg = format!("--rules={}", rules_path.display());
 
     let (code, stderr) = cargo_arc_check("transitive_layers_workspace", &[&rules_arg]);
-    assert_eq!(code, 0, "the pair is excepted, stderr: {stderr}");
+    assert_eq!(code, 0, "the pair is allowed, stderr: {stderr}");
     assert!(
-        !stderr.contains("unmatched-except"),
-        "the except entry matched, stderr: {stderr}"
+        !stderr.contains("unmatched-allow"),
+        "the allow entry matched, stderr: {stderr}"
     );
 }
 
@@ -1165,18 +1196,18 @@ fn test_check_gives_the_configuration_its_own_status_line() {
 [config]
 version = 1
 
-# multi_crate has no cycles, so the rule comes out clean. Its except names a
-# module that does not exist, and that gap is what fails the run.
+# multi_crate has no cycles, so the rule comes out clean. Its allow entry names
+# a module that does not exist, and that gap is what fails the run.
 [[rules]]
 type = "no-cycles"
 name = "global no-cycles"
 scope = "**"
-except = [
+allow = [
   { from = "crate_a::no_such_module", to = "crate_b::gamma" },
 ]
 
 [diagnostics]
-unmatched-except = "deny"
+unmatched-allow = "deny"
 "#,
     )
     .unwrap();
@@ -1617,7 +1648,7 @@ fn regenerating_after_a_fix_drops_only_what_the_fix_touched() {
 }
 
 #[test]
-fn test_generate_baseline_refuses_dead_except() {
+fn test_generate_baseline_refuses_dead_allow() {
     let dir = tempfile::tempdir().unwrap();
     let rules_path = dir.path().join("arc-rules.toml");
     std::fs::write(
@@ -1631,7 +1662,7 @@ type = "forbidden-dependency"
 name = "no infra in domain"
 from = "domain::**"
 to = "infra::**"
-except = [
+allow = [
   { from = "domain::lgacy", to = "infra::db" },
 ]
 "#,
@@ -1646,7 +1677,7 @@ except = [
     );
     assert_eq!(
         code, 2,
-        "a dead except should refuse baseline generation, stderr: {stderr}"
+        "a dead allow entry should refuse baseline generation, stderr: {stderr}"
     );
     assert!(
         stderr.contains("domain::lgacy"),
@@ -1834,7 +1865,7 @@ fn test_check_fails_on_a_denied_diagnostic() {
 }
 
 #[test]
-fn test_check_reports_an_except_that_matches_nothing() {
+fn test_check_reports_an_allow_that_matches_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let rules_path = dir.path().join("arc-rules.toml");
     std::fs::write(
@@ -1848,7 +1879,7 @@ type = "forbidden-dependency"
 name = "no infra in domain"
 from = "domain::**"
 to = "infra::**"
-except = [
+allow = [
   { from = "domain::lgacy", to = "infra::db" },
 ]
 "#,
@@ -1858,8 +1889,67 @@ except = [
 
     let (_code, stderr) = cargo_arc_check("arch_violation_workspace", &[&rules_arg]);
     assert!(
-        stderr.contains("unmatched-except: domain::lgacy"),
-        "a dead except should be reported in the check run, stderr: {stderr}"
+        stderr.contains("unmatched-allow: domain::lgacy"),
+        "a dead allow entry should be reported in the check run, stderr: {stderr}"
+    );
+}
+
+#[test]
+fn test_check_refuses_a_rules_file_with_a_retired_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let rules_path = dir.path().join("arc-rules.toml");
+    std::fs::write(
+        &rules_path,
+        r#"
+[config]
+version = 1
+
+[[rules]]
+type = "no-cycles"
+name = "no cycles"
+scope = "**"
+except = [{ from = "core::a", to = "core::b" }]
+"#,
+    )
+    .unwrap();
+    let rules_arg = format!("--rules={}", rules_path.display());
+
+    let (code, stderr) = cargo_arc_check("arch_violation_workspace", &[&rules_arg]);
+    assert_eq!(code, 2, "stderr: {stderr}");
+    assert!(
+        stderr.contains("`except`") && stderr.contains("allow = ["),
+        "the message names the key and its replacement, stderr: {stderr}"
+    );
+}
+
+#[test]
+fn test_check_reports_contradictory_allow_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    let rules_path = dir.path().join("arc-rules.toml");
+    std::fs::write(
+        &rules_path,
+        r#"
+[config]
+version = 1
+
+[[rules]]
+type = "no-cycles"
+name = "no cycles"
+scope = "**"
+allow = [
+  { from = "**", to = "super" },
+  { from = "**", to = "self::*" },
+]
+"#,
+    )
+    .unwrap();
+    let rules_arg = format!("--rules={}", rules_path.display());
+
+    let (code, stderr) = cargo_arc_check("arch_violation_workspace", &[&rules_arg]);
+    assert_eq!(code, 1, "stderr: {stderr}");
+    assert!(
+        stderr.contains("contradictory-allow:") && stderr.contains("`** -> self::*`"),
+        "stderr: {stderr}"
     );
 }
 

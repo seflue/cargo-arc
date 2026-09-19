@@ -4,10 +4,11 @@
 //! `NodeIndex` sets in the `ArcGraph`.
 
 use crate::graph::{ArcGraph, EdgeWeight};
-use crate::rules::config::Layer;
+use crate::rules::config::{AllowTarget, AllowedEdge, Layer};
 use petgraph::graph::NodeIndex;
 use petgraph::visit::EdgeRef;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::num::NonZeroUsize;
 
 fn non_external_indices(graph: &ArcGraph) -> impl Iterator<Item = NodeIndex> + '_ {
     graph
@@ -151,6 +152,160 @@ impl<'graph> PatternIndex<'graph> {
     }
 }
 
+/// The `allow` entries of one rule, resolved once against the graph so a
+/// per-edge check is a set lookup or a walk along the containment chain
+/// rather than a re-run of pattern resolution.
+pub(super) struct ResolvedAllows<'entries, 'graph> {
+    graph: &'graph ArcGraph,
+    entries: Vec<ResolvedAllow<'entries>>,
+    parent_of: HashMap<NodeIndex, NodeIndex>,
+    children_of: HashMap<NodeIndex, Vec<NodeIndex>>,
+}
+
+struct ResolvedAllow<'entries> {
+    entry: &'entries AllowedEdge,
+    from: HashSet<NodeIndex>,
+    to: ResolvedTarget,
+}
+
+/// An absolute `to` is one node set for every `from` node; a relative one is
+/// read off the containment tree per `from` node at check time.
+enum ResolvedTarget {
+    Nodes(HashSet<NodeIndex>),
+    Ancestor(NonZeroUsize),
+    Crate,
+    Children,
+    Descendants,
+}
+
+impl<'entries, 'graph> ResolvedAllows<'entries, 'graph> {
+    pub(super) fn resolve(entries: &'entries [AllowedEdge], index: &PatternIndex<'graph>) -> Self {
+        let graph = index.graph();
+        let parent_of = graph.parent_map();
+        let mut children_of: HashMap<NodeIndex, Vec<NodeIndex>> = HashMap::new();
+        for (&child, &parent) in &parent_of {
+            children_of.entry(parent).or_default().push(child);
+        }
+        Self {
+            graph,
+            entries: entries
+                .iter()
+                .map(|entry| ResolvedAllow {
+                    entry,
+                    from: index.resolve(&entry.from).into_iter().collect(),
+                    to: match &entry.to {
+                        AllowTarget::Path(pattern) => {
+                            ResolvedTarget::Nodes(index.resolve(pattern).into_iter().collect())
+                        }
+                        AllowTarget::Ancestor(levels) => ResolvedTarget::Ancestor(*levels),
+                        AllowTarget::Crate => ResolvedTarget::Crate,
+                        AllowTarget::Children => ResolvedTarget::Children,
+                        AllowTarget::Descendants => ResolvedTarget::Descendants,
+                    },
+                })
+                .collect(),
+            parent_of,
+            children_of,
+        }
+    }
+
+    /// Whether the rule carries no entry at all, so per-edge work can be
+    /// skipped entirely.
+    pub(super) fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// The first entry whose `from` matches `source` and whose `to` names
+    /// `target` from there.
+    pub(super) fn covers(
+        &self,
+        source: NodeIndex,
+        target: NodeIndex,
+    ) -> Option<&'entries AllowedEdge> {
+        self.entries
+            .iter()
+            .find(|resolved| {
+                resolved.from.contains(&source) && self.reaches(&resolved.to, source, target)
+            })
+            .map(|resolved| resolved.entry)
+    }
+
+    /// Every (source, target) pair some entry covers, with the position of
+    /// that entry in the list handed to `resolve`. Pairs of one node with
+    /// itself are left out: a node is not above itself, and no edge runs
+    /// there.
+    pub(super) fn pairs(&self) -> impl Iterator<Item = (NodeIndex, NodeIndex, usize)> + '_ {
+        self.entries
+            .iter()
+            .enumerate()
+            .flat_map(move |(position, resolved)| {
+                resolved.from.iter().flat_map(move |&source| {
+                    self.targets_from(&resolved.to, source)
+                        .into_iter()
+                        .filter(move |&target| target != source)
+                        .map(move |target| (source, target, position))
+                })
+            })
+    }
+
+    fn reaches(&self, to: &ResolvedTarget, source: NodeIndex, target: NodeIndex) -> bool {
+        match to {
+            ResolvedTarget::Nodes(nodes) => nodes.contains(&target),
+            ResolvedTarget::Ancestor(levels) => self.ancestor_of(source, *levels) == Some(target),
+            ResolvedTarget::Crate => self.crate_of(source) == Some(target),
+            ResolvedTarget::Children => self.parent_of.get(&target) == Some(&source),
+            ResolvedTarget::Descendants => {
+                let mut node = target;
+                while let Some(&parent) = self.parent_of.get(&node) {
+                    if parent == source {
+                        return true;
+                    }
+                    node = parent;
+                }
+                false
+            }
+        }
+    }
+
+    fn targets_from(&self, to: &ResolvedTarget, source: NodeIndex) -> Vec<NodeIndex> {
+        match to {
+            ResolvedTarget::Nodes(nodes) => nodes.iter().copied().collect(),
+            ResolvedTarget::Ancestor(levels) => {
+                self.ancestor_of(source, *levels).into_iter().collect()
+            }
+            ResolvedTarget::Crate => self.crate_of(source).into_iter().collect(),
+            ResolvedTarget::Children => self.children_of.get(&source).cloned().unwrap_or_default(),
+            ResolvedTarget::Descendants => {
+                let mut found = Vec::new();
+                let mut stack = self.children_of.get(&source).cloned().unwrap_or_default();
+                while let Some(node) = stack.pop() {
+                    stack.extend(self.children_of.get(&node).into_iter().flatten());
+                    found.push(node);
+                }
+                found
+            }
+        }
+    }
+
+    /// The node `levels` steps up the containment chain from `source`, or
+    /// `None` where the chain ends first.
+    fn ancestor_of(&self, source: NodeIndex, levels: NonZeroUsize) -> Option<NodeIndex> {
+        let mut node = source;
+        for _ in 0..levels.get() {
+            node = *self.parent_of.get(&node)?;
+        }
+        Some(node)
+    }
+
+    /// The crate root of a module; `None` for a crate node, which `crate`
+    /// does not point back at.
+    fn crate_of(&self, source: NodeIndex) -> Option<NodeIndex> {
+        self.graph[source]
+            .is_module()
+            .then(|| self.graph.owning_crate(source))
+    }
+}
+
 /// Whether `*` in `pattern` can stretch to make `name` match, where `*`
 /// stands for any run of characters, including none, within this one
 /// segment. Both are already free of `::`.
@@ -181,6 +336,7 @@ fn segment_matches(pattern: &str, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rules::test_support::allow_edge;
     use crate::test_support::{crate_node, module_node};
 
     /// Build a test graph with a crate "test" and modules beneath it.
@@ -261,6 +417,39 @@ mod tests {
         let (graph, _) = test_crate_graph();
         let result = PatternIndex::build(&graph).resolve("nonexistent");
         assert!(result.is_empty());
+    }
+
+    /// A relative `to` that leads off the containment tree matches nothing:
+    /// no node stands two levels above a top-level module, the crate node
+    /// has no crate above it, and a leaf has no children.
+    #[test]
+    fn test_a_relative_target_leading_nowhere_covers_nothing() {
+        let (mut graph, crate_idx) = test_crate_graph();
+        let top = add_module(&mut graph, "top", crate_idx, crate_idx);
+        let leaf = add_module(&mut graph, "leaf", crate_idx, top);
+        let index = PatternIndex::build(&graph);
+        let entry = |to: &str| allow_edge("**", to);
+
+        let covered = |to: &str, source: NodeIndex, target: NodeIndex| {
+            let entries = [entry(to)];
+            ResolvedAllows::resolve(&entries, &index)
+                .covers(source, target)
+                .is_some()
+        };
+        assert!(covered("super::super", leaf, crate_idx));
+        assert!(!covered("super::super", top, crate_idx));
+        assert!(covered("crate", top, crate_idx));
+        assert!(!covered("crate", crate_idx, crate_idx));
+        assert!(covered("self::*", top, leaf));
+        assert!(!covered("self::*", leaf, top));
+
+        let entries = [entry("super::super"), entry("crate"), entry("self::*")];
+        let pairs: Vec<_> = ResolvedAllows::resolve(&entries, &index).pairs().collect();
+        assert_eq!(
+            pairs.len(),
+            5,
+            "leaf: super::super, crate; top: crate, self::*; crate: self::*; got {pairs:?}"
+        );
     }
 
     fn add_crate(graph: &mut ArcGraph, name: &str) -> NodeIndex {

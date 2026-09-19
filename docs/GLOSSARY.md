@@ -109,16 +109,17 @@ An edge carrying few symbols is described by that count, not by a shape.
 | **Severity** | How bad breaking a rule is: `error`, `warn`, `ignore`. A property of the rule, not of what it finds. | — |
 | **Violation** | One fact a rule established: a dependency, or a cycle, under that rule. A dependency holds whether it is written as one edge or runs through nodes in between, and either way the violation names its two ends. A manifest entry and an import between the same two ends are one dependency, not two. Every violation is in exactly one of the three states below. | finding |
 | **Reported** | The state that counts: neither allowed nor frozen. Only reported violations reach the exit code. | — |
-| **Allowed** | Permitted by an `except` entry on the rule or by a rule option such as `child-to-ancestor`, permanently and by intent. | whitelisted, ignored |
+| **Allowed** | Permitted by an `allow` entry on the rule, permanently and by intent. An entry names the odd edge, the one that runs against the order the writer has in mind, and the entries of a rule together declare that order. | whitelisted, ignored, excepted |
 | **Frozen** | Covered by an `arc-baseline.toml` entry: debt that exists, is tolerated until someone gets to it, and is expected to shrink. | baselined |
 | **Silenced** | The genus of allowed and frozen, and what `--show-silenced` lists. Never a state on its own. | suppressed |
 | **Baseline** | The set of frozen violations, kept in `arc-baseline.toml` beside the rules file. Only `--generate-baseline` writes it. | — |
-| **Diagnostic** | A gap in the configuration rather than in the architecture: a node an exhaustive `layers` rule leaves in no position, a baseline entry that matches nothing, an `except` that matches nothing, a rule pattern that matches nothing, a catch-all layer that holds nothing. | — |
+| **Diagnostic** | A gap in the configuration rather than in the architecture: a node an exhaustive `layers` rule leaves in no position, a baseline entry that matches nothing, an `allow` entry that matches nothing, `allow` entries that put nodes above each other in a circle, a rule pattern that matches nothing, a catch-all layer that holds nothing. | — |
 | **Diagnostic level** | Whether the state a diagnostic names is tolerated: `allow`, `warn`, `deny`. | severity |
 | **Layer** | One position in a `layers` rule, holding one or more patterns, or `*` for the nodes no other layer holds. Patterns in the same layer sit at the same position. | tier |
 | **Exhaustive rule** | A `layers` rule carrying `exhaustive = true`, which claims to sort everything it addresses: its crate patterns claim every workspace crate, its module patterns every module of the crates those patterns reach. Without the field a rule says nothing about what it does not name. | total, complete |
-| **Pattern** | A module path with optional wildcards: `domain`, `domain::service`, `domain::*`, `domain::**`, `domain*` (`*` standing for any run of characters within one segment), or a bare `**`. | glob |
-| **Scope** | The pattern a `no-cycles` rule searches inside. Not a concept beside pattern, just the name of its role there. | — |
+| **Module path pattern** | A module path with optional wildcards: `domain`, `domain::service`, `domain::*`, `domain::**`, `domain*` (`*` standing for any run of characters within one segment), or a bare `**`. *Pattern* alone means this one where nothing says otherwise. | glob |
+| **Dependency pattern** | A named list of `allow` entries under `[dependency-patterns]`, referenced from a rule's `allow` list by name. It selects dependencies; whether they are allowed is decided by the list that references it. | idiom, allow pattern, edge pattern |
+| **Scope** | The module path pattern a `no-cycles` rule searches inside. Not a concept beside pattern, just the name of its role there. | — |
 
 *Allowed* and *frozen* are kept apart because one is meant to stay and the other is meant to shrink.
 

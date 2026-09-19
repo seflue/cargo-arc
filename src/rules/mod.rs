@@ -4,3 +4,5 @@ pub mod diagnostics;
 pub mod engine;
 pub mod format;
 pub mod matching;
+#[cfg(test)]
+mod test_support;

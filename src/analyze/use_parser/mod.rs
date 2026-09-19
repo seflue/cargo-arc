@@ -83,6 +83,10 @@ pub(crate) struct ModuleExportInfo {
     pub(crate) private_uses: HashMap<String, ReExportTarget>,
     /// Glob re-export sources (module paths from `pub use *`)
     pub(crate) glob_sources: Vec<String>,
+    /// Private glob sources (module paths from a private `use *`). Like
+    /// `private_uses`, visible to descendants only, which may name any of
+    /// the forwarded symbols through this module.
+    pub(crate) private_glob_sources: Vec<String>,
 }
 
 impl ModuleExportInfo {
@@ -93,6 +97,7 @@ impl ModuleExportInfo {
             && self.explicit_reexports.is_empty()
             && self.private_uses.is_empty()
             && self.glob_sources.is_empty()
+            && self.private_glob_sources.is_empty()
     }
 }
 
@@ -200,6 +205,23 @@ pub(crate) fn resolve_reexport(
             continue;
         }
 
+        // Tier 2b: Private glob, visible only to descendants of the module
+        // that holds it, like Tier 1b.
+        if is_descendant(importer_module, &dep.target_module)
+            && let Some(glob_src) = module_info.private_glob_sources.iter().find(|glob_src| {
+                module_scope_holds_symbol(
+                    crate_exports,
+                    glob_src,
+                    item,
+                    importer_module,
+                    &mut HashSet::new(),
+                )
+            })
+        {
+            dep.target_module = glob_src.clone();
+            continue;
+        }
+
         break;
     }
 }
@@ -229,6 +251,34 @@ fn module_exports_symbol(
         }
     }
     false
+}
+
+/// Whether `importer_module` can name `symbol` through `module_path`: what
+/// the module exports, plus what its private globs forward to a descendant.
+/// A private glob is followed on direct hops only; a `pub use m::*` on the
+/// way republishes `m`'s public items, none of `m`'s private imports.
+fn module_scope_holds_symbol(
+    crate_exports: &HashMap<String, ModuleExportInfo>,
+    module_path: &str,
+    symbol: &str,
+    importer_module: &str,
+    visited: &mut HashSet<String>,
+) -> bool {
+    if !visited.insert(module_path.to_string()) {
+        return false;
+    }
+    if module_exports_symbol(crate_exports, module_path, symbol, &mut HashSet::new()) {
+        return true;
+    }
+    if !is_descendant(importer_module, module_path) {
+        return false;
+    }
+    let Some(info) = crate_exports.get(module_path) else {
+        return false;
+    };
+    info.private_glob_sources.iter().any(|glob_src| {
+        module_scope_holds_symbol(crate_exports, glob_src, symbol, importer_module, visited)
+    })
 }
 
 /// Whether `module` is `ancestor` itself or nested below it. The crate root
@@ -1515,16 +1565,18 @@ pub(crate) fn parse_path_ref_dependencies(
     deps
 }
 
-/// Whether the module a glob imports from exports `name`, by its own
-/// definition, a named re-export, or a glob re-export chain.
+/// Whether the module a glob imports from brings `name` into this file's
+/// scope: by its own definition, a named re-export, a glob re-export chain,
+/// or a private glob the file's module sees as a descendant.
 fn glob_exports(ctx: &ResolutionContext, glob: &DependencyRef, name: &str) -> bool {
     ctx.reexport_map
         .get(&glob.target_crate)
         .is_some_and(|crate_exports| {
-            module_exports_symbol(
+            module_scope_holds_symbol(
                 crate_exports,
                 &glob.target_module,
                 name,
+                ctx.current_module_path,
                 &mut HashSet::new(),
             )
         })

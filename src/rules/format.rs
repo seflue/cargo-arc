@@ -195,7 +195,8 @@ fn subject(diagnostic: &Diagnostic) -> String {
                 "cross"
             }
         ),
-        DiagnosticKind::UnmatchedExcept { entry } => entry.pattern.clone(),
+        DiagnosticKind::UnmatchedAllow { entry } => entry.pattern.clone(),
+        DiagnosticKind::ContradictoryAllow { entry } => entry.cycle.join(" -> "),
         DiagnosticKind::UnmatchedPattern { entry } => entry.pattern.clone(),
         DiagnosticKind::DeadCatchAllLayer { .. } => "*".to_string(),
     }
@@ -217,9 +218,20 @@ fn explanation(diagnostic: &Diagnostic) -> String {
             "freezes more than the edge carries; arc check --generate-baseline narrows the entry"
                 .to_string()
         }
-        DiagnosticKind::UnmatchedExcept { entry } => {
+        DiagnosticKind::UnmatchedAllow { entry } => {
             format!("in rule {:?}, matches no module", entry.rule)
         }
+        DiagnosticKind::ContradictoryAllow { entry } => format!(
+            "in rule {:?}, the allow entries {} put these nodes above each other in a circle, \
+             so they declare no order",
+            entry.rule,
+            entry
+                .entries
+                .iter()
+                .map(|written| format!("`{written}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         DiagnosticKind::UnmatchedPattern { entry } => {
             format!(
                 "in rule {:?}, matches no module: the rule checks nothing",
@@ -275,7 +287,7 @@ fn rule_block(out: &mut String, violations: &[&Violation], level: &str) {
 /// the source locations that carry it. A silenced violation carries its state
 /// on the line; a reported one carries no mark.
 fn violation_body(out: &mut String, violation: &Violation) {
-    let mark = state_mark(violation.state);
+    let mark = state_mark(&violation.state);
     match &violation.detail {
         ViolationDetail::Edge {
             edge: ends,
@@ -303,7 +315,7 @@ fn violation_body(out: &mut String, violation: &Violation) {
             }
         }
         ViolationDetail::Cluster(cluster) => {
-            out.push_str(&cluster_block(cluster, "    ", mark));
+            out.push_str(&cluster_block(cluster, "    ", &mark));
         }
     }
     for loc in &violation.locations {
@@ -311,12 +323,14 @@ fn violation_body(out: &mut String, violation: &Violation) {
     }
 }
 
-fn state_mark(state: ViolationState) -> &'static str {
+fn state_mark(state: &ViolationState) -> String {
     match state {
-        ViolationState::Reported => "",
-        ViolationState::Allowed(AllowedBy::Except) => " (allowed by except)",
-        ViolationState::Allowed(AllowedBy::ChildToAncestor) => " (allowed by child-to-ancestor)",
-        ViolationState::Frozen => " (frozen)",
+        ViolationState::Reported => String::new(),
+        ViolationState::Allowed(AllowedBy::Entry) => " (allowed by entry)".to_string(),
+        ViolationState::Allowed(AllowedBy::Pattern(name)) => {
+            format!(" (allowed by pattern {name})")
+        }
+        ViolationState::Frozen => " (frozen)".to_string(),
     }
 }
 
@@ -795,7 +809,7 @@ mod tests {
             rule_name: "no infra in domain".into(),
             rule_type: "forbidden-dependency".into(),
             severity: Severity::Error,
-            state: ViolationState::Allowed(AllowedBy::Except),
+            state: ViolationState::Allowed(AllowedBy::Entry),
             detail: ViolationDetail::Edge {
                 edge: Edge::new("domain::service", "infra::db"),
                 frozen_for: None,
@@ -813,7 +827,7 @@ mod tests {
         };
         let output = format_violations(&result, false);
         assert!(
-            !output.contains("except[forbidden-dependency]"),
+            !output.contains("allowed[forbidden-dependency]"),
             "got:\n{output}"
         );
         assert!(
@@ -860,7 +874,7 @@ mod tests {
         let without_flag = format_violations(&result, false);
         let with_flag = format_violations(&result, true);
         assert_eq!(without_flag, with_flag);
-        assert!(!without_flag.contains("except"), "got:\n{without_flag}");
+        assert!(!without_flag.contains("allowed by"), "got:\n{without_flag}");
         assert!(
             !without_flag.contains("not counted"),
             "got:\n{without_flag}"
@@ -999,7 +1013,7 @@ mod tests {
             violations: vec![
                 domain_violation("domain::a", "src/domain/a.rs"),
                 Violation {
-                    state: ViolationState::Allowed(AllowedBy::Except),
+                    state: ViolationState::Allowed(AllowedBy::Entry),
                     ..domain_violation("domain::b", "src/domain/b.rs")
                 },
                 Violation {
@@ -1007,7 +1021,7 @@ mod tests {
                     ..domain_violation("domain::c", "src/domain/c.rs")
                 },
                 Violation {
-                    state: ViolationState::Allowed(AllowedBy::ChildToAncestor),
+                    state: ViolationState::Allowed(AllowedBy::Pattern("vocabulary-parent".into())),
                     ..domain_violation("domain::d", "src/domain/d.rs")
                 },
             ],
@@ -1019,11 +1033,11 @@ mod tests {
             "got:\n{output}"
         );
         assert!(
-            output.contains("domain::b → infra::db (allowed by except)"),
+            output.contains("domain::b → infra::db (allowed by entry)"),
             "got:\n{output}"
         );
         assert!(
-            output.contains("domain::d → infra::db (allowed by child-to-ancestor)"),
+            output.contains("domain::d → infra::db (allowed by pattern vocabulary-parent)"),
             "got:\n{output}"
         );
         assert!(output.contains("domain::a → infra::db\n"), "got:\n{output}");
@@ -1075,7 +1089,7 @@ mod tests {
     use crate::rules::baseline::{BaselineEntry, ViolationKey};
     use crate::rules::config::DiagnosticLevel;
     use crate::rules::diagnostics::{
-        DeadExcept, DeadPattern, Diagnostic, DiagnosticKind, UnsortedNode,
+        ContradictoryAllow, DeadAllow, DeadPattern, Diagnostic, DiagnosticKind, UnsortedNode,
     };
 
     fn unlayered(rule: &str, node: &str, level: DiagnosticLevel) -> Diagnostic {
@@ -1247,12 +1261,12 @@ mod tests {
     }
 
     #[test]
-    fn test_format_unmatched_except_names_its_rule() {
+    fn test_format_unmatched_allow_names_its_rule() {
         let result = CheckResult {
             diagnostics: vec![Diagnostic {
                 level: DiagnosticLevel::Warn,
-                kind: DiagnosticKind::UnmatchedExcept {
-                    entry: DeadExcept {
+                kind: DiagnosticKind::UnmatchedAllow {
+                    entry: DeadAllow {
                         rule: "no infra in domain".into(),
                         pattern: "domain::lgacy".into(),
                     },
@@ -1262,11 +1276,39 @@ mod tests {
         };
         let output = format_violations(&result, false);
         assert!(
-            output.contains("  unmatched-except: domain::lgacy"),
+            output.contains("  unmatched-allow: domain::lgacy"),
             "got:\n{output}"
         );
         assert!(
             output.contains(r#"in rule "no infra in domain""#),
+            "got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_format_contradictory_allow_names_the_entries_and_a_cycle() {
+        let result = CheckResult {
+            diagnostics: vec![Diagnostic {
+                level: DiagnosticLevel::Deny,
+                kind: DiagnosticKind::ContradictoryAllow {
+                    entry: ContradictoryAllow {
+                        rule: "no cycles".into(),
+                        entries: vec!["** -> super".into(), "** -> self::*".into()],
+                        cycle: vec!["core".into(), "core::a".into(), "core".into()],
+                    },
+                },
+            }],
+            ..Default::default()
+        };
+        let output = format_violations(&result, false);
+        assert!(
+            output.contains("  contradictory-allow: core -> core::a -> core"),
+            "got:\n{output}"
+        );
+        assert!(
+            output.contains(
+                r#"in rule "no cycles", the allow entries `** -> super`, `** -> self::*`"#
+            ),
             "got:\n{output}"
         );
     }

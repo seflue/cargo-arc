@@ -12,6 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `cargo arc ui` switches external crates and test code on and off: toolbar buttons, `:Arc externals on|off` and `:Arc tests on|off`.
+- `allow` entries accept `super`, `super::super`, `crate`, `self::*` and `self::**`, relative to the matched module.
+- `[dependency-patterns]` defines named `allow` lists that rules reference as `{ pattern = "<name>" }`.
+- `contradictory-allow` diagnostic: a rule's `allow` entries put nodes above each other in a circle.
+
+### Changed
+
+- `except` on a rule is renamed to `allow`, `unmatched-except` to `unmatched-allow`. The old keys are rejected.
 
 ## [0.5.0] - 2026-09-14
 

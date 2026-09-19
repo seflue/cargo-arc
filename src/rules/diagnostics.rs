@@ -7,9 +7,10 @@
 use crate::model::EdgeSymbols;
 use crate::rules::baseline::{Baseline, BaselineEntry, StaleEntry};
 use crate::rules::config::{ArcConfig, DiagnosticLevel, Layer, Rule, RuleKind, Severity};
-use crate::rules::matching::PatternIndex;
-use petgraph::graph::NodeIndex;
-use std::collections::HashSet;
+use crate::rules::matching::{PatternIndex, ResolvedAllows};
+use petgraph::algo::tarjan_scc;
+use petgraph::graph::{DiGraph, NodeIndex};
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug)]
 pub struct Diagnostic {
@@ -32,8 +33,11 @@ pub enum DiagnosticKind {
         entry: BaselineEntry,
         surplus: EdgeSymbols,
     },
-    /// An `except` pattern that resolves to no module, so it allows nothing.
-    UnmatchedExcept { entry: DeadExcept },
+    /// An `allow` pattern that resolves to no module, so it allows nothing.
+    UnmatchedAllow { entry: DeadAllow },
+    /// `allow` entries of one rule that put nodes above each other in a
+    /// circle, so together they declare no order.
+    ContradictoryAllow { entry: ContradictoryAllow },
     /// A rule's own pattern that resolves to no module, so the rule checks
     /// nothing and reports nothing.
     UnmatchedPattern { entry: DeadPattern },
@@ -52,7 +56,8 @@ impl Diagnostic {
             // the config has one switch for the pair.
             DiagnosticKind::UnmatchedBaselineEntry { .. }
             | DiagnosticKind::WideBaselineEntry { .. } => "unmatched-baseline-entry",
-            DiagnosticKind::UnmatchedExcept { .. } => "unmatched-except",
+            DiagnosticKind::UnmatchedAllow { .. } => "unmatched-allow",
+            DiagnosticKind::ContradictoryAllow { .. } => "contradictory-allow",
             DiagnosticKind::UnmatchedPattern { .. } | DiagnosticKind::DeadCatchAllLayer { .. } => {
                 "unmatched-pattern"
             }
@@ -103,14 +108,26 @@ pub(super) fn collect(
         );
     }
 
-    let level = settings.unmatched_except;
+    let level = settings.unmatched_allow;
     if level != DiagnosticLevel::Allow {
         found.extend(
-            dead_excepts(index, config)
+            dead_allows(index, config)
                 .into_iter()
                 .map(|entry| Diagnostic {
                     level,
-                    kind: DiagnosticKind::UnmatchedExcept { entry },
+                    kind: DiagnosticKind::UnmatchedAllow { entry },
+                }),
+        );
+    }
+
+    let level = settings.contradictory_allow;
+    if level != DiagnosticLevel::Allow {
+        found.extend(
+            contradictory_allows(index, config)
+                .into_iter()
+                .map(|entry| Diagnostic {
+                    level,
+                    kind: DiagnosticKind::ContradictoryAllow { entry },
                 }),
         );
     }
@@ -240,38 +257,159 @@ fn unlayered_nodes(index: &PatternIndex, config: &ArcConfig) -> Vec<UnsortedNode
     found
 }
 
-/// An `except` pattern that matches no module: a typo or a rename, and it
+/// An `allow` pattern that matches no module: a typo or a rename, and it
 /// silently allows nothing.
 #[derive(Debug)]
-pub struct DeadExcept {
+pub struct DeadAllow {
     pub rule: String,
     pub pattern: String,
 }
 
-/// `except` patterns across `config` whose `from` or `to` side resolves to no
-/// node. An `except` on a currently nonexistent *edge* is not dead — that's a
+/// `allow` patterns across `config` whose `from` or `to` side resolves to no
+/// node. An entry on a currently nonexistent *edge* is not dead — that's a
 /// forward-looking allowance, not a typo — so only the pattern side is
-/// checked, never whether the edge itself exists.
+/// checked, never whether the edge itself exists. A relative `to` has no
+/// pattern of its own and is asked nothing.
 #[must_use]
-pub(super) fn dead_excepts(index: &PatternIndex, config: &ArcConfig) -> Vec<DeadExcept> {
+pub(super) fn dead_allows(index: &PatternIndex, config: &ArcConfig) -> Vec<DeadAllow> {
     let mut dead = Vec::new();
     for rule in active_rules(config) {
-        for exception in &rule.except {
-            if index.resolve(&exception.from).is_empty() {
-                dead.push(DeadExcept {
-                    rule: rule.name.clone(),
-                    pattern: exception.from.clone(),
-                });
-            }
-            if index.resolve(&exception.to).is_empty() {
-                dead.push(DeadExcept {
-                    rule: rule.name.clone(),
-                    pattern: exception.to.clone(),
-                });
+        for entry in &rule.allow {
+            let sides = [Some(entry.from.as_str()), entry.to.pattern()];
+            for pattern in sides.into_iter().flatten() {
+                if index.resolve(pattern).is_empty() {
+                    dead.push(DeadAllow {
+                        rule: rule.name.clone(),
+                        pattern: pattern.to_owned(),
+                    });
+                }
             }
         }
     }
     dead
+}
+
+/// `allow` entries of one rule whose declared order runs in a circle. Each
+/// entry says its `to` stands above its `from`; `entries` are the ones that
+/// take part in the circle, as written, and `cycle` is one circle of nodes
+/// that shows it.
+#[derive(Debug)]
+pub struct ContradictoryAllow {
+    pub rule: String,
+    pub entries: Vec<String>,
+    pub cycle: Vec<String>,
+}
+
+/// The circles in the order each rule's `allow` entries declare: a strongly
+/// connected component of more than one node in the graph the entries lay
+/// out over the nodes they cover.
+fn contradictory_allows(index: &PatternIndex, config: &ArcConfig) -> Vec<ContradictoryAllow> {
+    let graph = index.graph();
+    let mut found = Vec::new();
+    for rule in active_rules(config) {
+        if rule.allow.is_empty() {
+            continue;
+        }
+        let order = declared_order(&ResolvedAllows::resolve(&rule.allow, index));
+        for component in tarjan_scc(&order) {
+            if component.len() < 2 {
+                continue;
+            }
+            let members: HashSet<NodeIndex> = component.iter().copied().collect();
+            found.push(ContradictoryAllow {
+                rule: rule.name.clone(),
+                entries: entries_within(&order, &members)
+                    .into_iter()
+                    .map(|position| rule.allow[position].written())
+                    .collect(),
+                cycle: example_cycle(&order, &members)
+                    .into_iter()
+                    .map(|node| graph.qualified_name(order[node]))
+                    .collect(),
+            });
+        }
+    }
+    found.sort_by(|a, b| a.rule.cmp(&b.rule).then_with(|| a.cycle.cmp(&b.cycle)));
+    found
+}
+
+/// The order a rule's entries declare, as a graph from each covered `from`
+/// node to its `to` node, the edge weighted with the entry's position. An
+/// entry ranks a pair only where it covers one direction of it: a pair it
+/// covers both ways it leaves unordered, and with the same pattern on both
+/// sides that is every pair.
+fn declared_order(allows: &ResolvedAllows) -> DiGraph<NodeIndex, usize> {
+    let mut covered: HashMap<usize, HashSet<(NodeIndex, NodeIndex)>> = HashMap::new();
+    for (source, target, position) in allows.pairs() {
+        covered
+            .entry(position)
+            .or_default()
+            .insert((source, target));
+    }
+
+    let mut order = DiGraph::new();
+    let mut order_node: HashMap<NodeIndex, NodeIndex> = HashMap::new();
+    for (position, pairs) in covered {
+        for &(source, target) in &pairs {
+            if pairs.contains(&(target, source)) {
+                continue;
+            }
+            let from = *order_node
+                .entry(source)
+                .or_insert_with(|| order.add_node(source));
+            let to = *order_node
+                .entry(target)
+                .or_insert_with(|| order.add_node(target));
+            order.add_edge(from, to, position);
+        }
+    }
+    order
+}
+
+/// The positions of the entries whose edges run inside `members`, each once,
+/// in the order the entries were written.
+fn entries_within(order: &DiGraph<NodeIndex, usize>, members: &HashSet<NodeIndex>) -> Vec<usize> {
+    let mut positions: Vec<usize> = order
+        .edge_indices()
+        .filter(|&edge| {
+            let (from, to) = order.edge_endpoints(edge).expect("edge should exist");
+            members.contains(&from) && members.contains(&to)
+        })
+        .map(|edge| order[edge])
+        .collect();
+    positions.sort_unstable();
+    positions.dedup();
+    positions
+}
+
+/// One circle inside `members`, as the nodes it runs through, closed by
+/// repeating the first. Starts at the smallest name, so the choice does not
+/// depend on the order the component was collected in, and follows the
+/// smallest-named successor from there until a node repeats.
+fn example_cycle(
+    order: &DiGraph<NodeIndex, usize>,
+    members: &HashSet<NodeIndex>,
+) -> Vec<NodeIndex> {
+    let start = members
+        .iter()
+        .copied()
+        .min_by_key(|&node| order[node])
+        .expect("a component holds at least one node");
+    let mut path = vec![start];
+    let mut node = start;
+    loop {
+        let next = order
+            .neighbors(node)
+            .filter(|next| members.contains(next))
+            .min_by_key(|&next| order[next])
+            .expect("every node of a strongly connected component has a successor in it");
+        if let Some(at) = path.iter().position(|&seen| seen == next) {
+            path.push(next);
+            return path.split_off(at);
+        }
+        path.push(next);
+        node = next;
+    }
 }
 
 /// A rule pattern that matches no module: a typo or a rename, and the rule it
@@ -282,7 +420,7 @@ pub struct DeadPattern {
     pub pattern: String,
 }
 
-/// Patterns across `config` that resolve to no node, `except` aside. A rule
+/// Patterns across `config` that resolve to no node, `allow` aside. A rule
 /// whose pattern misses has no other way of saying so: it checks zero edges,
 /// reports nothing, and leaves the run green.
 fn unmatched_patterns(index: &PatternIndex, config: &ArcConfig) -> Vec<DeadPattern> {
@@ -323,12 +461,14 @@ mod tests {
     use crate::model::{Edge, EdgeSymbols};
     use crate::rules::baseline::{Baseline, BaselineEntry, ViolationKey};
     use crate::rules::config::{
-        ArcConfig, ChildToAncestor, DiagnosticLevel, Diagnostics, Direction, Except,
-        ForbiddenDependencyRule, Layer, LayersRule, NoCyclesRule, Rule, RuleKind, Severity,
-        UnlayeredNode,
+        AllowedEdge, ArcConfig, DiagnosticLevel, Diagnostics, Direction, ForbiddenDependencyRule,
+        Layer, LayersRule, NoCyclesRule, Rule, RuleKind, Severity, UnlayeredNode,
     };
-    use crate::rules::diagnostics::{Diagnostic, DiagnosticKind, collect, dead_excepts};
+    use crate::rules::diagnostics::{
+        ContradictoryAllow, Diagnostic, DiagnosticKind, collect, dead_allows,
+    };
     use crate::rules::matching::PatternIndex;
+    use crate::rules::test_support::allow_edge;
     use crate::test_support::{crate_node, module_node};
     use petgraph::graph::NodeIndex;
 
@@ -363,7 +503,7 @@ mod tests {
         Rule {
             name: name.into(),
             severity: Severity::Error,
-            except: vec![],
+            allow: vec![],
             kind: RuleKind::Layers(LayersRule {
                 layers: layers.iter().map(|&layer| layer.into()).collect(),
                 direction: Direction::TopDown,
@@ -387,11 +527,9 @@ mod tests {
         Rule {
             name: name.into(),
             severity: Severity::Error,
-            except: vec![],
+            allow: vec![],
             kind: RuleKind::NoCycles(NoCyclesRule {
                 scope: scope.into(),
-                child_to_ancestor: ChildToAncestor::Report,
-                ancestor_levels: None,
             }),
         }
     }
@@ -400,7 +538,7 @@ mod tests {
         Rule {
             name: name.into(),
             severity: Severity::Error,
-            except: vec![],
+            allow: vec![],
             kind: RuleKind::ForbiddenDependency(ForbiddenDependencyRule {
                 from: from.into(),
                 to: to.into(),
@@ -408,18 +546,21 @@ mod tests {
         }
     }
 
-    fn forbidden_rule(name: &str, except: Vec<Except>) -> Rule {
+    fn forbidden_rule(name: &str, allow: Vec<AllowedEdge>) -> Rule {
         Rule {
-            except,
+            allow,
             ..forbidden_between(name, "domain::**", "infra::**")
         }
     }
 
-    fn except_edge(from: &str, to: &str) -> Except {
-        Except {
-            from: from.into(),
-            to: to.into(),
-            reason: None,
+    /// `no-cycles` rule over `**` with the given `allow` entries.
+    fn cycles_rule_allowing(entries: &[(&str, &str)]) -> Rule {
+        Rule {
+            allow: entries
+                .iter()
+                .map(|&(from, to)| allow_edge(from, to))
+                .collect(),
+            ..cycles_rule("no cycles", "**")
         }
     }
 
@@ -770,44 +911,59 @@ mod tests {
         assert_eq!(found[0].level, DiagnosticLevel::Warn);
     }
 
-    // ===== unmatched-except =====
+    // ===== unmatched-allow =====
 
     #[test]
-    fn except_pattern_matching_no_module_is_a_dead_entry() {
+    fn allow_pattern_matching_no_module_is_a_dead_entry() {
         let graph = workspace(&["domain", "infra"]);
         let config = config_of(
             vec![forbidden_rule(
                 "no infra in domain",
-                vec![except_edge("domain::typo", "infra::service")],
+                vec![allow_edge("domain::typo", "infra::service")],
             )],
             Diagnostics::default(),
         );
-        let dead = dead_excepts(&PatternIndex::build(&graph), &config);
+        let dead = dead_allows(&PatternIndex::build(&graph), &config);
         assert_eq!(dead.len(), 1);
         assert_eq!(dead[0].rule, "no infra in domain");
         assert_eq!(dead[0].pattern, "domain::typo");
     }
 
     #[test]
-    fn a_resolving_except_is_not_dead() {
+    fn a_resolving_allow_is_not_dead() {
         let graph = workspace(&["domain", "infra"]);
         let config = config_of(
             vec![forbidden_rule(
                 "no infra in domain",
-                vec![except_edge("domain::service", "infra::service")],
+                vec![allow_edge("domain::service", "infra::service")],
             )],
             Diagnostics::default(),
         );
-        assert!(dead_excepts(&PatternIndex::build(&graph), &config).is_empty());
+        assert!(dead_allows(&PatternIndex::build(&graph), &config).is_empty());
     }
 
     #[test]
-    fn dead_except_is_reported_as_a_diagnostic() {
+    fn a_relative_entry_is_asked_about_its_from_side_only() {
+        let graph = workspace(&["domain"]);
+        let config = config_of(
+            vec![cycles_rule_allowing(&[
+                ("domain::service", "super"),
+                ("domain::typo", "crate"),
+            ])],
+            Diagnostics::default(),
+        );
+        let dead = dead_allows(&PatternIndex::build(&graph), &config);
+        let patterns: Vec<&str> = dead.iter().map(|d| d.pattern.as_str()).collect();
+        assert_eq!(patterns, ["domain::typo"]);
+    }
+
+    #[test]
+    fn dead_allow_is_reported_as_a_diagnostic() {
         let graph = workspace(&["domain", "infra"]);
         let config = config_of(
             vec![forbidden_rule(
                 "no infra in domain",
-                vec![except_edge("domain::typo", "infra::service")],
+                vec![allow_edge("domain::typo", "infra::service")],
             )],
             Diagnostics::default(),
         );
@@ -815,10 +971,109 @@ mod tests {
         assert!(
             found.iter().any(|diagnostic| matches!(
                 &diagnostic.kind,
-                DiagnosticKind::UnmatchedExcept { entry }
+                DiagnosticKind::UnmatchedAllow { entry }
                     if entry.rule == "no infra in domain" && entry.pattern == "domain::typo"
             )),
             "got: {found:?}"
+        );
+    }
+
+    // ===== contradictory-allow =====
+
+    /// Crate `core` holding `a`, which holds `deep`, beside `b` and `error`.
+    fn nested_graph() -> ArcGraph {
+        let mut graph = ArcGraph::new();
+        let core = add_crate(&mut graph, "core");
+        let a = add_module(&mut graph, "a", core, core);
+        add_module(&mut graph, "deep", core, a);
+        add_module(&mut graph, "b", core, core);
+        add_module(&mut graph, "error", core, core);
+        graph
+    }
+
+    fn contradictions(graph: &ArcGraph, entries: &[(&str, &str)]) -> Vec<ContradictoryAllow> {
+        let config = config_of(vec![cycles_rule_allowing(entries)], Diagnostics::default());
+        diagnose(graph, &config)
+            .into_iter()
+            .filter_map(|diagnostic| match diagnostic.kind {
+                DiagnosticKind::ContradictoryAllow { entry } => {
+                    assert_eq!(diagnostic.level, DiagnosticLevel::Deny);
+                    Some(entry)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn two_entries_putting_a_pair_above_each_other_contradict() {
+        let found = contradictions(
+            &nested_graph(),
+            &[("core::a", "core::b"), ("core::b", "core::a")],
+        );
+        assert_eq!(found.len(), 1, "got: {found:?}");
+        assert_eq!(found[0].rule, "no cycles");
+        assert_eq!(
+            found[0].entries,
+            ["core::a -> core::b", "core::b -> core::a"]
+        );
+        assert_eq!(found[0].cycle, ["core::a", "core::b", "core::a"]);
+    }
+
+    #[test]
+    fn the_tree_reading_and_its_mirror_contradict_on_every_pair() {
+        let found = contradictions(&nested_graph(), &[("**", "super"), ("**", "self::*")]);
+        assert_eq!(found.len(), 1, "got: {found:?}");
+        assert_eq!(found[0].entries, ["** -> super", "** -> self::*"]);
+        assert_eq!(found[0].cycle.len(), 3, "got: {:?}", found[0].cycle);
+    }
+
+    #[test]
+    fn one_direction_declares_an_order() {
+        assert!(contradictions(&nested_graph(), &[("**", "super")]).is_empty());
+        assert!(contradictions(&nested_graph(), &[("**", "crate")]).is_empty());
+    }
+
+    #[test]
+    fn an_entry_with_the_same_pattern_on_both_sides_ranks_nothing() {
+        assert!(contradictions(&nested_graph(), &[("core", "core")]).is_empty());
+    }
+
+    /// `core` as a pattern takes its subtree with it, so the entry covers the
+    /// sibling pair `a`/`b` in both directions. That leaves the pair unranked
+    /// rather than ranked both ways, and `a -> core` still ranks.
+    #[test]
+    fn an_entry_covering_a_pair_both_ways_ranks_that_pair_neither_way() {
+        assert!(contradictions(&nested_graph(), &[("core::**", "core")]).is_empty());
+        let found = contradictions(
+            &nested_graph(),
+            &[("core::**", "core"), ("core", "core::a")],
+        );
+        assert_eq!(found.len(), 1, "got: {found:?}");
+        assert_eq!(found[0].cycle, ["core", "core::a", "core"]);
+    }
+
+    #[test]
+    fn an_entry_whose_sides_overlap_is_no_contradiction_with_itself() {
+        assert!(contradictions(&nested_graph(), &[("core::error", "core::*")]).is_empty());
+    }
+
+    #[test]
+    fn a_contradiction_at_allow_is_not_collected() {
+        let config = config_of(
+            vec![cycles_rule_allowing(&[
+                ("core::a", "core::b"),
+                ("core::b", "core::a"),
+            ])],
+            Diagnostics {
+                contradictory_allow: DiagnosticLevel::Allow,
+                ..Diagnostics::default()
+            },
+        );
+        assert!(
+            diagnose(&nested_graph(), &config)
+                .iter()
+                .all(|d| !matches!(d.kind, DiagnosticKind::ContradictoryAllow { .. }))
         );
     }
 

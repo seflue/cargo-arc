@@ -2767,6 +2767,90 @@ mod resolve_reexport_tests {
         assert_eq!(dep.target_module, "front::wgsl");
     }
 
+    // --- resolve_reexport: private glob, descendant visibility ---
+
+    fn private_glob_map(holder: &str, source: &str, item: &str) -> ReExportMap {
+        let mut holder_info = ModuleExportInfo::default();
+        holder_info.private_glob_sources.push(source.to_string());
+        let mut source_info = ModuleExportInfo::default();
+        source_info.definitions.insert(
+            item.to_string(),
+            Definition {
+                kind: DefKind::Struct,
+                line: 1,
+            },
+        );
+        let mut crate_exports = HashMap::new();
+        crate_exports.insert(holder.to_string(), holder_info);
+        crate_exports.insert(source.to_string(), source_info);
+        [("my_crate".to_string(), crate_exports)]
+            .into_iter()
+            .collect()
+    }
+
+    #[test]
+    fn resolve_private_glob_for_descendant() {
+        // api holds a private `use actions::*` and names nothing from it; a
+        // descendant names Mapping through the ancestor. The edge belongs to
+        // the definer.
+        let map = private_glob_map("api", "api::actions", "Mapping");
+
+        let mut dep = test_dep("my_crate", "api", Some("Mapping"));
+        resolve_reexport(&mut dep, &map, "api::buffer");
+        assert_eq!(dep.target_module, "api::actions");
+    }
+
+    #[test]
+    fn resolve_private_glob_not_for_non_descendant() {
+        // A module outside api cannot see its private glob; without a visible
+        // binding the edge stays on the ancestor.
+        let map = private_glob_map("api", "api::actions", "Mapping");
+
+        let mut dep = test_dep("my_crate", "api", Some("Mapping"));
+        resolve_reexport(&mut dep, &map, "backend");
+        assert_eq!(dep.target_module, "api");
+    }
+
+    #[test]
+    fn resolve_private_glob_chain_for_descendant() {
+        // api::buffer forwards api's scope with `use super::*`, api forwards
+        // actions with `use actions::*`; a module below api::buffer reaches
+        // the definer through both.
+        let mut map = private_glob_map("api", "api::actions", "Mapping");
+        let mut buffer_info = ModuleExportInfo::default();
+        buffer_info.private_glob_sources.push("api".to_string());
+        map.0
+            .get_mut("my_crate")
+            .unwrap()
+            .insert("api::buffer".to_string(), buffer_info);
+
+        let mut dep = test_dep("my_crate", "api::buffer", Some("Mapping"));
+        resolve_reexport(&mut dep, &map, "api::buffer::view");
+        assert_eq!(dep.target_module, "api::actions");
+    }
+
+    #[test]
+    fn resolve_pub_glob_carries_none_of_the_sources_private_globs() {
+        // dispatch holds private globs on custom and core; custom republishes
+        // dispatch with `pub use dispatch::*`. That carries dispatch's public
+        // items only, so Mapping (defined in core) is not custom's to give,
+        // even to dispatch itself.
+        let mut map = private_glob_map("dispatch", "core", "Mapping");
+        let mut custom_info = ModuleExportInfo::default();
+        custom_info.glob_sources.push("dispatch".to_string());
+        let crate_exports = map.0.get_mut("my_crate").unwrap();
+        crate_exports.insert("custom".to_string(), custom_info);
+        crate_exports
+            .get_mut("dispatch")
+            .unwrap()
+            .private_glob_sources
+            .push("custom".to_string());
+
+        let mut dep = test_dep("my_crate", "custom", Some("Mapping"));
+        resolve_reexport(&mut dep, &map, "dispatch");
+        assert_eq!(dep.target_module, "custom");
+    }
+
     // --- ModuleExportInfo default ---
 
     #[test]

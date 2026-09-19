@@ -434,9 +434,10 @@ fn run_generate_baseline(
 ) -> Result<()> {
     let baseline = Baseline::empty();
     let run = CheckRun::new(graph, &baseline, include_reexports);
-    let dead = run.dead_excepts(config);
+    let dead = run.dead_allows(config);
     if !dead.is_empty() {
-        let mut message = String::from("cannot write a baseline while an except matches nothing");
+        let mut message =
+            String::from("cannot write a baseline while an allow entry matches nothing");
         for d in &dead {
             let _ = write!(
                 message,

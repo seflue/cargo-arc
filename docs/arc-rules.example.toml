@@ -37,12 +37,13 @@ name = "no cycles"
 scope = "**"
 
 # A diagnostic reports a gap in this file rather than in the architecture. All
-# four stand at their default level here, so the section changes nothing until
+# five stand at their default level here, so the section changes nothing until
 # you edit it. `unlayered-node` also takes an `except` list, and a crate that
 # is outside the architecture on purpose goes in it: build tooling, examples,
-# benchmarks. The `except` of a rule does not reach here.
+# benchmarks. The `allow` list of a rule does not reach here.
 [diagnostics]
 unlayered-node = { level = "deny", except = [] }
 unmatched-baseline-entry = "warn"
-unmatched-except = "warn"
+unmatched-allow = "warn"
 unmatched-pattern = "deny"
+contradictory-allow = "deny"

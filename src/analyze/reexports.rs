@@ -258,8 +258,8 @@ fn resolution_context<'a>(
 ///
 /// `private` selects where named targets land: a `pub`/`pub(crate)`/`pub(super)`
 /// re-export fills `explicit_reexports`, a private `use` fills `private_uses`
-/// (a binding descendants can still name through this module). Glob sources are
-/// only recorded for the re-export case; a private glob republishes nothing.
+/// (a binding descendants can still name through this module). A glob lands in
+/// `glob_sources` or `private_glob_sources` by the same split.
 fn collect_use_reexports(
     ctx: &CollectContext,
     use_item: &syn::ItemUse,
@@ -281,7 +281,9 @@ fn collect_use_reexports(
         };
 
         if dep.target_item.as_deref() == Some("*") {
-            if !private {
+            if private {
+                info.private_glob_sources.push(dep.target_module.clone());
+            } else {
                 info.glob_sources.push(dep.target_module.clone());
             }
         } else if let Some(original_name) = &dep.target_item {
@@ -652,6 +654,41 @@ mod tests {
         assert!(
             !parent_info.explicit_reexports.contains_key("Private"),
             "private use must not leak into explicit_reexports"
+        );
+    }
+
+    // A private glob lands in private_glob_sources, where a descendant can
+    // still resolve the names it forwards
+    #[test]
+    fn private_glob_captured_in_private_glob_sources() {
+        let tmp = test_crate(&[
+            ("src/lib.rs", "pub mod parent;"),
+            ("src/parent/mod.rs", "pub mod sibling;\nuse sibling::*;"),
+            ("src/parent/sibling.rs", "pub struct Private;"),
+        ]);
+        let crate_info = make_crate_info(&tmp, "test_crate");
+        let mp: ModulePathMap = [(
+            "test_crate".to_string(),
+            HashSet::from(["parent".into(), "parent::sibling".into()]),
+        )]
+        .into_iter()
+        .collect();
+
+        let result = collect_crate_reexports(
+            &crate_info,
+            &mp,
+            &WorkspaceCrates::default(),
+            &CrateExportMap::default(),
+        );
+
+        let parent_info = result.get("parent").expect("parent should have exports");
+        assert_eq!(
+            parent_info.private_glob_sources,
+            vec!["parent::sibling".to_string()]
+        );
+        assert!(
+            parent_info.glob_sources.is_empty(),
+            "private glob must not leak into glob_sources"
         );
     }
 

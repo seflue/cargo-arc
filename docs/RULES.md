@@ -10,13 +10,13 @@
 - [Reference](#reference)
   - [Where the files live](#where-the-files-live)
   - [The `[config]` table](#the-config-table)
-  - [Patterns](#patterns)
+  - [Module path patterns](#module-path-patterns)
   - [`layers`](#layers)
   - [`forbidden-dependency`](#forbidden-dependency)
   - [`no-cycles`](#no-cycles)
     - [How bad a tangle is](#how-bad-a-tangle-is)
   - [Severity](#severity)
-  - [`except`](#except)
+  - [`allow`](#allow)
   - [Diagnostics](#diagnostics)
   - [The baseline](#the-baseline)
   - [What a run prints](#what-a-run-prints)
@@ -168,7 +168,7 @@ If it is outside the architecture on purpose (build tooling, examples, benchmark
 unlayered-node = { level = "deny", except = ["xtask"] }
 ```
 
-The `except` on a rule does not reach the diagnostics, which is why this list exists separately.
+The `allow` list of a rule does not reach the diagnostics, which is why this list exists separately.
 Inventing a layer for `xtask` does not work.
 It puts the crate in the order, and every dependency between it and a node in another position is then judged against that order.
 The names here are patterns like any other, so an excepted node takes the modules below it with it.
@@ -216,9 +216,9 @@ default_severity = "error"
 
 Unknown keys are rejected rather than ignored, so a typo in a rule or a diagnostic name fails the run instead of switching something off silently.
 
-### Patterns
+### Module path patterns
 
-A pattern names crates and modules by their path:
+A module path pattern names crates and modules by their path:
 
 | Pattern | Matches |
 |---------|---------|
@@ -231,7 +231,7 @@ A pattern names crates and modules by their path:
 
 There is no pattern for a crate on its own.
 `core` takes its modules with it, and `core::**` leaves the crate out.
-An `except` on a crate name therefore covers every dependency between the modules inside it.
+An `allow` entry with a crate name on both sides therefore covers every dependency between the modules inside it.
 Inside one segment, `*` stands for any run of characters, including none.
 It may sit anywhere in the segment and appear more than once, but never crosses a `::`.
 So `core*` names every crate that starts with `core`, and `*_test` every one that ends with `_test`.
@@ -285,7 +285,7 @@ error[layers]: architecture layers
       --> util/src/lib.rs:7
 ```
 
-An `except` or a baseline entry names the pair `services → core`, and that covers the dependency however it runs, including when it later runs over a different node.
+An `allow` entry or a baseline entry names the pair `services → core`, and that covers the dependency however it runs, including when it later runs over a different node.
 The walk stops at every layered node, because the order judges that pair on its own.
 Such an entry names two layered nodes, so a silenced edge is never a step of a longer route.
 A dependency with an endpoint no layer matches is still not checked, and neither is the place of that node itself; without `exhaustive = true` nothing says which nodes those are.
@@ -373,7 +373,7 @@ scope = "**"
 An edge takes part when the pattern matches both of its ends.
 A cycle running through a module the pattern leaves out is therefore never found.
 `scope` holds one pattern and a pattern has no negation, so a scope over the whole workspace except one crate cannot be written.
-An [`except`](#except) naming that crate on both sides does that job instead, because it takes every dependency inside the crate out before the search.
+An [`allow`](#allow) entry naming that crate on both sides does that job instead, because it takes every dependency inside the crate out before the search.
 
 Violations are reported per tangle.
 A tangle holding one cycle prints a `cycle:` line naming its modules in order, then one row per edge on it.
@@ -406,22 +406,22 @@ The search reads module edges only, so a dependency declared in a `Cargo.toml` i
 A dependency whose imports are all `pub use` counts only under `--include-reexports`: republishing a name is not a dependency on it, and the idiomatic re-export cycles that arise from it are not violations.
 
 A module that uses names of the module containing it closes a cycle with the dependency back down, and the rule reports that cycle like any other.
-`child-to-ancestor = "allow"` removes every edge from a module to one of its ancestor modules before the search, the way an `except` entry removes the edge it names:
+An [`allow`](#allow) entry whose `to` is `super` removes every edge from a module to the module containing it before the search:
 
 ```toml
 [[rules]]
 type = "no-cycles"
 name = "no cycles"
 scope = "**"
-child-to-ancestor = "allow"
-ancestor-levels = 1
+allow = [
+  { from = "**", to = "super", reason = "children read the parent's vocabulary" },
+]
 ```
 
-The crate root is the outermost ancestor, so an edge from a module to its own crate is removed too, where `scope` takes the crate in at all.
-`ancestor-levels` bounds how far up a removed edge may reach; `1` is the parent module only, and without the key any ancestor qualifies.
-It is refused while `child-to-ancestor` is `"report"`, the default, because it would then bound nothing.
-A removed edge that lay on a cycle is counted as *allowed* and listed under `--show-silenced` as `(allowed by child-to-ancestor)`; one that lay on none raises no count.
-The dependency down from the ancestor stays in the search, and so does a cycle between two modules under the same parent.
+The crate root contains its top-level modules, so an edge from such a module to its own crate is removed too, where `scope` takes the crate in at all.
+`super::super` reaches the module two levels up instead, and `crate` the root of the crate from anywhere inside it.
+A removed edge that lay on a cycle is counted as *allowed* and listed under `--show-silenced`; one that lay on none raises no count.
+The dependency down from the containing module stays in the search, and so does a cycle between two modules under the same parent.
 
 A file without a `no-cycles` rule is checked by an implicit one named `no cycles` with scope `**`.
 Because that rule would still forbid the cycles a narrower rule of yours deliberately permits, writing any `no-cycles` rule removes it.
@@ -450,9 +450,9 @@ With a frozen cycle in the mix, the cycle count covers only the counted ones.
 A reported violation of an `error` rule fails the run; under `warn` it is reported and counted but the run stays green.
 `ignore` switches the rule off entirely: it is never checked, gets no status line, and its baseline entries are left alone.
 
-### `except`
+### `allow`
 
-An `except` entry permanently allows dependencies under one rule:
+An `allow` entry permanently allows dependencies under one rule:
 
 ```toml
 [[rules]]
@@ -460,7 +460,7 @@ type = "forbidden-dependency"
 name = "no services in storage"
 from = "storage"
 to = "services"
-except = [
+allow = [
   { from = "storage::migrations", to = "services::schema", reason = "migrations follow the schema" },
 ]
 ```
@@ -471,16 +471,16 @@ An entry allows the one direction it names, and the dependency back needs its ow
 The two sides may hold the same pattern, and the entry then allows every dependency between the modules it matches, in either direction.
 With a crate name on both sides that is every dependency inside the crate, and under `no-cycles` no cycle within it is left to find.
 An entry wider than the dependency you meant to allow is never reported.
-`unmatched-except` fires when one of the two patterns matches no module, and says nothing about how much an entry that does match allows.
+`unmatched-allow` fires when one of the two patterns matches no module, and says nothing about how much an entry that does match allows.
 An entry may also name modules the rule never reaches, outside a `no-cycles` rule's `scope` or outside the `from` and `to` of a `forbidden-dependency`.
 It allows nothing there and is not reported, because the diagnostic asks whether the pattern matches a module in the workspace, not whether the rule ever asks about that module.
 `reason` is documentation and is never evaluated.
-Exceptions belong to the rule they are written on; there is no shared list.
+Entries belong to the rule they are written on; there is no shared list.
 
-Under `no-cycles` an excepted dependency is removed before the search, so a cycle running through it never forms in the first place.
+Under `no-cycles` an allowed dependency is removed before the search, so a cycle running through it never forms in the first place.
 Under the other rule types the violation is found and then allowed.
-Both count as *allowed* rather than *frozen*, because an exception is meant to stay and a baseline entry is meant to go.
-Under `no-cycles` only an excepted edge that lay inside a tangle is counted, and one removed elsewhere raises no count at all.
+Both count as *allowed* rather than *frozen*, because an entry is meant to stay and a baseline entry is meant to go.
+Under `no-cycles` only an allowed edge that lay inside a tangle is counted, and one removed elsewhere raises no count at all.
 
 The entry takes the same form on a `no-cycles` rule:
 
@@ -489,16 +489,59 @@ The entry takes the same form on a `no-cycles` rule:
 type = "no-cycles"
 name = "no cycles"
 scope = "**"
-except = [
+allow = [
   { from = "core::keywords", to = "core::writer", reason = "the table is generated from the writer" },
 ]
 ```
 
-Excepting either edge of a mutual pair ends the cycle between the two modules, so one entry is enough, and the one you write is the dependency you mean to keep.
+Allowing either edge of a mutual pair ends the cycle between the two modules, so one entry is enough, and the one you write is the dependency you mean to keep.
 Writing both directions takes both edges out of the search, and the status line then counts two allowed instead of one.
 Deleting either entry leaves the pair acyclic all the same.
 
-`--generate-baseline` refuses to write while an `unmatched-except` stands, even at level `allow`, because it would freeze the very violations that entry is supposed to allow.
+An entry names the odd edge: the one that runs against the order you have in mind, where `to` may depend on `from` by default and the edge back up is the one you tolerate.
+The entries of a rule together declare that order, and `contradictory-allow` fires when they put nodes above each other in a circle: one entry `core::a → core::b` beside another `core::b → core::a`, or `to = "super"` beside `to = "self::*"`.
+An entry with the same pattern on both sides ranks nothing, and neither does a pair one entry covers in both directions, which is what a crate name in `to` does for the modules inside it.
+
+`to` may be relative to the module `from` matched, so one entry covers the same shape everywhere in the tree:
+
+| `to` | Reaches |
+|------|---------|
+| `super` | the module containing `from`, or the crate for a top-level module |
+| `super::super` | the module two levels up; every further `::super` one more |
+| `crate` | the root of the crate `from` lies in |
+| `self::*` | the direct children of `from` |
+| `self::**` | every module under `from` |
+
+A relative `to` that leads nowhere, `super` from the crate node or `self::*` from a leaf module, matches nothing and is not reported.
+`unmatched-allow` asks about the `from` pattern of such an entry only.
+Other forms starting with `self`, `super` or `crate` are refused when the file is loaded.
+
+Entries several rules share form a dependency pattern: a named list under `[dependency-patterns]`, referenced by name:
+
+```toml
+[[rules]]
+type = "no-cycles"
+name = "no cycles"
+scope = "**"
+allow = [
+  { pattern = "vocabulary-parent" },
+  { from = "core::keywords", to = "core::writer", reason = "the table is generated from the writer" },
+]
+
+[dependency-patterns]
+vocabulary-parent = [
+  { from = "**", to = "super", reason = "children read the parent's vocabulary" },
+]
+```
+
+A dependency pattern holds entries only and cannot refer to another one.
+A reference to a name the file does not define is refused when the file is loaded.
+`--show-silenced` marks a violation allowed by such an entry `(allowed by pattern vocabulary-parent)`, and one allowed by an entry written on the rule `(allowed by entry)`.
+An edge two entries cover is counted once, under the entry listed first.
+
+`--generate-baseline` refuses to write while an `unmatched-allow` stands, even at level `allow`, because it would freeze the very violations that entry is supposed to allow.
+
+The key `except` of earlier versions is refused with a message naming the entry that replaces it.
 
 ### Diagnostics
 
@@ -509,20 +552,23 @@ Each has a level: `allow` says nothing, `warn` reports without failing, `deny` f
 [diagnostics]
 unlayered-node = { level = "deny", except = ["xtask"] }
 unmatched-baseline-entry = "warn"
-unmatched-except = "warn"
+unmatched-allow = "warn"
 unmatched-pattern = "deny"
+contradictory-allow = "deny"
 ```
 
 | Diagnostic | Default | Raised when |
 |------------|---------|-------------|
 | `unlayered-node` | `deny` | a node an `exhaustive` `layers` rule leaves in no position |
 | `unmatched-baseline-entry` | `warn` | a frozen violation the run no longer produces, or one that froze more symbols than the edge still carries |
-| `unmatched-except` | `warn` | an `except` pattern matching no module |
+| `unmatched-allow` | `warn` | an `allow` pattern matching no module |
 | `unmatched-pattern` | `deny` | a rule pattern matching no module, or a catch-all layer whose rest is empty |
+| `contradictory-allow` | `deny` | the `allow` entries of a rule put nodes above each other in a circle |
 
 `unlayered-node` and `unmatched-pattern` deny where the others warn because both failures leave the run green: a rule whose pattern misses checks nothing, and an unsorted node is never asked where it belongs.
 `unlayered-node` also fires only for a rule that carries `exhaustive = true`.
-A dead `except` only allows too much, and the violation it should have allowed shows up on its own.
+A dead `allow` entry only allows too much, and the violation it should have allowed shows up on its own.
+`contradictory-allow` denies because entries that rank a pair both ways say nothing about it, and the rule would tolerate the cycle between the two in silence.
 
 Only `unlayered-node` takes the table form with `except`; the others are written as a level alone.
 The names listed there are patterns like any other, so each takes the modules below it with it and a wildcard in one reaches the same nodes it would in a rule.
@@ -566,13 +612,13 @@ Once the edge carries a symbol the entry does not name, it is reported again:
 Renaming a frozen symbol makes the run report the edge again, and the fix is to regenerate the baseline.
 An edge that carries fewer symbols than its entry names is reported as an `unmatched-baseline-entry`, so the file can be narrowed as the debt goes down.
 
-Moving an edge from the baseline into an `except` means deleting its entry.
-Left standing, the entry freezes the same edge as before, so removing the `except` again leaves the run green: the edge falls back to *frozen* instead of being reported.
+Moving an edge from the baseline into an `allow` entry means deleting its baseline entry.
+Left standing, the entry freezes the same edge as before, so removing the `allow` entry again leaves the run green: the edge falls back to *frozen* instead of being reported.
 The entry confirms nothing any more and comes back as an `unmatched-baseline-entry`.
 That diagnostic is `warn`, so the run stays green and the line sits among the other warnings.
-Those warnings are the cleanup list, one decision each: kept as an exception, or fixed in the code.
-Regenerating then drops the entry, and under `no-cycles` it can drop more entries than the edges you excepted, because an excepted edge is gone before the search, so a node it held in a tangle leaves with it and that node's own entries are no longer confirmed either.
-With the exception as the only change, regenerating never adds an entry, because it writes one per violation the run still finds and an exception only takes violations away.
+Those warnings are the cleanup list, one decision each: allowed, or fixed in the code.
+Regenerating then drops the entry, and under `no-cycles` it can drop more entries than the edges you allowed, because an allowed edge is gone before the search, so a node it held in a tangle leaves with it and that node's own entries are no longer confirmed either.
+With the `allow` entry as the only change, regenerating never adds an entry, because it writes one per violation the run still finds and an `allow` entry only takes violations away.
 
 Regenerating over a rules file whose rules were renamed drops every entry that named the old rule.
 Entries under a rule at `severity = "ignore"` stay as they are until the rule is checked again; from then on, an ordinary run reports each one it no longer confirms as `unmatched-baseline-entry`.
@@ -629,7 +675,7 @@ error[forbidden-dependency]: no services in storage
     --> storage/src/pool.rs:31
 ```
 
-An allowed entry names what allowed it: `(allowed by except)`, or `(allowed by child-to-ancestor)` for an edge the [`no-cycles`](#no-cycles) option removed.
+An allowed violation names what allowed it: `(allowed by entry)` for an [`allow`](#allow) entry written on the rule, or `(allowed by pattern <name>)` for one that came in through a dependency pattern.
 
 Under the flag, a rule with nothing reported is headed `silenced` instead of `error` or `warning`.
 
