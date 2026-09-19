@@ -1,6 +1,8 @@
-//! The `use` in `stats` binds `shared` for that body alone. In `draw` the bare
-//! name still means the module beside this file, and that dependency closes a
-//! cycle with it.
+//! The `use` in `stats` binds `shared` for that body alone. In `draw` the name
+//! still means the module the file-level `use` binds, and that dependency
+//! closes a cycle with it.
+
+use crate::shared;
 
 pub struct Marker;
 

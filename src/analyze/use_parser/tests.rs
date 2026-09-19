@@ -1035,6 +1035,55 @@ mod bare_module_tests {
         assert_eq!(dep.target_module, "a::b::sub");
         assert_eq!(dep.target_item, Some("Item".to_string()));
     }
+
+    /// A top-level module is in scope of the crate root only. From a sibling
+    /// file its bare name is not the module; without a `use` it can only be an
+    /// extern crate, so nothing of this crate resolves.
+    #[test]
+    fn test_bare_module_root_sibling_not_in_scope() {
+        let mp: ModulePathMap = [(
+            "my_crate".to_string(),
+            HashSet::from(["config".into(), "error".into()]),
+        )]
+        .into_iter()
+        .collect();
+        let ctx = ResolutionContextBuilder::new(Path::new("src/error.rs"))
+            .module_paths(&mp)
+            .current_module_path("error")
+            .build();
+        let dep =
+            parse_bare_module_import(&ctx, "config::ConfigError", 1, &EdgeContext::production());
+        assert!(dep.is_none(), "a root sibling is not in scope: {dep:?}");
+    }
+
+    /// The same collision seen through a file: `config::ConfigError` in
+    /// `error.rs` beside a module `config` yields no edge to that module.
+    #[test]
+    fn test_root_sibling_path_ref_is_no_dependency() {
+        let source = r"
+impl From<config::ConfigError> for ConfigError {
+    fn from(e: config::ConfigError) -> Self { ConfigError::Load(e) }
+}
+";
+        let mp: ModulePathMap = [(
+            "my_crate".to_string(),
+            HashSet::from(["config".into(), "error".into()]),
+        )]
+        .into_iter()
+        .collect();
+        let ctx = ResolutionContextBuilder::new(Path::new("src/error.rs"))
+            .module_paths(&mp)
+            .current_module_path("error")
+            .build();
+        let syntax = syn::parse_file(source).unwrap();
+        let refs = collect_all_path_refs(&syntax, EdgeContext::production());
+        let bindings = bindings_of(source, &ctx);
+        let deps = parse_path_ref_dependencies(&refs, &ctx, &bindings);
+        assert!(
+            deps.iter().all(|d| d.target_module != "config"),
+            "no edge to the root sibling module: {deps:?}"
+        );
+    }
 }
 
 mod resolve_use_tree_tests {
@@ -3092,17 +3141,17 @@ mod file_binding_tests {
         );
     }
 
+    /// In the crate root, where the module is in scope by its bare name.
     #[test]
     fn test_item_import_from_this_crate_leaves_the_module_alone() {
         let mp: ModulePathMap = [(
             "my_crate".to_string(),
-            HashSet::from(["consumer".into(), "util".into(), "helper".into()]),
+            HashSet::from(["util".into(), "helper".into()]),
         )]
         .into_iter()
         .collect();
-        let ctx = ResolutionContextBuilder::new(Path::new("src/consumer.rs"))
+        let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs"))
             .module_paths(&mp)
-            .current_module_path("consumer")
             .build();
         let bindings = bindings_of("use crate::util::helper;", &ctx);
         let paths = vec![(

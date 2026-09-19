@@ -836,14 +836,16 @@ fn parse_crate_local_import(
     })
 }
 
-/// Parse bare module imports: `use cli::Args` where `cli` is a known module of the current crate.
-/// Rust 2018+ resolves bare paths from any file, not just the crate root.
+/// Parse bare module imports: `use cli::Args` where `cli` is a module in scope
+/// of the file.
 ///
-/// `ctx.current_module_path` is the relative module path of the file containing this import
-/// (e.g. `"render"` for `render/mod.rs`, `""` for crate root). When non-empty, child modules
-/// are checked first: `use css::X` in `render/mod.rs` resolves to `render::css` before
-/// trying top-level `css`. This matches Rust 2018+/2024 semantics where bare paths in
-/// non-root modules refer to children, not siblings.
+/// `ctx.current_module_path` is the relative module path of the file containing
+/// this import (e.g. `"render"` for `render/mod.rs`, `""` for crate root). A
+/// bare first segment names a child of that module: `use css::X` in
+/// `render/mod.rs` is `render::css`, `use cli::X` in the root is `cli`. A
+/// top-level module is a child of the root only; from any other file its bare
+/// name is not in scope, and what stands there is an extern crate or a name a
+/// `use` bound.
 fn parse_bare_module_import(
     ctx: &ResolutionContext,
     path: &str,
@@ -860,17 +862,16 @@ fn parse_bare_module_import(
         .all_module_paths
         .get_or_empty(&normalize_crate_name(ctx.current_crate));
 
-    // Child-module has priority (Rust 2018+/2024 semantics:
-    // bare `use foo::X` in non-root module means child, not sibling/top-level)
-    let effective_parts: Vec<&str> = if !ctx.current_module_path.is_empty()
-        && module_paths.contains(&format!("{}::{first}", ctx.current_module_path))
-    {
+    let effective_parts: Vec<&str> = if ctx.current_module_path.is_empty() {
+        if !module_paths.contains(first) {
+            return None;
+        }
+        parts
+    } else if module_paths.contains(&format!("{}::{first}", ctx.current_module_path)) {
         ctx.current_module_path
             .split("::")
             .chain(parts.iter().copied())
             .collect()
-    } else if module_paths.contains(first) {
-        parts
     } else {
         return None;
     };
@@ -1419,10 +1420,13 @@ enum Binding {
 /// stays inside resolves. Its name is therefore bound elsewhere, and that is what
 /// keeps `parse_bare_module_import` off it.
 ///
-/// A binding from another crate needs an entry only where its name also names a
-/// module of this crate. Without one, the reference lands on that module. Whether
-/// it would is asked of `parse_bare_module_import` rather than restated here, so
-/// the two cannot drift apart.
+/// A binding to a module, or to the root of another crate, is a module binding:
+/// what follows the name resolves under that path.
+///
+/// A binding from another crate to an item needs an entry only where its name
+/// also names a module of this crate. Without one, the reference lands on that
+/// module. Whether it would is asked of `parse_bare_module_import` rather than
+/// restated here, so the two cannot drift apart.
 fn classify_binding(
     ctx: &ResolutionContext,
     dep: Option<&DependencyRef>,
@@ -1431,7 +1435,7 @@ fn classify_binding(
     let Some(dep) = dep else {
         return Binding::Elsewhere;
     };
-    if dep.target_item.is_none() && !dep.target_module.is_empty() {
+    if dep.target_item.is_none() {
         return Binding::Module(absolute_module_path(ctx, dep));
     }
     if dep.target_crate == normalize_crate_name(ctx.current_crate) {
@@ -1444,12 +1448,12 @@ fn classify_binding(
 }
 
 /// Render a resolved module dependency as a path that `resolve_single_path` can
-/// re-resolve from any position in the file.
+/// re-resolve from any position in the file. Another crate's root is its name.
 fn absolute_module_path(ctx: &ResolutionContext, dep: &DependencyRef) -> String {
     if dep.target_crate == normalize_crate_name(ctx.current_crate) {
         format!("crate::{}", dep.target_module)
     } else {
-        format!("{}::{}", dep.target_crate, dep.target_module)
+        dep.full_target()
     }
 }
 
