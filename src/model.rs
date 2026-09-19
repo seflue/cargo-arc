@@ -303,6 +303,41 @@ impl TargetRoots {
     }
 }
 
+/// What one use takes from a symbol: a name to write types with, a value to
+/// read, or behaviour to call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UseCategory {
+    /// A name in a type position, or a value built from a struct or an enum
+    /// variant.
+    Types,
+    /// A const or static read.
+    Values,
+    /// A free or associated function called, or a trait imported for its
+    /// methods.
+    Fns,
+}
+
+impl std::fmt::Display for UseCategory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Types => "types",
+            Self::Values => "values",
+            Self::Fns => "fns",
+        })
+    }
+}
+
+/// One occurrence of a symbol in the importing file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SymbolUse {
+    pub line: usize,
+    pub category: UseCategory,
+    /// A trait imported and never named is used through its methods, which no
+    /// path in the file spells out. The category is then inferred, and the
+    /// line is the import's.
+    pub imported_for_methods: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct DependencyRef {
     pub target_crate: String,
@@ -315,6 +350,9 @@ pub struct DependencyRef {
     /// True when this reference stems from a `pub use` re-export (republish),
     /// not a behavioral use. Stamped in `parse_workspace_dependencies`.
     pub via_reexport: bool,
+    /// Every occurrence of the item in the importing file, in file order.
+    /// Merged when two references to one item are deduplicated.
+    pub uses: Vec<SymbolUse>,
 }
 
 impl DependencyRef {
@@ -364,6 +402,7 @@ impl DependencyRef {
             deps[idx].context.features.extend(dep.context.features);
             // Re-export only if every merged reference is a re-export.
             deps[idx].via_reexport &= dep.via_reexport;
+            deps[idx].uses.extend(dep.uses);
         } else {
             seen.insert(key, deps.len());
             deps.push(dep);
@@ -531,6 +570,7 @@ mod tests {
             line: 1,
             context: EdgeContext::production(),
             via_reexport: false,
+            uses: Vec::new(),
         };
         assert_eq!(prod_dep.context, EdgeContext::production());
 
@@ -542,6 +582,7 @@ mod tests {
             line: 1,
             context: EdgeContext::test(TestKind::Unit),
             via_reexport: false,
+            uses: Vec::new(),
         };
         assert_eq!(test_dep.context, EdgeContext::test(TestKind::Unit));
 
@@ -559,6 +600,7 @@ mod tests {
             line: 42,
             context: EdgeContext::production(),
             via_reexport: false,
+            uses: Vec::new(),
         };
         assert_eq!(dep.target_crate, "my_crate");
         assert_eq!(dep.target_module, "graph");
@@ -577,6 +619,7 @@ mod tests {
             line: 1,
             context: EdgeContext::production(),
             via_reexport: false,
+            uses: Vec::new(),
         };
         assert_eq!(dep.full_target(), "crate::graph::build");
     }
@@ -591,6 +634,7 @@ mod tests {
             line: 1,
             context: EdgeContext::production(),
             via_reexport: false,
+            uses: Vec::new(),
         };
         assert_eq!(dep.module_target(), "crate::graph");
     }
@@ -605,6 +649,7 @@ mod tests {
             line: 1,
             context: EdgeContext::production(),
             via_reexport: false,
+            uses: Vec::new(),
         };
         assert_eq!(dep.full_target(), "crate::graph");
     }
@@ -619,6 +664,7 @@ mod tests {
             line: 1,
             context: EdgeContext::production(),
             via_reexport: false,
+            uses: Vec::new(),
         };
         assert_eq!(dep.module_target(), "crate_b");
     }
@@ -633,6 +679,7 @@ mod tests {
             line: 1,
             context: EdgeContext::production(),
             via_reexport: false,
+            uses: Vec::new(),
         };
         assert_eq!(dep.full_target(), "crate_b::Symbol");
     }
@@ -647,6 +694,7 @@ mod tests {
             line: 1,
             context: EdgeContext::production(),
             via_reexport: false,
+            uses: Vec::new(),
         };
         assert_eq!(dep.full_target(), "crate_b");
     }
@@ -705,6 +753,7 @@ mod tests {
                 line: 5,
                 context: EdgeContext::production(),
                 via_reexport: false,
+                uses: Vec::new(),
             }],
         };
         assert!(

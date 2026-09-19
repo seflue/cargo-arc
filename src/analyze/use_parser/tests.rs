@@ -88,6 +88,12 @@ fn parse_test_uses(source: &str) -> CollectedUses {
     collect_all_use_items(&syn::parse_file(source).unwrap(), EdgeContext::production())
 }
 
+fn bindings_of(source: &str, ctx: &ResolutionContext) -> FileBindings {
+    let syntax = syn::parse_file(source).unwrap();
+    let uses = collect_all_use_items(&syntax, EdgeContext::production());
+    FileBindings::of(&syntax, &uses, ctx)
+}
+
 /// Path references standing in the file's own region, from the tuple form the
 /// fixtures write them in.
 fn root_path_refs(paths: Vec<(String, usize, EdgeContext, usize)>) -> CollectedPathRefs {
@@ -100,10 +106,21 @@ fn root_path_refs(paths: Vec<(String, usize, EdgeContext, usize)>) -> CollectedP
                 context,
                 inline_depth,
                 region: BindingRegions::ROOT,
+                position: PathPosition::Value,
+                in_macro: false,
             })
             .collect(),
         regions: BindingRegions::default(),
     }
+}
+
+/// Resolve path references in the file's own region against a file that binds
+/// nothing.
+fn resolve_root_refs(
+    paths: Vec<(String, usize, EdgeContext, usize)>,
+    ctx: &ResolutionContext,
+) -> Vec<DependencyRef> {
+    parse_path_ref_dependencies(&root_path_refs(paths), ctx, &FileBindings::default())
 }
 
 /// `use` items in the file's own region, from the tuple form the fixtures write
@@ -519,8 +536,7 @@ use crate::graph;
         assert_eq!(deps[0].target_module, "analyze");
     }
 
-    #[test]
-    fn test_process_use_glob_expands_to_payload() {
+    fn analyze_map() -> ReExportMap {
         let mut analyze_info = ModuleExportInfo::default();
         analyze_info.definitions.insert(
             "Walker".to_string(),
@@ -536,27 +552,127 @@ use crate::graph;
                 line: 1,
             },
         );
-        let map: ReExportMap = [(
+        [(
             "my_crate".to_string(),
             [("analyze".to_string(), analyze_info)]
                 .into_iter()
                 .collect(),
         )]
         .into_iter()
-        .collect();
+        .collect()
+    }
 
-        let uses = parse_test_uses("use crate::analyze::*;");
+    fn glob_deps(source: &str, map: &ReExportMap) -> Vec<DependencyRef> {
         let ctx = ResolutionContextBuilder::new(Path::new("src/cli.rs"))
-            .reexport_map(&map)
+            .reexport_map(map)
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        parse_file_dependencies(
+            &syn::parse_file(source).unwrap(),
+            &ctx,
+            EdgeContext::production(),
+        )
+    }
 
-        let items: Vec<_> = deps
-            .iter()
+    fn items_of(deps: &[DependencyRef]) -> Vec<&str> {
+        deps.iter()
             .filter_map(|d| d.target_item.as_deref())
-            .collect();
-        assert_eq!(items, ["Walker", "analyze_module"], "deps: {deps:?}");
-        assert!(deps.iter().all(|d| d.target_module == "analyze"));
+            .collect()
+    }
+
+    /// A glob brings in the names the file goes on to use, each with its
+    /// category, at the glob's line. A name it could bring in but the file never
+    /// writes is not a symbol on the edge.
+    #[test]
+    fn test_process_use_glob_expands_to_the_names_used() {
+        let map = analyze_map();
+        let deps = glob_deps(
+            "use crate::analyze::*;\nfn f(w: Walker) { analyze_module(); }",
+            &map,
+        );
+
+        assert_eq!(
+            items_of(&deps),
+            ["Walker", "analyze_module"],
+            "deps: {deps:?}"
+        );
+        assert!(
+            deps.iter()
+                .all(|d| d.target_module == "analyze" && d.line == 1)
+        );
+        assert_eq!(
+            deps[0].uses,
+            [SymbolUse {
+                line: 2,
+                category: UseCategory::Types,
+                imported_for_methods: false,
+            }]
+        );
+        assert_eq!(deps[1].uses[0].category, UseCategory::Fns);
+    }
+
+    /// A `pub use` glob republishes every name and uses none, so it carries
+    /// the whole payload; a name the file also writes is a use on that name.
+    #[test]
+    fn test_process_pub_use_glob_carries_the_whole_payload() {
+        let map = analyze_map();
+        let deps = glob_deps("pub use crate::analyze::*;\nfn f(w: Walker) {}", &map);
+        assert_eq!(
+            items_of(&deps),
+            ["Walker", "analyze_module"],
+            "deps: {deps:?}"
+        );
+        assert!(deps.iter().all(|d| d.via_reexport), "deps: {deps:?}");
+        assert_eq!(deps[0].uses.len(), 1, "the parameter type: {deps:?}");
+    }
+
+    /// A name written only inside macro input still counts as used.
+    #[test]
+    fn test_process_use_glob_finds_names_in_macro_input() {
+        let map = analyze_map();
+        let deps = glob_deps(
+            "use crate::analyze::*;\nfn f() { assert!(analyze_module()); }",
+            &map,
+        );
+        assert_eq!(items_of(&deps), ["analyze_module"], "deps: {deps:?}");
+    }
+
+    /// A glob whose names the file never writes keeps the `*`: the import is
+    /// there, and the edge with it.
+    #[test]
+    fn test_process_use_glob_unused_keeps_marker() {
+        let map = analyze_map();
+        let deps = glob_deps("use crate::analyze::*;\nfn f() {}", &map);
+        assert_eq!(items_of(&deps), ["*"], "deps: {deps:?}");
+    }
+
+    /// An explicit `use` and an item of the file itself both take the name
+    /// away from the glob.
+    #[test]
+    fn test_process_use_glob_yields_to_explicit_binding_and_local_definition() {
+        let map = analyze_map();
+        let deps = glob_deps(
+            "use crate::analyze::*;\nuse crate::other::Walker;\nfn analyze_module() {}\n\
+             fn f(w: Walker) { analyze_module(); }",
+            &map,
+        );
+        assert!(
+            !deps
+                .iter()
+                .any(|d| d.target_module == "analyze" && d.target_item.as_deref() != Some("*")),
+            "nothing from the glob is used: {deps:?}"
+        );
+    }
+
+    /// A glob written in a block binds in that block only.
+    #[test]
+    fn test_process_use_glob_binds_in_its_region() {
+        let map = analyze_map();
+        let deps = glob_deps(
+            "fn f() { use crate::analyze::*; analyze_module(); }\nfn g() { analyze_module(); }",
+            &map,
+        );
+        assert_eq!(items_of(&deps), ["analyze_module"], "deps: {deps:?}");
+        assert_eq!(deps[0].uses.len(), 1, "the call in `g` is not the glob's");
     }
 
     /// A glob re-export republishes the names it pulls in, so each expanded name
@@ -591,11 +707,7 @@ use crate::graph;
         .into_iter()
         .collect();
 
-        let uses = parse_test_uses("use crate::facade::*;");
-        let ctx = ResolutionContextBuilder::new(Path::new("src/cli.rs"))
-            .reexport_map(&map)
-            .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = glob_deps("use crate::facade::*;\nfn f(w: Widget) {}", &map);
 
         assert_eq!(deps.len(), 1, "deps: {deps:?}");
         assert_eq!(deps[0].target_item, Some("Widget".to_string()));
@@ -605,9 +717,10 @@ use crate::graph;
     /// An unknown payload keeps the `*`: one unnamed symbol, not zero.
     #[test]
     fn test_process_use_glob_unknown_payload_keeps_marker() {
-        let uses = parse_test_uses("use crate::analyze::*;");
-        let ctx = ResolutionContextBuilder::new(Path::new("src/cli.rs")).build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = glob_deps(
+            "use crate::analyze::*;\nfn f(w: Walker) {}",
+            &ReExportMap::default(),
+        );
 
         assert_eq!(deps.len(), 1, "deps: {deps:?}");
         assert_eq!(deps[0].target_item, Some("*".to_string()));
@@ -1375,21 +1488,30 @@ fn main() {
         );
     }
 
+    /// A bare name is an occurrence of what a `use` binds, or nothing. It never
+    /// names a module, even one spelled the same.
     #[test]
-    fn test_collect_path_refs_ignores_single_segment() {
-        let source = r#"
+    fn test_unbound_single_segment_is_no_dependency() {
+        let source = r"
 fn main() {
-    println!("hello");
-    let x = String::new();
+    let x = helper();
 }
-"#;
+";
+        let mp: ModulePathMap = [("my_crate".to_string(), HashSet::from(["helper".into()]))]
+            .into_iter()
+            .collect();
+        let ctx = ResolutionContextBuilder::new(Path::new("src/main.rs"))
+            .module_paths(&mp)
+            .build();
         let syntax = syn::parse_file(source).unwrap();
         let refs = collect_all_path_refs(&syntax, EdgeContext::production());
-        // "println" is a single segment → not collected
         assert!(
-            !refs.iter().any(|r| r.path == "println"),
-            "single-segment paths should not be collected, found: {refs:?}"
+            refs.iter().any(|r| r.path == "helper"),
+            "the bare name is collected: {refs:?}"
         );
+        let bindings = bindings_of("", &ctx);
+        let deps = parse_path_ref_dependencies(&refs, &ctx, &bindings);
+        assert!(deps.is_empty(), "no dependency from a bare name: {deps:?}");
     }
 
     #[rstest::rstest]
@@ -1518,8 +1640,7 @@ mod path_ref_resolution_tests {
             .workspace_crates(&ws)
             .module_paths(&mp)
             .build();
-        let deps =
-            parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &ModuleAliases::default());
+        let deps = resolve_root_refs(paths, &ctx);
         assert_eq!(
             deps.len(),
             1,
@@ -1545,8 +1666,7 @@ mod path_ref_resolution_tests {
         let ctx = ResolutionContextBuilder::new(Path::new("src/main.rs"))
             .module_paths(&mp)
             .build();
-        let deps =
-            parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &ModuleAliases::default());
+        let deps = resolve_root_refs(paths, &ctx);
         assert_eq!(deps.len(), 1, "should resolve crate-local path: {deps:?}");
         assert_eq!(deps[0].target_crate, "my_crate");
         assert_eq!(deps[0].target_module, "module");
@@ -1562,8 +1682,7 @@ mod path_ref_resolution_tests {
         let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs"))
             .module_paths(&mp)
             .build();
-        let deps =
-            parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &ModuleAliases::default());
+        let deps = resolve_root_refs(paths, &ctx);
         assert_eq!(deps.len(), 1, "should resolve bare module path: {deps:?}");
         assert_eq!(deps[0].target_crate, "my_crate");
         assert_eq!(deps[0].target_module, "cli");
@@ -1588,8 +1707,7 @@ mod path_ref_resolution_tests {
             ),
         ];
         let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs")).build();
-        let deps =
-            parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &ModuleAliases::default());
+        let deps = resolve_root_refs(paths, &ctx);
         assert!(deps.is_empty(), "unknown paths should be skipped: {deps:?}");
     }
 
@@ -1612,8 +1730,7 @@ mod path_ref_resolution_tests {
             .workspace_crates(&ws)
             .crate_exports(&exports)
             .build();
-        let deps =
-            parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &ModuleAliases::default());
+        let deps = resolve_root_refs(paths, &ctx);
         assert_eq!(deps.len(), 1, "should resolve entry-point path: {deps:?}");
         assert_eq!(deps[0].target_crate, "other_crate");
         assert_eq!(deps[0].target_module, "");
@@ -1644,8 +1761,7 @@ mod path_ref_resolution_tests {
             .workspace_crates(&ws)
             .module_paths(&mp)
             .build();
-        let deps =
-            parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &ModuleAliases::default());
+        let deps = resolve_root_refs(paths, &ctx);
         assert_eq!(deps.len(), 1, "duplicate paths should be deduped: {deps:?}");
     }
 }
@@ -1985,8 +2101,7 @@ mod context_aware_dedup_tests {
             .workspace_crates(&ws)
             .module_paths(&mp)
             .build();
-        let deps =
-            parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &ModuleAliases::default());
+        let deps = resolve_root_refs(paths, &ctx);
         assert_eq!(
             deps.len(),
             2,
@@ -2024,8 +2139,7 @@ mod context_aware_dedup_tests {
             .workspace_crates(&ws)
             .module_paths(&mp)
             .build();
-        let deps =
-            parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &ModuleAliases::default());
+        let deps = resolve_root_refs(paths, &ctx);
         assert_eq!(
             deps.len(),
             1,
@@ -2064,8 +2178,7 @@ mod context_aware_dedup_tests {
             .workspace_crates(&ws)
             .module_paths(&mp)
             .build();
-        let deps =
-            parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &ModuleAliases::default());
+        let deps = resolve_root_refs(paths, &ctx);
         assert_eq!(
             deps.len(),
             1,
@@ -2283,8 +2396,7 @@ mod reexport_resolution_tests {
             .module_paths(&mp)
             .reexport_map(&map)
             .build();
-        let deps =
-            parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &ModuleAliases::default());
+        let deps = resolve_root_refs(paths, &ctx);
         assert_eq!(deps.len(), 1);
         assert_eq!(
             deps[0].target_module, "parent::child",
@@ -2308,6 +2420,7 @@ mod resolve_reexport_tests {
             line: 1,
             context: EdgeContext::production(),
             via_reexport: false,
+            uses: Vec::new(),
         }
     }
 
@@ -2722,7 +2835,7 @@ mod external_crate_tests {
 
 /// `use crate::parent::child` binds `child` locally; later `child::Item` paths
 /// must resolve to `parent::child`, not to a top-level `child`.
-mod module_alias_tests {
+mod file_binding_tests {
     use super::*;
     use rstest::rstest;
 
@@ -2741,12 +2854,11 @@ mod module_alias_tests {
         let ctx = ResolutionContextBuilder::new(Path::new("src/consumer.rs"))
             .module_paths(&mp)
             .build();
-        let uses = parse_test_uses("use crate::parent::child;");
-        let aliases = collect_module_aliases(&uses, &ctx);
+        let bindings = bindings_of("use crate::parent::child;", &ctx);
         assert_eq!(
-            aliases.target(BindingRegions::ROOT, "child"),
+            bindings.target(BindingRegions::ROOT, "child"),
             Some("crate::parent::child"),
-            "leaf name should bind to the full module path: {aliases:?}"
+            "leaf name should bind to the full module path: {bindings:?}"
         );
     }
 
@@ -2756,15 +2868,14 @@ mod module_alias_tests {
         let ctx = ResolutionContextBuilder::new(Path::new("src/consumer.rs"))
             .module_paths(&mp)
             .build();
-        let uses = parse_test_uses("use crate::parent::{child, Other};");
-        let aliases = collect_module_aliases(&uses, &ctx);
+        let bindings = bindings_of("use crate::parent::{child, Other};", &ctx);
         assert_eq!(
-            aliases.target(BindingRegions::ROOT, "child"),
+            bindings.target(BindingRegions::ROOT, "child"),
             Some("crate::parent::child")
         );
         assert!(
-            aliases.target(BindingRegions::ROOT, "Other").is_none(),
-            "non-module items must not enter the alias map: {aliases:?}"
+            bindings.target(BindingRegions::ROOT, "Other").is_none(),
+            "non-module items must not enter the alias map: {bindings:?}"
         );
     }
 
@@ -2774,12 +2885,11 @@ mod module_alias_tests {
         let ctx = ResolutionContextBuilder::new(Path::new("src/consumer.rs"))
             .module_paths(&mp)
             .build();
-        let uses = parse_test_uses("use crate::parent::child as kid;");
-        let aliases = collect_module_aliases(&uses, &ctx);
+        let bindings = bindings_of("use crate::parent::child as kid;", &ctx);
         assert_eq!(
-            aliases.target(BindingRegions::ROOT, "kid"),
+            bindings.target(BindingRegions::ROOT, "kid"),
             Some("crate::parent::child"),
-            "rename binds the alias name to the original module: {aliases:?}"
+            "rename binds the alias name to the original module: {bindings:?}"
         );
     }
 
@@ -2793,12 +2903,11 @@ mod module_alias_tests {
             .workspace_crates(&ws)
             .module_paths(&mp)
             .build();
-        let uses = parse_test_uses("use other_crate::module;");
-        let aliases = collect_module_aliases(&uses, &ctx);
+        let bindings = bindings_of("use other_crate::module;", &ctx);
         assert_eq!(
-            aliases.target(BindingRegions::ROOT, "module"),
+            bindings.target(BindingRegions::ROOT, "module"),
             Some("other_crate::module"),
-            "workspace module alias keeps the code-side crate name: {aliases:?}"
+            "workspace module alias keeps the code-side crate name: {bindings:?}"
         );
     }
 
@@ -2808,10 +2917,9 @@ mod module_alias_tests {
         let ctx = ResolutionContextBuilder::new(Path::new("src/consumer.rs"))
             .module_paths(&mp)
             .build();
-        let uses = parse_test_uses("use crate::parent::child;");
-        let aliases = collect_module_aliases(&uses, &ctx);
+        let bindings = bindings_of("use crate::parent::child;", &ctx);
         let paths = vec![("child::Item".to_string(), 20, EdgeContext::production(), 0)];
-        let deps = parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &aliases);
+        let deps = parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &bindings);
         assert_eq!(deps.len(), 1, "alias-qualified path must resolve: {deps:?}");
         assert_eq!(deps[0].target_module, "parent::child");
         assert_eq!(deps[0].target_item, Some("Item".to_string()));
@@ -2832,15 +2940,14 @@ mod module_alias_tests {
         let ctx = ResolutionContextBuilder::new(Path::new("src/consumer.rs"))
             .module_paths(&mp)
             .build();
-        let uses = parse_test_uses("use crate::parent::child;");
-        let aliases = collect_module_aliases(&uses, &ctx);
+        let bindings = bindings_of("use crate::parent::child;", &ctx);
         let paths = vec![(
             "child::inner::Item".to_string(),
             20,
             EdgeContext::production(),
             0,
         )];
-        let deps = parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &aliases);
+        let deps = parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &bindings);
         assert_eq!(deps.len(), 1, "should resolve through alias: {deps:?}");
         assert_eq!(deps[0].target_module, "parent::child::inner");
         assert_eq!(deps[0].target_item, Some("Item".to_string()));
@@ -2857,9 +2964,8 @@ mod module_alias_tests {
         let ctx = ResolutionContextBuilder::new(Path::new("src/consumer.rs"))
             .module_paths(&mp)
             .build();
-        let aliases = ModuleAliases::default();
         let paths = vec![("child::Item".to_string(), 20, EdgeContext::production(), 0)];
-        let deps = parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &aliases);
+        let deps = resolve_root_refs(paths, &ctx);
         assert_eq!(deps.len(), 1, "top-level module still resolves: {deps:?}");
         assert_eq!(deps[0].target_module, "child");
     }
@@ -2892,10 +2998,9 @@ mod module_alias_tests {
             .current_module_path("consumer")
             .external_crate_names(&ext)
             .build();
-        let uses = parse_test_uses(use_line);
-        let aliases = collect_module_aliases(&uses, &ctx);
+        let bindings = bindings_of(use_line, &ctx);
         let paths = vec![("shared::Item".to_string(), 20, EdgeContext::production(), 0)];
-        let deps = parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &aliases);
+        let deps = parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &bindings);
         assert_eq!(deps.len(), 1, "the reference resolves once: {deps:?}");
         assert_eq!(
             deps[0].target_crate, "remote_lib",
@@ -2915,15 +3020,14 @@ mod module_alias_tests {
             .module_paths(&mp)
             .current_module_path("consumer")
             .build();
-        let uses = parse_test_uses("use crate::util::helper;");
-        let aliases = collect_module_aliases(&uses, &ctx);
+        let bindings = bindings_of("use crate::util::helper;", &ctx);
         let paths = vec![(
             "helper::thing".to_string(),
             20,
             EdgeContext::production(),
             0,
         )];
-        let deps = parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &aliases);
+        let deps = parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &bindings);
         assert_eq!(
             deps.len(),
             1,
@@ -2983,8 +3087,8 @@ mod module_alias_tests {
         let uses = collect_all_use_items(&file, EdgeContext::production());
         let refs = collect_all_path_refs(&file, EdgeContext::production());
 
-        let aliases = collect_module_aliases(&uses, &ctx);
-        let deps = parse_path_ref_dependencies(&refs, &ctx, &aliases);
+        let bindings = FileBindings::of(&file, &uses, &ctx);
+        let deps = parse_path_ref_dependencies(&refs, &ctx, &bindings);
 
         let targets: Vec<&str> = deps.iter().map(|d| d.target_module.as_str()).collect();
         assert!(
@@ -3004,10 +3108,9 @@ mod module_alias_tests {
             .module_paths(&mp)
             .current_module_path("consumer")
             .build();
-        let uses = parse_test_uses("use remote_lib::shared;");
-        let aliases = collect_module_aliases(&uses, &ctx);
+        let bindings = bindings_of("use remote_lib::shared;", &ctx);
         let paths = vec![("shared::Item".to_string(), 20, EdgeContext::production(), 0)];
-        let deps = parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &aliases);
+        let deps = parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &bindings);
         assert!(
             deps.is_empty(),
             "the name is bound even where the binding cannot be placed, \
@@ -3092,12 +3195,341 @@ mod use_self_tests {
         let ctx = ResolutionContextBuilder::new(Path::new("src/dx12/mod.rs"))
             .module_paths(&mp)
             .build();
-        let uses = parse_test_uses("use crate::auxil::{self, dxgi::Factory};");
-        let aliases = collect_module_aliases(&uses, &ctx);
+        let bindings = bindings_of("use crate::auxil::{self, dxgi::Factory};", &ctx);
         assert_eq!(
-            aliases.target(BindingRegions::ROOT, "auxil"),
+            bindings.target(BindingRegions::ROOT, "auxil"),
             Some("crate::auxil"),
-            "`self` binds the module name locally: {aliases:?}"
+            "`self` binds the module name locally: {bindings:?}"
+        );
+    }
+}
+
+/// One use per occurrence, each with the category its position and the
+/// definition give it.
+mod use_category_tests {
+    use super::*;
+    use crate::model::{SymbolUse, UseCategory};
+    use std::sync::LazyLock;
+
+    fn definition(kind: DefKind) -> Definition {
+        Definition { kind, line: 1 }
+    }
+
+    /// A crate with one module `vocab` holding one item of each kind.
+    fn vocab_map() -> ReExportMap {
+        let mut vocab = ModuleExportInfo::default();
+        vocab
+            .definitions
+            .insert("Config".to_string(), definition(DefKind::Struct));
+        vocab
+            .definitions
+            .insert("Mode".to_string(), definition(DefKind::Enum));
+        vocab
+            .definitions
+            .insert("LIMIT".to_string(), definition(DefKind::Const));
+        vocab
+            .definitions
+            .insert("TABLE".to_string(), definition(DefKind::Static));
+        vocab
+            .definitions
+            .insert("build".to_string(), definition(DefKind::Fn));
+        vocab
+            .definitions
+            .insert("Step".to_string(), definition(DefKind::Trait));
+        vocab.associated.insert(
+            "Mode".to_string(),
+            AssociatedItems {
+                variants: HashSet::from(["Fast".into(), "Slow".into()]),
+                ..AssociatedItems::default()
+            },
+        );
+        vocab.associated.insert(
+            "Config".to_string(),
+            AssociatedItems {
+                fns: HashSet::from(["new".into()]),
+                consts: HashSet::from(["MAX".into()]),
+                ..AssociatedItems::default()
+            },
+        );
+        vocab.associated.insert(
+            "Step".to_string(),
+            AssociatedItems {
+                fns: HashSet::from(["run".into()]),
+                ..AssociatedItems::default()
+            },
+        );
+        [(
+            "my_crate".to_string(),
+            [("vocab".to_string(), vocab)].into_iter().collect(),
+        )]
+        .into_iter()
+        .collect()
+    }
+
+    static VOCAB_MP: LazyLock<ModulePathMap> = LazyLock::new(|| {
+        [("my_crate".to_string(), HashSet::from(["vocab".into()]))]
+            .into_iter()
+            .collect()
+    });
+    static VOCAB_MAP: LazyLock<ReExportMap> = LazyLock::new(vocab_map);
+
+    fn deps_of(source: &str) -> Vec<DependencyRef> {
+        let ctx = ResolutionContextBuilder::new(Path::new("src/user.rs"))
+            .module_paths(&VOCAB_MP)
+            .reexport_map(&VOCAB_MAP)
+            .current_module_path("user")
+            .build();
+        parse_file_dependencies(
+            &syn::parse_file(source).unwrap(),
+            &ctx,
+            EdgeContext::production(),
+        )
+    }
+
+    fn uses_of<'a>(deps: &'a [DependencyRef], item: &str) -> &'a [SymbolUse] {
+        let dep = deps
+            .iter()
+            .find(|d| d.target_item.as_deref() == Some(item))
+            .unwrap_or_else(|| panic!("no dep on {item}: {deps:?}"));
+        &dep.uses
+    }
+
+    fn use_at(line: usize, category: UseCategory) -> SymbolUse {
+        SymbolUse {
+            line,
+            category,
+            imported_for_methods: false,
+        }
+    }
+
+    /// The `use` binds the name; the occurrences are the uses, the import line
+    /// is not one.
+    #[test]
+    fn a_bound_name_in_type_position_is_a_types_use() {
+        let deps = deps_of("use crate::vocab::Config;\nfn f(x: Config) -> Option<Config> {}");
+        assert_eq!(
+            uses_of(&deps, "Config"),
+            [use_at(2, UseCategory::Types), use_at(2, UseCategory::Types)]
+        );
+        assert_eq!(deps.len(), 1, "one dependency, at the import: {deps:?}");
+        assert_eq!(deps[0].line, 1);
+    }
+
+    #[test]
+    fn a_free_fn_called_is_a_fns_use() {
+        let deps = deps_of("use crate::vocab::build;\nfn f() { build(); crate::vocab::build(); }");
+        assert_eq!(
+            uses_of(&deps, "build"),
+            [use_at(2, UseCategory::Fns), use_at(2, UseCategory::Fns)]
+        );
+    }
+
+    /// A fn handed on as a value is still behaviour taken from the module.
+    #[test]
+    fn a_free_fn_passed_as_a_value_is_a_fns_use() {
+        let deps = deps_of("fn f() { let g = crate::vocab::build; }");
+        assert_eq!(uses_of(&deps, "build"), [use_at(1, UseCategory::Fns)]);
+    }
+
+    #[test]
+    fn a_const_or_static_read_is_a_values_use() {
+        let deps = deps_of(
+            "use crate::vocab::{LIMIT, TABLE};\n\
+             fn f(n: usize) -> bool { match n { LIMIT => true, _ => n < crate::vocab::LIMIT } }\n\
+             fn g() -> usize { TABLE.len() + crate::vocab::TABLE.len() }",
+        );
+        assert_eq!(
+            uses_of(&deps, "LIMIT"),
+            [
+                use_at(2, UseCategory::Values),
+                use_at(2, UseCategory::Values)
+            ]
+        );
+        assert_eq!(
+            uses_of(&deps, "TABLE"),
+            [
+                use_at(3, UseCategory::Values),
+                use_at(3, UseCategory::Values)
+            ]
+        );
+    }
+
+    /// `let build = ..` and a parameter `build` are fresh variables even when
+    /// a `use` or a glob brings in a fn of that name; a bare identifier
+    /// pattern matches only a const, a static or a unit struct.
+    #[test]
+    fn a_variable_named_like_an_imported_fn_is_no_use() {
+        let deps = deps_of(
+            "use crate::vocab::{build, Config};\n\
+             fn f(build: usize) { let build = 1; let Config = 2; }",
+        );
+        assert_eq!(uses_of(&deps, "build"), [use_at(1, UseCategory::Fns)]);
+        assert_eq!(uses_of(&deps, "Config"), [use_at(2, UseCategory::Types)]);
+    }
+
+    /// A republished name is not used here, so a `pub use` carries no use and
+    /// no trait is inferred as imported for its methods.
+    #[test]
+    fn a_reexport_carries_no_use() {
+        let deps = deps_of("pub use crate::vocab::{Step, Config};");
+        assert!(
+            deps.iter().all(|d| d.via_reexport && d.uses.is_empty()),
+            "deps: {deps:?}"
+        );
+    }
+
+    /// A call of a name the map does not know: a capitalised name is a
+    /// tuple-struct or variant constructor, anything else a fn.
+    #[test]
+    fn a_call_of_an_unknown_name_goes_by_spelling() {
+        let ws: WorkspaceCrates = ["other".to_string()].into_iter().collect();
+        let mp: ModulePathMap = [
+            ("my_crate".to_string(), HashSet::from(["vocab".into()])),
+            ("other".to_string(), HashSet::from(["types".into()])),
+        ]
+        .into_iter()
+        .collect();
+        let ctx = ResolutionContextBuilder::new(Path::new("src/user.rs"))
+            .workspace_crates(&ws)
+            .module_paths(&mp)
+            .build();
+        let source = "fn f() { other::types::Wrapper(1); other::types::make(); other::types::Kind::Variant(2); }";
+        let deps = parse_file_dependencies(
+            &syn::parse_file(source).unwrap(),
+            &ctx,
+            EdgeContext::production(),
+        );
+        assert_eq!(uses_of(&deps, "Wrapper"), [use_at(1, UseCategory::Types)]);
+        assert_eq!(uses_of(&deps, "make"), [use_at(1, UseCategory::Fns)]);
+        assert_eq!(uses_of(&deps, "Kind"), [use_at(1, UseCategory::Types)]);
+    }
+
+    /// A struct literal, a tuple-struct call, a variant with and without
+    /// fields, and a variant matched: all build or take apart a value of the
+    /// type.
+    #[test]
+    fn a_value_constructed_from_a_struct_or_variant_is_a_types_use() {
+        let deps = deps_of(
+            "use crate::vocab::{Config, Mode};\n\
+             fn f() -> Mode { let c = Config { x: 1 }; let d = crate::vocab::Config(1); Mode::Slow(2) }\n\
+             fn g(m: Mode) -> bool { matches!(m, Mode::Fast) && match m { Mode::Slow(_) => true } }",
+        );
+        assert_eq!(
+            uses_of(&deps, "Config"),
+            [use_at(2, UseCategory::Types), use_at(2, UseCategory::Types)]
+        );
+        assert_eq!(
+            uses_of(&deps, "Mode"),
+            [
+                use_at(2, UseCategory::Types),
+                use_at(2, UseCategory::Types),
+                use_at(3, UseCategory::Types),
+                use_at(3, UseCategory::Types),
+                use_at(3, UseCategory::Types),
+            ],
+            "the return type, the constructed variant, the parameter type, the variant inside \
+             `matches!`, the matched variant"
+        );
+    }
+
+    /// `Type::f()` takes behaviour, whether `f` is inherent or a trait fn
+    /// named through the trait; `Type::CONST` takes a value.
+    #[test]
+    fn an_associated_fn_called_is_a_fns_use() {
+        let deps = deps_of(
+            "use crate::vocab::{Config, Step};\n\
+             fn f() { let c = Config::new(); let n = Config::MAX; Step::run(&c); crate::vocab::Config::new(); }",
+        );
+        assert_eq!(
+            uses_of(&deps, "Config"),
+            [
+                use_at(2, UseCategory::Fns),
+                use_at(2, UseCategory::Values),
+                use_at(2, UseCategory::Fns),
+            ]
+        );
+        assert_eq!(uses_of(&deps, "Step"), [use_at(2, UseCategory::Fns)]);
+    }
+
+    /// An associated item the map does not know: a call is behaviour, a read
+    /// goes by the spelling of the name.
+    #[test]
+    fn an_unknown_associated_item_goes_by_position_then_spelling() {
+        let deps = deps_of(
+            "use crate::vocab::Config;\n\
+             fn f() { Config::parse(); let a = Config::DEFAULT; let b = Config::Builder; }",
+        );
+        assert_eq!(
+            uses_of(&deps, "Config"),
+            [
+                use_at(2, UseCategory::Fns),
+                use_at(2, UseCategory::Values),
+                use_at(2, UseCategory::Types),
+            ]
+        );
+    }
+
+    /// Nothing in the file spells the trait's name, so it is there for the
+    /// methods it brings into scope. The use sits on the import line.
+    #[test]
+    fn a_trait_imported_and_never_named_is_a_fns_use_by_inference() {
+        let deps = deps_of("use crate::vocab::Step;\nfn f(w: Writer) { w.run(); }");
+        assert_eq!(
+            uses_of(&deps, "Step"),
+            [SymbolUse {
+                line: 1,
+                category: UseCategory::Fns,
+                imported_for_methods: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_trait_named_is_a_types_use_and_nothing_is_inferred() {
+        let deps = deps_of("use crate::vocab::Step;\nimpl Step for Writer {}");
+        assert_eq!(uses_of(&deps, "Step"), [use_at(2, UseCategory::Types)]);
+    }
+
+    /// A struct, const or fn never named is a dead import; the use it leaves
+    /// is what the definition says the item is.
+    #[test]
+    fn an_import_never_named_is_a_use_by_its_definition() {
+        let deps = deps_of("use crate::vocab::{Config, LIMIT, build};");
+        assert_eq!(uses_of(&deps, "Config"), [use_at(1, UseCategory::Types)]);
+        assert_eq!(uses_of(&deps, "LIMIT"), [use_at(1, UseCategory::Values)]);
+        assert_eq!(uses_of(&deps, "build"), [use_at(1, UseCategory::Fns)]);
+    }
+
+    /// syn does not parse macro input, so the names in it are read off the
+    /// tokens. A bound name is an occurrence, and a qualified path written
+    /// there resolves through a binding only: the resolution chain is not
+    /// asked, so no edge comes from macro input alone.
+    #[test]
+    fn a_name_inside_macro_input_is_a_use_through_its_binding() {
+        let deps = deps_of(
+            "use crate::vocab::{Config, build};\n\
+             fn f() { println!(\"{} {}\", build(), Config::MAX); assert!(crate::vocab::LIMIT > 1); }",
+        );
+        assert_eq!(uses_of(&deps, "build"), [use_at(2, UseCategory::Fns)]);
+        assert_eq!(uses_of(&deps, "Config"), [use_at(2, UseCategory::Values)]);
+        assert!(
+            !deps
+                .iter()
+                .any(|d| d.target_item.as_deref() == Some("LIMIT")),
+            "a qualified path inside macro input is not resolved on its own: {deps:?}"
+        );
+    }
+
+    #[test]
+    fn a_qualified_path_in_type_position_is_a_types_use() {
+        let deps = deps_of("fn f(x: crate::vocab::Config) {}");
+        assert_eq!(
+            uses_of(&deps, "Config"),
+            [SymbolUse {
+                line: 1,
+                category: UseCategory::Types,
+                imported_for_methods: false,
+            }]
         );
     }
 }

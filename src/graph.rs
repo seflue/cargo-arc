@@ -565,6 +565,7 @@ impl GraphBuilder {
 
             for (to_idx, target, target_deps) in resolved {
                 let context = aggregate_context(&target_deps);
+                log_uses(from_path, &target, &target_deps);
                 let locations = build_source_locations(&target_deps, &target);
                 self.graph.add_edge(
                     from_idx,
@@ -646,6 +647,30 @@ impl GraphBuilder {
             .or_else(|| self.external_map.get(name))
             .or_else(|| self.external_map.get(&name.replace('_', "-")))
             .copied()
+    }
+}
+
+/// List every use on one edge with its category, so the walker's result can
+/// be read without a rule that consumes it. `STATIC_DATA` leaves the uses
+/// out; the debug log is where they show.
+fn log_uses(from: &str, target: &str, target_deps: &[&DependencyRef]) {
+    for dep in target_deps {
+        let Some(symbol) = &dep.target_item else {
+            continue;
+        };
+        for symbol_use in &dep.uses {
+            let inferred = if symbol_use.imported_for_methods {
+                " (imported for its methods)"
+            } else {
+                ""
+            };
+            tracing::debug!(
+                "use {from} -> {target}: {symbol} {}{inferred} at {}:{}",
+                symbol_use.category,
+                dep.source_file.display(),
+                symbol_use.line
+            );
+        }
     }
 }
 
@@ -732,6 +757,7 @@ mod tests {
             line,
             context: EdgeContext::production(),
             via_reexport: false,
+            uses: Vec::new(),
         }
     }
 

@@ -1,2 +1,5 @@
-#[allow(unused_imports)]
 use super::sibling::*;
+
+pub fn make() -> Widget {
+    Widget
+}

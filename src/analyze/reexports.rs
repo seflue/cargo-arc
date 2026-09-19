@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::LazyLock;
 use syn::spanned::Spanned;
 
 use crate::model::{
@@ -14,8 +15,8 @@ use crate::model::{
 
 use super::mod_resolver::{child_resolve_dir, extract_mod_declarations, resolve_mod_path};
 use super::use_parser::{
-    ModuleExportInfo, ReExportMap, ReExportTarget, ResolutionContext, is_reexport_visibility,
-    resolve_single_path, resolve_use_tree,
+    AssociatedItems, ModuleExportInfo, ReExportMap, ReExportTarget, ResolutionContext,
+    is_reexport_visibility, resolve_single_path, resolve_use_tree,
 };
 
 /// Invariant parameters shared across the recursive re-export walk.
@@ -43,20 +44,48 @@ pub(crate) fn collect_crate_reexports(
         crate_exports,
     };
     let mut result = HashMap::new();
+    let mut out_of_module_impls = Vec::new();
 
     for root_file in crate_info.target_roots.files() {
-        walk_collect_reexports(&ctx, root_file, "", &mut result);
+        walk_collect_reexports(&ctx, root_file, "", &mut result, &mut out_of_module_impls);
+    }
+
+    for block in out_of_module_impls {
+        result
+            .entry(block.module)
+            .or_default()
+            .associated
+            .entry(block.type_name)
+            .or_default()
+            .merge(block.items);
     }
 
     result
 }
 
-/// Extract re-exports and definitions from a single parsed module file.
+/// An `impl` block written in another module than the one defining its type.
+struct OutOfModuleImpl {
+    /// The module that defines the type.
+    module: String,
+    type_name: String,
+    items: AssociatedItems,
+}
+
+/// Where the type of an `impl` block is defined.
+enum ImplOwner {
+    ThisModule,
+    Other(String),
+}
+
+/// Extract re-exports, definitions and associated items from a single parsed
+/// module file. An `impl` block whose type lives in another module goes to
+/// `out_of_module_impls` for that module.
 fn collect_module_info(
     ctx: &CollectContext,
     syntax: &syn::File,
     source_file: &Path,
     module_path: &str,
+    out_of_module_impls: &mut Vec<OutOfModuleImpl>,
 ) -> ModuleExportInfo {
     let mut info = ModuleExportInfo::default();
 
@@ -94,7 +123,135 @@ fn collect_module_info(
         }
     }
 
+    // Second pass, once every `use` of the file is known: an `impl` block may
+    // precede the `use` that names its type.
+    for item in &syntax.items {
+        match item {
+            syn::Item::Enum(e) => {
+                let items = info.associated.entry(e.ident.to_string()).or_default();
+                items
+                    .variants
+                    .extend(e.variants.iter().map(|v| v.ident.to_string()));
+            }
+            syn::Item::Trait(t) => {
+                let mut items = AssociatedItems::default();
+                for trait_item in &t.items {
+                    match trait_item {
+                        syn::TraitItem::Fn(f) => items.add_fn(&f.sig.ident),
+                        syn::TraitItem::Const(c) => items.add_const(&c.ident),
+                        _ => {}
+                    }
+                }
+                info.associated
+                    .entry(t.ident.to_string())
+                    .or_default()
+                    .merge(items);
+            }
+            syn::Item::Impl(i) => {
+                let syn::Type::Path(self_type) = &*i.self_ty else {
+                    continue;
+                };
+                let Some((owner, type_name)) =
+                    impl_owner(ctx, &self_type.path, source_file, module_path, &info)
+                else {
+                    continue;
+                };
+                let mut items = AssociatedItems::default();
+                for impl_item in &i.items {
+                    match impl_item {
+                        syn::ImplItem::Fn(f) => items.add_fn(&f.sig.ident),
+                        syn::ImplItem::Const(c) => items.add_const(&c.ident),
+                        _ => {}
+                    }
+                }
+                match owner {
+                    ImplOwner::ThisModule => {
+                        info.associated.entry(type_name).or_default().merge(items);
+                    }
+                    ImplOwner::Other(module) => out_of_module_impls.push(OutOfModuleImpl {
+                        module,
+                        type_name,
+                        items,
+                    }),
+                }
+            }
+            _ => {}
+        }
+    }
+
     info
+}
+
+/// Find the module that defines the type an `impl` block is for, and the
+/// type's name there. A bare name is this module's when it defines the name,
+/// and otherwise whatever a `use` of this file binds it to; a qualified path
+/// resolves like any other. What resolves to neither is no type of this crate,
+/// and its `impl` is skipped.
+fn impl_owner(
+    ctx: &CollectContext,
+    path: &syn::Path,
+    source_file: &Path,
+    module_path: &str,
+    info: &ModuleExportInfo,
+) -> Option<(ImplOwner, String)> {
+    let name = path.segments.last()?.ident.to_string();
+    if path.segments.len() == 1 {
+        if info.definitions.contains_key(&name) {
+            return Some((ImplOwner::ThisModule, name));
+        }
+        let bound = info
+            .private_uses
+            .get(&name)
+            .or_else(|| info.explicit_reexports.get(&name))?;
+        return Some((
+            ImplOwner::Other(bound.module.clone()),
+            bound.original_name.clone(),
+        ));
+    }
+    let path_str: String = path
+        .segments
+        .iter()
+        .map(|s| s.ident.to_string())
+        .collect::<Vec<_>>()
+        .join("::");
+    let dep = resolve_single_path(
+        &resolution_context(ctx, source_file, module_path),
+        &path_str,
+        0,
+        &EdgeContext::production(),
+        0,
+    )?;
+    if dep.target_crate != ctx.crate_name {
+        return None;
+    }
+    let item = dep.target_item?;
+    let owner = if dep.target_module == module_path {
+        ImplOwner::ThisModule
+    } else {
+        ImplOwner::Other(dep.target_module)
+    };
+    Some((owner, item))
+}
+
+/// Build the resolution context of this phase: the re-export map is what is
+/// being built, so it is empty here, and no external crate is known.
+fn resolution_context<'a>(
+    ctx: &'a CollectContext,
+    source_file: &'a Path,
+    module_path: &'a str,
+) -> ResolutionContext<'a> {
+    static EMPTY_REEXPORT_MAP: LazyLock<ReExportMap> = LazyLock::new(ReExportMap::default);
+    static EMPTY_EXT_NAMES: LazyLock<HashMap<String, String>> = LazyLock::new(HashMap::new);
+    ResolutionContext {
+        current_crate: ctx.crate_name,
+        workspace_crates: ctx.workspace_crates,
+        source_file,
+        all_module_paths: ctx.all_module_paths,
+        crate_exports: ctx.crate_exports,
+        current_module_path: module_path,
+        reexport_map: &EMPTY_REEXPORT_MAP,
+        external_crate_names: &EMPTY_EXT_NAMES,
+    }
 }
 
 /// Resolve a single `use` item into re-export entries.
@@ -114,18 +271,7 @@ fn collect_use_reexports(
     let alias_paths = resolve_use_tree(&use_item.tree, "", true);
     let original_paths = resolve_use_tree(&use_item.tree, "", false);
 
-    let empty_reexport_map = ReExportMap::default();
-    let empty_ext_names = std::collections::HashMap::new();
-    let res_ctx = ResolutionContext {
-        current_crate: ctx.crate_name,
-        workspace_crates: ctx.workspace_crates,
-        source_file,
-        all_module_paths: ctx.all_module_paths,
-        crate_exports: ctx.crate_exports,
-        current_module_path: module_path,
-        reexport_map: &empty_reexport_map,
-        external_crate_names: &empty_ext_names,
-    };
+    let res_ctx = resolution_context(ctx, source_file, module_path);
 
     for (alias_path, original_path) in alias_paths.iter().zip(original_paths.iter()) {
         let Some(dep) =
@@ -159,6 +305,7 @@ fn walk_collect_reexports(
     file_path: &Path,
     module_path: &str,
     result: &mut HashMap<String, ModuleExportInfo>,
+    out_of_module_impls: &mut Vec<OutOfModuleImpl>,
 ) {
     let source = match std::fs::read_to_string(file_path) {
         Ok(s) => s,
@@ -179,7 +326,7 @@ fn walk_collect_reexports(
         .strip_prefix(ctx.workspace_root)
         .map_or_else(|_| file_path.to_path_buf(), Path::to_path_buf);
 
-    let info = collect_module_info(ctx, &syntax, &source_file, module_path);
+    let info = collect_module_info(ctx, &syntax, &source_file, module_path, out_of_module_impls);
     if !info.is_empty() {
         result.insert(module_path.to_string(), info);
     }
@@ -203,7 +350,13 @@ fn walk_collect_reexports(
         };
 
         if let Some(child_path) = child_file {
-            walk_collect_reexports(ctx, &child_path, &child_module_path, result);
+            walk_collect_reexports(
+                ctx,
+                &child_path,
+                &child_module_path,
+                result,
+                out_of_module_impls,
+            );
         }
     }
 }
@@ -701,5 +854,64 @@ impl AStruct { pub fn method(&self) {} }
             .expect("Widget should be the re-export key");
         assert_eq!(reexport.module, "parent::sibling");
         assert_eq!(reexport.original_name, "Item");
+    }
+
+    /// Variants, `impl` fns and consts, and trait fns are recorded on the module
+    /// that defines the type. An `impl` block in a sibling file lands there too.
+    #[test]
+    fn collects_associated_items_on_the_defining_module() {
+        let tmp = test_crate(&[
+            ("src/lib.rs", "pub mod back;"),
+            ("src/back/mod.rs", "pub mod writer;\npub mod features;"),
+            (
+                "src/back/writer.rs",
+                "pub enum Mode { Fast, Slow(u8) }\n\
+                 pub struct Writer;\n\
+                 impl Writer { pub fn new() -> Self { Writer } pub const MAX: u8 = 1; }\n\
+                 pub trait Step { fn run(&self); }\n\
+                 impl Step for Writer { fn run(&self) {} }",
+            ),
+            (
+                "src/back/features.rs",
+                "use super::writer::Writer;\nimpl Writer { pub fn write_feature(&self) {} }",
+            ),
+        ]);
+        let crate_info = make_crate_info(&tmp, "test_crate");
+        let mp: ModulePathMap = [(
+            "test_crate".to_string(),
+            HashSet::from([
+                "back".into(),
+                "back::writer".into(),
+                "back::features".into(),
+            ]),
+        )]
+        .into_iter()
+        .collect();
+
+        let result = collect_crate_reexports(
+            &crate_info,
+            &mp,
+            &WorkspaceCrates::default(),
+            &CrateExportMap::default(),
+        );
+
+        let writer = &result["back::writer"].associated;
+        assert_eq!(
+            writer["Mode"].variants,
+            HashSet::from(["Fast".into(), "Slow".into()])
+        );
+        assert_eq!(
+            writer["Writer"].fns,
+            HashSet::from(["new".into(), "run".into(), "write_feature".into()]),
+            "own impl, trait impl and the sibling file's impl"
+        );
+        assert_eq!(writer["Writer"].consts, HashSet::from(["MAX".into()]));
+        assert_eq!(writer["Step"].fns, HashSet::from(["run".into()]));
+        assert!(
+            !result
+                .get("back::features")
+                .is_some_and(|f| f.associated.contains_key("Writer")),
+            "the impl in features is Writer's, not a type of features"
+        );
     }
 }

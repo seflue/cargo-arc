@@ -1,8 +1,8 @@
 //! Syn-based use statement parsing for workspace dependency extraction.
 
 use crate::model::{
-    CrateExportMap, Definition, DependencyRef, EdgeContext, ModulePathMap, TestKind, UsageKind,
-    WorkspaceCrates, normalize_crate_name,
+    CrateExportMap, DefKind, Definition, DependencyRef, EdgeContext, ModulePathMap, SymbolUse,
+    TestKind, UsageKind, UseCategory, WorkspaceCrates, normalize_crate_name,
 };
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -38,11 +38,42 @@ pub(crate) struct ReExportTarget {
     pub(crate) original_name: String,
 }
 
+/// The items a type or trait carries with it, by name. They decide what
+/// `Type::item` takes from the type: a variant builds a value, a fn is called,
+/// a const is read.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub(crate) struct AssociatedItems {
+    pub(crate) variants: HashSet<String>,
+    pub(crate) fns: HashSet<String>,
+    pub(crate) consts: HashSet<String>,
+}
+
+impl AssociatedItems {
+    pub(crate) fn add_fn(&mut self, name: &syn::Ident) {
+        self.fns.insert(name.to_string());
+    }
+
+    pub(crate) fn add_const(&mut self, name: &syn::Ident) {
+        self.consts.insert(name.to_string());
+    }
+
+    /// Take in `other`'s items, so two `impl` blocks of one type add up.
+    pub(crate) fn merge(&mut self, other: Self) {
+        self.variants.extend(other.variants);
+        self.fns.extend(other.fns);
+        self.consts.extend(other.consts);
+    }
+}
+
 /// Export and re-export information for a single module.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct ModuleExportInfo {
     /// Own public definitions: name → kind and line at the definition site
     pub(crate) definitions: HashMap<String, Definition>,
+    /// The associated items of the types and traits defined here, by the
+    /// defined name. An `impl` block in another file of the crate lands here
+    /// too, on the module that defines the type.
+    pub(crate) associated: HashMap<String, AssociatedItems>,
     /// Explicit re-exports: alias/name → source target
     pub(crate) explicit_reexports: HashMap<String, ReExportTarget>,
     /// Private `use` bindings this module holds. Rust makes them visible to
@@ -58,6 +89,7 @@ impl ModuleExportInfo {
     #[must_use]
     pub(crate) fn is_empty(&self) -> bool {
         self.definitions.is_empty()
+            && self.associated.is_empty()
             && self.explicit_reexports.is_empty()
             && self.private_uses.is_empty()
             && self.glob_sources.is_empty()
@@ -69,6 +101,14 @@ impl ModuleExportInfo {
 /// Empty string "" = crate root (lib.rs/main.rs).
 #[derive(Debug, Default, Clone)]
 pub(crate) struct ReExportMap(HashMap<String, HashMap<String, ModuleExportInfo>>);
+
+impl ReExportMap {
+    /// Look up the export info of the module a dependency points at, where
+    /// the map has it.
+    pub(crate) fn module_info(&self, dep: &DependencyRef) -> Option<&ModuleExportInfo> {
+        self.0.get(&dep.target_crate)?.get(&dep.target_module)
+    }
+}
 
 impl Deref for ReExportMap {
     type Target = HashMap<String, HashMap<String, ModuleExportInfo>>;
@@ -376,7 +416,25 @@ pub(crate) fn collect_all_use_items(
     }
 }
 
-/// One qualified path reference with what its position says about it.
+/// Where a path stands. Together with what the path names, this decides the
+/// category of the use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PathPosition {
+    /// A type, a trait bound, or the trait of an `impl`.
+    Type,
+    /// The callee of a call expression, or the name of a macro.
+    Call,
+    /// The path of a struct expression or of a struct pattern.
+    Construct,
+    /// A path read as a value or matched as a pattern, and a path anywhere
+    /// else, such as in an attribute.
+    Value,
+    /// A bare identifier in a pattern. It matches a const, a static or a unit
+    /// struct a `use` brings in, and declares a fresh variable otherwise.
+    Binding,
+}
+
+/// One path reference with what its position says about it.
 #[derive(Debug)]
 pub(crate) struct PathRef {
     pub(crate) path: String,
@@ -384,6 +442,12 @@ pub(crate) struct PathRef {
     pub(crate) context: EdgeContext,
     pub(crate) inline_depth: usize,
     pub(crate) region: RegionId,
+    pub(crate) position: PathPosition,
+    /// Written in macro input or an attribute, where syn does not parse and
+    /// the segments are read off the tokens. A binding resolves such a path;
+    /// the resolution chain is not asked, so no edge comes from macro input
+    /// alone.
+    pub(crate) in_macro: bool,
 }
 
 /// The qualified path references of one file, with the regions they stand in.
@@ -406,58 +470,198 @@ impl Deref for CollectedPathRefs {
     }
 }
 
-/// Collect all qualified path references (2+ segments) from a parsed file.
+/// The walker behind [`collect_all_path_refs`].
+struct PathRefCollector {
+    paths: Vec<PathRef>,
+    context: EdgeContext,
+    inline_depth: usize,
+    regions: BindingRegions,
+    region: RegionId,
+    position: PathPosition,
+}
+impl PathRefCollector {
+    fn in_position(&mut self, position: PathPosition, visit: impl FnOnce(&mut Self)) {
+        let prev = self.position;
+        self.position = position;
+        visit(self);
+        self.position = prev;
+    }
+
+    fn record(&mut self, path: String, line: usize, in_macro: bool) {
+        self.paths.push(PathRef {
+            path,
+            line,
+            context: self.context.clone(),
+            inline_depth: self.inline_depth,
+            region: self.region,
+            position: self.position,
+            in_macro,
+        });
+    }
+
+    /// Read the paths off a token stream syn leaves unparsed: a run of
+    /// identifiers joined by `::`, at any nesting of brackets. Every other
+    /// token is skipped, so nothing here knows what position a path is in.
+    fn record_token_paths(&mut self, tokens: &proc_macro2::TokenStream) {
+        use proc_macro2::TokenTree;
+        let tokens: Vec<TokenTree> = tokens.clone().into_iter().collect();
+        let mut index = 0;
+        while index < tokens.len() {
+            match &tokens[index] {
+                TokenTree::Group(group) => self.record_token_paths(&group.stream()),
+                // A lifetime is a `'` followed by an identifier, not a name.
+                TokenTree::Ident(ident) if !is_lifetime_tick(tokens.get(index.wrapping_sub(1))) => {
+                    let line = ident.span().start().line;
+                    let mut path = vec![ident.to_string()];
+                    while is_path_separator(&tokens[index + 1..])
+                        && let Some(TokenTree::Ident(next)) = tokens.get(index + 3)
+                    {
+                        path.push(next.to_string());
+                        index += 3;
+                    }
+                    self.in_position(PathPosition::Value, |s| {
+                        s.record(path.join("::"), line, true);
+                    });
+                }
+                _ => {}
+            }
+            index += 1;
+        }
+    }
+}
+
+/// Whether the tokens start with `::`, which arrives as two colons with the
+/// first joint to the second.
+fn is_path_separator(tokens: &[proc_macro2::TokenTree]) -> bool {
+    use proc_macro2::{Spacing, TokenTree};
+    matches!(
+        tokens,
+        [TokenTree::Punct(first), TokenTree::Punct(second), ..]
+            if first.as_char() == ':' && first.spacing() == Spacing::Joint && second.as_char() == ':'
+    )
+}
+
+fn is_lifetime_tick(token: Option<&proc_macro2::TokenTree>) -> bool {
+    matches!(token, Some(proc_macro2::TokenTree::Punct(punct)) if punct.as_char() == '\'')
+}
+impl<'ast> Visit<'ast> for PathRefCollector {
+    fn visit_path(&mut self, node: &'ast syn::Path) {
+        let path_str: String = node
+            .segments
+            .iter()
+            .map(|s| s.ident.to_string())
+            .collect::<Vec<_>>()
+            .join("::");
+        let line = node
+            .segments
+            .first()
+            .map_or(0, |s| s.ident.span().start().line);
+        self.record(path_str, line, false);
+        syn::visit::visit_path(self, node);
+    }
+
+    // Syntax alone cannot tell a const matched from a variable declared; the
+    // lookup against the file's bindings and the item's definition can.
+    fn visit_pat_ident(&mut self, node: &'ast syn::PatIdent) {
+        if node.by_ref.is_none() && node.mutability.is_none() && node.subpat.is_none() {
+            self.in_position(PathPosition::Binding, |s| {
+                s.record(
+                    node.ident.to_string(),
+                    node.ident.span().start().line,
+                    false,
+                );
+            });
+        }
+        syn::visit::visit_pat_ident(self, node);
+    }
+
+    fn visit_type_path(&mut self, node: &'ast syn::TypePath) {
+        self.in_position(PathPosition::Type, |s| syn::visit::visit_type_path(s, node));
+    }
+
+    fn visit_trait_bound(&mut self, node: &'ast syn::TraitBound) {
+        self.in_position(PathPosition::Type, |s| {
+            syn::visit::visit_trait_bound(s, node);
+        });
+    }
+
+    fn visit_item_impl(&mut self, node: &'ast syn::ItemImpl) {
+        self.in_position(PathPosition::Type, |s| syn::visit::visit_item_impl(s, node));
+    }
+
+    fn visit_expr_path(&mut self, node: &'ast syn::ExprPath) {
+        self.in_position(PathPosition::Value, |s| {
+            syn::visit::visit_expr_path(s, node);
+        });
+    }
+
+    fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
+        if let syn::Expr::Path(func) = &*node.func {
+            self.in_position(PathPosition::Call, |s| syn::visit::visit_expr_path(s, func));
+            for arg in &node.args {
+                self.visit_expr(arg);
+            }
+        } else {
+            syn::visit::visit_expr_call(self, node);
+        }
+    }
+
+    fn visit_expr_struct(&mut self, node: &'ast syn::ExprStruct) {
+        self.in_position(PathPosition::Construct, |s| {
+            syn::visit::visit_expr_struct(s, node);
+        });
+    }
+
+    fn visit_pat_struct(&mut self, node: &'ast syn::PatStruct) {
+        self.in_position(PathPosition::Construct, |s| {
+            syn::visit::visit_pat_struct(s, node);
+        });
+    }
+
+    fn visit_pat_tuple_struct(&mut self, node: &'ast syn::PatTupleStruct) {
+        self.in_position(PathPosition::Construct, |s| {
+            syn::visit::visit_pat_tuple_struct(s, node);
+        });
+    }
+
+    fn visit_macro(&mut self, node: &'ast syn::Macro) {
+        self.in_position(PathPosition::Call, |s| syn::visit::visit_macro(s, node));
+        self.record_token_paths(&node.tokens);
+    }
+
+    // `#[derive(Serialize)]` and the like name what they use in tokens too.
+    fn visit_meta_list(&mut self, node: &'ast syn::MetaList) {
+        syn::visit::visit_meta_list(self, node);
+        self.record_token_paths(&node.tokens);
+    }
+
+    // `pub(in path)` names the scope that may see the item; nothing is used
+    // from that module, so its path is no dependency.
+    fn visit_vis_restricted(&mut self, _node: &'ast syn::VisRestricted) {}
+
+    impl_binding_region_visits!();
+}
+
+/// Collect all path references from a parsed file, each with its position.
 /// Uses `syn::visit::Visit` to traverse expressions, types, patterns, and trait bounds.
 /// References inside `#[cfg(test)]` scopes are tagged `Test(Unit)`, all others
 /// `Production`.
+///
+/// A single-segment path is kept too: it may name what a `use` in the file
+/// binds. The position is the innermost syntactic context around the path;
+/// the collector sets it on entering that context, so a path nested in another
+/// path's generic arguments gets its own.
 pub(crate) fn collect_all_path_refs(
     syntax: &syn::File,
     base_context: EdgeContext,
 ) -> CollectedPathRefs {
-    struct PathRefCollector {
-        paths: Vec<PathRef>,
-        context: EdgeContext,
-        inline_depth: usize,
-        regions: BindingRegions,
-        region: RegionId,
-    }
-    impl<'ast> Visit<'ast> for PathRefCollector {
-        fn visit_path(&mut self, node: &'ast syn::Path) {
-            if node.segments.len() >= 2 {
-                let path_str: String = node
-                    .segments
-                    .iter()
-                    .map(|s| s.ident.to_string())
-                    .collect::<Vec<_>>()
-                    .join("::");
-                let line = node
-                    .segments
-                    .first()
-                    .map_or(0, |s| s.ident.span().start().line);
-                self.paths.push(PathRef {
-                    path: path_str,
-                    line,
-                    context: self.context.clone(),
-                    inline_depth: self.inline_depth,
-                    region: self.region,
-                });
-            }
-            // Continue visiting nested paths (e.g. in generics)
-            syn::visit::visit_path(self, node);
-        }
-
-        // `pub(in path)` names the scope that may see the item; nothing is used
-        // from that module, so its path is no dependency.
-        fn visit_vis_restricted(&mut self, _node: &'ast syn::VisRestricted) {}
-
-        impl_binding_region_visits!();
-    }
     let mut collector = PathRefCollector {
         paths: Vec::new(),
         context: base_context,
         inline_depth: 0,
         regions: BindingRegions::default(),
         region: BindingRegions::ROOT,
+        position: PathPosition::Value,
     };
     collector.visit_file(syntax);
     CollectedPathRefs {
@@ -578,6 +782,7 @@ fn parse_crate_local_import(
         line: line_num,
         context: context.clone(),
         via_reexport: false,
+        uses: Vec::new(),
     })
 }
 
@@ -630,6 +835,7 @@ fn parse_bare_module_import(
         line: line_num,
         context: context.clone(),
         via_reexport: false,
+        uses: Vec::new(),
     })
 }
 
@@ -682,6 +888,7 @@ fn parse_workspace_import(
         line: line_num,
         context: context.clone(),
         via_reexport: false,
+        uses: Vec::new(),
     })
 }
 
@@ -758,6 +965,7 @@ pub(crate) fn resolve_single_path(
                     line: line_num,
                     context: context.clone(),
                     via_reexport: false,
+                    uses: Vec::new(),
                 })
             } else {
                 None
@@ -799,6 +1007,7 @@ fn parse_external_crate_import(
         line: line_num,
         context: context.clone(),
         via_reexport: false,
+        uses: Vec::new(),
     })
 }
 
@@ -833,6 +1042,13 @@ pub(crate) fn parse_workspace_dependencies(
                 &collected.context,
                 collected.inline_depth,
             ) {
+                // A private glob whose target the map knows is resolved into
+                // the names the file uses, by `parse_path_ref_dependencies`.
+                // A `pub use` glob republishes every name and uses none, so it
+                // is the whole payload.
+                if is_glob(&dep) && glob_payload_known(&dep, ctx.reexport_map) && !via_reexport {
+                    continue;
+                }
                 dep.via_reexport = via_reexport;
                 for mut dep in expand_glob(dep, ctx.reexport_map) {
                     resolve_reexport(&mut dep, ctx.reexport_map, ctx.current_module_path);
@@ -852,9 +1068,7 @@ pub(crate) fn parse_workspace_dependencies(
 /// it can see. Sorted, because the map iterates in arbitrary order and the names
 /// reach the rendered output.
 fn glob_payload(dep: &DependencyRef, reexport_map: &ReExportMap) -> Option<Vec<String>> {
-    let module_info = reexport_map
-        .get(&dep.target_crate)?
-        .get(&dep.target_module)?;
+    let module_info = reexport_map.module_info(dep)?;
     let mut names: Vec<String> = module_info
         .definitions
         .keys()
@@ -869,18 +1083,14 @@ fn glob_payload(dep: &DependencyRef, reexport_map: &ReExportMap) -> Option<Vec<S
     Some(names)
 }
 
-/// Split a glob into one dependency per name it imports, so an edge weighs what
-/// crosses it rather than the one line that spells it.
+/// Split a re-export glob into one dependency per name it republishes, so an
+/// edge weighs what crosses it rather than the one line that spells it.
 ///
 /// Non-globs pass through. So does a glob whose payload is unknown: it keeps the
 /// `*`, which scores as a single unnamed symbol — an understatement, but a
 /// smaller one than dropping the edge to zero.
-///
-/// The `*` marker itself must survive upstream of this: `collect_use_reexports`
-/// reads it out of its own `resolve_use_tree` pass to build `glob_sources`,
-/// which is what `resolve_reexport` resolves glob chains against.
 fn expand_glob(dep: DependencyRef, reexport_map: &ReExportMap) -> Vec<DependencyRef> {
-    if dep.target_item.as_deref() != Some("*") {
+    if !is_glob(&dep) {
         return vec![dep];
     }
     let Some(names) = glob_payload(&dep, reexport_map) else {
@@ -895,7 +1105,23 @@ fn expand_glob(dep: DependencyRef, reexport_map: &ReExportMap) -> Vec<Dependency
         .collect()
 }
 
-/// What the `use` items of one file bind.
+/// The `*` marker on a glob's dependency. It must survive upstream of here:
+/// `collect_use_reexports` reads it out of its own `resolve_use_tree` pass to
+/// build `glob_sources`, which is what `resolve_reexport` resolves glob chains
+/// against.
+fn is_glob(dep: &DependencyRef) -> bool {
+    dep.target_item.as_deref() == Some("*")
+}
+
+/// Whether the map holds the module a glob imports from, and so can say which
+/// names the glob brings in.
+fn glob_payload_known(dep: &DependencyRef, reexport_map: &ReExportMap) -> bool {
+    reexport_map.module_info(dep).is_some()
+}
+
+/// What every name in one file means, per region: module aliases, names bound
+/// elsewhere, names bound to items, glob imports, and the file's own item
+/// names.
 ///
 /// `modules` holds a binding name → the absolute path of the module it names.
 /// Absolute means `crate::a::b` for the current crate and `other_crate::b`
@@ -905,19 +1131,109 @@ fn expand_glob(dep: DependencyRef, reexport_map: &ReExportMap) -> Vec<Dependency
 /// The parser need not know what that something is. An import from a crate it has
 /// no metadata for still binds the name, and the module beside the file is then not
 /// what a bare path starting with that name means.
+///
+/// `items` holds the names bound to an item, with the dependency the `use`
+/// resolved to. A later path starting with such a name is an occurrence of that
+/// item, and what follows the name is an associated item of it.
+///
+/// `globs` holds the glob imports whose payload the map knows, as the
+/// dependency on the module with the `*` still in place. A name nothing else
+/// binds and the file does not define is the glob's where the module exports
+/// it.
 #[derive(Debug, Default)]
-pub(crate) struct ModuleAliases {
+pub(crate) struct FileBindings {
     regions: BindingRegions,
     modules: HashMap<RegionId, HashMap<String, String>>,
     elsewhere: HashMap<RegionId, HashSet<String>>,
+    items: HashMap<RegionId, HashMap<String, DependencyRef>>,
+    globs: HashMap<RegionId, Vec<DependencyRef>>,
+    /// The names of the items the file defines, at any depth. A glob never
+    /// brings in a name the file defines itself.
+    local_definitions: HashSet<String>,
 }
 
-impl ModuleAliases {
-    fn new(regions: BindingRegions) -> Self {
-        Self {
-            regions,
-            ..Self::default()
+/// What one path reference stands for, given the bindings around it.
+enum PathBinding<'a> {
+    /// A path to run through the resolution chain, with a bound module alias
+    /// replaced by the module's absolute path.
+    Path(Cow<'a, str>),
+    /// An occurrence of an item a `use` binds, plus the associated item the
+    /// path goes on to name: `Config::new` on the binding `Config` leaves
+    /// `new`.
+    Item(&'a DependencyRef, Option<&'a str>),
+    /// A path whose first segment is bound to something this crate does not
+    /// contain.
+    Elsewhere,
+    /// A bare name nothing binds, split into the name and what follows it.
+    /// It may be a glob's.
+    Unbound(&'a str, Option<&'a str>),
+}
+
+impl FileBindings {
+    /// Build the bindings of one file from its `use` items and the items it
+    /// defines.
+    ///
+    /// `use crate::device::{queue, Device}` binds `queue` to the module
+    /// `device::queue`; a later `queue::TempResource` is only resolvable against
+    /// that binding. What each binding means for later references is decided in
+    /// [`classify_binding`].
+    pub(crate) fn of(
+        syntax: &syn::File,
+        use_items: &CollectedUses,
+        ctx: &ResolutionContext,
+    ) -> FileBindings {
+        let mut bindings = FileBindings {
+            regions: use_items.regions.clone(),
+            ..FileBindings::default()
+        };
+
+        for collected in use_items.iter() {
+            let alias_paths = resolve_use_tree(&collected.item.tree, "", true);
+            let original_paths = resolve_use_tree(&collected.item.tree, "", false);
+
+            for (alias_path, original_path) in alias_paths.iter().zip(original_paths.iter()) {
+                let Some(binding) = alias_path.rsplit("::").next() else {
+                    continue;
+                };
+                let dep = resolve_single_path(
+                    ctx,
+                    original_path,
+                    collected.item.use_token.span.start().line,
+                    &collected.context,
+                    collected.inline_depth,
+                );
+                // A glob binds every name its module exports and none of them is
+                // written here; the names are found where the file uses them.
+                if binding == "*" {
+                    if let Some(mut dep) = dep
+                        && glob_payload_known(&dep, ctx.reexport_map)
+                    {
+                        dep.via_reexport = is_reexport_visibility(&collected.item.vis);
+                        bindings.bind_glob(collected.region, dep);
+                    }
+                    continue;
+                }
+                match classify_binding(ctx, dep.as_ref(), binding) {
+                    Binding::Module(module_path) => {
+                        bindings.bind_module(collected.region, binding, module_path);
+                    }
+                    Binding::Elsewhere => bindings.bind_elsewhere(collected.region, binding),
+                    Binding::OwnItem => {}
+                }
+                // A name bound to an item of any crate the parser placed carries the
+                // item's occurrences. A name bound elsewhere may also be one: the
+                // parser has no module for it, but it knows the crate.
+                if let Some(mut dep) = dep
+                    && dep.target_item.is_some()
+                {
+                    dep.via_reexport = is_reexport_visibility(&collected.item.vis);
+                    bindings.bind_item(collected.region, binding, dep);
+                }
+            }
         }
+
+        bindings.define_locally(syntax);
+        bindings
     }
 
     /// The module path a name is bound to as seen from `region`, where it is
@@ -930,35 +1246,54 @@ impl ModuleAliases {
             .map(String::as_str)
     }
 
-    /// The path to resolve for a reference standing in `region`, or `None` when
-    /// the reference is not this crate's to place.
+    /// Look up what a reference standing in `region` stands for.
     ///
-    /// `queue::TempResource` under `queue → crate::device::queue` becomes
-    /// `crate::device::queue::TempResource`. A first segment bound elsewhere yields
-    /// `None`: the binding rules out the module beside the file, and nothing here
-    /// says what to put in its place. An unbound path is returned unchanged.
+    /// `queue::TempResource` under `queue → crate::device::queue` is the path
+    /// `crate::device::queue::TempResource`. `Config::new` under an item binding
+    /// `Config` is an occurrence of that item. A first segment bound elsewhere
+    /// rules out the module beside the file, and nothing here says what to put
+    /// in its place. A path nothing binds is `Unbound`: qualified, it may still
+    /// resolve on its own; bare, it resolves through a glob or not at all.
     ///
     /// Only bindings written in `region` or around it are asked. A `use` in the
     /// body of one function says nothing about the function beside it, so the
     /// innermost region that binds the name wins and a sibling region is never
     /// consulted.
-    fn path_to_resolve<'p>(&self, path: &'p str, region: RegionId) -> Option<Cow<'p, str>> {
-        let Some((first, rest)) = path.split_once("::") else {
-            return Some(Cow::Borrowed(path));
+    fn binding_of<'p>(&'p self, path: &'p str, region: RegionId) -> PathBinding<'p> {
+        let (first, rest) = match path.split_once("::") {
+            Some((first, rest)) => (first, Some(rest)),
+            None => (path, None),
         };
+        let last = rest.and_then(|r| r.rsplit("::").next());
         for enclosing in self.regions.enclosing(region) {
-            if let Some(target) = self.modules.get(&enclosing).and_then(|m| m.get(first)) {
-                return Some(Cow::Owned(format!("{target}::{rest}")));
+            if let Some(target) = self.modules.get(&enclosing).and_then(|m| m.get(first))
+                && let Some(rest) = rest
+            {
+                return PathBinding::Path(Cow::Owned(format!("{target}::{rest}")));
+            }
+            if let Some(dep) = self.items.get(&enclosing).and_then(|m| m.get(first)) {
+                return PathBinding::Item(dep, last);
             }
             if self
                 .elsewhere
                 .get(&enclosing)
                 .is_some_and(|names| names.contains(first))
             {
-                return None;
+                return PathBinding::Elsewhere;
             }
         }
-        Some(Cow::Borrowed(path))
+        PathBinding::Unbound(first, last)
+    }
+
+    /// List the glob imports a name standing in `region` may come from,
+    /// innermost first. Empty when the file defines the name itself.
+    fn globs_for(&self, name: &str, region: RegionId) -> impl Iterator<Item = &DependencyRef> {
+        let defined_here = self.local_definitions.contains(name);
+        self.regions
+            .enclosing(region)
+            .filter(move |_| !defined_here)
+            .filter_map(|enclosing| self.globs.get(&enclosing))
+            .flatten()
     }
 
     fn bind_module(&mut self, region: RegionId, name: &str, module_path: String) {
@@ -968,55 +1303,52 @@ impl ModuleAliases {
             .insert(name.to_string(), module_path);
     }
 
+    fn bind_item(&mut self, region: RegionId, name: &str, dep: DependencyRef) {
+        self.items
+            .entry(region)
+            .or_default()
+            .insert(name.to_string(), dep);
+    }
+
+    fn bind_glob(&mut self, region: RegionId, dep: DependencyRef) {
+        self.globs.entry(region).or_default().push(dep);
+    }
+
+    /// Record the names of the items the file defines, so no glob claims them.
+    fn define_locally(&mut self, syntax: &syn::File) {
+        struct DefinedNames(HashSet<String>);
+        impl<'ast> Visit<'ast> for DefinedNames {
+            fn visit_item(&mut self, node: &'ast syn::Item) {
+                let ident = match node {
+                    syn::Item::Fn(i) => Some(&i.sig.ident),
+                    syn::Item::Struct(i) => Some(&i.ident),
+                    syn::Item::Enum(i) => Some(&i.ident),
+                    syn::Item::Union(i) => Some(&i.ident),
+                    syn::Item::Trait(i) => Some(&i.ident),
+                    syn::Item::Type(i) => Some(&i.ident),
+                    syn::Item::Const(i) => Some(&i.ident),
+                    syn::Item::Static(i) => Some(&i.ident),
+                    syn::Item::Mod(i) => Some(&i.ident),
+                    syn::Item::Macro(i) => i.ident.as_ref(),
+                    _ => None,
+                };
+                if let Some(ident) = ident {
+                    self.0.insert(ident.to_string());
+                }
+                syn::visit::visit_item(self, node);
+            }
+        }
+        let mut names = DefinedNames(HashSet::new());
+        names.visit_file(syntax);
+        self.local_definitions.extend(names.0);
+    }
+
     fn bind_elsewhere(&mut self, region: RegionId, name: &str) {
         self.elsewhere
             .entry(region)
             .or_default()
             .insert(name.to_string());
     }
-}
-
-/// Build the file-local module alias table from its `use` items.
-///
-/// `use crate::device::{queue, Device}` binds `queue` to the module `device::queue`;
-/// a later `queue::TempResource` is only resolvable against that binding. What each
-/// binding means for later references is decided in [`classify_binding`].
-pub(crate) fn collect_module_aliases(
-    use_items: &CollectedUses,
-    ctx: &ResolutionContext,
-) -> ModuleAliases {
-    let mut aliases = ModuleAliases::new(use_items.regions.clone());
-
-    for collected in use_items.iter() {
-        let alias_paths = resolve_use_tree(&collected.item.tree, "", true);
-        let original_paths = resolve_use_tree(&collected.item.tree, "", false);
-
-        for (alias_path, original_path) in alias_paths.iter().zip(original_paths.iter()) {
-            let Some(binding) = alias_path.rsplit("::").next() else {
-                continue;
-            };
-            // A glob binds every name it carries and none of them is written here.
-            if binding == "*" {
-                continue;
-            }
-            let dep = resolve_single_path(
-                ctx,
-                original_path,
-                0,
-                &collected.context,
-                collected.inline_depth,
-            );
-            match classify_binding(ctx, dep.as_ref(), binding) {
-                Binding::Module(module_path) => {
-                    aliases.bind_module(collected.region, binding, module_path);
-                }
-                Binding::Elsewhere => aliases.bind_elsewhere(collected.region, binding),
-                Binding::OwnItem => {}
-            }
-        }
-    }
-
-    aliases
 }
 
 /// What one `use` binding means for later references to its name.
@@ -1071,42 +1403,288 @@ fn absolute_module_path(ctx: &ResolutionContext, dep: &DependencyRef) -> String 
     }
 }
 
-/// Parse path references into workspace-relevant dependencies.
+/// Parse path references into workspace-relevant dependencies, each carrying
+/// the use the reference is.
 ///
-/// Takes pre-collected path refs from `collect_all_path_refs()` and resolves
-/// each through the existing resolution chain (`resolve_single_path()`).
-/// A path starting with a name the file's `use` items bind goes through
-/// [`ModuleAliases::path_to_resolve`] first. That binding is authoritative, so a
-/// path it rules out is dropped rather than resolved on its own.
+/// Takes pre-collected path refs from `collect_all_path_refs()` and asks the
+/// file's bindings what each stands for ([`FileBindings::binding_of`]). An
+/// occurrence of a bound item is that item's dependency again; any other path
+/// resolves through the existing resolution chain (`resolve_single_path()`).
+/// The binding is authoritative, so a path it rules out is dropped rather than
+/// resolved on its own.
 /// Deduplicates by `full_target()` — same strategy as `parse_workspace_dependencies()`.
 pub(crate) fn parse_path_ref_dependencies(
     paths: &CollectedPathRefs,
     ctx: &ResolutionContext,
-    aliases: &ModuleAliases,
+    bindings: &FileBindings,
 ) -> Vec<DependencyRef> {
     let mut deps: Vec<DependencyRef> = Vec::new();
     let mut seen_targets: HashMap<(String, UsageKind), usize> = HashMap::new();
+    // The globs a name was taken from, by `(full_target, kind)` of the glob.
+    let mut used_globs: HashSet<(String, UsageKind)> = HashSet::new();
 
     for path_ref in paths.iter() {
-        let Some(effective) = aliases.path_to_resolve(&path_ref.path, path_ref.region) else {
+        // A path written in macro input resolves through a binding only.
+        let resolve = |path: &str| {
+            (!path_ref.in_macro)
+                .then(|| {
+                    resolve_single_path(
+                        ctx,
+                        path,
+                        path_ref.line,
+                        &path_ref.context,
+                        path_ref.inline_depth,
+                    )
+                })
+                .flatten()
+        };
+        let (mut dep, associated, glob_taken_from) =
+            match bindings.binding_of(&path_ref.path, path_ref.region) {
+                PathBinding::Unbound(name, associated) => {
+                    // A qualified path resolves on its own where it can; what
+                    // does not, and a bare name, is a glob's where a glob
+                    // exports it.
+                    if let Some(dep) = associated.and_then(|_| resolve(&path_ref.path)) {
+                        let associated = associated_segment(&path_ref.path, &dep);
+                        (dep, associated, None)
+                    } else {
+                        let Some(glob) = bindings
+                            .globs_for(name, path_ref.region)
+                            .find(|glob| glob_exports(ctx, glob, name))
+                        else {
+                            continue;
+                        };
+                        let dep = DependencyRef {
+                            target_item: Some(name.to_string()),
+                            ..glob.clone()
+                        };
+                        let taken_from = (glob.full_target(), glob.context.kind);
+                        (dep, associated, Some(taken_from))
+                    }
+                }
+                // A qualified path may still name a module beside the file: a
+                // `use` of a fn `helper` leaves the module `helper` addressable,
+                // the two being in different namespaces. The module wins where
+                // it resolves.
+                PathBinding::Item(bound, associated) => {
+                    match associated.and_then(|_| resolve(&path_ref.path)) {
+                        Some(dep) => {
+                            let associated = associated_segment(&path_ref.path, &dep);
+                            (dep, associated, None)
+                        }
+                        None => (bound.clone(), associated, None),
+                    }
+                }
+                PathBinding::Path(effective) => {
+                    let Some(dep) = resolve(&effective) else {
+                        continue;
+                    };
+                    let associated = associated_segment(&path_ref.path, &dep);
+                    (dep, associated, None)
+                }
+                PathBinding::Elsewhere => continue,
+            };
+        resolve_reexport(&mut dep, ctx.reexport_map, ctx.current_module_path);
+        let Some(item) = dep.target_item.as_deref() else {
+            DependencyRef::dedup_push(&mut deps, &mut seen_targets, dep);
             continue;
         };
-        if let Some(mut dep) = resolve_single_path(
-            ctx,
-            &effective,
-            path_ref.line,
-            &path_ref.context,
-            path_ref.inline_depth,
-        ) {
-            resolve_reexport(&mut dep, ctx.reexport_map, ctx.current_module_path);
-            DependencyRef::dedup_push(&mut deps, &mut seen_targets, dep);
+        if path_ref.position == PathPosition::Binding && !is_matched_by_a_bare_pattern(ctx, &dep) {
+            continue;
+        }
+        if let Some(glob) = glob_taken_from {
+            used_globs.insert(glob);
+        }
+        let symbol_use = SymbolUse {
+            line: path_ref.line,
+            category: categorize(ctx, &dep, item, path_ref.position, associated),
+            imported_for_methods: false,
+        };
+        dep.uses.push(symbol_use);
+        DependencyRef::dedup_push(&mut deps, &mut seen_targets, dep);
+    }
+
+    // A glob the file takes no name from keeps its `*`: the import is there,
+    // and the edge with it. A re-export glob already carries its payload.
+    for glob in bindings.globs.values().flatten() {
+        if !glob.via_reexport && !used_globs.contains(&(glob.full_target(), glob.context.kind)) {
+            DependencyRef::dedup_push(&mut deps, &mut seen_targets, glob.clone());
         }
     }
 
     deps
 }
 
-/// Convenience wrapper: parse source text into syn::ItemUse items and extract dependencies.
+/// Whether the module a glob imports from exports `name`, by its own
+/// definition, a named re-export, or a glob re-export chain.
+fn glob_exports(ctx: &ResolutionContext, glob: &DependencyRef, name: &str) -> bool {
+    ctx.reexport_map
+        .get(&glob.target_crate)
+        .is_some_and(|crate_exports| {
+            module_exports_symbol(
+                crate_exports,
+                &glob.target_module,
+                name,
+                &mut HashSet::new(),
+            )
+        })
+}
+
+/// Take the segment a path writes after the item it resolved to:
+/// `crate::a::S::new` on a dependency on `S` leaves `new`. A path ending in the
+/// item leaves nothing.
+fn associated_segment<'p>(path: &'p str, dep: &DependencyRef) -> Option<&'p str> {
+    let last = path.rsplit("::").next()?;
+    (Some(last) != dep.target_item.as_deref()).then_some(last)
+}
+
+fn definition_kind(ctx: &ResolutionContext, dep: &DependencyRef, item: &str) -> Option<DefKind> {
+    ctx.reexport_map
+        .module_info(dep)
+        .and_then(|info| info.definitions.get(item))
+        .map(|definition| definition.kind)
+}
+
+/// Whether a bare identifier pattern matches `dep`'s item rather than
+/// declaring a variable of that name: only a const, a static or a unit struct
+/// can be matched that way. An item the map does not know is taken for a
+/// variable, since a variable is what such a pattern nearly always declares.
+fn is_matched_by_a_bare_pattern(ctx: &ResolutionContext, dep: &DependencyRef) -> bool {
+    let Some(item) = &dep.target_item else {
+        return false;
+    };
+    matches!(
+        definition_kind(ctx, dep, item),
+        Some(DefKind::Const | DefKind::Static | DefKind::Struct)
+    )
+}
+
+/// Categorize one use by what its position takes from the item and, where the
+/// position leaves that open, by what the item is.
+fn categorize(
+    ctx: &ResolutionContext,
+    dep: &DependencyRef,
+    item: &str,
+    position: PathPosition,
+    associated: Option<&str>,
+) -> UseCategory {
+    let kind = definition_kind(ctx, dep, item);
+    let items = ctx
+        .reexport_map
+        .module_info(dep)
+        .and_then(|info| info.associated.get(item));
+    match (associated, position) {
+        (_, PathPosition::Type | PathPosition::Construct) => UseCategory::Types,
+        (Some(name), _) if items.is_some_and(|items| items.variants.contains(name)) => {
+            UseCategory::Types
+        }
+        (Some(name), _) if items.is_some_and(|items| items.fns.contains(name)) => UseCategory::Fns,
+        (Some(name), _) if items.is_some_and(|items| items.consts.contains(name)) => {
+            UseCategory::Values
+        }
+        (Some(name), PathPosition::Call) => category_of_unknown_call(name),
+        (Some(name), PathPosition::Value | PathPosition::Binding) => category_by_convention(name),
+        (None, PathPosition::Call) => match kind {
+            Some(DefKind::Struct | DefKind::Enum) => UseCategory::Types,
+            Some(_) => UseCategory::Fns,
+            None => category_of_unknown_call(item),
+        },
+        (None, PathPosition::Value | PathPosition::Binding) => match kind {
+            Some(DefKind::Const | DefKind::Static) => UseCategory::Values,
+            Some(DefKind::Fn) => UseCategory::Fns,
+            Some(DefKind::Struct | DefKind::Enum | DefKind::Type | DefKind::Trait) => {
+                UseCategory::Types
+            }
+            None => category_by_convention(item),
+        },
+    }
+}
+
+/// Categorize a name by its spelling, where no definition says what it is:
+/// Rust names constants in upper case, types in camel case and functions in
+/// snake case.
+fn category_by_convention(name: &str) -> UseCategory {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(first) if first.is_uppercase() => {
+            if chars.all(|c| !c.is_lowercase()) {
+                UseCategory::Values
+            } else {
+                UseCategory::Types
+            }
+        }
+        _ => UseCategory::Fns,
+    }
+}
+
+/// Categorize a call of a name no definition explains: capitalised, it
+/// constructs a tuple struct or a variant; otherwise it calls a fn.
+fn category_of_unknown_call(name: &str) -> UseCategory {
+    if name.starts_with(char::is_uppercase) {
+        UseCategory::Types
+    } else {
+        UseCategory::Fns
+    }
+}
+
+/// Parse every dependency one file writes, with the uses each carries.
+///
+/// The `use` items name the imports; the path references say where and how
+/// each imported name, and each qualified path, is used. Both are resolved
+/// against the same bindings and deduplicated by `(full_target, kind)`, the
+/// `use` items first so a location stays at the import line.
+pub(crate) fn parse_file_dependencies(
+    syntax: &syn::File,
+    ctx: &ResolutionContext,
+    base_context: EdgeContext,
+) -> Vec<DependencyRef> {
+    let use_items = collect_all_use_items(syntax, base_context.clone());
+    let use_deps = parse_workspace_dependencies(&use_items, ctx);
+
+    let path_refs = collect_all_path_refs(syntax, base_context);
+    let bindings = FileBindings::of(syntax, &use_items, ctx);
+    let path_deps = parse_path_ref_dependencies(&path_refs, ctx, &bindings);
+
+    let mut seen = DependencyRef::build_seen_index(&use_deps);
+    let mut deps = use_deps;
+    for dep in path_deps {
+        DependencyRef::dedup_push(&mut deps, &mut seen, dep);
+    }
+    for dep in &mut deps {
+        if dep.uses.is_empty()
+            && !dep.via_reexport
+            && let Some(item) = dep.target_item.as_deref()
+            && item != "*"
+        {
+            let symbol_use = import_only_use(ctx, dep, item);
+            dep.uses.push(symbol_use);
+        }
+    }
+    deps
+}
+
+/// Derive the use of an import nothing in the file names. A trait is then
+/// there for its methods, which method-call syntax never spells out. Any other
+/// item is a dead import, and the use is what the definition says it is. A
+/// re-export republishes the name and uses nothing, so it gets no use.
+fn import_only_use(ctx: &ResolutionContext, dep: &DependencyRef, item: &str) -> SymbolUse {
+    let is_trait = definition_kind(ctx, dep, item) == Some(DefKind::Trait);
+    if is_trait {
+        SymbolUse {
+            line: dep.line,
+            category: UseCategory::Fns,
+            imported_for_methods: true,
+        }
+    } else {
+        SymbolUse {
+            line: dep.line,
+            category: categorize(ctx, dep, item, PathPosition::Value, None),
+            imported_for_methods: false,
+        }
+    }
+}
+
+/// Convenience wrapper: parse source text and extract dependencies.
 /// Used by hir.rs which has source text but no pre-parsed AST.
 #[cfg(feature = "hir")]
 pub(crate) fn parse_workspace_dependencies_from_source(
@@ -1117,8 +1695,7 @@ pub(crate) fn parse_workspace_dependencies_from_source(
         Ok(f) => f,
         Err(_) => return Vec::new(),
     };
-    let uses = collect_all_use_items(&syntax, EdgeContext::production());
-    parse_workspace_dependencies(&uses, ctx)
+    parse_file_dependencies(&syntax, ctx, EdgeContext::production())
 }
 
 #[cfg(test)]

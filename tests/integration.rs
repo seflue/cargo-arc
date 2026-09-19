@@ -453,8 +453,9 @@ fn test_reexport_resolution() {
 /// A glob edge must carry the names it imports, not the `*` that spells them.
 /// Covers the full pipeline: only a populated re-export map can name the payload,
 /// so a map that never reaches the resolver would leave the `*` in place here.
+/// The glob's module also exports `Extra`, which the file never writes.
 #[test]
-fn test_glob_import_carries_payload() {
+fn test_glob_import_carries_the_names_used() {
     let (temp, cmd) = fixture_args("reexport_workspace", false);
 
     let result = run(cmd);
@@ -466,8 +467,43 @@ fn test_glob_import_carries_payload() {
     let key = ("glob_user".to_string(), "sibling".to_string());
     assert_eq!(
         symbols.get(&key).map(Vec::as_slice),
-        Some(["Extra".to_string(), "Widget".to_string()].as_slice()),
-        "glob_user -> sibling should carry sibling's exports, found: {symbols:?}"
+        Some(["Widget".to_string()].as_slice()),
+        "glob_user -> sibling should carry the names glob_user uses, found: {symbols:?}"
+    );
+}
+
+/// Every use on an edge, with its category, goes to stderr under `--debug`,
+/// so the walker's result can be read without a rule that consumes it.
+/// A subprocess, because `run` installs the debug log on the process's own
+/// stderr, which an in-process test cannot capture.
+#[test]
+fn debug_lists_the_uses_of_an_edge_with_category() {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/reexport_workspace/Cargo.toml");
+    let temp = tempfile::NamedTempFile::new().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_cargo-arc"))
+        .arg("arc")
+        .arg("--manifest-path")
+        .arg(&manifest)
+        .arg("--debug")
+        .arg("-o")
+        .arg(temp.path())
+        .output()
+        .expect("failed to execute cargo-arc");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(
+            "use my_crate::parent::glob_user -> my_crate::parent::sibling: Widget types \
+             at my_crate/src/parent/glob_user.rs:3"
+        ),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "use my_crate::parent::glob_user -> my_crate::parent::sibling: Widget types \
+             at my_crate/src/parent/glob_user.rs:4"
+        ),
+        "the constructed value is a second use: {stderr}"
     );
 }
 
