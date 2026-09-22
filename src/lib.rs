@@ -2,6 +2,7 @@ pub mod analyze;
 pub mod cli;
 pub mod diagnose;
 pub mod graph;
+pub mod hotspots;
 pub mod layout;
 pub mod model;
 pub mod render;
