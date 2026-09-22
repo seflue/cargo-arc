@@ -194,18 +194,21 @@ fn validate_source_deps(modules: &[JsModuleInfo], sources: &[&str]) {
 /// Output: struct `JsModule` + const MODULES array with `include_str`!().
 fn generate_modules_rs(modules: &[JsModuleInfo], sorted_indices: &[usize]) -> String {
     let mut out = String::new();
-    out.push_str("#[allow(dead_code)]\n");
-    out.push_str("struct JsModule {\n");
-    out.push_str("    name: &'static str,\n");
-    out.push_str("    source: &'static str,\n");
-    out.push_str("    config_keys: &'static [&'static str],\n");
+    out.push_str("pub(crate) struct JsModule {\n");
+    out.push_str("    pub(crate) name: &'static str,\n");
+    out.push_str("    pub(crate) file_stem: &'static str,\n");
+    out.push_str("    pub(crate) source: &'static str,\n");
+    out.push_str("    pub(crate) config_keys: &'static [&'static str],\n");
+    out.push_str("    pub(crate) deps: &'static [&'static str],\n");
     out.push_str("}\n\n");
 
-    out.push_str("const MODULES: &[JsModule] = &[\n");
+    out.push_str("pub(crate) const MODULES: &[JsModule] = &[\n");
     for &idx in sorted_indices {
         let m = &modules[idx];
+        let file_stem = m.file_name.strip_suffix(".js").unwrap_or(&m.file_name);
         out.push_str("    JsModule {\n");
         let _ = writeln!(out, "        name: \"{}\",", m.name);
+        let _ = writeln!(out, "        file_stem: \"{file_stem}\",");
         let _ = writeln!(
             out,
             "        source: include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/js/{}\")),",
@@ -216,6 +219,12 @@ fn generate_modules_rs(modules: &[JsModuleInfo], sorted_indices: &[usize]) -> St
         } else {
             let keys: Vec<String> = m.config_keys.iter().map(|k| format!("\"{k}\"")).collect();
             let _ = writeln!(out, "        config_keys: &[{}],", keys.join(", "));
+        }
+        if m.deps.is_empty() {
+            out.push_str("        deps: &[],\n");
+        } else {
+            let deps: Vec<String> = m.deps.iter().map(|d| format!("\"{d}\"")).collect();
+            let _ = writeln!(out, "        deps: &[{}],", deps.join(", "));
         }
         out.push_str("    },\n");
     }
@@ -653,20 +662,20 @@ mod tests {
     fn test_source_scan_real_modules() {
         let modules = real_modules();
         let sources: Vec<&str> = vec![
-            include_str!("../js/arc_logic.js"),
-            include_str!("../js/tree_logic.js"),
-            include_str!("../js/app_state.js"),
-            include_str!("../js/selectors.js"),
-            include_str!("../js/text_metrics.js"),
-            include_str!("../js/layer_manager.js"),
-            include_str!("../js/static_data.js"),
-            include_str!("../js/dom_adapter.js"),
-            include_str!("../js/highlight_logic.js"),
-            include_str!("../js/derived_state.js"),
-            include_str!("../js/virtual_edge_logic.js"),
-            include_str!("../js/sidebar.js"),
-            include_str!("../js/highlight_renderer.js"),
-            include_str!("../js/svg_script.js"),
+            include_str!("../../js/arc_logic.js"),
+            include_str!("../../js/tree_logic.js"),
+            include_str!("../../js/app_state.js"),
+            include_str!("../../js/selectors.js"),
+            include_str!("../../js/text_metrics.js"),
+            include_str!("../../js/layer_manager.js"),
+            include_str!("../../js/static_data.js"),
+            include_str!("../../js/dom_adapter.js"),
+            include_str!("../../js/highlight_logic.js"),
+            include_str!("../../js/derived_state.js"),
+            include_str!("../../js/virtual_edge_logic.js"),
+            include_str!("../../js/sidebar.js"),
+            include_str!("../../js/highlight_renderer.js"),
+            include_str!("../../js/svg_script.js"),
         ];
         validate_source_deps(&modules, &sources); // no panic — all deps correctly declared
     }

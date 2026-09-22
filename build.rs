@@ -1,4 +1,4 @@
-include!("src/js_registry.rs");
+include!("src/js_registry/parse.rs");
 
 fn main() {
     let src_dir = std::path::Path::new("js");

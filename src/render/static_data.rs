@@ -2,13 +2,12 @@ use super::constants::{CSS, DRAWING, LAYOUT, RenderConfig};
 use super::positioning::PositionedItem;
 use super::theme::{Mode, Theme};
 use crate::diagnose::ConsumerLocality;
+use crate::js_registry::bundle;
 use crate::layout::{
     CyclicEdgeInfo, ItemKind, LayoutIR, LocatedSource, LocationId, NodeId, TargetKind,
 };
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-
-include!(concat!(env!("OUT_DIR"), "/js_modules.rs"));
 
 // === Serialization structs ===
 
@@ -596,9 +595,10 @@ pub(super) fn render_script(
     // Generate STATIC_DATA first (global scope, before IIFE)
     let static_data = generate_static_data(config, ir, positioned, parents);
 
-    // JS modules loaded via build.rs-generated registry (topological order)
+    // JS modules loaded via build.rs-generated registry: the entry module
+    // and its transitive @deps closure, in topological order.
     let mut scripts = vec![static_data];
-    for module in MODULES {
+    for module in bundle("svg_script") {
         let mut source = module.source.to_string();
         for key in module.config_keys {
             let placeholder = format!("__{key}__");
@@ -1160,19 +1160,20 @@ mod tests {
         let ir = LayoutIR::new();
         let script = render_script(&config, &ir, &[], &HashSet::new());
 
-        // Registry must contain all 12 modules
+        // The arc page's bundle must contain at least 12 modules
+        let bundled: Vec<_> = bundle("svg_script").collect();
         assert!(
-            MODULES.len() >= 12,
-            "Expected at least 12 modules in registry, got {}",
-            MODULES.len()
+            bundled.len() >= 12,
+            "Expected at least 12 modules in the arc page's bundle, got {}",
+            bundled.len()
         );
 
-        // Every module from the registry must appear in the script output
-        for module in MODULES {
+        // Every module in the bundle must appear in the script output
+        for module in bundled {
             let annotation = format!("// @module {}", module.name);
             assert!(
                 script.contains(&annotation),
-                "Registry module '{}' not found in render_script() output.",
+                "Bundled module '{}' not found in render_script() output.",
                 module.name
             );
         }
@@ -1185,8 +1186,7 @@ mod tests {
         let script = render_script(&config, &ir, &[], &HashSet::new());
 
         // Collect positions of each module annotation in the output
-        let positions: Vec<(&str, usize)> = MODULES
-            .iter()
+        let positions: Vec<(&str, usize)> = bundle("svg_script")
             .map(|m| {
                 let pattern = format!("// @module {}", m.name);
                 let pos = script
@@ -1214,6 +1214,35 @@ mod tests {
                 static_data_pos < *pos,
                 "STATIC_DATA must appear before {name} (pos {pos})"
             );
+        }
+    }
+
+    /// The arc page's script is `bundle("svg_script")`: every module it pulls
+    /// in is present, and each one appears strictly after all of its own
+    /// declared `@deps`, not merely before a single fixed sink module.
+    #[test]
+    fn test_arc_page_bundle_respects_every_declared_dep() {
+        let config = RenderConfig::default();
+        let ir = LayoutIR::new();
+        let script = render_script(&config, &ir, &[], &HashSet::new());
+
+        let position_of = |name: &str| {
+            let pattern = format!("// @module {name}");
+            script
+                .find(&pattern)
+                .unwrap_or_else(|| panic!("Module '{name}' not found in render_script() output"))
+        };
+
+        for module in bundle("svg_script") {
+            let module_pos = position_of(module.name);
+            for &dep in module.deps {
+                let dep_pos = position_of(dep);
+                assert!(
+                    dep_pos < module_pos,
+                    "{} (pos {module_pos}) must appear after its dep {dep} (pos {dep_pos})",
+                    module.name
+                );
+            }
         }
     }
 
