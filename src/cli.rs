@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, Write};
@@ -13,10 +14,12 @@ use crate::analyze::{
 };
 use crate::diagnose::RepresentativeCycles;
 use crate::graph::{ArcGraph, Reexports};
-use crate::layout::{JumpTable, LayoutIR, build_layout};
+use crate::hotspots;
+use crate::layout::{JumpTable, LayoutIR, LocationId, build_layout};
 use crate::model::{CrateExportMap, CrateInfo, ModulePathMap, WorkspaceCrates};
 use crate::render::{
     AnalysisSwitches, Appearance, RenderConfig, THEMES, Theme, html_page, project_name, render,
+    render_hotspots,
 };
 use crate::rules::baseline::{Baseline, BaselineError};
 use crate::rules::config::{ArcConfig, ConfigError};
@@ -99,6 +102,8 @@ pub enum Command {
     /// Serve the diagram over HTTP and resolve jump targets for an editor
     /// plugin; `--output` has no effect.
     Ui(UiArgs),
+    /// Render the circle-packed hotspot map (lines × commits) to `-o` or stdout
+    Hotspots(HotspotsArgs),
 }
 
 #[derive(Parser)]
@@ -127,6 +132,21 @@ pub struct CheckArgs {
     #[arg(long)]
     pub generate_baseline: bool,
 }
+
+#[derive(Parser)]
+#[command(override_usage = "cargo arc [SHARED OPTIONS] hotspots [OPTIONS]")]
+pub struct HotspotsArgs {
+    /// Output file (default: stdout)
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+
+    /// Number of top hotspots to rank
+    #[arg(long, default_value_t = DEFAULT_HOTSPOTS)]
+    pub hotspots: usize,
+}
+
+/// The default of `--hotspots`, and the count `ui` ranks its map with.
+const DEFAULT_HOTSPOTS: usize = 10;
 
 /// Shared flags for analysis configuration, used by both diagram and check modes.
 #[allow(clippy::struct_excessive_bools)] // CLI flags map 1:1 to fields
@@ -212,6 +232,10 @@ pub fn run(args: ArcCommand) -> Result<Judgment> {
         return run_ui(&args, ui_args);
     }
 
+    if let Some(Command::Hotspots(ref hotspots_args)) = args.command {
+        return run_hotspots(&args, hotspots_args);
+    }
+
     let vol_config = VolatilityConfig {
         months: args.volatility_months,
         low_threshold: args.volatility_low,
@@ -223,7 +247,7 @@ pub fn run(args: ArcCommand) -> Result<Judgment> {
         return Ok(Judgment::Clean);
     }
 
-    let analysis = analyze_for_diagram(&args, args.switches())?;
+    let analysis = analyze_for_diagram(&args, args.switches(), !args.no_volatility)?;
 
     let config = RenderConfig {
         expand_level: args.expand_level,
@@ -243,10 +267,13 @@ pub fn run(args: ArcCommand) -> Result<Judgment> {
     Ok(Judgment::Clean)
 }
 
-/// A workspace laid out for a diagram: the layout itself, the jump table
-/// [`JumpTable`] assigned while building it, and the workspace root the
-/// analysis ran against (`None` when the workspace has no crates).
+/// A workspace laid out for a diagram: the dependency graph, the layout
+/// built from it, the jump table [`JumpTable`] assigned while building it,
+/// and the workspace root the analysis ran against (`None` when the
+/// workspace has no crates). The graph is carried alongside the layout so a
+/// second page (the hotspot map) can be built from the same analysis run.
 struct DiagramAnalysis {
+    graph: ArcGraph,
     layout: LayoutIR,
     jump_table: JumpTable,
     workspace_root: Option<PathBuf>,
@@ -263,11 +290,17 @@ impl ArcCommand {
 }
 
 /// Analyze the workspace behind `args` with `switches` in place of the
-/// flags they stand for: build the dependency graph, lay it out, and enrich
-/// it with volatility. Rendering is the caller's job: the callers (`run`,
-/// `run_ui`) build their own [`RenderConfig`] and render `analysis.layout`
-/// with it.
-fn analyze_for_diagram(args: &ArcCommand, switches: AnalysisSwitches) -> Result<DiagramAnalysis> {
+/// flags they stand for: build the dependency graph, lay it out, and, when
+/// `with_volatility` is set, enrich it with volatility. `run_hotspots`
+/// passes `false`: it builds its own separate [`VolatilityAnalyzer`] for the
+/// map, so the arc layout's own enrichment would only be discarded work.
+/// Rendering is the caller's job: the callers (`run`, `run_ui`) build their
+/// own [`RenderConfig`] and render `analysis.layout` with it.
+fn analyze_for_diagram(
+    args: &ArcCommand,
+    switches: AnalysisSwitches,
+    with_volatility: bool,
+) -> Result<DiagramAnalysis> {
     let feature_config = FeatureConfig {
         include_tests: switches.tests,
         ..build_feature_config(&args.common)
@@ -296,7 +329,7 @@ fn analyze_for_diagram(args: &ArcCommand, switches: AnalysisSwitches) -> Result<
         build_layout(&graph, &analysis, reexports, workspace_root.as_deref());
     tracing::debug!("phase: layout built ({} items)", layout.items.len());
 
-    if !args.no_volatility {
+    if with_volatility {
         let vol_config = VolatilityConfig {
             months: args.volatility_months,
             low_threshold: args.volatility_low,
@@ -306,48 +339,67 @@ fn analyze_for_diagram(args: &ArcCommand, switches: AnalysisSwitches) -> Result<
     }
 
     Ok(DiagramAnalysis {
+        graph,
         layout,
         jump_table,
         workspace_root,
     })
 }
 
-/// Run the `ui` subcommand: analyze with jump ids, then serve the page and
-/// resolve jump ids until the process ends. The service gets the analysis
-/// as a closure over `args`, so it can run it again with other switches.
+/// Run the `ui` subcommand: analyze with jump ids, then serve both pages and
+/// resolve jump ids until the process ends. The service gets both pages as a
+/// closure over `args`, so it can run them again with other switches.
+/// `--volatility-months` and `--no-volatility` govern the map's volatility
+/// here too, same as the arc diagram: `ui` takes no separate hotspots flags.
 fn run_ui(args: &ArcCommand, ui_args: &UiArgs) -> Result<Judgment> {
-    let diagram = |switches: AnalysisSwitches| -> Result<(DiagramAnalysis, String)> {
-        let analysis = analyze_for_diagram(args, switches)?;
-        let config = RenderConfig {
+    let pages = |switches: AnalysisSwitches| -> Result<(PathBuf, ui::Pages)> {
+        let analysis = analyze_for_diagram(args, switches, !args.no_volatility)?;
+        let workspace_root = analysis
+            .workspace_root
+            .clone()
+            .context("workspace has no crates to determine its root")?;
+
+        let arc_config = RenderConfig {
             expand_level: args.expand_level,
             with_jump_ids: true,
             theme: args.theme,
             switches,
             ..RenderConfig::default()
         };
-        let svg = render(&analysis.layout, &config);
-        Ok((analysis, svg))
+        let arc_svg = render(&analysis.layout, &arc_config);
+
+        let (tree, grey_cause) =
+            build_hotspot_tree(args, &analysis.graph, &workspace_root, DEFAULT_HOTSPOTS);
+        let packed = hotspots::pack(&tree);
+
+        let mut table = analysis.jump_table;
+        let jump_targets = register_hotspot_targets(&mut table, &tree, &workspace_root);
+
+        let hotspots_config = RenderConfig {
+            with_jump_ids: true,
+            theme: args.theme,
+            grey_cause,
+            ..RenderConfig::default()
+        };
+        let hotspots_svg = render_hotspots(&tree, &packed, &jump_targets, &hotspots_config);
+
+        Ok((
+            workspace_root,
+            ui::Pages {
+                arc: ui::Diagram { svg: arc_svg },
+                hotspots: ui::Diagram { svg: hotspots_svg },
+                table,
+            },
+        ))
     };
     let switches = args.switches();
-    let (analysis, svg) = diagram(switches)?;
-    let workspace_root = analysis
-        .workspace_root
-        .context("workspace has no crates to determine its root")?;
+    let (workspace_root, initial) = pages(switches)?;
     let service = ui::JumpService::new(
-        ui::Diagram {
-            svg,
-            table: analysis.jump_table,
-        },
+        initial,
         switches,
         workspace_root,
         args.theme,
-        Box::new(move |switches| {
-            let (analysis, svg) = diagram(switches)?;
-            Ok(ui::Diagram {
-                svg,
-                table: analysis.jump_table,
-            })
-        }),
+        Box::new(move |switches| pages(switches).map(|(_, pages)| pages)),
     );
     ui::serve(
         &service,
@@ -355,6 +407,115 @@ fn run_ui(args: &ArcCommand, ui_args: &UiArgs) -> Result<Judgment> {
         io::BufReader::new(io::stdin()),
         &mut io::stdout(),
     )?;
+    Ok(Judgment::Clean)
+}
+
+/// Build the hotspot tree over `graph` with lines from `hotspots::code_lines`
+/// and commits from the repository holding `--manifest-path`, over the
+/// shared `--volatility-months` window. The cause is `Some` exactly when the
+/// map is grey: `--no-volatility`, no usable git, or no commit in the window.
+fn build_hotspot_tree(
+    args: &ArcCommand,
+    graph: &ArcGraph,
+    workspace_root: &Path,
+    hotspots_n: usize,
+) -> (hotspots::HotspotTree, Option<hotspots::GreyCause>) {
+    let months = args.volatility_months;
+    let volatility = if args.no_volatility {
+        Err(hotspots::GreyCause::Flag)
+    } else {
+        let mut analyzer = VolatilityAnalyzer::new(VolatilityConfig {
+            months,
+            ..VolatilityConfig::default()
+        });
+        match analyzer.analyze(resolve_repo_path(&args.common.manifest_path)) {
+            Ok(()) => Ok(analyzer),
+            Err(err) => {
+                tracing::warn!("Volatility analysis skipped: {err}");
+                Err(hotspots::GreyCause::GitUnavailable)
+            }
+        }
+    };
+    let tree = hotspots::build(
+        graph,
+        workspace_root,
+        // An unreadable file becomes a zero-line leaf rather than failing
+        // the whole map over one file.
+        |file: &Path| hotspots::code_lines(file).unwrap_or(0),
+        |file: &Path| {
+            volatility.as_ref().map_or_else(
+                |_| BTreeSet::new(),
+                |analyzer| analyzer.commits(file).clone(),
+            )
+        },
+        hotspots_n,
+    );
+    let cause = match volatility {
+        Err(cause) => Some(cause),
+        Ok(_) if tree.total_commits == 0 => Some(hotspots::GreyCause::NoCommitsInWindow { months }),
+        Ok(_) => None,
+    };
+    (tree, cause)
+}
+
+/// Add a line-1 jump target to `table` for every leaf of `tree`, and return
+/// each leaf's file mapped to its id. `node_files` keeps the file's arc node.
+fn register_hotspot_targets(
+    table: &mut JumpTable,
+    tree: &hotspots::HotspotTree,
+    workspace_root: &Path,
+) -> HashMap<PathBuf, LocationId> {
+    fn walk(
+        node: &hotspots::HotspotNode,
+        table: &mut JumpTable,
+        workspace_root: &Path,
+        targets: &mut HashMap<PathBuf, LocationId>,
+    ) {
+        if node.kind == hotspots::HotspotKind::File {
+            let id = table.insert(workspace_root.join(&node.file), 1);
+            targets.insert(node.file.clone(), id);
+        }
+        for child in &node.children {
+            walk(child, table, workspace_root, targets);
+        }
+    }
+    let mut targets = HashMap::new();
+    walk(&tree.root, table, workspace_root, &mut targets);
+    targets
+}
+
+/// Run the `hotspots` subcommand: build the map over the diagram's dependency
+/// graph and write it to `-o` or stdout, as the arc diagram's `-o` does.
+fn run_hotspots(args: &ArcCommand, hotspots_args: &HotspotsArgs) -> Result<Judgment> {
+    let analysis = analyze_for_diagram(args, args.switches(), false)?;
+    let workspace_root = analysis
+        .workspace_root
+        .context("workspace has no crates to build a hotspot map from")?;
+
+    let (tree, grey_cause) = build_hotspot_tree(
+        args,
+        &analysis.graph,
+        &workspace_root,
+        hotspots_args.hotspots,
+    );
+    let packed = hotspots::pack(&tree);
+
+    let config = RenderConfig {
+        theme: args.theme,
+        grey_cause,
+        ..RenderConfig::default()
+    };
+    // The standalone file carries no jump service to resolve an id against
+    // (`with_jump_ids` stays false in `config`, as for the plain arc
+    // diagram's own `-o` file), so no jump ids are assigned here either.
+    let svg = render_hotspots(&tree, &packed, &HashMap::new(), &config);
+    let document = diagram_document(
+        svg,
+        hotspots_args.output.as_deref(),
+        Some(&workspace_root),
+        args.theme,
+    );
+    write_output(&document, hotspots_args.output.as_ref())?;
     Ok(Judgment::Clean)
 }
 
@@ -1015,7 +1176,7 @@ mod tests {
             manifest.to_str().unwrap(),
         ]);
 
-        let analysis = analyze_for_diagram(&cmd, cmd.switches()).unwrap();
+        let analysis = analyze_for_diagram(&cmd, cmd.switches(), !cmd.no_volatility).unwrap();
 
         assert!(
             analysis.jump_table.resolve(LocationId::from(0)).is_some(),
@@ -1037,6 +1198,123 @@ mod tests {
         assert!(jump_svg.contains("\"jump\""));
     }
 
+    // ===== register_hotspot_targets =====
+
+    /// A hotspot leaf shares its file with the arc module `build_layout`
+    /// registered in `node_files`; registering the leaf must keep that entry.
+    #[test]
+    fn register_hotspot_targets_does_not_overwrite_the_arc_nodes_own_file_lookup() {
+        use crate::hotspots::{HotspotKind, HotspotNode, HotspotTree};
+
+        let workspace_root = PathBuf::from("/ws");
+        let mut table = JumpTable::new();
+        let module_id = table.insert(PathBuf::from("/ws/app/src/hot.rs"), 1);
+        table.insert_node_files("42", [module_id]);
+
+        let leaf = HotspotNode {
+            name: "hot.rs".to_string(),
+            kind: HotspotKind::File,
+            file: PathBuf::from("app/src/hot.rs"),
+            lines: 10,
+            commits: 0,
+            children: Vec::new(),
+        };
+        let tree = HotspotTree {
+            root: leaf,
+            max_file_commits: 0,
+            total_commits: 0,
+            hotspots: Vec::new(),
+        };
+
+        register_hotspot_targets(&mut table, &tree, &workspace_root);
+
+        assert_eq!(
+            table.node_at(Path::new("/ws/app/src/hot.rs")),
+            Some("42"),
+            "a hotspot leaf sharing a file with an arc module must not overwrite the arc node lookup for it"
+        );
+    }
+
+    /// A graph and workspace root for `build_hotspot_tree`'s own tests: the
+    /// tree's shape does not matter to them, only the cause it returns.
+    fn hotspot_tree_fixture() -> (ArcGraph, PathBuf) {
+        let manifest =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multi_crate/Cargo.toml");
+        let (graph, workspace_root) =
+            build_dependency_graph(&manifest, &FeatureConfig::default(), false, false, false)
+                .unwrap();
+        (graph, workspace_root.unwrap())
+    }
+
+    #[test]
+    fn build_hotspot_tree_names_the_flag_as_the_cause_when_no_volatility_is_set() {
+        let (graph, workspace_root) = hotspot_tree_fixture();
+        let manifest = workspace_root.join("Cargo.toml");
+        let cmd = parse_args(&[
+            "cargo",
+            "arc",
+            "--manifest-path",
+            manifest.to_str().unwrap(),
+            "--no-volatility",
+        ]);
+
+        let (_tree, cause) = build_hotspot_tree(&cmd, &graph, &workspace_root, DEFAULT_HOTSPOTS);
+
+        assert_eq!(cause, Some(hotspots::GreyCause::Flag));
+    }
+
+    /// A manifest whose directory sits outside any git repository (a fresh
+    /// tempdir): `VolatilityAnalyzer::analyze` fails, so the cause is that
+    /// git could not be run, not the flag or an empty window.
+    #[test]
+    fn build_hotspot_tree_names_git_unavailable_outside_a_repository() {
+        let (graph, workspace_root) = hotspot_tree_fixture();
+        let outside = tempfile::tempdir().unwrap();
+        let manifest = outside.path().join("Cargo.toml");
+        let cmd = parse_args(&[
+            "cargo",
+            "arc",
+            "--manifest-path",
+            manifest.to_str().unwrap(),
+        ]);
+
+        let (_tree, cause) = build_hotspot_tree(&cmd, &graph, &workspace_root, DEFAULT_HOTSPOTS);
+
+        assert_eq!(cause, Some(hotspots::GreyCause::GitUnavailable));
+    }
+
+    /// A freshly `git init`ed directory with no commits: `analyze` succeeds,
+    /// but the window holds nothing to report, so the cause names that
+    /// rather than a flag or an unavailable git.
+    #[test]
+    fn build_hotspot_tree_names_the_empty_window_when_git_has_no_commits() {
+        let (graph, workspace_root) = hotspot_tree_fixture();
+        let repo = tempfile::tempdir().unwrap();
+        let status = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(repo.path())
+            .status()
+            .expect("git should be on PATH");
+        assert!(status.success());
+
+        let manifest = repo.path().join("Cargo.toml");
+        let cmd = parse_args(&[
+            "cargo",
+            "arc",
+            "--manifest-path",
+            manifest.to_str().unwrap(),
+            "--volatility-months",
+            "3",
+        ]);
+
+        let (_tree, cause) = build_hotspot_tree(&cmd, &graph, &workspace_root, DEFAULT_HOTSPOTS);
+
+        assert_eq!(
+            cause,
+            Some(hotspots::GreyCause::NoCommitsInWindow { months: 3 })
+        );
+    }
+
     /// A function called through its module (`use crate::beta;` then
     /// `beta::helper()`) is a symbol of the edge like an imported item, and
     /// its definition line reaches the layout.
@@ -1051,7 +1329,7 @@ mod tests {
             manifest.to_str().unwrap(),
         ]);
 
-        let analysis = analyze_for_diagram(&cmd, cmd.switches()).unwrap();
+        let analysis = analyze_for_diagram(&cmd, cmd.switches(), !cmd.no_volatility).unwrap();
 
         let beta = analysis
             .layout

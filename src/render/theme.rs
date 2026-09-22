@@ -216,6 +216,21 @@ color_group!(
     }
 );
 
+color_group!(
+    /// The hotspot map's continuous fill scale: `sqrt(commits)` normalised
+    /// per level, `cold` an inactive file or container and `hot` the most
+    /// active one. `outline` marks a hotspot leaf, `grey` every circle when
+    /// volatility is unavailable.
+    HotspotColors, "hotspot" {
+        cold => "cold",
+        hot => "hot",
+        outline => "outline",
+        grey => "grey",
+        /// A hovered or selected circle's stroke.
+        highlight => "highlight",
+    }
+);
+
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ColorPalette {
     pub nodes: NodeColors,
@@ -227,6 +242,7 @@ pub(super) struct ColorPalette {
     pub sidebar: SidebarColors,
     pub popover: PopoverColors,
     pub page: PageColors,
+    pub hotspots: HotspotColors,
 }
 
 impl ColorPalette {
@@ -241,6 +257,7 @@ impl ColorPalette {
         sidebar: SidebarColors::VARS,
         popover: PopoverColors::VARS,
         page: PageColors::VARS,
+        hotspots: HotspotColors::VARS,
     };
 
     /// Every custom property with this palette's value.
@@ -255,6 +272,7 @@ impl ColorPalette {
             .chain(self.sidebar.variables())
             .chain(self.popover.variables())
             .chain(self.page.variables())
+            .chain(self.hotspots.variables())
     }
 }
 
@@ -284,12 +302,14 @@ mod latte {
     pub const GRAY_100: &str = "#f5f5f5";
     pub const GRAY_50: &str = "#fafafa";
     pub const WHITE: &str = "#fff";
+    /// The dark grey outlines and toolbar text share.
+    pub const TEXT: &str = "#333";
 }
 
 pub static LATTE: Theme = {
     use latte::{
         BLUE, BLUE_100, BLUE_300, GRAY_50, GRAY_100, GRAY_200, GRAY_300, GRAY_400, GRAY_600, GREEN,
-        ORANGE, ORANGE_100, ORANGE_300, PURPLE, RED, TEAL, WHITE, YELLOW,
+        ORANGE, ORANGE_100, ORANGE_300, PURPLE, RED, TEAL, TEXT, WHITE, YELLOW,
     };
     Theme {
         name: "latte",
@@ -376,6 +396,13 @@ pub static LATTE: Theme = {
                 chip_text: GRAY_600,
             },
             page: PageColors { bg: WHITE },
+            hotspots: HotspotColors {
+                cold: "#fde9e4",
+                hot: "#c41c1c",
+                outline: TEXT,
+                grey: GRAY_300,
+                highlight: "#0a5ad0",
+            },
         },
     }
 };
@@ -504,6 +531,13 @@ pub static MOCHA: Theme = {
                 chip_text: SUBTEXT1,
             },
             page: PageColors { bg: BASE },
+            hotspots: HotspotColors {
+                cold: "#3a2a2c",
+                hot: "#ff5c4e",
+                outline: TEXT,
+                grey: SURFACE1,
+                highlight: BLUE,
+            },
         },
     }
 };
@@ -535,5 +569,15 @@ mod tests {
         assert_eq!(NodeColors::VARS.crate_fill, "var(--arc-node-crate-fill)");
         let (name, value) = LATTE.palette.nodes.variables().next().unwrap();
         assert_eq!((name, value), ("--arc-node-crate-fill", "#dbeafe"));
+    }
+
+    /// The heat ramp's endpoints are the map's own, one pair per theme, not
+    /// the accent colours `direction`/`glow` already use for something else.
+    #[test]
+    fn the_hotspot_heat_ramp_has_its_own_endpoints_per_theme() {
+        assert_eq!(LATTE.palette.hotspots.cold, "#fde9e4");
+        assert_eq!(LATTE.palette.hotspots.hot, "#c41c1c");
+        assert_eq!(MOCHA.palette.hotspots.cold, "#3a2a2c");
+        assert_eq!(MOCHA.palette.hotspots.hot, "#ff5c4e");
     }
 }

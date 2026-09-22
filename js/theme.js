@@ -1,5 +1,5 @@
 // @module Theme
-// @deps
+// @deps DomAdapter
 // @config
 // theme.js - Chooses the theme the page shows: a mode (light, dark or the
 // system's) and a theme per mode, from the editor, the root attributes a
@@ -171,10 +171,78 @@ function localStorageAdapter() {
   };
 }
 
+/**
+ * Wires a page's appearance controls to a theme control: the mode switch
+ * and the light/dark theme selects (`theme-mode`, `theme-light`,
+ * `theme-dark`), populated from `STATIC_DATA.theme` and kept in sync with
+ * the root the stylesheet reads (the `svg` element in a file, `html` on a
+ * served page). Every page that offers the appearance block wires it this
+ * same way.
+ * @returns {ReturnType<typeof createTheme>}
+ */
+function bootstrapControls() {
+  const modeSelect = /** @type {HTMLSelectElement | null} */ (
+    DomAdapter.getElementById('theme-mode')
+  );
+  const themeSelects = {
+    light: /** @type {HTMLSelectElement | null} */ (
+      DomAdapter.getElementById('theme-light')
+    ),
+    dark: /** @type {HTMLSelectElement | null} */ (
+      DomAdapter.getElementById('theme-dark')
+    ),
+  };
+  const darkScheme = window.matchMedia('(prefers-color-scheme: dark)');
+  const themeControl = createTheme({
+    themes: STATIC_DATA.theme,
+    storage: localStorageAdapter(),
+    systemDark: () => darkScheme.matches,
+    onSystemChange: (listener) =>
+      darkScheme.addEventListener('change', listener),
+    root: {
+      theme: document.documentElement.dataset.theme,
+      mode: document.documentElement.dataset.mode,
+    },
+    applyTheme: (name) => {
+      document.documentElement.dataset.theme = name;
+    },
+    showState: ({ mode, light, dark }) => {
+      if (modeSelect) modeSelect.value = mode;
+      if (themeSelects.light) themeSelects.light.value = light;
+      if (themeSelects.dark) themeSelects.dark.value = dark;
+    },
+  });
+  modeSelect?.addEventListener('change', () => {
+    themeControl.setMode(
+      /** @type {'light' | 'dark' | 'system'} */ (modeSelect.value),
+    );
+  });
+  for (const mode of /** @type {const} */ (['light', 'dark'])) {
+    const select = themeSelects[mode];
+    if (!select) continue;
+    for (const { name, label } of STATIC_DATA.theme[mode]) {
+      const option = document.createElement('option');
+      option.value = name;
+      option.textContent = label;
+      select.appendChild(option);
+    }
+    select.addEventListener('change', () => {
+      themeControl.setThemeFor(mode, select.value);
+    });
+  }
+  themeControl.start();
+  return themeControl;
+}
+
 // The browser global exposing this module's API.
-const Theme = { createTheme, localStorageAdapter };
+const Theme = { createTheme, localStorageAdapter, bootstrapControls };
 
 // CommonJS export for tests (Node/Bun)
 if (typeof module !== 'undefined') {
-  module.exports = { createTheme, localStorageAdapter, Theme };
+  module.exports = {
+    createTheme,
+    localStorageAdapter,
+    bootstrapControls,
+    Theme,
+  };
 }

@@ -33,7 +33,21 @@ describe('createFollow', () => {
     follow.start();
     send('focus', '{"node":"a::b","jumps":[3]}');
     expect(apply).toHaveBeenCalledTimes(1);
-    expect(apply).toHaveBeenCalledWith('a::b', [3]);
+    expect(apply).toHaveBeenCalledWith('a::b', [3], undefined);
+  });
+
+  test('a focus event with a file passes it through to apply', () => {
+    const { follow, apply, send } = setup();
+    follow.start();
+    send('focus', '{"node":"a::b","jumps":[3],"file":"src/a.rs"}');
+    expect(apply).toHaveBeenCalledWith('a::b', [3], 'src/a.rs');
+  });
+
+  test('a non-string file is treated as absent', () => {
+    const { follow, apply, send } = setup();
+    follow.start();
+    send('focus', '{"node":"a::b","jumps":[3],"file":7}');
+    expect(apply).toHaveBeenCalledWith('a::b', [3], undefined);
   });
 
   test('after follow off a focus event applies nothing', () => {
@@ -53,7 +67,7 @@ describe('createFollow', () => {
     send('follow', 'on');
     expect(showState).toHaveBeenLastCalledWith(true);
     send('focus', '{"node":"7","jumps":[]}');
-    expect(apply).toHaveBeenCalledWith('7', []);
+    expect(apply).toHaveBeenCalledWith('7', [], undefined);
   });
 
   test('setEnabled switches locally and shows the state', () => {

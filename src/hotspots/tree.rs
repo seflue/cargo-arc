@@ -22,12 +22,25 @@ pub struct HotspotNode {
     pub children: Vec<HotspotNode>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum HotspotKind {
     Workspace,
     Crate,
     Module,
     File,
+}
+
+/// Why the map has no volatility data to colour or rank by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GreyCause {
+    /// `--no-volatility` was given.
+    Flag,
+    /// `VolatilityAnalyzer::analyze` failed: no git repository, or git could
+    /// not be run.
+    GitUnavailable,
+    /// Git ran, but no commit touched a workspace file in the last `months`.
+    NoCommitsInWindow { months: usize },
 }
 
 /// The built hierarchy plus the workspace-wide figures the map's colour scale
@@ -56,6 +69,14 @@ impl HotspotTree {
             .position(|hotspot| hotspot.file == node.file)
             .map(|index| index + 1)
     }
+}
+
+/// Return `node`'s children by lines descending, ties by name: the order
+/// `pack` places them in and `render::hotspots::render` reads them back in.
+pub(crate) fn sorted_children(node: &HotspotNode) -> Vec<&HotspotNode> {
+    let mut children: Vec<&HotspotNode> = node.children.iter().collect();
+    children.sort_by(|a, b| b.lines.cmp(&a.lines).then_with(|| a.name.cmp(&b.name)));
+    children
 }
 
 /// Build the hotspot tree from `graph`'s crates, modules and `Contains` edges,

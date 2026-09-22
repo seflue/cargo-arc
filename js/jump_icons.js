@@ -1,9 +1,10 @@
 // @module JumpIcons
-// @deps DomAdapter
+// @deps DomAdapter, JumpSymbol
 // @config
 // jump_icons.js - Builds, positions, and times out the jump popover shown
-// next to a hovered node, and defines the #jump-icon symbol the sidebar
-// rows reuse.
+// next to a hovered node. The `#jump-icon` symbol it draws the chips'
+// popover next to is defined in `jump_symbol.js`, shared with the sidebar
+// rows and the hotspot map's own single icon.
 
 /** Chip text per target kind (STATIC_DATA `targets[i].kind`). */
 const CHIP_LABELS = { lib: 'lib', bin: 'bin', manifest: 'toml', module: 'mod' };
@@ -46,26 +47,7 @@ function createJumpIcons({
   let group = null;
   let hideTimer = null;
 
-  // Defines the shared <use> target: a box with an arrow pointing out of its
-  // top-right corner. The sidebar rows reference it too, so it exists from
-  // construction on, not from the first hover.
-  function defineSymbol() {
-    const defs = DomAdapter.createSvgElement('defs');
-    const symbol = DomAdapter.createSvgElement('symbol');
-    symbol.setAttribute('id', 'jump-icon');
-    symbol.setAttribute('viewBox', '0 0 16 16');
-    const path = DomAdapter.createSvgElement('path');
-    path.setAttribute(
-      'd',
-      'M2 5a2 2 0 0 1 2-2h3v2H4v7h7V9h2v3a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5z' +
-        'M9 2h5v5h-2V5.4l-5 5-1.4-1.4 5-5H9z',
-    );
-    symbol.appendChild(path);
-    defs.appendChild(symbol);
-    defsHost.appendChild(defs);
-  }
-
-  defineSymbol();
+  JumpSymbol.defineJumpSymbol(defsHost);
 
   function removeGroup() {
     if (group) {

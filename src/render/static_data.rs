@@ -27,22 +27,24 @@ struct StaticData {
 
 /// What the page needs to style and choose themes: the glow opacity it
 /// paints itself, and the themes per mode, each mode's default first.
+/// Shared with `render::hotspots`, which carries the same block in its own
+/// `STATIC_DATA.theme`.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ThemeData {
+pub(super) struct ThemeData {
     shadow_opacity: &'static str,
     light: Vec<ThemeName>,
     dark: Vec<ThemeName>,
 }
 
 #[derive(Serialize)]
-struct ThemeName {
+pub(super) struct ThemeName {
     name: &'static str,
     label: &'static str,
 }
 
 impl ThemeData {
-    fn current() -> Self {
+    pub(super) fn current() -> Self {
         let of_mode = |mode: Mode| {
             Theme::of_mode(mode)
                 .map(|theme| ThemeName {
@@ -65,6 +67,11 @@ struct NodeData {
     #[serde(rename = "type")]
     node_type: &'static str,
     name: String,
+    /// Workspace-relative path identifying this node across pages (the
+    /// hotspot map keys its own data by the same path); absent for a node
+    /// with no module or manifest target (an external crate or section).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file: Option<String>,
     parent: Option<String>,
     x: f32,
     y: f32,
@@ -83,12 +90,13 @@ struct NodeData {
 /// One jump target of a node: the target's kind, the path shown in the UI
 /// (workspace-relative where the target lies inside the workspace), and the
 /// id it resolves through, in the `JumpTable` `build_layout` returns.
+/// Shared with `render::hotspots`, whose own leaf targets use the same shape.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct TargetData {
-    kind: TargetKind,
-    name: String,
-    jump: LocationId,
+pub(super) struct TargetData {
+    pub(super) kind: TargetKind,
+    pub(super) name: String,
+    pub(super) jump: LocationId,
 }
 
 #[derive(Serialize)]
@@ -374,6 +382,11 @@ fn generate_static_data(
                 Some(parent.to_string())
             }
         };
+        let file = item
+            .targets
+            .iter()
+            .find(|target| matches!(target.kind, TargetKind::Manifest | TargetKind::Module))
+            .map(|target| target.name.clone());
         let targets = if config.with_jump_ids {
             item.targets
                 .iter()
@@ -391,6 +404,7 @@ fn generate_static_data(
             NodeData {
                 node_type,
                 name: item.label.clone(),
+                file,
                 parent,
                 x: pos.x,
                 y: pos.y,
@@ -594,11 +608,16 @@ pub(super) fn render_script(
 ) -> String {
     // Generate STATIC_DATA first (global scope, before IIFE)
     let static_data = generate_static_data(config, ir, positioned, parents);
+    script_element(static_data, "svg_script", config)
+}
 
+/// A `<script>` holding `static_data` followed by the `entry` module's
+/// bundle, with each module's config placeholders filled from `config`.
+pub(super) fn script_element(static_data: String, entry: &str, config: &RenderConfig) -> String {
     // JS modules loaded via build.rs-generated registry: the entry module
     // and its transitive @deps closure, in topological order.
     let mut scripts = vec![static_data];
-    for module in bundle("svg_script") {
+    for module in bundle(entry) {
         let mut source = module.source.to_string();
         for key in module.config_keys {
             let placeholder = format!("__{key}__");
@@ -1136,6 +1155,57 @@ mod tests {
             usage_id, layout_location_id,
             "usage location carries the id already on the layout"
         );
+    }
+
+    /// A node's `file` identifies it across pages (the hotspot map keys its
+    /// own `STATIC_DATA` by the same path); it comes from the node's own
+    /// module or manifest target and is present independent of the jump
+    /// switch, since it names the node rather than a jump destination.
+    #[test]
+    fn test_static_data_node_file_is_present_without_the_jump_switch() {
+        let (ir, c, m) = ir_with_jump_targets();
+
+        let config = RenderConfig::default();
+        let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
+        let parents: HashSet<NodeId> = HashSet::from([c]);
+        let script = render_script(&config, &ir, &positioned, &parents);
+        let json_str = script
+            .split("const STATIC_DATA = ")
+            .nth(1)
+            .unwrap()
+            .split(";\n")
+            .next()
+            .unwrap();
+        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
+
+        assert_eq!(
+            data["nodes"][c.to_string()]["file"],
+            "Cargo.toml",
+            "the crate node's file is its manifest target"
+        );
+        assert_eq!(
+            data["nodes"][m.to_string()]["file"],
+            "m.rs",
+            "the module node's file is its module target"
+        );
+    }
+
+    #[test]
+    fn test_static_data_node_omits_file_without_a_module_or_manifest_target() {
+        let mut ir = LayoutIR::new();
+        ir.add_item(ItemKind::ExternalSection, "External".into());
+        let config = RenderConfig::default();
+        let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
+        let script = render_script(&config, &ir, &positioned, &HashSet::new());
+        let json_str = script
+            .split("const STATIC_DATA = ")
+            .nth(1)
+            .unwrap()
+            .split(";\n")
+            .next()
+            .unwrap();
+        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
+        assert!(data["nodes"]["0"]["file"].is_null());
     }
 
     #[test]

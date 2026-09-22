@@ -33,6 +33,8 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
     let tb = &palette.toolbar;
     let sb = &palette.sidebar;
     let pop = &palette.popover;
+    let pg = &palette.page;
+    let hs = &palette.hotspots;
     let draw = &DRAWING;
     let c = &CSS;
 
@@ -1357,6 +1359,194 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
             ),
             &[("display", "none")],
         ),
+        // Hotspot map: a circle's fill is a per-node color-mix set inline, so
+        // the class carries only what every circle shares - a faint hairline
+        // in the theme's outline colour, so a container circle is visible
+        // before it is hovered or ranked. `g#map-content` scales with the
+        // zoom, so a stroke width in user units would grow with it;
+        // `non-scaling-stroke` keeps it at the width declared here
+        // regardless of zoom.
+        // A leaf (a file) paints more opaque than a container (a workspace,
+        // crate or module), so the files a hotspot map actually ranks stand
+        // out over the containers holding them. The override binds through
+        // both classes, so its specificity beats the plain circle rule
+        // regardless of which one this sheet declares first.
+        CssRule::class(
+            c.hotspots.circle,
+            &[
+                ("stroke", hs.outline),
+                ("stroke-opacity", ".28"),
+                ("vector-effect", "non-scaling-stroke"),
+                ("fill-opacity", "0.32"),
+            ],
+        ),
+        CssRule::new(
+            &format!(".{}.{}", c.hotspots.circle, c.hotspots.leaf),
+            &[("fill-opacity", "0.92")],
+        ),
+        // Full stroke-opacity, or the base circle rule's hairline opacity
+        // would apply here too and leave the outline no stronger than it.
+        CssRule::class(
+            c.hotspots.outline,
+            &[
+                ("stroke", hs.outline),
+                ("stroke-width", "3"),
+                ("stroke-opacity", "1"),
+                ("vector-effect", "non-scaling-stroke"),
+            ],
+        ),
+        CssRule::class(c.hotspots.grey, &[("fill", hs.grey)]),
+        // Wider than the outline and the selected ring, so hovering a ranked
+        // hotspot still visibly changes it beyond the colour.
+        CssRule::class(
+            c.hotspots.hover,
+            &[
+                ("stroke", hs.highlight),
+                ("stroke-width", "4"),
+                ("stroke-opacity", "1"),
+                ("vector-effect", "non-scaling-stroke"),
+            ],
+        ),
+        CssRule::class(
+            c.hotspots.selected,
+            &[
+                ("stroke", hs.highlight),
+                ("stroke-width", "3.5"),
+                ("stroke-opacity", "1"),
+                ("vector-effect", "non-scaling-stroke"),
+            ],
+        ),
+        CssRule::class(
+            c.hotspots.label,
+            &[
+                ("font-family", "monospace"),
+                ("font-size", "11px"),
+                ("fill", n.text),
+                ("text-anchor", "middle"),
+                ("pointer-events", "none"),
+                ("display", "none"),
+                // A halo in the page background colour, so the label stays
+                // legible over any fill it sits on. Rounded, or the
+                // browser's default mitre join spikes the corners.
+                ("paint-order", "stroke"),
+                ("stroke", pg.bg),
+                ("stroke-width", ".22em"),
+                ("stroke-linejoin", "round"),
+            ],
+        ),
+        // The map's own jump icon (js/hotspot_jump_icon.js): no Rust markup
+        // emits this class onto an element, only `js/hotspot_jump_icon.js`
+        // reads it off the registry. The glyph sits on leaf circles whose
+        // fill can be the hottest colour in the ramp, so its halo shares
+        // `c.hotspots.label`'s colour, width and join. `stroke-width: .22em`
+        // only resolves against a font-size, and the `<use>` element this
+        // class sits on carries none of its own, so the rule also sets the
+        // label's own font-size to give the em one.
+        CssRule::class(
+            c.hotspots.jump_icon,
+            &[
+                ("fill", n.text),
+                ("cursor", "pointer"),
+                ("font-size", "11px"),
+                ("paint-order", "stroke"),
+                ("stroke", pg.bg),
+                ("stroke-width", ".22em"),
+                ("stroke-linejoin", "round"),
+            ],
+        ),
+        // The map's always-visible sidebar content, inside the arc sidebar's
+        // own frame (c.sidebar.root already styles the foreignObject around
+        // it): the same background/border/text palette, since it is the same
+        // panel with different content.
+        CssRule::class(
+            c.hotspots.sidebar,
+            &[
+                ("background", sb.bg),
+                ("border", &format!("1px solid {}", sb.border)),
+                ("border-radius", "8px"),
+                ("font-family", "monospace"),
+                ("font-size", "12px"),
+                ("color", sb.text),
+                ("padding", "8px 10px"),
+                ("overflow-y", "auto"),
+            ],
+        ),
+        CssRule::class(c.hotspots.details, &[("margin-bottom", "8px")]),
+        CssRule::class(
+            c.hotspots.details_title,
+            &[("font-weight", "bold"), ("margin-bottom", "4px")],
+        ),
+        CssRule::class(
+            c.hotspots.list,
+            &[("list-style", "none"), ("margin", "0"), ("padding", "0")],
+        ),
+        CssRule::class(
+            c.hotspots.list_item,
+            &[("cursor", "pointer"), ("padding", "2px 0")],
+        ),
+        CssRule::new(
+            &format!(".{}:hover", c.hotspots.list_item),
+            &[("background", sb.row_focus_bg)],
+        ),
+        CssRule::class(
+            c.hotspots.list_toggle,
+            &[
+                ("cursor", "pointer"),
+                ("background", tb.control_bg),
+                ("border", &format!("1px solid {}", tb.control_border)),
+                ("border-radius", "4px"),
+                ("color", tb.text),
+                ("font-size", "11px"),
+                ("padding", "2px 6px"),
+                ("margin-bottom", "6px"),
+            ],
+        ),
+        CssRule::class(
+            c.hotspots.note,
+            &[
+                ("color", sb.text_muted),
+                ("font-size", "11px"),
+                ("margin-top", "6px"),
+            ],
+        ),
+        CssRule::class(
+            c.hotspots.bar_label,
+            &[
+                ("display", "block"),
+                ("font-size", "11px"),
+                ("color", sb.text),
+            ],
+        ),
+        // A visible base for the ranked-bars view: `barFill`'s own inline
+        // width/colour draws over it, so the unfilled remainder still reads
+        // as a track rather than empty space.
+        CssRule::class(
+            c.hotspots.bar_track,
+            &[
+                ("background", sb.border),
+                ("border-radius", "3px"),
+                ("overflow", "hidden"),
+            ],
+        ),
+        // The hover tooltip (`js/hotspot_hover.js`): a plain `<rect>`/`<text>`
+        // pair inside the group, styled by descendant selector the way the
+        // jump popover above styles its own unclassed children.
+        CssRule::new(
+            &format!(".{} rect", c.hotspots.tooltip),
+            &[
+                ("fill", pop.bg),
+                ("stroke", pop.border),
+                ("stroke-width", "1"),
+            ],
+        ),
+        CssRule::new(
+            &format!(".{} text", c.hotspots.tooltip),
+            &[
+                ("fill", n.text),
+                ("font-family", "monospace"),
+                ("font-size", "11px"),
+            ],
+        ),
     ]
 }
 
@@ -2367,6 +2557,164 @@ mod tests {
             css.contains(".dep-arc, .cycle-arc { pointer-events: none; }")
                 || css.contains(".dep-arc, .cycle-arc {") && css.contains("pointer-events: none"),
             "dep-arc and cycle-arc should have pointer-events: none"
+        );
+    }
+
+    /// A `.{class} { ... }` rule's own declarations, so a test can check the
+    /// rule's own contents once instead of grepping the whole sheet, where a
+    /// coincidental match elsewhere would pass it just as well.
+    fn rule_body<'a>(css: &'a str, class: &str) -> &'a str {
+        let start = css
+            .find(&format!(".{class} {{"))
+            .unwrap_or_else(|| panic!("the .{class} rule exists"));
+        let end = css[start..]
+            .find('}')
+            .map_or_else(|| panic!("the .{class} rule is closed"), |i| start + i);
+        &css[start..end]
+    }
+
+    /// A leaf paints more opaque than a container, so the file circles a
+    /// hotspot leaf actually is stand out over the containers holding them.
+    /// The leaf rule binds through both classes: its specificity beats the
+    /// plain circle rule regardless of source order.
+    #[test]
+    fn a_leaf_paints_more_opaque_than_a_container() {
+        let css = render_styles();
+
+        let circle_rule = rule_body(&css, CSS.hotspots.circle);
+        assert!(
+            circle_rule.contains("fill-opacity: 0.32;"),
+            "container circles need a lower fill-opacity, got: {circle_rule}"
+        );
+        assert!(
+            css.contains(&format!(
+                ".{}.{} {{ fill-opacity: 0.92; }}",
+                CSS.hotspots.circle, CSS.hotspots.leaf
+            )),
+            "leaf circles need a higher fill-opacity, bound through both classes so it wins by \
+             specificity rather than by coming second, got: {css}"
+        );
+    }
+
+    /// Every circle keeps a faint hairline of its own, in the theme's
+    /// outline colour, so a container circle is visible before it is
+    /// hovered or ranked - much fainter than the outline, hover and
+    /// selected rings, which all set full stroke-opacity.
+    #[test]
+    fn every_hotspot_circle_has_a_faint_hairline() {
+        let css = render_styles();
+
+        assert!(
+            css.contains(&format!(
+                ".{} {{ stroke: {}; stroke-opacity: .28; vector-effect: non-scaling-stroke; \
+                 fill-opacity: 0.32; }}",
+                CSS.hotspots.circle,
+                ColorPalette::VARS.hotspots.outline,
+            )),
+            "got: {css}"
+        );
+    }
+
+    /// A label's text carries a halo in the page background colour, so it
+    /// stays legible over any fill it sits on, with rounded corners so the
+    /// browser's default mitre join does not spike them.
+    #[test]
+    fn a_labels_text_carries_a_rounded_background_halo() {
+        let css = render_styles();
+
+        let label_rule_start = css
+            .find(&format!(".{} {{", CSS.hotspots.label))
+            .expect("the label rule exists");
+        let label_rule_end = css[label_rule_start..]
+            .find('}')
+            .map(|i| label_rule_start + i)
+            .expect("the label rule is closed");
+        let label_rule = &css[label_rule_start..label_rule_end];
+
+        assert!(
+            label_rule.contains("paint-order: stroke;"),
+            "got: {label_rule}"
+        );
+        assert!(
+            label_rule.contains("stroke: var(--arc-page-bg);"),
+            "got: {label_rule}"
+        );
+        assert!(
+            label_rule.contains("stroke-width: .22em;"),
+            "got: {label_rule}"
+        );
+        assert!(
+            label_rule.contains("stroke-linejoin: round;"),
+            "got: {label_rule}"
+        );
+    }
+
+    /// The jump glyph sits on leaf circles whose fill can be the hottest
+    /// colour in the ramp, so it carries the same halo as a label, with the
+    /// same values, so the two stay in step. Checked by slicing both rules
+    /// and asserting the icon's own declarations inside the label rule too,
+    /// so a value drifting in one but not the other fails this test instead
+    /// of two hardcoded literals passing regardless of each other.
+    #[test]
+    fn the_jump_icon_carries_the_same_halo_as_a_label() {
+        let css = render_styles();
+
+        let label_rule = rule_body(&css, CSS.hotspots.label);
+        let icon_rule = rule_body(&css, CSS.hotspots.jump_icon);
+
+        for declaration in [
+            "paint-order: stroke;".to_string(),
+            format!("stroke: {};", ColorPalette::VARS.page.bg),
+            "stroke-width: .22em;".to_string(),
+            "stroke-linejoin: round;".to_string(),
+            "font-size: 11px;".to_string(),
+        ] {
+            assert!(
+                icon_rule.contains(&declaration),
+                "expected the icon rule to declare {declaration}, got: {icon_rule}"
+            );
+            assert!(
+                label_rule.contains(&declaration),
+                "expected the label rule to also declare {declaration}, got: {label_rule}"
+            );
+        }
+    }
+
+    /// A ranked hotspot's outline is thick enough to read on its own screen
+    /// pixels now that `non-scaling-stroke` no longer lets it grow with zoom,
+    /// and thinner than the hover ring so a hover still visibly changes it.
+    /// Full stroke-opacity, so the base circle rule's faint hairline does
+    /// not leave it any fainter than that.
+    #[test]
+    fn a_hotspots_outline_is_three_screen_pixels_wide() {
+        let css = render_styles();
+
+        assert!(
+            css.contains(&format!(
+                ".{} {{ stroke: {}; stroke-width: 3; stroke-opacity: 1; \
+                 vector-effect: non-scaling-stroke; }}",
+                CSS.hotspots.outline,
+                ColorPalette::VARS.hotspots.outline,
+            )),
+            "got: {css}"
+        );
+    }
+
+    /// Hovering a ranked hotspot must visibly change it beyond the colour:
+    /// the hover ring is wider than the always-visible outline and the
+    /// selected ring, the same relation the prototype's own variant draws.
+    #[test]
+    fn a_hovered_hotspots_ring_is_wider_than_its_outline_and_selection() {
+        let css = render_styles();
+
+        assert!(
+            css.contains(&format!(
+                ".{} {{ stroke: {}; stroke-width: 4; stroke-opacity: 1; \
+                 vector-effect: non-scaling-stroke; }}",
+                CSS.hotspots.hover,
+                ColorPalette::VARS.hotspots.highlight,
+            )),
+            "hover must be wider than the outline (3) and the selected ring (3.5), got: {css}"
         );
     }
 }

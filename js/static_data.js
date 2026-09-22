@@ -112,6 +112,20 @@ const StaticData = {
   },
 
   /**
+   * The node whose `file` matches, or `null` when none does - how
+   * `?select=<file>` and the hotspot map's editor-follow events resolve to
+   * a node on this page.
+   * @param {string} file
+   * @returns {string | null}
+   */
+  findNodeIdByFile(file) {
+    const found = Object.entries(STATIC_DATA.nodes).find(
+      ([, node]) => node.file === file,
+    );
+    return found ? found[0] : null;
+  },
+
+  /**
    * Get all arc IDs
    * @returns {string[]}
    */

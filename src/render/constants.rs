@@ -1,4 +1,5 @@
 use super::theme::Theme;
+use crate::hotspots::GreyCause;
 
 /// All layout constants consolidated in one place.
 /// Use `static` (not `const`) so references like `let tb = &LAYOUT.toolbar` work.
@@ -300,6 +301,49 @@ pub(super) struct SidebarClasses {
 }
 
 #[allow(dead_code)]
+pub(super) struct HotspotClasses {
+    /// A packed circle of the hotspot map.
+    pub circle: &'static str,
+    /// Additional class on a leaf's circle (a file, as opposed to a
+    /// container), so its fill can stand out from its container's.
+    pub leaf: &'static str,
+    /// Additional class on a hotspot leaf's circle.
+    pub outline: &'static str,
+    /// Additional class on every circle when volatility is unavailable.
+    pub grey: &'static str,
+    /// A circle's label text.
+    pub label: &'static str,
+    /// The map's sidebar content, inside the reused sidebar frame.
+    pub sidebar: &'static str,
+    /// The selected node's details panel.
+    pub details: &'static str,
+    /// The top-N hotspot list.
+    pub list: &'static str,
+    /// One entry of the hotspot list.
+    pub list_item: &'static str,
+    /// The list/bars display toggle.
+    pub list_toggle: &'static str,
+    /// The line explaining a grey map.
+    pub note: &'static str,
+    /// Additional class on the hovered circle.
+    pub hover: &'static str,
+    /// Additional class on the selected circle.
+    pub selected: &'static str,
+    /// The ranked-bars view's per-row label text.
+    pub bar_label: &'static str,
+    /// The ranked-bars view's row background track.
+    pub bar_track: &'static str,
+    /// The ranked-bars view's filled portion of a row.
+    pub bar_fill: &'static str,
+    /// The details panel's title line.
+    pub details_title: &'static str,
+    /// The hover tooltip's group.
+    pub tooltip: &'static str,
+    /// The single jump glyph at the selected leaf's edge (`js/hotspot_jump_icon.js`).
+    pub jump_icon: &'static str,
+}
+
+#[allow(dead_code)]
 pub(super) struct CssClassNames {
     pub nodes: NodeClasses,
     pub direction: DirectionClasses,
@@ -309,6 +353,7 @@ pub(super) struct CssClassNames {
     pub labels: LabelClasses,
     pub sidebar: SidebarClasses,
     pub search: SearchClasses,
+    pub hotspots: HotspotClasses,
 }
 
 pub(super) static CSS: CssClassNames = CssClassNames {
@@ -444,6 +489,27 @@ pub(super) static CSS: CssClassNames = CssClassNames {
         search_match: "search-match",
         search_match_parent: "search-match-parent",
     },
+    hotspots: HotspotClasses {
+        circle: "hotspot-circle",
+        leaf: "hotspot-leaf",
+        outline: "hotspot-outline",
+        grey: "hotspot-grey",
+        label: "hotspot-label",
+        sidebar: "hotspot-sidebar",
+        details: "hotspot-details",
+        list: "hotspot-list",
+        list_item: "hotspot-list-item",
+        list_toggle: "hotspot-list-toggle",
+        note: "hotspot-note",
+        hover: "hotspot-hover",
+        selected: "hotspot-selected",
+        bar_label: "hotspot-bar-label",
+        bar_track: "hotspot-bar-track",
+        bar_fill: "hotspot-bar-fill",
+        details_title: "hotspot-details-title",
+        tooltip: "hotspot-tooltip",
+        jump_icon: "hotspot-jump-icon",
+    },
 };
 
 /// The two analysis inputs a served page can switch while the service runs:
@@ -472,6 +538,9 @@ pub struct RenderConfig {
     pub theme: Option<&'static Theme>,
     /// The switches the analysis ran with; only a served page shows them.
     pub switches: AnalysisSwitches,
+    /// Why the hotspot map is grey; `None` draws it in colour. The arc
+    /// diagram ignores it.
+    pub grey_cause: Option<GreyCause>,
 }
 
 impl Default for RenderConfig {
@@ -484,6 +553,7 @@ impl Default for RenderConfig {
             with_jump_ids: false,
             theme: None,
             switches: AnalysisSwitches::default(),
+            grey_cause: None,
         }
     }
 }

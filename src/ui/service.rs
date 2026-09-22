@@ -63,12 +63,14 @@ pub(crate) enum Command {
     },
 }
 
-/// What the page needs to select the node the editor is in: the node's
-/// `STATIC_DATA` key, and the ids of the jump targets at the cursor line,
-/// so the sidebar can open their rows.
+/// What the page needs to select the node the editor is in: the arc node's
+/// `STATIC_DATA` key (used only by the arc page), the file the cursor is in
+/// as either page's own `STATIC_DATA` keys it, and the ids of the jump
+/// targets at the cursor line so the sidebar can open their rows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct FocusEvent {
     pub node: String,
+    pub file: String,
     pub jumps: Vec<LocationId>,
 }
 
@@ -111,21 +113,35 @@ pub(crate) fn parse_command(line: &str) -> Option<Command> {
     }
 }
 
-/// One analysis run's output: the diagram as `cargo arc -o` would write
-/// it, and the jump table that assigned the ids in it.
+/// One analysis run's output: the diagram as `cargo arc -o` would write it.
 pub(crate) struct Diagram {
     pub svg: String,
+}
+
+/// Both pages built from one analysis run: the arc diagram and the hotspot
+/// map, plus the one jump table the run assigned every id into; either
+/// resolves a jump id or a focused file.
+pub(crate) struct Pages {
+    pub arc: Diagram,
+    pub hotspots: Diagram,
     pub table: JumpTable,
 }
 
-/// Runs the analysis with the given switches and renders it. The service
-/// gets it as a closure because the analysis lives in `cli`, which `ui`
-/// must not import.
-pub(crate) type Recompute<'a> = Box<dyn Fn(AnalysisSwitches) -> Result<Diagram> + Send + Sync + 'a>;
+/// Which page a request is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Page {
+    Arc,
+    Hotspots,
+}
+
+/// Runs the analysis with the given switches and renders both pages. The
+/// service gets it as a closure because the analysis lives in `cli`, which
+/// `ui` must not import.
+pub(crate) type Recompute<'a> = Box<dyn Fn(AnalysisSwitches) -> Result<Pages> + Send + Sync + 'a>;
 
 /// What one run produced and the switches it ran with; replaced as a whole.
 struct Current {
-    diagram: Diagram,
+    pages: Pages,
     switches: AnalysisSwitches,
 }
 
@@ -145,14 +161,14 @@ pub(crate) struct JumpService<'a> {
 
 impl<'a> JumpService<'a> {
     pub(crate) fn new(
-        diagram: Diagram,
+        pages: Pages,
         switches: AnalysisSwitches,
         root: PathBuf,
         theme: Option<&'static Theme>,
         recompute: Recompute<'a>,
     ) -> Self {
         Self {
-            current: RwLock::new(Current { diagram, switches }),
+            current: RwLock::new(Current { pages, switches }),
             root,
             theme,
             editor_mode: Mutex::new(None),
@@ -164,20 +180,21 @@ impl<'a> JumpService<'a> {
         self.current.read().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The diagram as the page from [`html_page`]: a webview shrinks a bare
-    /// SVG document to its frame, an inline one keeps its size. The root
-    /// carries the editor's mode and the pinned theme, so the page is
-    /// rendered per request rather than once per run.
-    pub(crate) fn page(&self) -> String {
+    /// `page` as the page from [`html_page`]: a webview shrinks a bare SVG
+    /// document to its frame, an inline one keeps its size. The root carries
+    /// the editor's mode and the pinned theme, so the page is rendered per
+    /// request rather than once per run.
+    pub(crate) fn page(&self, page: Page) -> String {
         let appearance = Appearance {
             theme: self.theme,
             mode: *self.editor_mode(),
         };
-        html_page(
-            &self.current().diagram.svg,
-            project_name(&self.root),
-            appearance,
-        )
+        let current = self.current();
+        let svg = match page {
+            Page::Arc => &current.pages.arc.svg,
+            Page::Hotspots => &current.pages.hotspots.svg,
+        };
+        html_page(svg, project_name(&self.root), appearance)
     }
 
     /// Records the editor's mode; `true` when it differs from the last one.
@@ -196,34 +213,38 @@ impl<'a> JumpService<'a> {
         self.current().switches
     }
 
-    /// Runs the analysis for `switches` and swaps the result in. The lock
+    /// Runs the analysis for `switches` and swaps both pages in. The lock
     /// is taken for the swap only, not for the run; on an error nothing
     /// changes.
     pub(crate) fn recompute(&self, switches: AnalysisSwitches) -> Result<()> {
-        let diagram = (self.recompute)(switches)?;
+        let pages = (self.recompute)(switches)?;
         let mut current = self.current.write().unwrap_or_else(PoisonError::into_inner);
-        *current = Current { diagram, switches };
+        *current = Current { pages, switches };
         Ok(())
     }
 
-    /// Resolves `id` against the table and anchors the result at the
+    /// Resolves `id` against the shared table and anchors the result at the
     /// workspace root. A table entry that is already absolute is
     /// unaffected: `Path::join` on an absolute path replaces the base
     /// entirely.
     pub(crate) fn jump(&self, id: usize) -> Option<Location> {
         let current = self.current();
-        let location = current.diagram.table.resolve(LocationId::from(id))?;
+        let location = current.pages.table.resolve(LocationId::from(id))?;
         Some(Location {
             file: self.root.join(&location.file),
             line: location.line,
         })
     }
 
-    /// The node `path` belongs to and the jump targets on its `line`. The
-    /// table holds paths as the run had them, absolute or workspace-relative
-    /// depending on where they were collected; the editor sends an absolute
-    /// one, so both spellings are looked up; a path outside the root has only
-    /// the absolute one. `None` when the path belongs to no node.
+    /// The arc node `path` belongs to and the jump targets on its `line`.
+    /// The table holds paths as the run had them, absolute or
+    /// workspace-relative depending on where they were collected; the
+    /// editor sends an absolute one, so both spellings are looked up; a path
+    /// outside the root has only the absolute one. `None` when the path
+    /// belongs to no node. `file` carries the path workspace-relative, or
+    /// absolute when it lies outside the root, the same convention either
+    /// page's `STATIC_DATA` uses, so each page resolves it against its own
+    /// data independently of `node`, which only the arc page reads.
     pub(crate) fn focus(&self, line: usize, path: &Path) -> Option<FocusEvent> {
         let spellings: Vec<&Path> = std::iter::once(path)
             .chain(path.strip_prefix(&self.root).ok())
@@ -231,12 +252,13 @@ impl<'a> JumpService<'a> {
         let current = self.current();
         let node = spellings
             .iter()
-            .find_map(|file| current.diagram.table.node_at(file))?;
+            .find_map(|file| current.pages.table.node_at(file))?;
         Some(FocusEvent {
             node: node.to_string(),
+            file: workspace_relative(path, &self.root),
             jumps: spellings
                 .iter()
-                .flat_map(|file| current.diagram.table.ids_at(file, line))
+                .flat_map(|file| current.pages.table.ids_at(file, line))
                 .collect(),
         })
     }
@@ -306,13 +328,24 @@ fn error_text(err: &anyhow::Error) -> String {
     format!("{err:#}").replace('\n', " ")
 }
 
+/// `path` relative to `root` where it lies inside, the absolute path
+/// otherwise - the same convention `NodeData.file` uses on the arc page, so
+/// a focus event's `file` matches what either page's `STATIC_DATA` carries.
+fn workspace_relative(path: &Path, root: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .display()
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::Path;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// A service whose diagram never changes: the recomputation fails.
+    /// A service whose pages never change: the recomputation fails. Only the
+    /// arc page gets `svg`, the hotspots page an empty one.
     fn fixed(svg: &str, table: JumpTable, root: &str) -> JumpService<'static> {
         pinned(svg, table, root, None)
     }
@@ -325,8 +358,11 @@ mod tests {
         theme: Option<&'static Theme>,
     ) -> JumpService<'static> {
         JumpService::new(
-            Diagram {
-                svg: svg.to_string(),
+            Pages {
+                arc: Diagram {
+                    svg: svg.to_string(),
+                },
+                hotspots: Diagram { svg: String::new() },
                 table,
             },
             AnalysisSwitches::default(),
@@ -347,8 +383,8 @@ mod tests {
         fixed("", table, root)
     }
 
-    /// A recomputation that renders the switches into the SVG and registers
-    /// one location (id 0) whose line is the number of runs so far.
+    /// A recomputation that renders the switches into both pages' SVGs and
+    /// registers one location (id 0) whose line is the number of runs so far.
     fn counting_recompute() -> (Recompute<'static>, std::sync::Arc<AtomicUsize>) {
         let runs = std::sync::Arc::new(AtomicUsize::new(0));
         let counter = runs.clone();
@@ -356,8 +392,13 @@ mod tests {
             let run = counter.fetch_add(1, Ordering::SeqCst) + 1;
             let mut table = JumpTable::new();
             table.insert(PathBuf::from("src/lib.rs"), run);
-            Ok(Diagram {
-                svg: format!("<svg>{switches:?}</svg>"),
+            Ok(Pages {
+                arc: Diagram {
+                    svg: format!("<svg>{switches:?}</svg>"),
+                },
+                hotspots: Diagram {
+                    svg: format!("<svg>hotspots {switches:?}</svg>"),
+                },
                 table,
             })
         });
@@ -365,11 +406,16 @@ mod tests {
     }
 
     #[test]
-    fn recompute_swaps_page_table_and_switches() {
+    fn recompute_swaps_both_pages_the_table_and_switches() {
         let (recompute, runs) = counting_recompute();
         let service = JumpService::new(
-            Diagram {
-                svg: "<svg>old</svg>".to_string(),
+            Pages {
+                arc: Diagram {
+                    svg: "<svg>old</svg>".to_string(),
+                },
+                hotspots: Diagram {
+                    svg: "<svg>old hotspots</svg>".to_string(),
+                },
                 table: JumpTable::new(),
             },
             AnalysisSwitches::default(),
@@ -388,9 +434,17 @@ mod tests {
         assert_eq!(runs.load(Ordering::SeqCst), 1);
         assert_eq!(service.switches(), wanted);
         assert_eq!(
-            service.page(),
+            service.page(Page::Arc),
             html_page(
                 &format!("<svg>{wanted:?}</svg>"),
+                Some("ws"),
+                Appearance::default()
+            )
+        );
+        assert_eq!(
+            service.page(Page::Hotspots),
+            html_page(
+                &format!("<svg>hotspots {wanted:?}</svg>"),
                 Some("ws"),
                 Appearance::default()
             )
@@ -415,7 +469,7 @@ mod tests {
         assert_eq!(err.to_string(), "this service does not recompute");
         assert_eq!(service.switches(), AnalysisSwitches::default());
         assert_eq!(
-            service.page(),
+            service.page(Page::Arc),
             html_page("<svg>old</svg>", Some("ws"), Appearance::default())
         );
     }
@@ -503,13 +557,60 @@ mod tests {
         assert_eq!(service.jump(99), None);
     }
 
+    /// A hotspot map leaf's own jump target (file, line 1), registered in
+    /// `node_files` under its workspace-relative path the way the hotspots
+    /// page's own tree registers its leaves into the shared table: the
+    /// service resolves it exactly like an arc target.
+    #[test]
+    fn jump_resolves_a_hotspot_leaf_registered_in_the_shared_table() {
+        let mut table = JumpTable::new();
+        let leaf = table.insert(PathBuf::from("/ws/app/src/hot.rs"), 1);
+        table.insert_node_files("app/src/hot.rs", [leaf]);
+        let service = fixed("", table, "/ws");
+        assert_eq!(
+            service.jump(0),
+            Some(Location {
+                file: PathBuf::from("/ws/app/src/hot.rs"),
+                line: 1,
+            })
+        );
+    }
+
     #[test]
     fn page_is_the_html_page_of_the_svg() {
         let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
         let service = fixed(svg, JumpTable::new(), "/ws");
         assert_eq!(
-            service.page(),
+            service.page(Page::Arc),
             html_page(svg, Some("ws"), Appearance::default())
+        );
+    }
+
+    /// `page` selects between the two pages one analysis run produced.
+    #[test]
+    fn page_selects_between_the_arc_diagram_and_the_hotspot_map() {
+        let service = JumpService::new(
+            Pages {
+                arc: Diagram {
+                    svg: "<svg>arc</svg>".to_string(),
+                },
+                hotspots: Diagram {
+                    svg: "<svg>hotspots</svg>".to_string(),
+                },
+                table: JumpTable::new(),
+            },
+            AnalysisSwitches::default(),
+            PathBuf::from("/ws"),
+            None,
+            Box::new(|_| anyhow::bail!("this service does not recompute")),
+        );
+        assert_eq!(
+            service.page(Page::Arc),
+            html_page("<svg>arc</svg>", Some("ws"), Appearance::default())
+        );
+        assert_eq!(
+            service.page(Page::Hotspots),
+            html_page("<svg>hotspots</svg>", Some("ws"), Appearance::default())
         );
     }
 
@@ -550,6 +651,7 @@ mod tests {
             service.focus(1, Path::new("/ws/my_crate/Cargo.toml")),
             Some(FocusEvent {
                 node: "0".to_string(),
+                file: "my_crate/Cargo.toml".to_string(),
                 jumps: vec![LocationId::from(0), LocationId::from(5)],
             })
         );
@@ -562,13 +664,16 @@ mod tests {
             service.focus(5, Path::new("/ws/src/mod_a.rs")),
             Some(FocusEvent {
                 node: "1".to_string(),
+                file: "src/mod_a.rs".to_string(),
                 jumps: vec![LocationId::from(2), LocationId::from(3)],
             })
         );
     }
 
     /// A workspace member outside the root (`members = ["../member"]`) is
-    /// registered absolute and cannot be spelled relative to the root.
+    /// registered absolute and cannot be spelled relative to the root; its
+    /// `file` falls back to the absolute path, the same as `NodeData.file`
+    /// would for such a member.
     #[test]
     fn focus_resolves_an_absolute_path_outside_the_root() {
         let service = focus_service();
@@ -576,6 +681,7 @@ mod tests {
             service.focus(1, Path::new("/elsewhere/member/Cargo.toml")),
             Some(FocusEvent {
                 node: "2".to_string(),
+                file: "/elsewhere/member/Cargo.toml".to_string(),
                 jumps: vec![LocationId::from(6)],
             })
         );
@@ -595,6 +701,7 @@ mod tests {
             service.focus(42, Path::new("/ws/src/mod_a.rs")),
             Some(FocusEvent {
                 node: "1".to_string(),
+                file: "src/mod_a.rs".to_string(),
                 jumps: vec![],
             })
         );
@@ -648,14 +755,14 @@ mod tests {
     #[test]
     fn page_carries_the_editor_mode_once_set() {
         let service = service_over_root("/ws");
-        assert!(!service.page().contains("data-mode"));
+        assert!(!service.page(Page::Arc).contains("data-mode"));
         service.set_editor_mode(Mode::Dark);
         assert!(
             service
-                .page()
+                .page(Page::Arc)
                 .contains("<html xmlns=\"http://www.w3.org/1999/xhtml\" data-mode=\"dark\">"),
             "{}",
-            service.page()
+            service.page(Page::Arc)
         );
     }
 
@@ -666,11 +773,15 @@ mod tests {
         let mut table = JumpTable::new();
         table.insert(PathBuf::from("src/lib.rs"), 3);
         let service = pinned("", table, "/ws", Theme::named("mocha"));
-        assert!(service.page().contains("data-theme=\"mocha\""));
+        assert!(service.page(Page::Arc).contains("data-theme=\"mocha\""));
         service.set_editor_mode(Mode::Dark);
-        assert!(service.page().contains("data-theme=\"mocha\""));
+        assert!(service.page(Page::Arc).contains("data-theme=\"mocha\""));
         service.set_editor_mode(Mode::Light);
-        assert!(!service.page().contains("data-theme"), "{}", service.page());
+        assert!(
+            !service.page(Page::Arc).contains("data-theme"),
+            "{}",
+            service.page(Page::Arc)
+        );
     }
 
     #[test]
@@ -725,11 +836,12 @@ mod tests {
     fn focus_event_formats_as_an_sse_block() {
         let event = FocusEvent {
             node: "7".to_string(),
+            file: "src/lib.rs".to_string(),
             jumps: vec![LocationId::from(2), LocationId::from(3)],
         };
         assert_eq!(
             JumpService::focus_event(&event),
-            "event: focus\ndata: {\"node\":\"7\",\"jumps\":[2,3]}\n\n"
+            "event: focus\ndata: {\"node\":\"7\",\"file\":\"src/lib.rs\",\"jumps\":[2,3]}\n\n"
         );
     }
 

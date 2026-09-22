@@ -2,7 +2,7 @@ pub mod analyze;
 pub mod cli;
 pub mod diagnose;
 pub mod graph;
-pub mod hotspots;
+pub(crate) mod hotspots;
 mod js_registry;
 pub mod layout;
 pub mod model;

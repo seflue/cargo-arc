@@ -10,7 +10,7 @@ use std::thread;
 use anyhow::{Context, Result};
 use tiny_http::{Method, Request, Response};
 
-use super::service::{Command, JumpService, parse_command};
+use super::service::{Command, JumpService, Page, parse_command};
 use crate::render::AnalysisSwitches;
 
 /// Binds `service` to `port`, or to an OS-assigned one without it, announces
@@ -224,7 +224,11 @@ impl<'a> Server<'a> {
         let (path, query) = split_url(&url);
         match (request.method(), path) {
             (Method::Get, "/") => {
-                respond_page(request, &self.service.page());
+                respond_page(request, &self.service.page(Page::Arc));
+                Ok(())
+            }
+            (Method::Get, "/hotspots") => {
+                respond_page(request, &self.service.page(Page::Hotspots));
                 Ok(())
             }
             (Method::Get, "/jump") => self.handle_jump(request, query, out),
@@ -376,7 +380,7 @@ mod tests {
     use super::*;
     use crate::layout::{ItemKind, JumpTable, LayoutIR};
     use crate::render::{AnalysisSwitches, RenderConfig, render};
-    use crate::ui::service::Diagram;
+    use crate::ui::service::{Diagram, Pages};
     use std::io::{BufReader, Read as _};
     use std::net::TcpStream;
     use std::path::PathBuf;
@@ -386,7 +390,9 @@ mod tests {
     use std::time::Duration;
 
     /// Two crates, each contributing only its manifest target: `a` at id 0,
-    /// `b` at id 1. The service never recomputes.
+    /// `b` at id 1. The hotspot map gets its own, distinguishable SVG, as
+    /// `run_ui` would render from the same analysis run; both pages share
+    /// the table. The service never recomputes.
     fn two_entry_service() -> JumpService<'static> {
         let mut ir = LayoutIR::new();
         ir.add_item(ItemKind::Crate, "a".into());
@@ -400,7 +406,13 @@ mod tests {
         table.insert_node_files("1", [b]);
 
         JumpService::new(
-            Diagram { svg, table },
+            Pages {
+                arc: Diagram { svg },
+                hotspots: Diagram {
+                    svg: "<svg>const STATIC_DATA = {};</svg>".to_string(),
+                },
+                table,
+            },
             AnalysisSwitches::default(),
             PathBuf::from("/ws"),
             None,
@@ -477,7 +489,7 @@ mod tests {
             let second = read_until(&mut events, "\n\n");
             assert_eq!(
                 first,
-                "event: focus\ndata: {\"node\":\"1\",\"jumps\":[1]}\n\n"
+                "event: focus\ndata: {\"node\":\"1\",\"file\":\"b/Cargo.toml\",\"jumps\":[1]}\n\n"
             );
             assert_eq!(second, "event: follow\ndata: off\n\n");
 
@@ -585,7 +597,7 @@ mod tests {
             assert!(body.contains("STATIC_DATA"));
             // Sent with Content-Length, never chunked: the page must arrive
             // byte-for-byte for a raw reader like this one.
-            assert_eq!(body, service.page());
+            assert_eq!(body, service.page(Page::Arc));
 
             let (status, _, _) = send("GET", "/jump?id=1");
             assert_eq!(status, 200);
@@ -615,6 +627,32 @@ mod tests {
         assert_eq!(out, b"arc jump 1 /ws/b/Cargo.toml\n");
     }
 
+    /// `GET /hotspots` serves the hotspot map's own page, with its own
+    /// `STATIC_DATA`, next to `GET /` which keeps serving the arc diagram.
+    #[test]
+    fn serves_the_hotspot_map_next_to_the_arc_diagram() {
+        let service = two_entry_service();
+        let (server, port) = Server::bind(&service, None).unwrap();
+        let mut out = Vec::new();
+
+        thread::scope(|scope| {
+            let handle = scope.spawn(|| server.run(std::io::empty(), &mut out));
+
+            let (status, head, body) = send(port, "GET", "/hotspots", "");
+            assert_eq!(status, 200);
+            assert!(
+                head.contains("Content-Type: application/xhtml+xml"),
+                "{head}"
+            );
+            assert!(body.contains("STATIC_DATA"), "{body}");
+            assert_eq!(body, service.page(Page::Hotspots));
+            assert_ne!(body, service.page(Page::Arc));
+
+            server.unblock();
+            handle.join().unwrap().unwrap();
+        });
+    }
+
     /// A service whose recomputation renders the switches into the SVG,
     /// counts its runs, and blocks each run until the test releases it:
     /// `started` reports a run has begun, `release` lets it finish.
@@ -633,8 +671,13 @@ mod tests {
         let release_rx = Mutex::new(release_rx);
         let counter = runs.clone();
         let service = JumpService::new(
-            Diagram {
-                svg: "<svg>initial</svg>".to_string(),
+            Pages {
+                arc: Diagram {
+                    svg: "<svg>initial</svg>".to_string(),
+                },
+                hotspots: Diagram {
+                    svg: "<svg>initial hotspots</svg>".to_string(),
+                },
                 table: JumpTable::new(),
             },
             AnalysisSwitches::default(),
@@ -644,8 +687,13 @@ mod tests {
                 counter.fetch_add(1, Ordering::SeqCst);
                 started_tx.send(switches).unwrap();
                 release_rx.lock().unwrap().recv().unwrap();
-                Ok(Diagram {
-                    svg: format!("<svg>{switches:?}</svg>"),
+                Ok(Pages {
+                    arc: Diagram {
+                        svg: format!("<svg>{switches:?}</svg>"),
+                    },
+                    hotspots: Diagram {
+                        svg: format!("<svg>hotspots {switches:?}</svg>"),
+                    },
                     table: JumpTable::new(),
                 })
             }),
@@ -688,7 +736,7 @@ mod tests {
                 EXTERNALS_ON
             );
             // The old page is served until the run is through.
-            assert_eq!(send(port, "GET", "/", "").2, fake.service.page());
+            assert_eq!(send(port, "GET", "/", "").2, fake.service.page(Page::Arc));
             assert_eq!(fake.service.switches(), AnalysisSwitches::default());
 
             fake.release.send(()).unwrap();
@@ -767,8 +815,13 @@ mod tests {
     #[test]
     fn a_failed_run_keeps_the_page_and_reports_the_error_both_ways() {
         let service = JumpService::new(
-            Diagram {
-                svg: "<svg>initial</svg>".to_string(),
+            Pages {
+                arc: Diagram {
+                    svg: "<svg>initial</svg>".to_string(),
+                },
+                hotspots: Diagram {
+                    svg: "<svg>initial hotspots</svg>".to_string(),
+                },
                 table: JumpTable::new(),
             },
             AnalysisSwitches::default(),
@@ -814,8 +867,13 @@ mod tests {
     fn the_same_command_after_a_failed_run_runs_again() {
         let attempts = AtomicUsize::new(0);
         let service = JumpService::new(
-            Diagram {
-                svg: "<svg>initial</svg>".to_string(),
+            Pages {
+                arc: Diagram {
+                    svg: "<svg>initial</svg>".to_string(),
+                },
+                hotspots: Diagram {
+                    svg: "<svg>initial hotspots</svg>".to_string(),
+                },
                 table: JumpTable::new(),
             },
             AnalysisSwitches::default(),
@@ -825,8 +883,13 @@ mod tests {
                 if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
                     anyhow::bail!("the first run fails");
                 }
-                Ok(Diagram {
-                    svg: format!("<svg>{switches:?}</svg>"),
+                Ok(Pages {
+                    arc: Diagram {
+                        svg: format!("<svg>{switches:?}</svg>"),
+                    },
+                    hotspots: Diagram {
+                        svg: format!("<svg>hotspots {switches:?}</svg>"),
+                    },
                     table: JumpTable::new(),
                 })
             }),

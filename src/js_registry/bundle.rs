@@ -83,4 +83,16 @@ mod tests {
     fn bundle_of_unknown_entry_panics() {
         let _ = bundle("no_such_entry").count();
     }
+
+    /// `hotspot_jump_icon.js` draws its own copy of the `#jump-icon` symbol
+    /// rather than calling into `JumpIcons`, so the hotspot page's bundle
+    /// must not carry that module's popover and chip code at all.
+    #[test]
+    fn bundle_of_hotspot_script_excludes_jump_icons() {
+        let bundled: HashSet<&str> = bundle("hotspot_script").map(|m| m.name).collect();
+        assert!(
+            !bundled.contains("JumpIcons"),
+            "hotspot_script's bundle should not pull in JumpIcons, got: {bundled:?}"
+        );
+    }
 }

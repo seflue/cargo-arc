@@ -778,6 +778,140 @@ fn test_pure_reexport_cycle_excluded_by_default() {
     );
 }
 
+/// Run `cargo-arc arc --manifest-path <manifest> <shared_args...> hotspots
+/// <hotspots_args...>` as a subprocess. Returns (`exit_code`, stdout, stderr).
+fn cargo_arc_hotspots(
+    manifest: &PathBuf,
+    shared_args: &[&str],
+    hotspots_args: &[&str],
+) -> (i32, String, String) {
+    let output = Command::new(env!("CARGO_BIN_EXE_cargo-arc"))
+        .arg("arc")
+        .arg("--manifest-path")
+        .arg(manifest)
+        .args(shared_args)
+        .arg("hotspots")
+        .args(hotspots_args)
+        .output()
+        .expect("failed to execute cargo-arc");
+    let code = output.status.code().unwrap_or(-1);
+    (
+        code,
+        String::from_utf8_lossy(&output.stdout).to_string(),
+        String::from_utf8_lossy(&output.stderr).to_string(),
+    )
+}
+
+/// `--no-volatility` greys the whole map: sizes are still drawn (the crate
+/// and file nodes are all present), but nothing carries a rank and the
+/// hotspot list is empty. No error either way.
+#[test]
+fn hotspots_no_volatility_greys_the_map_with_no_ranks() {
+    let manifest =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multi_crate/Cargo.toml");
+    let temp = tempfile::Builder::new().suffix(".html").tempfile().unwrap();
+    let (code, _stdout, stderr) = cargo_arc_hotspots(
+        &manifest,
+        &["--no-volatility"],
+        &["-o", temp.path().to_str().unwrap()],
+    );
+    assert_eq!(code, 0, "hotspots run should succeed, stderr: {stderr}");
+
+    let html = std::fs::read_to_string(temp.path()).unwrap();
+    let data = parse_static_data(&html);
+    let nodes = data["nodes"].as_object().expect("nodes is object");
+    let keys: Vec<&String> = nodes.keys().collect();
+
+    for expected in [
+        "crate_a/Cargo.toml",
+        "crate_b/Cargo.toml",
+        "crate_a/src/alpha.rs",
+        "crate_a/src/beta.rs",
+        "crate_b/src/gamma.rs",
+    ] {
+        assert!(
+            nodes.contains_key(expected),
+            "expected node key {expected:?}, got: {keys:?}"
+        );
+    }
+
+    assert!(
+        nodes.values().all(|n| n["rank"].is_null()),
+        "no node should carry a rank without volatility data, got: {data}"
+    );
+    assert!(
+        data["hotspots"]
+            .as_array()
+            .expect("hotspots is an array")
+            .is_empty(),
+        "hotspot list must be empty without volatility data, got: {data}"
+    );
+    assert!(
+        html.contains("hotspot-grey"),
+        "every circle must carry the grey class, got: {html}"
+    );
+    assert!(
+        html.contains("id=\"hotspot-volatility-note\""),
+        "the sidebar must show why the map is grey, got: {html}"
+    );
+    assert_eq!(
+        data["volatility"],
+        "Volatility disabled: run without --no-volatility to see commit activity.",
+        "the note must name the flag, not a generic message, got: {data}"
+    );
+}
+
+/// With volatility on, the hotspot list has at most `--hotspots` entries and
+/// their ranks run `1..=N` in order: the top-N leaves workspace-wide by
+/// lines × commits.
+#[test]
+fn hotspots_with_volatility_ranks_at_most_n_leaves() {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+    let temp = tempfile::Builder::new().suffix(".html").tempfile().unwrap();
+    let n = 5;
+    let (code, _stdout, stderr) = cargo_arc_hotspots(
+        &manifest,
+        &[],
+        &[
+            "-o",
+            temp.path().to_str().unwrap(),
+            "--hotspots",
+            &n.to_string(),
+        ],
+    );
+    assert_eq!(code, 0, "hotspots run should succeed, stderr: {stderr}");
+
+    let html = std::fs::read_to_string(temp.path()).unwrap();
+    let data = parse_static_data(&html);
+    assert!(
+        data["volatility"].is_null(),
+        "a map with commits carries no grey note, got: {data}"
+    );
+    let hotspots = data["hotspots"].as_array().expect("hotspots is an array");
+    assert!(
+        hotspots.len() <= n,
+        "hotspot list must have at most {n} entries, got {}: {hotspots:?}",
+        hotspots.len()
+    );
+
+    let nodes = data["nodes"].as_object().expect("nodes is object");
+    let mut ranks: Vec<i64> = hotspots
+        .iter()
+        .map(|key| {
+            let key = key.as_str().expect("hotspot key is a string");
+            nodes[key]["rank"]
+                .as_i64()
+                .unwrap_or_else(|| panic!("hotspot {key} has a rank"))
+        })
+        .collect();
+    ranks.sort_unstable();
+    let expected: Vec<i64> = (1..=i64::try_from(hotspots.len()).unwrap()).collect();
+    assert_eq!(
+        ranks, expected,
+        "ranks must run 1..=N in order, got: {data}"
+    );
+}
+
 /// Reads the `stderr` layout of `format::rule_block`: one block per rule,
 /// separated by a blank line, each violation carrying its edge on a `  = ` line.
 fn layers_violation_edges(stderr: &str) -> Vec<String> {
@@ -2134,6 +2268,64 @@ fn ui_serves_the_page_and_resolves_a_jump_id_over_http() {
         rest.is_empty(),
         "an unknown id must not write to stdout, got: {rest:?}"
     );
+}
+
+/// Decision 7's end-to-end path: `run_ui` wires the hotspot map's own page
+/// next to the arc diagram, not just `ui::server`'s own hand-built `Pages`
+/// in its unit tests.
+#[test]
+fn ui_serves_the_hotspot_map_with_its_own_leaf_targets() {
+    let manifest =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multi_crate/Cargo.toml");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cargo-arc"))
+        .arg("arc")
+        .arg("--manifest-path")
+        .arg(&manifest)
+        .arg("ui")
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn cargo-arc ui");
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let guard = ChildGuard(child);
+
+    let mut ready_line = String::new();
+    stdout.read_line(&mut ready_line).unwrap();
+    let port: u16 = ready_line
+        .trim_end()
+        .split(' ')
+        .nth(3)
+        .expect("ready line carries a port")
+        .parse()
+        .expect("ready line carries a numeric port");
+    let mut analysis_line = String::new();
+    stdout.read_line(&mut analysis_line).unwrap();
+
+    let (arc_status, arc_body) = http_get(port, "/");
+    assert_eq!(arc_status, 200);
+    let (hotspots_status, hotspots_body) = http_get(port, "/hotspots");
+    assert_eq!(hotspots_status, 200);
+
+    let arc_data = parse_static_data(&arc_body);
+    let hotspots_data = parse_static_data(&hotspots_body);
+    assert_ne!(
+        arc_data, hotspots_data,
+        "the hotspot map must carry its own STATIC_DATA, not the arc diagram's"
+    );
+
+    let has_leaf_target = hotspots_data["nodes"]
+        .as_object()
+        .expect("nodes is an object")
+        .values()
+        .any(|node| {
+            node["kind"] == "file" && node["targets"].as_array().is_some_and(|t| !t.is_empty())
+        });
+    assert!(
+        has_leaf_target,
+        "a hotspot leaf must carry a jump target, got: {hotspots_data}"
+    );
+
+    drop(guard);
 }
 
 /// A posted switch command runs the analysis again in the same process:

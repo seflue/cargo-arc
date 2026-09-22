@@ -7,6 +7,7 @@ use std::path::Path;
 mod constants;
 mod css;
 mod elements;
+mod hotspots;
 mod positioning;
 mod static_data;
 mod theme;
@@ -16,6 +17,7 @@ use elements::{
     CycleMarks, ToolbarFacts, escape_xml, render_edges, render_header, render_nodes,
     render_sidebar, render_toolbar, render_tree_lines,
 };
+pub(crate) use hotspots::render as render_hotspots;
 use positioning::{
     PositionedItem, calculate_box_width, calculate_canvas_size, calculate_max_arc_width,
     calculate_positions, collapse_positions, item_nesting,
@@ -123,16 +125,8 @@ pub fn render(ir: &LayoutIR, config: &RenderConfig) -> String {
     svg
 }
 
-/// The diagram as an XHTML document with the SVG inline. An SVG document
-/// shown in a frame (an editor's webview) is shrunk to the frame; an inline
-/// `<svg>` keeps its pixel size and the body scrolls. The XML declaration of
-/// `svg` moves ahead of the wrapping document, and the rest is already
-/// well-formed XML. The body takes the theme's page colour, since the SVG
-/// has no background of its own and a webview would show the editor theme
-/// through it. The SVG's stylesheet applies to the whole document, so it
-/// declares that colour and reads `appearance` off the root. `project`
-/// leads the title so that browser tabs, which truncate on the right,
-/// differ per project.
+/// Wrap `svg` inline in an XHTML page, so a webview keeps its size instead of
+/// shrinking it to the frame. `project` leads the title, since tabs truncate.
 #[must_use]
 pub fn html_page(svg: &str, project: Option<&str>, appearance: Appearance) -> String {
     let (declaration, svg) = match svg.split_once('\n') {
@@ -145,9 +139,11 @@ pub fn html_page(svg: &str, project: Option<&str>, appearance: Appearance) -> St
     };
     let root = appearance.root_attributes();
     let background = theme::ColorPalette::VARS.page.bg;
+    // A 100%-sized SVG needs a body with a height and a block root. The body
+    // takes the page colour because the SVG has no background of its own.
     format!(
         "{declaration}\n\
-         <html xmlns=\"http://www.w3.org/1999/xhtml\"{root}><head><title>{title}</title></head><body style=\"margin:0;background:{background}\">\n\
+         <html xmlns=\"http://www.w3.org/1999/xhtml\"{root}><head><title>{title}</title><style>html,body{{height:100%}}svg{{display:block}}</style></head><body style=\"margin:0;background:{background}\">\n\
          {svg}\n\
          </body></html>\n"
     )
@@ -195,10 +191,25 @@ mod tests {
         assert_eq!(
             html_page(svg, None, Appearance::default()),
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
-             <html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>cargo-arc</title></head><body style=\"margin:0;background:var(--arc-page-bg)\">\n\
+             <html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>cargo-arc</title><style>html,body{height:100%}svg{display:block}</style></head><body style=\"margin:0;background:var(--arc-page-bg)\">\n\
              <svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"20\"/>\n\
              </body></html>\n"
         );
+    }
+
+    /// A percentage-sized SVG (the hotspot map's `width="100%"
+    /// height="100%"`) only fills the window once `html`/`body` carry a
+    /// resolvable height and the root is `display: block`; the arc page's
+    /// pixel-sized SVG does not need it but is unaffected by it either.
+    #[test]
+    fn html_page_gives_the_document_a_containing_block_for_a_percentage_sized_svg() {
+        let page = html_page(
+            "<svg width=\"100%\" height=\"100%\"/>",
+            None,
+            Appearance::default(),
+        );
+        assert!(page.contains("html,body{height:100%}"), "{page}");
+        assert!(page.contains("svg{display:block}"), "{page}");
     }
 
     /// The page root declares what the stylesheet reads: the editor's mode

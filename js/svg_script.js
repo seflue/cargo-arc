@@ -1,5 +1,5 @@
 // @module SvgScript
-// @deps ArcLogic, StaticData, AppState, Selectors, DomAdapter, LayerManager, TreeLogic, DerivedState, HighlightRenderer, VirtualEdgeLogic, TextMeasure, SidebarLogic, SearchLogic, Jump, JumpIcons, Follow, Theme, SwitchToggles, ViewSnapshot
+// @deps ArcLogic, StaticData, AppState, Selectors, DomAdapter, LayerManager, TreeLogic, DerivedState, HighlightRenderer, VirtualEdgeLogic, TextMeasure, SidebarLogic, SearchLogic, Jump, JumpIcons, Follow, Theme, SwitchToggles, ViewSnapshot, PageLink
 // @config ROW_HEIGHT, MARGIN, TOOLBAR_HEIGHT, SIDEBAR_SHADOW_PAD
 // svg_script.js - DOM code for interactive SVG
 // ArcLogic is loaded from arc_logic.js before this file
@@ -110,6 +110,20 @@ if (typeof document !== 'undefined') {
     // Use AppState module for unified state management
     const appState = AppState.create();
 
+    // The toolbar's link to the hotspot map, carrying the current node
+    // selection as `?select=<file>` - an arc selection or no selection
+    // carries nothing, since only a node resolves to one file.
+    const hotspotLinkEl = DomAdapter.getElementById('hotspot-page-link');
+    function updateHotspotLink() {
+      if (!hotspotLinkEl) return;
+      const selection = appState.clickSelection;
+      const file =
+        selection?.type === 'node'
+          ? (StaticData.getNode(selection.id)?.file ?? null)
+          : null;
+      hotspotLinkEl.setAttribute('href', PageLink.buildLink('/hotspots', file));
+    }
+
     // === View kept across the reload after a recomputation ===
     // The page stores a snapshot under this key before it reloads and
     // applies it once, at the end of this initialisation.
@@ -173,6 +187,7 @@ if (typeof document !== 'undefined') {
         ROW_HEIGHT,
       );
       HighlightRenderer.apply(DomAdapter, StaticData, virtualArcUsages, state);
+      updateHotspotLink();
     }
 
     const highlightTiming = createHighlightDebouncer(rerenderHighlights, 30);
@@ -1464,56 +1479,7 @@ if (typeof document !== 'undefined') {
 
     // Theme: the root is the svg element in a file and the html element in
     // the served page; both carry the attributes the stylesheet reads.
-    const modeSelect = /** @type {HTMLSelectElement | null} */ (
-      DomAdapter.getElementById('theme-mode')
-    );
-    const themeSelects = {
-      light: /** @type {HTMLSelectElement | null} */ (
-        DomAdapter.getElementById('theme-light')
-      ),
-      dark: /** @type {HTMLSelectElement | null} */ (
-        DomAdapter.getElementById('theme-dark')
-      ),
-    };
-    const darkScheme = window.matchMedia('(prefers-color-scheme: dark)');
-    const themeControl = Theme.createTheme({
-      themes: STATIC_DATA.theme,
-      storage: Theme.localStorageAdapter(),
-      systemDark: () => darkScheme.matches,
-      onSystemChange: (listener) =>
-        darkScheme.addEventListener('change', listener),
-      root: {
-        theme: document.documentElement.dataset.theme,
-        mode: document.documentElement.dataset.mode,
-      },
-      applyTheme: (name) => {
-        document.documentElement.dataset.theme = name;
-      },
-      showState: ({ mode, light, dark }) => {
-        if (modeSelect) modeSelect.value = mode;
-        if (themeSelects.light) themeSelects.light.value = light;
-        if (themeSelects.dark) themeSelects.dark.value = dark;
-      },
-    });
-    modeSelect?.addEventListener('change', () => {
-      themeControl.setMode(
-        /** @type {'light' | 'dark' | 'system'} */ (modeSelect.value),
-      );
-    });
-    for (const mode of /** @type {const} */ (['light', 'dark'])) {
-      const select = themeSelects[mode];
-      if (!select) continue;
-      for (const { name, label } of STATIC_DATA.theme[mode]) {
-        const option = document.createElement('option');
-        option.value = name;
-        option.textContent = label;
-        select.appendChild(option);
-      }
-      select.addEventListener('change', () => {
-        themeControl.setThemeFor(mode, select.value);
-      });
-    }
-    themeControl.start();
+    const themeControl = Theme.bootstrapControls();
 
     // The view menu's checkboxes, in the order they are restored: the
     // transitive one needs the external one on.
@@ -1862,9 +1828,19 @@ if (typeof document !== 'undefined') {
 
     if (restoredView) {
       applyRestoredView(restoredView);
-    } else if (expandLevel !== null) {
-      // Bootstrap virtual arcs for initially collapsed nodes (expand-level)
-      relayout();
+    } else {
+      if (expandLevel !== null) {
+        // Bootstrap virtual arcs for initially collapsed nodes (expand-level)
+        relayout();
+      }
+      // `?select=<file>`: the same node identity the hotspot map's own
+      // toolbar link carries, treated like an editor focus event.
+      const selectedFile = PageLink.parseSelect(location.search);
+      if (selectedFile) {
+        const nodeId = StaticData.findNodeIdByFile(selectedFile);
+        if (nodeId) focusNode(nodeId, []);
+      }
     }
+    updateHotspotLink();
   })();
 }

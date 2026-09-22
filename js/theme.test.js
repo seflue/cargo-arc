@@ -1,5 +1,6 @@
 import { describe, expect, mock, test } from 'bun:test';
-import { createTheme } from './theme.js';
+import { createFakeElement } from './dom_adapter.js';
+import { bootstrapControls, createTheme } from './theme.js';
 
 const THEMES = {
   light: [{ name: 'latte', label: 'Latte' }],
@@ -191,5 +192,64 @@ describe('createTheme', () => {
     });
     t.control.setThemeFor('dark', 'gone');
     expect(t.lastShown().dark).toBe('mocha');
+  });
+});
+
+// A <select> stub with a real addEventListener/_fire, so a test can drive
+// the change bootstrapControls wires (pattern: createFakeInteractiveElement
+// in hotspot_script.test.js).
+function createFakeSelect() {
+  const el = createFakeElement('select');
+  const listeners = new Map();
+  el.addEventListener = (evt, fn) => {
+    if (!listeners.has(evt)) listeners.set(evt, []);
+    listeners.get(evt).push(fn);
+  };
+  el._fire = (evt) => {
+    for (const fn of listeners.get(evt) || []) fn();
+  };
+  return el;
+}
+
+describe('bootstrapControls', () => {
+  test('populates both selects from STATIC_DATA.theme, reflects the mode, and forwards a change to setThemeFor', () => {
+    const elements = {
+      'theme-mode': createFakeSelect(),
+      'theme-light': createFakeSelect(),
+      'theme-dark': createFakeSelect(),
+    };
+    const store = new Map();
+    global.DomAdapter = { getElementById: (id) => elements[id] ?? null };
+    global.document = {
+      documentElement: { dataset: {} },
+      createElement: (tag) => createFakeElement(tag),
+    };
+    global.window = {
+      matchMedia: () => ({ matches: false, addEventListener() {} }),
+      localStorage: {
+        getItem: (key) => store.get(key) ?? null,
+        setItem: (key, value) => store.set(key, value),
+      },
+    };
+    global.STATIC_DATA = {
+      theme: THEMES,
+    };
+
+    bootstrapControls();
+
+    expect(elements['theme-light'].children.map((o) => o.value)).toEqual([
+      'latte',
+    ]);
+    expect(elements['theme-dark'].children.map((o) => o.value)).toEqual([
+      'mocha',
+      'night',
+    ]);
+    expect(elements['theme-mode'].value).toBe('system');
+    expect(document.documentElement.dataset.theme).toBe('latte');
+
+    elements['theme-dark'].value = 'night';
+    elements['theme-dark']._fire('change');
+
+    expect(store.get('arc.theme.dark')).toBe('night');
   });
 });

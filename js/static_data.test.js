@@ -807,4 +807,39 @@ describe('StaticData', () => {
       }
     });
   });
+
+  describe('findNodeIdByFile', () => {
+    test('finds the node whose file matches', () => {
+      const saved = globalThis.STATIC_DATA;
+      globalThis.STATIC_DATA = {
+        nodes: {
+          krate: { type: 'crate', name: 'app', file: 'app/Cargo.toml' },
+          hot: { type: 'module', name: 'hot', file: 'app/src/hot.rs' },
+          external: { type: 'crate', name: 'serde' },
+        },
+        arcs: {},
+      };
+      try {
+        expect(StaticData.findNodeIdByFile('app/src/hot.rs')).toBe('hot');
+        expect(StaticData.findNodeIdByFile('app/Cargo.toml')).toBe('krate');
+      } finally {
+        globalThis.STATIC_DATA = saved;
+      }
+    });
+
+    test('is null for a file matching no node, including nodes without one', () => {
+      const saved = globalThis.STATIC_DATA;
+      globalThis.STATIC_DATA = {
+        nodes: {
+          external: { type: 'crate', name: 'serde' },
+        },
+        arcs: {},
+      };
+      try {
+        expect(StaticData.findNodeIdByFile('app/src/missing.rs')).toBeNull();
+      } finally {
+        globalThis.STATIC_DATA = saved;
+      }
+    });
+  });
 });

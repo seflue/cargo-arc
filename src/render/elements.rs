@@ -124,6 +124,14 @@ pub(super) fn render_toolbar(width: f32, facts: ToolbarFacts, config: &RenderCon
         String::new()
     };
 
+    // The toolbar's link to the hotspot map; JS updates its `href` to carry
+    // the current node selection as `?select=<file>`. Present on a written
+    // file too, dead there like a jump link.
+    let page_link = format!(
+        "      <a id=\"hotspot-page-link\" class=\"{}\" href=\"/hotspots\">Hotspot map</a>\n",
+        ct.html_btn,
+    );
+
     format!(
         concat!(
             "  <foreignObject id=\"toolbar-fo\" x=\"0\" y=\"0\" width=\"{}\" height=\"{}\"",
@@ -186,6 +194,7 @@ pub(super) fn render_toolbar(width: f32, facts: ToolbarFacts, config: &RenderCon
             "        <span id=\"search-result-count\" class=\"{}\"></span>\n",
             "      </div>\n",
             "{}",
+            "{}",
             "      <span id=\"jump-status\" class=\"{}\"></span>\n",
             "    </div>\n",
             "  </foreignObject>\n",
@@ -232,6 +241,7 @@ pub(super) fn render_toolbar(width: f32, facts: ToolbarFacts, config: &RenderCon
         ct.scope_btn,    // symbol scope btn
         ct.result_count, // .toolbar-result-count
         service_toggles, // optional follow toggle button
+        page_link,       // link to the hotspot map
         ct.jump_status,  // .toolbar-jump-status
     )
 }
@@ -704,6 +714,17 @@ mod tests {
     use crate::model::EdgeContext;
     use rstest::rstest;
     use std::collections::HashMap;
+
+    /// Locks the arc page's own header: it sizes the root to its own pixel
+    /// dimensions and must stay byte-identical while the hotspot map gets
+    /// its own responsive variant (`hotspots::render_hotspot_header`).
+    #[test]
+    fn render_header_sizes_the_root_to_its_own_pixel_dimensions() {
+        assert_eq!(
+            render_header(500.0, 300.0, None),
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\" class=\"cluster-mode-on\" width=\"500\" height=\"300\" viewBox=\"0 0 500 300\">\n"
+        );
+    }
 
     #[test]
     fn test_render_sidebar_basic_structure() {

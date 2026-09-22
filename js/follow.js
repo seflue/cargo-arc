@@ -9,8 +9,10 @@
  * @property {(handler: (eventName: string, data: string) => void) => void} connect -
  *   opens the event stream and forwards each event to the handler; tests
  *   inject a mock so no connection happens.
- * @property {(node: string, jumps: number[]) => void} apply - selects the
- *   node in the page and opens the sidebar rows of the given jump ids.
+ * @property {(node: string, jumps: number[], file?: string) => void} apply -
+ *   selects the node in the page and opens the sidebar rows of the given
+ *   jump ids; `file` is the same node's workspace-relative identity on the
+ *   other page, when the event carries one.
  * @property {(enabled: boolean) => void} showState - reflects the follow
  *   state on the toolbar button.
  */
@@ -42,7 +44,11 @@ function createFollow({ connect, apply, showState }) {
     ) {
       return;
     }
-    apply(event.node, event.jumps);
+    apply(
+      event.node,
+      event.jumps,
+      typeof event.file === 'string' ? event.file : undefined,
+    );
   }
 
   /** @param {string} data */

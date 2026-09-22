@@ -8,7 +8,7 @@
 //! packing", 2006) and Welzl's smallest-enclosing-circle construction. Their
 //! vocabulary (front chain, basis, enclose) is kept.
 
-use super::tree::{HotspotNode, HotspotTree};
+use super::tree::{HotspotNode, HotspotTree, sorted_children};
 use std::path::PathBuf;
 
 /// Gap between a container's children, and from its own boundary to its
@@ -67,9 +67,7 @@ fn layout_node(node: &HotspotNode, parent_lines: Option<usize>) -> Layout<'_> {
         };
     }
 
-    let mut order: Vec<&HotspotNode> = node.children.iter().collect();
-    order.sort_by(|a, b| b.lines.cmp(&a.lines).then_with(|| a.name.cmp(&b.name)));
-    let mut children: Vec<Layout> = order
+    let mut children: Vec<Layout> = sorted_children(node)
         .into_iter()
         .map(|child| layout_node(child, Some(node.lines)))
         .collect();
@@ -540,9 +538,7 @@ mod tests {
         let this = packed[*cursor].clone();
         *cursor += 1;
 
-        let mut order: Vec<&HotspotNode> = node.children.iter().collect();
-        order.sort_by(|a, b| b.lines.cmp(&a.lines).then_with(|| a.name.cmp(&b.name)));
-        let child_circles: Vec<PackedCircle> = order
+        let child_circles: Vec<PackedCircle> = sorted_children(node)
             .into_iter()
             .map(|child| assert_no_overlap_and_contained(child, packed, cursor))
             .collect();
