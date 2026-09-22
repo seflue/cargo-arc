@@ -4,10 +4,10 @@
 //! Supports configurable thresholds and time periods.
 //! Optimized for large repositories using streaming and git-level path filtering.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use thiserror::Error;
@@ -76,10 +76,41 @@ impl Default for VolatilityConfig {
     }
 }
 
+/// A single commit that touched a file: its hash and commit time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Commit {
+    pub hash: String,
+    /// Commit time as a Unix timestamp (`%ct` in `git log`).
+    pub timestamp: i64,
+}
+
+impl PartialOrd for Commit {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Commit {
+    /// Orders by time, so a `BTreeSet<Commit>` iterates oldest first; falls
+    /// back to the hash to keep the order total when two commits share a
+    /// timestamp.
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.timestamp
+            .cmp(&other.timestamp)
+            .then_with(|| self.hash.cmp(&other.hash))
+    }
+}
+
 /// Volatility analyzer using git history.
+///
+/// Holds, per file, the dated set of commits that touched it, keyed by
+/// absolute path so a workspace nested inside the repository still resolves.
+/// `get_change_count`, `get_volatility` and `format_report` are read views
+/// over this table.
 pub struct VolatilityAnalyzer {
     config: VolatilityConfig,
-    file_changes: HashMap<String, usize>,
+    repo_root: PathBuf,
+    commits: HashMap<PathBuf, BTreeSet<Commit>>,
 }
 
 impl VolatilityAnalyzer {
@@ -88,33 +119,37 @@ impl VolatilityAnalyzer {
     pub fn new(config: VolatilityConfig) -> Self {
         Self {
             config,
-            file_changes: HashMap::new(),
+            repo_root: PathBuf::new(),
+            commits: HashMap::new(),
         }
     }
 
     /// Analyze git history for a repository.
     ///
-    /// Streams `git log` output to count per-file change frequency for `.rs` files.
-    /// Uses `--diff-filter=AMRC` to skip deleted files and a 64KB buffered reader.
+    /// Streams `git log` output once, combining commit hash, commit time and
+    /// changed `.rs` files, and resolves `repo_path` to the repository's
+    /// top-level directory via `git rev-parse --show-toplevel`. Uses
+    /// `--diff-filter=AMRC` to skip deleted files and a 64KB buffered reader.
     #[allow(clippy::missing_errors_doc)]
     pub fn analyze(&mut self, repo_path: &Path) -> Result<(), VolatilityError> {
-        // Check if it's a git repo
-        let git_check = Command::new("git")
-            .args(["rev-parse", "--git-dir"])
+        let toplevel = Command::new("git")
+            .args(["rev-parse", "--show-toplevel"])
             .current_dir(repo_path)
             .stderr(Stdio::null())
-            .stdout(Stdio::null())
-            .status()?;
+            .output()?;
 
-        if !git_check.success() {
+        if !toplevel.status.success() {
             return Err(VolatilityError::NotGitRepo);
         }
+        self.repo_root = PathBuf::from(String::from_utf8_lossy(&toplevel.stdout).trim());
+        self.commits.clear();
 
-        // Stream git log output
+        // Stream git log output; a null-prefixed header line starts each commit,
+        // carrying its hash and commit time ahead of --name-only's file list.
         let mut child = Command::new("git")
             .args([
                 "log",
-                "--pretty=format:",
+                "--pretty=format:%x00%H%x09%ct",
                 "--name-only",
                 "--diff-filter=AMRC",
                 &format!("--since={} months ago", self.config.months),
@@ -128,17 +163,32 @@ impl VolatilityAnalyzer {
 
         if let Some(stdout) = child.stdout.take() {
             let reader = BufReader::with_capacity(64 * 1024, stdout);
+            let mut current: Option<Commit> = None;
 
             for line in reader.lines() {
                 let Ok(line) = line else { continue };
-
                 let trimmed = line.trim();
-                if !trimmed.is_empty()
-                    && std::path::Path::new(trimmed)
-                        .extension()
-                        .is_some_and(|ext| ext.eq_ignore_ascii_case("rs"))
+                if trimmed.is_empty() {
+                    continue;
+                }
+
+                if let Some(header) = trimmed.strip_prefix('\0') {
+                    current = header.split_once('\t').and_then(|(hash, ts)| {
+                        ts.parse().ok().map(|timestamp| Commit {
+                            hash: hash.to_string(),
+                            timestamp,
+                        })
+                    });
+                    continue;
+                }
+
+                let Some(commit) = &current else { continue };
+                if Path::new(trimmed)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("rs"))
                 {
-                    *self.file_changes.entry(trimmed.to_string()).or_insert(0) += 1;
+                    let path = self.repo_root.join(trimmed);
+                    self.commits.entry(path).or_default().insert(commit.clone());
                 }
             }
         }
@@ -148,17 +198,49 @@ impl VolatilityAnalyzer {
         Ok(())
     }
 
+    /// The commits that touched `file`, keyed by its absolute path.
+    ///
+    /// Returns an empty set for a file with no recorded commits.
+    #[must_use]
+    pub fn commits(&self, file: &Path) -> &BTreeSet<Commit> {
+        static EMPTY: BTreeSet<Commit> = BTreeSet::new();
+        self.commits.get(file).unwrap_or(&EMPTY)
+    }
+
+    /// The display path for a tracked file: `path` with the repository root
+    /// stripped, as git printed it. Unchanged if `path` does not start with
+    /// the root.
+    fn display_path(&self, path: &Path) -> String {
+        path.strip_prefix(&self.repo_root)
+            .unwrap_or(path)
+            .display()
+            .to_string()
+    }
+
     /// Get the volatility level for a file path.
+    ///
+    /// `file_path` is interpreted relative to the repository root.
     #[must_use]
     pub fn get_volatility(&self, file_path: &str) -> Volatility {
-        let count = self.file_changes.get(file_path).copied().unwrap_or(0);
-        Volatility::from_count(count, &self.config)
+        Volatility::from_count(self.get_change_count(file_path), &self.config)
     }
 
     /// Get the raw change count for a file path.
+    ///
+    /// `file_path` is interpreted relative to the repository root.
     #[must_use]
     pub fn get_change_count(&self, file_path: &str) -> usize {
-        self.file_changes.get(file_path).copied().unwrap_or(0)
+        self.commits
+            .get(&self.repo_root.join(file_path))
+            .map_or(0, BTreeSet::len)
+    }
+
+    /// Each tracked file's display path and its change count.
+    fn path_counts(&self) -> Vec<(String, usize)> {
+        self.commits
+            .iter()
+            .map(|(path, set)| (self.display_path(path), set.len()))
+            .collect()
     }
 
     /// Normalized volatility scores (0.0 = no changes, 1.0 = most-changed file).
@@ -168,20 +250,20 @@ impl VolatilityAnalyzer {
     #[must_use]
     #[allow(clippy::cast_precision_loss)] // file change counts stay well below 2^52
     pub fn normalized_scores(&self) -> HashMap<String, f64> {
-        let max = self.file_changes.values().max().copied().unwrap_or(0);
+        let max = self.commits.values().map(BTreeSet::len).max().unwrap_or(0);
         if max == 0 {
             return HashMap::new();
         }
-        self.file_changes
-            .iter()
-            .map(|(path, &count)| (path.clone(), count as f64 / max as f64))
+        self.path_counts()
+            .into_iter()
+            .map(|(path, count)| (path, count as f64 / max as f64))
             .collect()
     }
 
     /// Format a human-readable volatility report.
     #[must_use]
     pub fn format_report(&self) -> String {
-        if self.file_changes.is_empty() {
+        if self.commits.is_empty() {
             return format!(
                 "No .rs file changes in the last {} months.\n",
                 self.config.months
@@ -208,12 +290,12 @@ impl VolatilityAnalyzer {
 
         // Sorted file list (descending by change count)
         let scores = self.normalized_scores();
-        let mut files: Vec<_> = self.file_changes.iter().collect();
-        files.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+        let mut files = self.path_counts();
+        files.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
         for (path, count) in &files {
-            let level = Volatility::from_count(**count, &self.config);
-            let score = scores.get(*path).copied().unwrap_or(0.0);
+            let level = Volatility::from_count(*count, &self.config);
+            let score = scores.get(path).copied().unwrap_or(0.0);
             let _ = writeln!(out, "  {path}  {count}  {score:.2}  {level}");
         }
 
@@ -223,11 +305,11 @@ impl VolatilityAnalyzer {
     /// Compute aggregate statistics across all tracked files.
     #[must_use]
     pub fn statistics(&self) -> VolatilityStats {
-        if self.file_changes.is_empty() {
+        if self.commits.is_empty() {
             return VolatilityStats::default();
         }
 
-        let counts: Vec<usize> = self.file_changes.values().copied().collect();
+        let counts: Vec<usize> = self.commits.values().map(BTreeSet::len).collect();
         let total_changes: usize = counts.iter().sum();
         let max_changes = counts.iter().max().copied().unwrap_or(0);
         let min_changes = counts.iter().min().copied().unwrap_or(0);
@@ -274,6 +356,104 @@ pub struct VolatilityStats {
 mod tests {
     use super::*;
 
+    /// Runs a git subcommand in `dir`, failing the test on a non-zero exit.
+    fn git(dir: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("git should be on PATH");
+        assert!(status.success(), "git {args:?} failed in {}", dir.display());
+    }
+
+    /// A fresh repository with a local identity, so commits succeed without
+    /// relying on the environment's global git config.
+    fn init_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init", "-q"]);
+        git(dir.path(), &["config", "user.email", "test@example.com"]);
+        git(dir.path(), &["config", "user.name", "Test"]);
+        dir
+    }
+
+    /// Writes `relative` under `repo_dir` and commits it, returning the new commit's hash.
+    fn commit_file(repo_dir: &Path, relative: &str, contents: &str) -> String {
+        let path = repo_dir.join(relative);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&path, contents).unwrap();
+        git(repo_dir, &["add", relative]);
+        git(repo_dir, &["commit", "-q", "-m", "test commit"]);
+        let output = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(repo_dir)
+            .output()
+            .unwrap();
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
+    }
+
+    /// `n` distinct commits with fabricated hashes, for tests that only care
+    /// about the count.
+    fn commits_of(n: usize) -> BTreeSet<Commit> {
+        (0..n)
+            .map(|i| Commit {
+                hash: format!("commit{i}"),
+                timestamp: i64::try_from(i).unwrap(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_commits_known_file_has_hash_and_timestamp() {
+        let repo = init_repo();
+        let hash = commit_file(repo.path(), "src/lib.rs", "fn main() {}");
+
+        let mut analyzer = VolatilityAnalyzer::new(VolatilityConfig::default());
+        analyzer.analyze(repo.path()).unwrap();
+
+        let file = repo.path().canonicalize().unwrap().join("src/lib.rs");
+        let commits: Vec<&Commit> = analyzer.commits(&file).iter().collect();
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].hash, hash);
+        assert!(commits[0].timestamp > 0);
+    }
+
+    #[test]
+    fn test_commits_unknown_file_is_empty() {
+        let repo = init_repo();
+        commit_file(repo.path(), "src/lib.rs", "fn main() {}");
+
+        let mut analyzer = VolatilityAnalyzer::new(VolatilityConfig::default());
+        analyzer.analyze(repo.path()).unwrap();
+
+        let file = repo
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("src/never_committed.rs");
+        assert!(analyzer.commits(&file).is_empty());
+    }
+
+    #[test]
+    fn test_commits_for_workspace_in_subdirectory() {
+        let repo = init_repo();
+        commit_file(repo.path(), "workspace/src/lib.rs", "fn main() {}");
+
+        let workspace_root = repo.path().join("workspace");
+        let mut analyzer = VolatilityAnalyzer::new(VolatilityConfig::default());
+        analyzer.analyze(&workspace_root).unwrap();
+
+        let file = repo
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("workspace/src/lib.rs");
+        assert_eq!(analyzer.commits(&file).len(), 1);
+    }
+
     #[test]
     fn test_volatility_config_default() {
         let config = VolatilityConfig::default();
@@ -314,7 +494,7 @@ mod tests {
     #[test]
     fn test_analyzer_new() {
         let analyzer = VolatilityAnalyzer::new(VolatilityConfig::default());
-        assert!(analyzer.file_changes.is_empty());
+        assert!(analyzer.commits.is_empty());
         assert_eq!(analyzer.config.months, 6);
     }
 
@@ -338,7 +518,7 @@ mod tests {
         let mut analyzer = VolatilityAnalyzer::new(VolatilityConfig::default());
         let result = analyzer.analyze(repo);
         assert!(result.is_ok());
-        assert!(!analyzer.file_changes.is_empty());
+        assert!(!analyzer.commits.is_empty());
     }
 
     #[test]
@@ -364,9 +544,16 @@ mod tests {
     #[test]
     fn test_get_volatility_known_file() {
         let mut analyzer = VolatilityAnalyzer::new(VolatilityConfig::default());
-        analyzer.file_changes.insert("low.rs".into(), 1);
-        analyzer.file_changes.insert("med.rs".into(), 5);
-        analyzer.file_changes.insert("high.rs".into(), 15);
+        analyzer.repo_root = PathBuf::from("/repo");
+        analyzer
+            .commits
+            .insert(analyzer.repo_root.join("low.rs"), commits_of(1));
+        analyzer
+            .commits
+            .insert(analyzer.repo_root.join("med.rs"), commits_of(5));
+        analyzer
+            .commits
+            .insert(analyzer.repo_root.join("high.rs"), commits_of(15));
 
         assert_eq!(analyzer.get_volatility("low.rs"), Volatility::Low);
         assert_eq!(analyzer.get_volatility("med.rs"), Volatility::Medium);
@@ -383,7 +570,10 @@ mod tests {
     #[test]
     fn test_get_change_count() {
         let mut analyzer = VolatilityAnalyzer::new(VolatilityConfig::default());
-        analyzer.file_changes.insert("known.rs".into(), 42);
+        analyzer.repo_root = PathBuf::from("/repo");
+        analyzer
+            .commits
+            .insert(analyzer.repo_root.join("known.rs"), commits_of(42));
 
         assert_eq!(analyzer.get_change_count("known.rs"), 42);
         assert_eq!(analyzer.get_change_count("unknown.rs"), 0);
@@ -392,9 +582,16 @@ mod tests {
     #[test]
     fn test_statistics_with_data() {
         let mut analyzer = VolatilityAnalyzer::new(VolatilityConfig::default());
-        analyzer.file_changes.insert("a.rs".into(), 1); // Low
-        analyzer.file_changes.insert("b.rs".into(), 5); // Medium
-        analyzer.file_changes.insert("c.rs".into(), 15); // High
+        analyzer.repo_root = PathBuf::from("/repo");
+        analyzer
+            .commits
+            .insert(analyzer.repo_root.join("a.rs"), commits_of(1)); // Low
+        analyzer
+            .commits
+            .insert(analyzer.repo_root.join("b.rs"), commits_of(5)); // Medium
+        analyzer
+            .commits
+            .insert(analyzer.repo_root.join("c.rs"), commits_of(15)); // High
 
         let stats = analyzer.statistics();
         assert_eq!(stats.total_files, 3);
@@ -429,9 +626,16 @@ mod tests {
     #[test]
     fn test_format_report() {
         let mut analyzer = VolatilityAnalyzer::new(VolatilityConfig::default());
-        analyzer.file_changes.insert("src/hot.rs".into(), 15);
-        analyzer.file_changes.insert("src/warm.rs".into(), 5);
-        analyzer.file_changes.insert("src/cold.rs".into(), 1);
+        analyzer.repo_root = PathBuf::from("/repo");
+        analyzer
+            .commits
+            .insert(analyzer.repo_root.join("src/hot.rs"), commits_of(15));
+        analyzer
+            .commits
+            .insert(analyzer.repo_root.join("src/warm.rs"), commits_of(5));
+        analyzer
+            .commits
+            .insert(analyzer.repo_root.join("src/cold.rs"), commits_of(1));
 
         let report = analyzer.format_report();
 
@@ -451,9 +655,16 @@ mod tests {
     #[test]
     fn test_normalized_scores() {
         let mut analyzer = VolatilityAnalyzer::new(VolatilityConfig::default());
-        analyzer.file_changes.insert("a.rs".into(), 10);
-        analyzer.file_changes.insert("b.rs".into(), 5);
-        analyzer.file_changes.insert("c.rs".into(), 0);
+        analyzer.repo_root = PathBuf::from("/repo");
+        analyzer
+            .commits
+            .insert(analyzer.repo_root.join("a.rs"), commits_of(10));
+        analyzer
+            .commits
+            .insert(analyzer.repo_root.join("b.rs"), commits_of(5));
+        analyzer
+            .commits
+            .insert(analyzer.repo_root.join("c.rs"), commits_of(0));
 
         let scores = analyzer.normalized_scores();
         assert!((scores["a.rs"] - 1.0).abs() < f64::EPSILON);
@@ -472,5 +683,47 @@ mod tests {
         let analyzer = VolatilityAnalyzer::new(VolatilityConfig::default());
         let report = analyzer.format_report();
         assert_eq!(report, "No .rs file changes in the last 6 months.\n");
+    }
+
+    #[test]
+    fn test_analyze_clears_commits_from_previous_repository() {
+        let repo_a = init_repo();
+        commit_file(repo_a.path(), "a.rs", "fn a() {}");
+        let repo_b = init_repo();
+        commit_file(repo_b.path(), "b.rs", "fn b() {}");
+
+        let mut analyzer = VolatilityAnalyzer::new(VolatilityConfig::default());
+        analyzer.analyze(repo_a.path()).unwrap();
+        analyzer.analyze(repo_b.path()).unwrap();
+
+        assert_eq!(analyzer.statistics().total_files, 1);
+    }
+
+    #[test]
+    fn test_commits_are_ordered_by_time_not_hash() {
+        let mut analyzer = VolatilityAnalyzer::new(VolatilityConfig::default());
+        analyzer.repo_root = PathBuf::from("/repo");
+        let file = analyzer.repo_root.join("a.rs");
+        analyzer.commits.insert(
+            file.clone(),
+            BTreeSet::from([
+                Commit {
+                    hash: "zzz".into(),
+                    timestamp: 1,
+                },
+                Commit {
+                    hash: "aaa".into(),
+                    timestamp: 2,
+                },
+            ]),
+        );
+
+        let ordered: Vec<&str> = analyzer
+            .commits(&file)
+            .iter()
+            .map(|c| c.hash.as_str())
+            .collect();
+
+        assert_eq!(ordered, vec!["zzz", "aaa"]);
     }
 }
