@@ -64,26 +64,19 @@ impl ToolbarFacts {
     }
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "SVG pixel coordinates fit in i32"
-)]
 #[allow(clippy::too_many_lines, reason = "single cohesive markup template")]
 pub(super) fn render_toolbar(width: f32, facts: ToolbarFacts, config: &RenderConfig) -> String {
     let ct = &CSS.toolbar;
-    let height = LAYOUT.toolbar.height as i32;
 
-    // Only a page served by `cargo arc ui` has an editor to follow and a
-    // service to switch; a file written by `cargo arc -o` has neither.
-    let service_toggles = if config.with_jump_ids {
+    // Only a page served by `cargo arc ui` has a service to switch; a file
+    // written by `cargo arc -o` has none (Follow editor is the shared
+    // frame's own concern, gated on the same `with_jump_ids`).
+    let after_follow = if config.with_jump_ids {
         format!(
             concat!(
-                "      <button id=\"follow-toggle\" class=\"{} {}\" aria-pressed=\"true\">Follow editor</button>\n",
                 "      <button id=\"externals-toggle\" class=\"{} {}\" aria-pressed=\"{}\">External crates</button>\n",
                 "      <button id=\"tests-toggle\" class=\"{} {}\" aria-pressed=\"{}\">Test code</button>\n",
             ),
-            ct.html_btn,
-            ct.follow_toggle,
             ct.html_btn,
             ct.switch_toggle,
             config.switches.externals,
@@ -124,24 +117,22 @@ pub(super) fn render_toolbar(width: f32, facts: ToolbarFacts, config: &RenderCon
         String::new()
     };
 
-    // The toolbar's link to the hotspot map; JS updates its `href` to carry
-    // the current node selection as `?select=<file>`. Present on a written
-    // file too, dead there like a jump link.
-    let page_link = format!(
-        "      <a id=\"hotspot-page-link\" class=\"{}\" href=\"/hotspots\">Hotspot map</a>\n",
-        ct.html_btn,
-    );
-
-    format!(
+    let before_dropdown = format!(
         concat!(
-            "  <foreignObject id=\"toolbar-fo\" x=\"0\" y=\"0\" width=\"{}\" height=\"{}\"",
-            " style=\"display:none; overflow:visible\">\n",
-            "    <div class=\"{}\" xmlns=\"http://www.w3.org/1999/xhtml\">\n",
             "      <button id=\"collapse-toggle-btn\" class=\"{}\">{}</button>\n",
             "      <span class=\"{}\"></span>\n",
-            "      <div class=\"{}\">\n",
-            "        <button id=\"view-dropdown-btn\" class=\"{} {}\">View \u{25be}</button>\n",
-            "        <div class=\"{}\" style=\"display:none\">\n",
+        ),
+        ct.html_btn,
+        if facts.initial_collapsed {
+            "Expand All"
+        } else {
+            "Collapse All"
+        },
+        ct.separator_v,
+    );
+
+    let dropdown_filters = format!(
+        concat!(
             "          <label class=\"{}\">\n",
             "            <span class=\"{} {}\" id=\"crate-dep-checkbox\"></span>\n",
             "            Show Crate Dependencies\n",
@@ -159,25 +150,23 @@ pub(super) fn render_toolbar(width: f32, facts: ToolbarFacts, config: &RenderCon
             "            Show Circular Dependencies\n",
             "          </label>\n",
             "{}",
-            "          <div class=\"{}\"></div>\n",
-            "          <label class=\"{}\">\n",
-            "            <span>Appearance</span>\n",
-            "            <select id=\"theme-mode\">",
-            "<option value=\"light\">Light</option>",
-            "<option value=\"dark\">Dark</option>",
-            "<option value=\"system\">System</option>",
-            "</select>\n",
-            "          </label>\n",
-            "          <label class=\"{}\">\n",
-            "            <span>Light theme</span>\n",
-            "            <select id=\"theme-light\"></select>\n",
-            "          </label>\n",
-            "          <label class=\"{}\">\n",
-            "            <span>Dark theme</span>\n",
-            "            <select id=\"theme-dark\"></select>\n",
-            "          </label>\n",
-            "        </div>\n",
-            "      </div>\n",
+        ),
+        ct.toggle,
+        ct.checkbox,
+        ct.checked, // checkbox span (checked)
+        ct.toggle,  // label.toolbar-toggle (module dep)
+        ct.checkbox,
+        ct.checked,  // checkbox span (checked)
+        ct.toggle,   // label.toolbar-toggle (re-export dep)
+        ct.checkbox, // checkbox span (unchecked → default hidden)
+        ct.toggle,   // label.toolbar-toggle (cycles)
+        ct.checkbox,
+        ct.checked,        // checkbox span (checked → cluster mode on)
+        external_checkbox, // optional external dep checkbox
+    );
+
+    let after_dropdown = format!(
+        concat!(
             "      <span class=\"{}\"></span>\n",
             "      <div class=\"{}\">\n",
             "        <div class=\"{}\">\n",
@@ -193,57 +182,34 @@ pub(super) fn render_toolbar(width: f32, facts: ToolbarFacts, config: &RenderCon
             "        </div>\n",
             "        <span id=\"search-result-count\" class=\"{}\"></span>\n",
             "      </div>\n",
-            "{}",
-            "{}",
-            "      <span id=\"jump-status\" class=\"{}\"></span>\n",
-            "    </div>\n",
-            "  </foreignObject>\n",
         ),
-        width,       // foreignObject width
-        height,      // foreignObject height
-        ct.root,     // .toolbar-root
-        ct.html_btn, // collapse button class
-        if facts.initial_collapsed {
-            "Expand All"
-        } else {
-            "Collapse All"
-        }, // button text
-        ct.separator_v, // separator
-        ct.dropdown, // .toolbar-dropdown container
-        ct.html_btn, // dropdown button base class
-        ct.dropdown_btn, // dropdown button marker class
-        ct.dropdown_panel, // .toolbar-dropdown-panel
-        ct.toggle,   // label.toolbar-toggle (crate dep)
-        ct.checkbox,
-        ct.checked, // checkbox span (checked)
-        ct.toggle,  // label.toolbar-toggle (module dep)
-        ct.checkbox,
-        ct.checked,  // checkbox span (checked)
-        ct.toggle,   // label.toolbar-toggle (re-export dep)
-        ct.checkbox, // checkbox span (unchecked → default hidden)
-        ct.toggle,   // label.toolbar-toggle (cycles)
-        ct.checkbox,
-        ct.checked,              // checkbox span (checked → cluster mode on)
-        external_checkbox,       // optional external dep checkbox
-        ct.dropdown_divider,     // line between the filters and the appearance controls
-        ct.select,               // label.toolbar-select (mode switch)
-        ct.select,               // label.toolbar-select (light theme)
-        ct.select,               // label.toolbar-select (dark theme)
-        ct.separator_v,          // separator
-        ct.search_group,         // .toolbar-search-group
-        ct.search_input_wrapper, // .toolbar-search-input-wrapper
-        ct.search_clear,         // .toolbar-search-clear
-        ct.scope,                // .toolbar-scope
+        ct.separator_v,
+        ct.search_group,
+        ct.search_input_wrapper,
+        ct.search_clear,
+        ct.scope,
         ct.scope_btn,
         ct.scope_active, // first scope btn (active)
         ct.scope_btn,    // crate scope btn
         ct.scope_btn,    // module scope btn
         ct.scope_btn,    // symbol scope btn
-        ct.result_count, // .toolbar-result-count
-        service_toggles, // optional follow toggle button
-        page_link,       // link to the hotspot map
-        ct.jump_status,  // .toolbar-jump-status
-    )
+        ct.result_count,
+    );
+
+    let content = super::toolbar::Content {
+        before_dropdown,
+        dropdown_filters,
+        after_dropdown,
+        after_follow,
+    };
+    // The toolbar's link to the hotspot map; JS updates its `href` to carry
+    // the current node selection as `?select=<file>`.
+    let cross_link = super::toolbar::CrossLink {
+        id: "hotspot-page-link",
+        href: "/hotspots",
+        label: "Hotspot map",
+    };
+    super::toolbar::render(width, config, &content, cross_link)
 }
 
 pub(super) fn render_tree_lines(
@@ -1152,6 +1118,101 @@ mod tests {
             "id=\"cycle-marker-{}\" class=\"{}\"></tspan>",
             fx.root, CSS.nodes.cycle_marker
         )));
+    }
+
+    /// Locks the arc page's toolbar markup byte-for-byte, with every optional
+    /// block present (external + transitive checkboxes, follow editor, the
+    /// externals/tests switches): the widest surface `render_toolbar` emits.
+    /// The toolbar frame is shared with the hotspot map's own toolbar
+    /// (`hotspots::render_toolbar`), but the arc page's own emitted markup
+    /// must not move as a result.
+    #[test]
+    fn arc_toolbar_markup_is_pinned() {
+        let facts = ToolbarFacts {
+            has_externals: true,
+            has_transitive_externals: true,
+            initial_collapsed: false,
+        };
+        let config = RenderConfig {
+            with_jump_ids: true,
+            switches: AnalysisSwitches {
+                externals: true,
+                tests: false,
+            },
+            ..RenderConfig::default()
+        };
+        let output = render_toolbar(800.0, facts, &config);
+        assert_eq!(
+            output,
+            "  <foreignObject id=\"toolbar-fo\" x=\"0\" y=\"0\" width=\"800\" height=\"40\" style=\"display:none; overflow:visible\">\n\
+\u{20}   <div class=\"toolbar-root\" xmlns=\"http://www.w3.org/1999/xhtml\">\n\
+\u{20}     <button id=\"collapse-toggle-btn\" class=\"toolbar-html-btn\">Collapse All</button>\n\
+\u{20}     <span class=\"toolbar-separator-v\"></span>\n\
+\u{20}     <div class=\"toolbar-dropdown\">\n\
+\u{20}       <button id=\"view-dropdown-btn\" class=\"toolbar-html-btn toolbar-dropdown-btn\">View \u{25be}</button>\n\
+\u{20}       <div class=\"toolbar-dropdown-panel\" style=\"display:none\">\n\
+\u{20}         <label class=\"toolbar-toggle\">\n\
+\u{20}           <span class=\"toolbar-checkbox checked\" id=\"crate-dep-checkbox\"></span>\n\
+\u{20}           Show Crate Dependencies\n\
+\u{20}         </label>\n\
+\u{20}         <label class=\"toolbar-toggle\">\n\
+\u{20}           <span class=\"toolbar-checkbox checked\" id=\"module-dep-checkbox\"></span>\n\
+\u{20}           Show Module Dependencies\n\
+\u{20}         </label>\n\
+\u{20}         <label class=\"toolbar-toggle\">\n\
+\u{20}           <span class=\"toolbar-checkbox\" id=\"reexport-dep-checkbox\"></span>\n\
+\u{20}           Show Re-Export Dependencies\n\
+\u{20}         </label>\n\
+\u{20}         <label class=\"toolbar-toggle\">\n\
+\u{20}           <span class=\"toolbar-checkbox checked\" id=\"cycles-checkbox\"></span>\n\
+\u{20}           Show Circular Dependencies\n\
+\u{20}         </label>\n\
+\u{20}         <label class=\"toolbar-toggle\">\n\
+\u{20}           <span class=\"toolbar-checkbox checked\" id=\"external-dep-checkbox\"></span>\n\
+\u{20}           External Dependencies\n\
+\u{20}         </label>\n\
+\u{20}         <label class=\"toolbar-toggle\">\n\
+\u{20}           <span class=\"toolbar-checkbox checked\" id=\"transitive-dep-checkbox\"></span>\n\
+\u{20}           Transitive Dependencies\n\
+\u{20}         </label>\n\
+\u{20}         <div class=\"toolbar-dropdown-divider\"></div>\n\
+\u{20}         <label class=\"toolbar-select\">\n\
+\u{20}           <span>Appearance</span>\n\
+\u{20}           <select id=\"theme-mode\"><option value=\"light\">Light</option><option value=\"dark\">Dark</option><option value=\"system\">System</option></select>\n\
+\u{20}         </label>\n\
+\u{20}         <label class=\"toolbar-select\">\n\
+\u{20}           <span>Light theme</span>\n\
+\u{20}           <select id=\"theme-light\"></select>\n\
+\u{20}         </label>\n\
+\u{20}         <label class=\"toolbar-select\">\n\
+\u{20}           <span>Dark theme</span>\n\
+\u{20}           <select id=\"theme-dark\"></select>\n\
+\u{20}         </label>\n\
+\u{20}       </div>\n\
+\u{20}     </div>\n\
+\u{20}     <span class=\"toolbar-separator-v\"></span>\n\
+\u{20}     <div class=\"toolbar-search-group\">\n\
+\u{20}       <div class=\"toolbar-search-input-wrapper\">\n\
+\u{20}         <input id=\"search-input\" type=\"text\" placeholder=\"Search...\" />\n\
+\u{20}         <button id=\"search-clear\" class=\"toolbar-search-clear\" style=\"display:none\">\u{2715}</button>\n\
+\u{20}       </div>\n\
+\u{20}       <div id=\"scope-selector\" class=\"toolbar-scope\">\n\
+\u{20}         <button class=\"toolbar-scope-btn active\" data-scope=\"all\">All</button>\n\
+\u{20}         <button class=\"toolbar-scope-btn\" data-scope=\"crate\">Crate</button>\n\
+\u{20}         <button class=\"toolbar-scope-btn\" data-scope=\"module\">Module</button>\n\
+\u{20}         <button class=\"toolbar-scope-btn\" data-scope=\"symbol\">Symbol</button>\n\
+\u{20}       </div>\n\
+\u{20}       <span id=\"search-result-count\" class=\"toolbar-result-count\"></span>\n\
+\u{20}     </div>\n\
+\u{20}     <button id=\"follow-toggle\" class=\"toolbar-html-btn toolbar-follow-toggle\" aria-pressed=\"true\">Follow editor</button>\n\
+\u{20}     <button id=\"externals-toggle\" class=\"toolbar-html-btn toolbar-switch-toggle\" aria-pressed=\"true\">External crates</button>\n\
+\u{20}     <button id=\"tests-toggle\" class=\"toolbar-html-btn toolbar-switch-toggle\" aria-pressed=\"false\">Test code</button>\n\
+\u{20}     <a id=\"hotspot-page-link\" class=\"toolbar-html-btn\" href=\"/hotspots\">Hotspot map</a>\n\
+\u{20}     <span id=\"jump-status\" class=\"toolbar-jump-status\"></span>\n\
+\u{20}   </div>\n\
+\u{20} </foreignObject>\n",
+            "arc toolbar markup changed, got: {output}"
+        );
     }
 
     #[test]

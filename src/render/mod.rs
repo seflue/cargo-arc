@@ -11,6 +11,7 @@ mod hotspots;
 mod positioning;
 mod static_data;
 mod theme;
+mod toolbar;
 pub use constants::{AnalysisSwitches, RenderConfig};
 use css::render_styles;
 use elements::{

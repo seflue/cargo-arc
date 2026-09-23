@@ -197,7 +197,9 @@ function buildHotspotMap(themeControl) {
   /**
    * The jump icon at the selected leaf: shown only while it carries a jump
    * target (`config.with_jump_ids` on the server, decision 12's second
-   * half), and kept at the circle's current drawn position across a zoom.
+   * half), placed right after its own label (or, while that label is not
+   * shown, at the circle's edge - `HotspotJumpIcon.glyphPosition`'s own
+   * fallback), and kept there across a zoom.
    */
   function updateJumpIcon() {
     const targets = selectedKey === null ? null : nodes[selectedKey]?.targets;
@@ -206,12 +208,14 @@ function buildHotspotMap(themeControl) {
       return;
     }
     const node = nodes[selectedKey];
-    const circle = {
-      cx: tx + node.cx * scale,
-      cy: ty + node.cy * scale,
-      r: node.r * scale,
-    };
-    jumpIcon.show(circle, targets[0]);
+    const placement = HotspotLabels.placeLabels(
+      nodes,
+      targetKey,
+      hoveredKey,
+      scale,
+    ).get(selectedKey);
+    const at = HotspotJumpIcon.glyphPosition(node, placement, scale, tx, ty);
+    jumpIcon.show(at, targets[0]);
   }
 
   function zoomTo(key) {

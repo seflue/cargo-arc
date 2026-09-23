@@ -562,6 +562,43 @@ describe('hotspot_script entry', () => {
     expect(jumpLayer.children.length).toBe(0);
   });
 
+  test('updateJumpIcon feeds glyphPosition the selected leaf’s own label placement', () => {
+    const map = buildHotspotMap();
+    const jumpLayer = svg.children
+      .filter((child) => child.getAttribute('id') === 'hotspot-jump-layer')
+      .pop();
+
+    map.select('hot'); // carries a target and, per the fixture above, a shown label
+    const [icon] = jumpLayer.children;
+
+    const [, txStr, tyStr, scaleStr] = mapContent
+      .getAttribute('transform')
+      .match(/translate\(([^ ]+) ([^)]+)\) scale\(([^)]+)\)/);
+    const tx = Number(txStr);
+    const ty = Number(tyStr);
+    const scale = Number(scaleStr);
+    const node = STATIC_DATA.nodes.hot;
+    const placement = HotspotLabels.placeLabels(
+      STATIC_DATA.nodes,
+      'root',
+      null,
+      scale,
+    ).get('hot');
+    expect(placement).not.toBeNull();
+
+    const wired = HotspotJumpIcon.glyphPosition(node, placement, scale, tx, ty);
+    expect(Number(icon.getAttribute('x'))).toBeCloseTo(wired.x, 5);
+    expect(Number(icon.getAttribute('y'))).toBeCloseTo(wired.y, 5);
+    expect(Number(icon.getAttribute('width'))).toBeCloseTo(wired.size, 5);
+
+    // The old circle-edge fallback (`glyphPosition`'s no-label branch) sits
+    // elsewhere - proof the wiring actually forwards a placement instead of
+    // always passing null.
+    const fallback = HotspotJumpIcon.glyphPosition(node, null, scale, tx, ty);
+    expect(Number(icon.getAttribute('x'))).not.toBeCloseTo(fallback.x, 0);
+    expect(Number(icon.getAttribute('y'))).not.toBeCloseTo(fallback.y, 0);
+  });
+
   test('focus() selects the leaf without throwing, ready to zoom to its parent', () => {
     const map = buildHotspotMap();
 

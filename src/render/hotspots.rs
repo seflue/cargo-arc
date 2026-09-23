@@ -179,56 +179,18 @@ fn render_hotspot_header(width: f32, height: f32, theme: Option<&Theme>) -> Stri
     )
 }
 
-/// Render the map's toolbar with the arc page's classes and ids, so both
-/// pages share one theme bootstrap; the follow toggle needs `with_jump_ids`.
+/// Render the toolbar shared with the arc page, with a link to it and no
+/// buttons of the map's own.
 fn render_toolbar(width: f32, config: &RenderConfig) -> String {
-    let ct = &CSS.toolbar;
-    #[allow(clippy::cast_possible_truncation)] // toolbar height is a small constant
-    let height = LAYOUT.toolbar.height as i32;
-    let follow = if config.with_jump_ids {
-        format!(
-            "      <button id=\"follow-toggle\" class=\"{} {}\" aria-pressed=\"true\">Follow editor</button>\n",
-            ct.html_btn, ct.follow_toggle,
-        )
-    } else {
-        String::new()
-    };
+    let content = super::toolbar::Content::default();
     // The toolbar's link to the arc page; JS updates its `href` to carry
-    // the currently selected leaf as `?select=<file>`. Present on a written
-    // file too, dead there like a jump link.
-    let page_link = format!(
-        "      <a id=\"arc-page-link\" class=\"{}\" href=\"/\">Arc diagram</a>\n",
-        ct.html_btn,
-    );
-    format!(
-        concat!(
-            "  <foreignObject id=\"toolbar-fo\" x=\"0\" y=\"0\" width=\"{}\" height=\"{}\"",
-            " style=\"display:none; overflow:visible\">\n",
-            "    <div class=\"{}\" xmlns=\"http://www.w3.org/1999/xhtml\">\n",
-            "{}",
-            "{}",
-            "      <label class=\"{}\">\n",
-            "        <span>Appearance</span>\n",
-            "        <select id=\"theme-mode\">",
-            "<option value=\"light\">Light</option>",
-            "<option value=\"dark\">Dark</option>",
-            "<option value=\"system\">System</option>",
-            "</select>\n",
-            "      </label>\n",
-            "      <label class=\"{}\">\n",
-            "        <span>Light theme</span>\n",
-            "        <select id=\"theme-light\"></select>\n",
-            "      </label>\n",
-            "      <label class=\"{}\">\n",
-            "        <span>Dark theme</span>\n",
-            "        <select id=\"theme-dark\"></select>\n",
-            "      </label>\n",
-            "      <span id=\"jump-status\" class=\"{}\"></span>\n",
-            "    </div>\n",
-            "  </foreignObject>\n",
-        ),
-        width, height, ct.root, follow, page_link, ct.select, ct.select, ct.select, ct.jump_status,
-    )
+    // the currently selected leaf as `?select=<file>`.
+    let cross_link = super::toolbar::CrossLink {
+        id: "arc-page-link",
+        href: "/",
+        label: "Arc diagram",
+    };
+    super::toolbar::render(width, config, &content, cross_link)
 }
 
 /// Return `node`'s `<circle>` with its classes, and its inline fill unless
@@ -1033,6 +995,54 @@ mod tests {
                 "missing rule for {selector}: {svg}"
             );
         }
+    }
+
+    /// The `toolbar-fo` foreignObject's own markup, for asserting on the
+    /// bar's structure independent of the circles and sidebar around it.
+    fn toolbar_markup(svg: &str) -> &str {
+        let start = svg.find("id=\"toolbar-fo\"").expect("toolbar present");
+        let end = start + svg[start..].find("</foreignObject>").unwrap();
+        &svg[start..end]
+    }
+
+    /// The map's appearance, light-theme and dark-theme controls sit inside
+    /// the same View dropdown the arc page uses, not as bare selects on the
+    /// bar (`super::toolbar::render` is the shared renderer for both).
+    #[test]
+    fn hotspot_toolbar_puts_appearance_controls_inside_the_view_dropdown() {
+        let (_, _, svg) = rendered_default();
+        let toolbar = toolbar_markup(&svg);
+        let panel_start = toolbar
+            .find("toolbar-dropdown-panel")
+            .expect("View dropdown panel present");
+
+        for id in ["theme-mode", "theme-light", "theme-dark"] {
+            let pos = toolbar
+                .find(&format!("id=\"{id}\""))
+                .unwrap_or_else(|| panic!("{id} missing, got: {toolbar}"));
+            assert!(
+                pos > panel_start,
+                "{id} must sit inside the View dropdown panel, got: {toolbar}"
+            );
+        }
+    }
+
+    /// Outside the (collapsed) View dropdown, the map's bar shows buttons
+    /// only - no raw `<select>` eating the bar's width.
+    #[test]
+    fn hotspot_toolbar_shows_no_bare_selects_outside_the_view_dropdown() {
+        let (_, _, svg) = rendered_default();
+        let toolbar = toolbar_markup(&svg);
+        let panel_start = toolbar
+            .find("toolbar-dropdown-panel")
+            .expect("View dropdown panel present");
+
+        let selects: Vec<usize> = toolbar.match_indices("<select").map(|(i, _)| i).collect();
+        assert!(!selects.is_empty(), "expected the three theme selects");
+        assert!(
+            selects.iter().all(|&pos| pos > panel_start),
+            "a <select> sits outside the View dropdown, got: {toolbar}"
+        );
     }
 
     /// `STATIC_DATA`'s own `classes` map names every hotspot class JS builds
