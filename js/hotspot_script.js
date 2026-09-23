@@ -147,6 +147,10 @@ function buildHotspotMap(themeControl) {
   let targetKey = rootKey;
   let hoveredKey = null;
   let selectedKey = null;
+  // Which of a selection or a zoom the cross-page link should carry, per
+  // whichever happened last (`updatePageLink`'s own doc comment); `null`
+  // before either has happened, carrying nothing.
+  let lastLinkSource = null;
   let showingBars = false;
   let view = HotspotZoom.viewFor(nodes[targetKey]);
   let animationHandle = null;
@@ -220,6 +224,8 @@ function buildHotspotMap(themeControl) {
 
   function zoomTo(key) {
     targetKey = key;
+    lastLinkSource = 'zoom';
+    updatePageLink();
     const from = view;
     const to = HotspotZoom.viewFor(nodes[key]);
     const startedAt = performance.now();
@@ -289,9 +295,23 @@ function buildHotspotMap(themeControl) {
       '</table>';
   }
 
+  /**
+   * The cross-page link: a selected leaf carries its file, a zoomed-into
+   * container carries its, and whichever of the two happened last wins -
+   * that is where the user last put their attention. A zoom to the root is
+   * the absence of a zoomed container, not a cancelled selection, so it
+   * falls back to a still-selected leaf's file instead of carrying nothing.
+   */
   function updatePageLink() {
     if (!pageLinkEl) return;
-    const file = selectedKey === null ? null : nodes[selectedKey].file;
+    let file = null;
+    if (lastLinkSource === 'select' && selectedKey !== null) {
+      file = nodes[selectedKey].file;
+    } else if (lastLinkSource === 'zoom' && targetKey !== rootKey) {
+      file = nodes[targetKey].file;
+    } else if (selectedKey !== null) {
+      file = nodes[selectedKey].file;
+    }
     pageLinkEl.setAttribute('href', PageLink.buildLink('/', file));
   }
 
@@ -299,6 +319,7 @@ function buildHotspotMap(themeControl) {
   function select(key) {
     const previous = selectedKey;
     selectedKey = key;
+    lastLinkSource = 'select';
     paintCircle(previous);
     paintCircle(selectedKey);
     renderDetails();
@@ -306,17 +327,31 @@ function buildHotspotMap(themeControl) {
     updateJumpIcon();
   }
 
-  /** Selects a leaf and zooms to its parent circle, so it sits among its siblings. */
+  /**
+   * Selects a leaf and zooms to its parent circle, so it sits among its
+   * siblings. Zooms first, so the leaf's own selection - not the parent
+   * it's framed against - is what the cross-page link ends up carrying.
+   */
   function focus(key) {
-    select(key);
     zoomTo(nodes[key]?.parent ?? HotspotTree.rootKey(nodes));
+    select(key);
   }
 
-  /** An editor follow event or `?select` naming a workspace-relative file. */
+  /** An editor follow event naming a workspace-relative file: it arrives
+   * with no idea where the map is already looking, so a leaf keeps zooming
+   * to its parent, same as always. */
   function focusFile(file) {
     const key = HotspotSelection.leafKeyForFile(nodes, file);
     if (key === null) return;
     focus(key);
+  }
+
+  /** Show the file `?select=` names: zoom into a container, focus a leaf. */
+  function applyIncomingSelect(file) {
+    const place = HotspotSelection.placeForFile(nodes, file);
+    if (!place) return;
+    if (place.type === 'zoom') zoomTo(place.key);
+    else focus(place.key);
   }
 
   function barsHtml() {
@@ -409,7 +444,7 @@ function buildHotspotMap(themeControl) {
 
   if (typeof location !== 'undefined') {
     const file = PageLink.parseSelect(location.search);
-    if (file) focusFile(file);
+    if (file) applyIncomingSelect(file);
   }
 
   /**

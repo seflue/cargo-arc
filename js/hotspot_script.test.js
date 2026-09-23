@@ -251,6 +251,37 @@ global.STATIC_DATA = {
       commits: 1,
       fillPercent: 50,
     },
+    // A container distinct from the root, so a zoom target can differ from
+    // both the root and a leaf's own parent. Module-scope, not one test's
+    // own assignment: several tests below share it, and `bun test ... -t`
+    // on any one of them alone needs it present without that other test
+    // having run first.
+    select_container: {
+      kind: 'module',
+      name: 'container',
+      file: 'src/container/mod.rs',
+      parent: 'root',
+      cx: 220,
+      cy: 190,
+      r: 30,
+      lines: 50,
+      commits: 2,
+      fillPercent: 80,
+    },
+    // A leaf under `select_container`, not the root - its own parent is a
+    // zoom target with a different scale than the root's, unlike `hot`'s.
+    nested: {
+      kind: 'file',
+      name: 'nested.rs',
+      file: 'src/container/nested.rs',
+      parent: 'select_container',
+      cx: 228,
+      cy: 185,
+      r: 6,
+      lines: 20,
+      commits: 1,
+      fillPercent: 60,
+    },
   },
 };
 global.Theme = Theme;
@@ -607,6 +638,16 @@ describe('hotspot_script entry', () => {
     expect(detailsEl.innerHTML).toContain('src/hot.rs');
   });
 
+  test('focus() on a leaf whose parent is not the root leaves the cross-page link on the leaf, not the parent it zoomed to', () => {
+    const map = buildHotspotMap();
+
+    map.focus('nested');
+
+    expect(arcLinkEl.getAttribute('href')).toBe(
+      PageLink.buildLink('/', 'src/container/nested.rs'),
+    );
+  });
+
   test('the list/bars toggle swaps the list content and its own label, and back', () => {
     buildHotspotMap();
     const original = listEl.innerHTML;
@@ -633,6 +674,128 @@ describe('hotspot_script entry', () => {
     listEl._fire('click', { target: row });
 
     expect(detailsEl.innerHTML).toContain('src/hot.rs');
+  });
+
+  test('the cross-page link carries a selected leaf’s file', () => {
+    const map = buildHotspotMap();
+
+    map.select('hot');
+
+    expect(arcLinkEl.getAttribute('href')).toBe(
+      PageLink.buildLink('/', 'src/hot.rs'),
+    );
+  });
+
+  test('the cross-page link carries a zoomed-into container’s file', () => {
+    const map = buildHotspotMap();
+
+    map.zoomTo('select_container');
+
+    expect(arcLinkEl.getAttribute('href')).toBe(
+      PageLink.buildLink('/', 'src/container/mod.rs'),
+    );
+  });
+
+  test('zooming to the root carries nothing on the cross-page link, with no selection', () => {
+    const map = buildHotspotMap();
+
+    map.zoomTo('select_container');
+    map.zoomTo('root');
+
+    expect(arcLinkEl.getAttribute('href')).toBe('/');
+  });
+
+  test('zooming to the root falls back to a still-selected leaf on the cross-page link', () => {
+    const map = buildHotspotMap();
+
+    map.select('hot');
+    map.zoomTo('select_container');
+    map.zoomTo('root');
+
+    expect(arcLinkEl.getAttribute('href')).toBe(
+      PageLink.buildLink('/', 'src/hot.rs'),
+    );
+  });
+
+  test('a selection then a zoom to a container: the zoom (last) wins the cross-page link', () => {
+    const map = buildHotspotMap();
+
+    map.select('hot');
+    map.zoomTo('select_container');
+
+    expect(arcLinkEl.getAttribute('href')).toBe(
+      PageLink.buildLink('/', 'src/container/mod.rs'),
+    );
+  });
+
+  test('a zoom to a container then a selection: the selection (last) wins the cross-page link', () => {
+    const map = buildHotspotMap();
+
+    map.zoomTo('select_container');
+    map.select('hot');
+
+    expect(arcLinkEl.getAttribute('href')).toBe(
+      PageLink.buildLink('/', 'src/hot.rs'),
+    );
+  });
+
+  test('`?select=` for a container zooms into it on arrival, never selecting it (decision 12)', () => {
+    const savedRaf = global.requestAnimationFrame;
+    const savedSearch = global.location.search;
+    // Completes the zoom animation in one synchronous frame (same idiom as
+    // the resize test above), so `view` lands exactly on the container.
+    global.requestAnimationFrame = (fn) =>
+      fn(performance.now() + HotspotZoom.ZOOM_MS * 2);
+    global.location.search = `?select=${encodeURIComponent('src/container/mod.rs')}`;
+    try {
+      const map = buildHotspotMap();
+      expect(map).not.toBeNull();
+
+      const [, , , scaleText] =
+        mapContent
+          .getAttribute('transform')
+          .match(/translate\(([^ ]+) ([^)]+)\) scale\(([^)]+)\)/) ?? [];
+      const expectedScale =
+        400 /
+        (2 * HotspotZoom.viewFor(STATIC_DATA.nodes.select_container).radius);
+      expect(Number(scaleText)).toBeCloseTo(expectedScale, 5);
+      expect(arcLinkEl.getAttribute('href')).toBe(
+        PageLink.buildLink('/', 'src/container/mod.rs'),
+      );
+    } finally {
+      global.requestAnimationFrame = savedRaf;
+      global.location.search = savedSearch;
+    }
+  });
+
+  test('`?select=` for a leaf selects it on arrival and zooms to its parent', () => {
+    const savedRaf = global.requestAnimationFrame;
+    const savedSearch = global.location.search;
+    // Completes the zoom animation in one synchronous frame (same idiom as
+    // the container test above), so `view` lands exactly on the parent.
+    global.requestAnimationFrame = (fn) =>
+      fn(performance.now() + HotspotZoom.ZOOM_MS * 2);
+    // `nested`'s parent is `select_container`, not the root, so the scale
+    // tells a zoom to the parent apart from no zoom at all.
+    global.location.search = `?select=${encodeURIComponent('src/container/nested.rs')}`;
+    try {
+      const map = buildHotspotMap();
+      expect(map).not.toBeNull();
+
+      const [, scaleText] =
+        mapContent.getAttribute('transform').match(/scale\(([^)]+)\)/) ?? [];
+      const expectedScale =
+        400 /
+        (2 * HotspotZoom.viewFor(STATIC_DATA.nodes.select_container).radius);
+      expect(Number(scaleText)).toBeCloseTo(expectedScale, 5);
+      expect(detailsEl.innerHTML).toContain('src/container/nested.rs');
+      expect(arcLinkEl.getAttribute('href')).toBe(
+        PageLink.buildLink('/', 'src/container/nested.rs'),
+      );
+    } finally {
+      global.requestAnimationFrame = savedRaf;
+      global.location.search = savedSearch;
+    }
   });
 
   test('a list row’s click and hover stop propagation, so the svg’s own circle handlers do not immediately undo them', () => {

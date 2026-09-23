@@ -7,7 +7,11 @@ import { HotspotZoom } from './hotspot_zoom.js';
 
 global.HotspotZoom = HotspotZoom;
 
-import { clickAction, leafKeyForFile } from './hotspot_selection.js';
+import {
+  clickAction,
+  leafKeyForFile,
+  placeForFile,
+} from './hotspot_selection.js';
 
 // root (crate) -> a (module, own leaf 'a/mod.rs' + child a1) -> a1 (file)
 //              -> b (file)
@@ -90,5 +94,32 @@ describe('clickAction', () => {
 
   test('clicking outside any node at the root does nothing', () => {
     expect(clickAction(nodes(), 'root', null)).toEqual({ type: 'none' });
+  });
+});
+
+describe('placeForFile', () => {
+  test('a leaf’s file focuses it', () => {
+    expect(placeForFile(nodes(), 'src/a/a1.rs')).toEqual({
+      type: 'focus',
+      key: 'a1',
+    });
+  });
+
+  test('a container’s own file zooms into it, even though a same-named self-leaf shares it', () => {
+    expect(placeForFile(nodes(), 'src/a/mod.rs')).toEqual({
+      type: 'zoom',
+      key: 'a',
+    });
+  });
+
+  test('a crate’s own file zooms into it', () => {
+    expect(placeForFile(nodes(), 'Cargo.toml')).toEqual({
+      type: 'zoom',
+      key: 'root',
+    });
+  });
+
+  test('is null for a file matching no node', () => {
+    expect(placeForFile(nodes(), 'src/missing.rs')).toBeNull();
   });
 });

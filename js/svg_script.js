@@ -1828,18 +1828,21 @@ if (typeof document !== 'undefined') {
 
     if (restoredView) {
       applyRestoredView(restoredView);
-    } else {
-      if (expandLevel !== null) {
-        // Bootstrap virtual arcs for initially collapsed nodes (expand-level)
-        relayout();
-      }
-      // `?select=<file>`: the same node identity the hotspot map's own
-      // toolbar link carries, treated like an editor focus event.
-      const selectedFile = PageLink.parseSelect(location.search);
-      if (selectedFile) {
-        const nodeId = StaticData.findNodeIdByFile(selectedFile);
-        if (nodeId) focusNode(nodeId, []);
-      }
+    } else if (expandLevel !== null) {
+      // Bootstrap virtual arcs for initially collapsed nodes (expand-level)
+      relayout();
+    }
+    // `?select=<file>`: the same node identity the hotspot map's own
+    // toolbar link carries, treated like an editor focus event. Applied
+    // whether or not a view was restored above: a stored view exists only
+    // between a recompute and its reload, and reading it just cleared it,
+    // so one left over from a recompute the user abandoned for the map
+    // reflects an older moment than a `?select=` arriving now - the newer,
+    // more specific signal wins over its own captured selection.
+    const selectedFile = PageLink.parseSelect(location.search);
+    if (selectedFile) {
+      const nodeId = StaticData.findNodeIdByFile(selectedFile);
+      if (nodeId) focusNode(nodeId, []);
     }
     updateHotspotLink();
   })();
