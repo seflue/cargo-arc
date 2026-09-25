@@ -107,6 +107,11 @@ impl EdgeWeight {
         matches!(self, EdgeWeight::ModuleDep { context, .. } if context.kind == UsageKind::Production)
     }
 
+    #[must_use]
+    pub fn is_test_module_dep(&self) -> bool {
+        matches!(self, EdgeWeight::ModuleDep { context, .. } if matches!(context.kind, UsageKind::Test(_)))
+    }
+
     /// Whether this is a production `ModuleDep` whose references are ALL
     /// `pub use` re-exports. Such edges republish names without behavioral
     /// coupling and are excluded from the logic subgraph (ADR-022).

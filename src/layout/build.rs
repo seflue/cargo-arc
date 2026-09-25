@@ -8,6 +8,7 @@ use crate::diagnose::{
 use crate::graph::{ArcGraph, EdgeWeight, Node, Reexports};
 use crate::model::{EdgeContext, SourceLocation, TargetRoots};
 use crate::volatility::Volatility;
+use petgraph::algo::has_path_connecting;
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -740,6 +741,36 @@ impl<N> IncrementEdge for DiGraph<N, usize> {
     }
 }
 
+/// Add aggregated test-context edges to an ordering graph built from
+/// production edges (`order_crates`, `build_sibling_dep_graph`), trying each
+/// in turn by aggregated weight descending, then by (source, target) name.
+/// An edge is added only if the target cannot already reach the source:
+/// otherwise it would reverse a production edge between the same pair, or
+/// close a cycle through several of them.
+fn add_soft_test_edges(
+    graph: &mut DiGraph<NodeIndex, usize>,
+    arc_graph: &ArcGraph,
+    orig_to_local: &HashMap<NodeIndex, petgraph::graph::NodeIndex>,
+    test_edges: HashMap<(NodeIndex, NodeIndex), usize>,
+) {
+    let mut candidates: Vec<(NodeIndex, NodeIndex, usize)> = test_edges
+        .into_iter()
+        .map(|((src, dst), weight)| (src, dst, weight))
+        .collect();
+    candidates.sort_by(|&(s1, d1, w1), &(s2, d2, w2)| {
+        w2.cmp(&w1).then_with(|| {
+            (arc_graph[s1].name(), arc_graph[d1].name())
+                .cmp(&(arc_graph[s2].name(), arc_graph[d2].name()))
+        })
+    });
+    for (src, dst, weight) in candidates {
+        let (local_src, local_dst) = (orig_to_local[&src], orig_to_local[&dst]);
+        if !has_path_connecting(&*graph, local_dst, local_src, None) {
+            graph.add_edge(local_src, local_dst, weight);
+        }
+    }
+}
+
 /// Build a mini dependency graph among sibling nodes based on cross-subtree dependencies.
 /// For each sibling, collects its full subtree and counts how many production `ModuleDep`
 /// edges cross from one sibling's subtree to another's.
@@ -779,6 +810,24 @@ fn build_sibling_dep_graph(children: &[NodeIndex], graph: &ArcGraph) -> DiGraph<
     for (child, sibling) in cross_subtree_deps {
         sibling_deps.increment_edge(orig_to_local[&child], orig_to_local[&sibling]);
     }
+
+    // Test-only siblings sort below their testers, not above with the roots.
+    let mut test_edges: HashMap<(NodeIndex, NodeIndex), usize> = HashMap::new();
+    for &child in children {
+        for edge in subtrees[&child]
+            .iter()
+            .flat_map(|&node| graph.edges(node))
+            .filter(|e| e.weight().is_test_module_dep())
+        {
+            let Some(&sibling) = node_to_sibling.get(&edge.target()) else {
+                continue;
+            };
+            if sibling != child {
+                *test_edges.entry((child, sibling)).or_insert(0) += 1;
+            }
+        }
+    }
+    add_soft_test_edges(&mut sibling_deps, graph, &orig_to_local, test_edges);
 
     sibling_deps
 }
@@ -850,6 +899,23 @@ impl ArcGraph {
                 }
             }
         }
+
+        // Test-only dependency crates sort below their testers, not above
+        // with the root crates.
+        let mut test_edges: HashMap<(NodeIndex, NodeIndex), usize> = HashMap::new();
+        for edge in self.edge_references() {
+            if edge.weight().is_test_crate_dep() {
+                let src_crate = self.owning_crate(edge.source());
+                let dst_crate = self.owning_crate(edge.target());
+                if src_crate != dst_crate
+                    && orig_to_local.contains_key(&src_crate)
+                    && orig_to_local.contains_key(&dst_crate)
+                {
+                    *test_edges.entry((src_crate, dst_crate)).or_insert(0) += 1;
+                }
+            }
+        }
+        add_soft_test_edges(&mut crate_graph, self, &orig_to_local, test_edges);
 
         stable_toposort(&crate_graph, |idx| self[idx].name().to_owned())
     }
@@ -1854,6 +1920,51 @@ mod tests {
         let la = LayoutAssert::new(ir);
 
         la.assert_order("aaa", "bbb");
+    }
+
+    #[test]
+    fn test_dev_dependency_crate_sorts_below_its_test_users() {
+        let mut b = TestGraphBuilder::new();
+        b.crate_with_modules("aaa_kit", &["mod_kit"])
+            .crate_with_modules("bbb", &["mod_b"])
+            .crate_with_modules("ccc", &["mod_c"])
+            .test_crate_dep("bbb", "aaa_kit", TestKind::Unit)
+            .test_crate_dep("ccc", "aaa_kit", TestKind::Unit);
+        let (graph, _) = b.build();
+        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
+        let la = LayoutAssert::new(ir);
+
+        la.assert_order("bbb", "aaa_kit");
+        la.assert_order("ccc", "aaa_kit");
+    }
+
+    #[test]
+    fn test_dev_dependency_crate_with_prod_dep_sorts_between_users_and_dep() {
+        let mut b = TestGraphBuilder::new();
+        b.crate_with_modules("aaa_kit", &["mod_kit"])
+            .crate_with_modules("bbb", &["mod_b"])
+            .crate_with_modules("zzz_shared", &["mod_shared"])
+            .test_crate_dep("bbb", "aaa_kit", TestKind::Unit)
+            .crate_dep("aaa_kit", "zzz_shared");
+        let (graph, _) = b.build();
+        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
+        let la = LayoutAssert::new(ir);
+
+        la.assert_top_level_order(&["bbb", "aaa_kit", "zzz_shared"]);
+    }
+
+    #[test]
+    fn test_test_only_sibling_module_sorts_below_its_test_users() {
+        let mut b = TestGraphBuilder::new();
+        b.crate_with_modules("my_crate", &["aaa_kit", "bbb", "ccc"])
+            .test_dep("bbb", "aaa_kit", TestKind::Unit)
+            .test_dep("ccc", "aaa_kit", TestKind::Unit);
+        let (graph, _) = b.build();
+        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
+        let la = LayoutAssert::new(ir);
+
+        la.assert_order("bbb", "aaa_kit");
+        la.assert_order("ccc", "aaa_kit");
     }
 
     /// `CrateDep` edges are suppressed whenever a `ModuleDep` exists between the same crate pair,
