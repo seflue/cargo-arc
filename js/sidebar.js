@@ -47,8 +47,18 @@ const SidebarLogic = {
   _onEdgeHover: null,
   /** @type {(() => void) | null} */
   _onEdgeHoverEnd: null,
-  /** @type {((arcId: string, expandable: boolean, expanded: boolean) => boolean) | null} */
-  _onEdgeClick: null,
+  /** @type {((arcId: string) => boolean) | null} */
+  _isRowExpanded: null,
+  /** @type {((arcId: string) => void) | null} */
+  _onRowToggle: null,
+  /** @type {((arcId: string) => void) | null} */
+  _onRowPinClick: null,
+  /** @type {((arcId: string) => void) | null} */
+  _onRowFollow: null,
+  /** @type {(() => void) | null} */
+  _onRowsExpandAll: null,
+  /** @type {(() => void) | null} */
+  _onRowsCollapseAll: null,
   /**
    * Merge symbol groups: combine groups with same symbol, deduplicate locations by file+line.
    * @param {Array<{symbol: string, modulePath: string|null, locations: Array<{file: string, line: number}>, definition?: {file: string, line: number, jump: number}}>} groups
@@ -1002,16 +1012,17 @@ const SidebarLogic = {
     const fromClass = `sidebar-cycle-node ${fromType ? `sidebar-node-${fromType} ` : ''}sidebar-node-from`;
     const toClass = `sidebar-cycle-node ${toType ? `sidebar-node-${toType} ` : ''}sidebar-node-to`;
     const expandable = symbols.length > 0;
+    const expanded = expandable && (this._isRowExpanded?.(arcId) ?? false);
     const focusClass = arcId === focusArcId ? ' sidebar-edge-row-focus' : '';
     const extraClass = extraClasses.length ? ` ${extraClasses.join(' ')}` : '';
     const isClosing = extraClasses.includes('edge-closing');
 
     let html = `<div class="sidebar-usage-group sidebar-edge-row${extraClass}${focusClass}" data-arc-id="${arcId}">`;
     const headAttrs = expandable
-      ? ' data-collapsible="" data-collapsed="true"'
+      ? ` data-collapsible=""${expanded ? '' : ' data-collapsed="true"'}`
       : ' style="cursor:default"';
     html += `<div class="sidebar-symbol sidebar-edge-head"${headAttrs}>`;
-    html += `<span class="sidebar-toggle">${expandable ? '\u25b8' : ''}</span>`;
+    html += `<span class="sidebar-toggle">${expandable ? (expanded ? '\u25be' : '\u25b8') : ''}</span>`;
     html += `<div class="sidebar-cycle-edge">`;
     if (isClosing) {
       html += `<span class="sidebar-edge-closing-marker" title="closes the cycle">&#x21ba;</span>`;
@@ -1024,9 +1035,15 @@ const SidebarLogic = {
     html += `</div>`;
 
     if (expandable) {
-      html += `<div class="sidebar-locations" style="display:none">`;
+      html += `<div class="sidebar-locations" style="display:${expanded ? '' : 'none'}">`;
       for (const u of symbols) {
-        html += `<div class="sidebar-edge-symbol" title="${this._symbolTitle(u)}">`;
+        // The whole row is the jump target (data-jump on this div, read by
+        // svg_script.js's jumpIdFromClick), not only the definition chip;
+        // a symbol without a definition carries no data-jump and stays inert.
+        const jumpAttr = u.definition
+          ? ` data-jump="${u.definition.jump}"`
+          : '';
+        html += `<div class="sidebar-edge-symbol"${jumpAttr} title="${this._symbolTitle(u)}">`;
         html += this._symbolLabel(u);
         html += this._definitionChip(u);
         html += this._renderLocalityTag(edge.toId, u.symbol);
@@ -1042,27 +1059,59 @@ const SidebarLogic = {
   },
 
   /**
-   * A cluster row was clicked: let the state machine couple pin and expansion
-   * (AppState.clickClusterRow via _onEdgeClick), then sync the row's DOM, focus
+   * A cluster row's triangle was clicked: ask the state machine to flip the
+   * row's expand bit (AppState.rowToggle via _onRowToggle), then sync every
+   * row's DOM, the focus marker and the collapse-all button in place (no
+   * sidebar rebuild). A no-op on a row without symbols to show.
+   * @param {HTMLElement} row
+   * @param {HTMLElement} root
+   * @param {HTMLElement} content
+   */
+  _handleRowToggle(row, root, content) {
+    const arcId = row.dataset.arcId;
+    const head = row.querySelector('.sidebar-edge-head');
+    if (!arcId || !head || !head.hasAttribute('data-collapsible')) return;
+    this._onRowToggle?.(arcId);
+    this._syncEdgeRowsFromState(content);
+    this._refreshEdgeRowFocus(content);
+    this._syncCollapseAllButton(root, content);
+    this.updatePosition();
+  },
+
+  /**
+   * A cluster row's head (outside the triangle) was clicked: let the state
+   * machine pin/unpin it (AppState.rowPinClick via _onRowPinClick), which may
+   * also move the pin off another row, then sync every row's DOM, the focus
    * marker and the collapse-all button in place (no sidebar rebuild).
    * @param {HTMLElement} row
    * @param {HTMLElement} root
    * @param {HTMLElement} content
    */
-  _handleEdgeRowClick(row, root, content) {
+  _handleRowPinClick(row, root, content) {
     const arcId = row.dataset.arcId;
     if (!arcId) return;
-    const head = row.querySelector('.sidebar-edge-head');
-    const expandable = !!head && head.hasAttribute('data-collapsible');
-    const expanded =
-      expandable && head.getAttribute('data-collapsed') !== 'true';
-    const endExpanded = this._onEdgeClick
-      ? this._onEdgeClick(arcId, expandable, expanded)
-      : false;
-    if (head && expandable) this._setEdgeRowExpanded(head, endExpanded);
+    this._onRowPinClick?.(arcId);
+    this._syncEdgeRowsFromState(content);
     this._refreshEdgeRowFocus(content);
     this._syncCollapseAllButton(root, content);
     this.updatePosition();
+  },
+
+  /**
+   * Re-sync every cluster row's expand DOM (data-collapsed, triangle, symbol
+   * list) from AppState via _isRowExpanded. The direction is always state to
+   * DOM; no handler computes a row's next look from the click itself.
+   * @param {HTMLElement} content
+   */
+  _syncEdgeRowsFromState(content) {
+    if (!content.querySelectorAll) return;
+    for (const el of content.querySelectorAll('.sidebar-edge-row')) {
+      const row = /** @type {HTMLElement} */ (el);
+      const arcId = row.dataset?.arcId;
+      const head = row.querySelector?.('.sidebar-edge-head');
+      if (!arcId || !head || !head.hasAttribute('data-collapsible')) continue;
+      this._setEdgeRowExpanded(head, this._isRowExpanded?.(arcId) ?? false);
+    }
   },
 
   /**
@@ -1137,6 +1186,15 @@ const SidebarLogic = {
         ) {
           this._setEdgeRowExpanded(head, true);
           opened = true;
+          // Cluster rows also keep AppState.expandedRows in step, so a later
+          // rebuild (a graph click) renders this row open too.
+          if (head.classList?.contains('sidebar-edge-head')) {
+            const edgeRow = /** @type {HTMLElement|null} */ (
+              head.closest('.sidebar-edge-row')
+            );
+            const arcId = edgeRow?.dataset?.arcId;
+            if (arcId) this._onRowFollow?.(arcId);
+          }
         }
         const parent = /** @type {Element|null} */ (list.parentNode);
         list = parent?.closest('.sidebar-locations') ?? null;
@@ -1194,14 +1252,26 @@ const SidebarLogic = {
     const content = root.querySelector('.sidebar-content');
     if (!content) return;
     content.addEventListener('click', (e) => {
-      // A location row's or definition chip's click is a jump, handled on
-      // the document; the row around it keeps its pin and expansion state.
+      // A location row's, definition chip's or symbol row's click is a jump,
+      // handled on the document; the row around it keeps its pin and
+      // expansion state.
       if (e.target.closest?.('.sidebar-location[data-jump]')) return;
       if (e.target.closest?.('.sidebar-definition[data-jump]')) return;
-      // Cluster rows couple pin and expansion; the state machine decides.
+      if (e.target.closest?.('.sidebar-edge-symbol[data-jump]')) return;
+      // Cluster rows: the triangle toggles expansion, the rest of the head
+      // pins/unpins. The two never share a click. A non-expandable row's
+      // triangle is an empty placeholder, not a toggle, so it pins too.
       const edgeRow = e.target.closest?.('.sidebar-edge-row');
       if (edgeRow) {
-        SidebarLogic._handleEdgeRowClick(edgeRow, root, content);
+        const head = edgeRow.querySelector?.('.sidebar-edge-head');
+        if (
+          e.target.closest?.('.sidebar-toggle') &&
+          head?.hasAttribute('data-collapsible')
+        ) {
+          SidebarLogic._handleRowToggle(edgeRow, root, content);
+        } else if (e.target.closest?.('.sidebar-edge-head')) {
+          SidebarLogic._handleRowPinClick(edgeRow, root, content);
+        }
         return;
       }
       const symbolEl = e.target.closest('.sidebar-symbol');
@@ -1243,18 +1313,22 @@ const SidebarLogic = {
         });
       }
       // Row hover transiently focuses the graph edge; the row click (wired
-      // above) pins it and drives expansion. Hover changes neither.
+      // above) pins it and drives expansion. Hover changes neither, but the
+      // focus mark tracks _resolvedFocusArc (pin-or-hover), so it has to be
+      // refreshed on both ends of a hover too, not only on click.
       const edgeRows = root.querySelectorAll('.sidebar-edge-row');
       for (const row of edgeRows) {
         row.addEventListener('mouseenter', () => {
           if (SidebarLogic._onEdgeHover) {
             SidebarLogic._onEdgeHover(row.dataset.arcId);
           }
+          SidebarLogic._refreshEdgeRowFocus(content);
         });
         row.addEventListener('mouseleave', () => {
           if (SidebarLogic._onEdgeHoverEnd) {
             SidebarLogic._onEdgeHoverEnd();
           }
+          SidebarLogic._refreshEdgeRowFocus(content);
         });
       }
       // A cycle block's native toggle changes how many blocks are open, so keep
@@ -1277,8 +1351,11 @@ const SidebarLogic = {
           if (anyClosed) b.setAttribute('open', '');
           else b.removeAttribute('open');
         }
-        // Rows open without going through AppState.clickClusterRow. The pin
-        // holds one arc, so clicking every row would pin only the last one.
+        // Tell AppState so a later rebuild (e.g. a graph click) renders the
+        // same expand state, then drive the DOM directly as before — the
+        // pin is untouched either way.
+        if (anyClosed) SidebarLogic._onRowsExpandAll?.();
+        else SidebarLogic._onRowsCollapseAll?.();
         for (const head of heads) {
           SidebarLogic._setEdgeRowExpanded(head, anyClosed);
         }

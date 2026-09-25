@@ -2316,6 +2316,40 @@ describe('SidebarLogic', () => {
       );
     });
 
+    test('edge symbol row carries data-jump when its symbol has a definition', () => {
+      globalThis.STATIC_DATA.arcs['x-y'].usages = [
+        {
+          symbol: 'Foo',
+          modulePath: null,
+          locations: [{ file: 'a.rs', line: 1 }],
+          definition: { file: 'a.rs', line: 1, jump: 4 },
+        },
+      ];
+      const html = SidebarLogic.buildContent('x-y');
+      expect(html).toContain('<div class="sidebar-edge-symbol" data-jump="4"');
+    });
+
+    test('a row renders expanded when _isRowExpanded says so, from the state, not the DOM', () => {
+      globalThis.STATIC_DATA.arcs['x-y'].usages = [
+        {
+          symbol: 'Foo',
+          modulePath: null,
+          locations: [{ file: 'a.rs', line: 1 }],
+        },
+      ];
+      SidebarLogic._isRowExpanded = (arcId) => arcId === 'x-y';
+      const html = SidebarLogic.buildContent('x-y');
+      SidebarLogic._isRowExpanded = null;
+
+      const xyIdx = html.indexOf('data-arc-id="x-y"');
+      const yxIdx = html.indexOf('data-arc-id="y-x"');
+      const xyRow = html.slice(xyIdx, yxIdx);
+      expect(xyRow).toContain('data-collapsible=""'); // still expandable
+      expect(xyRow).not.toContain('data-collapsed');
+      expect(xyRow).toContain('▾'); // open triangle
+      expect(xyRow).not.toContain('style="display:none"'); // locations shown
+    });
+
     test('edge row drops re-export-only symbols, counts coupling only', () => {
       globalThis.STATIC_DATA.arcs['x-y'].usages = [
         {
@@ -2774,8 +2808,10 @@ describe('SidebarLogic', () => {
   });
 
   describe('cluster row click wiring', () => {
-    function makeHead() {
-      const attrs = { 'data-collapsible': '', 'data-collapsed': 'true' };
+    function makeHead({ collapsible = true } = {}) {
+      const attrs = collapsible
+        ? { 'data-collapsible': '', 'data-collapsed': 'true' }
+        : {};
       const toggle = { innerHTML: '▸' };
       return {
         nextElementSibling: { style: { display: 'none' } },
@@ -2809,10 +2845,12 @@ describe('SidebarLogic', () => {
       SidebarLogic.updatePosition = () => {};
       SidebarLogic._setupCollapseHandlers(root);
       return {
-        fireClick: () =>
+        // `matches` names which selectors the click target resolves under,
+        // e.g. the head (pin click) or the triangle (toggle).
+        fireClick: (matches = ['.sidebar-edge-row', '.sidebar-edge-head']) =>
           clickHandler({
             target: {
-              closest: (sel) => (sel === '.sidebar-edge-row' ? row : null),
+              closest: (sel) => (matches.includes(sel) ? row : null),
             },
           }),
         restore: () => {
@@ -2821,7 +2859,7 @@ describe('SidebarLogic', () => {
       };
     }
 
-    test('row click routes to _onEdgeClick and applies the returned expand state', () => {
+    test('row head click routes to _onRowPinClick and syncs the row from _isRowExpanded', () => {
       const head = makeHead();
       const row = {
         dataset: { arcId: 'x-y' },
@@ -2830,26 +2868,23 @@ describe('SidebarLogic', () => {
         addEventListener() {},
       };
       let calledWith = null;
-      SidebarLogic._onEdgeClick = (arcId, expandable, expanded) => {
-        calledWith = { arcId, expandable, expanded };
-        return true; // pinned -> ends expanded
+      SidebarLogic._onRowPinClick = (arcId) => {
+        calledWith = arcId;
       };
+      SidebarLogic._isRowExpanded = () => true; // pinned -> ends expanded
       SidebarLogic._resolvedFocusArc = () => 'x-y';
       const h = harness(row);
       h.fireClick();
-      expect(calledWith).toEqual({
-        arcId: 'x-y',
-        expandable: true,
-        expanded: false,
-      });
+      expect(calledWith).toBe('x-y');
       expect(head.hasAttribute('data-collapsed')).toBe(false); // expanded in place
       expect(head._toggle.innerHTML).toBe('▾');
       h.restore();
-      SidebarLogic._onEdgeClick = null;
+      SidebarLogic._onRowPinClick = null;
+      SidebarLogic._isRowExpanded = null;
       SidebarLogic._resolvedFocusArc = null;
     });
 
-    test('row click marks only the resolved focus row', () => {
+    test('row head click marks only the resolved focus row', () => {
       const head = makeHead();
       let focusedOn = null;
       const row = {
@@ -2862,15 +2897,73 @@ describe('SidebarLogic', () => {
         querySelector: (sel) => (sel === '.sidebar-edge-head' ? head : null),
         addEventListener() {},
       };
-      SidebarLogic._onEdgeClick = () => false; // unpinned -> collapses
+      SidebarLogic._onRowPinClick = () => {}; // unpinned -> collapses
+      SidebarLogic._isRowExpanded = () => false;
       SidebarLogic._resolvedFocusArc = () => null; // overview, no focus
       const h = harness(row);
       h.fireClick();
       expect(focusedOn).toBe(false); // row not focused when nothing resolved
       expect(head.hasAttribute('data-collapsed')).toBe(true); // collapsed
       h.restore();
-      SidebarLogic._onEdgeClick = null;
+      SidebarLogic._onRowPinClick = null;
+      SidebarLogic._isRowExpanded = null;
       SidebarLogic._resolvedFocusArc = null;
+    });
+
+    test('row triangle click routes to _onRowToggle, not _onRowPinClick', () => {
+      const head = makeHead();
+      const row = {
+        dataset: { arcId: 'x-y' },
+        classList: { toggle() {} },
+        querySelector: (sel) => (sel === '.sidebar-edge-head' ? head : null),
+        addEventListener() {},
+      };
+      let toggled = null;
+      let pinClicked = false;
+      SidebarLogic._onRowToggle = (arcId) => {
+        toggled = arcId;
+      };
+      SidebarLogic._onRowPinClick = () => {
+        pinClicked = true;
+      };
+      const h = harness(row);
+      h.fireClick(['.sidebar-edge-row', '.sidebar-toggle']);
+      expect(toggled).toBe('x-y');
+      expect(pinClicked).toBe(false);
+      h.restore();
+      SidebarLogic._onRowToggle = null;
+      SidebarLogic._onRowPinClick = null;
+    });
+
+    test('a click on the empty triangle of a non-expandable row pins instead of no-opping', () => {
+      const head = makeHead({ collapsible: false });
+      const row = {
+        dataset: { arcId: 'x-y' },
+        classList: { toggle() {} },
+        querySelector: (sel) => (sel === '.sidebar-edge-head' ? head : null),
+        addEventListener() {},
+      };
+      let toggled = null;
+      let pinnedArc = null;
+      SidebarLogic._onRowToggle = (arcId) => {
+        toggled = arcId;
+      };
+      SidebarLogic._onRowPinClick = (arcId) => {
+        pinnedArc = arcId;
+      };
+      const h = harness(row);
+      // The triangle sits inside the head, so a real click's closest() also
+      // resolves to '.sidebar-edge-head', not only '.sidebar-toggle'.
+      h.fireClick([
+        '.sidebar-edge-row',
+        '.sidebar-edge-head',
+        '.sidebar-toggle',
+      ]);
+      expect(pinnedArc).toBe('x-y');
+      expect(toggled).toBeNull();
+      h.restore();
+      SidebarLogic._onRowToggle = null;
+      SidebarLogic._onRowPinClick = null;
     });
   });
 
@@ -3220,6 +3313,24 @@ describe('SidebarLogic', () => {
       expect(btn.innerHTML).toBe('+');
     });
 
+    test('collapse-all also tells AppState, so a later rebuild stays in sync', () => {
+      const html = SidebarLogic._buildClusterContent('0');
+      const root = parseFragment(`<div class="sidebar-root">${html}</div>`);
+      SidebarLogic._setupCollapseHandlers(root);
+      const btn = root.querySelector('.sidebar-collapse-all');
+
+      const calls = [];
+      SidebarLogic._onRowsExpandAll = () => calls.push('expandAll');
+      SidebarLogic._onRowsCollapseAll = () => calls.push('collapseAll');
+
+      btn._fire('click'); // closed -> open all
+      btn._fire('click'); // open -> close all
+
+      SidebarLogic._onRowsExpandAll = null;
+      SidebarLogic._onRowsCollapseAll = null;
+      expect(calls).toEqual(['expandAll', 'collapseAll']);
+    });
+
     test('the glyph shows + while any edge row is still collapsed', () => {
       const html = SidebarLogic._buildClusterContent('0');
       const root = parseFragment(`<div class="sidebar-root">${html}</div>`);
@@ -3475,7 +3586,8 @@ describe('SidebarLogic', () => {
       const content = root.querySelector('.sidebar-content');
       const origUP = SidebarLogic.updatePosition;
       SidebarLogic.updatePosition = () => {};
-      SidebarLogic._onEdgeClick = () => true; // pinned
+      SidebarLogic._onRowPinClick = () => {}; // pinned
+      SidebarLogic._isRowExpanded = () => true;
       SidebarLogic._resolvedFocusArc = () => 'a-b';
       SidebarLogic._setupCollapseHandlers(root);
 
@@ -3485,9 +3597,7 @@ describe('SidebarLogic', () => {
       expect(abRows.length).toBe(2); // sanity: the shared edge renders twice
 
       content._fire('click', {
-        target: {
-          closest: (sel) => (sel === '.sidebar-edge-row' ? abRows[0] : null),
-        },
+        target: abRows[0].querySelector('.sidebar-edge-head'),
       });
 
       expect(
@@ -3495,7 +3605,8 @@ describe('SidebarLogic', () => {
       ).toBe(true);
 
       SidebarLogic.updatePosition = origUP;
-      SidebarLogic._onEdgeClick = null;
+      SidebarLogic._onRowPinClick = null;
+      SidebarLogic._isRowExpanded = null;
       SidebarLogic._resolvedFocusArc = null;
     });
 
@@ -3506,9 +3617,8 @@ describe('SidebarLogic', () => {
       const origUP = SidebarLogic.updatePosition;
       SidebarLogic.updatePosition = () => {};
       let called = false;
-      SidebarLogic._onEdgeClick = () => {
+      SidebarLogic._onRowPinClick = () => {
         called = true;
-        return false;
       };
       SidebarLogic._setupCollapseHandlers(root);
 
@@ -3519,7 +3629,7 @@ describe('SidebarLogic', () => {
       expect(called).toBe(false); // native <details> toggle handles it, not our handler
 
       SidebarLogic.updatePosition = origUP;
-      SidebarLogic._onEdgeClick = null;
+      SidebarLogic._onRowPinClick = null;
     });
 
     test('a click on a location row inside an edge row does not pin or toggle the row', () => {
@@ -3540,9 +3650,8 @@ describe('SidebarLogic', () => {
       const origUP = SidebarLogic.updatePosition;
       SidebarLogic.updatePosition = () => {};
       let called = false;
-      SidebarLogic._onEdgeClick = () => {
+      SidebarLogic._onRowPinClick = () => {
         called = true;
-        return true;
       };
       SidebarLogic._setupCollapseHandlers(root);
 
@@ -3553,8 +3662,169 @@ describe('SidebarLogic', () => {
       expect(called).toBe(false);
 
       SidebarLogic.updatePosition = origUP;
-      SidebarLogic._onEdgeClick = null;
+      SidebarLogic._onRowPinClick = null;
       delete globalThis.STATIC_DATA.arcs['a-b'];
+    });
+
+    test('a click on a symbol row inside an edge row does not pin or toggle the row', () => {
+      globalThis.STATIC_DATA.arcs['a-b'] = {
+        from: 'a',
+        to: 'b',
+        usages: [
+          {
+            symbol: 'Foo',
+            modulePath: null,
+            locations: [{ file: 'a.rs', line: 1 }],
+            definition: { file: 'a.rs', line: 1, jump: 7 },
+          },
+        ],
+      };
+      const html = SidebarLogic._buildClusterContent('0');
+      const root = parseFragment(`<div class="sidebar-root">${html}</div>`);
+      const content = root.querySelector('.sidebar-content');
+      const origUP = SidebarLogic.updatePosition;
+      SidebarLogic.updatePosition = () => {};
+      let toggled = false;
+      let pinClicked = false;
+      SidebarLogic._onRowToggle = () => {
+        toggled = true;
+      };
+      SidebarLogic._onRowPinClick = () => {
+        pinClicked = true;
+      };
+      SidebarLogic._setupCollapseHandlers(root);
+
+      const symbol = content.querySelector('.sidebar-edge-symbol[data-jump]');
+      expect(symbol).not.toBeNull();
+      content._fire('click', { target: symbol });
+
+      expect(toggled).toBe(false);
+      expect(pinClicked).toBe(false);
+
+      SidebarLogic.updatePosition = origUP;
+      SidebarLogic._onRowToggle = null;
+      SidebarLogic._onRowPinClick = null;
+      delete globalThis.STATIC_DATA.arcs['a-b'];
+    });
+
+    test('expandLocations opens a collapsed edge row by its jump id and tells AppState via _onRowFollow', () => {
+      globalThis.STATIC_DATA.arcs['a-b'] = {
+        from: 'a',
+        to: 'b',
+        usages: [
+          {
+            symbol: 'Foo',
+            modulePath: null,
+            locations: [{ file: 'a.rs', line: 1, jump: 7 }],
+          },
+        ],
+      };
+      const html = SidebarLogic._buildClusterContent('0');
+      const root = parseFragment(`<div class="sidebar-root">${html}</div>`);
+      const origUP = SidebarLogic.updatePosition;
+      const origGetElement = SidebarLogic._getElement;
+      SidebarLogic.updatePosition = () => {};
+      SidebarLogic._getElement = () => root;
+      const followedArcs = [];
+      SidebarLogic._onRowFollow = (arcId) => {
+        followedArcs.push(arcId);
+      };
+
+      SidebarLogic.expandLocations([7]);
+
+      expect(followedArcs).toContain('a-b');
+
+      SidebarLogic.updatePosition = origUP;
+      SidebarLogic._getElement = origGetElement;
+      SidebarLogic._onRowFollow = null;
+      delete globalThis.STATIC_DATA.arcs['a-b'];
+    });
+
+    // A minimal stand-in for AppState's click/hover slots (getSelection's
+    // click-priority-over-hover, rowPinClick's toggle-or-move, setHover
+    // guarded by a pin), just enough to drive _resolvedFocusArc the way
+    // svg_script.js wires it.
+    function makeFakeSelection() {
+      let click = null;
+      let hover = null;
+      return {
+        resolvedFocusArc: () => click ?? hover,
+        onRowPinClick: (arcId) => {
+          click = click === arcId ? null : arcId;
+        },
+        onEdgeHover: (arcId) => {
+          if (click == null) hover = arcId;
+        },
+        onEdgeHoverEnd: () => {
+          if (click == null) hover = null;
+        },
+      };
+    }
+
+    test('unpinning a row and then leaving it clears its stale focus mark', () => {
+      const html = SidebarLogic._buildClusterContent('0');
+      const root = parseFragment(`<div class="sidebar-root">${html}</div>`);
+      const content = root.querySelector('.sidebar-content');
+      const row = content
+        .querySelectorAll('.sidebar-edge-row')
+        .find((r) => r.dataset.arcId === 'b-a');
+      const origUP = SidebarLogic.updatePosition;
+      SidebarLogic.updatePosition = () => {};
+      const sel = makeFakeSelection();
+      SidebarLogic._resolvedFocusArc = sel.resolvedFocusArc;
+      SidebarLogic._onRowPinClick = sel.onRowPinClick;
+      SidebarLogic._onEdgeHover = sel.onEdgeHover;
+      SidebarLogic._onEdgeHoverEnd = sel.onEdgeHoverEnd;
+      SidebarLogic._setupCollapseHandlers(root);
+      const head = row.querySelector('.sidebar-edge-head');
+
+      row._fire('mouseenter'); // mouse rests on the row before any click
+      content._fire('click', { target: head }); // pin
+      expect(row.classList.contains('sidebar-edge-row-focus')).toBe(true);
+      content._fire('click', { target: head }); // unpin, mouse still over it
+      expect(row.classList.contains('sidebar-edge-row-focus')).toBe(true);
+      row._fire('mouseleave'); // mouse actually leaves
+
+      expect(row.classList.contains('sidebar-edge-row-focus')).toBe(false);
+
+      SidebarLogic.updatePosition = origUP;
+      SidebarLogic._resolvedFocusArc = null;
+      SidebarLogic._onRowPinClick = null;
+      SidebarLogic._onEdgeHover = null;
+      SidebarLogic._onEdgeHoverEnd = null;
+    });
+
+    test('pinning a second row moves the focus mark off the first', () => {
+      const html = SidebarLogic._buildClusterContent('0');
+      const root = parseFragment(`<div class="sidebar-root">${html}</div>`);
+      const content = root.querySelector('.sidebar-content');
+      const rowBA = content
+        .querySelectorAll('.sidebar-edge-row')
+        .find((r) => r.dataset.arcId === 'b-a');
+      const rowCA = content
+        .querySelectorAll('.sidebar-edge-row')
+        .find((r) => r.dataset.arcId === 'c-a');
+      const origUP = SidebarLogic.updatePosition;
+      SidebarLogic.updatePosition = () => {};
+      const sel = makeFakeSelection();
+      SidebarLogic._resolvedFocusArc = sel.resolvedFocusArc;
+      SidebarLogic._onRowPinClick = sel.onRowPinClick;
+      SidebarLogic._setupCollapseHandlers(root);
+
+      content._fire('click', {
+        target: rowBA.querySelector('.sidebar-edge-head'),
+      });
+      expect(rowBA.classList.contains('sidebar-edge-row-focus')).toBe(true);
+
+      content._fire('click', {
+        target: rowCA.querySelector('.sidebar-edge-head'),
+      });
+      expect(rowBA.classList.contains('sidebar-edge-row-focus')).toBe(false);
+      expect(rowCA.classList.contains('sidebar-edge-row-focus')).toBe(true);
+
+      SidebarLogic.updatePosition = origUP;
+      SidebarLogic._resolvedFocusArc = null;
+      SidebarLogic._onRowPinClick = null;
     });
   });
 
