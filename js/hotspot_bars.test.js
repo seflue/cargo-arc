@@ -6,9 +6,30 @@ import { hotspotBars } from './hotspot_bars.js';
 // scale), not recomputed here.
 function nodes() {
   return {
-    hot: { name: 'hot.rs', lines: 100, commits: 8, rank: 1, fillPercent: 100 },
-    warm: { name: 'warm.rs', lines: 40, commits: 4, rank: 2, fillPercent: 71 },
-    cool: { name: 'cool.rs', lines: 10, commits: 1, rank: 3, fillPercent: 35 },
+    hot: {
+      name: 'hot.rs',
+      file: 'src/hot.rs',
+      lines: 100,
+      commits: 8,
+      rank: 1,
+      fillPercent: 100,
+    },
+    warm: {
+      name: 'warm.rs',
+      file: 'src/warm.rs',
+      lines: 40,
+      commits: 4,
+      rank: 2,
+      fillPercent: 71,
+    },
+    cool: {
+      name: 'cool.rs',
+      file: 'src/cool.rs',
+      lines: 10,
+      commits: 1,
+      rank: 3,
+      fillPercent: 35,
+    },
   };
 }
 
@@ -38,9 +59,9 @@ describe('hotspotBars', () => {
     expect(bars[2].fillPercent).toBe(35);
   });
 
-  test('carries name and rank through for display', () => {
+  test('carries the file path and rank through for display', () => {
     const [bar] = hotspotBars(nodes(), ['hot']);
-    expect(bar.name).toBe('hot.rs');
+    expect(bar.file).toBe('src/hot.rs');
     expect(bar.rank).toBe(1);
     expect(bar.lines).toBe(100);
     expect(bar.commits).toBe(8);

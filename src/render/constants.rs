@@ -1,5 +1,5 @@
 use super::theme::Theme;
-use crate::hotspots::GreyCause;
+use crate::hotspots::MapVolatility;
 
 /// All layout constants consolidated in one place.
 /// Use `static` (not `const`) so references like `let tb = &LAYOUT.toolbar` work.
@@ -343,6 +343,14 @@ pub(super) struct HotspotClasses {
     pub jump_icon: &'static str,
     /// The toolbar's second line: the path from the root to the zoom target.
     pub breadcrumb: &'static str,
+    /// The sidebar's title line.
+    pub header: &'static str,
+    /// The cells of a hotspot list row: rank, path, `lines × commits`.
+    pub list_rank: &'static str,
+    pub list_path: &'static str,
+    pub list_size: &'static str,
+    /// The list's first row, naming the columns.
+    pub list_head: &'static str,
 }
 
 #[allow(dead_code)]
@@ -512,6 +520,11 @@ pub(super) static CSS: CssClassNames = CssClassNames {
         tooltip: "hotspot-tooltip",
         jump_icon: "hotspot-jump-icon",
         breadcrumb: "hotspot-breadcrumb",
+        header: "hotspot-header",
+        list_rank: "hotspot-list-rank",
+        list_path: "hotspot-list-path",
+        list_size: "hotspot-list-size",
+        list_head: "hotspot-list-head",
     },
 };
 
@@ -541,9 +554,9 @@ pub struct RenderConfig {
     pub theme: Option<&'static Theme>,
     /// The switches the analysis ran with; only a served page shows them.
     pub switches: AnalysisSwitches,
-    /// Why the hotspot map is grey; `None` draws it in colour. The arc
-    /// diagram ignores it.
-    pub grey_cause: Option<GreyCause>,
+    /// The hotspot map's commit window, or why it is grey. The arc diagram
+    /// ignores it.
+    pub volatility: MapVolatility,
 }
 
 impl Default for RenderConfig {
@@ -556,7 +569,7 @@ impl Default for RenderConfig {
             with_jump_ids: false,
             theme: None,
             switches: AnalysisSwitches::default(),
-            grey_cause: None,
+            volatility: MapVolatility::default(),
         }
     }
 }

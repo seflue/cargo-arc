@@ -6,4 +6,6 @@ mod tree;
 
 pub(crate) use lines::code_lines;
 pub(crate) use pack::{PackedCircle, pack};
-pub(crate) use tree::{GreyCause, HotspotKind, HotspotNode, HotspotTree, build, sorted_children};
+pub(crate) use tree::{
+    GreyCause, HotspotKind, HotspotNode, HotspotTree, MapVolatility, build, sorted_children,
+};

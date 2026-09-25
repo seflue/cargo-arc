@@ -10,9 +10,9 @@
 
 /**
  * The top-N hotspots as bar rows, in the given order.
- * @param {Record<string, {name: string, lines: number, commits: number, rank?: number, fillPercent: number}>} nodes
+ * @param {Record<string, {file: string, lines: number, commits: number, rank?: number, fillPercent: number}>} nodes
  * @param {string[]} hotspots - keys into `nodes`, rank order
- * @returns {{ key: string, name: string, rank: number | undefined, lines: number, commits: number, score: number, widthPercent: number, fillPercent: number }[]}
+ * @returns {{ key: string, file: string, rank: number | undefined, lines: number, commits: number, score: number, widthPercent: number, fillPercent: number }[]}
  */
 function hotspotBars(nodes, hotspots) {
   const scored = hotspots.map((key) => {
@@ -22,7 +22,7 @@ function hotspotBars(nodes, hotspots) {
   const maxScore = Math.max(1, ...scored.map((s) => s.score));
   return scored.map(({ key, node, score }) => ({
     key,
-    name: node.name,
+    file: node.file,
     rank: node.rank,
     lines: node.lines,
     commits: node.commits,

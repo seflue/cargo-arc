@@ -1480,9 +1480,54 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
             c.hotspots.list,
             &[("list-style", "none"), ("margin", "0"), ("padding", "0")],
         ),
+        // Rank, path and size in aligned columns; a bar row's label and
+        // track span all three.
         CssRule::class(
             c.hotspots.list_item,
-            &[("cursor", "pointer"), ("padding", "2px 0")],
+            &[
+                ("cursor", "pointer"),
+                ("padding", "2px 0"),
+                ("display", "grid"),
+                ("grid-template-columns", "2em 1fr auto"),
+                ("column-gap", "6px"),
+            ],
+        ),
+        CssRule::class(
+            c.hotspots.list_head,
+            &[
+                ("display", "grid"),
+                ("grid-template-columns", "2em 1fr auto"),
+                ("column-gap", "6px"),
+                ("padding", "2px 0"),
+                ("color", sb.text_muted),
+            ],
+        ),
+        CssRule::new(
+            &format!(".{}, .{}", c.hotspots.bar_label, c.hotspots.bar_track),
+            &[("grid-column", "1 / -1")],
+        ),
+        CssRule::new(
+            &format!(".{}, .{}", c.hotspots.list_rank, c.hotspots.list_size),
+            &[("font-variant-numeric", "tabular-nums")],
+        ),
+        CssRule::class(c.hotspots.list_size, &[("text-align", "right")]),
+        // One line, so an overflowing path is measurable and `PathFit` can
+        // shorten it.
+        CssRule::new(
+            &format!(".{}, .{}", c.hotspots.list_path, c.hotspots.bar_label),
+            &[
+                ("white-space", "nowrap"),
+                ("overflow", "hidden"),
+                ("min-width", "0"),
+            ],
+        ),
+        CssRule::class(
+            c.hotspots.header,
+            &[
+                ("font-weight", "600"),
+                ("font-size", "13px"),
+                ("margin-bottom", "6px"),
+            ],
         ),
         CssRule::new(
             &format!(".{}:hover", c.hotspots.list_item),
@@ -1499,7 +1544,12 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
                 ("font-size", "11px"),
                 ("padding", "2px 6px"),
                 ("margin-bottom", "6px"),
+                ("margin-right", "4px"),
             ],
+        ),
+        CssRule::new(
+            &format!(".{}[aria-pressed=\"true\"]", c.hotspots.list_toggle),
+            &[("background", tb.accent), ("color", tb.on_accent)],
         ),
         CssRule::class(
             c.hotspots.note,

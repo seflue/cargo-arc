@@ -1,5 +1,5 @@
 // @module HotspotScript
-// @deps Theme, DomAdapter, HotspotTree, HotspotZoom, HotspotLabels, HotspotHover, HotspotSelection, HotspotBars, PageLink, Follow, HotspotJumpIcon, Jump, HotspotLayout
+// @deps Theme, DomAdapter, HotspotTree, HotspotZoom, HotspotLabels, HotspotHover, HotspotSelection, HotspotBars, PageLink, Follow, HotspotJumpIcon, Jump, HotspotLayout, PathFit
 // @config
 // hotspot_script.js - entry module for the hotspot map page. Applies the
 // theme STATIC_DATA carries, wires the map's zoom with its breadcrumb,
@@ -36,6 +36,35 @@ function crumbKeyAt(event) {
   const target = /** @type {Element | null} */ (event.target);
   const crumb = target?.closest?.('[data-crumb]');
   return crumb ? crumb.getAttribute('data-crumb') : null;
+}
+
+/** The path spans in the sidebar: rows and bar labels carrying `data-full`. */
+function sidebarPaths(sidebarFo) {
+  const inner = sidebarFo?.firstElementChild;
+  return inner ? [...inner.querySelectorAll('[data-full]')] : [];
+}
+
+/**
+ * The sidebar's natural content width with every path at full length,
+ * measured the way `SidebarLogic.updatePosition` measures the arc page's;
+ * `undefined` when there is nothing to measure.
+ */
+function measureSidebarWidth(sidebarFo) {
+  const inner = sidebarFo?.firstElementChild;
+  if (!inner) return undefined;
+  for (const span of sidebarPaths(sidebarFo)) PathFit.resetPath(span);
+  sidebarFo.setAttribute('width', '9999');
+  inner.style.width = 'max-content';
+  const natural = inner.offsetWidth;
+  inner.style.width = '';
+  return natural;
+}
+
+/** Shorten every sidebar path that overflows its cell, keeping the file name. */
+function fitSidebarPaths(sidebarFo) {
+  for (const span of sidebarPaths(sidebarFo)) {
+    PathFit.fitPath(span, '/', (s) => s.scrollWidth > s.clientWidth);
+  }
 }
 
 /** Escapes text before it is interpolated into `innerHTML`, matching the
@@ -82,19 +111,33 @@ function buildHotspotMap(themeControl) {
   // occupies gives a `viewBox` that keeps one SVG unit equal to one CSS
   // pixel. `resize()` below recomputes it for a new box and reapplies it;
   // the initial values live in the same `let`s so both paths update them
-  // the same way.
-  let layout = HotspotLayout.computeLayout(
-    svg.getBoundingClientRect(),
-    STATIC_DATA.layout,
-  );
-  HotspotLayout.apply(
-    {
-      svg,
-      toolbarFo: DomAdapter.getElementById('toolbar-fo'),
-      sidebarFo: DomAdapter.getElementById('hotspot-sidebar'),
-    },
-    layout,
-  );
+  // the same way. The sidebar takes its content's width, as on the arc
+  // page, so it must be shown before it is measured.
+  const sidebarEl = DomAdapter.getElementById('hotspot-sidebar');
+  if (sidebarEl) sidebarEl.style.display = 'block';
+  function layoutFor(box) {
+    const sidebarWidth = HotspotLayout.sidebarWidthFor(
+      measureSidebarWidth(sidebarEl),
+      box.width,
+      STATIC_DATA.layout.sidebarWidth,
+    );
+    const next = HotspotLayout.computeLayout(
+      box,
+      STATIC_DATA.layout,
+      sidebarWidth,
+    );
+    HotspotLayout.apply(
+      {
+        svg,
+        toolbarFo: DomAdapter.getElementById('toolbar-fo'),
+        sidebarFo: sidebarEl,
+      },
+      next,
+    );
+    fitSidebarPaths(sidebarEl);
+    return next;
+  }
+  let layout = layoutFor(svg.getBoundingClientRect());
   const canvasWidth = layout.viewBox.width;
   let canvasHeight = layout.viewBox.height;
   let mapAreaSize = layout.mapAreaSize;
@@ -142,11 +185,10 @@ function buildHotspotMap(themeControl) {
 
   const detailsEl = DomAdapter.getElementById('hotspot-details');
   const listEl = DomAdapter.getElementById('hotspot-list');
-  const listToggleEl = DomAdapter.getElementById('hotspot-list-toggle');
-  const sidebarEl = DomAdapter.getElementById('hotspot-sidebar');
+  const showListEl = DomAdapter.getElementById('hotspot-show-list');
+  const showBarsEl = DomAdapter.getElementById('hotspot-show-bars');
   const pageLinkEl = DomAdapter.getElementById('arc-page-link');
   const breadcrumbEl = DomAdapter.getElementById('hotspot-breadcrumb');
-  if (sidebarEl) sidebarEl.style.display = 'block';
   // The static SVG starts the toolbar hidden so a file opens sensibly
   // outside a browser. This reveals it, as `svg_script.js` does for the arc page.
   const toolbarFoEl = DomAdapter.getElementById('toolbar-fo');
@@ -160,7 +202,6 @@ function buildHotspotMap(themeControl) {
   // whichever happened last (`updatePageLink`'s own doc comment); `null`
   // before either has happened, carrying nothing.
   let lastLinkSource = null;
-  let showingBars = false;
   let view = HotspotZoom.viewFor(nodes[targetKey]);
   let animationHandle = null;
   let scale = 1;
@@ -387,7 +428,7 @@ function buildHotspotMap(themeControl) {
       .map(
         (bar) =>
           `<li class="${LIST_ITEM_CLASS}" data-file="${escapeHtml(bar.key)}">` +
-          `<span class="${c.barLabel}">${escapeHtml(bar.name)}</span>` +
+          `<span class="${c.barLabel}" data-full="${escapeHtml(bar.file)}">${escapeHtml(bar.file)}</span>` +
           `<span class="${c.barTrack}" style="display:block;height:8px">` +
           `<span class="${c.barFill}" style="display:block;height:100%;` +
           `width:${bar.widthPercent.toFixed(1)}%;background:` +
@@ -397,13 +438,16 @@ function buildHotspotMap(themeControl) {
       .join('');
   }
 
-  if (listToggleEl && listEl) {
-    listToggleEl.addEventListener('click', () => {
-      showingBars = !showingBars;
-      listToggleEl.setAttribute('aria-pressed', String(showingBars));
-      listToggleEl.textContent = showingBars ? 'List' : 'Bars';
-      listEl.innerHTML = showingBars ? barsHtml() : originalListHtml;
-    });
+  function showView(bars) {
+    showListEl.setAttribute('aria-pressed', String(!bars));
+    showBarsEl.setAttribute('aria-pressed', String(bars));
+    listEl.innerHTML = bars ? barsHtml() : originalListHtml;
+    fitSidebarPaths(sidebarEl);
+  }
+
+  if (showListEl && showBarsEl && listEl) {
+    showListEl.addEventListener('click', () => showView(false));
+    showBarsEl.addEventListener('click', () => showView(true));
   }
 
   if (listEl) {
@@ -491,15 +535,7 @@ function buildHotspotMap(themeControl) {
    * left untouched, so a resize does not snap the map back to the root.
    */
   function resize(width, height) {
-    layout = HotspotLayout.computeLayout({ width, height }, STATIC_DATA.layout);
-    HotspotLayout.apply(
-      {
-        svg,
-        toolbarFo: DomAdapter.getElementById('toolbar-fo'),
-        sidebarFo: DomAdapter.getElementById('hotspot-sidebar'),
-      },
-      layout,
-    );
+    layout = layoutFor({ width, height });
     canvasHeight = layout.viewBox.height;
     mapAreaSize = layout.mapAreaSize;
     tooltip.setCanvasWidth(layout.viewBox.width);

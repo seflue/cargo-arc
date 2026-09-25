@@ -8,7 +8,7 @@ use super::elements::escape_xml;
 use super::static_data::{TargetData, ThemeData, script_element};
 use super::theme::{ColorPalette, Theme};
 use crate::hotspots::{
-    GreyCause, HotspotKind, HotspotNode, HotspotTree, PackedCircle, sorted_children,
+    GreyCause, HotspotKind, HotspotNode, HotspotTree, MapVolatility, PackedCircle, sorted_children,
 };
 use crate::layout::{LocationId, TargetKind};
 use serde::Serialize;
@@ -23,6 +23,8 @@ const MAP_MARGIN: f64 = 20.0;
 /// the packed circle so the sidebar never covers a circle.
 const SIDEBAR_WIDTH: f64 = 280.0;
 const SIDEBAR_GAP: f64 = 20.0;
+/// Room between the sidebar and the page's right edge, as on the arc page.
+const SIDEBAR_MARGIN_RIGHT: f64 = 16.0;
 
 // === Serialization structs ===
 
@@ -52,6 +54,7 @@ struct HotspotStaticData {
 struct HotspotLayoutData {
     sidebar_width: f64,
     sidebar_gap: f64,
+    sidebar_margin_right: f64,
     map_margin: f64,
     toolbar_height: f32,
 }
@@ -61,6 +64,7 @@ impl HotspotLayoutData {
         Self {
             sidebar_width: SIDEBAR_WIDTH,
             sidebar_gap: SIDEBAR_GAP,
+            sidebar_margin_right: SIDEBAR_MARGIN_RIGHT,
             map_margin: MAP_MARGIN,
             toolbar_height: super::toolbar::height(&toolbar_content()),
         }
@@ -315,26 +319,70 @@ fn volatility_message(cause: GreyCause) -> String {
     }
 }
 
-/// Render the sidebar: details panel, ranked list, list/bars toggle and grey
-/// note. `hotspot_script.js` fills in the details and drives the toggle.
+/// Return the sidebar's title: the workspace, and the commit window unless
+/// the map is grey.
+fn sidebar_header(workspace: &str, volatility: MapVolatility) -> String {
+    match volatility {
+        MapVolatility::Window { months } => format!("Hotspots · {workspace} · {months} months"),
+        MapVolatility::Grey(_) => format!("Hotspots · {workspace}"),
+    }
+}
+
+/// Return the hotspot class names JS builds markup with, keyed as JS reads them.
+fn class_names() -> BTreeMap<String, String> {
+    let hs = &CSS.hotspots;
+    [
+        ("circle", hs.circle),
+        ("listItem", hs.list_item),
+        ("hover", hs.hover),
+        ("selected", hs.selected),
+        ("barLabel", hs.bar_label),
+        ("barTrack", hs.bar_track),
+        ("barFill", hs.bar_fill),
+        ("detailsTitle", hs.details_title),
+        ("tooltip", hs.tooltip),
+        ("jumpIcon", hs.jump_icon),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect()
+}
+
+/// Render the sidebar below the toolbar at `top`: header, details panel,
+/// ranked list, list/bars toggle and grey note. `hotspot_script.js` fills in
+/// the details and drives the toggle.
 fn render_hotspot_sidebar(
     width: f32,
     height: f32,
+    top: f32,
+    header: &str,
     nodes: &BTreeMap<String, HotspotCircleData>,
     hotspots: &[String],
     volatility: Option<&str>,
 ) -> String {
     let hs = &CSS.hotspots;
     let mut list = String::new();
-    for (index, key) in hotspots.iter().enumerate() {
-        let Some(node) = nodes.get(key) else { continue };
+    if !hotspots.is_empty() {
         let _ = writeln!(
             list,
-            "        <li class=\"{}\" data-file=\"{}\">{}. {} — {}×{}</li>",
+            "        <li class=\"{}\"><span></span><span>file</span>\
+             <span class=\"{}\">lines × commits</span></li>",
+            hs.list_head, hs.list_size,
+        );
+    }
+    for (index, key) in hotspots.iter().enumerate() {
+        let Some(node) = nodes.get(key) else { continue };
+        let path = escape_xml(&node.file);
+        let _ = writeln!(
+            list,
+            "        <li class=\"{}\" data-file=\"{}\"><span class=\"{}\">#{}</span>\
+             <span class=\"{}\" data-full=\"{path}\">{path}</span><span class=\"{}\">{} × {}</span></li>",
             hs.list_item,
             escape_xml(key),
+            hs.list_rank,
             index + 1,
-            escape_xml(&node.name),
+            hs.list_path,
+            hs.list_size,
             node.lines,
             node.commits,
         );
@@ -350,7 +398,12 @@ fn render_hotspot_sidebar(
     // explains it (no churn data), so the toggle is omitted there too.
     let toggle = if volatility.is_none() {
         format!(
-            "    <button id=\"hotspot-list-toggle\" class=\"{}\" aria-pressed=\"false\">Bars</button>\n",
+            concat!(
+                "    <div>",
+                "<button id=\"hotspot-show-list\" class=\"{0}\" aria-pressed=\"true\">List</button>",
+                "<button id=\"hotspot-show-bars\" class=\"{0}\" aria-pressed=\"false\">Bars</button>",
+                "</div>\n",
+            ),
             hs.list_toggle,
         )
     } else {
@@ -360,12 +413,13 @@ fn render_hotspot_sidebar(
     #[allow(clippy::cast_possible_truncation)] // SVG pixel coordinates fit in i32
     let sidebar_width = SIDEBAR_WIDTH as f32;
     #[allow(clippy::cast_possible_truncation)]
-    let x = (width - sidebar_width) as i32;
+    let x = (width - sidebar_width - SIDEBAR_MARGIN_RIGHT as f32) as i32;
     format!(
         concat!(
-            "<foreignObject id=\"hotspot-sidebar\" x=\"{}\" y=\"0\" width=\"{}\" height=\"{}\"",
+            "<foreignObject id=\"hotspot-sidebar\" x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"",
             " style=\"display:none; overflow:visible\">\n",
             "  <div class=\"{}\" xmlns=\"http://www.w3.org/1999/xhtml\">\n",
+            "    <div class=\"{}\">{}</div>\n",
             "    <div id=\"hotspot-details\" class=\"{}\"></div>\n",
             "{}",
             "    <ul id=\"hotspot-list\" class=\"{}\">\n",
@@ -375,7 +429,18 @@ fn render_hotspot_sidebar(
             "  </div>\n",
             "</foreignObject>\n",
         ),
-        x, sidebar_width, height, hs.sidebar, hs.details, toggle, hs.list, list, note,
+        x,
+        top,
+        sidebar_width,
+        height - top,
+        hs.sidebar,
+        hs.header,
+        escape_xml(header),
+        hs.details,
+        toggle,
+        hs.list,
+        list,
+        note,
     )
 }
 
@@ -399,15 +464,24 @@ pub(crate) fn render(
         "pack() must yield one circle per tree node, in the same preorder"
     );
     let keys = node_keys(&ordered);
-    let grey = config.grey_cause.is_some();
+    let grey_cause = match config.volatility {
+        MapVolatility::Grey(cause) => Some(cause),
+        MapVolatility::Window { .. } => None,
+    };
+    let grey = grey_cause.is_some();
 
     let root_r = packed.first().map_or(1.0, |circle| circle.r.max(1.0));
     let scale = TARGET_ROOT_RADIUS / root_r;
     let cx0 = MAP_MARGIN + TARGET_ROOT_RADIUS;
-    let cy0 =
-        f64::from(super::toolbar::height(&toolbar_content())) + MAP_MARGIN + TARGET_ROOT_RADIUS;
+    let toolbar_height = super::toolbar::height(&toolbar_content());
+    let cy0 = f64::from(toolbar_height) + MAP_MARGIN + TARGET_ROOT_RADIUS;
     #[allow(clippy::cast_possible_truncation)] // canvas size stays well below 2^23
-    let width = (cx0 + TARGET_ROOT_RADIUS + MAP_MARGIN + SIDEBAR_GAP + SIDEBAR_WIDTH) as f32;
+    let width = (cx0
+        + TARGET_ROOT_RADIUS
+        + MAP_MARGIN
+        + SIDEBAR_GAP
+        + SIDEBAR_WIDTH
+        + SIDEBAR_MARGIN_RIGHT) as f32;
     #[allow(clippy::cast_possible_truncation)]
     let height = (cy0 + TARGET_ROOT_RADIUS + MAP_MARGIN) as f32;
 
@@ -446,24 +520,17 @@ pub(crate) fn render(
     hotspot_ranks.sort_by_key(|(rank, _)| *rank);
     let hotspots: Vec<String> = hotspot_ranks.into_iter().map(|(_, key)| key).collect();
 
-    let volatility = config.grey_cause.map(volatility_message);
-    let sidebar = render_hotspot_sidebar(width, height, &nodes, &hotspots, volatility.as_deref());
-    let hs = &CSS.hotspots;
-    let classes: BTreeMap<String, String> = [
-        ("circle", hs.circle),
-        ("listItem", hs.list_item),
-        ("hover", hs.hover),
-        ("selected", hs.selected),
-        ("barLabel", hs.bar_label),
-        ("barTrack", hs.bar_track),
-        ("barFill", hs.bar_fill),
-        ("detailsTitle", hs.details_title),
-        ("tooltip", hs.tooltip),
-        ("jumpIcon", hs.jump_icon),
-    ]
-    .into_iter()
-    .map(|(k, v)| (k.to_string(), v.to_string()))
-    .collect();
+    let volatility = grey_cause.map(volatility_message);
+    let sidebar = render_hotspot_sidebar(
+        width,
+        height,
+        toolbar_height,
+        &sidebar_header(&tree.root.name, config.volatility),
+        &nodes,
+        &hotspots,
+        volatility.as_deref(),
+    );
+    let classes = class_names();
     let static_data = HotspotStaticData {
         nodes,
         hotspots,
@@ -552,7 +619,7 @@ mod tests {
     fn rendered_grey() -> String {
         let tree = single_crate_tree();
         let config = RenderConfig {
-            grey_cause: Some(GreyCause::Flag),
+            volatility: MapVolatility::Grey(GreyCause::Flag),
             ..RenderConfig::default()
         };
         render(&tree, &pack(&tree), &HashMap::new(), &config)
@@ -566,7 +633,7 @@ mod tests {
         let (_, _, svg) = rendered_default();
 
         assert!(
-            svg.contains("width=\"100%\" height=\"100%\" viewBox=\"0 0 1100 872\">"),
+            svg.contains("width=\"100%\" height=\"100%\" viewBox=\"0 0 1116 872\">"),
             "got: {svg}"
         );
     }
@@ -678,6 +745,7 @@ mod tests {
 
         assert_eq!(data["layout"]["sidebarWidth"], SIDEBAR_WIDTH);
         assert_eq!(data["layout"]["sidebarGap"], SIDEBAR_GAP);
+        assert_eq!(data["layout"]["sidebarMarginRight"], 16.0);
         assert_eq!(data["layout"]["mapMargin"], MAP_MARGIN);
         assert_eq!(data["layout"]["toolbarHeight"], 72.0);
     }
@@ -742,7 +810,7 @@ mod tests {
         let tree = single_crate_tree();
         let packed = pack(&tree);
         let config = RenderConfig {
-            grey_cause: Some(GreyCause::Flag),
+            volatility: MapVolatility::Grey(GreyCause::Flag),
             ..RenderConfig::default()
         };
         let svg = render(&tree, &packed, &HashMap::new(), &config);
@@ -759,7 +827,7 @@ mod tests {
         let tree = single_crate_tree();
         let packed = pack(&tree);
         let config = RenderConfig {
-            grey_cause: Some(GreyCause::GitUnavailable),
+            volatility: MapVolatility::Grey(GreyCause::GitUnavailable),
             ..RenderConfig::default()
         };
         let svg = render(&tree, &packed, &HashMap::new(), &config);
@@ -776,7 +844,7 @@ mod tests {
         let tree = single_crate_tree();
         let packed = pack(&tree);
         let config = RenderConfig {
-            grey_cause: Some(GreyCause::NoCommitsInWindow { months: 6 }),
+            volatility: MapVolatility::Grey(GreyCause::NoCommitsInWindow { months: 6 }),
             ..RenderConfig::default()
         };
         let svg = render(&tree, &packed, &HashMap::new(), &config);
@@ -818,8 +886,8 @@ mod tests {
         assert!(!svg.contains("CHIP_LABELS"), "{svg}");
     }
 
-    #[test]
-    fn sidebar_lists_ranked_hotspots_with_size_and_commits() {
+    /// A crate with one leaf ranked as a hotspot, rendered with the default config.
+    fn rendered_with_one_hotspot() -> String {
         let leaf = HotspotNode {
             name: "hot".to_string(),
             kind: HotspotKind::File,
@@ -841,14 +909,104 @@ mod tests {
             total_commits: 5,
             hotspots: vec![leaf],
         };
-        let packed = pack(&tree);
-        let svg = render(&tree, &packed, &HashMap::new(), &RenderConfig::default());
+        render(
+            &tree,
+            &pack(&tree),
+            &HashMap::new(),
+            &RenderConfig::default(),
+        )
+    }
 
+    #[test]
+    fn sidebar_lists_ranked_hotspots_with_size_and_commits() {
+        let svg = rendered_with_one_hotspot();
+
+        let hs = &CSS.hotspots;
         assert!(svg.contains("id=\"hotspot-list\""), "{svg}");
-        assert!(svg.contains("1. hot — 100×5"), "{svg}");
+        assert!(
+            svg.contains(&format!(
+                "data-file=\"app/src/hot.rs\"><span class=\"{}\">#1</span>\
+                 <span class=\"{}\" data-full=\"app/src/hot.rs\">app/src/hot.rs</span>\
+                 <span class=\"{}\">100 × 5</span></li>",
+                hs.list_rank, hs.list_path, hs.list_size
+            )),
+            "{svg}"
+        );
         assert!(svg.contains("id=\"hotspot-details\""), "{svg}");
-        assert!(svg.contains("id=\"hotspot-list-toggle\""), "{svg}");
         assert!(!svg.contains("id=\"hotspot-volatility-note\""), "{svg}");
+    }
+
+    /// The size column's numbers say what they count.
+    #[test]
+    fn the_hotspot_list_opens_with_a_row_naming_its_columns() {
+        let svg = rendered_with_one_hotspot();
+        let hs = &CSS.hotspots;
+
+        let head = format!(
+            "<ul id=\"hotspot-list\" class=\"{}\">\n        <li class=\"{}\"><span></span>\
+             <span>file</span><span class=\"{}\">lines × commits</span></li>",
+            hs.list, hs.list_head, hs.list_size
+        );
+        assert!(svg.contains(&head), "{svg}");
+    }
+
+    /// List and Bars are a pair of buttons; the list is the view shown first.
+    #[test]
+    fn sidebar_offers_list_and_bars_as_a_pair_with_the_list_pressed() {
+        let (_, _, svg) = rendered_default();
+
+        assert!(
+            svg.contains("id=\"hotspot-show-list\"")
+                && svg.contains("aria-pressed=\"true\">List</button>"),
+            "{svg}"
+        );
+        assert!(
+            svg.contains("id=\"hotspot-show-bars\"")
+                && svg.contains("aria-pressed=\"false\">Bars</button>"),
+            "{svg}"
+        );
+    }
+
+    #[test]
+    fn sidebar_header_names_the_workspace_and_the_commit_window() {
+        let tree = single_crate_tree();
+        let config = RenderConfig {
+            volatility: MapVolatility::Window { months: 3 },
+            ..RenderConfig::default()
+        };
+        let svg = render(&tree, &pack(&tree), &HashMap::new(), &config);
+
+        assert!(
+            svg.contains(&format!(
+                "<div class=\"{}\">Hotspots · app · 3 months</div>",
+                CSS.hotspots.header
+            )),
+            "{svg}"
+        );
+    }
+
+    /// The grey note explains the missing window, so the header leaves it out.
+    #[test]
+    fn a_grey_sidebar_header_names_only_the_workspace() {
+        let svg = rendered_grey();
+
+        assert!(
+            svg.contains(&format!(
+                "<div class=\"{}\">Hotspots · app</div>",
+                CSS.hotspots.header
+            )),
+            "{svg}"
+        );
+    }
+
+    #[test]
+    fn the_sidebar_starts_below_the_toolbar() {
+        let (_, _, svg) = rendered_default();
+
+        assert!(
+            svg.contains("<foreignObject id=\"hotspot-sidebar\" x=\"820\" y=\"72\" width=\"280\" height=\"800\""),
+            "{svg}"
+        );
     }
 
     #[test]
@@ -937,7 +1095,8 @@ mod tests {
     fn sidebar_hides_the_list_toggle_when_grey() {
         let svg = rendered_grey();
 
-        assert!(!svg.contains("id=\"hotspot-list-toggle\""), "{svg}");
+        assert!(!svg.contains("id=\"hotspot-show-list\""), "{svg}");
+        assert!(!svg.contains("id=\"hotspot-show-bars\""), "{svg}");
     }
 
     /// `targets` is `cli::register_hotspot_targets`'s own return value: a

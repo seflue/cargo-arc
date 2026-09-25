@@ -10,7 +10,7 @@
 // repeated here as literals.
 
 /**
- * @typedef {{ sidebarWidth: number, sidebarGap: number, mapMargin: number, toolbarHeight: number }} HotspotLayoutConstants
+ * @typedef {{ sidebarWidth: number, sidebarGap: number, sidebarMarginRight: number, mapMargin: number, toolbarHeight: number }} HotspotLayoutConstants
  */
 
 /**
@@ -26,31 +26,56 @@ const MIN_MAP_AREA_SIZE = 40;
  * The layout for a `width` x `height` box (the browser window, or the root
  * SVG's own measured box): `viewBox` fills it exactly (one SVG unit per CSS
  * pixel, so no text scales with the window), the toolbar spans the full
- * width at its fixed height, the sidebar sits at its fixed width against
- * the right edge at the full height, and `mapAreaSize` is the side of the
- * largest square left over once the toolbar strip, the sidebar strip with
- * its gap, and a margin on every side of the square are taken out - never
+ * width at its fixed height, the sidebar sits `sidebarMarginRight` away
+ * from the right edge, from below the toolbar to the bottom, and
+ * `mapAreaSize` is the side of the largest square left over once the
+ * toolbar strip, the sidebar strip with its gap and right margin, and a
+ * margin on every side of the square are taken out - never
  * below `MIN_MAP_AREA_SIZE`.
  * @param {{ width: number, height: number }} box
  * @param {HotspotLayoutConstants} constants
+ * @param {number} [sidebarWidth] - the measured width (`sidebarWidthFor`);
+ *   defaults to the constant the page was rendered with
  */
-function computeLayout({ width, height }, constants) {
-  const { sidebarWidth, sidebarGap, mapMargin, toolbarHeight } = constants;
-  const freeWidth = width - sidebarGap - sidebarWidth - 2 * mapMargin;
+function computeLayout(
+  { width, height },
+  constants,
+  sidebarWidth = constants.sidebarWidth,
+) {
+  const { sidebarGap, sidebarMarginRight, mapMargin, toolbarHeight } =
+    constants;
+  const freeWidth =
+    width - sidebarGap - sidebarWidth - sidebarMarginRight - 2 * mapMargin;
   const freeHeight = height - toolbarHeight - 2 * mapMargin;
   return {
     viewBox: { width, height },
     toolbar: { width, height: toolbarHeight },
-    sidebar: { x: width - sidebarWidth, width: sidebarWidth, height },
+    sidebar: {
+      x: width - sidebarMarginRight - sidebarWidth,
+      y: toolbarHeight,
+      width: sidebarWidth,
+      height: height - toolbarHeight,
+    },
     mapAreaSize: Math.max(MIN_MAP_AREA_SIZE, Math.min(freeWidth, freeHeight)),
   };
+}
+
+/**
+ * The sidebar's width for content `naturalWidth` wide, as the arc page's
+ * sidebar sizes itself: at least `minWidth`, at most half of `boxWidth`.
+ * @param {number | undefined} naturalWidth
+ * @param {number} boxWidth
+ * @param {number} minWidth
+ */
+function sidebarWidthFor(naturalWidth, boxWidth, minWidth) {
+  return Math.max(minWidth, Math.min(naturalWidth || 0, boxWidth * 0.5));
 }
 
 /**
  * Writes `layout` onto the root SVG's viewBox (mutating `baseVal` in place,
  * so the DOM's own attribute stays in sync) and onto the toolbar and
  * sidebar foreignObjects - only the attributes that actually move with the
- * window; the sidebar's own width and the toolbar's own height are already
+ * window or the sidebar's content; the toolbar's own height is already
  * fixed by the initial render. Either foreignObject may be absent (a page
  * rendered without jump ids still carries both here, but a caller mid
  * teardown should not have to guard for it).
@@ -63,14 +88,26 @@ function apply({ svg, toolbarFo, sidebarFo }, layout) {
   if (toolbarFo) toolbarFo.setAttribute('width', String(layout.toolbar.width));
   if (sidebarFo) {
     sidebarFo.setAttribute('x', String(layout.sidebar.x));
+    sidebarFo.setAttribute('width', String(layout.sidebar.width));
     sidebarFo.setAttribute('height', String(layout.sidebar.height));
   }
 }
 
 // The browser global exposing this module's API.
-const HotspotLayout = { computeLayout, apply, MIN_MAP_AREA_SIZE };
+const HotspotLayout = {
+  computeLayout,
+  sidebarWidthFor,
+  apply,
+  MIN_MAP_AREA_SIZE,
+};
 
 // CommonJS export for tests (Node/Bun)
 if (typeof module !== 'undefined') {
-  module.exports = { computeLayout, apply, MIN_MAP_AREA_SIZE, HotspotLayout };
+  module.exports = {
+    computeLayout,
+    sidebarWidthFor,
+    apply,
+    MIN_MAP_AREA_SIZE,
+    HotspotLayout,
+  };
 }

@@ -1,7 +1,7 @@
 //! Workspace/crate/module/file hierarchy with sizes, commits and ranks.
 
 use crate::graph::{ArcGraph, EdgeWeight, Node};
-use crate::volatility::Commit;
+use crate::volatility::{Commit, VolatilityConfig};
 use petgraph::graph::NodeIndex;
 use petgraph::visit::EdgeRef;
 use std::collections::BTreeSet;
@@ -41,6 +41,21 @@ pub enum GreyCause {
     GitUnavailable,
     /// Git ran, but no commit touched a workspace file in the last `months`.
     NoCommitsInWindow { months: usize },
+}
+
+/// The commit window the map is coloured over, or why it is grey.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MapVolatility {
+    Window { months: usize },
+    Grey(GreyCause),
+}
+
+impl Default for MapVolatility {
+    fn default() -> Self {
+        Self::Window {
+            months: VolatilityConfig::default().months,
+        }
+    }
 }
 
 /// The built hierarchy plus the workspace-wide figures the map's colour scale

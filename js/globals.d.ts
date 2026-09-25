@@ -141,6 +141,7 @@ declare const STATIC_DATA: {
   layout?: {
     sidebarWidth: number;
     sidebarGap: number;
+    sidebarMarginRight: number;
     mapMargin: number;
     toolbarHeight: number;
   };

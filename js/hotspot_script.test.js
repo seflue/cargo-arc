@@ -12,6 +12,7 @@ import { HotspotZoom } from './hotspot_zoom.js';
 import { Jump } from './jump.js';
 import { JumpSymbol } from './jump_symbol.js';
 import { PageLink } from './page_link.js';
+import { PathFit } from './path_fit.js';
 import { TextMeasure } from './text_metrics.js';
 import { Theme } from './theme.js';
 
@@ -86,7 +87,8 @@ function createFakeMap() {
   const listEl = createFakeInteractiveElement('ul');
   listEl.innerHTML =
     '<li class="hotspot-list-item" data-file="hot">1. hot.rs — 100×4</li>';
-  const listToggleEl = createFakeInteractiveElement('button');
+  const showListEl = createFakeInteractiveElement('button');
+  const showBarsEl = createFakeInteractiveElement('button');
   const sidebarEl = createFakeElement('div');
   const arcLinkEl = createFakeElement('a');
   // Starts hidden, the same `style="display:none"` the static SVG carries
@@ -105,7 +107,8 @@ function createFakeMap() {
     warmLabel,
     detailsEl,
     listEl,
-    listToggleEl,
+    showListEl,
+    showBarsEl,
     sidebarEl,
     arcLinkEl,
     toolbarFoEl,
@@ -122,7 +125,8 @@ const {
   warmLabel,
   detailsEl,
   listEl,
-  listToggleEl,
+  showListEl,
+  showBarsEl,
   sidebarEl,
   arcLinkEl,
   toolbarFoEl,
@@ -136,7 +140,8 @@ const elements = {
   'theme-dark': createFakeSelect(),
   'hotspot-details': detailsEl,
   'hotspot-list': listEl,
-  'hotspot-list-toggle': listToggleEl,
+  'hotspot-show-list': showListEl,
+  'hotspot-show-bars': showBarsEl,
   'hotspot-sidebar': sidebarEl,
   'arc-page-link': arcLinkEl,
   'jump-status': jumpStatusEl,
@@ -207,7 +212,13 @@ global.STATIC_DATA = {
   // this produces is exactly the fixed 400x400 canvas the tests below were
   // written against. `hotspot_layout.test.js` covers the arithmetic itself
   // with realistic, non-zero constants.
-  layout: { sidebarWidth: 0, sidebarGap: 0, mapMargin: 0, toolbarHeight: 0 },
+  layout: {
+    sidebarWidth: 0,
+    sidebarGap: 0,
+    sidebarMarginRight: 0,
+    mapMargin: 0,
+    toolbarHeight: 0,
+  },
   nodes: {
     // The root sits centred in its own square footprint (200, 200 of a
     // 400×400 area), the way `render::hotspots::render` draws it - the
@@ -299,6 +310,7 @@ global.Follow = Follow;
 global.HotspotJumpIcon = HotspotJumpIcon;
 global.JumpSymbol = JumpSymbol;
 global.HotspotLayout = HotspotLayout;
+global.PathFit = PathFit;
 global.Jump = Jump;
 // A click on a jump chip would call this; no test here exercises a click.
 global.fetch = () => Promise.resolve({ ok: true });
@@ -366,6 +378,7 @@ describe('hotspot_script entry', () => {
     STATIC_DATA.layout = {
       sidebarWidth: 280,
       sidebarGap: 20,
+      sidebarMarginRight: 0,
       mapMargin: 20,
       toolbarHeight: 40,
     };
@@ -394,6 +407,7 @@ describe('hotspot_script entry', () => {
     STATIC_DATA.layout = {
       sidebarWidth: 100,
       sidebarGap: 10,
+      sidebarMarginRight: 0,
       mapMargin: 5,
       toolbarHeight: 30,
     };
@@ -408,7 +422,7 @@ describe('hotspot_script entry', () => {
       expect(svg.viewBox.baseVal).toEqual({ width: 1000, height: 700 });
       expect(toolbarFoEl.getAttribute('width')).toBe('1000');
       expect(sidebarEl.getAttribute('x')).toBe('900');
-      expect(sidebarEl.getAttribute('height')).toBe('700');
+      expect(sidebarEl.getAttribute('height')).toBe('670');
     } finally {
       STATIC_DATA.layout = savedLayout;
       svg.getBoundingClientRect = savedRect;
@@ -687,19 +701,22 @@ describe('hotspot_script entry', () => {
     expect(stopped).toBe(true);
   });
 
-  test('the list/bars toggle swaps the list content and its own label, and back', () => {
+  test('the List/Bars pair swaps the list content and which button is pressed, and back', () => {
     buildHotspotMap();
     const original = listEl.innerHTML;
 
-    listToggleEl._fire('click');
-    expect(listToggleEl.getAttribute('aria-pressed')).toBe('true');
-    expect(listToggleEl.textContent).toBe('List');
+    showBarsEl._fire('click');
+    expect(showBarsEl.getAttribute('aria-pressed')).toBe('true');
+    expect(showListEl.getAttribute('aria-pressed')).toBe('false');
     expect(listEl.innerHTML).not.toBe(original);
     expect(listEl.innerHTML).toContain('data-file="hot"');
+    expect(listEl.innerHTML).toContain(
+      'data-full="src/hot.rs">src/hot.rs</span>',
+    );
 
-    listToggleEl._fire('click');
-    expect(listToggleEl.getAttribute('aria-pressed')).toBe('false');
-    expect(listToggleEl.textContent).toBe('Bars');
+    showListEl._fire('click');
+    expect(showListEl.getAttribute('aria-pressed')).toBe('true');
+    expect(showBarsEl.getAttribute('aria-pressed')).toBe('false');
     expect(listEl.innerHTML).toBe(original);
   });
 

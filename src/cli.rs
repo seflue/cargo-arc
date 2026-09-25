@@ -368,7 +368,7 @@ fn run_ui(args: &ArcCommand, ui_args: &UiArgs) -> Result<Judgment> {
         };
         let arc_svg = render(&analysis.layout, &arc_config);
 
-        let (tree, grey_cause) =
+        let (tree, volatility) =
             build_hotspot_tree(args, &analysis.graph, &workspace_root, DEFAULT_HOTSPOTS);
         let packed = hotspots::pack(&tree);
 
@@ -378,7 +378,7 @@ fn run_ui(args: &ArcCommand, ui_args: &UiArgs) -> Result<Judgment> {
         let hotspots_config = RenderConfig {
             with_jump_ids: true,
             theme: args.theme,
-            grey_cause,
+            volatility,
             ..RenderConfig::default()
         };
         let hotspots_svg = render_hotspots(&tree, &packed, &jump_targets, &hotspots_config);
@@ -412,14 +412,14 @@ fn run_ui(args: &ArcCommand, ui_args: &UiArgs) -> Result<Judgment> {
 
 /// Build the hotspot tree over `graph` with lines from `hotspots::code_lines`
 /// and commits from the repository holding `--manifest-path`, over the
-/// shared `--volatility-months` window. The cause is `Some` exactly when the
-/// map is grey: `--no-volatility`, no usable git, or no commit in the window.
+/// shared `--volatility-months` window. The map is grey on `--no-volatility`,
+/// without usable git, or with no commit in the window.
 fn build_hotspot_tree(
     args: &ArcCommand,
     graph: &ArcGraph,
     workspace_root: &Path,
     hotspots_n: usize,
-) -> (hotspots::HotspotTree, Option<hotspots::GreyCause>) {
+) -> (hotspots::HotspotTree, hotspots::MapVolatility) {
     let months = args.volatility_months;
     let volatility = if args.no_volatility {
         Err(hotspots::GreyCause::Flag)
@@ -450,12 +450,14 @@ fn build_hotspot_tree(
         },
         hotspots_n,
     );
-    let cause = match volatility {
-        Err(cause) => Some(cause),
-        Ok(_) if tree.total_commits == 0 => Some(hotspots::GreyCause::NoCommitsInWindow { months }),
-        Ok(_) => None,
+    let map_volatility = match volatility {
+        Err(cause) => hotspots::MapVolatility::Grey(cause),
+        Ok(_) if tree.total_commits == 0 => {
+            hotspots::MapVolatility::Grey(hotspots::GreyCause::NoCommitsInWindow { months })
+        }
+        Ok(_) => hotspots::MapVolatility::Window { months },
     };
-    (tree, cause)
+    (tree, map_volatility)
 }
 
 /// Add a line-1 jump target to `table` for every leaf of `tree`, and return
@@ -492,7 +494,7 @@ fn run_hotspots(args: &ArcCommand, hotspots_args: &HotspotsArgs) -> Result<Judgm
         .workspace_root
         .context("workspace has no crates to build a hotspot map from")?;
 
-    let (tree, grey_cause) = build_hotspot_tree(
+    let (tree, volatility) = build_hotspot_tree(
         args,
         &analysis.graph,
         &workspace_root,
@@ -502,7 +504,7 @@ fn run_hotspots(args: &ArcCommand, hotspots_args: &HotspotsArgs) -> Result<Judgm
 
     let config = RenderConfig {
         theme: args.theme,
-        grey_cause,
+        volatility,
         ..RenderConfig::default()
     };
     // The standalone file carries no jump service to resolve an id against
@@ -1260,7 +1262,10 @@ mod tests {
 
         let (_tree, cause) = build_hotspot_tree(&cmd, &graph, &workspace_root, DEFAULT_HOTSPOTS);
 
-        assert_eq!(cause, Some(hotspots::GreyCause::Flag));
+        assert_eq!(
+            cause,
+            hotspots::MapVolatility::Grey(hotspots::GreyCause::Flag)
+        );
     }
 
     /// A manifest whose directory sits outside any git repository (a fresh
@@ -1280,7 +1285,10 @@ mod tests {
 
         let (_tree, cause) = build_hotspot_tree(&cmd, &graph, &workspace_root, DEFAULT_HOTSPOTS);
 
-        assert_eq!(cause, Some(hotspots::GreyCause::GitUnavailable));
+        assert_eq!(
+            cause,
+            hotspots::MapVolatility::Grey(hotspots::GreyCause::GitUnavailable)
+        );
     }
 
     /// A freshly `git init`ed directory with no commits: `analyze` succeeds,
@@ -1311,7 +1319,7 @@ mod tests {
 
         assert_eq!(
             cause,
-            Some(hotspots::GreyCause::NoCommitsInWindow { months: 3 })
+            hotspots::MapVolatility::Grey(hotspots::GreyCause::NoCommitsInWindow { months: 3 })
         );
     }
 
