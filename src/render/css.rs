@@ -902,6 +902,15 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
             ),
             &[("cursor", "pointer")],
         ),
+        // A tangle sidebar row's whole symbol line is the jump target (see
+        // js/sidebar.js _buildEdgeRow), not only its definition chip.
+        CssRule::new(
+            &format!(
+                "svg.{} .sidebar-edge-symbol[data-jump]",
+                c.relation.has_pinned
+            ),
+            &[("cursor", "pointer")],
+        ),
         CssRule::new(
             &format!(
                 "svg.{} .{}:hover .sidebar-jump, svg.{} .sidebar-edge-symbol:hover .sidebar-jump",
@@ -1079,6 +1088,17 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
                 ("margin-left", "-2px"),
                 ("padding-left", "2px"),
             ],
+        ),
+        // The triangle's own hit area, wider than its glyph so a click does
+        // not need to land pixel-perfect; the negative margin keeps the row's
+        // other content from shifting. Grows slightly on hover, pure CSS.
+        CssRule::new(
+            ".sidebar-edge-head .sidebar-toggle",
+            &[("padding", "4px"), ("margin", "-4px")],
+        ),
+        CssRule::new(
+            ".sidebar-edge-head .sidebar-toggle:hover",
+            &[("transform", "scale(1.3)")],
         ),
         CssRule::class(
             "sidebar-edge-meta",
@@ -2021,6 +2041,47 @@ mod tests {
         assert!(
             !css.contains(&format!("\n.{}[data-jump]", CSS.sidebar.location)),
             "an unpinned row must not look clickable"
+        );
+    }
+
+    #[test]
+    fn test_css_contains_sidebar_edge_symbol_jump_rule() {
+        let css = render_styles();
+        let selector = format!(
+            "svg.{} .sidebar-edge-symbol[data-jump]",
+            CSS.relation.has_pinned
+        );
+        let idx = css
+            .find(&format!("{selector} {{"))
+            .unwrap_or_else(|| panic!("CSS should contain a rule for {selector}"));
+        let section = &css[idx..idx + 90];
+        assert!(
+            section.contains("cursor: pointer"),
+            "pinned sidebar-edge-symbol[data-jump] should set cursor: pointer, got: {section}"
+        );
+    }
+
+    /// The tangle sidebar row's triangle needs a bigger hit area than its
+    /// glyph, and grows slightly on hover, both without moving the row's
+    /// other content.
+    #[test]
+    fn test_css_edge_head_toggle_has_a_bigger_hit_area_and_grows_on_hover() {
+        let css = render_styles();
+        let idx = css
+            .find(".sidebar-edge-head .sidebar-toggle {")
+            .unwrap_or_else(|| panic!("CSS should contain .sidebar-edge-head .sidebar-toggle"));
+        let section = &css[idx..idx + 120];
+        assert!(
+            section.contains("padding"),
+            "the toggle should widen its own hit area with padding, got: {section}"
+        );
+        assert!(
+            section.contains("margin"),
+            "padding without a matching negative margin would shift the row, got: {section}"
+        );
+        assert!(
+            css.contains(".sidebar-edge-head .sidebar-toggle:hover { transform:"),
+            "hovering the triangle should grow it via transform, got: {css}"
         );
     }
 
