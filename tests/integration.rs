@@ -2579,3 +2579,31 @@ fn cross_crate_private_use_edge_attaches_to_the_definer() {
         "address -> store should carry the uses of Handle, found: {symbols:?}"
     );
 }
+
+/// `net` holds a private `use external_lib::Client;` to a crate outside the
+/// workspace, and its child `net::endpoint` names the symbol through it with
+/// `use super::Client;`. Re-export collection resolves without external
+/// crates and cannot place `external_lib::Client`, so the reference is
+/// neither the ancestor's binding nor the descendant's own: it produces no
+/// edge. Today it stays attached to `net`, the ancestor.
+#[test]
+fn private_use_of_an_external_crate_gives_the_descendant_no_edge() {
+    let (temp, cmd) = fixture_args("private_use_external_crate", false);
+
+    let result = run(cmd);
+    assert!(result.is_ok(), "run() should succeed: {result:?}");
+
+    let svg = std::fs::read_to_string(temp.path()).unwrap();
+    let arcs = extract_arcs(&svg);
+    let nodes = extract_node_names(&svg);
+    let named_arcs = resolve_arc_names(&arcs, &nodes);
+
+    let has_endpoint_to_net = named_arcs
+        .iter()
+        .any(|(from, to, _)| from == "endpoint" && to == "net");
+    assert!(
+        !has_endpoint_to_net,
+        "endpoint -> net arc should NOT exist (Client is bound elsewhere, \
+         not net's to give), found arcs: {named_arcs:?}"
+    );
+}

@@ -259,7 +259,10 @@ fn resolution_context<'a>(
 /// `private` selects where named targets land: a `pub`/`pub(crate)`/`pub(super)`
 /// re-export fills `explicit_reexports`, a private `use` fills `private_uses`
 /// (a binding descendants can still name through this module). A glob lands in
-/// `glob_sources` or `private_glob_sources` by the same split.
+/// `glob_sources` or `private_glob_sources` by the same split. A private,
+/// non-glob leaf the resolution chain cannot place at all names something
+/// outside this crate; recording it in `elsewhere` keeps a descendant's
+/// reference to it from resolving to this module.
 fn collect_use_reexports(
     ctx: &CollectContext,
     use_item: &syn::ItemUse,
@@ -277,6 +280,10 @@ fn collect_use_reexports(
         let Some(dep) =
             resolve_single_path(&res_ctx, original_path, 0, &EdgeContext::production(), 0)
         else {
+            let alias_name = alias_path.rsplit("::").next().unwrap_or(alias_path);
+            if private && alias_name != "*" {
+                info.elsewhere.insert(alias_name.to_string());
+            }
             continue;
         };
 

@@ -91,6 +91,12 @@ pub(crate) struct ModuleExportInfo {
     /// `private_uses`, visible to descendants only, which may name any of
     /// the forwarded symbols through this module.
     pub(crate) private_glob_sources: Vec<String>,
+    /// Names a private `use` binds to a path the resolution chain cannot
+    /// place: an external crate, invisible while re-exports are collected.
+    /// Visible to descendants like `private_uses`, but nothing here names a
+    /// definer, so a descendant's reference through this module produces no
+    /// edge rather than staying on the ancestor.
+    pub(crate) elsewhere: HashSet<String>,
 }
 
 impl ModuleExportInfo {
@@ -102,6 +108,7 @@ impl ModuleExportInfo {
             && self.private_uses.is_empty()
             && self.glob_sources.is_empty()
             && self.private_glob_sources.is_empty()
+            && self.elsewhere.is_empty()
     }
 }
 
@@ -137,15 +144,17 @@ impl FromIterator<(String, HashMap<String, ModuleExportInfo>)> for ReExportMap {
 /// Resolve re-exports in a [`DependencyRef`]: follow the re-export chain
 /// until the original definition module is found, crossing into another
 /// workspace crate where the chain does.
-/// Modifies `dep.target_crate` and `dep.target_module` in place. No-op if no
-/// re-export applies.
+/// Modifies `dep.target_crate` and `dep.target_module` in place; a no-op if
+/// no re-export applies. Returns `false` when the chain instead reaches a
+/// name a private `use` bound to something outside the crate (an external
+/// crate) — the caller then produces no edge for `dep` — and `true` otherwise.
 pub(crate) fn resolve_reexport(
     dep: &mut DependencyRef,
     reexport_map: &ReExportMap,
     importer_module: &str,
-) {
+) -> bool {
     let Some(mut crate_exports) = reexport_map.get(&dep.target_crate) else {
-        return;
+        return true;
     };
     let mut visited = HashSet::new();
     let mut lookup_name = dep.target_item.clone();
@@ -201,6 +210,14 @@ pub(crate) fn resolve_reexport(
             continue;
         }
 
+        // Tier 1c: Bound elsewhere, visible only to descendants like Tier 1b.
+        // Nothing here names a definer, so the reference produces no edge.
+        if is_descendant(importer_module, &dep.target_module)
+            && module_info.elsewhere.contains(item)
+        {
+            return false;
+        }
+
         // Tier 2: Glob re-exports
         let mut found = false;
         for glob_src in &module_info.glob_sources {
@@ -241,6 +258,7 @@ pub(crate) fn resolve_reexport(
 
         break;
     }
+    true
 }
 
 /// Check whether a module exports a symbol (own definition OR re-export).
@@ -1119,8 +1137,9 @@ pub(crate) fn parse_workspace_dependencies(
                 }
                 dep.via_reexport = via_reexport;
                 for mut dep in expand_glob(dep, ctx.reexport_map) {
-                    resolve_reexport(&mut dep, ctx.reexport_map, ctx.current_module_path);
-                    DependencyRef::dedup_push(&mut deps, &mut seen_targets, dep);
+                    if resolve_reexport(&mut dep, ctx.reexport_map, ctx.current_module_path) {
+                        DependencyRef::dedup_push(&mut deps, &mut seen_targets, dep);
+                    }
                 }
             }
         }
@@ -1555,7 +1574,9 @@ pub(crate) fn parse_path_ref_dependencies(
                 }
                 PathBinding::Elsewhere => continue,
             };
-        resolve_reexport(&mut dep, ctx.reexport_map, ctx.current_module_path);
+        if !resolve_reexport(&mut dep, ctx.reexport_map, ctx.current_module_path) {
+            continue;
+        }
         let Some(item) = dep.target_item.as_deref() else {
             DependencyRef::dedup_push(&mut deps, &mut seen_targets, dep);
             continue;
