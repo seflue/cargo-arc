@@ -137,10 +137,12 @@ fn status_word(errors: usize, warnings: usize) -> &'static str {
 
 /// One block for the gaps in the configuration, headed `warning:` or, as soon
 /// as a `deny` is among them, `error:`. Entries that share a diagnostic and an
-/// explanation take one line together: nineteen unlayered nodes are one gap,
-/// not nineteen.
+/// explanation take one line together, however far apart they stand in
+/// `diagnostics`: nineteen unlayered nodes are one gap, not nineteen. Their
+/// header names how many. Above `SHOWN` of them, each takes its own line
+/// instead of crowding one, so the list stays complete rather than cut.
 fn diagnostics_block(diagnostics: &[Diagnostic]) -> String {
-    /// Beyond this many subjects on one line the list stops informing.
+    /// Above this many subjects, each takes its own line instead of sharing one.
     const SHOWN: usize = 5;
 
     if diagnostics.is_empty() {
@@ -156,25 +158,45 @@ fn diagnostics_block(diagnostics: &[Diagnostic]) -> String {
         if denied { "error" } else { "warning" }
     );
 
-    let same_line =
-        |a: &Diagnostic, b: &Diagnostic| a.name() == b.name() && explanation(a) == explanation(b);
-    for group in diagnostics.chunk_by(same_line) {
-        let subjects: Vec<String> = group.iter().map(subject).collect();
-        let shown = subjects.len().min(SHOWN);
-        let _ = write!(
-            out,
-            "  {}: {}",
-            group[0].name(),
-            subjects[..shown].join(", ")
-        );
-        if let Some(hidden) = subjects.len().checked_sub(SHOWN).filter(|&n| n > 0) {
-            let _ = write!(out, ", ... {hidden} more");
+    for group in group_by_name_and_explanation(diagnostics) {
+        let subjects: Vec<String> = group.iter().copied().map(subject).collect();
+        if subjects.len() <= SHOWN {
+            let _ = writeln!(
+                out,
+                "  {} ({}): {}",
+                group[0].name(),
+                subjects.len(),
+                subjects.join(", ")
+            );
+        } else {
+            let _ = writeln!(out, "  {} ({}):", group[0].name(), subjects.len());
+            for subject in &subjects {
+                let _ = writeln!(out, "    {subject}");
+            }
         }
-        let _ = writeln!(out);
-        let _ = writeln!(out, "    {}", explanation(&group[0]));
+        let _ = writeln!(out, "    {}", explanation(group[0]));
     }
     let _ = writeln!(out);
     out
+}
+
+/// Diagnostics sharing a name and an explanation, gathered onto one group
+/// wherever in `diagnostics` they stand. `Baseline::unmatched` sorts stale
+/// entries by edge, not by kind, so a gone and a too-wide entry can fall
+/// between two gone ones; grouping only adjacent equals would then split the
+/// gone entries across two lines instead of one. Groups keep the order their
+/// first member appeared in.
+fn group_by_name_and_explanation(diagnostics: &[Diagnostic]) -> Vec<Vec<&Diagnostic>> {
+    let mut groups: Vec<Vec<&Diagnostic>> = Vec::new();
+    for diagnostic in diagnostics {
+        match groups.iter_mut().find(|group| {
+            group[0].name() == diagnostic.name() && explanation(group[0]) == explanation(diagnostic)
+        }) {
+            Some(group) => group.push(diagnostic),
+            None => groups.push(vec![diagnostic]),
+        }
+    }
+    groups
 }
 
 /// What the diagnostic is about: the node, the frozen violation, the pattern.
@@ -1116,7 +1138,7 @@ mod tests {
         let output = format_violations(&result, false);
         assert!(output.contains("warning: configuration"), "got:\n{output}");
         assert!(
-            output.contains("  unlayered-node: benches, xtask"),
+            output.contains("  unlayered-node (2): benches, xtask"),
             "got:\n{output}"
         );
     }
@@ -1132,7 +1154,7 @@ mod tests {
         };
         let output = format_violations(&result, false);
         assert!(
-            output.contains("  unlayered-node: app::store, xtask"),
+            output.contains("  unlayered-node (2): app::store, xtask"),
             "got:\n{output}"
         );
     }
@@ -1147,8 +1169,14 @@ mod tests {
             ..Default::default()
         };
         let output = format_violations(&result, false);
-        assert!(output.contains("unlayered-node: tools"), "got:\n{output}");
-        assert!(output.contains("unlayered-node: domain"), "got:\n{output}");
+        assert!(
+            output.contains("unlayered-node (1): tools"),
+            "got:\n{output}"
+        );
+        assert!(
+            output.contains("unlayered-node (1): domain"),
+            "got:\n{output}"
+        );
         assert!(!output.contains("tools, domain"), "got:\n{output}");
     }
 
@@ -1201,7 +1229,7 @@ mod tests {
         };
         let output = format_violations(&result, false);
         assert!(
-            output.contains("  unmatched-pattern: domian::**"),
+            output.contains("  unmatched-pattern (1): domian::**"),
             "got:\n{output}"
         );
         assert!(
@@ -1227,7 +1255,10 @@ mod tests {
             ..Default::default()
         };
         let output = format_violations(&result, false);
-        assert!(output.contains("  unmatched-pattern: *"), "got:\n{output}");
+        assert!(
+            output.contains("  unmatched-pattern (1): *"),
+            "got:\n{output}"
+        );
         assert!(
             output.contains(
                 "    in rule \"architecture layers\", its other layers already cover every node, so the catch-all layer (\"*\") holds nothing"
@@ -1255,7 +1286,7 @@ mod tests {
         };
         let output = format_violations(&result, false);
         assert!(
-            output.contains("  unmatched-pattern: domian, crate::infra"),
+            output.contains("  unmatched-pattern (2): domian, crate::infra"),
             "got:\n{output}"
         );
     }
@@ -1276,7 +1307,7 @@ mod tests {
         };
         let output = format_violations(&result, false);
         assert!(
-            output.contains("  unmatched-allow: domain::lgacy"),
+            output.contains("  unmatched-allow (1): domain::lgacy"),
             "got:\n{output}"
         );
         assert!(
@@ -1302,7 +1333,7 @@ mod tests {
         };
         let output = format_violations(&result, false);
         assert!(
-            output.contains("  contradictory-allow: core -> core::a -> core"),
+            output.contains("  contradictory-allow (1): core -> core::a -> core"),
             "got:\n{output}"
         );
         assert!(
@@ -1452,7 +1483,7 @@ mod tests {
     }
 
     #[test]
-    fn test_format_long_subject_list_is_cut() {
+    fn test_format_long_subject_list_prints_every_name_one_per_line() {
         let names = ["a", "b", "c", "d", "e", "f", "g"];
         let result = CheckResult {
             diagnostics: names
@@ -1462,8 +1493,124 @@ mod tests {
             ..Default::default()
         };
         let output = format_violations(&result, false);
+        assert!(output.contains("unlayered-node (7):"), "got:\n{output}");
+        for name in names {
+            assert!(
+                output.contains(&format!("\n    {name}\n")),
+                "missing {name}, got:\n{output}"
+            );
+        }
+        assert!(!output.contains("more"), "got:\n{output}");
+    }
+
+    #[test]
+    fn test_format_long_baseline_entry_list_prints_every_edge_one_per_line() {
+        let edges = [
+            ("a", "b"),
+            ("c", "d"),
+            ("e", "f"),
+            ("g", "h"),
+            ("i", "j"),
+            ("k", "l"),
+        ];
+        let result = CheckResult {
+            diagnostics: edges
+                .iter()
+                .map(|&(from, to)| Diagnostic {
+                    level: DiagnosticLevel::Warn,
+                    kind: DiagnosticKind::UnmatchedBaselineEntry {
+                        entry: baseline_entry("a rule", from, to, &[]),
+                    },
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let output = format_violations(&result, false);
         assert!(
-            output.contains("a, b, c, d, e, ... 2 more"),
+            output.contains("unmatched-baseline-entry (6):"),
+            "got:\n{output}"
+        );
+        for (from, to) in edges {
+            assert!(
+                output.contains(&format!("\n    a rule: {from} → {to}\n")),
+                "missing {from} → {to}, got:\n{output}"
+            );
+        }
+        assert!(!output.contains("more"), "got:\n{output}");
+    }
+
+    #[test]
+    fn test_format_gone_and_wide_entries_group_regardless_of_order() {
+        // `Baseline::unmatched` sorts stale entries by edge, so a gone and a
+        // too-wide entry can stand between two gone entries. Grouping must
+        // still gather both gone entries onto one line and the wide entry
+        // onto its own, not print three lines for one rule.
+        let gone = |from: &str, to: &str| Diagnostic {
+            level: DiagnosticLevel::Warn,
+            kind: DiagnosticKind::UnmatchedBaselineEntry {
+                entry: baseline_entry("a rule", from, to, &[]),
+            },
+        };
+        let wide = |from: &str, to: &str| Diagnostic {
+            level: DiagnosticLevel::Warn,
+            kind: DiagnosticKind::WideBaselineEntry {
+                entry: baseline_entry("a rule", from, to, &["One"]),
+                surplus: EdgeSymbols {
+                    named: ["One".to_string()].into_iter().collect(),
+                    bare: false,
+                },
+            },
+        };
+        let result = CheckResult {
+            diagnostics: vec![gone("a", "b"), wide("c", "d"), gone("e", "f")],
+            ..Default::default()
+        };
+        let output = format_violations(&result, false);
+        assert_eq!(
+            output.matches("unmatched-baseline-entry").count(),
+            2,
+            "one line for both gone entries, one for the wide entry; got:\n{output}"
+        );
+        assert!(
+            output.contains("unmatched-baseline-entry (2): a rule: a → b, a rule: e → f"),
+            "got:\n{output}"
+        );
+        assert!(
+            output.contains("unmatched-baseline-entry (1): a rule: c → d"),
+            "got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_format_grouped_line_counts_entries_not_edges() {
+        let result = CheckResult {
+            diagnostics: vec![
+                Diagnostic {
+                    level: DiagnosticLevel::Warn,
+                    kind: DiagnosticKind::UnmatchedBaselineEntry {
+                        entry: baseline_entry("a rule", "a", "b", &[]),
+                    },
+                },
+                Diagnostic {
+                    level: DiagnosticLevel::Warn,
+                    kind: DiagnosticKind::UnmatchedBaselineEntry {
+                        entry: baseline_entry("a rule", "c", "d", &[]),
+                    },
+                },
+                Diagnostic {
+                    level: DiagnosticLevel::Warn,
+                    kind: DiagnosticKind::UnmatchedBaselineEntry {
+                        entry: baseline_entry("a rule", "e", "f", &[]),
+                    },
+                },
+            ],
+            ..Default::default()
+        };
+        let output = format_violations(&result, false);
+        assert!(
+            output.contains(
+                "unmatched-baseline-entry (3): a rule: a → b, a rule: c → d, a rule: e → f"
+            ),
             "got:\n{output}"
         );
     }

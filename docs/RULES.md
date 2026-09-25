@@ -579,6 +579,30 @@ Diagnostics do not belong to any single rule and are counted on their own status
 config FAILED: 1 errors, 1 warnings
 ```
 
+Diagnostics that share a name and a reason are grouped onto one line, headed
+by how many:
+
+```
+warning: configuration
+  unlayered-node (2): benches, xtask
+    in rule "architecture layers", in no layer, so its own place goes unchecked
+```
+
+A group of more than five names prints one per line instead of crowding them
+onto the header, so a long list stays complete rather than cut:
+
+```
+  unlayered-node (7):
+    a
+    b
+    c
+    d
+    e
+    f
+    g
+    in rule "architecture layers", in no layer, so its own place goes unchecked
+```
+
 ### The baseline
 
 `arc-baseline.toml` is written only by `--generate-baseline`, which rewrites every entry from the current violations, except those under a rule at `severity = "ignore"`, which it carries over as they are:

@@ -1946,7 +1946,7 @@ fn test_check_reports_a_crate_an_exhaustive_rule_leaves_unsorted() {
         "the unsorted crate should be reported once, stderr: {stderr}"
     );
     assert!(
-        stderr.contains("unlayered-node: domain"),
+        stderr.contains("unlayered-node (1): domain"),
         "stderr should name the unsorted crate, stderr: {stderr}"
     );
 }
@@ -2023,7 +2023,7 @@ allow = [
 
     let (_code, stderr) = cargo_arc_check("arch_violation_workspace", &[&rules_arg]);
     assert!(
-        stderr.contains("unmatched-allow: domain::lgacy"),
+        stderr.contains("unmatched-allow (1): domain::lgacy"),
         "a dead allow entry should be reported in the check run, stderr: {stderr}"
     );
 }
@@ -2082,7 +2082,7 @@ allow = [
     let (code, stderr) = cargo_arc_check("arch_violation_workspace", &[&rules_arg]);
     assert_eq!(code, 1, "stderr: {stderr}");
     assert!(
-        stderr.contains("contradictory-allow:") && stderr.contains("`** -> self::*`"),
+        stderr.contains("contradictory-allow (3):") && stderr.contains("`** -> self::*`"),
         "stderr: {stderr}"
     );
 }
@@ -2111,7 +2111,7 @@ to = "infra::**"
 
     let (code, stderr) = cargo_arc_check("arch_violation_workspace", &[&rules_arg]);
     assert!(
-        stderr.contains("unmatched-pattern: crate::domain"),
+        stderr.contains("unmatched-pattern (1): crate::domain"),
         "a rule pattern matching nothing should be reported, stderr: {stderr}"
     );
     assert_eq!(
