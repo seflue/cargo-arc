@@ -495,12 +495,11 @@ pub(super) fn render_edges(
 
     for &idx in &edge_order {
         let edge = &ir.edges[idx];
-        // Skip edges to/from hidden nodes
-        if let Some(visible) = visible_nodes
-            && (!visible.contains(&edge.from) || !visible.contains(&edge.to))
-        {
-            continue;
-        }
+        // An edge to/from a hidden node is still rendered, hidden by the
+        // same class its endpoint carries, so expand/collapse in the
+        // browser finds it already in the DOM.
+        let endpoint_collapsed = visible_nodes
+            .is_some_and(|visible| !visible.contains(&edge.from) || !visible.contains(&edge.to));
         let from_pos = positioned_index.get(&edge.from).copied();
         let to_pos = positioned_index.get(&edge.to).copied();
 
@@ -526,11 +525,20 @@ pub(super) fn render_edges(
             );
 
             let ArcAttrs {
-                arc: arc_class,
-                arrow: arrow_class,
-                hitarea,
+                arc: mut arc_class,
+                arrow: mut arrow_class,
+                mut hitarea,
                 direction,
             } = arc_attrs(edge, &from.kind, &to.kind);
+            // Endpoint hidden by collapse: same class a hidden node itself
+            // carries, kept alongside a filter's hidden-by-filter so
+            // expanding the endpoint can never reveal a filtered arc.
+            if endpoint_collapsed {
+                let collapsed_cls = CSS.nodes.collapsed;
+                arc_class = format!("{arc_class} {collapsed_cls}");
+                arrow_class = format!("{arrow_class} {collapsed_cls}");
+                hitarea = format!("{hitarea} {collapsed_cls}");
+            }
 
             let edge_id = format!("{}-{}", edge.from, edge.to);
             let cycle_ids_attr = if edge.cycle_ids.is_empty() {
@@ -1561,6 +1569,97 @@ mod tests {
         assert!(
             hitarea_line.contains("hidden-by-filter"),
             "Re-export hitarea should start hidden, got: {hitarea_line}"
+        );
+    }
+
+    #[test]
+    fn test_edge_to_collapsed_endpoint_keeps_its_own_classes() {
+        let mut ir = LayoutIR::new();
+        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let a = ir.add_item(
+            ItemKind::Module {
+                nesting: 1,
+                parent: c,
+            },
+            "a".into(),
+        );
+        let b = ir.add_item(
+            ItemKind::Module {
+                nesting: 1,
+                parent: c,
+            },
+            "b".into(),
+        );
+        // Direct cycle edge, so it keeps dep-arc, its direction class and
+        // cycle-arc: the classes a JS-side recovery once lost.
+        ir.edges
+            .push(LayoutEdge::new(a, b, EdgeContext::production()).with_cycle(
+                CycleKind::Direct,
+                vec![0],
+                0,
+            ));
+        let config = RenderConfig::default();
+        let box_width = calculate_box_width(&ir);
+        let positioned = calculate_positions(&ir, &config, box_width);
+        let positioned_index: HashMap<_, _> = positioned.iter().map(|p| (p.id, p)).collect();
+
+        // Only `a` is visible; the edge still renders, using `b`'s position too.
+        let visible: HashSet<NodeId> = [c, a].into();
+
+        let output = render_edges(&positioned_index, &ir, config.row_height, Some(&visible));
+
+        let arc_line = output
+            .lines()
+            .find(|l| l.contains(r#"id="edge-1-2""#))
+            .expect("edge to the collapsed endpoint should still be rendered");
+        assert!(
+            arc_line.contains("dep-arc") && arc_line.contains("cycle-arc"),
+            "Arc to a collapsed endpoint should keep its own arc classes, got: {arc_line}"
+        );
+        assert!(
+            arc_line.contains("collapsed"),
+            "Arc to a collapsed endpoint should carry the collapsed class, got: {arc_line}"
+        );
+    }
+
+    #[test]
+    fn test_edge_to_collapsed_endpoint_keeps_hidden_by_filter_too() {
+        let mut ir = LayoutIR::new();
+        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let a = ir.add_item(
+            ItemKind::Module {
+                nesting: 1,
+                parent: c,
+            },
+            "a".into(),
+        );
+        let b = ir.add_item(
+            ItemKind::Module {
+                nesting: 1,
+                parent: c,
+            },
+            "b".into(),
+        );
+        let mut edge = LayoutEdge::new(a, b, EdgeContext::production());
+        edge.reexport = true;
+        ir.edges.push(edge);
+        let config = RenderConfig::default();
+        let box_width = calculate_box_width(&ir);
+        let positioned = calculate_positions(&ir, &config, box_width);
+        let positioned_index: HashMap<_, _> = positioned.iter().map(|p| (p.id, p)).collect();
+
+        // Only `a` is visible; a re-export arc to it is hidden for both reasons.
+        let visible: HashSet<NodeId> = [c, a].into();
+
+        let output = render_edges(&positioned_index, &ir, config.row_height, Some(&visible));
+
+        let arc_line = output
+            .lines()
+            .find(|l| l.contains(r#"id="edge-1-2""#))
+            .expect("edge to the collapsed endpoint should still be rendered");
+        assert!(
+            arc_line.contains("hidden-by-filter") && arc_line.contains("collapsed"),
+            "Arc hidden by both the filter and a collapsed endpoint should carry both classes, got: {arc_line}"
         );
     }
 

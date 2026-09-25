@@ -497,3 +497,200 @@ describe("the SVG's size around a wrapped toolbar (svg_script.js's init)", () =>
     );
   });
 });
+
+// === Arc visibility across a relayout (svg_script.js's init) ===
+//
+// A relayout no longer needs to recover an arc Rust skipped rendering
+// (ca-0451: Rust now renders every arc, hidden ones included, by class), so
+// the only thing left to guard is the class a relayout must not disturb: an
+// arc a filter hides (`hidden-by-filter`) stays hidden across it. The load
+// path and an interactive expand/collapse both end in the same
+// `relayout()` (confirmed against the code, not re-derived here), so a page
+// loaded with both of an arc's endpoints already visible exercises the same
+// `updateOriginalEdges` branch an expand would land in.
+//
+// Two plain modules under one crate, connected by one arc pre-classed as a
+// filter would leave it (`hidden-by-filter`), the way Rust renders a
+// re-export by default or a toggled-off arc-type filter leaves it.
+function loadArcVisibilityPage({ sessionStorageView }) {
+  const dom = createMockDomAdapter();
+
+  const nodes = {
+    root: {
+      type: 'crate',
+      name: 'root',
+      file: 'Cargo.toml',
+      parent: null,
+      x: 0,
+      y: 0,
+      width: 100,
+      height: 24,
+      hasChildren: true,
+    },
+    a: {
+      type: 'module',
+      name: 'a',
+      file: 'src/a.rs',
+      parent: 'root',
+      x: 20,
+      y: 50,
+      width: 100,
+      height: 20,
+      hasChildren: false,
+    },
+    b: {
+      type: 'module',
+      name: 'b',
+      file: 'src/b.rs',
+      parent: 'root',
+      x: 20,
+      y: 80,
+      width: 100,
+      height: 20,
+      hasChildren: false,
+    },
+  };
+  const staticData = { ...makeSvgPageStaticData(), nodes, arcs: {} };
+  staticData.arcs['a-b'] = { from: 'a', to: 'b', usages: [] };
+
+  for (const [id, node] of Object.entries(nodes)) {
+    const rect = createFakeElement('rect');
+    rect.setAttribute('x', String(node.x));
+    rect.setAttribute('y', String(node.y));
+    rect.setAttribute('width', String(node.width));
+    rect.setAttribute('height', String(node.height));
+    rect.addEventListener = () => {};
+    dom._registerElement(`node-${id}`, rect);
+  }
+
+  // Both endpoints start visible; the arc itself is already filter-hidden,
+  // the way Rust's static render leaves a re-export by default.
+  const arcEl = createFakeElement('path');
+  arcEl.classList.add('dep-arc');
+  arcEl.classList.add('downward');
+  arcEl.classList.add('module-dep-arc');
+  arcEl.classList.add('hidden-by-filter');
+  arcEl.setAttribute('data-arc-id', 'a-b');
+  dom._registerSelector(
+    '.dep-arc[data-arc-id="a-b"], .cycle-arc[data-arc-id="a-b"]',
+    arcEl,
+  );
+  const hitareaEl = createFakeElement('path');
+  hitareaEl.classList.add('arc-hitarea');
+  hitareaEl.classList.add('hidden-by-filter');
+  hitareaEl.setAttribute('data-arc-id', 'a-b');
+  dom._registerSelector('.arc-hitarea[data-arc-id="a-b"]', hitareaEl);
+
+  const svg = createFakeElement('svg');
+  svg.viewBox = { baseVal: { width: 1000, height: 800 } };
+  svg.getBoundingClientRect = () => ({
+    width: 1000,
+    height: 800,
+    top: 0,
+    left: 0,
+  });
+  svg.addEventListener = () => {};
+  dom._registerSelector('svg', svg);
+
+  const sidebarContent = createFakeElement('div');
+  sidebarContent.classList.add('sidebar-root');
+  sidebarContent.innerHTML = '';
+  const sidebarEl = createFakeElement('div');
+  sidebarEl.addEventListener = () => {};
+  sidebarEl.querySelector = (sel) =>
+    sel === '.sidebar-root' ? sidebarContent : null;
+  dom._registerElement('relation-sidebar', sidebarEl);
+
+  global.DomAdapter = dom;
+  global.document = {
+    documentElement: { dataset: {}, scrollHeight: 2000, clientWidth: 1000 },
+    createElement: (tag) => createFakeElement(tag),
+  };
+  global.window = {
+    matchMedia: () => ({ matches: false, addEventListener() {} }),
+    addEventListener: () => {},
+    innerWidth: 1000,
+    innerHeight: 800,
+    scrollX: 0,
+    scrollY: 0,
+    scrollTo: () => {},
+  };
+  global.location = { search: '' };
+  global.sessionStorage = {
+    getItem: (key) =>
+      key === 'cargo-arc-view' ? JSON.stringify(sessionStorageView) : null,
+    removeItem: () => {},
+    setItem: () => {},
+  };
+  global.requestAnimationFrame = () => 0;
+  global.cancelAnimationFrame = () => {};
+  global.fetch = () => Promise.resolve({ ok: true });
+
+  global.STATIC_DATA = staticData;
+  global.ArcLogic = ArcLogic;
+  global.StaticData = StaticData;
+  global.AppState = AppState;
+  global.Selectors = Selectors;
+  global.LayerManager = LayerManager;
+  global.TreeLogic = TreeLogic;
+  global.DerivedState = DerivedState;
+  global.HighlightRenderer = HighlightRenderer;
+  global.VirtualEdgeLogic = VirtualEdgeLogic;
+  global.SidebarLogic = SidebarLogic;
+  global.SearchLogic = SearchLogic;
+  global.Jump = Jump;
+  global.JumpIcons = JumpIcons;
+  global.JumpSymbol = JumpSymbol;
+  global.Follow = Follow;
+  global.Theme = Theme;
+  global.SwitchToggles = SwitchToggles;
+  global.OnSaveToggle = OnSaveToggle;
+  global.ViewSnapshot = ViewSnapshot;
+  global.PageLink = PageLink;
+  global.CanvasSize = CanvasSize;
+
+  global.__ROW_HEIGHT__ = 24;
+  global.__MARGIN__ = 20;
+  global.__TOOLBAR_HEIGHT__ = 40;
+
+  delete require.cache[require.resolve('./svg_script.js')];
+  require('./svg_script.js');
+
+  return { dom, arcEl, hitareaEl };
+}
+
+describe('arc visibility across a relayout (applyRestoredView)', () => {
+  afterEach(() => {
+    SidebarLogic._onBadgeClick = null;
+  });
+
+  const restoredView = {
+    collapsed: [],
+    selection: null,
+    checks: {},
+    search: { query: '', scope: 'all' },
+    follow: false,
+    scroll: { x: 0, y: 0 },
+  };
+
+  test('an arc hidden by the filter stays hidden across the relayout', () => {
+    const { arcEl, hitareaEl } = loadArcVisibilityPage({
+      sessionStorageView: restoredView,
+    });
+
+    expect(arcEl.classList.contains('hidden-by-filter')).toBe(true);
+    expect(hitareaEl.classList.contains('hidden-by-filter')).toBe(true);
+  });
+
+  test('applyRestoredView relayouts the diagram once, not twice', () => {
+    const { dom } = loadArcVisibilityPage({ sessionStorageView: restoredView });
+
+    // cleanupVirtualElements queries this selector exactly once per
+    // recalculateVirtualEdges call; more than one call means relayout ran
+    // more than once for the same restored view.
+    const cleanupCalls = dom
+      ._getCalls('querySelectorAll')
+      .filter(([sel]) => sel === '.arc-hitarea, .dep-arc, .cycle-arc');
+    expect(cleanupCalls.length).toBe(1);
+  });
+});

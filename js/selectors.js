@@ -34,7 +34,7 @@ const Selectors = {
   allHitareas: () => `.${STATIC_DATA.classes.arcHitarea}`,
   allVirtualElements: () => {
     const c = STATIC_DATA.classes;
-    return `.${c.virtualArc}, .${c.virtualHitarea}, .${c.virtualArrow}, .${c.arcCount}, .${c.arcCountGroup}, .${c.arcCountBg}, .recovered-arc`;
+    return `.${c.virtualArc}, .${c.virtualHitarea}, .${c.virtualArrow}, .${c.arcCount}, .${c.arcCountGroup}, .${c.arcCountBg}`;
   },
   allBaseEdges: () => {
     const c = STATIC_DATA.classes;

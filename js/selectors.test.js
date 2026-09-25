@@ -94,7 +94,7 @@ describe('Selectors', () => {
 
     test('allVirtualElements returns all virtual element classes', () => {
       expect(Selectors.allVirtualElements()).toBe(
-        '.virtual-arc, .virtual-hitarea, .virtual-arrow, .arc-count, .arc-count-group, .arc-count-bg, .recovered-arc',
+        '.virtual-arc, .virtual-hitarea, .virtual-arrow, .arc-count, .arc-count-group, .arc-count-bg',
       );
     });
 

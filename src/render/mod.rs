@@ -75,6 +75,16 @@ pub fn render(ir: &LayoutIR, config: &RenderConfig) -> String {
 
     let positioned_vis_index: HashMap<NodeId, &PositionedItem> =
         positioned_visible.iter().map(|p| (p.id, p)).collect();
+    // Every edge needs a position for both endpoints, hidden ones included:
+    // the visible (collapsed) position where the node is shown, else its own
+    // original position, mirroring how render_nodes falls back per item.
+    let positioned_edge_index: HashMap<NodeId, &PositionedItem> = positioned_all
+        .iter()
+        .map(|item| {
+            let pos = positioned_vis_index.get(&item.id).copied().unwrap_or(item);
+            (item.id, pos)
+        })
+        .collect();
     let max_arc_width = calculate_max_arc_width(&positioned_vis_index, ir, config.row_height);
     let (width, height) = calculate_canvas_size(&positioned_visible, config, max_arc_width);
 
@@ -92,7 +102,7 @@ pub fn render(ir: &LayoutIR, config: &RenderConfig) -> String {
         &CycleMarks::from_ir(ir),
     ));
     svg.push_str(&render_edges(
-        &positioned_vis_index,
+        &positioned_edge_index,
         ir,
         config.row_height,
         visible_nodes.as_ref(),
@@ -369,10 +379,15 @@ mod tests {
             svg.contains(r#"class="module collapsed""#),
             "Modules should have collapsed class with expand_level=0"
         );
-        // No edges should be rendered (all between hidden modules)
+        // The edge between the two hidden modules is still rendered, hidden
+        // by the same "collapsed" class its endpoints carry.
+        let arc_line = svg
+            .lines()
+            .find(|l| l.contains(r#"id="edge-1-2""#))
+            .expect("the arc between the hidden modules should be rendered");
         assert!(
-            !svg.contains(r#"class="dep-arc"#),
-            "No edges should appear with expand_level=0"
+            arc_line.contains("collapsed"),
+            "Arc to a hidden node should carry the collapsed class, got: {arc_line}"
         );
         // STATIC_DATA should contain expandLevel
         assert!(

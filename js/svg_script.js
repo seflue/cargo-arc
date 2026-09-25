@@ -803,114 +803,6 @@ if (typeof document !== 'undefined') {
       });
     }
 
-    // Create DOM elements for arcs whose endpoints are both visible but were
-    // never rendered by Rust (both were collapsed at initial render time).
-    function recoverMissingArcs(edgeData, currentPositions, maxRight, layers) {
-      edgeData.forEach((edge) => {
-        const { arcId, fromId, toId, fromHidden, toHidden, hitarea } = edge;
-        if (fromHidden || toHidden || hitarea) return;
-
-        const fromPos = currentPositions.get(fromId);
-        const toPos = currentPositions.get(toId);
-        if (!fromPos || !toPos) return;
-
-        const arc = ArcLogic.calculateArcPathFromPositions(
-          fromPos,
-          toPos,
-          3,
-          maxRight,
-          ROW_HEIGHT,
-        );
-        const strokeWidth = StaticData.getArcStrokeWidth(arcId);
-        const staticArc = StaticData.getArc(arcId);
-        if (!staticArc) return;
-        const isCycle = staticArc.cycleIds && staticArc.cycleIds.length > 0;
-
-        // Determine CSS classes matching Rust rendering
-        const direction = edge.direction;
-        let arcClass;
-        let arrowClass;
-        if (isCycle) {
-          arcClass = C.cycleArc;
-          arrowClass = C.cycleArrow;
-        } else if (direction === 'upward') {
-          arcClass = `${C.depArc} ${C.upward}`;
-          arrowClass = C.upwardArrow;
-        } else {
-          arcClass = `${C.depArc} ${C.downward}`;
-          arrowClass = C.depArrow;
-        }
-
-        // Arc type: crate-dep or module-dep
-        const fromNode = StaticData.getNode(fromId);
-        const toNode = StaticData.getNode(toId);
-        const isCrateDep =
-          fromNode &&
-          toNode &&
-          (fromNode.type === 'crate' ||
-            fromNode.type === 'external' ||
-            fromNode.type === 'external-transitive') &&
-          (toNode.type === 'crate' ||
-            toNode.type === 'external' ||
-            toNode.type === 'external-transitive');
-        const arcTypeClass = isCrateDep ? C.crateDepArc : C.moduleDepArc;
-
-        // Visible path
-        const visPath = DomAdapter.createSvgElement('path');
-        visPath.setAttribute(
-          'class',
-          `${arcClass} ${arcTypeClass} recovered-arc`,
-        );
-        visPath.setAttribute('id', `edge-${arcId}`);
-        visPath.setAttribute('data-arc-id', arcId);
-        visPath.setAttribute('data-direction', direction);
-        visPath.style.strokeWidth = `${strokeWidth}px`;
-        visPath.setAttribute('d', arc.path);
-        layers.baseArcs.appendChild(visPath);
-
-        // Hitarea path
-        const hitPath = DomAdapter.createSvgElement('path');
-        hitPath.setAttribute('class', `${C.arcHitarea} recovered-arc`);
-        hitPath.setAttribute('data-arc-id', arcId);
-        hitPath.setAttribute('data-from', fromId);
-        hitPath.setAttribute('data-to', toId);
-        hitPath.setAttribute('data-direction', direction);
-        hitPath.setAttribute('d', arc.path);
-        hitPath.addEventListener('click', (e) => {
-          e.stopPropagation();
-          highlightEdge(fromId, toId);
-        });
-        hitPath.addEventListener('mouseenter', () =>
-          handleMouseEnter('arc', arcId),
-        );
-        hitPath.addEventListener('mouseleave', handleMouseLeave);
-        layers.hitareas.appendChild(hitPath);
-
-        // Arrow
-        const scale = ArcLogic.scaleFromStrokeWidth(strokeWidth);
-        const arrow = DomAdapter.createSvgElement('polygon');
-        arrow.setAttribute('class', `${arrowClass} recovered-arc`);
-        arrow.setAttribute('data-edge', arcId);
-        arrow.setAttribute(
-          'points',
-          ArcLogic.getArrowPoints({ x: arc.toX, y: arc.toY }, scale),
-        );
-        layers.baseArcs.appendChild(arrow);
-
-        // Cache for DomAdapter lookups
-        DomAdapter.cacheArcElements(
-          arcId,
-          visPath,
-          Array.from(
-            layers.baseArcs.querySelectorAll(
-              `polygon[data-edge="${arcId}"].recovered-arc`,
-            ),
-          ),
-          null,
-        );
-      });
-    }
-
     // Collect node IDs hidden by active filters (external-dep toggle etc.)
     // Cached: recomputed only after filter toggles invalidate via invalidateFilterHiddenNodeIds().
     let _filterHiddenNodeIds = null;
@@ -970,8 +862,6 @@ if (typeof document !== 'undefined') {
         baseLabels: DomAdapter.getElementById(LayerManager.LAYERS.BASE_LABELS),
         hitareas: DomAdapter.getElementById(LayerManager.LAYERS.HITAREAS),
       };
-
-      recoverMissingArcs(edgeData, currentPositions, maxRight, layers);
 
       const virtualEdges = VirtualEdgeLogic.aggregateHiddenEdges(
         edgeData,
