@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { createFakeElement } from './dom_adapter.js';
+import { PathFit } from './path_fit.js';
 import { SidebarLogic } from './sidebar.js';
+
+globalThis.PathFit = PathFit;
 
 // Mock Selectors (sidebar.js uses _getMaxArcRightX → Selectors.allArcPaths)
 globalThis.Selectors = {
@@ -2664,34 +2667,6 @@ describe('SidebarLogic', () => {
       );
       expect(label).toBe('a → … → e → a');
       expect(label).not.toContain('b');
-    });
-  });
-
-  describe('elidePath', () => {
-    test('drops segments from the end of the prefix, keeps the last part', () => {
-      expect(SidebarLogic.elidePath('a::b::c::', '::', 1)).toBe('a::b::…::');
-      expect(SidebarLogic.elidePath('a::b::c::', '::', 2)).toBe('a::…::');
-      expect(SidebarLogic.elidePath('a::b::c::', '::', 3)).toBe('…::');
-    });
-
-    test('keeps the file name of a file path', () => {
-      expect(SidebarLogic.elidePath('src/render/static.rs', '/', 1)).toBe(
-        'src/…/static.rs',
-      );
-      expect(SidebarLogic.elidePath('src/render/static.rs', '/', 2)).toBe(
-        '…/static.rs',
-      );
-    });
-
-    test('dropCount past the prefix stops at the last part', () => {
-      expect(SidebarLogic.elidePath('src/render/static.rs', '/', 9)).toBe(
-        '…/static.rs',
-      );
-    });
-
-    test('zero drops returns the path unchanged', () => {
-      expect(SidebarLogic.elidePath('a::b::', '::', 0)).toBe('a::b::');
-      expect(SidebarLogic.elidePath('lib.rs', '/', 0)).toBe('lib.rs');
     });
   });
 

@@ -25,6 +25,7 @@ declare const VirtualEdgeLogic: typeof import('./virtual_edge_logic.js').Virtual
 declare const ViewSnapshot: typeof import('./view_snapshot.js').ViewSnapshot;
 declare const TextMeasure: typeof import('./text_metrics.js').TextMeasure;
 declare const PageLink: typeof import('./page_link.js').PageLink;
+declare const PathFit: typeof import('./path_fit.js').PathFit;
 declare const HotspotTree: typeof import('./hotspot_tree.js').HotspotTree;
 declare const HotspotZoom: typeof import('./hotspot_zoom.js').HotspotZoom;
 declare const HotspotLabels: typeof import('./hotspot_labels.js').HotspotLabels;

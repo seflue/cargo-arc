@@ -1,5 +1,5 @@
 // @module SidebarLogic
-// @deps StaticData, DomAdapter, Selectors
+// @deps StaticData, DomAdapter, Selectors, PathFit
 // @config TOOLBAR_HEIGHT, SIDEBAR_SHADOW_PAD
 // sidebar.js - Relation sidebar for arc usage details
 // Shows usage locations when an arc is selected (pinned)
@@ -925,24 +925,6 @@ const SidebarLogic = {
   },
 
   /**
-   * Shortens a path by replacing `dropCount` segments with `…`, taken from
-   * the end of the prefix backwards. The part after the last separator is
-   * never dropped: for a module path `a::b::` that is the empty tail, so the
-   * result still ends in `::`; for a file path it is the file name.
-   * @param {string} full
-   * @param {string} separator
-   * @param {number} dropCount
-   * @returns {string}
-   */
-  elidePath(full, separator, dropCount) {
-    if (dropCount <= 0) return full;
-    const parts = full.split(separator);
-    const tail = parts.pop();
-    const kept = parts.slice(0, Math.max(0, parts.length - dropCount));
-    return [...kept, '…', tail].join(separator);
-  },
-
-  /**
    * Path spans under `root`, each with the separator its kind is cut on.
    * @param {Element} root
    * @returns {Array<{ span: HTMLElement, separator: string }>}
@@ -968,37 +950,20 @@ const SidebarLogic = {
    * @param {Element} root
    */
   resetPaths(root) {
-    for (const { span } of this._pathSpans(root)) {
-      span.textContent = span.dataset.full ?? '';
-      span.style.flexShrink = '';
-    }
+    for (const { span } of this._pathSpans(root)) PathFit.resetPath(span);
   },
 
   /**
-   * Rewrites every path span under `root` so it fits its box: the text is
-   * reset to `data-full`, then segments are dropped one at a time while
-   * `overflows(span)` holds. Runs after the sidebar width is final; the reset
-   * happens again on every call, so a span that has more room than last time
-   * gets its segments back. A span that overflows even at its shortest form
-   * sits in a row whose other children are wider than the sidebar; it stops
-   * shrinking there so the `…` stays visible and the row scrolls instead.
+   * Fits every path span under `root` to its box (`PathFit.fitPath`). Runs
+   * after the sidebar width is final; the reset happens again on every call,
+   * so a span that has more room than last time gets its segments back.
    * @param {Element} root
    * @param {(span: HTMLElement) => boolean} [overflows] - defaults to the DOM
    *   overflow test; tests pass a text-length predicate instead.
    */
   fitPaths(root, overflows = (span) => span.scrollWidth > span.clientWidth) {
     for (const { span, separator } of this._pathSpans(root)) {
-      const full = span.dataset.full ?? '';
-      span.textContent = full;
-      span.style.flexShrink = '';
-      for (let drop = 1; overflows(span); drop++) {
-        const shorter = this.elidePath(full, separator, drop);
-        if (shorter === span.textContent) {
-          span.style.flexShrink = '0';
-          break;
-        }
-        span.textContent = shorter;
-      }
+      PathFit.fitPath(span, separator, overflows);
     }
   },
 
