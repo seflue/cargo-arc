@@ -1,5 +1,5 @@
 // @module AppState
-// @deps
+// @deps RowState
 // @config
 // app_state.js - Unified application state management
 // Consolidates CollapseState and HighlightState into single state object
@@ -18,7 +18,8 @@ const AppState = {
    *   hoverSelection: { type: 'node'|'arc'|null, id: string|null },
    *   hiddenArcIds: Set<string>,
    *   clusterMode: boolean,
-   *   selectedScc: number|null
+   *   selectedScc: number|null,
+   *   expandedRows: Set<string>
    * }}
    */
   create() {
@@ -29,6 +30,7 @@ const AppState = {
       hiddenArcIds: new Set(),
       clusterMode: true,
       selectedScc: null,
+      expandedRows: new Set(),
     };
   },
 
@@ -37,6 +39,11 @@ const AppState = {
   /** @param {Object} state @param {string} nodeId @returns {boolean} */
   isCollapsed(state, nodeId) {
     return state.collapsed.has(nodeId);
+  },
+
+  /** @param {Object} state @param {string} arcId @returns {boolean} */
+  isRowExpanded(state, arcId) {
+    return state.expandedRows.has(arcId);
   },
 
   /**
@@ -192,7 +199,7 @@ const AppState = {
     if (sccId == null) {
       // Non-cycle edge: leaves cluster selection, falls back to the
       // pre-existing single-edge toggle behavior.
-      state.selectedScc = null;
+      this._enterScc(state, null);
       this.toggleSelection(state, 'arc', arcId);
       return;
     }
@@ -200,42 +207,31 @@ const AppState = {
       // First click selects the SCC only: the cluster reads as one unit. Drop
       // the hover the preceding mouseenter set on this very edge, so the
       // overview shows before any inner edge is focused.
-      state.selectedScc = sccId;
+      this._enterScc(state, sccId);
       this.clearHover(state);
       return;
     }
     if (state.selectedScc === sccId) {
-      const pinned = this.toggleSelection(state, 'arc', arcId);
+      // Any edge click while this SCC is already open, same edge or a
+      // different one (the pin moves here from wherever it was): the row
+      // follows via the same pinned/unpinned events an outside pin change
+      // sends it, so unpinning here leaves the row expanded instead of
+      // collapsing it.
+      const wasPinned = this.isSelected(state, 'arc', arcId);
+      const current = this.rowState(state, arcId);
+      const next = wasPinned
+        ? RowState[current].unpinned()
+        : RowState[current].pinned();
+      this.applyRowState(state, arcId, next);
       // Unpin returns to the cluster overview: drop the lingering hover so no
       // inner edge stays focused.
-      if (!pinned) this.clearHover(state);
+      if (!this.isSelected(state, 'arc', arcId)) this.clearHover(state);
       return;
     }
     // Switching SCCs opens a fresh overview: drop pin and hover.
-    state.selectedScc = sccId;
+    this._enterScc(state, sccId);
     this.clearSelection(state);
     this.clearHover(state);
-  },
-
-  /**
-   * Transition for a click on a sidebar cluster row. Expansion and pin move
-   * together: a click drives the row toward expanded+pinned, except when it is
-   * already expanded+pinned, where it collapses+unpins. A row left collapsed
-   * while pinned (via collapse-all) just re-expands, keeping the pin.
-   * @param {Object} state
-   * @param {string} arcId
-   * @param {number|null|undefined} sccId - SCC of the row's edge (open cluster)
-   * @param {boolean} expandable - Row has crossing symbols to show
-   * @param {boolean} expanded - Row is currently expanded
-   * @returns {boolean} whether the row ends expanded (mirrors the new pin state)
-   */
-  clickClusterRow(state, arcId, sccId, expandable, expanded) {
-    if (expandable && !expanded && this.isSelected(state, 'arc', arcId)) {
-      // Collapsed but pinned: re-expand only, pin and graph stay put.
-      return true;
-    }
-    this.clickEdge(state, arcId, sccId);
-    return this.isSelected(state, 'arc', arcId);
   },
 
   /**
@@ -243,9 +239,126 @@ const AppState = {
    * @param {Object} state
    */
   clickEmpty(state) {
-    state.selectedScc = null;
+    this._enterScc(state, null);
     this.clearSelection(state);
     this.clearHover(state);
+  },
+
+  // === Tangle sidebar row state (RowState: expand/collapse x pin/unpin) ===
+  //
+  // A row's state is not stored; it is read from the two bits that already
+  // exist (expandedRows, the arc pin slot) and written back the same way, so
+  // there is no second copy of "is this row pinned" beside clickSelection.
+
+  /**
+   * Enter a (possibly unchanged) SCC selection. A different tangle has
+   * different rows, so its expandedRows is meaningless once the sidebar
+   * moves on — dropped on every selectedScc change, including to null.
+   * @param {Object} state
+   * @param {number|null} sccId
+   */
+  _enterScc(state, sccId) {
+    if (state.selectedScc === sccId) return;
+    state.selectedScc = sccId;
+    state.expandedRows.clear();
+  },
+
+  /**
+   * Read a tangle row's current state from its two bits.
+   * @param {Object} state
+   * @param {string} arcId
+   * @returns {'CU'|'EU'|'CP'|'EP'}
+   */
+  rowState(state, arcId) {
+    const expanded = this.isRowExpanded(state, arcId);
+    const pinned = this.isSelected(state, 'arc', arcId);
+    if (expanded) return pinned ? 'EP' : 'EU';
+    return pinned ? 'CP' : 'CU';
+  },
+
+  /**
+   * Write a row's next state back into expandedRows and the pin slot.
+   * @param {Object} state
+   * @param {string} arcId
+   * @param {'CU'|'EU'|'CP'|'EP'} next
+   */
+  applyRowState(state, arcId, next) {
+    if (next === 'EU' || next === 'EP') state.expandedRows.add(arcId);
+    else state.expandedRows.delete(arcId);
+    if (next === 'CP' || next === 'EP') {
+      this.setSelection(state, 'arc', arcId);
+    } else if (this.isSelected(state, 'arc', arcId)) {
+      this.clearSelection(state);
+    }
+  },
+
+  /**
+   * Triangle click: flip a row's expand bit, the pin stays untouched.
+   * @param {Object} state
+   * @param {string} arcId
+   */
+  rowToggle(state, arcId) {
+    this.applyRowState(
+      state,
+      arcId,
+      RowState[this.rowState(state, arcId)].toggle(),
+    );
+  },
+
+  /**
+   * Head click (outside the triangle): pin this row, expanding it, unless it
+   * already held the pin, in which case it unpins without collapsing. A pin
+   * taken from another row sends that row the same unpinned event a graph
+   * unpin would, so it too stays expanded.
+   * @param {Object} state
+   * @param {string} arcId
+   * @param {number|null|undefined} sccId - SCC of the row's edge (open cluster)
+   */
+  rowPinClick(state, arcId, sccId) {
+    if (sccId != null) this._enterScc(state, sccId);
+    const next = RowState[this.rowState(state, arcId)].pinClick();
+    if (next === 'EP') {
+      const previous = this.getPinned(state);
+      if (previous && previous.type === 'arc' && previous.id !== arcId) {
+        const prevState = this.rowState(state, previous.id);
+        this.applyRowState(state, previous.id, RowState[prevState].unpinned());
+      }
+    }
+    this.applyRowState(state, arcId, next);
+  },
+
+  /**
+   * Expand every given row, whatever its pin. Used by the sidebar's
+   * collapse-all control; the caller resolves which arc ids belong to the
+   * open tangle.
+   * @param {Object} state
+   * @param {Iterable<string>} arcIds
+   */
+  rowsExpandAll(state, arcIds) {
+    for (const arcId of arcIds) state.expandedRows.add(arcId);
+  },
+
+  /**
+   * Collapse every given row, whatever its pin.
+   * @param {Object} state
+   * @param {Iterable<string>} arcIds
+   */
+  rowsCollapseAll(state, arcIds) {
+    for (const arcId of arcIds) state.expandedRows.delete(arcId);
+  },
+
+  /**
+   * The editor's cursor landed on a row's jump target: expand it, pin
+   * untouched.
+   * @param {Object} state
+   * @param {string} arcId
+   */
+  rowFollow(state, arcId) {
+    this.applyRowState(
+      state,
+      arcId,
+      RowState[this.rowState(state, arcId)].follow(),
+    );
   },
 
   // === Arc Filter Operations ===

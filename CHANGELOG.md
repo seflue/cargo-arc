@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `except` on a rule is renamed to `allow`, `unmatched-except` to `unmatched-allow`. The old keys are rejected.
 
+### Fixed
+
+- Unpinning a tangle sidebar row keeps it expanded.
+
 ## [0.5.0] - 2026-09-14
 
 ### Added

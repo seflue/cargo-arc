@@ -1,4 +1,8 @@
 import { describe, expect, test } from 'bun:test';
+import { RowState } from './row_state.js';
+
+global.RowState = RowState;
+
 import { AppState } from './app_state.js';
 
 describe('AppState', () => {
@@ -343,7 +347,7 @@ describe('AppState', () => {
     });
   });
 
-  describe('clickClusterRow (sidebar row: pin couples to expand)', () => {
+  describe('rowPinClick (tangle sidebar row head: pin decoupled from expand)', () => {
     // All start with the SCC already selected (cluster view open).
     function selected() {
       const state = AppState.create();
@@ -351,43 +355,162 @@ describe('AppState', () => {
       return state;
     }
 
-    test('collapsed + unpinned -> pins, ends expanded', () => {
+    test('unpinned row: pins and expands', () => {
       const state = selected();
-      const end = AppState.clickClusterRow(state, '1-2', 7, true, false);
+      AppState.rowPinClick(state, '1-2', 7);
       expect(AppState.isSelected(state, 'arc', '1-2')).toBe(true);
-      expect(end).toBe(true);
+      expect(state.expandedRows.has('1-2')).toBe(true);
     });
 
-    test('expanded + unpinned -> pins, stays expanded', () => {
+    test('expanded pinned row: unpins, stays expanded (the core regression)', () => {
       const state = selected();
-      const end = AppState.clickClusterRow(state, '1-2', 7, true, true);
-      expect(AppState.isSelected(state, 'arc', '1-2')).toBe(true);
-      expect(end).toBe(true);
-    });
+      AppState.rowPinClick(state, '1-2', 7); // pin -> EP
+      AppState.rowPinClick(state, '1-2', 7); // click again: unpin
 
-    test('expanded + pinned -> unpins, collapses', () => {
-      const state = selected();
-      AppState.clickClusterRow(state, '1-2', 7, true, false); // pin
-      const end = AppState.clickClusterRow(state, '1-2', 7, true, true);
       expect(AppState.isSelected(state, 'arc', '1-2')).toBe(false);
-      expect(end).toBe(false);
+      expect(state.expandedRows.has('1-2')).toBe(true); // stays expanded
     });
 
-    test('collapsed + pinned (after collapse-all) -> keeps pin, only re-expands', () => {
+    test('collapsed pinned row (left collapsed by the triangle): unpins, stays collapsed', () => {
       const state = selected();
-      AppState.clickClusterRow(state, '1-2', 7, true, false); // pin
-      const end = AppState.clickClusterRow(state, '1-2', 7, true, false);
-      expect(AppState.isSelected(state, 'arc', '1-2')).toBe(true);
-      expect(end).toBe(true);
+      AppState.rowPinClick(state, '1-2', 7); // pin -> EP
+      AppState.rowToggle(state, '1-2'); // collapse via the triangle -> CP
+      AppState.rowPinClick(state, '1-2', 7); // unpin -> CU
+
+      expect(AppState.isSelected(state, 'arc', '1-2')).toBe(false);
+      expect(state.expandedRows.has('1-2')).toBe(false);
     });
 
-    test('non-expandable row toggles the pin normally', () => {
+    test('pinning a different row moves the pin: new row EP, old row EU (not CU)', () => {
       const state = selected();
-      AppState.clickClusterRow(state, '1-2', 7, false, false); // pin
+      AppState.rowPinClick(state, '1-2', 7); // A: EP
+
+      AppState.rowPinClick(state, '3-4', 7); // click B's head
+
+      expect(AppState.isSelected(state, 'arc', '3-4')).toBe(true);
+      expect(state.expandedRows.has('3-4')).toBe(true);
+      expect(AppState.isSelected(state, 'arc', '1-2')).toBe(false);
+      expect(state.expandedRows.has('1-2')).toBe(true); // A stays expanded
+    });
+
+    test('pinning a different row moves the pin away from a collapsed pinned row: it stays collapsed', () => {
+      const state = selected();
+      AppState.rowPinClick(state, '1-2', 7); // A: EP
+      AppState.rowToggle(state, '1-2'); // collapse via the triangle -> A: CP
+
+      AppState.rowPinClick(state, '3-4', 7); // click B's head
+
+      expect(AppState.isSelected(state, 'arc', '3-4')).toBe(true);
+      expect(state.expandedRows.has('3-4')).toBe(true);
+      expect(AppState.isSelected(state, 'arc', '1-2')).toBe(false);
+      expect(state.expandedRows.has('1-2')).toBe(false); // A stays collapsed
+    });
+  });
+
+  describe('rowToggle (tangle sidebar row triangle: expand only, pin untouched)', () => {
+    test('collapsed unpinned row: expands without pinning', () => {
+      const state = AppState.create();
+      AppState.rowToggle(state, '1-2');
+      expect(state.expandedRows.has('1-2')).toBe(true);
+      expect(AppState.isSelected(state, 'arc', '1-2')).toBe(false);
+    });
+
+    test('expanded pinned row: collapses without unpinning', () => {
+      const state = AppState.create();
+      AppState.clickEdge(state, '1-2', 7);
+      AppState.rowPinClick(state, '1-2', 7); // EP
+      AppState.rowToggle(state, '1-2'); // -> CP
+      expect(state.expandedRows.has('1-2')).toBe(false);
       expect(AppState.isSelected(state, 'arc', '1-2')).toBe(true);
-      const end = AppState.clickClusterRow(state, '1-2', 7, false, false);
-      expect(AppState.isSelected(state, 'arc', '1-2')).toBe(false); // unpin
-      expect(end).toBe(false);
+
+      AppState.rowToggle(state, '1-2'); // -> EP again
+      expect(state.expandedRows.has('1-2')).toBe(true);
+      expect(AppState.isSelected(state, 'arc', '1-2')).toBe(true);
+    });
+  });
+
+  describe('rowsExpandAll / rowsCollapseAll (tangle sidebar collapse-all)', () => {
+    test('rowsExpandAll expands every given row, whatever its pin', () => {
+      const state = AppState.create();
+      AppState.clickEdge(state, '1-2', 7);
+      AppState.rowPinClick(state, '1-2', 7); // pinned
+      AppState.rowsExpandAll(state, ['1-2', '3-4']);
+      expect(state.expandedRows.has('1-2')).toBe(true);
+      expect(state.expandedRows.has('3-4')).toBe(true); // unpinned row too
+    });
+
+    test('rowsCollapseAll collapses every given row, whatever its pin', () => {
+      const state = AppState.create();
+      AppState.clickEdge(state, '1-2', 7);
+      AppState.rowPinClick(state, '1-2', 7); // pinned
+      AppState.rowsExpandAll(state, ['1-2', '3-4']);
+      AppState.rowsCollapseAll(state, ['1-2', '3-4']);
+      expect(state.expandedRows.has('1-2')).toBe(false);
+      expect(state.expandedRows.has('3-4')).toBe(false);
+      expect(AppState.isSelected(state, 'arc', '1-2')).toBe(true); // pin unaffected
+    });
+  });
+
+  describe('rowFollow (tangle sidebar row: editor jump target landed here)', () => {
+    test('expands an unpinned collapsed row without pinning it', () => {
+      const state = AppState.create();
+      AppState.rowFollow(state, '1-2');
+      expect(state.expandedRows.has('1-2')).toBe(true);
+      expect(AppState.isSelected(state, 'arc', '1-2')).toBe(false);
+    });
+  });
+
+  describe('clickEdge (diagram) drives a row like an outside pin/unpin', () => {
+    test('pinning an edge from the graph expands its row', () => {
+      const state = AppState.create();
+      AppState.clickEdge(state, '1-2', 7); // select SCC
+      AppState.clickEdge(state, '1-2', 7); // pin from the graph
+      expect(AppState.isSelected(state, 'arc', '1-2')).toBe(true);
+      expect(state.expandedRows.has('1-2')).toBe(true);
+    });
+
+    test('unpinning a pinned edge from the graph leaves its row expanded, not collapsed', () => {
+      const state = AppState.create();
+      AppState.clickEdge(state, '1-2', 7); // select SCC
+      AppState.clickEdge(state, '1-2', 7); // pin
+      AppState.clickEdge(state, '1-2', 7); // unpin
+
+      expect(AppState.isSelected(state, 'arc', '1-2')).toBe(false);
+      expect(state.expandedRows.has('1-2')).toBe(true); // EU, not CU
+    });
+  });
+
+  describe('expandedRows is cleared on every selectedScc change, including to null', () => {
+    test('switching to a different SCC clears it', () => {
+      const state = AppState.create();
+      AppState.clickEdge(state, '1-2', 7);
+      AppState.rowPinClick(state, '1-2', 7);
+      AppState.clickEdge(state, '3-4', 9); // different SCC
+      expect(state.expandedRows.size).toBe(0);
+    });
+
+    test('a non-cycle edge click clears it', () => {
+      const state = AppState.create();
+      AppState.clickEdge(state, '1-2', 7);
+      AppState.rowPinClick(state, '1-2', 7);
+      AppState.clickEdge(state, '5-6', null);
+      expect(state.expandedRows.size).toBe(0);
+    });
+
+    test('clickEmpty clears it', () => {
+      const state = AppState.create();
+      AppState.clickEdge(state, '1-2', 7);
+      AppState.rowPinClick(state, '1-2', 7);
+      AppState.clickEmpty(state);
+      expect(state.expandedRows.size).toBe(0);
+    });
+
+    test('a click that keeps the same SCC selected leaves it alone', () => {
+      const state = AppState.create();
+      AppState.clickEdge(state, '1-2', 7);
+      AppState.rowPinClick(state, '1-2', 7);
+      AppState.clickEdge(state, '3-4', 7); // same SCC, a different edge
+      expect(state.expandedRows.has('1-2')).toBe(true);
     });
   });
 
