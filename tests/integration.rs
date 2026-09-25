@@ -2430,3 +2430,107 @@ fn ui_forwards_expand_level_into_static_data() {
 
     drop(guard);
 }
+
+/// `reexport_mixed_cycle_workspace` has one mixed edge, `b -> a`: a pure
+/// re-export (`AThing`) alongside a real, behavioral import (`value`). Only
+/// `value` crosses the edge as a symbol; the re-export does not.
+fn mixed_edge_entry(baseline: &str) -> &str {
+    baseline
+        .split("[[violations]]")
+        .find(|block| {
+            block.contains("from = \"my_crate::b\"") && block.contains("to = \"my_crate::a\"")
+        })
+        .unwrap_or_else(|| panic!("no baseline entry for the b -> a edge, baseline:\n{baseline}"))
+}
+
+#[test]
+fn generate_baseline_on_a_mixed_edge_keeps_only_the_real_name() {
+    let (_dir, manifest) = writable_fixture_copy("reexport_mixed_cycle_workspace");
+    let baseline_path = manifest.parent().unwrap().join("arc-baseline.toml");
+
+    let (code, stderr) = cargo_arc_check_at(&manifest, &["--generate-baseline"]);
+    assert_eq!(code, 0, "generate should exit 0, stderr: {stderr}");
+
+    let baseline = std::fs::read_to_string(&baseline_path).unwrap();
+    let entry = mixed_edge_entry(&baseline);
+    assert!(
+        entry.contains("value"),
+        "the real import must still count, baseline:\n{baseline}"
+    );
+    assert!(
+        !entry.contains("AThing"),
+        "the re-exported name must not count as a symbol crossing the edge, baseline:\n{baseline}"
+    );
+}
+
+#[test]
+fn a_frozen_mixed_edge_stays_green_when_a_reexported_name_is_added() {
+    let (dir, manifest) = writable_fixture_copy("reexport_mixed_cycle_workspace");
+    let root = manifest.parent().unwrap();
+
+    let (code, stderr) = cargo_arc_check_at(&manifest, &["--generate-baseline"]);
+    assert_eq!(code, 0, "generate should exit 0, stderr: {stderr}");
+
+    let (code, stderr) = cargo_arc_check_at(&manifest, &[]);
+    assert_eq!(
+        code, 0,
+        "the frozen mixed edge should pass, stderr: {stderr}"
+    );
+
+    // Add a second re-export to the already-frozen b -> a edge.
+    let b = root.join("my_crate/src/b.rs");
+    let source = std::fs::read_to_string(&b).unwrap();
+    std::fs::write(
+        &b,
+        source.replace(
+            "pub use crate::a::AThing;",
+            "pub use crate::a::AThing;\npub use crate::a::AnotherThing;",
+        ),
+    )
+    .unwrap();
+
+    let (code, stderr) = cargo_arc_check_at(&manifest, &[]);
+    assert_eq!(
+        code, 0,
+        "a re-exported name does not widen what the edge carries, stderr: {stderr}"
+    );
+    drop(dir);
+}
+
+/// `reexport_cycle_workspace`'s `alpha <-> beta` cycle is pure re-exports on
+/// both edges (`AlphaThing`, `BetaThing`). Under `--include-reexports` an edge
+/// carries only re-exports, so the exclusion in `EdgeSymbols::from_locations`
+/// must not apply: both names stay.
+#[test]
+fn an_edge_made_only_of_reexports_keeps_every_name_with_include_reexports() {
+    let (_dir, manifest) = writable_fixture_copy("reexport_cycle_workspace");
+    let baseline_path = manifest.parent().unwrap().join("arc-baseline.toml");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cargo-arc"))
+        .arg("arc")
+        .arg("--manifest-path")
+        .arg(&manifest)
+        .arg("--include-reexports")
+        .arg("check")
+        .arg("--generate-baseline")
+        .output()
+        .expect("failed to execute cargo-arc");
+    let code = output.status.code().unwrap_or(-1);
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert_eq!(code, 0, "generate should exit 0, stderr: {stderr}");
+
+    let baseline = std::fs::read_to_string(&baseline_path).unwrap();
+    let alpha_to_beta = baseline
+        .split("[[violations]]")
+        .find(|block| {
+            block.contains("from = \"my_crate::alpha\"")
+                && block.contains("to = \"my_crate::beta\"")
+        })
+        .unwrap_or_else(|| {
+            panic!("no baseline entry for the alpha -> beta edge, baseline:\n{baseline}")
+        });
+    assert!(
+        alpha_to_beta.contains("BetaThing"),
+        "a pure re-export edge keeps its names, baseline:\n{baseline}"
+    );
+}

@@ -50,14 +50,21 @@ pub struct EdgeSymbols {
 }
 
 impl EdgeSymbols {
+    /// A re-exported name does not count unless it's all the edge carries: a
+    /// mixed edge is priced by its real imports alone, but an edge made only
+    /// of re-exports (reachable only under `--include-reexports`) keeps every
+    /// name, so it still reads as something rather than nothing.
     #[must_use]
     pub fn from_locations(locations: &[SourceLocation]) -> Self {
-        Self {
-            named: locations
+        let all_reexports = !locations.is_empty() && locations.iter().all(|l| l.via_reexport);
+        let counted = || {
+            locations
                 .iter()
-                .flat_map(|l| l.symbols.iter().cloned())
-                .collect(),
-            bare: locations.iter().any(|l| l.symbols.is_empty()),
+                .filter(move |l| all_reexports || !l.via_reexport)
+        };
+        Self {
+            named: counted().flat_map(|l| l.symbols.iter().cloned()).collect(),
+            bare: counted().any(|l| l.symbols.is_empty()),
         }
     }
 
@@ -486,6 +493,13 @@ mod tests {
         }
     }
 
+    fn reexport_location(symbols: &[&str]) -> SourceLocation {
+        SourceLocation {
+            via_reexport: true,
+            ..location(symbols)
+        }
+    }
+
     #[test]
     fn import_group_counts_every_symbol_it_carries() {
         let symbols = EdgeSymbols::from_locations(&[location(&["One", "Two", "Three"])]);
@@ -509,6 +523,27 @@ mod tests {
         let frozen = EdgeSymbols::from_locations(&[location(&["Foo", "Bar"])]);
         assert!(frozen.covers(&EdgeSymbols::from_locations(&[location(&["Foo"])])));
         assert!(!frozen.covers(&EdgeSymbols::from_locations(&[location(&["Foo", "Baz"])])));
+    }
+
+    #[test]
+    fn a_mixed_edge_drops_only_the_reexported_names() {
+        let symbols = EdgeSymbols::from_locations(&[
+            location(&["Real"]),
+            reexport_location(&["Republished"]),
+        ]);
+        assert_eq!(symbols.named, BTreeSet::from(["Real".to_string()]));
+    }
+
+    #[test]
+    fn an_edge_made_only_of_reexports_keeps_every_name() {
+        let symbols = EdgeSymbols::from_locations(&[
+            reexport_location(&["Foo"]),
+            reexport_location(&["Bar"]),
+        ]);
+        assert_eq!(
+            symbols.named,
+            BTreeSet::from(["Bar".to_string(), "Foo".to_string()])
+        );
     }
 
     #[test]

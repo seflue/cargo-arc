@@ -76,7 +76,7 @@ Which dependencies the search takes in, and what it prints, is in [RULES.md](RUL
 | **Feedback arc** | An edge whose removal breaks cycles. In a single-cycle tangle every edge is one and removing any of them suffices; in a multi-cycle tangle they come as a set to be removed together. | cut |
 | **Feedback arc set** | The edge set whose joint removal breaks every counted cycle. With nothing tolerated it reaches past the enumeration to make the tangle acyclic; with a tolerated cycle it stops at the counted ones. Not unique. | cut set |
 | **Traffic** | How many counted cycles run through one edge. Removing it removes all of them. Order-independent, and the basis for ranking feedback arcs. | edge betweenness |
-| **Symbol count** | How many distinct symbols cross one edge, each counted once however many import lines carry it. Breaks ties in the traffic ranking, and decides it alone in a single-cycle tangle, where every edge carries the same traffic. | — |
+| **Symbol count** | How many distinct symbols cross one edge, each counted once however many import lines carry it. A name reached only through `pub use` does not count, unless the edge carries nothing else. Breaks ties in the traffic ranking, and decides it alone in a single-cycle tangle, where every edge carries the same traffic. | — |
 
 Every feedback arc is a cyclic edge, not the other way round.
 *Cyclic edge* states a property of the edge; *feedback arc* is the role it was given in one solution.
