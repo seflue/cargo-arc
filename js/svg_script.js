@@ -766,12 +766,21 @@ if (typeof document !== 'undefined') {
         }
 
         if (fromHidden || toHidden) {
-          // Hide original elements (hitarea may be null for expand-level hidden arcs)
-          if (hitarea) hitarea.style.display = 'none';
+          // Hide original elements (hitarea may be null for expand-level hidden arcs).
+          // The collapsed class mirrors the inline display so a Rust-baked or
+          // previously-set class never outlives the state it was set for.
+          if (hitarea) {
+            hitarea.style.display = 'none';
+            hitarea.classList.add(C.collapsed);
+          }
           const visibleArc = DomAdapter.getVisibleArc(arcId);
-          if (visibleArc) visibleArc.style.display = 'none';
+          if (visibleArc) {
+            visibleArc.style.display = 'none';
+            visibleArc.classList.add(C.collapsed);
+          }
           DomAdapter.getArrows(`${fromId}-${toId}`).forEach((arr) => {
             arr.style.display = 'none';
+            arr.classList.add(C.collapsed);
           });
         } else {
           // Update visible arc paths using computed positions (no DOM read)
@@ -785,9 +794,15 @@ if (typeof document !== 'undefined') {
               maxRight,
               ROW_HEIGHT,
             );
-            if (hitarea) hitarea.setAttribute('d', arc.path);
+            if (hitarea) {
+              hitarea.setAttribute('d', arc.path);
+              hitarea.classList.remove(C.collapsed);
+            }
             const visibleArc = DomAdapter.getVisibleArc(arcId);
-            if (visibleArc) visibleArc.setAttribute('d', arc.path);
+            if (visibleArc) {
+              visibleArc.setAttribute('d', arc.path);
+              visibleArc.classList.remove(C.collapsed);
+            }
 
             const strokeWidth = StaticData.getArcStrokeWidth(arcId);
             const scale = ArcLogic.scaleFromStrokeWidth(strokeWidth);
@@ -797,6 +812,7 @@ if (typeof document !== 'undefined') {
                 'points',
                 ArcLogic.getArrowPoints({ x: arc.toX, y: arc.toY }, scale),
               );
+              arrow.classList.remove(C.collapsed);
             });
           }
         }

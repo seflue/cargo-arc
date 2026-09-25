@@ -509,10 +509,13 @@ describe("the SVG's size around a wrapped toolbar (svg_script.js's init)", () =>
 // loaded with both of an arc's endpoints already visible exercises the same
 // `updateOriginalEdges` branch an expand would land in.
 //
-// Two plain modules under one crate, connected by one arc pre-classed as a
-// filter would leave it (`hidden-by-filter`), the way Rust renders a
-// re-export by default or a toggled-off arc-type filter leaves it.
-function loadArcVisibilityPage({ sessionStorageView }) {
+// Two plain modules under one crate, connected by one arc pre-classed the way
+// Rust bakes it (`hidden-by-filter` by default, or `collapsed` when the
+// endpoint starts hidden by expand-level).
+function loadArcVisibilityPage({
+  sessionStorageView,
+  arcInitialClasses = ['hidden-by-filter'],
+}) {
   const dom = createMockDomAdapter();
 
   const nodes = {
@@ -563,13 +566,14 @@ function loadArcVisibilityPage({ sessionStorageView }) {
     dom._registerElement(`node-${id}`, rect);
   }
 
-  // Both endpoints start visible; the arc itself is already filter-hidden,
-  // the way Rust's static render leaves a re-export by default.
+  // Both endpoints start visible; the arc itself carries whatever class
+  // Rust baked at render time (a filter-hidden re-export, or a collapsed
+  // endpoint at a given expand-level).
   const arcEl = createFakeElement('path');
   arcEl.classList.add('dep-arc');
   arcEl.classList.add('downward');
   arcEl.classList.add('module-dep-arc');
-  arcEl.classList.add('hidden-by-filter');
+  for (const cls of arcInitialClasses) arcEl.classList.add(cls);
   arcEl.setAttribute('data-arc-id', 'a-b');
   dom._registerSelector(
     '.dep-arc[data-arc-id="a-b"], .cycle-arc[data-arc-id="a-b"]',
@@ -577,7 +581,7 @@ function loadArcVisibilityPage({ sessionStorageView }) {
   );
   const hitareaEl = createFakeElement('path');
   hitareaEl.classList.add('arc-hitarea');
-  hitareaEl.classList.add('hidden-by-filter');
+  for (const cls of arcInitialClasses) hitareaEl.classList.add(cls);
   hitareaEl.setAttribute('data-arc-id', 'a-b');
   dom._registerSelector('.arc-hitarea[data-arc-id="a-b"]', hitareaEl);
 
@@ -680,6 +684,21 @@ describe('arc visibility across a relayout (applyRestoredView)', () => {
 
     expect(arcEl.classList.contains('hidden-by-filter')).toBe(true);
     expect(hitareaEl.classList.contains('hidden-by-filter')).toBe(true);
+  });
+
+  // ca-0451: Rust bakes the `collapsed` class onto an arc whose endpoint
+  // starts hidden. Both endpoints here are visible by the time relayout
+  // runs, the same as an expand would leave them, so the stale class must
+  // not survive: `.collapsed { display: none }` would otherwise hide the
+  // arc forever even though nothing hides its endpoints any more.
+  test('an arc pre-classed collapsed loses the class once both endpoints are visible', () => {
+    const { arcEl, hitareaEl } = loadArcVisibilityPage({
+      sessionStorageView: restoredView,
+      arcInitialClasses: ['collapsed'],
+    });
+
+    expect(arcEl.classList.contains('collapsed')).toBe(false);
+    expect(hitareaEl.classList.contains('collapsed')).toBe(false);
   });
 
   test('applyRestoredView relayouts the diagram once, not twice', () => {
