@@ -1,5 +1,5 @@
 // @module SvgScript
-// @deps ArcLogic, StaticData, AppState, Selectors, DomAdapter, LayerManager, TreeLogic, DerivedState, HighlightRenderer, VirtualEdgeLogic, TextMeasure, SidebarLogic, SearchLogic, Jump, JumpIcons, Follow, Theme, SwitchToggles, ViewSnapshot, PageLink
+// @deps ArcLogic, StaticData, AppState, Selectors, DomAdapter, LayerManager, TreeLogic, DerivedState, HighlightRenderer, VirtualEdgeLogic, TextMeasure, SidebarLogic, SearchLogic, Jump, JumpIcons, Follow, Theme, SwitchToggles, ViewSnapshot, PageLink, CanvasSize
 // @config ROW_HEIGHT, MARGIN, TOOLBAR_HEIGHT, SIDEBAR_SHADOW_PAD
 // svg_script.js - DOM code for interactive SVG
 // ArcLogic is loaded from arc_logic.js before this file
@@ -600,11 +600,38 @@ if (typeof document !== 'undefined') {
       const neededWidth =
         maxNodeRight + Math.max(maxArcWidth, 50) + sidebarSpace + MARGIN;
 
+      contentSize = { width: neededWidth, height: neededHeight };
+      applyCanvasSize();
+    }
+
+    // The diagram's own size, from the render until the first relayout.
+    const renderedViewBox = DomAdapter.getSvgRoot()?.viewBox.baseVal;
+    let contentSize = {
+      width: renderedViewBox?.width ?? 0,
+      height: renderedViewBox?.height ?? 0,
+    };
+    // The toolbar's measured height; more than TOOLBAR_HEIGHT once it wraps.
+    let toolbarHeight = TOOLBAR_HEIGHT;
+
+    function applyCanvasSize() {
+      const svg = DomAdapter.getSvgRoot();
+      if (!svg) return;
       const vb = svg.viewBox.baseVal;
-      vb.width = neededWidth;
-      vb.height = neededHeight;
-      svg.setAttribute('width', String(neededWidth));
-      svg.setAttribute('height', String(neededHeight));
+      // Height first: it decides whether the page gets a vertical
+      // scrollbar, which narrows the visible width read below.
+      const height = CanvasSize.svgHeight(
+        contentSize.height,
+        toolbarHeight - TOOLBAR_HEIGHT,
+      );
+      vb.height = height;
+      svg.setAttribute('height', String(height));
+      const width = CanvasSize.svgWidth(
+        contentSize.width,
+        CanvasSize.visibleArea().width,
+      );
+      vb.width = width;
+      svg.setAttribute('width', String(width));
+      placeToolbar();
 
       // Base SVG size changed — sidebar must recapture on next show/update
       SidebarLogic.resetStoredViewBox();
@@ -1428,19 +1455,31 @@ if (typeof document !== 'undefined') {
           panel && panel.style.display !== 'none' ? panel.offsetHeight : 0;
         fo.setAttribute('height', baseH + panelH);
         // Shift graph content down by the delta between actual and default toolbar height
+        const delta = baseH - TOOLBAR_HEIGHT;
         if (graph) {
-          const delta = baseH - TOOLBAR_HEIGHT;
           if (delta !== 0) {
             graph.setAttribute('transform', `translate(0, ${delta})`);
           } else {
             graph.removeAttribute('transform');
           }
         }
+        if (baseH !== toolbarHeight) {
+          toolbarHeight = baseH;
+          SidebarLogic.setToolbarHeight(baseH);
+          applyCanvasSize();
+        }
       }
     }
 
-    // Update toolbar position to stay at top when scrolling
+    // Update toolbar and sidebar position to stay at top when scrolling
     function updateToolbarPosition() {
+      placeToolbar();
+      if (SidebarLogic.isVisible() && !_isNavigating)
+        SidebarLogic.updatePosition();
+    }
+
+    // Keep the toolbar at the top-left of the visible area, as wide as it.
+    function placeToolbar() {
       const fo = DomAdapter.getElementById('toolbar-fo');
       const svg = DomAdapter.getSvgRoot();
       if (!fo || !svg) return;
@@ -1451,16 +1490,19 @@ if (typeof document !== 'undefined') {
 
       // Keep toolbar aligned to visible viewport during horizontal scroll
       const scrollLeft = Math.max(0, -rect.left);
-      const visibleWidth = Math.min(window.innerWidth, rect.width - scrollLeft);
+      const visibleWidth = Math.min(
+        CanvasSize.visibleArea().width,
+        rect.width - scrollLeft,
+      );
       fo.setAttribute('x', String(scrollLeft));
       fo.setAttribute('width', String(visibleWidth));
-
-      if (SidebarLogic.isVisible() && !_isNavigating)
-        SidebarLogic.updatePosition();
     }
 
     window.addEventListener('scroll', updateToolbarPosition);
-    window.addEventListener('resize', updateToolbarPosition);
+    window.addEventListener('resize', () => {
+      applyCanvasSize();
+      updateToolbarPosition();
+    });
 
     // Observe toolbar content height changes (flex-wrap grows/shrinks)
     const toolbarRoot = DomAdapter.querySelector(`.${C.toolbarRoot}`);
@@ -1823,6 +1865,10 @@ if (typeof document !== 'undefined') {
     // Initialize search module
     SearchLogic.init(appState);
 
+    // Widen the SVG and the toolbar to the window before the toolbar's
+    // height is measured, or the measurement counts the rows the toolbar
+    // wraps into at the diagram's width.
+    applyCanvasSize();
     // Sync toolbar foreignObject height with actual content
     syncToolbarHeight();
 

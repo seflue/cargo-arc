@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { AppState } from './app_state.js';
 import { ArcLogic } from './arc_logic.js';
+import { CanvasSize } from './canvas_size.js';
 import { DerivedState } from './derived_state.js';
 import { createFakeElement, createMockDomAdapter } from './dom_adapter.js';
 import { Follow } from './follow.js';
@@ -292,10 +293,25 @@ function makeSvgPageStaticData() {
  * the node rects, the sidebar's own content div, and every `window.scrollTo`
  * call the init made (`scrollToSpan`'s object-argument call is how to tell
  * apart from `applyRestoredView`'s own two-argument one).
- * @param {{ search?: string, sessionStorageView?: object }} [options]
+ * `toolbarHeight` is the toolbar's measured height; without it the page has
+ * no toolbar. `expandLevel` makes init relayout the diagram.
+ * @param {{ search?: string, sessionStorageView?: object, toolbarHeight?: number, expandLevel?: number }} [options]
  */
-function loadSvgPage({ search = '', sessionStorageView } = {}) {
+function loadSvgPage({
+  search = '',
+  sessionStorageView,
+  toolbarHeight,
+  expandLevel,
+} = {}) {
   const dom = createMockDomAdapter();
+
+  if (toolbarHeight !== undefined) {
+    dom._registerElement('toolbar-fo', createFakeElement('foreignObject'));
+    dom._registerElement('graph-content', createFakeElement('g'));
+    const toolbarRoot = createFakeElement('div');
+    toolbarRoot.offsetHeight = toolbarHeight;
+    dom._registerSelector('.toolbar-root', toolbarRoot);
+  }
 
   const svg = createFakeElement('svg');
   svg.viewBox = { baseVal: { width: 1000, height: 800 } };
@@ -335,7 +351,7 @@ function loadSvgPage({ search = '', sessionStorageView } = {}) {
 
   global.DomAdapter = dom;
   global.document = {
-    documentElement: { dataset: {}, scrollHeight: 2000 },
+    documentElement: { dataset: {}, scrollHeight: 2000, clientWidth: 1000 },
     createElement: (tag) => createFakeElement(tag),
   };
   global.window = {
@@ -361,6 +377,7 @@ function loadSvgPage({ search = '', sessionStorageView } = {}) {
   global.fetch = () => Promise.resolve({ ok: true });
 
   global.STATIC_DATA = makeSvgPageStaticData();
+  if (expandLevel !== undefined) global.STATIC_DATA.expandLevel = expandLevel;
   global.ArcLogic = ArcLogic;
   global.StaticData = StaticData;
   global.AppState = AppState;
@@ -380,6 +397,7 @@ function loadSvgPage({ search = '', sessionStorageView } = {}) {
   global.SwitchToggles = SwitchToggles;
   global.ViewSnapshot = ViewSnapshot;
   global.PageLink = PageLink;
+  global.CanvasSize = CanvasSize;
 
   // svg_script.js's own runtime placeholders, normally substituted by
   // render.rs before the page ships.
@@ -390,7 +408,7 @@ function loadSvgPage({ search = '', sessionStorageView } = {}) {
   delete require.cache[require.resolve('./svg_script.js')];
   require('./svg_script.js');
 
-  return { nodeRects, sidebarContent, scrollCalls };
+  return { nodeRects, sidebarContent, scrollCalls, svg };
 }
 
 describe("`?select=` on arrival (svg_script.js's init)", () => {
@@ -452,5 +470,28 @@ describe("`?select=` on arrival (svg_script.js's init)", () => {
 
     expect(sidebarContent.innerHTML).toBe('');
     expect(scrollCalls.length).toBe(0);
+  });
+});
+
+describe("the SVG's size around a wrapped toolbar (svg_script.js's init)", () => {
+  afterEach(() => {
+    SidebarLogic._onBadgeClick = null;
+  });
+
+  test('a toolbar wrapped onto extra rows at load makes the SVG taller by those rows', () => {
+    // Rendered viewBox 1000x800, toolbar 96 instead of 40: 56 extra.
+    const { svg } = loadSvgPage({ toolbarHeight: 96 });
+
+    expect(svg.getAttribute('height')).toBe('856');
+  });
+
+  test('a relayout keeps the extra toolbar rows in the height', () => {
+    const unwrapped = loadSvgPage({ toolbarHeight: 40, expandLevel: 1 });
+    const unwrappedHeight = Number(unwrapped.svg.getAttribute('height'));
+    const wrapped = loadSvgPage({ toolbarHeight: 96, expandLevel: 1 });
+
+    expect(Number(wrapped.svg.getAttribute('height'))).toBe(
+      unwrappedHeight + 56,
+    );
   });
 });

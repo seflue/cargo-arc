@@ -4,6 +4,7 @@
 
 // Module globals — typeof import preserves the inferred types from each file.
 declare const ArcLogic: typeof import('./arc_logic.js').ArcLogic;
+declare const CanvasSize: typeof import('./canvas_size.js').CanvasSize;
 declare const AppState: typeof import('./app_state.js').AppState;
 declare const DomAdapter: typeof import('./dom_adapter.js').DomAdapter;
 declare const DerivedState: typeof import('./derived_state.js').DerivedState;

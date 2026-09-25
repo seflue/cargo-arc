@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { CanvasSize } from './canvas_size.js';
 import { createFakeElement } from './dom_adapter.js';
 import { PathFit } from './path_fit.js';
 import { SidebarLogic } from './sidebar.js';
@@ -132,6 +133,8 @@ globalThis.StaticData = {
     return { crate, path: segments.join('::') };
   },
 };
+
+globalThis.CanvasSize = CanvasSize;
 
 // sidebar.js measures the visible area on document.documentElement. Tests set
 // the viewport through window.innerWidth/innerHeight; with no scrollbar the
@@ -981,6 +984,38 @@ describe('SidebarLogic', () => {
       // scaleY = 1600/800 = 2, scrollTop = max(0,300)*2 = 600
       // y = 600 + TOOLBAR_HEIGHT(0 in test) + GAP_TOP(20) = 620
       expect(fakeEl.getAttribute('y')).toBe('620');
+    });
+
+    test('starts below a toolbar that wrapped onto extra rows', () => {
+      const fakeEl = createFakeElement('foreignObject');
+      fakeEl.querySelector = () => createFakeElement('div');
+      globalThis.DomAdapter = {
+        getElementById(id) {
+          if (id === 'relation-sidebar') return fakeEl;
+          return null;
+        },
+        getSvgRoot() {
+          return {
+            getBoundingClientRect() {
+              return { left: 0, top: 0, width: 1000, height: 800 };
+            },
+            viewBox: { baseVal: { width: 1000, height: 800 } },
+            setAttribute() {},
+          };
+        },
+        querySelectorAll() {
+          return [];
+        },
+      };
+      const renderedHeight = SidebarLogic._toolbarHeight;
+      SidebarLogic.setToolbarHeight(124);
+      try {
+        SidebarLogic.show('crate_a-crate_b');
+        // 124 (toolbar) + 20 (gap), no scroll
+        expect(fakeEl.getAttribute('y')).toBe('144');
+      } finally {
+        SidebarLogic.setToolbarHeight(renderedHeight);
+      }
     });
 
     test('restores path spans before measuring, cuts them after sizing', () => {

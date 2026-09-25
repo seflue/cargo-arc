@@ -550,6 +550,7 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
             c.toolbar.search_group,
             &[
                 ("display", "flex"),
+                ("flex-wrap", "wrap"),
                 ("align-items", "center"),
                 ("gap", "6px"),
             ],

@@ -1,5 +1,5 @@
 // @module SidebarLogic
-// @deps StaticData, DomAdapter, Selectors, PathFit
+// @deps StaticData, DomAdapter, Selectors, PathFit, CanvasSize
 // @config TOOLBAR_HEIGHT, SIDEBAR_SHADOW_PAD
 // sidebar.js - Relation sidebar for arc usage details
 // Shows usage locations when an arc is selected (pinned)
@@ -28,17 +28,6 @@ const CYCLE_HEADER_MAX_CHARS = 48;
 // must not count, or the first click would collapse instead of expand.
 const COLLAPSIBLE_SYMBOL_SELECTOR =
   ':scope > .sidebar-usage-group > .sidebar-symbol[data-collapsible]';
-
-/**
- * The visible page area in CSS pixels. `window.innerWidth`/`innerHeight`
- * include the scrollbars, so a sidebar clamped to them ends under the
- * vertical scrollbar whenever the page scrolls, as it does in an editor pane.
- * @returns {{ width: number, height: number }}
- */
-function visibleArea() {
-  const root = document.documentElement;
-  return { width: root.clientWidth, height: root.clientHeight };
-}
 
 const SidebarLogic = {
   _isTransient: false,
@@ -586,6 +575,17 @@ const SidebarLogic = {
     this._originalViewBoxWidth = null;
   },
 
+  /** The toolbar's measured height; more than TOOLBAR_HEIGHT once it wraps. */
+  _toolbarHeight: TOOLBAR_HEIGHT,
+
+  /**
+   * Record the toolbar's measured height; the sidebar starts below it.
+   * @param {number} height
+   */
+  setToolbarHeight(height) {
+    this._toolbarHeight = height;
+  },
+
   /** Cached X position — set once in show(), reused by updatePosition(). @type {number | null} */
   _cachedX: null,
   /** Cached max arc right X — only changes on collapse/relayout, not on hover. @type {number | null} */
@@ -609,7 +609,7 @@ const SidebarLogic = {
     const maxArcRight = this._getMaxArcRightX();
     let x = maxArcRight + SIDEBAR_GAP_X;
 
-    const viewportRight = (visibleArea().width - rect.left) * scaleX;
+    const viewportRight = (CanvasSize.visibleArea().width - rect.left) * scaleX;
     if (x + SIDEBAR_MIN_WIDTH > viewportRight) {
       x = viewportRight - SIDEBAR_MIN_WIDTH - SIDEBAR_MARGIN_RIGHT;
     }
@@ -628,12 +628,12 @@ const SidebarLogic = {
     const scaleY = viewBox.height / rect.height;
 
     const scrollTop = Math.max(0, -rect.top) * scaleY;
-    const y = scrollTop + TOOLBAR_HEIGHT + SIDEBAR_GAP_TOP;
-    const vpHeight = visibleArea().height * scaleY;
+    const y = scrollTop + this._toolbarHeight + SIDEBAR_GAP_TOP;
+    const vpHeight = CanvasSize.visibleArea().height * scaleY;
 
     return {
       y: Math.round(y),
-      height: Math.round(vpHeight - TOOLBAR_HEIGHT - SIDEBAR_GAP_TOP),
+      height: Math.round(vpHeight - this._toolbarHeight - SIDEBAR_GAP_TOP),
     };
   },
 
@@ -1415,7 +1415,7 @@ const SidebarLogic = {
     const effectiveH =
       naturalH > 0 ? Math.min(naturalH, pos.height) : pos.height;
 
-    const vpWidth = visibleArea().width;
+    const vpWidth = CanvasSize.visibleArea().width;
     const width = Math.max(
       SIDEBAR_MIN_WIDTH,
       Math.min(naturalW, vpWidth * 0.5),
