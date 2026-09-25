@@ -2534,3 +2534,48 @@ fn an_edge_made_only_of_reexports_keeps_every_name_with_include_reexports() {
         "a pure re-export edge keeps its names, baseline:\n{baseline}"
     );
 }
+
+/// `consumer::db` holds a private `use provider::store::Handle;`, and its
+/// child `consumer::db::address` names the symbol through it with
+/// `use super::Handle;`. The edge belongs to `provider::store`, the module
+/// that defines `Handle`, the same rule already applied within one crate.
+/// Today it lands on the importer's own crate instead.
+#[test]
+fn cross_crate_private_use_edge_attaches_to_the_definer() {
+    let (temp, cmd) = fixture_args("cross_crate_reexport", false);
+
+    let result = run(cmd);
+    assert!(result.is_ok(), "run() should succeed: {result:?}");
+
+    let svg = std::fs::read_to_string(temp.path()).unwrap();
+    let arcs = extract_arcs(&svg);
+    let nodes = extract_node_names(&svg);
+    let named_arcs = resolve_arc_names(&arcs, &nodes);
+
+    let has_address_to_store = named_arcs
+        .iter()
+        .any(|(from, to, _)| from == "address" && to == "store");
+    assert!(
+        has_address_to_store,
+        "address -> store arc should exist (edge follows the private use to \
+         the definer), found arcs: {named_arcs:?}"
+    );
+
+    let has_address_to_consumer = named_arcs
+        .iter()
+        .any(|(from, to, _)| from == "address" && to == "consumer");
+    assert!(
+        !has_address_to_consumer,
+        "address -> consumer arc should NOT exist (Handle is not consumer's \
+         to give), found arcs: {named_arcs:?}"
+    );
+
+    // The reference's uses move with the edge to its resolved target.
+    let symbols = extract_arc_symbols(&svg);
+    let key = ("address".to_string(), "store".to_string());
+    assert_eq!(
+        symbols.get(&key).map(Vec::as_slice),
+        Some(["Handle".to_string()].as_slice()),
+        "address -> store should carry the uses of Handle, found: {symbols:?}"
+    );
+}

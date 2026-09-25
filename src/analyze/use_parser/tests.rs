@@ -683,6 +683,7 @@ use crate::graph;
         facade_info.explicit_reexports.insert(
             "Widget".to_string(),
             ReExportTarget {
+                crate_name: "my_crate".to_string(),
                 module: "origin".to_string(),
                 original_name: "Widget".to_string(),
             },
@@ -2325,6 +2326,7 @@ mod reexport_resolution_tests {
         parent_info.explicit_reexports.insert(
             "Item".to_string(),
             ReExportTarget {
+                crate_name: "my_crate".to_string(),
                 module: "parent::sibling".to_string(),
                 original_name: "Item".to_string(),
             },
@@ -2371,6 +2373,7 @@ mod reexport_resolution_tests {
         parent_info.explicit_reexports.insert(
             "Config".to_string(),
             ReExportTarget {
+                crate_name: "my_crate".to_string(),
                 module: "parent::child".to_string(),
                 original_name: "Config".to_string(),
             },
@@ -2416,6 +2419,7 @@ mod reexport_resolution_tests {
         parent_info.explicit_reexports.insert(
             "Config".to_string(),
             ReExportTarget {
+                crate_name: "my_crate".to_string(),
                 module: "parent::child".to_string(),
                 original_name: "Config".to_string(),
             },
@@ -2524,6 +2528,7 @@ mod resolve_reexport_tests {
         m_info.explicit_reexports.insert(
             "Widget".to_string(),
             ReExportTarget {
+                crate_name: "my_crate".to_string(),
                 module: "render::elements".to_string(),
                 original_name: "Widget".to_string(),
             },
@@ -2557,6 +2562,7 @@ mod resolve_reexport_tests {
         m_info.explicit_reexports.insert(
             "Widget".to_string(),
             ReExportTarget {
+                crate_name: "my_crate".to_string(),
                 module: "middle".to_string(),
                 original_name: "Widget".to_string(),
             },
@@ -2565,6 +2571,7 @@ mod resolve_reexport_tests {
         n_info.explicit_reexports.insert(
             "Widget".to_string(),
             ReExportTarget {
+                crate_name: "my_crate".to_string(),
                 module: "origin".to_string(),
                 original_name: "Widget".to_string(),
             },
@@ -2599,6 +2606,7 @@ mod resolve_reexport_tests {
         m_info.explicit_reexports.insert(
             "Alias".to_string(),
             ReExportTarget {
+                crate_name: "my_crate".to_string(),
                 module: "origin".to_string(),
                 original_name: "Original".to_string(),
             },
@@ -2661,6 +2669,7 @@ mod resolve_reexport_tests {
         n_info.explicit_reexports.insert(
             "Widget".to_string(),
             ReExportTarget {
+                crate_name: "my_crate".to_string(),
                 module: "origin".to_string(),
                 original_name: "Widget".to_string(),
             },
@@ -2695,6 +2704,7 @@ mod resolve_reexport_tests {
         a_info.explicit_reexports.insert(
             "Widget".to_string(),
             ReExportTarget {
+                crate_name: "my_crate".to_string(),
                 module: "b".to_string(),
                 original_name: "Widget".to_string(),
             },
@@ -2703,6 +2713,7 @@ mod resolve_reexport_tests {
         b_info.explicit_reexports.insert(
             "Widget".to_string(),
             ReExportTarget {
+                crate_name: "my_crate".to_string(),
                 module: "a".to_string(),
                 original_name: "Widget".to_string(),
             },
@@ -2729,6 +2740,7 @@ mod resolve_reexport_tests {
         root_info.explicit_reexports.insert(
             "Config".to_string(),
             ReExportTarget {
+                crate_name: "other_crate".to_string(),
                 module: "settings".to_string(),
                 original_name: "Config".to_string(),
             },
@@ -2764,6 +2776,7 @@ mod resolve_reexport_tests {
         wgsl_info.private_uses.insert(
             "Error".to_string(),
             ReExportTarget {
+                crate_name: "my_crate".to_string(),
                 module: "front::wgsl::error".to_string(),
                 original_name: "Error".to_string(),
             },
@@ -2801,6 +2814,7 @@ mod resolve_reexport_tests {
         wgsl_info.private_uses.insert(
             "Error".to_string(),
             ReExportTarget {
+                crate_name: "my_crate".to_string(),
                 module: "front::wgsl::error".to_string(),
                 original_name: "Error".to_string(),
             },

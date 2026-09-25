@@ -289,6 +289,7 @@ fn collect_use_reexports(
         } else if let Some(original_name) = &dep.target_item {
             let alias_name = alias_path.rsplit("::").next().unwrap_or(alias_path);
             let target = ReExportTarget {
+                crate_name: dep.target_crate.clone(),
                 module: dep.target_module.clone(),
                 original_name: original_name.clone(),
             };

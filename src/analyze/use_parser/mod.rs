@@ -32,6 +32,10 @@ pub(crate) fn is_reexport_visibility(vis: &syn::Visibility) -> bool {
 /// Where a re-exported symbol originally comes from.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ReExportTarget {
+    /// Source crate, normalized. Usually the crate the target belongs to
+    /// already, but a re-export or a private `use` may cross into another
+    /// workspace crate.
+    pub(crate) crate_name: String,
     /// Source module path (crate-relative, e.g. `"render::elements"`)
     pub(crate) module: String,
     /// Original name in the source module (differs from map key on rename)
@@ -131,21 +135,23 @@ impl FromIterator<(String, HashMap<String, ModuleExportInfo>)> for ReExportMap {
 }
 
 /// Resolve re-exports in a [`DependencyRef`]: follow the re-export chain
-/// until the original definition module is found.
-/// Modifies `dep.target_module` in place. No-op if no re-export applies.
+/// until the original definition module is found, crossing into another
+/// workspace crate where the chain does.
+/// Modifies `dep.target_crate` and `dep.target_module` in place. No-op if no
+/// re-export applies.
 pub(crate) fn resolve_reexport(
     dep: &mut DependencyRef,
     reexport_map: &ReExportMap,
     importer_module: &str,
 ) {
-    let Some(crate_exports) = reexport_map.get(&dep.target_crate) else {
+    let Some(mut crate_exports) = reexport_map.get(&dep.target_crate) else {
         return;
     };
     let mut visited = HashSet::new();
     let mut lookup_name = dep.target_item.clone();
 
     loop {
-        if !visited.insert(dep.target_module.clone()) {
+        if !visited.insert((dep.target_crate.clone(), dep.target_module.clone())) {
             break;
         }
         let Some(module_info) = crate_exports.get(&dep.target_module) else {
@@ -162,6 +168,7 @@ pub(crate) fn resolve_reexport(
         // Tier 1: Explicit re-export
         if let Some(target) = module_info.explicit_reexports.get(item) {
             let original_target = dep.target_module.clone();
+            dep.target_crate = target.crate_name.clone();
             dep.target_module = target.module.clone();
             tracing::debug!(
                 "re-export resolved: {} -> {} (via re-export in {})",
@@ -170,17 +177,27 @@ pub(crate) fn resolve_reexport(
                 original_target
             );
             lookup_name = Some(target.original_name.clone());
+            let Some(next_exports) = reexport_map.get(&dep.target_crate) else {
+                break;
+            };
+            crate_exports = next_exports;
             continue;
         }
 
         // Tier 1b: Private `use` binding, visible only to descendants of the
         // module that holds it. A descendant naming the symbol through this
-        // ancestor really depends on the definer.
+        // ancestor really depends on the definer, in the same crate or
+        // another workspace crate.
         if is_descendant(importer_module, &dep.target_module)
             && let Some(target) = module_info.private_uses.get(item)
         {
+            dep.target_crate = target.crate_name.clone();
             dep.target_module = target.module.clone();
             lookup_name = Some(target.original_name.clone());
+            let Some(next_exports) = reexport_map.get(&dep.target_crate) else {
+                break;
+            };
+            crate_exports = next_exports;
             continue;
         }
 
