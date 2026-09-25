@@ -71,6 +71,20 @@ describe('clickAction', () => {
     });
   });
 
+  test('re-clicking the selected leaf deselects it', () => {
+    expect(clickAction(nodes(), 'root', 'a1', 'a1')).toEqual({
+      type: 'select',
+      key: null,
+    });
+  });
+
+  test('a leaf click while another leaf is selected selects the clicked one', () => {
+    expect(clickAction(nodes(), 'root', 'a1', 'b')).toEqual({
+      type: 'select',
+      key: 'a1',
+    });
+  });
+
   test('a container click zooms to it', () => {
     expect(clickAction(nodes(), 'root', 'a')).toEqual({
       type: 'zoom',

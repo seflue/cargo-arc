@@ -489,7 +489,12 @@ function buildHotspotMap(themeControl) {
 
   svg.addEventListener('click', (event) => {
     const clickedKey = circleKeyAt(event);
-    const action = HotspotSelection.clickAction(nodes, targetKey, clickedKey);
+    const action = HotspotSelection.clickAction(
+      nodes,
+      targetKey,
+      clickedKey,
+      selectedKey,
+    );
     if (action.type === 'select') select(action.key);
     else if (action.type === 'zoom') zoomTo(action.key);
   });

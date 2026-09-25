@@ -21,17 +21,21 @@ function leafKeyForFile(nodes, file) {
 }
 
 /**
- * What a click on the map should do: a leaf selects itself, a container or
- * empty space zooms, following `HotspotZoom.nextZoomTarget`'s targeting
- * rules.
+ * What a click on the map should do: a leaf selects itself (or deselects
+ * itself when already selected), a container or empty space zooms,
+ * following `HotspotZoom.nextZoomTarget`'s targeting rules.
  * @param {Record<string, {kind: string, parent?: string}>} nodes
  * @param {string} targetKey - the current zoom target
  * @param {string | null | undefined} clickedKey - the node under the pointer
- * @returns {{ type: 'select', key: string } | { type: 'zoom', key: string } | { type: 'none' }}
+ * @param {string | null} [selectedKey] - the currently selected leaf
+ * @returns {{ type: 'select', key: string | null } | { type: 'zoom', key: string } | { type: 'none' }}
  */
-function clickAction(nodes, targetKey, clickedKey) {
+function clickAction(nodes, targetKey, clickedKey, selectedKey = null) {
   if (clickedKey != null && nodes[clickedKey]?.kind === 'file') {
-    return { type: 'select', key: clickedKey };
+    return {
+      type: 'select',
+      key: clickedKey === selectedKey ? null : clickedKey,
+    };
   }
   const next = HotspotZoom.nextZoomTarget(nodes, targetKey, clickedKey);
   return next === targetKey ? { type: 'none' } : { type: 'zoom', key: next };
