@@ -33,6 +33,10 @@ delete global.document;
 const { jumpIdFromClick, spanCenter } = require('./svg_script.js');
 if (hadDocument) global.document = savedDocument;
 
+// Captured before any test can mutate it, so leak-detection tests below
+// have a real default to compare against instead of a hardcoded guess.
+const DEFAULT_TOOLBAR_HEIGHT = SidebarLogic._toolbarHeight;
+
 describe('spanCenter', () => {
   test('is the middle between the topmost top and the lowest bottom', () => {
     const rects = [
@@ -71,6 +75,16 @@ describe('jumpIdFromClick', () => {
           : null,
     };
     expect(jumpIdFromClick(target)).toBe(9);
+  });
+
+  test('returns the jump id of a tangle sidebar symbol row', () => {
+    const target = {
+      closest: (sel) =>
+        sel.includes('.sidebar-edge-symbol[data-jump]')
+          ? { dataset: { jump: '3' } }
+          : null,
+    };
+    expect(jumpIdFromClick(target)).toBe(3);
   });
 
   test('returns null when no ancestor row has data-jump', () => {
@@ -478,6 +492,9 @@ describe("`?select=` on arrival (svg_script.js's init)", () => {
 describe("the SVG's size around a wrapped toolbar (svg_script.js's init)", () => {
   afterEach(() => {
     SidebarLogic._onBadgeClick = null;
+    // syncToolbarHeight() assigns this on the real, shared SidebarLogic
+    // module object too, so it has to be put back the same way.
+    SidebarLogic.setToolbarHeight(DEFAULT_TOOLBAR_HEIGHT);
   });
 
   test('a toolbar wrapped onto extra rows at load makes the SVG taller by those rows', () => {
@@ -495,6 +512,10 @@ describe("the SVG's size around a wrapped toolbar (svg_script.js's init)", () =>
     expect(Number(wrapped.svg.getAttribute('height'))).toBe(
       unwrappedHeight + 56,
     );
+  });
+
+  test('does not leak its measured toolbar height to whichever test runs next', () => {
+    expect(SidebarLogic._toolbarHeight).toBe(DEFAULT_TOOLBAR_HEIGHT);
   });
 });
 

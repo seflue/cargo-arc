@@ -52,7 +52,7 @@ function createHoverKeyTracker() {
 // definition chip carrying data-jump, or null when the click landed elsewhere.
 function jumpIdFromClick(target) {
   const el = target.closest(
-    '.sidebar-location[data-jump], .sidebar-definition[data-jump]',
+    '.sidebar-location[data-jump], .sidebar-definition[data-jump], .sidebar-edge-symbol[data-jump]',
   );
   return el ? Number(el.dataset.jump) : null;
 }
@@ -416,27 +416,60 @@ if (typeof document !== 'undefined') {
       AppState.clearHover(appState);
       highlightTiming.debounced();
     };
-    // Sidebar cluster row click: pin couples to expansion (AppState.clickCluster-
-    // Row decides). Returns the new expand state so the sidebar syncs the row.
-    /** @type {{ _onEdgeClick: ((arcId: string, expandable: boolean, expanded: boolean) => boolean) | null }} */ (
+    // Row expand state, read by the sidebar on every rebuild so a graph
+    // click never collapses a row the user had opened.
+    /** @type {{ _isRowExpanded: ((arcId: string) => boolean) | null }} */ (
       SidebarLogic
-    )._onEdgeClick = (arcId, expandable, expanded) => {
+    )._isRowExpanded = (arcId) => AppState.isRowExpanded(appState, arcId);
+    // Cluster row triangle: expand bit only, never the pin, so it never
+    // touches the graph.
+    /** @type {{ _onRowToggle: ((arcId: string) => void) | null }} */ (
+      SidebarLogic
+    )._onRowToggle = (arcId) => AppState.rowToggle(appState, arcId);
+    // Cluster row head (outside the triangle): pin/unpin, which may move the
+    // pin off another row (AppState.rowPinClick decides both).
+    /** @type {{ _onRowPinClick: ((arcId: string) => void) | null }} */ (
+      SidebarLogic
+    )._onRowPinClick = (arcId) => {
       const before = AppState.isSelected(appState, 'arc', arcId);
       const sccId = StaticData.getArc(arcId)?.sccId;
-      const endExpanded = AppState.clickClusterRow(
-        appState,
-        arcId,
-        sccId,
-        expandable,
-        expanded,
-      );
-      // Pure re-expand (collapsed+pinned) leaves the selection untouched; only
-      // re-render the graph when the pin actually changed.
+      AppState.rowPinClick(appState, arcId, sccId);
+      // Re-render the graph only when this row's pin actually changed; a
+      // pin move off another row is reflected in the same re-render.
       if (AppState.isSelected(appState, 'arc', arcId) !== before) {
         highlightTiming.immediate();
       }
-      return endExpanded;
     };
+    // Every arc id in an SCC's cycles, for the collapse-all control below.
+    function clusterArcIds(sccId) {
+      const cluster = StaticData.getCluster(sccId);
+      if (!cluster) return [];
+      const ids = new Set();
+      for (const cycle of cluster.cycles) {
+        for (const edge of cycle) ids.add(`${edge.fromId}-${edge.toId}`);
+      }
+      return ids;
+    }
+    /** @type {{ _onRowsExpandAll: (() => void) | null }} */ (
+      SidebarLogic
+    )._onRowsExpandAll = () => {
+      const sccId = AppState.getSelectedScc(appState);
+      if (sccId != null) {
+        AppState.rowsExpandAll(appState, clusterArcIds(sccId));
+      }
+    };
+    /** @type {{ _onRowsCollapseAll: (() => void) | null }} */ (
+      SidebarLogic
+    )._onRowsCollapseAll = () => {
+      const sccId = AppState.getSelectedScc(appState);
+      if (sccId != null) {
+        AppState.rowsCollapseAll(appState, clusterArcIds(sccId));
+      }
+    };
+    // The editor's cursor landed on a cluster row's jump target.
+    /** @type {{ _onRowFollow: ((arcId: string) => void) | null }} */ (
+      SidebarLogic
+    )._onRowFollow = (arcId) => AppState.rowFollow(appState, arcId);
 
     // Cancels a pending hide and updates hoverKey if the derived identity
     // changed. Returns false when the hover is a same-cluster/element no-op
