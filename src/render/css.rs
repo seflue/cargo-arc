@@ -1509,6 +1509,39 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
                 ("margin-top", "6px"),
             ],
         ),
+        // A full-width flex item wraps onto its own line of the toolbar.
+        CssRule::class(
+            c.hotspots.breadcrumb,
+            &[
+                ("flex-basis", "100%"),
+                ("display", "flex"),
+                ("align-items", "center"),
+                ("gap", "4px"),
+                ("height", "24px"),
+                ("font-size", "13px"),
+                ("white-space", "nowrap"),
+                ("overflow", "hidden"),
+            ],
+        ),
+        CssRule::new(
+            &format!(".{} button", c.hotspots.breadcrumb),
+            &[
+                ("background", "none"),
+                ("border", "0"),
+                ("padding", "0 2px"),
+                ("color", tb.accent),
+                ("cursor", "pointer"),
+                ("font", "inherit"),
+            ],
+        ),
+        CssRule::new(
+            &format!(".{} [aria-current]", c.hotspots.breadcrumb),
+            &[("color", tb.text), ("font-weight", "600")],
+        ),
+        CssRule::new(
+            &format!(".{} [aria-hidden]", c.hotspots.breadcrumb),
+            &[("color", tb.text_muted)],
+        ),
         CssRule::class(
             c.hotspots.bar_label,
             &[

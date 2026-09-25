@@ -341,6 +341,8 @@ pub(super) struct HotspotClasses {
     pub tooltip: &'static str,
     /// The single jump glyph at the selected leaf's edge (`js/hotspot_jump_icon.js`).
     pub jump_icon: &'static str,
+    /// The toolbar's second line: the path from the root to the zoom target.
+    pub breadcrumb: &'static str,
 }
 
 #[allow(dead_code)]
@@ -509,6 +511,7 @@ pub(super) static CSS: CssClassNames = CssClassNames {
         details_title: "hotspot-details-title",
         tooltip: "hotspot-tooltip",
         jump_icon: "hotspot-jump-icon",
+        breadcrumb: "hotspot-breadcrumb",
     },
 };
 

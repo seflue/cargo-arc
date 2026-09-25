@@ -148,13 +148,15 @@ function boxesOverlap(a, b) {
  * hovered node's, which always wins even over a collision and never blocks
  * a later label either, matching the prototype.
  * @param {Record<string, {kind: string, name: string, parent?: string, cx: number, cy: number, r: number, lines: number}>} nodes
- * @param {string} targetKey - the current zoom target; it and its ancestors carry no label
+ * @param {string} targetKey - the current zoom target; its ancestors carry no label
  * @param {string | null} hoveredKey
  * @param {number} pxPerUnit
  * @returns {Map<string, {fontSize: number, y: number, text: string} | null>}
  */
 function placeLabels(nodes, targetKey, hoveredKey, pxPerUnit) {
-  const onPath = new Set(HotspotTree.ancestorPath(nodes, targetKey));
+  const ancestors = new Set(
+    HotspotTree.ancestorPath(nodes, targetKey).slice(0, -1),
+  );
   const children = HotspotTree.childrenOf(nodes);
   const placed = [];
   const result = new Map();
@@ -163,7 +165,8 @@ function placeLabels(nodes, targetKey, hoveredKey, pxPerUnit) {
     const node = nodes[key];
     const kids = (children.get(key) ?? []).map((childKey) => nodes[childKey]);
     const { fontSize, y, text } = labelFor(node, kids, pxPerUnit);
-    const wanted = !onPath.has(key) && labelReadable(node, fontSize, pxPerUnit);
+    const wanted =
+      !ancestors.has(key) && labelReadable(node, fontSize, pxPerUnit);
     const isHovered = key === hoveredKey;
     let show = isHovered || wanted;
     if (show && !isHovered) {

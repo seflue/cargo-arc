@@ -23,6 +23,21 @@ pub(super) struct Content {
     pub after_dropdown: String,
     /// Rendered after Follow editor (the arc page's externals/tests switches).
     pub after_follow: String,
+    /// A full-width line below the buttons (the map's breadcrumb); the bar
+    /// grows by [`SECOND_LINE_HEIGHT`] when it is set.
+    pub second_line: String,
+}
+
+/// One button-high line plus the bar's 8px flex gap above it.
+const SECOND_LINE_HEIGHT: f32 = 32.0;
+
+/// Return the bar's height with `content`'s lines.
+pub(super) fn height(content: &Content) -> f32 {
+    if content.second_line.is_empty() {
+        LAYOUT.toolbar.height
+    } else {
+        LAYOUT.toolbar.height + SECOND_LINE_HEIGHT
+    }
 }
 
 /// The bar's link to the workspace's other page: JS updates `href` to carry
@@ -52,7 +67,7 @@ pub(super) fn render(
     cross_link: CrossLink,
 ) -> String {
     let ct = &CSS.toolbar;
-    let height = LAYOUT.toolbar.height as i32;
+    let height = height(content) as i32;
 
     let divider = if content.dropdown_filters.is_empty() {
         String::new()
@@ -110,6 +125,7 @@ pub(super) fn render(
             "{}",
             "{}",
             "      <span id=\"jump-status\" class=\"{}\"></span>\n",
+            "{}",
             "    </div>\n",
             "  </foreignObject>\n",
         ),
@@ -131,5 +147,6 @@ pub(super) fn render(
         content.after_follow,     // page-specific service toggles after Follow editor
         page_link,                // link to the workspace's other page
         ct.jump_status,           // .toolbar-jump-status
+        content.second_line,      // page-specific line below the buttons
     )
 }

@@ -2,7 +2,8 @@
 // @deps Theme, DomAdapter, HotspotTree, HotspotZoom, HotspotLabels, HotspotHover, HotspotSelection, HotspotBars, PageLink, Follow, HotspotJumpIcon, Jump, HotspotLayout
 // @config
 // hotspot_script.js - entry module for the hotspot map page. Applies the
-// theme STATIC_DATA carries, wires the map's zoom, labels and hover, its
+// theme STATIC_DATA carries, wires the map's zoom with its breadcrumb,
+// labels and hover, its
 // selection (click, sidebar details, the hotspot list/bars, editor follow
 // and `?select` on load), and the jump icon at the selected leaf.
 
@@ -28,6 +29,13 @@ function rowKeyAt(event) {
   const target = /** @type {Element | null} */ (event.target);
   const row = target?.closest?.('[data-file]');
   return row ? row.getAttribute('data-file') : null;
+}
+
+/** The `data-crumb` key a breadcrumb entry (or its click target) zooms to, or `null` outside any entry. */
+function crumbKeyAt(event) {
+  const target = /** @type {Element | null} */ (event.target);
+  const crumb = target?.closest?.('[data-crumb]');
+  return crumb ? crumb.getAttribute('data-crumb') : null;
 }
 
 /** Escapes text before it is interpolated into `innerHTML`, matching the
@@ -137,6 +145,7 @@ function buildHotspotMap(themeControl) {
   const listToggleEl = DomAdapter.getElementById('hotspot-list-toggle');
   const sidebarEl = DomAdapter.getElementById('hotspot-sidebar');
   const pageLinkEl = DomAdapter.getElementById('arc-page-link');
+  const breadcrumbEl = DomAdapter.getElementById('hotspot-breadcrumb');
   if (sidebarEl) sidebarEl.style.display = 'block';
   // The static SVG starts the toolbar hidden so a file opens sensibly
   // outside a browser. This reveals it, as `svg_script.js` does for the arc page.
@@ -222,10 +231,27 @@ function buildHotspotMap(themeControl) {
     jumpIcon.show(at, targets[0]);
   }
 
+  /** Name every ancestor of the zoom target as a button that zooms there, the target itself as plain text. */
+  function renderBreadcrumb() {
+    if (!breadcrumbEl) return;
+    const path = HotspotTree.ancestorPath(nodes, targetKey);
+    const ancestors = path
+      .slice(0, -1)
+      .map(
+        (key) =>
+          `<button data-crumb="${escapeHtml(key)}">${escapeHtml(nodes[key].name)}</button>` +
+          '<span aria-hidden="true">›</span>',
+      );
+    breadcrumbEl.innerHTML =
+      ancestors.join('') +
+      `<span aria-current="location">${escapeHtml(nodes[targetKey].name)}</span>`;
+  }
+
   function zoomTo(key) {
     targetKey = key;
     lastLinkSource = 'zoom';
     updatePageLink();
+    renderBreadcrumb();
     const from = view;
     const to = HotspotZoom.viewFor(nodes[key]);
     const startedAt = performance.now();
@@ -396,6 +422,16 @@ function buildHotspotMap(themeControl) {
     listEl.addEventListener('pointerleave', () => setHover(null));
   }
 
+  if (breadcrumbEl) {
+    // Stopped for the same reason as the list's own click: the svg root's
+    // handler would read a click outside any circle as "zoom out".
+    breadcrumbEl.addEventListener('click', (event) => {
+      event.stopPropagation?.();
+      const key = crumbKeyAt(event);
+      if (key && nodes[key]) zoomTo(key);
+    });
+  }
+
   /** A pointer event's client position, converted into the outer `<svg>`'s
    * own coordinate space (the one `node.cx`/`cy` and `canvasWidth` share). */
   function pointerToSvg(event) {
@@ -441,6 +477,7 @@ function buildHotspotMap(themeControl) {
   applyView();
   renderDetails();
   updatePageLink();
+  renderBreadcrumb();
 
   if (typeof location !== 'undefined') {
     const file = PageLink.parseSelect(location.search);

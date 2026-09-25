@@ -199,8 +199,8 @@ describe('labelBox and boxesOverlap', () => {
 });
 
 describe('placeLabels', () => {
-  // root (container) -> near, far (two files close enough their labels
-  // collide at this pxPerUnit; far is a bit further and larger).
+  // root (container) -> near, far: two files whose circles overlap, so
+  // their centred labels collide at this pxPerUnit.
   function nodes() {
     return {
       root: { name: 'root', kind: 'crate', cx: 0, cy: 0, r: 200, lines: 20 },
@@ -208,7 +208,7 @@ describe('placeLabels', () => {
         name: 'near',
         kind: 'file',
         parent: 'root',
-        cx: -60,
+        cx: -10,
         cy: 0,
         r: 50,
         lines: 10,
@@ -217,7 +217,7 @@ describe('placeLabels', () => {
         name: 'far',
         kind: 'file',
         parent: 'root',
-        cx: 60,
+        cx: 10,
         cy: 0,
         r: 50,
         lines: 5,
@@ -225,8 +225,9 @@ describe('placeLabels', () => {
     };
   }
 
-  test('the zoom target and its ancestors carry no label', () => {
-    const placed = placeLabels(nodes(), 'root', null, 1);
+  test('the zoom target keeps its label, its ancestors carry none', () => {
+    const placed = placeLabels(nodes(), 'near', null, 1);
+    expect(placed.get('near')).not.toBeNull();
     expect(placed.get('root')).toBeNull();
   });
 

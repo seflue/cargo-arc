@@ -201,6 +201,7 @@ pub(super) fn render_toolbar(width: f32, facts: ToolbarFacts, config: &RenderCon
         dropdown_filters,
         after_dropdown,
         after_follow,
+        second_line: String::new(),
     };
     // The toolbar's link to the hotspot map; JS updates its `href` to carry
     // the current node selection as `?select=<file>`.

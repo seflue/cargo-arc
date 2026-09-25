@@ -2,7 +2,7 @@
 //! come from the same `Vec<PackedCircle>` `hotspots::pack::pack` produced, the
 //! way `render::render` feeds both paths from one `Vec<PositionedItem>`.
 
-use super::constants::{CSS, LAYOUT, RenderConfig};
+use super::constants::{CSS, RenderConfig};
 use super::css::render_styles;
 use super::elements::escape_xml;
 use super::static_data::{TargetData, ThemeData, script_element};
@@ -62,7 +62,7 @@ impl HotspotLayoutData {
             sidebar_width: SIDEBAR_WIDTH,
             sidebar_gap: SIDEBAR_GAP,
             map_margin: MAP_MARGIN,
-            toolbar_height: LAYOUT.toolbar.height,
+            toolbar_height: super::toolbar::height(&toolbar_content()),
         }
     }
 }
@@ -179,10 +179,21 @@ fn render_hotspot_header(width: f32, height: f32, theme: Option<&Theme>) -> Stri
     )
 }
 
-/// Render the toolbar shared with the arc page, with a link to it and no
-/// buttons of the map's own.
+/// Return the map's part of the shared toolbar: no buttons of its own, and
+/// the breadcrumb as the second line, filled by `hotspot_script.js`.
+fn toolbar_content() -> super::toolbar::Content {
+    super::toolbar::Content {
+        second_line: format!(
+            "      <nav id=\"hotspot-breadcrumb\" class=\"{}\"></nav>\n",
+            CSS.hotspots.breadcrumb
+        ),
+        ..super::toolbar::Content::default()
+    }
+}
+
+/// Render the toolbar shared with the arc page, with a link to it.
 fn render_toolbar(width: f32, config: &RenderConfig) -> String {
-    let content = super::toolbar::Content::default();
+    let content = toolbar_content();
     // The toolbar's link to the arc page; JS updates its `href` to carry
     // the currently selected leaf as `?select=<file>`.
     let cross_link = super::toolbar::CrossLink {
@@ -393,7 +404,8 @@ pub(crate) fn render(
     let root_r = packed.first().map_or(1.0, |circle| circle.r.max(1.0));
     let scale = TARGET_ROOT_RADIUS / root_r;
     let cx0 = MAP_MARGIN + TARGET_ROOT_RADIUS;
-    let cy0 = f64::from(LAYOUT.toolbar.height) + MAP_MARGIN + TARGET_ROOT_RADIUS;
+    let cy0 =
+        f64::from(super::toolbar::height(&toolbar_content())) + MAP_MARGIN + TARGET_ROOT_RADIUS;
     #[allow(clippy::cast_possible_truncation)] // canvas size stays well below 2^23
     let width = (cx0 + TARGET_ROOT_RADIUS + MAP_MARGIN + SIDEBAR_GAP + SIDEBAR_WIDTH) as f32;
     #[allow(clippy::cast_possible_truncation)]
@@ -554,7 +566,7 @@ mod tests {
         let (_, _, svg) = rendered_default();
 
         assert!(
-            svg.contains("width=\"100%\" height=\"100%\" viewBox=\"0 0 1100 840\">"),
+            svg.contains("width=\"100%\" height=\"100%\" viewBox=\"0 0 1100 872\">"),
             "got: {svg}"
         );
     }
@@ -571,7 +583,7 @@ mod tests {
 
         let root = &data["nodes"]["app/Cargo.toml"];
         assert_eq!(root["cx"], 400.0);
-        assert_eq!(root["cy"], 440.0);
+        assert_eq!(root["cy"], 472.0);
         assert_eq!(root["r"], 380.0);
     }
 
@@ -667,10 +679,7 @@ mod tests {
         assert_eq!(data["layout"]["sidebarWidth"], SIDEBAR_WIDTH);
         assert_eq!(data["layout"]["sidebarGap"], SIDEBAR_GAP);
         assert_eq!(data["layout"]["mapMargin"], MAP_MARGIN);
-        assert_eq!(
-            data["layout"]["toolbarHeight"],
-            f64::from(LAYOUT.toolbar.height)
-        );
+        assert_eq!(data["layout"]["toolbarHeight"], 72.0);
     }
 
     #[test]
@@ -1043,6 +1052,24 @@ mod tests {
             selects.iter().all(|&pos| pos > panel_start),
             "a <select> sits outside the View dropdown, got: {toolbar}"
         );
+    }
+
+    /// The breadcrumb is the toolbar's second line: after every button and
+    /// inside a foreignObject tall enough for both lines. JS fills it.
+    #[test]
+    fn hotspot_toolbar_ends_with_an_empty_breadcrumb_line() {
+        let (_, _, svg) = rendered_default();
+        let toolbar = toolbar_markup(&svg);
+
+        assert!(toolbar.contains("height=\"72\""), "got: {toolbar}");
+        let crumbs = toolbar
+            .find(&format!(
+                "<nav id=\"hotspot-breadcrumb\" class=\"{}\"></nav>",
+                CSS.hotspots.breadcrumb
+            ))
+            .unwrap_or_else(|| panic!("breadcrumb missing, got: {toolbar}"));
+        let last_button = toolbar.rfind("<button").expect("buttons present");
+        assert!(crumbs > last_button, "got: {toolbar}");
     }
 
     /// `STATIC_DATA`'s own `classes` map names every hotspot class JS builds

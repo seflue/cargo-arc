@@ -128,7 +128,9 @@ const {
   toolbarFoEl,
 } = fixture;
 const jumpStatusEl = createFakeElement('span');
+const breadcrumbEl = createFakeInteractiveElement('nav');
 const elements = {
+  'hotspot-breadcrumb': breadcrumbEl,
   'theme-mode': createFakeSelect(),
   'theme-light': createFakeSelect(),
   'theme-dark': createFakeSelect(),
@@ -646,6 +648,43 @@ describe('hotspot_script entry', () => {
     expect(arcLinkEl.getAttribute('href')).toBe(
       PageLink.buildLink('/', 'src/container/nested.rs'),
     );
+  });
+
+  test('the breadcrumb names the path from the root to the zoom target, the target as plain text', () => {
+    const map = buildHotspotMap();
+    expect(breadcrumbEl.innerHTML).toBe(
+      '<span aria-current="location">root</span>',
+    );
+
+    map.zoomTo('select_container');
+
+    expect(breadcrumbEl.innerHTML).toBe(
+      '<button data-crumb="root">root</button>' +
+        '<span aria-hidden="true">›</span>' +
+        '<span aria-current="location">container</span>',
+    );
+  });
+
+  test('clicking a breadcrumb entry zooms there, without reaching the svg’s own click handler', () => {
+    const map = buildHotspotMap();
+    map.zoomTo('select_container');
+    let stopped = false;
+    const crumb = {
+      getAttribute: () => 'root',
+      closest: (sel) => (sel === '[data-crumb]' ? crumb : null),
+    };
+
+    breadcrumbEl._fire('click', {
+      target: crumb,
+      stopPropagation: () => {
+        stopped = true;
+      },
+    });
+
+    expect(breadcrumbEl.innerHTML).toBe(
+      '<span aria-current="location">root</span>',
+    );
+    expect(stopped).toBe(true);
   });
 
   test('the list/bars toggle swaps the list content and its own label, and back', () => {
