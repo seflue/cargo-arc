@@ -6,6 +6,7 @@
 use std::path::{Path, PathBuf};
 
 /// A declared `mod` item (external, not inline).
+#[derive(PartialEq)]
 pub(crate) struct ModDecl {
     pub(crate) name: String,
     pub(crate) explicit_path: Option<String>,
@@ -69,10 +70,14 @@ pub(crate) fn extract_mod_declarations(syntax: &syn::File, include_tests: bool) 
             if !include_tests && is_cfg_test(&item_mod.attrs) {
                 continue;
             }
-            decls.push(ModDecl {
+            let decl = ModDecl {
                 name: item_mod.ident.to_string(),
                 explicit_path: extract_path_attribute(&item_mod.attrs),
-            });
+            };
+            // `mod foo;` repeated under complementary cfgs names one file
+            if !decls.contains(&decl) {
+                decls.push(decl);
+            }
         }
     }
     decls

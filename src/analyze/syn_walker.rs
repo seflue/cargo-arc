@@ -500,6 +500,34 @@ mod tests {
             assert_eq!(decls[0].name, "foo");
             assert_eq!(decls[0].explicit_path.as_deref(), Some("custom.rs"));
         }
+
+        #[test]
+        fn test_parse_mod_cfg_alternatives_read_once() {
+            let tmp = TestProject::new()
+                .file(
+                    "test.rs",
+                    "#[cfg(not(feature = \"x\"))]\nmod foo;\n#[cfg(feature = \"x\")]\npub mod foo;",
+                )
+                .build();
+            let path = tmp.path().join("test.rs");
+
+            let decls = parse_mod_declarations(&path, false).unwrap();
+            assert_eq!(decls.len(), 1);
+        }
+
+        #[test]
+        fn test_parse_mod_cfg_alternatives_with_distinct_paths_kept() {
+            let tmp = TestProject::new()
+                .file(
+                    "test.rs",
+                    "#[cfg(unix)]\n#[path = \"unix.rs\"]\nmod sys;\n#[cfg(windows)]\n#[path = \"windows.rs\"]\nmod sys;",
+                )
+                .build();
+            let path = tmp.path().join("test.rs");
+
+            let decls = parse_mod_declarations(&path, false).unwrap();
+            assert_eq!(decls.len(), 2);
+        }
     }
 
     mod collect_paths {
