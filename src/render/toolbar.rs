@@ -1,6 +1,6 @@
 //! The toolbar frame shared by both pages: the `foreignObject`/`toolbar-root`
 //! wrapper, the View dropdown with the appearance block inside it, Follow
-//! editor and the cross-link to the workspace's other page. `elements::render_toolbar`
+//! editor, Recompute on save and the cross-link to the workspace's other page. `elements::render_toolbar`
 //! (the arc diagram) and `hotspots::render_toolbar` (the hotspot map) each
 //! weave their own buttons into [`Content`] and call [`render`]; the arc
 //! page fills every field, the map leaves them at their `Default`.
@@ -52,8 +52,8 @@ pub(super) struct CrossLink {
 
 /// The toolbar frame: the `foreignObject`/`toolbar-root` wrapper, the View
 /// dropdown (`content.dropdown_filters` above a divider, then the
-/// appearance block every page gets), Follow editor (under
-/// `config.with_jump_ids`, like the rest of a served page's service
+/// appearance block every page gets), Follow editor and Recompute on save
+/// (under `config.with_jump_ids`, like the rest of a served page's service
 /// toggles), the cross-link and the jump-status span, with `content`'s
 /// page-specific buttons woven in around them.
 #[allow(
@@ -75,12 +75,17 @@ pub(super) fn render(
         format!("          <div class=\"{}\"></div>\n", ct.dropdown_divider)
     };
 
-    // Only a page served by `cargo arc ui` has an editor to follow; a file
-    // written by `cargo arc -o` has none.
+    // Only a page served by `cargo arc ui` has an editor to follow and a
+    // service to recompute; a file written by `cargo arc -o` has neither.
+    // The on-save button starts pressed, the service's default; the service
+    // sends its actual state when the page connects.
     let follow = if config.with_jump_ids {
         format!(
-            "      <button id=\"follow-toggle\" class=\"{} {}\" aria-pressed=\"true\">Follow editor</button>\n",
-            ct.html_btn, ct.follow_toggle,
+            concat!(
+                "      <button id=\"follow-toggle\" class=\"{} {}\" aria-pressed=\"true\">Follow editor</button>\n",
+                "      <button id=\"on-save-toggle\" class=\"{} {}\" aria-pressed=\"true\">Recompute on save</button>\n",
+            ),
+            ct.html_btn, ct.follow_toggle, ct.html_btn, ct.switch_toggle,
         )
     } else {
         String::new()
@@ -143,7 +148,7 @@ pub(super) fn render(
         ct.select,                // label.toolbar-select (light theme)
         ct.select,                // label.toolbar-select (dark theme)
         content.after_dropdown,   // page-specific content after the dropdown
-        follow,                   // Follow editor, under with_jump_ids
+        follow,                   // Follow editor and Recompute on save, under with_jump_ids
         content.after_follow,     // page-specific service toggles after Follow editor
         page_link,                // link to the workspace's other page
         ct.jump_status,           // .toolbar-jump-status

@@ -57,6 +57,9 @@ struct Wanted {
     /// run the page still shows the old state and sends the same command
     /// again.
     commands: u64,
+    /// Set by a save or `arc recompute`: the sources changed, so the served
+    /// switches need a run too.
+    rerun: bool,
     /// Set when the request loop has ended, so the recomputation thread
     /// returns instead of waiting for a next command.
     stopped: bool,
@@ -84,6 +87,7 @@ impl<'a> Server<'a> {
                 wanted: Mutex::new(Wanted {
                     switches: service.switches(),
                     commands: 0,
+                    rerun: false,
                     stopped: false,
                 }),
                 wanted_changed: Condvar::new(),
@@ -146,10 +150,11 @@ impl<'a> Server<'a> {
         }
     }
 
-    /// A focus, follow or theme command becomes an event for every open
-    /// stream (a focus on a file without a node or a repeat of the editor's
-    /// mode is dropped); a switch command changes what the recomputation
-    /// thread works toward.
+    /// A focus, follow, theme or on-save command becomes an event for every
+    /// open stream (a focus on a file without a node or a repeat of the
+    /// editor's mode is dropped); a switch command changes what the
+    /// recomputation thread works toward, and a save of an analysis input
+    /// (while on-save is on) or `arc recompute` asks it for a run.
     fn execute(&self, command: Command) {
         match command {
             Command::Focus { line, file } => {
@@ -169,20 +174,37 @@ impl<'a> Server<'a> {
                 wanted.commands += 1;
                 self.wanted_changed.notify_all();
             }
+            Command::Saved(file) => {
+                if self.service.on_save() && self.service.reads(&file) {
+                    self.request_rerun();
+                }
+            }
+            Command::Recompute => self.request_rerun(),
+            Command::OnSave(on) => {
+                self.service.set_on_save(on);
+                self.broadcast(&JumpService::on_save_event(on));
+            }
         }
     }
 
+    fn request_rerun(&self) {
+        let mut wanted = self.wanted();
+        wanted.rerun = true;
+        wanted.commands += 1;
+        self.wanted_changed.notify_all();
+    }
+
     /// Runs the analysis for the wanted switches after each command that
-    /// asks for something other than the served page, so commands that
-    /// arrive during a run cost one further run at most and the last one
-    /// wins. After each run the page hears `analysis` and the editor
+    /// asks for something other than the served page or for a rerun, so
+    /// commands that arrive during a run cost one further run at most and
+    /// the last one wins. After each run the page hears `analysis` and the editor
     /// `arc analysis`, or both hear the error; a failed run waits for the
     /// next command.
     fn recompute_on_demand(&self, out: &Mutex<&mut (impl Write + Send)>) {
         let mut seen = 0;
         loop {
-            let switches = {
-                let wanted = self
+            let (switches, rerun) = {
+                let mut wanted = self
                     .wanted_changed
                     .wait_while(self.wanted(), |wanted| {
                         !wanted.stopped && wanted.commands == seen
@@ -192,9 +214,9 @@ impl<'a> Server<'a> {
                     return;
                 }
                 seen = wanted.commands;
-                wanted.switches
+                (wanted.switches, std::mem::take(&mut wanted.rerun))
             };
-            if switches == self.service.switches() {
+            if !rerun && switches == self.service.switches() {
                 continue;
             }
             let (event, line) = match self.service.recompute(switches) {
@@ -266,14 +288,23 @@ impl<'a> Server<'a> {
     }
 
     /// Hands the connection to a thread that writes events until the page
-    /// closes it or the server ends.
+    /// closes it or the server ends. The first event is the on-save state,
+    /// which the page cannot know otherwise.
     fn handle_events<'scope>(
         &'scope self,
         request: Request,
         scope: &'scope thread::Scope<'scope, '_>,
     ) {
         let (sender, receiver) = mpsc::channel();
-        self.subscribers().push(sender);
+        {
+            // Held across the read and the push, so an on-save command
+            // either lands before the read or broadcasts to this stream.
+            let mut subscribers = self.subscribers();
+            sender
+                .send(JumpService::on_save_event(self.service.on_save()))
+                .expect("the receiver is still held here");
+            subscribers.push(sender);
+        }
         scope.spawn(move || stream_events(request, &receiver));
     }
 
@@ -421,7 +452,8 @@ mod tests {
     }
 
     /// Opens the event stream and returns the connection once the response
-    /// head has arrived, so lines written to stdin afterwards reach it.
+    /// head and the opening on-save state have arrived, so lines written to
+    /// stdin afterwards reach it.
     fn subscribe(port: u16) -> TcpStream {
         let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
         stream
@@ -431,6 +463,10 @@ mod tests {
         let head = read_until(&mut stream, "\r\n\r\n");
         assert!(head.starts_with("HTTP/1.1 200"), "{head}");
         assert!(head.contains("Content-Type: text/event-stream"), "{head}");
+        assert_eq!(
+            read_until(&mut stream, "\n\n"),
+            "event: on-save\ndata: on\n\n"
+        );
         stream
     }
 
@@ -997,6 +1033,144 @@ mod tests {
             out,
             b"arc analysis externals=on tests=off\narc analysis externals=off tests=on\n"
         );
+    }
+
+    /// A save of an analysis input runs with the served switches; any other
+    /// save runs nothing.
+    #[test]
+    fn a_saved_source_or_manifest_recomputes_with_the_served_switches() {
+        let fake = recomputing_service();
+        let (server, port) = Server::bind(&fake.service, None).unwrap();
+        let (reader, mut stdin) = std::io::pipe().unwrap();
+        let mut out = Vec::new();
+
+        thread::scope(|scope| {
+            let handle = scope.spawn(|| server.run(BufReader::new(reader), &mut out));
+            let mut events = subscribe(port);
+
+            writeln!(stdin, "arc saved /ws/README.md").unwrap();
+            writeln!(stdin, "arc saved /elsewhere/src/lib.rs").unwrap();
+            writeln!(stdin, "arc saved /ws/src/lib.rs").unwrap();
+            assert_eq!(
+                fake.started.recv_timeout(Duration::from_secs(5)).unwrap(),
+                AnalysisSwitches::default()
+            );
+            fake.release.send(()).unwrap();
+            assert_eq!(
+                read_until(&mut events, "\n\n"),
+                "event: analysis\ndata: externals=off tests=off\n\n"
+            );
+
+            writeln!(stdin, "arc saved /ws/a/Cargo.toml").unwrap();
+            assert_eq!(
+                fake.started.recv_timeout(Duration::from_secs(5)).unwrap(),
+                AnalysisSwitches::default()
+            );
+            fake.release.send(()).unwrap();
+            assert_eq!(
+                read_until(&mut events, "\n\n"),
+                "event: analysis\ndata: externals=off tests=off\n\n"
+            );
+
+            drop(stdin);
+            server.unblock();
+            handle.join().unwrap().unwrap();
+        });
+
+        assert_eq!(fake.runs.load(Ordering::SeqCst), 2);
+    }
+
+    /// Saves during a run cost one further run, like switch commands.
+    #[test]
+    fn saves_during_a_run_cost_one_further_run() {
+        let fake = recomputing_service();
+        let (server, port) = Server::bind(&fake.service, None).unwrap();
+        let mut out = Vec::new();
+
+        thread::scope(|scope| {
+            let handle = scope.spawn(|| server.run(std::io::empty(), &mut out));
+            let mut events = subscribe(port);
+
+            let save = "arc saved /ws/src/lib.rs";
+            assert_eq!(send(port, "POST", "/command", save).0, 202);
+            fake.started.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert_eq!(send(port, "POST", "/command", save).0, 202);
+            assert_eq!(send(port, "POST", "/command", save).0, 202);
+            fake.release.send(()).unwrap();
+            read_until(&mut events, "\n\n");
+            fake.started.recv_timeout(Duration::from_secs(5)).unwrap();
+            fake.release.send(()).unwrap();
+            read_until(&mut events, "\n\n");
+
+            // A follow event proves nothing further was queued.
+            assert_eq!(send(port, "POST", "/command", "arc follow on").0, 202);
+            assert_eq!(
+                read_until(&mut events, "\n\n"),
+                "event: follow\ndata: on\n\n"
+            );
+
+            server.unblock();
+            handle.join().unwrap().unwrap();
+        });
+
+        assert_eq!(fake.runs.load(Ordering::SeqCst), 2);
+    }
+
+    /// With on-save off a save runs nothing, while `arc recompute` still
+    /// does; every page hears the new state.
+    #[test]
+    fn on_save_off_ignores_saves_and_recompute_still_runs() {
+        let fake = recomputing_service();
+        let (server, port) = Server::bind(&fake.service, None).unwrap();
+        let (reader, mut stdin) = std::io::pipe().unwrap();
+        let mut out = Vec::new();
+
+        thread::scope(|scope| {
+            let handle = scope.spawn(|| server.run(BufReader::new(reader), &mut out));
+            let mut events = subscribe(port);
+
+            writeln!(stdin, "arc on-save off").unwrap();
+            assert_eq!(
+                read_until(&mut events, "\n\n"),
+                "event: on-save\ndata: off\n\n"
+            );
+            // A page opened now starts with the service's state.
+            let mut later = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            later
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            write!(later, "GET /events HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
+            read_until(&mut later, "\r\n\r\n");
+            assert_eq!(
+                read_until(&mut later, "\n\n"),
+                "event: on-save\ndata: off\n\n"
+            );
+
+            writeln!(stdin, "arc saved /ws/src/lib.rs").unwrap();
+            // A follow event proves the save line was handled.
+            writeln!(stdin, "arc follow on").unwrap();
+            assert_eq!(
+                read_until(&mut events, "\n\n"),
+                "event: follow\ndata: on\n\n"
+            );
+            assert!(!server.wanted().rerun);
+            writeln!(stdin, "arc recompute").unwrap();
+            assert_eq!(
+                fake.started.recv_timeout(Duration::from_secs(5)).unwrap(),
+                AnalysisSwitches::default()
+            );
+            fake.release.send(()).unwrap();
+            assert_eq!(
+                read_until(&mut events, "\n\n"),
+                "event: analysis\ndata: externals=off tests=off\n\n"
+            );
+
+            drop(stdin);
+            server.unblock();
+            handle.join().unwrap().unwrap();
+        });
+
+        assert_eq!(fake.runs.load(Ordering::SeqCst), 1);
     }
 
     #[test]

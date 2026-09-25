@@ -3,6 +3,7 @@
 //! page, and the events it pushes to the page.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, PoisonError, RwLock};
 
 use anyhow::Result;
@@ -61,6 +62,12 @@ pub(crate) enum Command {
         switch: Switch,
         on: bool,
     },
+    /// The editor wrote `file` (absolute) to disk.
+    Saved(PathBuf),
+    /// Run the analysis again with the served switches.
+    Recompute,
+    /// Whether a save starts a run.
+    OnSave(bool),
 }
 
 /// What the page needs to select the node the editor is in: the arc node's
@@ -89,6 +96,12 @@ pub(crate) fn parse_command(line: &str) -> Option<Command> {
     if let Some(rest) = line.strip_prefix("arc theme ") {
         return Some(Command::Theme(Mode::parse(rest)?));
     }
+    if let Some(file) = line.strip_prefix("arc saved ") {
+        return (!file.is_empty()).then(|| Command::Saved(PathBuf::from(file)));
+    }
+    if line == "arc recompute" {
+        return Some(Command::Recompute);
+    }
     let (word, state) = line.strip_prefix("arc ")?.split_once(' ')?;
     let on = match state {
         "on" => true,
@@ -109,6 +122,7 @@ pub(crate) fn parse_command(line: &str) -> Option<Command> {
             switch: Switch::Tests,
             on,
         }),
+        "on-save" => Some(Command::OnSave(on)),
         _ => None,
     }
 }
@@ -156,6 +170,8 @@ pub(crate) struct JumpService<'a> {
     /// The last mode the editor sent. Held so that a page loaded after the
     /// line, or reloaded, starts in the editor's mode.
     editor_mode: Mutex<Option<Mode>>,
+    /// Whether a save starts a run; on until a command turns it off.
+    on_save: AtomicBool,
     recompute: Recompute<'a>,
 }
 
@@ -172,6 +188,7 @@ impl<'a> JumpService<'a> {
             root,
             theme,
             editor_mode: Mutex::new(None),
+            on_save: AtomicBool::new(true),
             recompute,
         }
     }
@@ -206,6 +223,22 @@ impl<'a> JumpService<'a> {
         self.editor_mode
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub(crate) fn on_save(&self) -> bool {
+        self.on_save.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn set_on_save(&self, on: bool) {
+        self.on_save.store(on, Ordering::Relaxed);
+    }
+
+    /// Whether the analysis reads `path` (absolute): a Rust source file or a
+    /// manifest under the workspace root.
+    pub(crate) fn reads(&self, path: &Path) -> bool {
+        path.starts_with(&self.root)
+            && (path.extension().is_some_and(|ext| ext == "rs")
+                || path.file_name().is_some_and(|name| name == "Cargo.toml"))
     }
 
     /// The switches the served page was computed with.
@@ -304,6 +337,14 @@ impl<'a> JumpService<'a> {
             FollowState::Off => "off",
         };
         format!("event: follow\ndata: {data}\n\n")
+    }
+
+    /// The `on-save` event as one complete SSE block.
+    pub(crate) fn on_save_event(on: bool) -> String {
+        format!(
+            "event: on-save\ndata: {}\n\n",
+            if on { "on" } else { "off" }
+        )
     }
 
     /// The `theme` event as one complete SSE block.
@@ -816,6 +857,53 @@ mod tests {
         );
     }
 
+    #[test]
+    fn reads_a_save_of_a_source_file_or_manifest_under_the_root() {
+        let service = service_over_root("/ws");
+        assert!(service.reads(Path::new("/ws/src/lib.rs")));
+        assert!(service.reads(Path::new("/ws/a/src/deep/mod.rs")));
+        assert!(service.reads(Path::new("/ws/Cargo.toml")));
+        assert!(service.reads(Path::new("/ws/a/Cargo.toml")));
+        assert!(!service.reads(Path::new("/ws/README.md")));
+        assert!(!service.reads(Path::new("/ws/arc-rules.toml")));
+        assert!(!service.reads(Path::new("/ws/Cargo.lock")));
+        assert!(!service.reads(Path::new("/elsewhere/src/lib.rs")));
+    }
+
+    #[test]
+    fn on_save_starts_on_and_its_event_spells_the_state() {
+        let service = service_over_root("/ws");
+        assert!(service.on_save());
+        service.set_on_save(false);
+        assert!(!service.on_save());
+        assert_eq!(
+            JumpService::on_save_event(false),
+            "event: on-save\ndata: off\n\n"
+        );
+        assert_eq!(
+            JumpService::on_save_event(true),
+            "event: on-save\ndata: on\n\n"
+        );
+    }
+
+    #[test]
+    fn parse_command_reads_saved_lines_with_the_whole_rest_as_path() {
+        assert_eq!(
+            parse_command("arc saved /tmp/a b/lib.rs"),
+            Some(Command::Saved(PathBuf::from("/tmp/a b/lib.rs")))
+        );
+    }
+
+    #[test]
+    fn parse_command_reads_the_recompute_and_on_save_lines() {
+        assert_eq!(parse_command("arc recompute"), Some(Command::Recompute));
+        assert_eq!(parse_command("arc on-save on"), Some(Command::OnSave(true)));
+        assert_eq!(
+            parse_command("arc on-save off"),
+            Some(Command::OnSave(false))
+        );
+    }
+
     /// The line is a protocol: spelling is exact, nothing is trimmed.
     #[test]
     fn parse_command_ignores_malformed_and_foreign_lines() {
@@ -828,6 +916,9 @@ mod tests {
         assert_eq!(parse_command("arc externals"), None);
         assert_eq!(parse_command("arc externals on "), None);
         assert_eq!(parse_command("arc jump 3 /p"), None);
+        assert_eq!(parse_command("arc saved "), None);
+        assert_eq!(parse_command("arc recompute now"), None);
+        assert_eq!(parse_command("arc on-save"), None);
         assert_eq!(parse_command("hello"), None);
         assert_eq!(parse_command(""), None);
     }

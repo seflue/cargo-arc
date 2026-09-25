@@ -774,7 +774,10 @@ mod tests {
     }
 
     fn tree(root: ModuleInfo) -> ModuleTree {
-        ModuleTree { root }
+        ModuleTree {
+            root,
+            unparsed: Vec::new(),
+        }
     }
 
     // -- Edge-query helpers --

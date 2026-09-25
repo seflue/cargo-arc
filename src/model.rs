@@ -427,6 +427,9 @@ pub struct ModuleInfo {
 #[derive(Debug, Clone)]
 pub struct ModuleTree {
     pub root: ModuleInfo,
+    /// Module files that did not parse. Their modules stand in the tree
+    /// without children or dependencies.
+    pub unparsed: Vec<PathBuf>,
 }
 
 /// Metadata for a single external crate (one entry per version).

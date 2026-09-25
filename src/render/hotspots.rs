@@ -1128,6 +1128,23 @@ mod tests {
         assert!(data["nodes"]["app/Cargo.toml"].get("targets").is_none());
     }
 
+    /// A served map recomputes on save like the arc page and carries the
+    /// same button; a written file has no service to recompute.
+    #[test]
+    fn a_served_map_carries_the_on_save_button() {
+        let tree = single_crate_tree();
+        let packed = pack(&tree);
+        let served = RenderConfig {
+            with_jump_ids: true,
+            ..RenderConfig::default()
+        };
+        let svg = render(&tree, &packed, &HashMap::new(), &served);
+        assert!(svg.contains("id=\"on-save-toggle\""), "{svg}");
+
+        let written = render(&tree, &packed, &HashMap::new(), &RenderConfig::default());
+        assert!(!written.contains("id=\"on-save-toggle\""), "{written}");
+    }
+
     /// The ids exist on `targets` either way; `with_jump_ids` only gates
     /// whether `render` serializes them, the same contract `RenderConfig`
     /// documents for the arc page.

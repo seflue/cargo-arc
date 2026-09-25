@@ -10,6 +10,7 @@ import { Jump } from './jump.js';
 import { JumpIcons } from './jump_icons.js';
 import { JumpSymbol } from './jump_symbol.js';
 import { LayerManager } from './layer_manager.js';
+import { OnSaveToggle } from './on_save_toggle.js';
 import { PageLink } from './page_link.js';
 import { SearchLogic } from './search.js';
 import { Selectors } from './selectors.js';
@@ -395,6 +396,7 @@ function loadSvgPage({
   global.Follow = Follow;
   global.Theme = Theme;
   global.SwitchToggles = SwitchToggles;
+  global.OnSaveToggle = OnSaveToggle;
   global.ViewSnapshot = ViewSnapshot;
   global.PageLink = PageLink;
   global.CanvasSize = CanvasSize;

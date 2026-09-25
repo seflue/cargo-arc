@@ -251,7 +251,10 @@ pub fn analyze_modules(
     };
     let root = walk_module(root_module, &normalized_crate_name, &ctx);
 
-    Ok(ModuleTree { root })
+    Ok(ModuleTree {
+        root,
+        unparsed: Vec::new(),
+    })
 }
 
 /// Invariant parameters shared across the recursive HIR module walk.

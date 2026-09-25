@@ -205,13 +205,15 @@ struct WalkContext<'a> {
     base_context: EdgeContext,
 }
 
-/// Recursively walk a module, building `ModuleInfo` with dependency extraction.
+/// Recursively walk a module, building `ModuleInfo` with dependency
+/// extraction. A file that does not parse is pushed onto `unparsed`.
 fn walk_module_syn(
     ctx: &WalkContext,
     file_path: &Path,
     module_name: &str,
     parent_path: &str,
     is_crate_root: bool,
+    unparsed: &mut Vec<PathBuf>,
 ) -> ModuleInfo {
     let full_path = if parent_path == module_name {
         // root module: full_path == crate name
@@ -239,6 +241,7 @@ fn walk_module_syn(
         Ok(f) => f,
         Err(e) => {
             tracing::warn!("parsing {}: {e:#}", file_path.display());
+            unparsed.push(file_path.to_path_buf());
             return ModuleInfo {
                 name: module_name.to_string(),
                 full_path,
@@ -290,7 +293,7 @@ fn walk_module_syn(
                 resolve_mod_path(&resolve_dir, &decl.name)
             };
 
-            child_file.map(|cf| walk_module_syn(ctx, &cf, &decl.name, &full_path, false))
+            child_file.map(|cf| walk_module_syn(ctx, &cf, &decl.name, &full_path, false, unparsed))
         })
         .collect();
 
@@ -336,6 +339,7 @@ pub(crate) fn analyze_modules_syn(
         base_context: EdgeContext::production(),
     };
 
+    let mut unparsed = Vec::new();
     let mut root: Option<ModuleInfo> = None;
     for root_file in crate_info.target_roots.files() {
         let tree = walk_module_syn(
@@ -344,6 +348,7 @@ pub(crate) fn analyze_modules_syn(
             &normalized,
             &normalized, // parent_path == name for root → triggers identity check
             true,
+            &mut unparsed,
         );
         match &mut root {
             None => root = Some(tree),
@@ -396,13 +401,14 @@ pub(crate) fn analyze_modules_syn(
                 test_name,
                 &format!("{normalized}::tests"),
                 true,
+                &mut unparsed,
             );
             root.children.push(tree);
         }
     }
 
     let root = root.unwrap();
-    ModuleTree { root }
+    ModuleTree { root, unparsed }
 }
 
 #[cfg(test)]
@@ -737,6 +743,31 @@ mod tests {
 
     mod analyze_syn {
         use super::*;
+
+        /// A module whose file does not parse keeps its node, without
+        /// children or dependencies, and the tree names the file.
+        #[test]
+        fn a_file_that_does_not_parse_is_listed_as_unparsed() {
+            let tmp = TestProject::new()
+                .file("src/lib.rs", "mod good;\nmod broken;")
+                .file("src/good.rs", "pub fn fine() {}")
+                .file("src/broken.rs", "pub fn half(")
+                .build();
+
+            let tree = analyze_modules_syn(
+                &conventional_crate("fixture", tmp.path()),
+                &WorkspaceCrates::default(),
+                &ModulePathMap::default(),
+                &CrateExportMap::default(),
+                &ReExportMap::default(),
+                &std::collections::HashMap::new(),
+                false,
+            );
+
+            assert_eq!(tree.unparsed, vec![tmp.path().join("src/broken.rs")]);
+            let names: Vec<&str> = tree.root.children.iter().map(|m| m.name.as_str()).collect();
+            assert_eq!(names, ["good", "broken"]);
+        }
 
         #[test]
         fn test_analyze_modules_syn_structure() {

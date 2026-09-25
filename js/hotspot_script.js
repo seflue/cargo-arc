@@ -1,5 +1,5 @@
 // @module HotspotScript
-// @deps Theme, DomAdapter, HotspotTree, HotspotZoom, HotspotLabels, HotspotHover, HotspotSelection, HotspotBars, PageLink, Follow, HotspotJumpIcon, Jump, HotspotLayout, PathFit
+// @deps Theme, DomAdapter, HotspotTree, HotspotZoom, HotspotLabels, HotspotHover, HotspotSelection, HotspotBars, PageLink, Follow, OnSaveToggle, HotspotJumpIcon, Jump, HotspotLayout, PathFit
 // @config
 // hotspot_script.js - entry module for the hotspot map page. Applies the
 // theme STATIC_DATA carries, wires the map's zoom with its breadcrumb,
@@ -438,7 +438,10 @@ function buildHotspotMap(themeControl) {
       .join('');
   }
 
+  let showingBars = false;
+
   function showView(bars) {
+    showingBars = bars;
     showListEl.setAttribute('aria-pressed', String(!bars));
     showBarsEl.setAttribute('aria-pressed', String(bars));
     listEl.innerHTML = bars ? barsHtml() : originalListHtml;
@@ -503,13 +506,81 @@ function buildHotspotMap(themeControl) {
   );
   svg.addEventListener('pointerleave', () => setHover(null));
 
+  // === View kept across the reload after a recomputation ===
+  // The page stores the zoom target, the selection and the list view under
+  // this key before it reloads, and applies them once when it loads again.
+  const VIEW_KEY = 'cargo-arc-hotspot-view';
+
+  function readStoredView() {
+    try {
+      const stored = sessionStorage.getItem(VIEW_KEY);
+      if (!stored) return null;
+      sessionStorage.removeItem(VIEW_KEY);
+      return JSON.parse(stored);
+    } catch {
+      return null;
+    }
+  }
+
+  function storeViewAndReload() {
+    try {
+      sessionStorage.setItem(
+        VIEW_KEY,
+        JSON.stringify({
+          target: targetKey,
+          selected: selectedKey,
+          bars: showingBars,
+        }),
+      );
+    } catch {
+      // The view is lost; the page still shows the new run.
+    }
+    location.reload();
+  }
+
+  /** A key the new run no longer has is dropped. */
+  function applyStoredView(stored) {
+    if (typeof stored.target === 'string' && nodes[stored.target]) {
+      targetKey = stored.target;
+      view = HotspotZoom.viewFor(nodes[targetKey]);
+      lastLinkSource = 'zoom';
+    }
+    if (typeof stored.selected === 'string' && nodes[stored.selected]) {
+      select(stored.selected);
+    }
+    if (stored.bars === true && showListEl && showBarsEl && listEl) {
+      showView(true);
+    }
+  }
+
+  // The follow and on-save toggles are rendered only for a map served by
+  // `cargo arc ui`; a written file has no event stream to open.
   const followEl = DomAdapter.getElementById('follow-toggle');
   if (followEl) {
+    const onSaveEl = DomAdapter.getElementById('on-save-toggle');
+    const onSave = OnSaveToggle.createOnSaveToggle({
+      post: (line) => fetch('command', { method: 'POST', body: line }),
+      showState: (on) => onSaveEl?.setAttribute('aria-pressed', String(on)),
+      showStatus: showJumpStatus,
+      isOn: () => onSaveEl?.getAttribute('aria-pressed') === 'true',
+    });
+    onSaveEl?.addEventListener('click', (event) => {
+      event.stopPropagation?.();
+      onSave.click();
+    });
     const follow = Follow.createFollow({
+      // One stream serves them all: the theme event goes to the theme
+      // control, a finished run reloads the page, a failed one shows its
+      // error, and the follow module and the on-save button take theirs.
       connect: (handler) =>
         Follow.connectEventSource((name, data) => {
           if (name === 'theme') themeControl?.handleEditorMode(data);
-          else handler(name, data);
+          else if (name === 'analysis') storeViewAndReload();
+          else if (name === 'analysis-error') showJumpStatus(data);
+          else {
+            handler(name, data);
+            onSave.handleEvent(name, data);
+          }
         }),
       apply: (_node, _jumps, file) => {
         if (typeof file === 'string') focusFile(file);
@@ -523,12 +594,15 @@ function buildHotspotMap(themeControl) {
     follow.start();
   }
 
+  const storedView = readStoredView();
+  if (storedView) applyStoredView(storedView);
   applyView();
   renderDetails();
   updatePageLink();
   renderBreadcrumb();
 
-  if (typeof location !== 'undefined') {
+  // A reload keeps `?select=` in the address; the stored view is newer.
+  if (!storedView && typeof location !== 'undefined') {
     const file = PageLink.parseSelect(location.search);
     if (file) applyIncomingSelect(file);
   }

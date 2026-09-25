@@ -21,6 +21,7 @@ declare const SidebarLogic: typeof import('./sidebar.js').SidebarLogic;
 declare const StaticData: typeof import('./static_data.js').StaticData;
 declare const Theme: typeof import('./theme.js').Theme;
 declare const SwitchToggles: typeof import('./switch_toggles.js').SwitchToggles;
+declare const OnSaveToggle: typeof import('./on_save_toggle.js').OnSaveToggle;
 declare const TreeLogic: typeof import('./tree_logic.js').TreeLogic;
 declare const VirtualEdgeLogic: typeof import('./virtual_edge_logic.js').VirtualEdgeLogic;
 declare const ViewSnapshot: typeof import('./view_snapshot.js').ViewSnapshot;

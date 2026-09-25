@@ -109,30 +109,51 @@ local function send(line)
   service.process:write(line .. '\n')
 end
 
---- Tells the service where the cursor is, if the current buffer is a file.
---- The service decides whether the file has a node; nothing is filtered
---- here beyond buffers that are no file at all.
-local function send_focus()
+--- The absolute path of the current buffer's file, or nil for a buffer that
+--- is no file at all.
+--- @return string|nil
+local function current_file()
   if vim.bo.buftype ~= '' then
-    return
+    return nil
   end
   local name = vim.api.nvim_buf_get_name(0)
   if name == '' then
-    return
+    return nil
   end
-  local line = vim.api.nvim_win_get_cursor(0)[1]
-  send('arc focus ' .. line .. ' ' .. vim.fn.fnamemodify(name, ':p'))
+  return vim.fn.fnamemodify(name, ':p')
+end
+
+--- Tells the service where the cursor is, if the current buffer is a file.
+--- The service decides whether the file has a node.
+local function send_focus()
+  local file = current_file()
+  if file then
+    send('arc focus ' .. vim.api.nvim_win_get_cursor(0)[1] .. ' ' .. file)
+  end
+end
+
+--- Tells the service a file was written. The service decides whether the
+--- analysis reads it and whether a save starts a run.
+local function send_saved()
+  local file = current_file()
+  if file then
+    send('arc saved ' .. file)
+  end
 end
 
 local follow_group = 'cargo-arc-follow'
 
---- Reports the cursor's file whenever it can have changed: on entering a
---- buffer and on the editor regaining focus.
+--- Reports the cursor's file whenever it can have changed, on entering a
+--- buffer and on the editor regaining focus, and every file written.
 local function watch_cursor()
   local group = vim.api.nvim_create_augroup(follow_group, {})
   vim.api.nvim_create_autocmd({ 'BufEnter', 'FocusGained' }, {
     group = group,
     callback = send_focus,
+  })
+  vim.api.nvim_create_autocmd('BufWritePost', {
+    group = group,
+    callback = send_saved,
   })
 end
 
@@ -235,6 +256,22 @@ end
 --- @param on boolean
 function M.tests(on)
   send_switch('tests', on)
+end
+
+--- Switches whether a written file makes the service recompute. The
+--- service holds the state; the plugin reports every write either way.
+--- @param on boolean
+function M.on_save(on)
+  send_switch('on-save', on)
+end
+
+--- Asks the service to run the analysis again with its current switches.
+function M.recompute()
+  if not service then
+    vim.notify('cargo-arc is not running', vim.log.levels.INFO)
+    return
+  end
+  send('arc recompute')
 end
 
 --- The window in the current tabpage that shows `file`, if any.

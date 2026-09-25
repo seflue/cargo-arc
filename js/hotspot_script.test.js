@@ -11,6 +11,7 @@ import { HotspotTree } from './hotspot_tree.js';
 import { HotspotZoom } from './hotspot_zoom.js';
 import { Jump } from './jump.js';
 import { JumpSymbol } from './jump_symbol.js';
+import { OnSaveToggle } from './on_save_toggle.js';
 import { PageLink } from './page_link.js';
 import { PathFit } from './path_fit.js';
 import { TextMeasure } from './text_metrics.js';
@@ -307,6 +308,7 @@ global.HotspotSelection = HotspotSelection;
 global.HotspotBars = HotspotBars;
 global.PageLink = PageLink;
 global.Follow = Follow;
+global.OnSaveToggle = OnSaveToggle;
 global.HotspotJumpIcon = HotspotJumpIcon;
 global.JumpSymbol = JumpSymbol;
 global.HotspotLayout = HotspotLayout;
@@ -882,5 +884,137 @@ describe('hotspot_script entry', () => {
 
     expect(pointeroverStopped).toBe(true);
     expect(clickStopped).toBe(true);
+  });
+});
+
+/**
+ * Runs `body` against a served page: the Follow editor and Recompute on save
+ * buttons exist, the event stream is a handler the test drives by hand, and
+ * `sessionStorage` and `location.reload` are recorded.
+ */
+function onServedPage(body) {
+  const followEl = createFakeInteractiveElement('button');
+  const onSaveEl = createFakeInteractiveElement('button');
+  onSaveEl.setAttribute('aria-pressed', 'true');
+  elements['follow-toggle'] = followEl;
+  elements['on-save-toggle'] = onSaveEl;
+  let handler = null;
+  const realFollow = global.Follow;
+  global.Follow = {
+    ...Follow,
+    connectEventSource: (h) => {
+      handler = h;
+    },
+  };
+  const stored = new Map();
+  global.sessionStorage = {
+    getItem: (key) => stored.get(key) ?? null,
+    setItem: (key, value) => stored.set(key, value),
+    removeItem: (key) => stored.delete(key),
+  };
+  const reloads = [];
+  global.location = { search: '', reload: () => reloads.push(true) };
+  try {
+    body({
+      emit: (name, data) => handler(name, data),
+      stored,
+      reloads,
+      onSaveEl,
+    });
+  } finally {
+    delete elements['follow-toggle'];
+    delete elements['on-save-toggle'];
+    global.Follow = realFollow;
+    global.location = { search: '' };
+    delete global.sessionStorage;
+    showListEl._fire('click');
+    jumpStatusEl.textContent = '';
+  }
+}
+
+const HOTSPOT_VIEW_KEY = 'cargo-arc-hotspot-view';
+
+describe('hotspot page on a recomputing service', () => {
+  test('a finished run stores the zoom target, the selection and the bars view, then reloads', () => {
+    onServedPage(({ emit, stored, reloads }) => {
+      const map = buildHotspotMap();
+      map.zoomTo('select_container');
+      map.select('nested');
+      showBarsEl._fire('click');
+
+      emit('analysis', 'externals=off tests=off');
+
+      expect(reloads.length).toBe(1);
+      expect(JSON.parse(stored.get(HOTSPOT_VIEW_KEY))).toEqual({
+        target: 'select_container',
+        selected: 'nested',
+        bars: true,
+      });
+    });
+  });
+
+  test('the page loaded after the run shows the stored view, once', () => {
+    onServedPage(({ stored }) => {
+      stored.set(
+        HOTSPOT_VIEW_KEY,
+        JSON.stringify({
+          target: 'select_container',
+          selected: 'nested',
+          bars: true,
+        }),
+      );
+
+      buildHotspotMap();
+
+      expect(breadcrumbEl.innerHTML).toContain(
+        '<span aria-current="location">container</span>',
+      );
+      expect(detailsEl.innerHTML).toContain('nested.rs');
+      expect(showBarsEl.getAttribute('aria-pressed')).toBe('true');
+      const [, scaleText] =
+        mapContent.getAttribute('transform').match(/scale\(([^)]+)\)/) ?? [];
+      const expectedScale =
+        400 /
+        (2 * HotspotZoom.viewFor(STATIC_DATA.nodes.select_container).radius);
+      expect(Number(scaleText)).toBeCloseTo(expectedScale, 5);
+      expect(stored.has(HOTSPOT_VIEW_KEY)).toBe(false);
+    });
+  });
+
+  test('a stored key the new run no longer has is dropped', () => {
+    onServedPage(({ stored }) => {
+      stored.set(
+        HOTSPOT_VIEW_KEY,
+        JSON.stringify({ target: 'gone', selected: 'gone', bars: false }),
+      );
+
+      buildHotspotMap();
+
+      expect(breadcrumbEl.innerHTML).toBe(
+        '<span aria-current="location">root</span>',
+      );
+      expect(detailsEl.innerHTML).toBe('');
+    });
+  });
+
+  test('a failed run shows its error and keeps the page', () => {
+    onServedPage(({ emit, reloads }) => {
+      buildHotspotMap();
+
+      emit('analysis-error', 'src/x.rs does not parse');
+
+      expect(jumpStatusEl.textContent).toBe('src/x.rs does not parse');
+      expect(reloads.length).toBe(0);
+    });
+  });
+
+  test('the on-save event sets the Recompute on save button', () => {
+    onServedPage(({ emit, onSaveEl }) => {
+      buildHotspotMap();
+
+      emit('on-save', 'off');
+
+      expect(onSaveEl.getAttribute('aria-pressed')).toBe('false');
+    });
   });
 });

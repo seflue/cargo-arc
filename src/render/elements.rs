@@ -1206,6 +1206,7 @@ mod tests {
 \u{20}       <span id=\"search-result-count\" class=\"toolbar-result-count\"></span>\n\
 \u{20}     </div>\n\
 \u{20}     <button id=\"follow-toggle\" class=\"toolbar-html-btn toolbar-follow-toggle\" aria-pressed=\"true\">Follow editor</button>\n\
+\u{20}     <button id=\"on-save-toggle\" class=\"toolbar-html-btn toolbar-switch-toggle\" aria-pressed=\"true\">Recompute on save</button>\n\
 \u{20}     <button id=\"externals-toggle\" class=\"toolbar-html-btn toolbar-switch-toggle\" aria-pressed=\"true\">External crates</button>\n\
 \u{20}     <button id=\"tests-toggle\" class=\"toolbar-html-btn toolbar-switch-toggle\" aria-pressed=\"false\">Test code</button>\n\
 \u{20}     <a id=\"hotspot-page-link\" class=\"toolbar-html-btn\" href=\"/hotspots\">Hotspot map</a>\n\
@@ -1377,9 +1378,20 @@ mod tests {
             "{served}"
         );
 
+        // The service holds the on-save state and sends it when the page
+        // connects; the button starts at the service's default.
+        assert!(
+            served.contains(&format!(
+                r#"<button id="on-save-toggle" class="{} {}" aria-pressed="true">Recompute on save</button>"#,
+                ct.html_btn, ct.switch_toggle
+            )),
+            "{served}"
+        );
+
         let written = render_toolbar(800.0, ToolbarFacts::default(), &RenderConfig::default());
         assert!(!written.contains("externals-toggle"), "{written}");
         assert!(!written.contains("tests-toggle"), "{written}");
+        assert!(!written.contains("on-save-toggle"), "{written}");
     }
 
     #[test]

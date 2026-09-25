@@ -87,6 +87,7 @@ function connectEventSource(handler) {
     'theme',
     'analysis',
     'analysis-error',
+    'on-save',
   ]) {
     source.addEventListener(name, (event) => {
       handler(name, /** @type {MessageEvent} */ (event).data);

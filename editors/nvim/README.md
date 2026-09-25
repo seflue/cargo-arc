@@ -3,8 +3,9 @@
 Starts `cargo-arc arc ui` for Neovim's working directory, opens the diagram in
 the browser, and jumps to the file and line the service names when a jump
 target is clicked. In the other direction, the diagram follows the editor:
-entering a buffer selects that file's node in the page, as a click would. The
-service is a child of this Neovim session and ends with it.
+entering a buffer selects that file's node in the page, as a click would, and
+writing a file recomputes the diagram. The service is a child of this Neovim
+session and ends with it.
 
 Requires Neovim 0.12 and a `cargo-arc` binary that has the `ui` subcommand.
 
@@ -45,6 +46,12 @@ For development against this repository, point at the release build:
   reached, or the error if the analysis failed. `:Arc restart` starts the
   new service with the state last reached, not with the options below;
   `:Arc stop` and `:Arc open` start from the options again.
+- `:Arc on-save off` stops a written file from recomputing the diagram;
+  `:Arc on-save on` resumes it. The page's "Recompute on save" button does the
+  same. The plugin reports every write; the service recomputes for `.rs` files
+  and `Cargo.toml` under the workspace root. A file that does not parse keeps
+  the diagram as it was, and a notice names the file.
+- `:Arc recompute` runs the analysis once with the current state.
 
 ## Options
 

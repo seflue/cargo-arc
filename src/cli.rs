@@ -269,14 +269,16 @@ pub fn run(args: ArcCommand) -> Result<Judgment> {
 
 /// A workspace laid out for a diagram: the dependency graph, the layout
 /// built from it, the jump table [`JumpTable`] assigned while building it,
-/// and the workspace root the analysis ran against (`None` when the
-/// workspace has no crates). The graph is carried alongside the layout so a
-/// second page (the hotspot map) can be built from the same analysis run.
+/// the workspace root the analysis ran against (`None` when the workspace
+/// has no crates), and the module files that did not parse. The graph is
+/// carried alongside the layout so a second page (the hotspot map) can be
+/// built from the same analysis run.
 struct DiagramAnalysis {
     graph: ArcGraph,
     layout: LayoutIR,
     jump_table: JumpTable,
     workspace_root: Option<PathBuf>,
+    unparsed: Vec<PathBuf>,
 }
 
 impl ArcCommand {
@@ -311,7 +313,7 @@ fn analyze_for_diagram(
     #[cfg(not(feature = "hir"))]
     let use_hir = false;
 
-    let (graph, workspace_root) = build_dependency_graph(
+    let (graph, workspace_root, unparsed) = build_dependency_graph(
         &args.common.manifest_path,
         &feature_config,
         use_hir,
@@ -343,16 +345,43 @@ fn analyze_for_diagram(
         layout,
         jump_table,
         workspace_root,
+        unparsed,
     })
+}
+
+/// The error a rerun of the service reports instead of swapping its pages
+/// in: a file that does not parse drops its module's children and edges
+/// from the diagram without notice. Paths are shown relative to `root`
+/// where they lie under it.
+fn unparsed_error(unparsed: &[PathBuf], root: &Path) -> Option<anyhow::Error> {
+    if unparsed.is_empty() {
+        return None;
+    }
+    let files: Vec<String> = unparsed
+        .iter()
+        .map(|file| {
+            file.strip_prefix(root)
+                .unwrap_or(file)
+                .display()
+                .to_string()
+        })
+        .collect();
+    let verb = if files.len() == 1 { "does" } else { "do" };
+    Some(anyhow::anyhow!(
+        "{} {verb} not parse; the diagram stays at the last run",
+        files.join(", ")
+    ))
 }
 
 /// Run the `ui` subcommand: analyze with jump ids, then serve both pages and
 /// resolve jump ids until the process ends. The service gets both pages as a
-/// closure over `args`, so it can run them again with other switches.
-/// `--volatility-months` and `--no-volatility` govern the map's volatility
-/// here too, same as the arc diagram: `ui` takes no separate hotspots flags.
+/// closure over `args`, so it can run them again with other switches or
+/// changed sources; a rerun with a file that does not parse fails, the first
+/// run only logs it. `--volatility-months` and `--no-volatility` govern the
+/// map's volatility here too, same as the arc diagram: `ui` takes no separate
+/// hotspots flags.
 fn run_ui(args: &ArcCommand, ui_args: &UiArgs) -> Result<Judgment> {
-    let pages = |switches: AnalysisSwitches| -> Result<(PathBuf, ui::Pages)> {
+    let pages = |switches: AnalysisSwitches| -> Result<(PathBuf, ui::Pages, Vec<PathBuf>)> {
         let analysis = analyze_for_diagram(args, switches, !args.no_volatility)?;
         let workspace_root = analysis
             .workspace_root
@@ -390,16 +419,23 @@ fn run_ui(args: &ArcCommand, ui_args: &UiArgs) -> Result<Judgment> {
                 hotspots: ui::Diagram { svg: hotspots_svg },
                 table,
             },
+            analysis.unparsed,
         ))
     };
     let switches = args.switches();
-    let (workspace_root, initial) = pages(switches)?;
+    let (workspace_root, initial, _unparsed) = pages(switches)?;
     let service = ui::JumpService::new(
         initial,
         switches,
         workspace_root,
         args.theme,
-        Box::new(move |switches| pages(switches).map(|(_, pages)| pages)),
+        Box::new(move |switches| {
+            let (root, pages, unparsed) = pages(switches)?;
+            match unparsed_error(&unparsed, &root) {
+                Some(err) => Err(err),
+                None => Ok(pages),
+            }
+        }),
     );
     ui::serve(
         &service,
@@ -530,7 +566,7 @@ fn run_check(check_args: &CheckArgs, common: &CommonArgs) -> Result<Judgment> {
     #[cfg(not(feature = "hir"))]
     let use_hir = false;
 
-    let (graph, _workspace_root) = build_dependency_graph(
+    let (graph, _workspace_root, _unparsed) = build_dependency_graph(
         &common.manifest_path,
         &feature_config,
         use_hir,
@@ -713,7 +749,7 @@ fn build_dependency_graph(
     use_hir: bool,
     externals: bool,
     transitive_deps: bool,
-) -> Result<(ArcGraph, Option<PathBuf>)> {
+) -> Result<(ArcGraph, Option<PathBuf>, Vec<PathBuf>)> {
     let crates = analyze_workspace(manifest_path, feature_config)?;
     tracing::debug!("phase: workspace analyzed ({} crates)", crates.len());
     let workspace_root = workspace_root_of(&crates);
@@ -792,6 +828,10 @@ fn build_dependency_graph(
         })
         .collect();
     tracing::debug!("phase: all crates analyzed");
+    let unparsed = modules
+        .iter()
+        .flat_map(|tree| tree.unparsed.iter().cloned())
+        .collect();
 
     let graph = ArcGraph::build(
         &crates,
@@ -804,7 +844,7 @@ fn build_dependency_graph(
         graph.node_count(),
         graph.edge_count()
     );
-    Ok((graph, workspace_root))
+    Ok((graph, workspace_root, unparsed))
 }
 
 fn enrich_volatility(layout: &mut LayoutIR, manifest_path: &Path, vol_config: VolatilityConfig) {
@@ -1133,7 +1173,7 @@ mod tests {
     fn build_dependency_graph_returns_the_workspace_root() {
         let manifest =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multi_crate/Cargo.toml");
-        let (_graph, workspace_root) =
+        let (_graph, workspace_root, _unparsed) =
             build_dependency_graph(&manifest, &FeatureConfig::default(), false, false, false)
                 .unwrap();
         assert_eq!(
@@ -1200,6 +1240,54 @@ mod tests {
         assert!(jump_svg.contains("\"jump\""));
     }
 
+    #[test]
+    fn analyze_for_diagram_lists_the_files_that_did_not_parse() {
+        let package = tempfile::tempdir().unwrap();
+        let write = |path: &str, content: &str| {
+            let full = package.path().join(path);
+            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+            std::fs::write(full, content).unwrap();
+        };
+        write(
+            "Cargo.toml",
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        );
+        write("src/lib.rs", "mod broken;\n");
+        write("src/broken.rs", "pub fn half(\n");
+        let manifest = package.path().join("Cargo.toml");
+        let cmd = parse_args(&[
+            "cargo",
+            "arc",
+            "--manifest-path",
+            manifest.to_str().unwrap(),
+        ]);
+
+        let analysis = analyze_for_diagram(&cmd, cmd.switches(), false).unwrap();
+
+        let root = package.path().canonicalize().unwrap();
+        assert_eq!(analysis.unparsed, vec![root.join("src/broken.rs")]);
+        assert_eq!(
+            unparsed_error(&analysis.unparsed, &root)
+                .unwrap()
+                .to_string(),
+            "src/broken.rs does not parse; the diagram stays at the last run"
+        );
+    }
+
+    #[test]
+    fn unparsed_error_is_none_without_files_and_names_each_file() {
+        let root = Path::new("/ws");
+        assert!(unparsed_error(&[], root).is_none());
+        let files = [
+            PathBuf::from("/ws/a/src/x.rs"),
+            PathBuf::from("/elsewhere/y.rs"),
+        ];
+        assert_eq!(
+            unparsed_error(&files, root).unwrap().to_string(),
+            "a/src/x.rs, /elsewhere/y.rs do not parse; the diagram stays at the last run"
+        );
+    }
+
     // ===== register_hotspot_targets =====
 
     /// A hotspot leaf shares its file with the arc module `build_layout`
@@ -1242,7 +1330,7 @@ mod tests {
     fn hotspot_tree_fixture() -> (ArcGraph, PathBuf) {
         let manifest =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multi_crate/Cargo.toml");
-        let (graph, workspace_root) =
+        let (graph, workspace_root, _unparsed) =
             build_dependency_graph(&manifest, &FeatureConfig::default(), false, false, false)
                 .unwrap();
         (graph, workspace_root.unwrap())

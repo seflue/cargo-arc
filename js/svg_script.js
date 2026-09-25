@@ -1,5 +1,5 @@
 // @module SvgScript
-// @deps ArcLogic, StaticData, AppState, Selectors, DomAdapter, LayerManager, TreeLogic, DerivedState, HighlightRenderer, VirtualEdgeLogic, TextMeasure, SidebarLogic, SearchLogic, Jump, JumpIcons, Follow, Theme, SwitchToggles, ViewSnapshot, PageLink, CanvasSize
+// @deps ArcLogic, StaticData, AppState, Selectors, DomAdapter, LayerManager, TreeLogic, DerivedState, HighlightRenderer, VirtualEdgeLogic, TextMeasure, SidebarLogic, SearchLogic, Jump, JumpIcons, Follow, Theme, SwitchToggles, OnSaveToggle, ViewSnapshot, PageLink, CanvasSize
 // @config ROW_HEIGHT, MARGIN, TOOLBAR_HEIGHT, SIDEBAR_SHADOW_PAD
 // svg_script.js - DOM code for interactive SVG
 // ArcLogic is loaded from arc_logic.js before this file
@@ -1650,16 +1650,29 @@ if (typeof document !== 'undefined') {
           switches.click(name);
         });
       }
+      const onSaveButton = DomAdapter.getElementById('on-save-toggle');
+      const onSave = OnSaveToggle.createOnSaveToggle({
+        post: SwitchToggles.postCommand,
+        showState: (on) =>
+          onSaveButton?.setAttribute('aria-pressed', String(on)),
+        showStatus: showJumpStatus,
+        isOn: () => onSaveButton?.getAttribute('aria-pressed') === 'true',
+      });
+      onSaveButton?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        onSave.click();
+      });
       follow = Follow.createFollow({
-        // One stream serves all three: the theme event is the editor's and
-        // goes to the theme control, the follow module takes its events,
-        // the switches take theirs.
+        // One stream serves them all: the theme event is the editor's and
+        // goes to the theme control, the follow module, the switches and
+        // the on-save button take theirs.
         connect: (handler) =>
           Follow.connectEventSource((name, data) => {
             if (name === 'theme') themeControl.handleEditorMode(data);
             else {
               handler(name, data);
               switches.handleEvent(name, data);
+              onSave.handleEvent(name, data);
             }
           }),
         apply: focusNode,

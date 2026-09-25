@@ -47,6 +47,19 @@ While the button is released, the diagram ignores the editor and the selection s
 The editor plugin can release and press the button too; the Neovim plugin does so with `:Arc follow off` and `:Arc follow on`.
 A click in the diagram never scrolls the page.
 
+### Recomputing on save
+
+A page served by `cargo arc ui` carries a **Recompute on save** button in the toolbar, pressed by default.
+While it is pressed, writing a `.rs` file or a `Cargo.toml` under the workspace root makes the service run the analysis again, and the page reloads with its view kept.
+The hotspot map served beside it carries the same button and reloads the same way, keeping its zoom, its selection and the choice between list and bars.
+The editor plugin reports each written file.
+Of the three plugins, only the Neovim plugin does so today.
+The service holds the button's state, so every open page shows the same state, and a restarted service starts pressed again.
+The Neovim plugin sets it with `:Arc on-save off` and `:Arc on-save on`, and `:Arc recompute` runs the analysis once regardless of the button.
+
+When a file the analysis reads does not parse, the page keeps the diagram it shows and the toolbar names the file, for example `src/cli.rs does not parse; the diagram stays at the last run`.
+The next write that parses brings the page up to date.
+
 ### The sidebar for a node
 
 The sidebar is divided into two sections.

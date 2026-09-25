@@ -254,9 +254,14 @@ T['service'][':Arc open, stop and restart drive the service'] = function()
 end
 
 T['service'][':Arc completes its subcommands and refuses others'] = function()
-  eq(child.fn.getcompletion('Arc ', 'cmdline'), { 'open', 'restart', 'stop', 'follow', 'externals', 'tests' })
-  eq(child.fn.getcompletion('Arc re', 'cmdline'), { 'restart' })
+  eq(
+    child.fn.getcompletion('Arc ', 'cmdline'),
+    { 'open', 'restart', 'stop', 'recompute', 'follow', 'externals', 'tests', 'on-save' }
+  )
+  eq(child.fn.getcompletion('Arc re', 'cmdline'), { 'restart', 'recompute' })
   eq(child.fn.getcompletion('Arc follow ', 'cmdline'), { 'on', 'off' })
+  eq(child.fn.getcompletion('Arc on-save ', 'cmdline'), { 'on', 'off' })
+  eq(child.fn.getcompletion('Arc recompute ', 'cmdline'), {})
   eq(child.fn.getcompletion('Arc externals ', 'cmdline'), { 'on', 'off' })
   eq(child.fn.getcompletion('Arc tests o', 'cmdline'), { 'on', 'off' })
   child.cmd('Arc bogus')
@@ -361,6 +366,30 @@ T['arc focus'][':Arc externals and tests write the switch lines'] = function()
   local last = notified[#notified]
   eq(last.level, child.lua_get('vim.log.levels.ERROR'))
   eq(last.message:find('maybe', 1, true) ~= nil, true)
+end
+
+T['arc focus']['writing a file buffer writes its absolute path as saved'] = function()
+  open_and_wait()
+  local path = numbered_file(3)
+  child.cmd('edit ' .. path)
+  child.cmd('write')
+  local lines = stdin_lines(_G.stdin_log, 2)
+  eq(lines[#lines], 'arc saved ' .. path)
+end
+
+T['arc focus'][':Arc on-save and recompute write their lines'] = function()
+  open_and_wait()
+  child.cmd('Arc on-save off')
+  eq(stdin_lines(_G.stdin_log, 1)[1], 'arc on-save off')
+  child.cmd('Arc recompute')
+  eq(stdin_lines(_G.stdin_log, 2)[2], 'arc recompute')
+end
+
+T['arc focus'][':Arc recompute without a service reports it'] = function()
+  child.cmd('Arc recompute')
+  local notified = child.lua_get('_G.notified')
+  eq(#notified, 1)
+  eq(notified[1].level, child.lua_get('vim.log.levels.INFO'))
 end
 
 T['service']['the first report sets the state without a notice, a change is reported'] = function()
