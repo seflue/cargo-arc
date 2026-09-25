@@ -515,6 +515,7 @@ describe("the SVG's size around a wrapped toolbar (svg_script.js's init)", () =>
 function loadArcVisibilityPage({
   sessionStorageView,
   arcInitialClasses = ['hidden-by-filter'],
+  nodeFilterHiddenIds = [],
 }) {
   const dom = createMockDomAdapter();
 
@@ -563,6 +564,8 @@ function loadArcVisibilityPage({
     rect.setAttribute('width', String(node.width));
     rect.setAttribute('height', String(node.height));
     rect.addEventListener = () => {};
+    if (nodeFilterHiddenIds.includes(id))
+      rect.classList.add('hidden-by-filter');
     dom._registerElement(`node-${id}`, rect);
   }
 
@@ -697,6 +700,23 @@ describe('arc visibility across a relayout (applyRestoredView)', () => {
       arcInitialClasses: ['collapsed'],
     });
 
+    expect(arcEl.classList.contains('collapsed')).toBe(false);
+    expect(hitareaEl.classList.contains('collapsed')).toBe(false);
+  });
+
+  // ca-0451 review: an endpoint hidden by a node filter must not also mark
+  // its arc `collapsed` — the ticket's decision gives the two hiding
+  // reasons one class each, and `collapsed` is reserved for a collapsed
+  // endpoint.
+  test('an arc hidden only by a node filter does not get the collapsed class', () => {
+    const { arcEl, hitareaEl } = loadArcVisibilityPage({
+      sessionStorageView: restoredView,
+      arcInitialClasses: ['hidden-by-filter'],
+      nodeFilterHiddenIds: ['a'],
+    });
+
+    expect(arcEl.classList.contains('hidden-by-filter')).toBe(true);
+    expect(hitareaEl.classList.contains('hidden-by-filter')).toBe(true);
     expect(arcEl.classList.contains('collapsed')).toBe(false);
     expect(hitareaEl.classList.contains('collapsed')).toBe(false);
   });

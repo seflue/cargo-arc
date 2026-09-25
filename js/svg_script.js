@@ -724,6 +724,10 @@ if (typeof document !== 'undefined') {
           toId,
           fromHidden: !visibleNodes.has(fromId),
           toHidden: !visibleNodes.has(toId),
+          // Collapse alone, ignoring any filter — which hiding reason the
+          // `collapsed` class may report (see updateOriginalEdges).
+          fromCollapsed: getVisibleAncestor(fromId) !== fromId,
+          toCollapsed: getVisibleAncestor(toId) !== toId,
           sourceLocations: StaticData.getArcUsages(arcId),
           direction: DerivedState._determineDirection(fromId, toId, parentMap),
         });
@@ -757,7 +761,16 @@ if (typeof document !== 'undefined') {
     // Hide original elements when from/to hidden, update visible arc paths
     function updateOriginalEdges(edgeData, currentPositions, maxRight) {
       edgeData.forEach((edge) => {
-        const { hitarea, arcId, fromId, toId, fromHidden, toHidden } = edge;
+        const {
+          hitarea,
+          arcId,
+          fromId,
+          toId,
+          fromHidden,
+          toHidden,
+          fromCollapsed,
+          toCollapsed,
+        } = edge;
 
         if (window.DEBUG_ARCS) {
           console.log(
@@ -768,19 +781,27 @@ if (typeof document !== 'undefined') {
         if (fromHidden || toHidden) {
           // Hide original elements (hitarea may be null for expand-level hidden arcs).
           // The collapsed class mirrors the inline display so a Rust-baked or
-          // previously-set class never outlives the state it was set for.
+          // previously-set class never outlives the state it was set for —
+          // but only when an endpoint is actually collapsed: an arc hidden
+          // solely by a node filter keeps just the hidden-by-filter class
+          // that filter toggling already set on it.
+          const collapsed = fromCollapsed || toCollapsed;
+          const setCollapsedClass = (el) => {
+            if (collapsed) el.classList.add(C.collapsed);
+            else el.classList.remove(C.collapsed);
+          };
           if (hitarea) {
             hitarea.style.display = 'none';
-            hitarea.classList.add(C.collapsed);
+            setCollapsedClass(hitarea);
           }
           const visibleArc = DomAdapter.getVisibleArc(arcId);
           if (visibleArc) {
             visibleArc.style.display = 'none';
-            visibleArc.classList.add(C.collapsed);
+            setCollapsedClass(visibleArc);
           }
           DomAdapter.getArrows(`${fromId}-${toId}`).forEach((arr) => {
             arr.style.display = 'none';
-            arr.classList.add(C.collapsed);
+            setCollapsedClass(arr);
           });
         } else {
           // Update visible arc paths using computed positions (no DOM read)
