@@ -8,6 +8,7 @@ Object.assign(globalThis.STATIC_DATA.classes, {
   module: 'module',
   searchMatch: 'search-match',
   searchMatchParent: 'search-match-parent',
+  searchContext: 'search-context',
   label: 'label',
   toolbarScopeActive: 'scope-active',
   depArc: 'dep-arc',
@@ -551,7 +552,11 @@ describe('SearchLogic', () => {
       DomAdapter.getLabelGroup = origGetLabelGroup;
     });
 
-    test('arc connected to matched node gets search-match', () => {
+    // This inverts the old spreading rule on purpose: a name match no
+    // longer lights up the arcs touching it. Only an arc whose own symbols
+    // match gets the highlight (see the "symbol match adds search-match"
+    // test above).
+    test('arc connected only through a matched node name gets no search-match', () => {
       const origGetAllNodeIds = StaticData.getAllNodeIds;
       const origGetNode = StaticData.getNode;
       const origGetAllArcIds = StaticData.getAllArcIds;
@@ -561,6 +566,7 @@ describe('SearchLogic', () => {
       const origGetVisibleArc = DomAdapter.getVisibleArc;
       const origGetVisibleArrows = DomAdapter.getVisibleArrows;
       const origGetLabelGroup = DomAdapter.getLabelGroup;
+      const origQuerySelectorAll = DomAdapter.querySelectorAll;
 
       StaticData.getAllNodeIds = () => ['n1', 'n2'];
       StaticData.getNode = (id) =>
@@ -603,11 +609,13 @@ describe('SearchLogic', () => {
       DomAdapter.getVisibleArc = (id) => (id === 'arc-1' ? arcEl : null);
       DomAdapter.getVisibleArrows = () => [];
       DomAdapter.getLabelGroup = () => null;
+      DomAdapter.querySelectorAll = () => [];
 
-      // Search by node name — arc endpoint matches
+      // Search by node name only — "HashMap" is not the query, so arc-1's
+      // own symbols do not match. Its endpoint n1 matches by name.
       SearchLogic.executeSearch('my-crate', 'all');
 
-      expect(arcClasses.has('search-match')).toBe(true);
+      expect(arcClasses.has('search-match')).toBe(false);
 
       StaticData.getAllNodeIds = origGetAllNodeIds;
       StaticData.getNode = origGetNode;
@@ -618,6 +626,298 @@ describe('SearchLogic', () => {
       DomAdapter.getVisibleArc = origGetVisibleArc;
       DomAdapter.getVisibleArrows = origGetVisibleArrows;
       DomAdapter.getLabelGroup = origGetLabelGroup;
+      DomAdapter.querySelectorAll = origQuerySelectorAll;
+    });
+
+    // A symbol-matched arc's own endpoints are context, not matches.
+    // They must stay undimmed (search-context) but never get search-match
+    // and must not be counted.
+    test('endpoint of a symbol-matched arc gets search-context, not search-match', () => {
+      const origGetAllNodeIds = StaticData.getAllNodeIds;
+      const origGetNode = StaticData.getNode;
+      const origGetAllArcIds = StaticData.getAllArcIds;
+      const origGetArc = StaticData.getArc;
+      const origGetSvgRoot = DomAdapter.getSvgRoot;
+      const origDomGetNode = DomAdapter.getNode;
+      const origGetVisibleArc = DomAdapter.getVisibleArc;
+      const origGetVisibleArrows = DomAdapter.getVisibleArrows;
+      const origGetLabelGroup = DomAdapter.getLabelGroup;
+      const origQuerySelectorAll = DomAdapter.querySelectorAll;
+
+      StaticData.getAllNodeIds = () => ['n1', 'n2'];
+      StaticData.getNode = (id) =>
+        ({
+          n1: { name: 'alpha', type: 'crate', parent: null },
+          n2: { name: 'beta', type: 'crate', parent: null },
+        })[id];
+      StaticData.getAllArcIds = () => ['arc-1'];
+      StaticData.getArc = (id) =>
+        id === 'arc-1'
+          ? { from: 'n1', to: 'n2', usages: [{ symbol: 'HashMap' }] }
+          : null;
+
+      const nodeClasses = { n1: new Set(), n2: new Set() };
+      const makeNode = (id) => ({
+        classList: {
+          add: (c) => nodeClasses[id].add(c),
+          remove: (c) => nodeClasses[id].delete(c),
+          toggle: (c, force) => {
+            if (force) nodeClasses[id].add(c);
+            else nodeClasses[id].delete(c);
+          },
+          contains: (c) => nodeClasses[id].has(c),
+        },
+        nextElementSibling: null,
+      });
+
+      DomAdapter.getSvgRoot = () => ({
+        classList: { add: () => {}, remove: () => {}, toggle: () => {} },
+      });
+      DomAdapter.getNode = (id) =>
+        ['n1', 'n2'].includes(id) ? makeNode(id) : null;
+      DomAdapter.getVisibleArc = () => null;
+      DomAdapter.getVisibleArrows = () => [];
+      DomAdapter.getLabelGroup = () => null;
+      DomAdapter.querySelectorAll = () => [];
+
+      const result = SearchLogic.executeSearch('hashmap', 'all');
+
+      expect(nodeClasses.n1.has('search-context')).toBe(true);
+      expect(nodeClasses.n1.has('search-match')).toBe(false);
+      expect(nodeClasses.n2.has('search-context')).toBe(true);
+      expect(nodeClasses.n2.has('search-match')).toBe(false);
+      // Context endpoints are not counted: only the edge counts.
+      expect(result).toBe(1);
+
+      StaticData.getAllNodeIds = origGetAllNodeIds;
+      StaticData.getNode = origGetNode;
+      StaticData.getAllArcIds = origGetAllArcIds;
+      StaticData.getArc = origGetArc;
+      DomAdapter.getSvgRoot = origGetSvgRoot;
+      DomAdapter.getNode = origDomGetNode;
+      DomAdapter.getVisibleArc = origGetVisibleArc;
+      DomAdapter.getVisibleArrows = origGetVisibleArrows;
+      DomAdapter.getLabelGroup = origGetLabelGroup;
+      DomAdapter.querySelectorAll = origQuerySelectorAll;
+    });
+
+    // An endpoint that is also a real name match keeps its match
+    // style; symbol matching never downgrades an existing match to context.
+    test('a name-matched node that is also an arc endpoint keeps search-match', () => {
+      const origGetAllNodeIds = StaticData.getAllNodeIds;
+      const origGetNode = StaticData.getNode;
+      const origGetAllArcIds = StaticData.getAllArcIds;
+      const origGetArc = StaticData.getArc;
+      const origGetSvgRoot = DomAdapter.getSvgRoot;
+      const origDomGetNode = DomAdapter.getNode;
+      const origGetVisibleArc = DomAdapter.getVisibleArc;
+      const origGetVisibleArrows = DomAdapter.getVisibleArrows;
+      const origGetLabelGroup = DomAdapter.getLabelGroup;
+      const origQuerySelectorAll = DomAdapter.querySelectorAll;
+
+      StaticData.getAllNodeIds = () => ['n1', 'n2'];
+      StaticData.getNode = (id) =>
+        ({
+          n1: { name: 'hashmap-utils', type: 'crate', parent: null },
+          n2: { name: 'other', type: 'crate', parent: null },
+        })[id];
+      StaticData.getAllArcIds = () => ['arc-1'];
+      StaticData.getArc = (id) =>
+        id === 'arc-1'
+          ? { from: 'n1', to: 'n2', usages: [{ symbol: 'HashMap' }] }
+          : null;
+
+      const nodeClasses = { n1: new Set(), n2: new Set() };
+      const makeNode = (id) => ({
+        classList: {
+          add: (c) => nodeClasses[id].add(c),
+          remove: (c) => nodeClasses[id].delete(c),
+          toggle: (c, force) => {
+            if (force) nodeClasses[id].add(c);
+            else nodeClasses[id].delete(c);
+          },
+          contains: (c) => nodeClasses[id].has(c),
+        },
+        nextElementSibling: null,
+      });
+
+      DomAdapter.getSvgRoot = () => ({
+        classList: { add: () => {}, remove: () => {}, toggle: () => {} },
+      });
+      DomAdapter.getNode = (id) =>
+        ['n1', 'n2'].includes(id) ? makeNode(id) : null;
+      DomAdapter.getVisibleArc = () => null;
+      DomAdapter.getVisibleArrows = () => [];
+      DomAdapter.getLabelGroup = () => null;
+      DomAdapter.querySelectorAll = () => [];
+
+      // "hashmap" matches n1's own name AND arc-1's symbol.
+      SearchLogic.executeSearch('hashmap', 'all');
+
+      expect(nodeClasses.n1.has('search-match')).toBe(true);
+      expect(nodeClasses.n1.has('search-context')).toBe(false);
+
+      StaticData.getAllNodeIds = origGetAllNodeIds;
+      StaticData.getNode = origGetNode;
+      StaticData.getAllArcIds = origGetAllArcIds;
+      StaticData.getArc = origGetArc;
+      DomAdapter.getSvgRoot = origGetSvgRoot;
+      DomAdapter.getNode = origDomGetNode;
+      DomAdapter.getVisibleArc = origGetVisibleArc;
+      DomAdapter.getVisibleArrows = origGetVisibleArrows;
+      DomAdapter.getLabelGroup = origGetLabelGroup;
+      DomAdapter.querySelectorAll = origQuerySelectorAll;
+    });
+
+    // The result count is split by kind, using the project's
+    // vocabulary for node kinds and edges (docs/GLOSSARY.md).
+    test('result count splits by kind: modules and edges', () => {
+      const origGetAllNodeIds = StaticData.getAllNodeIds;
+      const origGetNode = StaticData.getNode;
+      const origGetAllArcIds = StaticData.getAllArcIds;
+      const origGetArc = StaticData.getArc;
+      const origGetSvgRoot = DomAdapter.getSvgRoot;
+      const origDomGetNode = DomAdapter.getNode;
+      const origGetVisibleArc = DomAdapter.getVisibleArc;
+      const origGetVisibleArrows = DomAdapter.getVisibleArrows;
+      const origGetLabelGroup = DomAdapter.getLabelGroup;
+      const origQuerySelectorAll = DomAdapter.querySelectorAll;
+      const origGetElementById = DomAdapter.getElementById;
+
+      StaticData.getAllNodeIds = () => ['n1', 'n2', 'n3'];
+      StaticData.getNode = (id) =>
+        ({
+          n1: { name: 'hir-lower', type: 'module', parent: null },
+          n2: { name: 'other', type: 'crate', parent: null },
+          n3: { name: 'checker-mod', type: 'module', parent: null },
+        })[id];
+      StaticData.getAllArcIds = () => ['arc-1'];
+      StaticData.getArc = (id) =>
+        id === 'arc-1'
+          ? { from: 'n2', to: 'n3', usages: [{ symbol: 'HirId' }] }
+          : null;
+
+      const inertNode = () => ({
+        classList: { add: () => {}, remove: () => {}, toggle: () => {} },
+        nextElementSibling: null,
+      });
+
+      DomAdapter.getSvgRoot = () => ({
+        classList: { add: () => {}, remove: () => {}, toggle: () => {} },
+      });
+      DomAdapter.getNode = (id) =>
+        ['n1', 'n2', 'n3'].includes(id) ? inertNode() : null;
+      DomAdapter.getVisibleArc = () => null;
+      DomAdapter.getVisibleArrows = () => [];
+      DomAdapter.getLabelGroup = () => null;
+      DomAdapter.querySelectorAll = () => [];
+
+      let countText = null;
+      DomAdapter.getElementById = (id) =>
+        id === 'search-result-count'
+          ? {
+              set textContent(v) {
+                countText = v;
+              },
+              get textContent() {
+                return countText;
+              },
+            }
+          : null;
+
+      // "hir" matches n1's name directly, and arc-1's own symbol (HirId);
+      // n3 is only an arc endpoint, so it stays a context node, not a match.
+      SearchLogic.executeSearch('hir', 'all');
+
+      expect(countText).toBe('1 module, 1 edge');
+
+      StaticData.getAllNodeIds = origGetAllNodeIds;
+      StaticData.getNode = origGetNode;
+      StaticData.getAllArcIds = origGetAllArcIds;
+      StaticData.getArc = origGetArc;
+      DomAdapter.getSvgRoot = origGetSvgRoot;
+      DomAdapter.getNode = origDomGetNode;
+      DomAdapter.getVisibleArc = origGetVisibleArc;
+      DomAdapter.getVisibleArrows = origGetVisibleArrows;
+      DomAdapter.getLabelGroup = origGetLabelGroup;
+      DomAdapter.querySelectorAll = origQuerySelectorAll;
+      DomAdapter.getElementById = origGetElementById;
+    });
+
+    // A symbol-matched arc whose endpoint sits inside a collapsed
+    // module has no visible real arc element (display:none). The visible
+    // stand-in is the virtual arc aggregating it, keyed by the visible
+    // ancestors' ids; that element must get search-match too.
+    test('symbol match on an arc inside a collapsed module marks the visible virtual arc', () => {
+      const origGetAllNodeIds = StaticData.getAllNodeIds;
+      const origGetNode = StaticData.getNode;
+      const origGetAllArcIds = StaticData.getAllArcIds;
+      const origGetArc = StaticData.getArc;
+      const origGetSvgRoot = DomAdapter.getSvgRoot;
+      const origDomGetNode = DomAdapter.getNode;
+      const origGetVisibleArc = DomAdapter.getVisibleArc;
+      const origGetVisibleArrows = DomAdapter.getVisibleArrows;
+      const origGetLabelGroup = DomAdapter.getLabelGroup;
+      const origQuerySelectorAll = DomAdapter.querySelectorAll;
+      const origIsCollapsed = AppState.isCollapsed;
+
+      // mod-a is inside collapsed crate-x; n2 is a top-level, visible crate.
+      StaticData.getAllNodeIds = () => ['crate-x', 'mod-a', 'n2'];
+      StaticData.getNode = (id) =>
+        ({
+          'crate-x': { name: 'crate-x', type: 'crate', parent: null },
+          'mod-a': { name: 'mod-a', type: 'module', parent: 'crate-x' },
+          n2: { name: 'other', type: 'crate', parent: null },
+        })[id];
+      StaticData.getAllArcIds = () => ['arc-1'];
+      StaticData.getArc = (id) =>
+        id === 'arc-1'
+          ? { from: 'mod-a', to: 'n2', usages: [{ symbol: 'HashMap' }] }
+          : null;
+
+      AppState.isCollapsed = (_appState, nodeId) => nodeId === 'crate-x';
+
+      DomAdapter.getSvgRoot = () => ({
+        classList: { add: () => {}, remove: () => {}, toggle: () => {} },
+      });
+      DomAdapter.getNode = () => null;
+      // The real arc is hidden behind the collapse: no visible element.
+      DomAdapter.getVisibleArc = () => null;
+      DomAdapter.getVisibleArrows = () => [];
+      DomAdapter.getLabelGroup = () => null;
+
+      const virtualArcEl = {
+        classList: {
+          added: new Set(),
+          add(c) {
+            this.added.add(c);
+          },
+          remove(c) {
+            this.added.delete(c);
+          },
+        },
+      };
+      DomAdapter.querySelectorAll = (selector) =>
+        selector.includes('virtual-arc') &&
+        selector.includes('data-arc-id="crate-x-n2"')
+          ? [virtualArcEl]
+          : [];
+
+      SearchLogic.executeSearch('hashmap', 'all');
+
+      expect(virtualArcEl.classList.added.has('search-match')).toBe(true);
+
+      StaticData.getAllNodeIds = origGetAllNodeIds;
+      StaticData.getNode = origGetNode;
+      StaticData.getAllArcIds = origGetAllArcIds;
+      StaticData.getArc = origGetArc;
+      DomAdapter.getSvgRoot = origGetSvgRoot;
+      DomAdapter.getNode = origDomGetNode;
+      DomAdapter.getVisibleArc = origGetVisibleArc;
+      DomAdapter.getVisibleArrows = origGetVisibleArrows;
+      DomAdapter.getLabelGroup = origGetLabelGroup;
+      DomAdapter.querySelectorAll = origQuerySelectorAll;
+      AppState.isCollapsed = origIsCollapsed;
     });
 
     test('arc between non-matching nodes has no search-match', () => {

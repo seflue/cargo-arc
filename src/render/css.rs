@@ -661,13 +661,15 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
             &[("opacity", "0.6"), ("cursor", "progress")],
         ),
         // CSS-only search dimming via search-active on SVG root
-        // Rects: dim all except search matches, toolbar buttons, and arc-count backgrounds
+        // Rects: dim all except search matches, context endpoints, toolbar
+        // buttons, and arc-count backgrounds
         CssRule::new(
             &format!(
-                "svg.{} rect:not(.{}):not(.{}):not(.{}):not(.{})",
+                "svg.{} rect:not(.{}):not(.{}):not(.{}):not(.{}):not(.{})",
                 c.search.search_active,
                 c.search.search_match,
                 c.search.search_match_parent,
+                c.search.search_context,
                 c.toolbar.btn,
                 c.labels.arc_count_bg
             ),
@@ -2633,6 +2635,21 @@ mod tests {
         assert!(
             css.contains(&line_rule),
             "CSS should contain svg.search-active line dimming rule"
+        );
+
+        // Rect dimming rule also exempts context endpoints: visible,
+        // but styled as neither a match nor a collapsed-parent match.
+        let sc = CSS.search.search_context;
+        let context_exclusion = format!(":not(.{sc})");
+        let rect_rule_start = css
+            .find(&format!("svg.{sa} rect:not(.{sm})"))
+            .expect("rect dimming rule should exist");
+        let rect_rule_end = css[rect_rule_start..]
+            .find('{')
+            .map_or(css.len(), |i| rect_rule_start + i);
+        assert!(
+            css[rect_rule_start..rect_rule_end].contains(&context_exclusion),
+            "rect dimming rule should exclude search-context"
         );
     }
 

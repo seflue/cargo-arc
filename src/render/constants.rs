@@ -250,6 +250,7 @@ pub(super) struct SearchClasses {
     pub search_active: &'static str,
     pub search_match: &'static str,
     pub search_match_parent: &'static str,
+    pub search_context: &'static str,
 }
 
 #[allow(dead_code)]
@@ -498,6 +499,7 @@ pub(super) static CSS: CssClassNames = CssClassNames {
         search_active: "search-active",
         search_match: "search-match",
         search_match_parent: "search-match-parent",
+        search_context: "search-context",
     },
     hotspots: HotspotClasses {
         circle: "hotspot-circle",

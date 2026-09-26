@@ -11,6 +11,7 @@ const SearchLogic = {
     matchedNodeIds: new Set(),
     matchParentIds: new Set(),
     matchedArcIds: new Set(),
+    contextNodeIds: new Set(),
     /** @type {number | null} */
     debounceTimer: null,
   },
@@ -94,7 +95,10 @@ const SearchLogic = {
       }
     }
 
+    // An arc matches by its own symbols only; a name match on a
+    // node no longer spreads to the arcs touching it.
     const matchedArcs = new Set();
+    const contextNodeIds = new Set();
 
     if (scope === 'all' || scope === 'symbol') {
       for (const arcId of StaticData.getAllArcIds()) {
@@ -102,9 +106,9 @@ const SearchLogic = {
         if (!arc || !arc.usages) continue;
         for (const group of arc.usages) {
           if (group.symbol?.toLowerCase().includes(q)) {
-            matchedNodes.add(arc.from);
-            matchedNodes.add(arc.to);
             matchedArcs.add(arcId);
+            contextNodeIds.add(arc.from);
+            contextNodeIds.add(arc.to);
             break;
           }
         }
@@ -124,29 +128,24 @@ const SearchLogic = {
       }
     }
 
-    // Undim arcs connected to matched nodes
-    const allVisibleMatches = new Set([...directMatches, ...parentMatches]);
-    for (const arcId of StaticData.getAllArcIds()) {
-      if (matchedArcs.has(arcId)) continue;
-      const arc = StaticData.getArc(arcId);
-      if (!arc) continue;
-      const fromVisible = this._resolveVisibleAncestor(arc.from);
-      const toVisible = this._resolveVisibleAncestor(arc.to);
-      if (
-        allVisibleMatches.has(fromVisible) ||
-        allVisibleMatches.has(toVisible)
-      ) {
-        matchedArcs.add(arcId);
-      }
+    // A matched arc's endpoints are context, not matches: visible,
+    // no match style, not counted. A node that is already a real match
+    // keeps that match instead.
+    const contextMatches = new Set();
+    for (const nodeId of contextNodeIds) {
+      const visible = this._resolveVisibleAncestor(nodeId);
+      if (directMatches.has(visible) || parentMatches.has(visible)) continue;
+      contextMatches.add(visible);
     }
 
-    // Diff-based DOM updates for match/parent highlight classes
+    // Diff-based DOM updates for match/parent/context highlight classes
     this._applySearchDiff(
       this._state.matchedNodeIds,
       this._state.matchParentIds,
       directMatches,
       parentMatches,
     );
+    this._applyContextDiff(this._state.contextNodeIds, contextMatches);
 
     // Clear previous arc matches, then mark new matched arc elements
     this._clearArcMatches();
@@ -155,19 +154,64 @@ const SearchLogic = {
     this._state.matchedNodeIds = directMatches;
     this._state.matchParentIds = parentMatches;
     this._state.matchedArcIds = matchedArcs;
+    this._state.contextNodeIds = contextMatches;
     this._state.active = true;
     const svg = DomAdapter.getSvgRoot();
     if (svg) svg.classList.add(STATIC_DATA.classes.searchActive);
 
-    const total = directMatches.size + parentMatches.size;
+    const nodeMatchCount = directMatches.size + parentMatches.size;
+    const total = nodeMatchCount + matchedArcs.size;
     const countEl = DomAdapter.getElementById('search-result-count');
-    if (countEl)
-      countEl.textContent = `${total} match${total !== 1 ? 'es' : ''}`;
+    if (countEl) {
+      countEl.textContent = this._formatResultCount(
+        directMatches,
+        parentMatches,
+        matchedArcs.size,
+      );
+    }
 
     // Update scope button active state
     this._updateScopeButtons(scope);
 
     return total;
+  },
+
+  /**
+   * Format the result count split by kind, e.g. "1 module, 2 edges".
+   * Kinds with zero matches are omitted; an all-zero result reads "0 matches".
+   * @param {Set<string>} directMatches
+   * @param {Set<string>} parentMatches
+   * @param {number} edgeCount
+   * @returns {string}
+   */
+  _formatResultCount(directMatches, parentMatches, edgeCount) {
+    const nodeKindCounts = new Map();
+    for (const nodeId of [...directMatches, ...parentMatches]) {
+      const kind = this._nodeKind(nodeId);
+      nodeKindCounts.set(kind, (nodeKindCounts.get(kind) ?? 0) + 1);
+    }
+
+    const parts = [];
+    for (const kind of ['crate', 'module']) {
+      const n = nodeKindCounts.get(kind) ?? 0;
+      if (n > 0) parts.push(`${n} ${kind}${n !== 1 ? 's' : ''}`);
+    }
+    if (edgeCount > 0) {
+      parts.push(`${edgeCount} edge${edgeCount !== 1 ? 's' : ''}`);
+    }
+
+    return parts.length > 0 ? parts.join(', ') : '0 matches';
+  },
+
+  /**
+   * A node's kind for the result count: 'module', or 'crate' for anything
+   * else (including external and transitive-external nodes).
+   * @param {string} nodeId
+   * @returns {'crate' | 'module'}
+   */
+  _nodeKind(nodeId) {
+    const node = StaticData.getNode(nodeId);
+    return node?.type === 'module' ? 'module' : 'crate';
   },
 
   /**
@@ -182,6 +226,7 @@ const SearchLogic = {
     this._state.matchedNodeIds = new Set();
     this._state.matchParentIds = new Set();
     this._state.matchedArcIds = new Set();
+    this._state.contextNodeIds = new Set();
 
     const countEl = DomAdapter.getElementById('search-result-count');
     if (countEl) countEl.textContent = '';
@@ -224,6 +269,9 @@ const SearchLogic = {
     for (const nodeId of this._state.matchParentIds) {
       this._setNodeClass(nodeId, C.searchMatchParent, false);
     }
+    for (const nodeId of this._state.contextNodeIds) {
+      this._setNodeClass(nodeId, C.searchContext, false);
+    }
 
     this._clearArcMatches();
   },
@@ -244,7 +292,37 @@ const SearchLogic = {
           child.classList.remove(C.searchMatch);
         }
       }
+      this._setVirtualArcMatch(arcId, false);
     }
+  },
+
+  /**
+   * Toggle search-match on the virtual arc standing in for a real arc whose
+   * endpoint sits behind a collapsed ancestor: the real arc has no
+   * visible element then, only the virtual one aggregating it does.
+   * No-op when both endpoints are visible, since no virtual arc exists.
+   */
+  _setVirtualArcMatch(arcId, add) {
+    const arc = StaticData.getArc(arcId);
+    if (!arc) return;
+    const visibleFrom = this._resolveVisibleAncestor(arc.from);
+    const visibleTo = this._resolveVisibleAncestor(arc.to);
+    if (visibleFrom === arc.from && visibleTo === arc.to) return;
+    if (visibleFrom === visibleTo) return;
+
+    const C = STATIC_DATA.classes;
+    const virtualArcId = `${visibleFrom}-${visibleTo}`;
+    const toggle = (el) => el.classList[add ? 'add' : 'remove'](C.searchMatch);
+
+    DomAdapter.querySelectorAll(
+      `.${C.virtualArc}[data-arc-id="${virtualArcId}"]`,
+    ).forEach(toggle);
+    DomAdapter.querySelectorAll(
+      `.${C.virtualArrow}[data-vedge="${virtualArcId}"]`,
+    ).forEach(toggle);
+    DomAdapter.querySelectorAll(
+      `.${C.arcCount}[data-vedge="${virtualArcId}"]`,
+    ).forEach(toggle);
   },
 
   /**
@@ -280,6 +358,25 @@ const SearchLogic = {
     }
   },
 
+  /**
+   * Diff old vs new context-node sets, same delta-only approach as
+   * _applySearchDiff.
+   */
+  _applyContextDiff(oldContext, newContext) {
+    const C = STATIC_DATA.classes;
+
+    for (const nodeId of oldContext) {
+      if (!newContext.has(nodeId)) {
+        this._setNodeClass(nodeId, C.searchContext, false);
+      }
+    }
+    for (const nodeId of newContext) {
+      if (!oldContext.has(nodeId)) {
+        this._setNodeClass(nodeId, C.searchContext, true);
+      }
+    }
+  },
+
   _setNodeClass(nodeId, className, add) {
     const rect = DomAdapter.getNode(nodeId);
     if (!rect) return;
@@ -307,6 +404,7 @@ const SearchLogic = {
           child.classList.add(C.searchMatch);
         }
       }
+      this._setVirtualArcMatch(arcId, true);
     }
   },
 

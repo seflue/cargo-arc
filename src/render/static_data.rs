@@ -525,6 +525,7 @@ fn generate_static_data(
         ("searchActive", CSS.search.search_active),
         ("searchMatch", CSS.search.search_match),
         ("searchMatchParent", CSS.search.search_match_parent),
+        ("searchContext", CSS.search.search_context),
         ("arcCount", CSS.labels.arc_count),
         ("arcCountBg", CSS.labels.arc_count_bg),
         ("arcCountGroup", CSS.labels.arc_count_group),
@@ -1867,6 +1868,7 @@ mod tests {
             data["classes"]["externalTransitive"],
             CSS.nodes.external_transitive
         );
+        assert_eq!(data["classes"]["searchContext"], CSS.search.search_context);
     }
 
     // === Struct / Helper Tests ===
