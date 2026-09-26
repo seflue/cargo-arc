@@ -173,6 +173,8 @@ Inventing a layer for `xtask` does not work.
 It puts the crate in the order, and every dependency between it and a node in another position is then judged against that order.
 The names here are patterns like any other, so an excepted node takes the modules below it with it.
 
+An entry that matches no node — a typo, or a node since renamed or removed — is reported too, under `unlayered-node` at its level.
+
 ### Introducing a rule the workspace already breaks
 
 `severity = "warn"` looks like the way to introduce a rule gently, and it is the wrong tool.
@@ -559,14 +561,14 @@ contradictory-allow = "deny"
 
 | Diagnostic | Default | Raised when |
 |------------|---------|-------------|
-| `unlayered-node` | `deny` | a node an `exhaustive` `layers` rule leaves in no position |
+| `unlayered-node` | `deny` | a node an `exhaustive` `layers` rule leaves in no position, or an `except` entry that matches no node |
 | `unmatched-baseline-entry` | `warn` | a frozen violation the run no longer produces, or one that froze more symbols than the edge still carries |
 | `unmatched-allow` | `warn` | an `allow` pattern matching no module |
 | `unmatched-pattern` | `deny` | a rule pattern matching no module, or a catch-all layer whose rest is empty |
 | `contradictory-allow` | `deny` | the `allow` entries of a rule put nodes above each other in a circle |
 
 `unlayered-node` and `unmatched-pattern` deny where the others warn because both failures leave the run green: a rule whose pattern misses checks nothing, and an unsorted node is never asked where it belongs.
-`unlayered-node` also fires only for a rule that carries `exhaustive = true`.
+Leaving a node unsorted fires only for a rule that carries `exhaustive = true`; a dead `except` entry fires on its own, whether or not any rule is exhaustive.
 A dead `allow` entry only allows too much, and the violation it should have allowed shows up on its own.
 `contradictory-allow` denies because entries that rank a pair both ways say nothing about it, and the rule would tolerate the cycle between the two in silence.
 

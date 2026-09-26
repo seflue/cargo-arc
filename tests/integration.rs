@@ -1984,6 +1984,23 @@ fn test_check_stays_quiet_about_a_crate_on_the_except_list() {
 }
 
 #[test]
+fn test_check_names_a_dead_except_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let rules_path = layers_without_domain(
+        &dir,
+        true,
+        "\n[diagnostics]\nunlayered-node = { except = [\"no-such-crate\"] }\n",
+    );
+    let rules_arg = format!("--rules={}", rules_path.display());
+
+    let (_code, stderr) = cargo_arc_check("arch_violation_workspace", &[&rules_arg]);
+    assert!(
+        stderr.contains("no-such-crate"),
+        "a dead except entry must be named, stderr: {stderr}"
+    );
+}
+
+#[test]
 fn test_check_fails_on_a_denied_diagnostic() {
     let dir = tempfile::tempdir().unwrap();
     let rules_path =

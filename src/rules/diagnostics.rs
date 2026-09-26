@@ -44,6 +44,9 @@ pub enum DiagnosticKind {
     /// A rule's catch-all layer whose rest is empty: its ordinary layers
     /// already cover every node, so `*` never receives one.
     DeadCatchAllLayer { rule: String },
+    /// A `[diagnostics] unlayered-node.except` entry that resolves to no
+    /// node, reported under the same name and level as `UnlayeredNode`.
+    DeadExceptEntry { pattern: String },
 }
 
 impl Diagnostic {
@@ -51,7 +54,9 @@ impl Diagnostic {
     #[must_use]
     pub fn name(&self) -> &'static str {
         match self.kind {
-            DiagnosticKind::UnlayeredNode { .. } => "unlayered-node",
+            DiagnosticKind::UnlayeredNode { .. } | DiagnosticKind::DeadExceptEntry { .. } => {
+                "unlayered-node"
+            }
             // Both say the baseline names something the run does not confirm;
             // the config has one switch for the pair.
             DiagnosticKind::UnmatchedBaselineEntry { .. }
@@ -85,6 +90,14 @@ pub(super) fn collect(
                 .map(|entry| Diagnostic {
                     level,
                     kind: DiagnosticKind::UnlayeredNode { entry },
+                }),
+        );
+        found.extend(
+            dead_excepts(index, config)
+                .into_iter()
+                .map(|pattern| Diagnostic {
+                    level,
+                    kind: DiagnosticKind::DeadExceptEntry { pattern },
                 }),
         );
     }
@@ -287,6 +300,19 @@ pub(super) fn dead_allows(index: &PatternIndex, config: &ArcConfig) -> Vec<DeadA
         }
     }
     dead
+}
+
+/// `[diagnostics] unlayered-node.except` entries that resolve to no node: a
+/// typo or a rename, and the entry then excepts nothing.
+fn dead_excepts(index: &PatternIndex, config: &ArcConfig) -> Vec<String> {
+    config
+        .diagnostics
+        .unlayered_node
+        .except
+        .iter()
+        .filter(|pattern| index.resolve(pattern).is_empty())
+        .cloned()
+        .collect()
 }
 
 /// `allow` entries of one rule whose declared order runs in a circle. Each
@@ -837,6 +863,58 @@ mod tests {
             unlayered_node_except(&["app::service"]),
         );
         assert!(unlayered(&diagnose(&graph, &config)).is_empty());
+    }
+
+    #[test]
+    fn a_dead_except_entry_is_reported_under_unlayered_node() {
+        let graph = workspace(&["domain"]);
+        let config = config_of(
+            vec![exhaustive_layers_rule("architecture layers", &["domain"])],
+            unlayered_node_except(&["no-such-node"]),
+        );
+        let found = diagnose(&graph, &config);
+        assert!(unlayered(&found).is_empty());
+        assert_eq!(found.len(), 1, "got: {found:?}");
+        assert_eq!(found[0].name(), "unlayered-node");
+        assert!(
+            matches!(
+                &found[0].kind,
+                DiagnosticKind::DeadExceptEntry { pattern } if pattern == "no-such-node"
+            ),
+            "got: {found:?}"
+        );
+    }
+
+    #[test]
+    fn a_live_except_entry_is_not_reported_as_dead() {
+        let graph = workspace(&["domain"]);
+        let config = config_of(
+            vec![exhaustive_layers_rule("architecture layers", &["domain"])],
+            unlayered_node_except(&["domain"]),
+        );
+        let found = diagnose(&graph, &config);
+        assert!(
+            found
+                .iter()
+                .all(|d| !matches!(d.kind, DiagnosticKind::DeadExceptEntry { .. })),
+            "got: {found:?}"
+        );
+    }
+
+    #[test]
+    fn a_dead_except_entry_reports_nothing_while_unlayered_node_is_allowed() {
+        let graph = workspace(&["domain"]);
+        let config = config_of(
+            vec![exhaustive_layers_rule("architecture layers", &["domain"])],
+            Diagnostics {
+                unlayered_node: UnlayeredNode {
+                    level: DiagnosticLevel::Allow,
+                    except: vec!["no-such-node".into()],
+                },
+                ..Diagnostics::default()
+            },
+        );
+        assert!(diagnose(&graph, &config).is_empty());
     }
 
     #[test]

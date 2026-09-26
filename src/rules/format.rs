@@ -221,6 +221,7 @@ fn subject(diagnostic: &Diagnostic) -> String {
         DiagnosticKind::ContradictoryAllow { entry } => entry.cycle.join(" -> "),
         DiagnosticKind::UnmatchedPattern { entry } => entry.pattern.clone(),
         DiagnosticKind::DeadCatchAllLayer { .. } => "*".to_string(),
+        DiagnosticKind::DeadExceptEntry { pattern } => pattern.clone(),
     }
 }
 
@@ -263,6 +264,9 @@ fn explanation(diagnostic: &Diagnostic) -> String {
         DiagnosticKind::DeadCatchAllLayer { rule } => format!(
             "in rule {rule:?}, its other layers already cover every node, so the catch-all layer (\"*\") holds nothing"
         ),
+        DiagnosticKind::DeadExceptEntry { .. } => {
+            "in the unlayered-node except list, matches no node, so it excepts nothing".to_string()
+        }
     }
 }
 
@@ -1355,6 +1359,47 @@ mod tests {
                 },
             },
         }
+    }
+
+    #[test]
+    fn test_format_dead_except_entry_names_the_pattern() {
+        let result = CheckResult {
+            diagnostics: vec![Diagnostic {
+                level: DiagnosticLevel::Deny,
+                kind: DiagnosticKind::DeadExceptEntry {
+                    pattern: "no-such-crate".into(),
+                },
+            }],
+            ..Default::default()
+        };
+        let output = format_violations(&result, false);
+        assert!(
+            output.contains("  unlayered-node (1): no-such-crate"),
+            "got:\n{output}"
+        );
+        assert!(output.contains("matches no node"), "got:\n{output}");
+    }
+
+    #[test]
+    fn test_format_unlayered_node_and_dead_except_entry_form_separate_groups() {
+        let result = CheckResult {
+            diagnostics: vec![
+                unlayered("architecture layers", "xtask", DiagnosticLevel::Deny),
+                Diagnostic {
+                    level: DiagnosticLevel::Deny,
+                    kind: DiagnosticKind::DeadExceptEntry {
+                        pattern: "no-such-crate".into(),
+                    },
+                },
+            ],
+            ..Default::default()
+        };
+        let output = format_violations(&result, false);
+        assert_eq!(
+            output.matches("  unlayered-node (1):").count(),
+            2,
+            "the unsorted node and the dead except entry stay in separate groups, got:\n{output}"
+        );
     }
 
     #[test]

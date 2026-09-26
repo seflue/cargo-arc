@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Unpinning a tangle sidebar row keeps it expanded.
 - A crate or module used only by tests sorts below its users.
+- An `except` entry under `unlayered-node` that matches no node is reported.
 
 ## [0.5.0] - 2026-09-14
 
