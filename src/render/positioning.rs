@@ -15,6 +15,7 @@ pub(super) fn calculate_box_width(ir: &LayoutIR) -> f32 {
         .map(|item| calculate_text_width(&item.label))
         .fold(0.0_f32, f32::max)
         + LAYOUT.box_padding
+        + LAYOUT.toggle_space
 }
 
 /// Calculate maximum arc width from edges
@@ -174,6 +175,21 @@ mod tests {
         let width = calculate_box_width(&ir);
         // längster Name (22 chars) * 7.2 + padding (20px)
         assert!(width >= 158.4 + 20.0);
+    }
+
+    #[test]
+    fn test_box_width_leaves_a_gap_between_longest_label_and_toggle() {
+        let mut ir = LayoutIR::new();
+        ir.add_item(ItemKind::Crate, "a_long_crate_name".into());
+
+        let width = calculate_box_width(&ir);
+        let text_end = LAYOUT.text_padding_x + calculate_text_width("a_long_crate_name");
+        let toggle_start = width - LAYOUT.toggle_offset;
+        assert!(
+            toggle_start - text_end >= 8.0,
+            "toggle starts {} px after the label",
+            toggle_start - text_end
+        );
     }
 
     #[test]

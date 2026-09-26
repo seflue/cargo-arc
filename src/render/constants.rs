@@ -17,6 +17,8 @@ pub(super) struct LayoutConstants {
     pub text_padding_x: f32,
     pub text_y_offset: f32,
     pub toggle_offset: f32,
+    /// Extra box width that keeps the collapse toggle clear of the longest label.
+    pub toggle_space: f32,
     pub toggle_y_offset: f32,
     pub arc_y_offset: f32,
     pub arc_min_space: f32,
@@ -88,6 +90,7 @@ pub(super) static LAYOUT: LayoutConstants = LayoutConstants {
     text_padding_x: 10.0,
     text_y_offset: 4.0,
     toggle_offset: 14.0,
+    toggle_space: 14.0,
     toggle_y_offset: 4.0,
     arc_y_offset: 3.0,
     arc_min_space: 50.0,
