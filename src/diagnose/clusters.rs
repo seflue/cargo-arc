@@ -325,7 +325,7 @@ impl ArcGraph {
     /// [`Preferred`](RemovalBias::Preferred): under the default graph this edge
     /// doesn't exist at all (ADR-022 drops it as non-coupling), so it only
     /// shows up as a candidate under `--include-reexports`, where it's still
-    /// just a facade, not a layer to break.
+    /// just a re-export, not a layer to break.
     fn removal_bias(&self, edge: (NodeIndex, NodeIndex)) -> RemovalBias {
         let (from, to) = edge;
         if self.contains_child(from, to) {

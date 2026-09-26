@@ -94,12 +94,52 @@ The report states the set in prose instead of naming it ([RULES.md](RULES.md#no-
 *Edge betweenness*, the nearest established word, counts shortest paths rather than cycles.
 
 Removing a feedback arc moves code, and Lakos names the two directions it can go.
-*Escalation* moves the shared functionality into a component above both modules, an existing one or a new one; *demotion* moves it into one below both.
+*Escalation* moves mutually dependent functionality into a component above both modules, an existing one or a new one; *demotion* moves common functionality into one below both.
+They are two of the nine levelization techniques in Lakos, *Large-Scale C++* Vol. I, section 3.5.
 cargo-arc names neither yet; a hint that proposes a move uses these words.
 
 Nothing calls an edge *thin* or *thick*.
 Width is geometry in this tool: an arc's width is how far it bulges, a stroke's width is how the highlight scales it.
 An edge carrying few symbols is described by that count, not by a shape.
+
+## Module roles
+
+| Term | Definition | Avoid |
+|------|------------|-------|
+| **Vocabulary** | The types, constants and errors a module holds for its descendants to read. A cycle whose edges toward an ancestor carry only vocabulary is intended, not debt. | — |
+| **Facade** | A module that is the entry point to its subtree for everything outside it. It declares and re-exports its children and may call into them, but holds nothing they read back. Its edges point down only, so on its own it closes no cycle. | wrapper, insulation |
+| **Container module** | A facade with no code of its own: only `mod` declarations and `pub use`. | container, package |
+| **Prelude** | A module that holds nothing of its own and re-exports names defined elsewhere, so that other code can import them with one glob. Its edges are re-exports only. | — |
+
+One module can play both roles, and in Rust a parent often does: it is the facade of its subtree and holds the subtree's vocabulary.
+A cycle between a parent and its children needs both: the children read the vocabulary up, and the parent's calls go down.
+The `allow` entries that tolerate the first half are in [RULES.md](RULES.md#allow).
+
+*Up* and *down* in this section follow the module tree.
+Lakos's levels agree for a facade and run the other way for vocabulary: a module others depend on sits low in his hierarchy, so a parent holding its subtree's vocabulary is below its own children there.
+
+Lakos calls types that flow through function boundaries, such as a date or an allocator, *vocabulary types*, and places them low (Vol. I, section 0.4).
+The idea is the same, but his term names a property of a type, and *vocabulary* here names what a module holds.
+He has no word for a parent that holds its children's types.
+
+*Facade* keeps the meaning Lakos and the Gang of Four give it, one interface over a whole subsystem, and Lakos already places it above what it wraps (Vol. I, section 0.7).
+The levelization technique that builds one is *escalating encapsulation*.
+Lakos also says *wrapper*; in Rust a wrapper is usually a newtype around a single type, so the word stays with that.
+
+What a facade gives its clients is *encapsulation* in Lakos's sense: a detail behind it can change without clients reworking their code.
+*Insulation* promises more, that clients need not even recompile (Vol. I, section 3.11.1).
+In Rust the crate is the unit of compilation, so a module facade cannot spare a client in the same crate a recompile, and the word does not describe what it does.
+
+A prelude forwards names like a facade, but not those of its own subtree: its names come from elsewhere, often from its parent, so its edges point up.
+Being re-exports, they pass names on and make it depend on nothing.
+
+*Container* alone is taken by C4, where it names an application or a data store, a unit that runs on its own.
+A workspace with several binaries holds several C4 containers, and no module is one.
+Say *container module* for a module and *C4 container* for the deployable unit.
+
+Lakos calls a unit that only aggregates a *package*: it holds components and is not one itself.
+Cargo already uses *package* for what a `Cargo.toml` describes, so the word stays with Lakos and Cargo.
+A Lakos component, a header with its implementation file, corresponds to a module file here.
 
 ## Rules and violations
 
@@ -235,8 +275,10 @@ A violation that was found and then hidden is *silenced*, never suppressed.
 *Cluster mode* is what the cycles filter's checkbox turns on in addition to filtering.
 It is not a filter and keeps its own name.
 
-The reading order is a levelization in Lakos's sense, and Structure101 calls an edge against it a *feedback (upward) dependency*.
-*Level* is not used for a position in it: a level number belongs to a node of an acyclic graph, which a tangle is not, and *diagnostic level* is already taken.
+The reading order follows a levelization in Lakos's sense, and Structure101 calls an edge against it a *feedback (upward) dependency*.
+A node's *level* is Lakos's: 0 for what lies outside the workspace, 1 for a node that depends on nothing inside it, and otherwise one more than the highest level among the nodes it depends on (Vol. I, section 1.10).
+Levels explain the reading order but are not positions in it: several nodes can share a level, and Lakos gives every member of a cycle the highest level the cycle spans (footnote 128), so inside a tangle a level cannot order the nodes.
+The *diagnostic level* of a rules file is a different thing and always carries its qualifier.
 *Layer* is a position in a `layers` rule.
 
 *Back edge* is relative to a traversal (see Cycles and clusters); an upward edge is relative to the reading order, which the layout fixes, so a reader can check it against the picture.
