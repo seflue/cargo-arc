@@ -498,8 +498,10 @@ function buildHotspotMap(themeControl) {
       clickedKey,
       selectedKey,
     );
-    if (action.type === 'select') select(action.key);
-    else if (action.type === 'zoom') zoomTo(action.key);
+    if (action.type === 'select') {
+      if (action.key !== null) focus(action.key);
+      else select(null);
+    } else if (action.type === 'zoom') zoomTo(action.key);
   });
   svg.addEventListener('pointerover', (event) =>
     setHover(circleKeyAt(event), pointerToSvg(event)),

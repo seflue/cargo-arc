@@ -821,6 +821,40 @@ describe('hotspot_script entry', () => {
     expect(detailsEl.innerHTML).toContain('src/hot.rs');
   });
 
+  test('clicking a leaf circle on the map selects it and zooms to its parent, the same result focus() produces', () => {
+    // `nested`'s parent is `select_container`, not the root, so the scale
+    // tells a zoom to the parent apart from no zoom at all (unlike `hot`,
+    // whose parent is the root the map already starts zoomed to).
+    const savedRaf = global.requestAnimationFrame;
+    const savedAdd = svg.addEventListener;
+    global.requestAnimationFrame = (fn) =>
+      fn(performance.now() + HotspotZoom.ZOOM_MS * 2);
+    const listeners = new Map();
+    svg.addEventListener = (evt, fn) => {
+      if (!listeners.has(evt)) listeners.set(evt, []);
+      listeners.get(evt).push(fn);
+    };
+    try {
+      buildHotspotMap();
+      const circle = {
+        getAttribute: () => 'nested',
+        closest: (sel) => (sel === '.hotspot-circle' ? circle : null),
+      };
+      for (const fn of listeners.get('click') ?? []) fn({ target: circle });
+
+      const [, scaleText] =
+        mapContent.getAttribute('transform').match(/scale\(([^)]+)\)/) ?? [];
+      const expectedScale =
+        400 /
+        (2 * HotspotZoom.viewFor(STATIC_DATA.nodes.select_container).radius);
+      expect(Number(scaleText)).toBeCloseTo(expectedScale, 5);
+      expect(detailsEl.innerHTML).toContain('src/container/nested.rs');
+    } finally {
+      global.requestAnimationFrame = savedRaf;
+      svg.addEventListener = savedAdd;
+    }
+  });
+
   test('the cross-page link carries a selected leaf’s file', () => {
     const map = buildHotspotMap();
 
