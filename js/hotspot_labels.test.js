@@ -107,7 +107,7 @@ describe('containerLabel - deterministic, band-bounded placement (HARD 1)', () =
     // This repo's own STATIC_DATA for src/js_registry/mod.rs: the container
     // and its actual children (bundle.rs, mod.rs#leaf, table.rs), at the
     // pxPerUnit the default, unzoomed view renders it at
-    // (mapAreaSize 800 / (2 * root radius 380)).
+    // (map area side 800 / (2 * root radius 380)).
     const node = {
       cx: 368.67217346421074,
       cy: 156.45631880697027,

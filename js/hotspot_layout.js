@@ -14,7 +14,7 @@
  */
 
 /**
- * The smallest `mapAreaSize` a window ever gets, even when the furniture
+ * The smallest `mapArea` side a window ever gets, even when the furniture
  * (toolbar, sidebar, margins) no longer fits it. Below this, a zero map
  * area makes `buildHotspotMap` return `null`, and the returned handle is
  * what the page's resize path and its tests call `resize` on - so a window
@@ -28,10 +28,12 @@ const MIN_MAP_AREA_SIZE = 40;
  * pixel, so no text scales with the window), the toolbar spans the full
  * width at its fixed height, the sidebar sits `sidebarMarginRight` away
  * from the right edge, from below the toolbar to the bottom, and
- * `mapAreaSize` is the side of the largest square left over once the
- * toolbar strip, the sidebar strip with its gap and right margin, and a
- * margin on every side of the square are taken out - never
- * below `MIN_MAP_AREA_SIZE`.
+ * `mapArea` is the largest square left over once the toolbar strip, the
+ * sidebar strip with its gap and right margin, and a margin on every side
+ * of the square are taken out - its side never below `MIN_MAP_AREA_SIZE`.
+ * The square is centred in the free space rather than flush with the
+ * canvas's own (0, 0): the free width and free height rarely match, so one
+ * axis has slack the square does not fill.
  * @param {{ width: number, height: number }} box
  * @param {HotspotLayoutConstants} constants
  * @param {number} [sidebarWidth] - the measured width (`sidebarWidthFor`);
@@ -47,6 +49,10 @@ function computeLayout(
   const freeWidth =
     width - sidebarGap - sidebarWidth - sidebarMarginRight - 2 * mapMargin;
   const freeHeight = height - toolbarHeight - 2 * mapMargin;
+  const mapAreaSize = Math.max(
+    MIN_MAP_AREA_SIZE,
+    Math.min(freeWidth, freeHeight),
+  );
   return {
     viewBox: { width, height },
     toolbar: { width, height: toolbarHeight },
@@ -56,7 +62,11 @@ function computeLayout(
       width: sidebarWidth,
       height: height - toolbarHeight,
     },
-    mapAreaSize: Math.max(MIN_MAP_AREA_SIZE, Math.min(freeWidth, freeHeight)),
+    mapArea: {
+      x: mapMargin + (freeWidth - mapAreaSize) / 2,
+      y: toolbarHeight + mapMargin + (freeHeight - mapAreaSize) / 2,
+      size: mapAreaSize,
+    },
   };
 }
 

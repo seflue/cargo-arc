@@ -30,36 +30,37 @@ describe('computeLayout', () => {
     expect(layout.sidebar).toEqual({ x: 1304, y: 40, width: 280, height: 860 });
   });
 
-  test('the map area is the largest square left over once the toolbar, the sidebar and its gap, and a margin on every side are taken out', () => {
+  test('the map area is the largest square left over once the toolbar, the sidebar and its gap, and a margin on every side are taken out, centred in that free space', () => {
     // free width = 1600 - 20 (gap) - 280 (sidebar) - 16 (right margin) - 2*20 (margin) = 1244
     // free height = 900 - 40 (toolbar) - 2*20 (margin) = 820
-    // the square is bounded by the smaller of the two
+    // the square is bounded by the smaller of the two and sits centred in
+    // the wider free width: x = 20 + (1244 - 820) / 2, y = 40 + 20
     const layout = computeLayout({ width: 1600, height: 900 }, CONSTANTS);
-    expect(layout.mapAreaSize).toBe(820);
+    expect(layout.mapArea).toEqual({ x: 232, y: 60, size: 820 });
   });
 
   test('a measured sidebar width replaces the constant, and the map square shrinks to match', () => {
     const layout = computeLayout({ width: 1600, height: 900 }, CONSTANTS, 700);
     expect(layout.sidebar).toEqual({ x: 884, y: 40, width: 700, height: 860 });
     // free width = 1600 - 20 - 700 - 16 - 2*20 = 824, free height = 820
-    expect(layout.mapAreaSize).toBe(820);
+    expect(layout.mapArea.size).toBe(820);
     const narrower = computeLayout(
       { width: 1600, height: 900 },
       CONSTANTS,
       800,
     );
     // free width = 1600 - 20 - 800 - 16 - 2*20 = 724
-    expect(narrower.mapAreaSize).toBe(724);
+    expect(narrower.mapArea.size).toBe(724);
   });
 
   test('a window too small for the furniture is floored at the minimum map area, never zero', () => {
     const layout = computeLayout({ width: 100, height: 100 }, CONSTANTS);
-    expect(layout.mapAreaSize).toBe(MIN_MAP_AREA_SIZE);
+    expect(layout.mapArea.size).toBe(MIN_MAP_AREA_SIZE);
   });
 
   test('a window narrower than the minimum plus the furniture is still floored, not negative', () => {
     const layout = computeLayout({ width: 0, height: 0 }, CONSTANTS);
-    expect(layout.mapAreaSize).toBe(MIN_MAP_AREA_SIZE);
+    expect(layout.mapArea.size).toBe(MIN_MAP_AREA_SIZE);
   });
 });
 

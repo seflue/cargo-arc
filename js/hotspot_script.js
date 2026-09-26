@@ -140,8 +140,8 @@ function buildHotspotMap(themeControl) {
   let layout = layoutFor(svg.getBoundingClientRect());
   const canvasWidth = layout.viewBox.width;
   let canvasHeight = layout.viewBox.height;
-  let mapAreaSize = layout.mapAreaSize;
-  if (!mapAreaSize || !canvasHeight) return null;
+  let mapArea = layout.mapArea;
+  if (!mapArea.size || !canvasHeight) return null;
 
   const tooltipLayer = DomAdapter.createSvgElement('g');
   tooltipLayer.setAttribute('id', 'hotspot-tooltip-layer');
@@ -237,9 +237,9 @@ function buildHotspotMap(themeControl) {
   }
 
   function applyView() {
-    scale = mapAreaSize / (2 * view.radius);
-    tx = mapAreaSize / 2 - view.x * scale;
-    ty = canvasHeight / 2 - view.y * scale;
+    scale = mapArea.size / (2 * view.radius);
+    tx = mapArea.x + mapArea.size / 2 - view.x * scale;
+    ty = mapArea.y + mapArea.size / 2 - view.y * scale;
     mapContent.setAttribute(
       'transform',
       `translate(${tx} ${ty}) scale(${scale})`,
@@ -616,7 +616,7 @@ function buildHotspotMap(themeControl) {
   function resize(width, height) {
     layout = layoutFor({ width, height });
     canvasHeight = layout.viewBox.height;
-    mapAreaSize = layout.mapAreaSize;
+    mapArea = layout.mapArea;
     tooltip.setCanvasWidth(layout.viewBox.width);
     applyView();
   }

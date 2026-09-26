@@ -400,6 +400,51 @@ describe('hotspot_script entry', () => {
     }
   });
 
+  test('frames the initial target inside the reserved square, not the raw canvas, once the furniture takes up real space', () => {
+    // Non-zero furniture (unlike the shared all-zero fixture): the reserved
+    // square then sits away from the canvas's own (0, 0), and the pan must
+    // follow it there instead of assuming the square starts at the origin.
+    const savedLayout = STATIC_DATA.layout;
+    const savedRect = svg.getBoundingClientRect;
+    STATIC_DATA.layout = {
+      sidebarWidth: 100,
+      sidebarGap: 10,
+      sidebarMarginRight: 0,
+      mapMargin: 5,
+      toolbarHeight: 30,
+    };
+    svg.getBoundingClientRect = () => ({ width: 1000, height: 700 });
+    try {
+      const map = buildHotspotMap();
+      expect(map).not.toBeNull();
+      const layout = HotspotLayout.computeLayout(
+        { width: 1000, height: 700 },
+        STATIC_DATA.layout,
+        STATIC_DATA.layout.sidebarWidth,
+      );
+      const [, txText, tyText, scaleText] =
+        mapContent
+          .getAttribute('transform')
+          .match(/translate\(([^ ]+) ([^)]+)\) scale\(([^)]+)\)/) ?? [];
+      // The root's own centre maps to the reserved square's centre, not the
+      // canvas's.
+      const root = STATIC_DATA.nodes.root;
+      const drawnCx = Number(txText) + root.cx * Number(scaleText);
+      const drawnCy = Number(tyText) + root.cy * Number(scaleText);
+      expect(drawnCx).toBeCloseTo(
+        layout.mapArea.x + layout.mapArea.size / 2,
+        5,
+      );
+      expect(drawnCy).toBeCloseTo(
+        layout.mapArea.y + layout.mapArea.size / 2,
+        5,
+      );
+    } finally {
+      STATIC_DATA.layout = savedLayout;
+      svg.getBoundingClientRect = savedRect;
+    }
+  });
+
   test('positions the viewBox, the toolbar and the sidebar for the svg’s own measured box, from STATIC_DATA.layout', () => {
     // Realistic, non-zero furniture constants for this one test; every
     // other test in this file keeps the shared fixture's all-zero layout so
