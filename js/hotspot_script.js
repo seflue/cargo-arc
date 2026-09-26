@@ -334,7 +334,7 @@ function buildHotspotMap(themeControl) {
     hoveredKey = key;
     paintCircle(previous);
     paintCircle(hoveredKey);
-    if (key && circles.has(key)) {
+    if (key != null && circles.has(key)) {
       const node = nodes[key];
       const at = point ?? { x: tx + node.cx * scale, y: ty + node.cy * scale };
       tooltip.show(at, HotspotHover.tooltipRows(nodes, key));
@@ -460,7 +460,7 @@ function buildHotspotMap(themeControl) {
     listEl.addEventListener('click', (event) => {
       event.stopPropagation?.();
       const key = rowKeyAt(event);
-      if (key && nodes[key]) focus(key);
+      if (key != null && nodes[key]) focus(key);
     });
     listEl.addEventListener('pointerover', (event) => {
       event.stopPropagation?.();
@@ -475,7 +475,7 @@ function buildHotspotMap(themeControl) {
     breadcrumbEl.addEventListener('click', (event) => {
       event.stopPropagation?.();
       const key = crumbKeyAt(event);
-      if (key && nodes[key]) zoomTo(key);
+      if (key != null && nodes[key]) zoomTo(key);
     });
   }
 

@@ -748,6 +748,48 @@ describe('hotspot_script entry', () => {
     expect(stopped).toBe(true);
   });
 
+  test('clicking the breadcrumb’s root entry zooms there, even though a multi-crate workspace root’s own key is the empty string', () => {
+    // `build_workspace_root` (src/hotspots/tree.rs) gives the synthetic
+    // workspace root `file: PathBuf::new()`, so `node_keys`
+    // (src/render/hotspots.rs) derives its STATIC_DATA key as `""` - unlike
+    // this fixture's own 'root', whose key is never empty. Reuses the shared
+    // fixture's own nodes with 'root' renamed to '', so a listener a stray
+    // buildHotspotMap() call below leaves on the shared list/bars/breadcrumb
+    // elements (this file's own fixture accumulates them, never resets) stays
+    // compatible with every other test's node keys.
+    const savedNodes = STATIC_DATA.nodes;
+    STATIC_DATA.nodes = Object.fromEntries(
+      Object.entries(savedNodes).map(([key, node]) => [
+        key === 'root' ? '' : key,
+        { ...node, parent: node.parent === 'root' ? '' : node.parent },
+      ]),
+    );
+    try {
+      const map = buildHotspotMap();
+      map.zoomTo('select_container');
+      expect(breadcrumbEl.innerHTML).toBe(
+        '<button data-crumb="">root</button>' +
+          '<span aria-hidden="true">›</span>' +
+          '<span aria-current="location">container</span>',
+      );
+
+      const crumb = {
+        getAttribute: () => '',
+        closest: (sel) => (sel === '[data-crumb]' ? crumb : null),
+      };
+      breadcrumbEl._fire('click', {
+        target: crumb,
+        stopPropagation: () => {},
+      });
+
+      expect(breadcrumbEl.innerHTML).toBe(
+        '<span aria-current="location">root</span>',
+      );
+    } finally {
+      STATIC_DATA.nodes = savedNodes;
+    }
+  });
+
   test('the List/Bars pair swaps the list content and which button is pressed, and back', () => {
     buildHotspotMap();
     const original = listEl.innerHTML;
