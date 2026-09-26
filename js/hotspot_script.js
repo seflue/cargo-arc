@@ -67,6 +67,21 @@ function fitSidebarPaths(sidebarFo) {
   }
 }
 
+/**
+ * Size the sidebar frame and its panel to the panel's content height, at
+ * most `freeHeight`, measured the way `SidebarLogic.updatePosition` measures
+ * the arc page's. A frame taller than its panel would catch the pointer
+ * over the map below it.
+ */
+function fitSidebarHeight(sidebarFo, freeHeight) {
+  const inner = sidebarFo?.firstElementChild;
+  if (!inner) return;
+  inner.style.height = 'auto';
+  const height = HotspotLayout.sidebarHeightFor(inner.offsetHeight, freeHeight);
+  sidebarFo.setAttribute('height', String(height));
+  inner.style.height = `${height}px`;
+}
+
 /** Escapes text before it is interpolated into `innerHTML`, matching the
  * Rust side's own `escape_xml`. */
 function escapeHtml(text) {
@@ -135,6 +150,7 @@ function buildHotspotMap(themeControl) {
       next,
     );
     fitSidebarPaths(sidebarEl);
+    fitSidebarHeight(sidebarEl, next.sidebar.height);
     return next;
   }
   let layout = layoutFor(svg.getBoundingClientRect());
@@ -390,6 +406,7 @@ function buildHotspotMap(themeControl) {
     paintCircle(previous);
     paintCircle(selectedKey);
     renderDetails();
+    fitSidebarHeight(sidebarEl, layout.sidebar.height);
     updatePageLink();
     updateJumpIcon();
   }
@@ -446,6 +463,7 @@ function buildHotspotMap(themeControl) {
     showBarsEl.setAttribute('aria-pressed', String(bars));
     listEl.innerHTML = bars ? barsHtml() : originalListHtml;
     fitSidebarPaths(sidebarEl);
+    fitSidebarHeight(sidebarEl, layout.sidebar.height);
   }
 
   if (showListEl && showBarsEl && listEl) {

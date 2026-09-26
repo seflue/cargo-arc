@@ -27,7 +27,8 @@ const MIN_MAP_AREA_SIZE = 40;
  * SVG's own measured box): `viewBox` fills it exactly (one SVG unit per CSS
  * pixel, so no text scales with the window), the toolbar spans the full
  * width at its fixed height, the sidebar sits `sidebarMarginRight` away
- * from the right edge, from below the toolbar to the bottom, and
+ * from the right edge below the toolbar, its `height` the free height down
+ * to the bottom (the most `sidebarHeightFor` lets its content take), and
  * `mapArea` is the largest square left over once the toolbar strip, the
  * sidebar strip with its gap and right margin, and a margin on every side
  * of the square are taken out - its side never below `MIN_MAP_AREA_SIZE`.
@@ -82,6 +83,17 @@ function sidebarWidthFor(naturalWidth, boxWidth, minWidth) {
 }
 
 /**
+ * The sidebar's height for content `naturalHeight` tall, as the arc page's
+ * sidebar sizes itself: its content height, at most `freeHeight` (the
+ * layout's `sidebar.height`), so a longer panel scrolls inside the window.
+ * @param {number | undefined} naturalHeight
+ * @param {number} freeHeight
+ */
+function sidebarHeightFor(naturalHeight, freeHeight) {
+  return naturalHeight ? Math.min(naturalHeight, freeHeight) : freeHeight;
+}
+
+/**
  * Writes `layout` onto the root SVG's viewBox (mutating `baseVal` in place,
  * so the DOM's own attribute stays in sync) and onto the toolbar and
  * sidebar foreignObjects - only the attributes that actually move with the
@@ -107,6 +119,7 @@ function apply({ svg, toolbarFo, sidebarFo }, layout) {
 const HotspotLayout = {
   computeLayout,
   sidebarWidthFor,
+  sidebarHeightFor,
   apply,
   MIN_MAP_AREA_SIZE,
 };
@@ -116,6 +129,7 @@ if (typeof module !== 'undefined') {
   module.exports = {
     computeLayout,
     sidebarWidthFor,
+    sidebarHeightFor,
     apply,
     MIN_MAP_AREA_SIZE,
     HotspotLayout,

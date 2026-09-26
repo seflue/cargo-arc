@@ -3,6 +3,7 @@ import {
   apply,
   computeLayout,
   MIN_MAP_AREA_SIZE,
+  sidebarHeightFor,
   sidebarWidthFor,
 } from './hotspot_layout.js';
 
@@ -74,6 +75,18 @@ describe('sidebarWidthFor', () => {
   test('a content width that could not be measured keeps the minimum', () => {
     expect(sidebarWidthFor(undefined, 1600, 280)).toBe(280);
     expect(sidebarWidthFor(0, 1600, 280)).toBe(280);
+  });
+});
+
+describe('sidebarHeightFor', () => {
+  test('the sidebar takes its content height, at most the height free below the toolbar', () => {
+    expect(sidebarHeightFor(300, 860)).toBe(300);
+    expect(sidebarHeightFor(1200, 860)).toBe(860);
+  });
+
+  test('a content height that could not be measured takes the free height', () => {
+    expect(sidebarHeightFor(undefined, 860)).toBe(860);
+    expect(sidebarHeightFor(0, 860)).toBe(860);
   });
 });
 

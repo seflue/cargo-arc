@@ -1491,6 +1491,7 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
                 ("font-size", "12px"),
                 ("color", sb.text),
                 ("padding", "8px 10px"),
+                ("box-sizing", "border-box"),
                 ("overflow-y", "auto"),
             ],
         ),

@@ -476,6 +476,43 @@ describe('hotspot_script entry', () => {
     }
   });
 
+  test('the sidebar frame ends where its panel’s content ends, so the map below it stays reachable', () => {
+    const panel = createFakeElement('div');
+    panel.querySelectorAll = () => [];
+    panel.offsetHeight = 200;
+    sidebarEl.firstElementChild = panel;
+    try {
+      buildHotspotMap();
+      expect(sidebarEl.getAttribute('height')).toBe('200');
+      expect(panel.style.height).toBe('200px');
+    } finally {
+      delete sidebarEl.firstElementChild;
+    }
+  });
+
+  test('the sidebar frame follows its panel’s content through a selection and the list/bars toggle, never past the free height', () => {
+    const panel = createFakeElement('div');
+    panel.querySelectorAll = () => [];
+    panel.offsetHeight = 200;
+    sidebarEl.firstElementChild = panel;
+    try {
+      const map = buildHotspotMap();
+      // The details block makes the panel taller than the 400px box: the
+      // frame stops at the box, and the panel scrolls inside it.
+      panel.offsetHeight = 1000;
+      map.select('hot');
+      expect(sidebarEl.getAttribute('height')).toBe('400');
+      expect(panel.style.height).toBe('400px');
+      panel.offsetHeight = 150;
+      showBarsEl._fire('click');
+      expect(sidebarEl.getAttribute('height')).toBe('150');
+      expect(panel.style.height).toBe('150px');
+    } finally {
+      showListEl._fire('click');
+      delete sidebarEl.firstElementChild;
+    }
+  });
+
   test('a resize rescales the map for its new box, framing the zoomed-to container, not the root', () => {
     // Zoom away from the root before resizing: a scale that merely tracks
     // the root's own radius would look identical before and after the
