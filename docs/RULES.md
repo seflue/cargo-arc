@@ -200,7 +200,7 @@ Neither file has to sit in the workspace under test.
 Two rules files in one directory share the one `arc-baseline.toml` there, so a copy made to try a rule out reads the entries of the original and reports its own violations as frozen.
 
 `--manifest-path` selects the workspace, not a part of it.
-Pointed at a member crate's `Cargo.toml`, it analyses the whole workspace that crate belongs to.
+Pointed at a member crate's `Cargo.toml`, it analyzes the whole workspace that crate belongs to.
 Without `--rules`, both files are looked up beside the manifest the flag names, so pointing at a member crate looks for `arc-rules.toml` in that crate's directory and not in the workspace root.
 Most member crates have no rules file there, and the run then falls back to the implicit check over the whole workspace: the rules in the workspace root are not read.
 Pass `--rules` to keep them.
@@ -751,8 +751,8 @@ An import counts no matter which `#[cfg(feature = "…")]` stands over it, so `-
 A workspace whose features exclude one another carries the imports of all of them at once.
 
 `--features` does one thing more.
-Only the workspace members that declare one of the named features are analysed, together with the members those reach through their dependencies.
+Only the workspace members that declare one of the named features are analyzed, together with the members those reach through their dependencies.
 A rule whose pattern names one of the crates left out reports `unmatched-pattern`.
 A feature name no crate in the workspace declares ends the run at exit 2, refused by `cargo metadata`.
-`--all-features` and `--no-default-features` leave the set of analysed crates alone.
+`--all-features` and `--no-default-features` leave the set of analyzed crates alone.
 

@@ -343,6 +343,7 @@ Everything below overrides the baseline. Delete the rows that do not apply.
 | Concurrency | None on the analysis and request path, no async runtime. `ui/server.rs` alone starts threads (see the deviation below). |
 | Build and test commands | `just test` (cargo test + bun test), `just lint`, `just fmt`. |
 | Lint configuration | `[lints.clippy] pedantic = "warn"`; CI runs `cargo clippy --all-targets -- -D warnings`. |
+| Spelling | American English in identifiers, comments and documentation: `color`, `analyze`, `center`, `gray`, `behavior`. A British spelling already in the code is corrected when its line changes anyway, not in a sweep. |
 
 ### Deviations from the baseline
 
@@ -358,7 +359,7 @@ analysis that takes seconds cannot run on it without stalling every page, and
 an async runtime for the blocking readers would be the larger dependency. The
 module is the only one in the crate that starts a thread.
 
-**Locks in `ui/service.rs`.** The service holds the editor's colour mode
+**Locks in `ui/service.rs`.** The service holds the editor's color mode
 behind a `std::sync::Mutex`, written by the stdin thread and read when a page
 is served: a page loaded after the editor's line has to start in that mode,
 and the value is a two-variant enum with no contention worth a channel. The
