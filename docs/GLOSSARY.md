@@ -6,22 +6,21 @@ This file pins the terms whose everyday meaning is too loose for how it uses the
 On conflict this file wins; code, CLI output and documentation follow.
 What the tool does with these things is written elsewhere: checking in [RULES.md](RULES.md), the arc diagram in [ARC_DIAGRAM.md](ARC_DIAGRAM.md), the hotspot map in [HOTSPOT_MAP.md](HOTSPOT_MAP.md), implementation in [ARCHITECTURE.md](ARCHITECTURE.md).
 
-*Avoid* means: not as a name for that entry.
-The column holds only words that compete with ours because they are established elsewhere, either in the literature or in another entry of this file, and each of them is taken up in the prose under its table with the reason it does not fit.
-A word listed there stays correct in its own place: `RepresentativeCycles` replaced an exhaustive elementary-cycle enumeration, and that sentence does not break the column.
+Where another word names the same thing, or the same word means something else elsewhere, the prose under the table says so.
 
 ## Nodes and edges
 
-| Term | Definition | Avoid |
-|------|------------|-------|
-| **Node** | One crate of the workspace, or one module in it. Patterns match nodes, and dependencies run between them. A crate the workspace only depends on is not one. | vertex |
-| **Edge** | One node depending directly on another. A dependency may also run over nodes in between, and it then holds between its two ends without an edge joining them. | — |
-| **Qualified node name** | A node written from its crate down: `storage` is the crate, `storage::pool` a module in it. Both ends of a reported dependency are written this way. | — |
-| **Manifest edge** | The dependency one crate's `Cargo.toml` declares on another. No line of source writes it. | — |
-| **Bare import** | An import naming no symbol, `use storage::pool;`. | — |
+| Term | Definition |
+|------|------------|
+| **Node** | In Rust, the crates of the workspace and the modules within them are the nodes of the dependency graph. Modules can be nested at any depth. `--externals` adds the external crates the workspace depends on to the graph. Patterns match only nodes inside the workspace. |
+| **Edge** | The directed connection from one node to another that the first depends on directly. A transitive dependency runs through other nodes and is not an edge. |
+| **Qualified node name** | A node's path starting at its crate: `storage` is the crate, `storage::pool` a module in it. `check` writes both ends of a `layers` or `forbidden-dependency` violation as qualified node names. |
+| **Manifest edge** | The edge from one crate to another that the first declares in its `Cargo.toml`. No import in the source code creates it. |
+| **Bare import** | An import of a module itself instead of an item in it, such as `use storage::pool;`. |
 
-*Vertex* is the graph-theoretic name for the same thing.
-A node here is a crate or a module, and everywhere a user reads one it is named as what it is, so the graph word stays in the analysis.
+Graph theory calls a node a *vertex*.
+The literature on directed graphs calls an edge an *arc*.
+In the arc diagram, an arc is the curve that draws a dependency (see [Arc type](#the-arc-diagram)).
 
 ## Cycles and clusters
 
