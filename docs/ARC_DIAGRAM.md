@@ -39,13 +39,10 @@ The toolbar button does the same for the whole tree and flips between **Collapse
 ### Following the editor
 
 A page served by `cargo arc ui` carries a **Follow editor** button in the toolbar, pressed by default.
-While it is pressed, the diagram selects the node of the file the editor shows, as a click on it would, and scrolls until the node and its relations are centered.
-A node inside a collapsed module is expanded into view first.
-When the cursor stands on a line that appears as a location in the sidebar, that entry is expanded; otherwise the sidebar keeps its expansion state.
-For a node that is already selected the page does not scroll; the sidebar entry of the cursor line still expands.
-While the button is released, the diagram ignores the editor and the selection stays as it is.
+While it is pressed, the diagram selects the node of the file the editor shows and scrolls it into view.
+When the cursor stands on a line that appears as a location in the sidebar, that entry is expanded.
+For a node that is already selected the page does not scroll.
 The editor plugin can release and press the button too; the Neovim plugin does so with `:Arc follow off` and `:Arc follow on`.
-A click in the diagram never scrolls the page.
 
 ### Recomputing on save
 
@@ -53,7 +50,6 @@ A page served by `cargo arc ui` carries a **Recompute on save** button in the to
 While it is pressed, writing a `.rs` file or a `Cargo.toml` under the workspace root makes the service run the analysis again, and the page reloads with its view kept.
 The hotspot map served beside it carries the same button and reloads the same way, keeping its zoom, its selection and the choice between list and bars.
 The editor plugin reports each written file.
-Of the three plugins, only the Neovim plugin does so today.
 The service holds the button's state, so every open page shows the same state, and a restarted service starts pressed again.
 The Neovim plugin sets it with `:Arc on-save off` and `:Arc on-save on`, and `:Arc recompute` runs the analysis once regardless of the button.
 
