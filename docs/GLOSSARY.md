@@ -65,36 +65,32 @@ A tangle with exactly one cycle is a *single-cycle tangle*, and a tangle with mo
 
 ## Feedback arcs
 
-| Term | Definition | Avoid |
-|------|------------|-------|
-| **Feedback arc** | An edge whose removal breaks cycles. In a single-cycle tangle every edge is one and removing any of them suffices; in a multi-cycle tangle they come as a set to be removed together. | cut |
-| **Feedback arc set** | The edge set whose joint removal breaks every counted cycle. With nothing tolerated it reaches past the enumeration to make the tangle acyclic; with a tolerated cycle it stops at the counted ones. Not unique. | cut set |
-| **Traffic** | How many counted cycles run through one edge. Removing it removes all of them. Order-independent, and the basis for ranking feedback arcs. | edge betweenness |
-| **Symbol count** | How many distinct symbols cross one edge, each counted once however many import lines carry it. A name reached only through `pub use` does not count, unless the edge carries nothing else. Breaks ties in the traffic ranking, and decides it alone in a single-cycle tangle, where every edge carries the same traffic. | — |
+| Term | Definition |
+|------|------------|
+| **Feedback arc** | An edge in a feedback arc set. In a single-cycle tangle, any one edge of the cycle is a feedback arc set by itself. |
+| **Feedback arc set** | A set of edges whose removal together breaks every counted cycle of a tangle. In a tangle where some but not all cycles are frozen, it breaks only the counted cycles. In any other tangle it makes the tangle acyclic, which can take more edges than the counted cycles need. A tangle can have more than one feedback arc set. |
+| **Traffic** | The number of counted cycles that run through one edge. Removing the edge breaks all of them. Traffic counts every one of them, whichever other edges are removed first. Feedback arcs are ranked by traffic. |
+| **Symbol count** | The number of distinct symbols that cross one edge. A symbol counts once, even when several imports on the edge carry it. All bare imports on an edge together add one. A symbol imported by `pub use` does not count, unless every import on the edge is a `pub use`. The symbol count breaks ties in the traffic ranking. In a single-cycle tangle every edge has the same traffic, so the symbol count alone decides the order. |
 
-Every feedback arc is a cyclic edge, not the other way round.
-*Cyclic edge* states a property of the edge; *feedback arc* is the role it was given in one solution.
-That one reads *arc* and the other *edge* follows their sources, the feedback-arc-set literature works on directed graphs and says arc.
-Both name the same object, a directed dependency between two modules.
+Every feedback arc is a cyclic edge.
+*Arc* is the directed-graph word for an edge (see [Nodes and edges](#nodes-and-edges)), and *feedback arc* is the established name.
 
-*Cut* and *cut set* mean something else: in graph theory a cut partitions the vertices and the cut set is the edge set between the two halves.
-That is connectivity, not cyclicity, and both notions turn up in this tool.
+In graph theory, a *cut* splits the nodes into two parts, and the *cut set* is the set of edges between them.
+A cut concerns connectivity, and a feedback arc set concerns cycles.
 
-The set is deliberately not the *minimum* feedback arc set, which is NP-hard.
-Say *greedy feedback arc set* where the distinction matters.
-The report states the set in prose instead of naming it ([RULES.md](RULES.md#no-cycles)).
+cargo-arc builds the feedback arc set greedily.
+It is not the *minimum* feedback arc set, which is NP-hard to find.
+Where the difference matters, say *greedy feedback arc set*.
+The report describes the set in a sentence without naming it ([RULES.md](RULES.md#no-cycles)).
 
-*Traffic* is a term of this project's own.
-*Edge betweenness*, the nearest established word, counts shortest paths rather than cycles.
+*Traffic* is a term of this project.
+*Edge betweenness* is the nearest established term, and it counts the shortest paths through an edge instead of cycles.
 
 Removing a feedback arc moves code, and Lakos names the two directions it can go.
-*Escalation* moves mutually dependent functionality into a component above both modules, an existing one or a new one; *demotion* moves common functionality into one below both.
+*Escalation* moves mutually dependent functionality into a component above both modules, an existing one or a new one.
+*Demotion* moves common functionality into a component below both.
 They are two of the nine levelization techniques in Lakos, *Large-Scale C++* Vol. I, section 3.5.
-cargo-arc names neither yet; a hint that proposes a move uses these words.
-
-Nothing calls an edge *thin* or *thick*.
-Width is geometry in this tool: an arc's width is how far it bulges, a stroke's width is how the highlight scales it.
-An edge carrying few symbols is described by that count, not by a shape.
+cargo-arc does not use either word yet; a hint that proposes a move should use them.
 
 ## Module roles
 
