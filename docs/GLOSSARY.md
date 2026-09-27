@@ -181,19 +181,16 @@ An exhaustive rule written only from module patterns covers the modules of the c
 
 ### What a run prints
 
-| Term | Definition | Avoid |
-|------|------------|-------|
-| **Report** | The blocks on stderr: one per rule that fired, headed by the rule and holding each of its violations, with the locations and the edge or cycle each one found. What a reader goes to for why a run is red. | output |
-| **Status** | How one rule came out: `ok`, `WARN` when it produced warnings only, `FAILED` when it produced an error. One line on stdout carries it, per rule and one for the configuration, printed whether or not anything fired. | severity |
-| **Location** | A file and a line. An import that writes an edge has one, printed as `--> path:line` and listed in the sidebar; the path is relative to the root of the analyzed workspace, a file outside it stays absolute. | source |
+| Term | Definition |
+|------|------------|
+| **Report** | The blocks that `check` writes to stderr, one per rule that fired. A block is headed by the rule and lists its violations, each with its dependency or tangle and its locations. |
+| **Status** | The outcome of one rule in a run: `ok`, `WARN` when the rule produced only warnings, or `FAILED` when it produced an error. `check` prints one status line on stdout for each checked rule and one for the configuration, whether or not anything fired. |
+| **Location** | A file and a line, such as the place of an import that creates an edge. The report prints a location as `--> path:line`, and the sidebar of the arc diagram lists it. The path is relative to the root of the analyzed workspace, and a file outside the workspace keeps its absolute path. |
 
-The report and the status lines are split by role, not by audience.
-The report says what was found, a status line says how one rule came out.
+Severity is configured on a rule, and a status is the result of a run.
+The severity does not determine the status: a rule of severity `error` whose violations are all frozen has status `ok`.
 
-*Severity* is configured and belongs to the rule; a status is produced and belongs to the run.
-The two do not read off each other in either direction: a rule of severity `error` whose violations are all frozen has status `ok`.
-
-*Source* is taken in `rules/engine.rs`, where it names the outgoing end of an edge.
+In the code, the *source* of an edge is the node it starts from.
 
 ## Hotspots
 
