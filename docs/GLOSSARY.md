@@ -216,22 +216,20 @@ cargo-arc tried one and draws nested circles instead, which show the nesting dep
 
 ## Symbols and consumers
 
-| Term | Definition | Avoid |
-|------|------------|-------|
-| **Provider** | A module other modules import symbols from. | — |
-| **Consumer** | A module that imports a symbol. A symbol imported by `pub use` is republished, not consumed. | — |
-| **Consumer group** | The symbols of one provider that share exactly the same consumers. | cluster |
-| **Consumer locality** | How closely a consumer group's consumers sit together in the module tree: one consumer, several under a common ancestor module, or scattered across the crate. | scope |
+| Term | Definition |
+|------|------------|
+| **Provider** | A module that other modules import symbols from. |
+| **Consumer** | A module that imports a symbol from a provider in production code. A module that imports a symbol only by `pub use` republishes it and is not its consumer. |
+| **Consumer group** | The symbols of one provider that have exactly the same consumers. |
+| **Consumer locality** | How close the consumers of a consumer group sit to each other in the module tree. It has three cases: a single consumer, several consumers under a common ancestor module that does not contain the provider, or consumers spread across the crate. |
 
-*Consumer locality* answers one question: could these symbols move closer to the modules that use them?
-It is three named cases rather than a measured distance.
-The sidebar's wording for the three is in [ARC_DIAGRAM.md](ARC_DIAGRAM.md#the-sidebar-for-an-arc).
+Consumer locality shows whether the symbols of a group could move closer to the modules that use them.
+[ARC_DIAGRAM.md](ARC_DIAGRAM.md#the-sidebar-for-an-arc) gives the sidebar's wording for each case.
 
-A group is the unit that moves.
-Its symbols share one set of consumers, so the group's locality holds for every symbol in it.
+A consumer group is the unit that can move.
+Its symbols share one set of consumers, so the group's locality holds for each of them.
 
-*Cluster* and *scope* are both taken in this file: a cluster is a strongly connected component, and a scope is the pattern a `no-cycles` rule searches inside.
-Neither has anything to do with who imports a symbol.
+In this file, a *cluster* is a strongly connected component (see [Cycles and clusters](#cycles-and-clusters)), and a *scope* is the pattern a `no-cycles` rule searches inside (see [Rules and violations](#rules-and-violations)).
 
 ## The arc diagram
 
