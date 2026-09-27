@@ -1473,6 +1473,124 @@ describe('SidebarLogic', () => {
     });
   });
 
+  describe('followScroll', () => {
+    test('moves only y and grows the canvas, without re-measuring', () => {
+      const fakeEl = createFakeElement('foreignObject');
+      const innerDiv = createFakeElement('div');
+      innerDiv.offsetWidth = 400;
+      innerDiv.offsetHeight = 400;
+      fakeEl.querySelector = () => innerDiv;
+      let scroll = 0;
+      /** @type {string[]} */
+      const svgWrites = [];
+      const svgMock = {
+        getBoundingClientRect() {
+          return { left: 0, top: -scroll, width: 1000, height: vb.height };
+        },
+        viewBox: { baseVal: { width: 1000, height: 1000 } },
+        setAttribute(name) {
+          svgWrites.push(name);
+        },
+      };
+      const vb = svgMock.viewBox.baseVal;
+      globalThis.DomAdapter = {
+        getElementById(id) {
+          if (id === 'relation-sidebar') return fakeEl;
+          return null;
+        },
+        getSvgRoot() {
+          return svgMock;
+        },
+        querySelectorAll() {
+          return [];
+        },
+      };
+      globalThis.window = globalThis.window || {};
+      globalThis.window.innerWidth = 1000;
+      globalThis.window.innerHeight = 600;
+      SidebarLogic.resetStoredViewBox();
+      SidebarLogic.show('crate_a-crate_b');
+      expect(vb.height).toBe(1000);
+
+      const origFit = SidebarLogic.fitPaths;
+      const origReset = SidebarLogic.resetPaths;
+      let measured = 0;
+      SidebarLogic.fitPaths = () => {
+        measured++;
+      };
+      SidebarLogic.resetPaths = () => {
+        measured++;
+      };
+      const before = {
+        x: fakeEl.getAttribute('x'),
+        width: fakeEl.getAttribute('width'),
+        height: fakeEl.getAttribute('height'),
+      };
+      /** @type {string[]} */
+      const elWrites = [];
+      const origSet = fakeEl.setAttribute;
+      fakeEl.setAttribute = (name, value) => {
+        elWrites.push(name);
+        origSet.call(fakeEl, name, value);
+      };
+      svgWrites.length = 0;
+      try {
+        scroll = 800;
+        SidebarLogic.followScroll();
+        // y = 800 + 20; bottom = 820 + 400 (content) + 12 (shadow pad)
+        expect(fakeEl.getAttribute('y')).toBe('820');
+        expect(vb.height).toBe(1232);
+
+        scroll = 0;
+        SidebarLogic.followScroll();
+        expect(fakeEl.getAttribute('y')).toBe('20');
+        expect(vb.height).toBe(1000);
+      } finally {
+        SidebarLogic.fitPaths = origFit;
+        SidebarLogic.resetPaths = origReset;
+      }
+      expect(measured).toBe(0);
+      expect(new Set(elWrites)).toEqual(new Set(['y']));
+      expect(new Set(svgWrites)).toEqual(new Set(['height']));
+      expect(fakeEl.getAttribute('x')).toBe(before.x);
+      expect(fakeEl.getAttribute('width')).toBe(before.width);
+      expect(fakeEl.getAttribute('height')).toBe(before.height);
+    });
+
+    test('measures fully when no measurement exists yet', () => {
+      const fakeEl = createFakeElement('foreignObject');
+      const innerDiv = createFakeElement('div');
+      innerDiv.offsetHeight = 300;
+      fakeEl.querySelector = () => innerDiv;
+      globalThis.DomAdapter = {
+        getElementById(id) {
+          if (id === 'relation-sidebar') return fakeEl;
+          return null;
+        },
+        getSvgRoot() {
+          return {
+            getBoundingClientRect() {
+              return { left: 0, top: 0, width: 1000, height: 1000 };
+            },
+            viewBox: { baseVal: { width: 1000, height: 1000 } },
+            setAttribute() {},
+          };
+        },
+        querySelectorAll() {
+          return [];
+        },
+      };
+      globalThis.window = globalThis.window || {};
+      globalThis.window.innerWidth = 1000;
+      globalThis.window.innerHeight = 600;
+      SidebarLogic.resetStoredViewBox();
+      SidebarLogic.hide();
+      SidebarLogic.followScroll();
+      expect(fakeEl.getAttribute('y')).toBe('20');
+      expect(fakeEl.getAttribute('height')).toBe('312');
+    });
+  });
+
   describe('collapse-all handler', () => {
     function makeSymbolEl(collapsed) {
       const attrs = new Map();

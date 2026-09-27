@@ -604,6 +604,8 @@ const SidebarLogic = {
   _originalViewBoxHeight: null,
   /** Original SVG viewBox width — stored to restore after sidebar close. @type {number | null} */
   _originalViewBoxWidth: null,
+  /** Sidebar height from the last updatePosition(), reused by followScroll(). @type {number | null} */
+  _effectiveHeight: null,
 
   /**
    * Calculate sidebar x in SVG coordinates (right of widest visible arc).
@@ -1429,6 +1431,7 @@ const SidebarLogic = {
     el.style.display = 'none';
     this._cachedX = null;
     this._cachedMaxArcRightX = null;
+    this._effectiveHeight = null;
     this._isTransient = false;
     clearTimeout(this._debounceTimer ?? undefined);
 
@@ -1524,20 +1527,11 @@ const SidebarLogic = {
       innerDiv.style.height = `${effectiveH}px`;
       this.fitPaths(innerDiv);
     }
+    this._effectiveHeight = effectiveH;
 
-    // Expand SVG canvas if sidebar extends beyond viewBox
     if (svg) {
       const vb = svg.viewBox.baseVal;
-      const originalH = this._originalViewBoxHeight ?? vb.height;
-      if (this._originalViewBoxHeight === null) {
-        this._originalViewBoxHeight = vb.height;
-      }
-      const sidebarBottom = pos.y + effectiveH + SIDEBAR_SHADOW_PAD;
-      const neededH = Math.max(originalH, sidebarBottom);
-      if (vb.height !== neededH) {
-        vb.height = neededH;
-        svg.setAttribute('height', String(neededH));
-      }
+      this._growCanvasHeight(svg, pos.y + effectiveH + SIDEBAR_SHADOW_PAD);
 
       // Also expand width when sidebar extends beyond viewBox
       const originalW = this._originalViewBoxWidth ?? vb.width;
@@ -1550,6 +1544,48 @@ const SidebarLogic = {
         vb.width = neededW;
         svg.setAttribute('width', String(neededW));
       }
+    }
+  },
+
+  /**
+   * Move the sidebar to the current scroll position. Width, height and x
+   * depend only on content and viewport, so they keep the values of the last
+   * updatePosition().
+   */
+  followScroll() {
+    if (this._effectiveHeight === null) {
+      this.updatePosition();
+      return;
+    }
+    const el = this._getElement();
+    if (!el) return;
+    const pos = this._calcPosition();
+    if (!pos) return;
+    el.setAttribute('y', String(pos.y));
+    const svg = DomAdapter.getSvgRoot();
+    if (svg) {
+      this._growCanvasHeight(
+        svg,
+        pos.y + this._effectiveHeight + SIDEBAR_SHADOW_PAD,
+      );
+    }
+  },
+
+  /**
+   * Expand the SVG canvas if the sidebar extends beyond the viewBox.
+   * @param {SVGSVGElement} svg
+   * @param {number} sidebarBottom
+   */
+  _growCanvasHeight(svg, sidebarBottom) {
+    const vb = svg.viewBox.baseVal;
+    const originalH = this._originalViewBoxHeight ?? vb.height;
+    if (this._originalViewBoxHeight === null) {
+      this._originalViewBoxHeight = vb.height;
+    }
+    const neededH = Math.max(originalH, sidebarBottom);
+    if (vb.height !== neededH) {
+      vb.height = neededH;
+      svg.setAttribute('height', String(neededH));
     }
   },
 };

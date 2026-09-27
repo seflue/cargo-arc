@@ -1431,11 +1431,17 @@ if (typeof document !== 'undefined') {
       }
     }
 
-    // Update toolbar and sidebar position to stay at top when scrolling
+    // Update toolbar and sidebar position, re-measuring the sidebar
     function updateToolbarPosition() {
       placeToolbar();
       if (SidebarLogic.isVisible() && !_isNavigating)
         SidebarLogic.updatePosition();
+    }
+
+    function followScroll() {
+      placeToolbar();
+      if (SidebarLogic.isVisible() && !_isNavigating)
+        SidebarLogic.followScroll();
     }
 
     // Keep the toolbar at the top-left of the visible area, as wide as it.
@@ -1458,7 +1464,7 @@ if (typeof document !== 'undefined') {
       fo.setAttribute('width', String(visibleWidth));
     }
 
-    window.addEventListener('scroll', updateToolbarPosition);
+    window.addEventListener('scroll', followScroll);
     window.addEventListener('resize', () => {
       applyCanvasSize();
       updateToolbarPosition();
