@@ -60,6 +60,11 @@ instance is your installed RustRover.
 Restart and stop are also title actions of the tool window, and disabled
 while no service runs.
 
+While the service runs, the plugin reports the file and caret line of the
+selected editor whenever the selection changes or RustRover comes back to the
+foreground, and every file a save writes. The page's toolbar decides what the
+service does with them: select the file's node, recompute the diagram.
+
 ## Settings
 
 Settings → Tools → cargo-arc, all optional:

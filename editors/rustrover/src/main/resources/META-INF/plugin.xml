@@ -12,6 +12,18 @@
                           id="com.github.seflue.cargoarc.ArcConfigurable" displayName="cargo-arc"/>
   </extensions>
 
+  <projectListeners>
+    <listener class="com.github.seflue.cargoarc.EditorSelectionListener"
+              topic="com.intellij.openapi.fileEditor.FileEditorManagerListener"/>
+    <listener class="com.github.seflue.cargoarc.SaveListener"
+              topic="com.intellij.openapi.vfs.newvfs.BulkFileListener"/>
+  </projectListeners>
+
+  <applicationListeners>
+    <listener class="com.github.seflue.cargoarc.ActivationListener"
+              topic="com.intellij.openapi.application.ApplicationActivationListener"/>
+  </applicationListeners>
+
   <actions>
     <action id="com.github.seflue.cargoarc.OpenAction" class="com.github.seflue.cargoarc.OpenAction"
             text="cargo-arc: Open">

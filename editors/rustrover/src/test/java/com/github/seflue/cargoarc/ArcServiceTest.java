@@ -3,7 +3,10 @@ package com.github.seflue.cargoarc;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledOnOs;
 import org.junit.jupiter.api.condition.OS;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
@@ -94,6 +97,52 @@ class ArcServiceTest {
         waitUntil(() -> !service.isRunning());
         Thread.sleep(200);
         assertFalse(service.isRunning());
+    }
+
+    @Test
+    void focusWritesTheLineToTheService(@TempDir Path directory) throws Exception {
+        Path received = directory.resolve("stdin");
+        ArcService service = recordingService(received);
+        service.open();
+        waitUntil(() -> Files.exists(received));
+
+        service.focus(Path.of("/tmp/a b/lib.rs"), 7);
+
+        waitUntil(() -> read(received).equals("arc focus 7 /tmp/a b/lib.rs\n"));
+        service.stop();
+    }
+
+    @Test
+    void savedWritesTheLineToTheService(@TempDir Path directory) throws Exception {
+        Path received = directory.resolve("stdin");
+        ArcService service = recordingService(received);
+        service.open();
+        waitUntil(() -> Files.exists(received));
+
+        service.saved(Path.of("/tmp/a b/lib.rs"));
+
+        waitUntil(() -> read(received).equals("arc saved /tmp/a b/lib.rs\n"));
+        service.stop();
+    }
+
+    // Echoes stdin into `received`, created at startup so a test knows the
+    // service runs before it sends.
+    private static ArcService recordingService(Path received) {
+        return new ArcService(
+            () -> List.of("sh", "-c", "echo 'arc ready 0.0.0 4321'; cat > \"$0\"", received.toString()),
+            Path.of(System.getProperty("user.dir")),
+            (file, line) -> { },
+            url -> { },
+            failure -> { }
+        );
+    }
+
+    private static String read(Path file) {
+        try {
+            return Files.readString(file);
+        } catch (IOException missing) {
+            return "";
+        }
     }
 
     private static void waitUntil(BooleanSupplier condition) throws InterruptedException {

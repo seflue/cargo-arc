@@ -10,12 +10,16 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
+import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
@@ -46,11 +50,17 @@ public final class ArcService implements Disposable {
 
     private final Object lock = new Object();
     private Process process;
+    private Writer stdin;
     private String version;
     private Integer port;
     private boolean stopRequested;
     private boolean restartRequested;
     private final Deque<String> stderrTail = new ArrayDeque<>();
+    private final ExecutorService stdinWriter = Executors.newSingleThreadExecutor(task -> {
+        Thread thread = new Thread(task, "cargo-arc writer");
+        thread.setDaemon(true);
+        return thread;
+    });
 
     ArcService(
         Supplier<List<String>> command,
@@ -161,6 +171,42 @@ public final class ArcService implements Disposable {
         toDestroy.destroy();
     }
 
+    /**
+     * Tells the service the cursor is on 1-based {@code line} of {@code file}.
+     * The service decides whether the file has a node.
+     */
+    public void focus(Path file, int line) {
+        send("arc focus " + line + " " + file);
+    }
+
+    /**
+     * Tells the service {@code file} was written. The service decides whether
+     * the analysis reads it and whether it recomputes the diagram.
+     */
+    public void saved(Path file) {
+        send("arc saved " + file);
+    }
+
+    // Writes on its own thread: callers are editor listeners on the UI
+    // thread, and a service that stops reading would block the write.
+    private void send(String line) {
+        Writer target;
+        synchronized (lock) {
+            if (process == null || !process.isAlive() || stopRequested) {
+                return;
+            }
+            target = stdin;
+        }
+        stdinWriter.execute(() -> {
+            try {
+                target.write(line + "\n");
+                target.flush();
+            } catch (IOException closed) {
+                // Dropped: a closed pipe means the service reads no more commands.
+            }
+        });
+    }
+
     public boolean isRunning() {
         synchronized (lock) {
             return process != null && process.isAlive();
@@ -184,6 +230,7 @@ public final class ArcService implements Disposable {
             restartRequested = false;
             toDestroy = process;
         }
+        stdinWriter.shutdown();
         if (toDestroy != null) {
             toDestroy.destroy();
         }
@@ -201,6 +248,7 @@ public final class ArcService implements Disposable {
         }
         synchronized (lock) {
             process = started;
+            stdin = new OutputStreamWriter(started.getOutputStream(), StandardCharsets.UTF_8);
             version = null;
             port = null;
             stopRequested = false;
