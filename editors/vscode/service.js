@@ -1,5 +1,6 @@
 // What the extension knows about the service without VS Code: the command
-// line that starts it, the two stdout lines it speaks, and the jump target.
+// line that starts it, the two stdout lines it speaks, the jump target, and
+// the stdin lines the editor's events become.
 
 const path = require('node:path');
 
@@ -97,4 +98,54 @@ function jumpLine(line, lineCount) {
   return Math.min(line, lineCount) - 1;
 }
 
-module.exports = { argv, parseLine, resolveBinary, jumpLine };
+/**
+ * The fields of VS Code's `TextDocument` and `TextEditor` the stdin lines
+ * are built from.
+ * @typedef {{ uri: { scheme: string, fsPath: string } }} TextDocument
+ * @typedef {{ document: TextDocument, selection: { active: { line: number } } }} TextEditor
+ */
+
+/**
+ * The absolute path of `document`, or null for a document that is no file
+ * on disk, such as an untitled buffer.
+ * @param {TextDocument} document
+ * @returns {string|null}
+ */
+function fileOf(document) {
+  return document.uri.scheme === 'file' ? document.uri.fsPath : null;
+}
+
+/**
+ * Turn the editor's events into lines on the service's stdin, each passed
+ * to `write`. A document that is no file writes nothing; the service
+ * decides whether a file has a node or counts for a recompute.
+ * @param {(line: string) => void} write
+ * @returns {{ activeEditorChanged: (editor: TextEditor|undefined) => void, windowFocused: (state: { focused: boolean }, editor: TextEditor|undefined) => void, saved: (document: TextDocument) => void }}
+ */
+function editorEvents(write) {
+  /**
+   * @param {TextEditor|undefined} editor undefined when no editor is active
+   */
+  const focus = (editor) => {
+    const file = editor && fileOf(editor.document);
+    if (file) {
+      write(`arc focus ${editor.selection.active.line + 1} ${file}`);
+    }
+  };
+  return {
+    activeEditorChanged: focus,
+    windowFocused(state, editor) {
+      if (state.focused) {
+        focus(editor);
+      }
+    },
+    saved(document) {
+      const file = fileOf(document);
+      if (file) {
+        write(`arc saved ${file}`);
+      }
+    },
+  };
+}
+
+module.exports = { argv, parseLine, resolveBinary, jumpLine, editorEvents };

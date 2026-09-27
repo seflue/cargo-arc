@@ -1,5 +1,11 @@
 import { describe, expect, test } from 'bun:test';
-import { argv, jumpLine, parseLine, resolveBinary } from './service.js';
+import {
+  argv,
+  editorEvents,
+  jumpLine,
+  parseLine,
+  resolveBinary,
+} from './service.js';
 
 const defaults = {
   binary: 'cargo-arc',
@@ -107,5 +113,58 @@ describe('jumpLine', () => {
 
   test('clamps to the last line when the file has grown shorter', () => {
     expect(jumpLine(500, 10)).toBe(9);
+  });
+});
+
+describe('editorEvents', () => {
+  /**
+   * @param {string} fsPath
+   * @param {string} [scheme]
+   */
+  const document = (fsPath, scheme = 'file') => ({ uri: { scheme, fsPath } });
+  /**
+   * @param {string} fsPath
+   * @param {number} line 0-based, as VS Code counts
+   * @param {string} [scheme]
+   */
+  const editor = (fsPath, line, scheme) => ({
+    document: document(fsPath, scheme),
+    selection: { active: { line } },
+  });
+  const recorder = () => {
+    /** @type {string[]} */
+    const lines = [];
+    return { lines, events: editorEvents((line) => lines.push(line)) };
+  };
+
+  test('switching the editor writes the focus line with a 1-based line', () => {
+    const { lines, events } = recorder();
+    events.activeEditorChanged(editor('/ws/src/lib.rs', 6));
+    expect(lines).toEqual(['arc focus 7 /ws/src/lib.rs']);
+  });
+
+  test('the window gaining focus writes the focus line of the active editor', () => {
+    const { lines, events } = recorder();
+    const active = editor('/ws/src/lib.rs', 0);
+    events.windowFocused({ focused: false }, active);
+    events.windowFocused({ focused: true }, active);
+    expect(lines).toEqual(['arc focus 1 /ws/src/lib.rs']);
+  });
+
+  test('a save writes the saved line', () => {
+    const { lines, events } = recorder();
+    events.saved(document('/ws/src/lib.rs'));
+    expect(lines).toEqual(['arc saved /ws/src/lib.rs']);
+  });
+
+  test('writes nothing for a document that is no file, or without an editor', () => {
+    const { lines, events } = recorder();
+    const untitled = editor('Untitled-1', 0, 'untitled');
+    events.activeEditorChanged(untitled);
+    events.activeEditorChanged(undefined);
+    events.windowFocused({ focused: true }, untitled);
+    events.windowFocused({ focused: true }, undefined);
+    events.saved(untitled.document);
+    expect(lines).toEqual([]);
   });
 });

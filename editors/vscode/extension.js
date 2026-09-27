@@ -1,11 +1,18 @@
-// Three jobs: start and own the cargo-arc service, embed its page in a
-// webview, and jump into the code when the page asks for it.
+// Four jobs: start and own the cargo-arc service, embed its page in a
+// webview, jump into the code when the page asks for it, and tell the
+// service which file the editor is in and which file was saved.
 
 const vscode = require('vscode');
 const { spawn } = require('node:child_process');
 const readline = require('node:readline');
 const path = require('node:path');
-const { argv, parseLine, resolveBinary, jumpLine } = require('./service.js');
+const {
+  argv,
+  parseLine,
+  resolveBinary,
+  jumpLine,
+  editorEvents,
+} = require('./service.js');
 
 /**
  * The running service: its process, once it has announced itself the
@@ -27,6 +34,7 @@ let output = null;
  */
 function activate(context) {
   output = vscode.window.createOutputChannel('cargo-arc');
+  const events = editorEvents(send);
   context.subscriptions.push(
     output,
     vscode.commands.registerCommand('cargoArc.open', () => open(context)),
@@ -35,7 +43,24 @@ function activate(context) {
     ),
     vscode.commands.registerCommand('cargoArc.restart', () => restart(context)),
     vscode.commands.registerCommand('cargoArc.stop', () => endService()),
+    vscode.window.onDidChangeActiveTextEditor(events.activeEditorChanged),
+    vscode.window.onDidChangeWindowState((state) =>
+      events.windowFocused(state, vscode.window.activeTextEditor),
+    ),
+    vscode.workspace.onDidSaveTextDocument(events.saved),
   );
+}
+
+/**
+ * Writes one line to the service's stdin. A service that was asked to stop
+ * still exists until its exit event; it gets nothing more.
+ * @param {string} line
+ */
+function send(line) {
+  if (!service || service.stopping) {
+    return;
+  }
+  service.process.stdin?.write(`${line}\n`);
 }
 
 function deactivate() {
@@ -212,6 +237,11 @@ function startService(folder, replacesPort) {
     }
   });
 
+  // A service that exits between two writes closes stdin under a pending
+  // one; without a listener the EPIPE would be thrown.
+  child.stdin.on('error', (err) => {
+    output.appendLine(`cargo-arc: stdin: ${err.message}`);
+  });
   readline.createInterface({ input: child.stderr }).on('line', (line) => {
     output.appendLine(line);
   });

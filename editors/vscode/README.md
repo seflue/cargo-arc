@@ -2,6 +2,8 @@
 
 Starts `<binary> arc ui` for the workspace folder and shows the diagram in a webview panel beside the editor.
 Clicking a jump target in the diagram opens the file at that line.
+Switching to another file, or returning to the window, selects that file's node in the diagram.
+Saving a file that belongs to the analysis recomputes the diagram, unless recomputing on save is switched off (it is on by default).
 The service is a child of this VS Code window and ends when the panel closes, when it is stopped, or with the window.
 
 Requires VS Code 1.80 or newer and a `cargo-arc` binary that has the `ui` subcommand.
