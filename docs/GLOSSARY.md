@@ -136,51 +136,48 @@ A Lakos component, a header with its implementation file, corresponds to a modul
 
 ## Rules and violations
 
-| Term | Definition | Avoid |
-|------|------------|-------|
-| **Rule** | One named check from `arc-rules.toml`, of type `layers`, `forbidden-dependency` or `no-cycles`. A name is unique across all types. | — |
-| **Severity** | How bad breaking a rule is: `error`, `warn`, `ignore`. A property of the rule, not of what it finds. | — |
-| **Violation** | One fact a rule established: a dependency, or a cycle, under that rule. A dependency holds whether it is written as one edge or runs through nodes in between, and either way the violation names its two ends. A manifest entry and an import between the same two ends are one dependency, not two. Every violation is in exactly one of the three states below. | finding |
-| **Reported** | The state that counts: neither allowed nor frozen. Only reported violations reach the exit code. | — |
-| **Allowed** | Permitted by an `allow` entry on the rule, permanently and by intent. An entry names the odd edge, the one that runs against the order the writer has in mind, and the entries of a rule together declare that order. | whitelisted, ignored, excepted |
-| **Frozen** | Covered by an `arc-baseline.toml` entry: debt that exists, is tolerated until someone gets to it, and is expected to shrink. | baselined |
-| **Silenced** | The genus of allowed and frozen, and what `--show-silenced` lists. Never a state on its own. | suppressed |
-| **Baseline** | The set of frozen violations, kept in `arc-baseline.toml` beside the rules file. Only `--generate-baseline` writes it. | — |
-| **Diagnostic** | A gap in the configuration rather than in the architecture: a node an exhaustive `layers` rule leaves in no position, a baseline entry that matches nothing, an `allow` entry that matches nothing, `allow` entries that put nodes above each other in a circle, a rule pattern that matches nothing, a catch-all layer that holds nothing. | — |
-| **Diagnostic level** | Whether the state a diagnostic names is tolerated: `allow`, `warn`, `deny`. | severity |
-| **Layer** | One position in a `layers` rule, holding one or more patterns, or `*` for the nodes no other layer holds. Patterns in the same layer sit at the same position. | tier |
-| **Exhaustive rule** | A `layers` rule carrying `exhaustive = true`, which claims to sort everything it addresses: its crate patterns claim every workspace crate, its module patterns every module of the crates those patterns reach. Without the field a rule says nothing about what it does not name. | total, complete |
-| **Module path pattern** | A module path with optional wildcards: `domain`, `domain::service`, `domain::*`, `domain::**`, `domain*` (`*` standing for any run of characters within one segment), or a bare `**`. *Pattern* alone means this one where nothing says otherwise. | glob |
-| **Dependency pattern** | A named list of `allow` entries under `[dependency-patterns]`, referenced from a rule's `allow` list by name. It selects dependencies; whether they are allowed is decided by the list that references it. | idiom, allow pattern, edge pattern |
-| **Scope** | The module path pattern a `no-cycles` rule searches inside. Not a concept beside pattern, just the name of its role there. | — |
+| Term | Definition |
+|------|------------|
+| **Rule** | One named check in `arc-rules.toml`, of type `layers`, `forbidden-dependency` or `no-cycles`. Its name is unique across all types. |
+| **Severity** | How bad it is to break a rule: `error`, `warn` or `ignore`. Severity belongs to the rule, and all its violations share it. |
+| **Violation** | A dependency or a tangle that breaks a rule. The dependency can be direct or transitive. A manifest entry and an import between the same two ends are one dependency. Every violation is in exactly one of the three states below. |
+| **Reported** | The state of a violation that is neither allowed nor frozen. Only reported violations affect the exit code. |
+| **Allowed** | Permitted by an `allow` entry on the rule, permanently and on purpose. An entry names an edge that runs against the order the rule's writer has in mind, and the entries of a rule together declare that order. |
+| **Frozen** | Covered by an entry in `arc-baseline.toml`. A frozen violation is debt that is tolerated until someone fixes it and is expected to shrink. |
+| **Silenced** | Allowed or frozen. `--show-silenced` lists silenced violations. Silenced is not a state of its own. |
+| **Baseline** | The set of frozen violations, kept in `arc-baseline.toml` beside the rules file. Only `--generate-baseline` writes it. |
+| **Diagnostic** | A gap in the configuration: a node that an exhaustive `layers` rule leaves in no position, an `except` entry that matches no node, a baseline entry that matches nothing, a baseline entry that freezes more symbols than the edge still carries, an `allow` entry that matches nothing, `allow` entries that put nodes above each other in a circle, a rule pattern that matches nothing, or a catch-all layer that holds nothing. |
+| **Diagnostic level** | Whether a run tolerates the gap a diagnostic names: `allow`, `warn` or `deny`. |
+| **Layer** | One position in a `layers` rule. It holds one or more patterns, or `*` for the nodes that no other layer holds. Patterns in the same layer share its position. |
+| **Exhaustive rule** | A `layers` rule with `exhaustive = true`, which claims to sort everything it addresses. Its crate patterns claim every workspace crate, and its module patterns claim every module of the crates they reach. A rule without the field says nothing about the nodes it does not name. |
+| **Module path pattern** | A module path with optional wildcards, such as `domain`, `domain::service`, `domain::*`, `domain::**`, `domain*` or a bare `**`. Inside one segment, `*` stands for any run of characters. *Pattern* alone means a module path pattern unless the text says otherwise. |
+| **Dependency pattern** | A named list of `allow` entries under `[dependency-patterns]`, which a rule's `allow` list refers to by name. It only selects dependencies; the `allow` list that names it allows them. |
+| **Scope** | The module path pattern in the `scope` field of a `no-cycles` rule. The rule searches only the edges whose two ends the pattern matches. |
 
-*Allowed* and *frozen* are kept apart because one is meant to stay and the other is meant to shrink.
+Semgrep and Detekt call a violation a *finding*.
 
-*Finding* is what Semgrep and Detekt call the violation itself, so it would add a second noun for one thing instead of a distinction.
+A *whitelist* is a list of exceptions, and the word fits allowed and frozen violations alike.
+An *ignored* rule has severity `ignore` and is never checked, while an allowed violation was found and then permitted.
+*Baselined* says only that a violation has an entry in `arc-baseline.toml`.
+Linters usually call a hidden result *suppressed*.
+In the arc diagram, a suppressed arc is one the diagram does not draw (see [The arc diagram](#the-arc-diagram)).
 
-*Whitelisted* names a mechanism and covers allowed and frozen alike, which is the one line those two words exist to draw.
-*Ignored* is taken by the severity: a rule at `ignore` finds nothing, while an allowed violation was found and then permitted.
-*Baselined* says an entry sits in the file, not that the debt is meant to shrink.
-*Suppressed* is the usual word across linters for hiding a result and invites reading it as a state beside allowed and frozen, which silenced is not.
+A diagnostic is not a violation and has no severity.
 
-*Severity* and *diagnostic level* stay separate because they qualify different objects: severity says how bad breaking an intent is, the level says whether a state is acceptable.
-A diagnostic is not a violation and carries no severity.
+The configuration and the output use different words.
+Severity and diagnostic level are configured as `error`, `warn`, `ignore`, `allow` and `deny`.
+The output calls what a run produced an *error* or a *warning*: a violation of severity `warn` is printed and counted as a warning, and a diagnostic at level `deny` is printed as an error.
+A rule's block with no reported violation is headed `silenced` instead.
 
-Both axes are configured in one set of words and printed in another.
-`error`, `warn`, `ignore`, `allow` and `deny` say what to do with a case; the output names what the run produced, an error or a warning.
-So a violation of severity `warn` is printed and counted as a warning, and a diagnostic at level `deny` is printed as an error.
-The printed word is neither a fourth value of an axis nor a severity assigned to a diagnostic.
-A rule with nothing reported is headed `silenced` in place of that word, which says the block holds nothing that counts, not that silenced is a severity.
+A shell *glob* also has character classes, alternation and negation.
+A module path pattern has none of them.
+Its `*` never crosses a `::`, and `**` stands only as the whole pattern or as its last segment.
 
-*Glob* promises the shell's matching, and what is absent here is character classes, alternation and negation.
-`*` is the one wildcard, and it never crosses a `::`.
+In the frontend code, a *layer* is also an SVG stacking order.
+In the architecture literature, a *tier* is a deployment boundary.
 
-*Layer* also names an SVG stacking order in the frontend.
-That is the ordinary graphics sense and it stays; this entry governs the rule position.
-*Tier* is a deployment boundary in the architecture literature, while a layer here is a position in a rule and is matched against module paths.
-
-*Total* and *complete* both overstate the claim: a rule written only from module patterns is exhaustive over the modules of the crates it reaches, and says nothing about the rest of the workspace.
-*Exhaustive* is scoped by what the rule addresses, which is the point of the field.
+*Total* and *complete* would claim the whole workspace.
+An exhaustive rule written only from module patterns covers the modules of the crates it reaches and says nothing about other crates.
 
 ### What a run prints
 
