@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Hotspot map: visualize the workspace as nested circles, sized by lines of code and colored by number of commits.
-- The diagram selects the file open in Neovim and recomputes when code is saved.
+- The diagram selects the file open in the editor and recomputes when code is saved.
 - External crates and test code can be switched on and off in the diagram.
 - Light and dark themes.
 - Rules can share named `allow` lists, and `allow` entries can name targets relative to the matched module.
@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Fewer false edges and cycles from import resolution.
 - The symbol count of a cycle edge no longer includes re-exported names.
+- The diagram no longer scrolls endlessly in Chromium, VS Code and RustRover.
 
 ## [0.5.0] - 2026-09-14
 
