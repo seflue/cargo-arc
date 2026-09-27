@@ -24,23 +24,24 @@ In the arc diagram, an arc is the curve that draws a dependency (see [Arc type](
 | Term | Definition |
 |------|------------|
 | **Cycle** | A chain of direct dependencies between modules that leads back to the module it started from, such as `a -> b -> c -> a`. |
+| **Cluster** | A strongly connected component of the module graph with at least two modules: the maximal set of modules that all reach each other. A cluster holds one or more cycles and never spans crates. |
+| **Tangle** | The same set of modules as a cluster. Structure101 defines a tangle as "a set of items that form a cyclic dependency graph at any scope". |
 | **Representative cycle** | The shortest cycle through one edge. Several edges can share the same representative cycle. Every cycle cargo-arc reports is a representative cycle. |
 | **Counted cycle** | A representative cycle that a tangle's numbers count and its feedback arc set breaks. In a tangle with at least one cycle that is not frozen, these are the cycles that are not frozen. In a tangle whose cycles are all frozen, they are all of its cycles. |
 | **Unlisted cycle** | A cycle that is not the representative cycle of any of its edges. For each of its edges, cargo-arc lists a shorter or equally short cycle instead. |
 | **Cyclic edge** | An edge that lies on at least one cycle. Its two ends are in the same cluster. The arc diagram highlights cyclic edges. |
-| **Cluster** | A strongly connected component of the module graph with at least two modules: the maximal set of modules that all reach each other. A cluster holds one or more cycles and never spans crates. |
-| **Tangle** | The same set of modules as a cluster. Structure101 defines a tangle as "a set of items that form a cyclic dependency graph at any scope". |
 
 *Circular dependency* is the word in dependency analysis for a cycle.
 The code says *cycle*.
 Output a user reads says *circular dependency* in sentences, and *cycle* in counts and table cells.
 
+The code says *cluster*, and output a user reads says *tangle*.
+
+A tangle with exactly one cycle is a *single-cycle tangle*, and a tangle with more is a *multi-cycle tangle*.
+[RULES.md](RULES.md#no-cycles) describes which dependencies the search includes and how the report differs between the two.
+
 Graph theory calls a cycle without a repeated node an *elementary cycle*.
 Every representative cycle is elementary, but cargo-arc never lists all elementary cycles.
-
-In a depth-first search, a *back edge* leads from a node to one of its ancestors in the search tree.
-Which edges are back edges depends on where the search starts.
-Whether an edge is cyclic does not.
 
 A representative cycle stands in for every cycle through its edge.
 In graph theory, a *minimal cycle* has no chord, an edge that joins two of its nodes without being part of it.
@@ -56,10 +57,9 @@ A counted cycle is not always *reported* (see [Rules and violations](#rules-and-
 In a tangle whose cycles are all frozen, every cycle counts and none is reported.
 An unlisted cycle is never reported.
 
-The code says *cluster*, and output a user reads says *tangle*.
-
-A tangle with exactly one cycle is a *single-cycle tangle*, and a tangle with more is a *multi-cycle tangle*.
-[RULES.md](RULES.md#no-cycles) describes which dependencies the search includes and how the report differs between the two.
+In a depth-first search, a *back edge* leads from a node to one of its ancestors in the search tree.
+Which edges are back edges depends on where the search starts.
+Whether an edge is cyclic does not.
 
 ## Feedback arcs
 
