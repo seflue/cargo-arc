@@ -1,0 +1,7 @@
+[package]
+name = "aaa_kit"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+zzz_base = { path = "../zzz_base" }

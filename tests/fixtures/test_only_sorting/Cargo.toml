@@ -1,0 +1,3 @@
+[workspace]
+members = ["aaa_kit", "bbb", "ccc", "zzz_base"]
+resolver = "2"
