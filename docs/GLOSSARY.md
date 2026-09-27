@@ -1,12 +1,9 @@
 # Glossary
 
 cargo-arc visualizes a workspace's module and crate dependencies and detects architecture violations.
-This file pins the terms whose everyday meaning is too loose for how it uses them.
+This file defines the terms it uses in a specific sense.
 
-On conflict this file wins; code, CLI output and documentation follow.
-What the tool does with these things is written elsewhere: checking in [RULES.md](RULES.md), the arc diagram in [ARC_DIAGRAM.md](ARC_DIAGRAM.md), the hotspot map in [HOTSPOT_MAP.md](HOTSPOT_MAP.md), implementation in [ARCHITECTURE.md](ARCHITECTURE.md).
-
-Where another word names the same thing, or the same word means something else elsewhere, the prose under the table says so.
+See also [RULES.md](RULES.md), [ARC_DIAGRAM.md](ARC_DIAGRAM.md), [HOTSPOT_MAP.md](HOTSPOT_MAP.md) and [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Nodes and edges
 
