@@ -235,47 +235,45 @@ Neither has anything to do with who imports a symbol.
 
 ## The arc diagram
 
-| Term | Definition | Avoid |
-|------|------------|-------|
-| **Arc diagram** | The view of a workspace as a tree of crates and modules, with arcs for the dependencies between them. What `cargo arc` renders; `cargo arc ui` serves it beside the hotspot map. | — |
-| **Arc type** | Which of three dependencies an arc draws: crate-dep, module-dep or re-export. Every arc has exactly one, and it is read off the arc's endpoints and its re-export flag rather than stored. | kind, level |
-| **Re-export** | One of the three arc types: an arc whose imports are all `pub use`, so it passes names on rather than depending on them. A single ordinary import behind it makes it a module dependency instead ([ADR-022](adr/022-reexport-edges-tagged-not-dropped.md)). | — |
-| **Filter** | One switch over what the diagram shows, offered as a toolbar checkbox. Four cover arcs (crate dependencies, module dependencies, re-exports, cycles), the others cover nodes. | layer |
-| **Reading order** | The top-to-bottom sequence of the nodes under one parent. A node comes before the nodes it depends on; inside a tangle, where no order can do that for every edge, the layout takes the one that leaves the least dependency weight pointing up. | level, layer |
-| **Upward edge** | An edge whose target sits above its source in the reading order. Inside a tangle some edge has to; outside one it occurs only where two subtrees each hold a module using the other's, a cycle between the subtrees with none between modules. Drawn in its own style. | back edge, reverse dependency |
+| Term | Definition |
+|------|------------|
+| **Arc diagram** | The view of a workspace as a tree of crates and modules, with arcs for the dependencies between them. `cargo arc` renders it, and `cargo arc ui` serves it beside the hotspot map. |
+| **Arc type** | Which of crate-dep, module-dep and re-export an arc draws. Every arc has exactly one arc type. cargo-arc derives it from the arc's endpoints and its re-export flag and does not store it. |
+| **Re-export** | The arc type of an arc whose imports are all `pub use`, so that it passes names on without depending on them. A single ordinary import on the arc makes it a module-dep instead ([ADR-022](adr/022-reexport-edges-tagged-not-dropped.md)). |
+| **Filter** | One switch over what the diagram shows, offered as a checkbox in the **View** menu. Four filters cover arcs: crate dependencies, module dependencies, re-exports and circular dependencies. The others cover nodes. |
+| **Reading order** | The top-to-bottom sequence of the nodes under one parent. A node comes before the nodes it depends on. Inside a tangle no order can do that for every edge, and the layout picks the order with the least dependency weight pointing up. A tangle of more than eight nodes under one parent is ordered alphabetically instead. |
+| **Upward edge** | An edge whose target sits above its source in the reading order. Inside a tangle some edge must be upward. Outside a tangle, an upward edge occurs only where two subtrees each hold a module that uses a module of the other: a cycle between the subtrees without a cycle between modules. The diagram draws upward edges in their own style. |
 
-*Diagram* alone is short for the arc diagram only where the hotspot map is out of reach, as in this section and in [ARC_DIAGRAM.md](ARC_DIAGRAM.md).
-Where both views are in reach, it names neither.
+In this section and in [ARC_DIAGRAM.md](ARC_DIAGRAM.md), *diagram* alone means the arc diagram.
+Where a text also covers the hotspot map, say *arc diagram*.
 
-*Kind* is taken twice over and neither use is this one: it says whether a reference sits in production or in test source, and in cargo it classifies a manifest dependency as normal, dev or build.
-Both cut across the arc type, since one pair of crates can carry a production and a test edge of the same type.
-*Level* would put the three values in an order they do not have.
-A node carries a type in the same sense, so the two read alike.
+*Kind* has two other meanings in this project.
+It says whether a reference is in production or in test code, and in Cargo it classifies a manifest dependency as normal, dev or build.
+Both are independent of the arc type: one pair of crates can have a production edge and a test edge of the same arc type.
+*Level* would suggest an order among the three arc types, and they have none.
 
-A filter is not a classification.
-Three of the four arc filters select on the arc's type, which is one of crate-dep, module-dep and re-export; the cycles filter selects on a property an arc carries in addition to its type.
-An arc can therefore fall under two filters at once.
-Which arcs a set of filters leaves visible is in [ARC_DIAGRAM.md](ARC_DIAGRAM.md#filters).
+Three of the four arc filters select on the arc type.
+The circular-dependencies filter selects on whether the arc is a cyclic edge, so an arc can fall under two filters at once.
+[ARC_DIAGRAM.md](ARC_DIAGRAM.md#filters) describes which arcs a set of filters leaves visible.
 
-*Layer* is taken twice over and fits neither: it names a position in a `layers` rule, and in the frontend an SVG stacking container.
-All arcs sit in one stacking layer whatever filters cover them, so the two groupings cut across each other.
+A *layer* is a position in a `layers` rule or an SVG stacking order (see [Rules and violations](#rules-and-violations)).
+All arcs sit in one SVG stacking layer, whichever filters cover them.
 
-*Suppressed* names an arc the diagram does not draw because another already covers it: a crate arc that a module arc between the same pair duplicates, or an arc outside the selection in group mode.
-That is the rendering sense and it stays.
-A violation that was found and then hidden is *silenced*, never suppressed.
+A *suppressed* arc is one the diagram does not draw: a crate arc between two crates whose modules a module arc already connects, or, in group mode, an arc that does not touch the selected node.
+A violation that was found and then hidden is *silenced*.
 
-*Cluster mode* is what the cycles filter's checkbox turns on in addition to filtering.
-It is not a filter and keeps its own name.
+The checkbox of the circular-dependencies filter also turns on *cluster mode*, which is not a filter.
 
 The reading order follows a levelization in Lakos's sense, and Structure101 calls an edge against it a *feedback (upward) dependency*.
-A node's *level* is Lakos's: 0 for what lies outside the workspace, 1 for a node that depends on nothing inside it, and otherwise one more than the highest level among the nodes it depends on (Vol. I, section 1.10).
-Levels explain the reading order but are not positions in it: several nodes can share a level, and Lakos gives every member of a cycle the highest level the cycle spans (footnote 128), so inside a tangle a level cannot order the nodes.
-The *diagnostic level* of a rules file is a different thing and always carries its qualifier.
-*Layer* is a position in a `layers` rule.
+A node's *level* is the one Lakos defines: 0 for what lies outside the workspace, 1 for a node that depends on nothing inside it, and otherwise one more than the highest level among the nodes it depends on (Vol. I, section 1.10).
+Levels are not positions in the reading order, and several nodes can share a level.
+Lakos gives every member of a cycle the highest level the cycle spans (footnote 128), so levels cannot order the nodes of a tangle.
+The *diagnostic level* of a rules file is unrelated and is always written with *diagnostic*.
 
-*Back edge* is relative to a traversal (see Cycles and clusters); an upward edge is relative to the reading order, which the layout fixes, so a reader can check it against the picture.
-*Reverse dependency* is taken by package managers, where it names the packages that depend on a given one.
+Whether an edge is a *back edge* depends on where a depth-first search starts (see [Cycles and clusters](#cycles-and-clusters)).
+Whether an edge is upward depends only on the reading order, which a reader can see in the diagram.
+In package managers, the *reverse dependencies* of a package are the packages that depend on it.
 
 An upward edge inside a tangle is a cyclic edge.
-Whether it is also a feedback arc is not settled by definition today: the layout weighs module edges between sibling subtrees, the diagnosis covers cycles between modules, and the two can name different edges.
+It need not be a feedback arc: the layout weighs module edges between sibling subtrees, the cycle search looks at cycles between modules, and the two can pick different edges.
 Deriving the reading order from the feedback arc set is open work.
