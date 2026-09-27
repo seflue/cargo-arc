@@ -35,7 +35,7 @@ lint:
     cargo clippy --all-targets -- -D warnings
     cargo fmt --check
     bunx biome check js/
-    bunx tsc --project jsconfig.json
+    bunx --no-install tsc --project jsconfig.json
     cargo run -- arc check
 
 # format Rust + JS
