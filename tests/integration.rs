@@ -450,6 +450,42 @@ fn test_reexport_resolution() {
     );
 }
 
+/// A cycle between a nested module and a module outside its parent carries
+/// what collapsing the parent needs to draw it as a cycle: a shared cycle id
+/// on both arcs and the direction of each.
+#[test]
+fn nested_cycle_carries_cycle_ids_and_direction() {
+    let (temp, cmd) = fixture_args("nested_cycle_workspace", false);
+
+    let result = run(cmd);
+    assert!(result.is_ok(), "run() should succeed: {result:?}");
+
+    let svg = std::fs::read_to_string(temp.path()).unwrap();
+    let data = parse_static_data(&svg);
+    let id_of = |name: &str| {
+        extract_node_names(&svg)
+            .into_iter()
+            .find_map(|(id, n)| (n == name).then_some(id))
+            .unwrap_or_else(|| panic!("node {name} should exist"))
+    };
+    let (inner, peer, util) = (id_of("inner"), id_of("peer"), id_of("util"));
+
+    let cycle_ids = |from: &str, to: &str| data["arcs"][format!("{from}-{to}")]["cycleIds"].clone();
+    assert_eq!(cycle_ids(&inner, &peer), serde_json::json!([0]));
+    assert_eq!(cycle_ids(&peer, &inner), serde_json::json!([0]));
+    assert_eq!(cycle_ids(&inner, &util), Value::Null);
+
+    let peer_to_inner = format!("id=\"edge-{peer}-{inner}\"");
+    let element = svg
+        .split('<')
+        .find(|e| e.contains(&peer_to_inner))
+        .expect("peer -> inner should be rendered");
+    assert!(
+        element.contains("data-direction=\"upward\""),
+        "peer -> inner should point upward: {element}"
+    );
+}
+
 /// A glob edge must carry the names it imports, not the `*` that spells them.
 /// Covers the full pipeline: only a populated re-export map can name the payload,
 /// so a map that never reaches the resolver would leave the `*` in place here.
