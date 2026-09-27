@@ -39,6 +39,11 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
     let c = &CSS;
 
     vec![
+        // Chromium picks a foreignObject inside the svg as scroll anchor; the
+        // scroll listeners that move toolbar and sidebar then feed its anchor
+        // adjustment back into another scroll, every frame. Firefox never
+        // anchors inside an svg, so this matches the behavior tested there.
+        CssRule::new("svg", &[("overflow-anchor", "none")]),
         // Node base styles
         CssRule::class(
             c.nodes.crate_node,

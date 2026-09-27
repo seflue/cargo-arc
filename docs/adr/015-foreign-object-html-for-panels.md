@@ -24,3 +24,4 @@ SVG renders the graph, but code references are text — and text is easier to st
 ### Negative
 - foreignObject support varies between SVG viewers (browsers OK, some tools not)
 - CSS isolation between SVG and HTML requires care
+- Repositioning the panels on scroll can make Chromium keep scrolling on its own. Scroll anchoring is therefore turned off for the diagram, and must stay off as long as panels move with scrolling.
