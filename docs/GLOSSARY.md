@@ -94,41 +94,44 @@ cargo-arc does not use either word yet; a hint that proposes a move should use t
 
 ## Module roles
 
-| Term | Definition | Avoid |
-|------|------------|-------|
-| **Vocabulary** | The types, constants and errors a module holds for its descendants to read. A cycle whose edges toward an ancestor carry only vocabulary is intended, not debt. | — |
-| **Facade** | A module that is the entry point to its subtree for everything outside it. It declares and re-exports its children and may call into them, but holds nothing they read back. Its edges point down only, so on its own it closes no cycle. | wrapper, insulation |
-| **Container module** | A facade with no code of its own: only `mod` declarations and `pub use`. | container, package |
-| **Prelude** | A module that holds nothing of its own and re-exports names defined elsewhere, so that other code can import them with one glob. Its edges are re-exports only. | — |
+| Term | Definition |
+|------|------------|
+| **Vocabulary** | The types, constants and errors that a module holds for its descendants to read. A cycle whose edges toward an ancestor carry only vocabulary is intended and is not debt. |
+| **Facade** | A module that is the entry point to its subtree for all code outside it. It declares and re-exports its children and may call into them, but holds nothing they read back. Its edges point down only, so it closes no cycle on its own. |
+| **Container module** | A facade with no code of its own, only `mod` declarations and `pub use`. |
+| **Prelude** | A module that holds nothing of its own and re-exports names defined elsewhere, so that other code can import them with one glob import. All its edges are re-exports. |
 
-One module can play both roles, and in Rust a parent often does: it is the facade of its subtree and holds the subtree's vocabulary.
-A cycle between a parent and its children needs both: the children read the vocabulary up, and the parent's calls go down.
-The `allow` entries that tolerate the first half are in [RULES.md](RULES.md#allow).
+In Rust a parent module is often both the facade of its subtree and the holder of the subtree's vocabulary.
+A cycle between such a parent and its children has two halves: the children read the vocabulary upward, and the parent calls downward.
+[RULES.md](RULES.md#allow) describes the `allow` entries that permit the upward half.
 
-*Up* and *down* in this section follow the module tree.
-Lakos's levels agree for a facade and run the other way for vocabulary: a module others depend on sits low in his hierarchy, so a parent holding its subtree's vocabulary is below its own children there.
+In this section, *up* and *down* follow the module tree.
+For a facade, Lakos's levels give the same direction.
+For vocabulary they give the opposite one: a module that others depend on sits low in his hierarchy, so a parent that holds its subtree's vocabulary sits below its own children there.
 
-Lakos calls types that flow through function boundaries, such as a date or an allocator, *vocabulary types*, and places them low (Vol. I, section 0.4).
+Lakos calls types that pass through function boundaries, such as a date or an allocator, *vocabulary types*, and places them low (Vol. I, section 0.4).
 The idea is the same, but his term names a property of a type, and *vocabulary* here names what a module holds.
 He has no word for a parent that holds its children's types.
 
-*Facade* keeps the meaning Lakos and the Gang of Four give it, one interface over a whole subsystem, and Lakos already places it above what it wraps (Vol. I, section 0.7).
-The levelization technique that builds one is *escalating encapsulation*.
-Lakos also says *wrapper*; in Rust a wrapper is usually a newtype around a single type, so the word stays with that.
+*Facade* has the meaning Lakos and the Gang of Four give it: one interface over a whole subsystem.
+Lakos places a facade above what it wraps (Vol. I, section 0.7), and the levelization technique that builds one is *escalating encapsulation*.
+Lakos also calls a facade a *wrapper*.
+In Rust a wrapper is usually a newtype around a single type.
 
-What a facade gives its clients is *encapsulation* in Lakos's sense: a detail behind it can change without clients reworking their code.
-*Insulation* promises more, that clients need not even recompile (Vol. I, section 3.11.1).
-In Rust the crate is the unit of compilation, so a module facade cannot spare a client in the same crate a recompile, and the word does not describe what it does.
+With a facade, a detail behind it can change without its clients changing their code, which Lakos calls *encapsulation*.
+His *insulation* also spares the clients a recompile (Vol. I, section 3.11.1).
+In Rust the crate is the unit of compilation, so a module facade cannot spare a recompile to a client in the same crate.
 
-A prelude forwards names like a facade, but not those of its own subtree: its names come from elsewhere, often from its parent, so its edges point up.
-Being re-exports, they pass names on and make it depend on nothing.
+A prelude re-exports names like a facade, but the names come from outside its subtree, often from its parent, so its edges point up.
+A re-export passes a name on without depending on it, so a prelude depends on nothing.
 
-*Container* alone is taken by C4, where it names an application or a data store, a unit that runs on its own.
+In C4, a *container* is an application or a data store, a unit that runs on its own.
 A workspace with several binaries holds several C4 containers, and no module is one.
 Say *container module* for a module and *C4 container* for the deployable unit.
+In the hotspot map, a *container* is a circle that holds other circles (see [Hotspots](#hotspots)).
 
-Lakos calls a unit that only aggregates a *package*: it holds components and is not one itself.
-Cargo already uses *package* for what a `Cargo.toml` describes, so the word stays with Lakos and Cargo.
+Lakos calls a unit that only groups components a *package*; it is not a component itself.
+In Cargo, a *package* is what a `Cargo.toml` describes.
 A Lakos component, a header with its implementation file, corresponds to a module file here.
 
 ## Rules and violations
