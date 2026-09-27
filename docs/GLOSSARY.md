@@ -55,8 +55,9 @@ A representative cycle is the shortest only among the cycles through its edge.
 A *cycle basis* is a set of cycles from which every cycle of the graph can be built.
 cargo-arc does not choose the representative cycles to form one.
 
-*Reported* is a state of a violation (see [Rules and violations](#rules-and-violations)).
-A counted cycle in a tangle whose cycles are all frozen is not reported, and an unlisted cycle is never reported.
+A counted cycle is not always *reported* (see [Rules and violations](#rules-and-violations)).
+In a tangle whose cycles are all frozen, every cycle counts and none is reported.
+An unlisted cycle is never reported.
 
 The code says *cluster*, and output a user reads says *tangle*.
 
@@ -69,11 +70,11 @@ A tangle with exactly one cycle is a *single-cycle tangle*, and a tangle with mo
 |------|------------|
 | **Feedback arc** | An edge in a feedback arc set. In a single-cycle tangle, any one edge of the cycle is a feedback arc set by itself. |
 | **Feedback arc set** | A set of edges whose removal together breaks every counted cycle of a tangle. In a tangle where some but not all cycles are frozen, it breaks only the counted cycles. In any other tangle it makes the tangle acyclic, which can take more edges than the counted cycles need. A tangle can have more than one feedback arc set. |
-| **Traffic** | The number of counted cycles that run through one edge. Removing the edge breaks all of them. Traffic counts every one of them, whichever other edges are removed first. Feedback arcs are ranked by traffic. |
+| **Traffic** | The number of counted cycles that run through one edge. Removing the edge breaks all of them. Traffic does not depend on which other edges are removed first. Feedback arcs are ranked by traffic. |
 | **Symbol count** | The number of distinct symbols that cross one edge. A symbol counts once, even when several imports on the edge carry it. All bare imports on an edge together add one. A symbol imported by `pub use` does not count, unless every import on the edge is a `pub use`. The symbol count breaks ties in the traffic ranking. In a single-cycle tangle every edge has the same traffic, so the symbol count alone decides the order. |
 
 Every feedback arc is a cyclic edge.
-*Arc* is the directed-graph word for an edge (see [Nodes and edges](#nodes-and-edges)), and *feedback arc* is the established name.
+*Feedback arc* is the established name from the literature on directed graphs, which says *arc* for an edge (see [Nodes and edges](#nodes-and-edges)).
 
 In graph theory, a *cut* splits the nodes into two parts, and the *cut set* is the set of edges between them.
 A cut concerns connectivity, and a feedback arc set concerns cycles.
@@ -156,10 +157,10 @@ A Lakos component, a header with its implementation file, corresponds to a modul
 
 Semgrep and Detekt call a violation a *finding*.
 
-A *whitelist* is a list of exceptions, and the word fits allowed and frozen violations alike.
+A *whitelist* is a list of exceptions, and the word fits allowed and frozen violations alike, so it does not tell them apart.
 An *ignored* rule has severity `ignore` and is never checked, while an allowed violation was found and then permitted.
 *Baselined* says only that a violation has an entry in `arc-baseline.toml`.
-Linters usually call a hidden result *suppressed*.
+Linters usually call a hidden result *suppressed*, and cargo-arc calls it *silenced*.
 In the arc diagram, a suppressed arc is one the diagram does not draw (see [The arc diagram](#the-arc-diagram)).
 
 A diagnostic is not a violation and has no severity.
@@ -190,7 +191,7 @@ An exhaustive rule written only from module patterns covers the modules of the c
 Severity is configured on a rule, and a status is the result of a run.
 The severity does not determine the status: a rule of severity `error` whose violations are all frozen has status `ok`.
 
-In the code, the *source* of an edge is the node it starts from.
+In the code, the *source* of an edge is the node it starts from, not a location.
 
 ## Hotspots
 
@@ -236,9 +237,9 @@ In this file, a *cluster* is a strongly connected component (see [Cycles and clu
 | Term | Definition |
 |------|------------|
 | **Arc diagram** | The view of a workspace as a tree of crates and modules, with arcs for the dependencies between them. `cargo arc` renders it, and `cargo arc ui` serves it beside the hotspot map. |
-| **Arc type** | Which of crate-dep, module-dep and re-export an arc draws. Every arc has exactly one arc type. cargo-arc derives it from the arc's endpoints and its re-export flag and does not store it. |
+| **Arc type** | The category of dependency an arc draws: crate-dep, module-dep or re-export. Every arc has exactly one arc type. cargo-arc derives it from the arc's endpoints and its re-export flag and does not store it. |
 | **Re-export** | The arc type of an arc whose imports are all `pub use`, so that it passes names on without depending on them. A single ordinary import on the arc makes it a module-dep instead ([ADR-022](adr/022-reexport-edges-tagged-not-dropped.md)). |
-| **Filter** | One switch over what the diagram shows, offered as a checkbox in the **View** menu. Four filters cover arcs: crate dependencies, module dependencies, re-exports and circular dependencies. The others cover nodes. |
+| **Filter** | A checkbox in the **View** menu that shows or hides part of the diagram. Four filters cover arcs: crate dependencies, module dependencies, re-exports and circular dependencies. The others cover nodes. |
 | **Reading order** | The top-to-bottom sequence of the nodes under one parent. A node comes before the nodes it depends on. Inside a tangle no order can do that for every edge, and the layout picks the order with the least dependency weight pointing up. A tangle of more than eight nodes under one parent is ordered alphabetically instead. |
 | **Upward edge** | An edge whose target sits above its source in the reading order. Inside a tangle some edge must be upward. Outside a tangle, an upward edge occurs only where two subtrees each hold a module that uses a module of the other: a cycle between the subtrees without a cycle between modules. The diagram draws upward edges in their own style. |
 
@@ -258,7 +259,6 @@ A *layer* is a position in a `layers` rule or an SVG stacking order (see [Rules 
 All arcs sit in one SVG stacking layer, whichever filters cover them.
 
 A *suppressed* arc is one the diagram does not draw: a crate arc between two crates whose modules a module arc already connects, or, in group mode, an arc that does not touch the selected node.
-A violation that was found and then hidden is *silenced*.
 
 The checkbox of the circular-dependencies filter also turns on *cluster mode*, which is not a filter.
 
