@@ -194,24 +194,25 @@ In the code, the *source* of an edge is the node it starts from.
 
 ## Hotspots
 
-| Term | Definition | Avoid |
-|------|------------|-------|
-| **Code lines** | Tokei's `code` count for a file: source lines, excluding comments and blank lines. | LOC, lines of code |
-| **Container** | A circle holding other circles: a workspace, a crate, or a module with children. Its own declaring file appears as a leaf inside it. | group, folder |
-| **Leaf** | A single file's circle: the unit size and commits are measured on. | node |
-| **Hotspot** | One of the top-N files, workspace-wide, ranked by code lines times commit count. A leaf only, never a container. | hot file |
-| **Hotspot map** | The nested-circle view of a workspace: size by code lines, color by commit activity. | treemap |
-| **Label band** | The strip a container keeps free at its top for its own label. Its children are shifted down by it. | — |
+| Term | Definition |
+|------|------------|
+| **Code lines** | Tokei's `code` count for a file: its source lines without comments and blank lines. |
+| **Container** | A circle that holds other circles: the workspace, a crate, or a module with children. The file that declares it appears as a leaf inside it. |
+| **Leaf** | The circle of a single file. Size and commits are measured on leaves. |
+| **Hotspot** | One of the top-N files of the workspace, ranked by code lines times commit count. A hotspot is always a leaf. |
+| **Hotspot map** | The view of a workspace as nested circles, sized by code lines and colored by commit activity. |
+| **Label band** | The strip at the top of a container that stays free for the container's label. The container's children are shifted down by its height. |
 
-*LOC* and *lines of code* both leave open whether comments and blanks are counted; this tool's count never does.
+*LOC* and *lines of code* can include comments and blank lines; code lines never do.
 
-*Hot file* fits the same idea but not the plural sense the ranking needs: a hotspot is a rank, not just a property a file has or lacks.
+*Hot file* names a property that a file has or lacks, and a hotspot is a rank among all files.
 
-*Group* and *folder* both suggest a filesystem directory; a container can be a crate or a workspace as well as a module, and is drawn as a circle, not a tree row.
+*Group* and *folder* suggest a directory in the file system, and a container can also be a crate or the workspace.
 
-*Node* already names one crate or module in the dependency graph (see Dependencies); a leaf is a circle in the hotspot map, a narrower thing.
+A *node* is a crate or module in the dependency graph (see [Nodes and edges](#nodes-and-edges)), and a leaf is the circle of one file in the hotspot map.
 
-*Treemap* names the layout this tool tried and rejected: nested circles read the nesting depth better, at the cost of wasted space.
+A *treemap* nests rectangles.
+cargo-arc tried one and draws nested circles instead, which show the nesting depth better but leave space unused.
 
 ## Symbols and consumers
 
