@@ -9,11 +9,11 @@ See also [RULES.md](RULES.md), [ARC_DIAGRAM.md](ARC_DIAGRAM.md), [HOTSPOT_MAP.md
 
 | Term | Definition |
 |------|------------|
-| **Node** | In Rust, the crates of the workspace and the modules within them are the nodes of the dependency graph. Modules can be nested at any depth. `--externals` adds the external crates the workspace depends on to the graph. Patterns match only nodes inside the workspace. |
-| **Edge** | The directed connection from one node to another that the first depends on directly. A transitive dependency runs through other nodes and is not an edge. |
-| **Qualified node name** | A node's path starting at its crate: `storage` is the crate, `storage::pool` a module in it. `check` writes both ends of a `layers` or `forbidden-dependency` violation as qualified node names. |
-| **Manifest edge** | The edge from one crate to another that the first declares in its `Cargo.toml`. No import in the source code creates it. |
-| **Bare import** | An import of a module itself instead of an item in it, such as `use storage::pool;`. |
+| <a id="node"></a>**Node** | In Rust, the crates of the workspace and the modules within them are the nodes of the dependency graph. Modules can be nested at any depth. `--externals` adds the external crates the workspace depends on to the graph. Patterns match only nodes inside the workspace. |
+| <a id="edge"></a>**Edge** | The directed connection from one node to another that the first depends on directly. A transitive dependency runs through other nodes and is not an edge. |
+| <a id="qualified-node-name"></a>**Qualified node name** | A node's path starting at its crate: `storage` is the crate, `storage::pool` a module in it. `check` writes both ends of a `layers` or `forbidden-dependency` violation as qualified node names. |
+| <a id="manifest-edge"></a>**Manifest edge** | The edge from one crate to another that the first declares in its `Cargo.toml`. No import in the source code creates it. |
+| <a id="bare-import"></a>**Bare import** | An import of a module itself instead of an item in it, such as `use storage::pool;`. |
 
 Graph theory calls a node a *vertex*.
 The literature on directed graphs calls an edge an *arc*.
@@ -23,52 +23,52 @@ In the arc diagram, an arc is the curve that draws a dependency (see [Arc type](
 
 | Term | Definition |
 |------|------------|
-| **Cycle** | A chain of direct dependencies between modules that leads back to the module it started from, such as `a -> b -> c -> a`. |
-| **Cluster** | A strongly connected component of the module graph with at least two modules: the maximal set of modules that all reach each other. A cluster holds one or more cycles and never spans crates. |
-| **Tangle** | The same set of modules as a cluster. Structure101 [defines a tangle](https://www.sonarsource.com/structure101/docs/java/studio/Content/restructure101/tangles.html) as "a set of items that form a cyclic dependency graph at any scope …". |
-| **Representative cycle** | The shortest cycle through one edge. Several edges can share the same representative cycle. Every cycle cargo-arc reports is a representative cycle. |
-| **Counted cycle** | A representative cycle of a tangle that is not [frozen](#rules-and-violations). When every cycle of a tangle is frozen, all of them are counted, so that the tangle still has a feedback arc set that shows how to reduce the frozen debt. [Traffic and the feedback arc set](#feedback-arcs) consider only counted cycles. |
-| **Unlisted cycle** | A cycle that is not the representative cycle of any of its edges. For each of its edges, cargo-arc lists a shorter or equally short cycle instead. |
-| **Cyclic edge** | An edge that lies on at least one cycle. Its two ends are in the same cluster. The arc diagram highlights cyclic edges. |
+| <a id="cycle"></a>**Cycle** | A chain of direct dependencies between modules that leads back to the module it started from, such as `a -> b -> c -> a`. |
+| <a id="cluster"></a>**Cluster** | A strongly connected component of the module graph with at least two modules: the maximal set of modules that all reach each other. A cluster holds one or more [cycles](#cycle) and never spans crates. |
+| <a id="tangle"></a>**Tangle** | The same set of modules as a [cluster](#cluster). Structure101 [defines a tangle](https://www.sonarsource.com/structure101/docs/java/studio/Content/restructure101/tangles.html) as "a set of items that form a cyclic dependency graph at any scope …". |
+| <a id="representative-cycle"></a>**Representative cycle** | The shortest [cycle](#cycle) through one [edge](#edge). Several edges can share the same representative cycle. Every cycle cargo-arc reports is a representative cycle. |
+| <a id="counted-cycle"></a>**Counted cycle** | A [representative cycle](#representative-cycle) of a [tangle](#tangle) that is not [frozen](#frozen). When every cycle of a tangle is frozen, all of them are counted, so that the tangle still has a [feedback arc set](#feedback-arc-set) that shows how to reduce the frozen debt. [Traffic](#traffic) and the feedback arc set consider only counted cycles. |
+| <a id="unlisted-cycle"></a>**Unlisted cycle** | A [cycle](#cycle) that is not the [representative cycle](#representative-cycle) of any of its [edges](#edge). For each of its edges, cargo-arc lists a shorter or equally short cycle instead. |
+| <a id="cyclic-edge"></a>**Cyclic edge** | An [edge](#edge) that lies on at least one [cycle](#cycle). Its two ends are in the same [cluster](#cluster). The [arc diagram](#arc-diagram) highlights cyclic edges. |
 
-*Circular dependency* is the word in dependency analysis for a cycle.
+*Circular dependency* is the word in dependency analysis for a [cycle](#cycle).
 The code says *cycle*.
 Output a user reads says *circular dependency* in sentences, and *cycle* in counts and table cells.
 
 The code says *cluster*, and output a user reads says *tangle*.
 
-A tangle with exactly one cycle is a *single-cycle tangle*, and a tangle with more is a *multi-cycle tangle*.
+A [tangle](#tangle) with exactly one [cycle](#cycle) is a *single-cycle tangle*, and a tangle with more is a *multi-cycle tangle*.
 [RULES.md](RULES.md#no-cycles) describes which dependencies the search includes and how the report differs between the two.
 
 Graph theory calls a cycle without a repeated node an *elementary cycle*.
-Every representative cycle is elementary, but cargo-arc never lists all elementary cycles.
+Every [representative cycle](#representative-cycle) is elementary, but cargo-arc never lists all elementary cycles.
 
-A representative cycle stands in for every cycle through its edge.
-In graph theory, a *minimal cycle* has no chord, an edge that joins two of its nodes without being part of it.
+A [representative cycle](#representative-cycle) stands in for every cycle through its edge.
+In graph theory, a *minimal cycle* has no chord, an edge that joins two of its [nodes](#node) without being part of it.
 A representative cycle can have a chord, as long as the shorter cycle that the chord creates does not pass through its edge.
 The *minimum* cycle is the shortest cycle in the whole graph, and its length is the *girth*.
 A representative cycle is the shortest only among the cycles through its edge.
 [ADR-021](adr/021-minimal-cycle-per-edge.md) calls a representative cycle a *minimal cycle* in its title.
 
 A *cycle basis* is a set of cycles from which every cycle of the graph can be built.
-cargo-arc does not choose the representative cycles to form one.
+cargo-arc does not choose the [representative cycles](#representative-cycle) to form one.
 
-A counted cycle is not always *reported* (see [Rules and violations](#rules-and-violations)).
-In a tangle whose cycles are all frozen, every cycle counts and none is reported.
-An unlisted cycle is never reported.
+A [counted cycle](#counted-cycle) is not always [reported](#reported).
+In a tangle whose cycles are all [frozen](#frozen), every cycle counts and none is reported.
+An [unlisted cycle](#unlisted-cycle) is never reported.
 
-In a depth-first search, a *back edge* leads from a node to one of its ancestors in the search tree.
+In a depth-first search, a *back edge* leads from a [node](#node) to one of its ancestors in the search tree.
 Which edges are back edges depends on where the search starts.
-Whether an edge is cyclic does not.
+Whether an edge is [cyclic](#cyclic-edge) does not.
 
 ## Feedback arcs
 
 | Term | Definition |
 |------|------------|
-| **Feedback arc** | An edge in a feedback arc set. In a single-cycle tangle, any one edge of the cycle is a feedback arc set by itself. |
-| **Feedback arc set** | A set of edges whose removal together breaks every counted cycle of a tangle. In a tangle where some but not all cycles are frozen, it breaks only the counted cycles. In any other tangle it makes the tangle acyclic, which can take more edges than the counted cycles need. A tangle can have more than one feedback arc set. |
-| **Traffic** | The number of counted cycles that run through one edge. Removing the edge breaks all of them. Traffic does not depend on which other edges are removed first. Feedback arcs are ranked by traffic. |
-| **Symbol count** | The number of distinct symbols that cross one edge. A symbol counts once, even when several imports on the edge carry it. All bare imports on an edge together add one. A symbol imported by `pub use` does not count, unless every import on the edge is a `pub use`. The symbol count breaks ties in the traffic ranking. In a single-cycle tangle every edge has the same traffic, so the symbol count alone decides the order. |
+| <a id="feedback-arc"></a>**Feedback arc** | An edge in a feedback arc set. In a single-cycle tangle, any one edge of the cycle is a feedback arc set by itself. |
+| <a id="feedback-arc-set"></a>**Feedback arc set** | A set of edges whose removal together breaks every counted cycle of a tangle. In a tangle where some but not all cycles are frozen, it breaks only the counted cycles. In any other tangle it makes the tangle acyclic, which can take more edges than the counted cycles need. A tangle can have more than one feedback arc set. |
+| <a id="traffic"></a>**Traffic** | The number of counted cycles that run through one edge. Removing the edge breaks all of them. Traffic does not depend on which other edges are removed first. Feedback arcs are ranked by traffic. |
+| <a id="symbol-count"></a>**Symbol count** | The number of distinct symbols that cross one edge. A symbol counts once, even when several imports on the edge carry it. All bare imports on an edge together add one. A symbol imported by `pub use` does not count, unless every import on the edge is a `pub use`. The symbol count breaks ties in the traffic ranking. In a single-cycle tangle every edge has the same traffic, so the symbol count alone decides the order. |
 
 Every feedback arc is a cyclic edge.
 *Feedback arc* is the established name from the literature on directed graphs, which says *arc* for an edge (see [Nodes and edges](#nodes-and-edges)).
@@ -94,10 +94,10 @@ cargo-arc does not use either word yet; a hint that proposes a move should use t
 
 | Term | Definition |
 |------|------------|
-| **Vocabulary** | The types, constants and errors that a module holds for its descendants to read. A cycle whose edges toward an ancestor carry only vocabulary is intended and is not debt. |
-| **Facade** | A module that is the entry point to its subtree for all code outside it. It declares and re-exports its children and may call into them, but holds nothing they read back. Its edges point down only, so it closes no cycle on its own. |
-| **Container module** | A facade with no code of its own, only `mod` declarations and `pub use`. |
-| **Prelude** | A module that holds nothing of its own and re-exports names defined elsewhere, so that other code can import them with one glob import. All its edges are re-exports. |
+| <a id="vocabulary"></a>**Vocabulary** | The types, constants and errors that a module holds for its descendants to read. A cycle whose edges toward an ancestor carry only vocabulary is intended and is not debt. |
+| <a id="facade"></a>**Facade** | A module that is the entry point to its subtree for all code outside it. It declares and re-exports its children and may call into them, but holds nothing they read back. Its edges point down only, so it closes no cycle on its own. |
+| <a id="container-module"></a>**Container module** | A facade with no code of its own, only `mod` declarations and `pub use`. |
+| <a id="prelude"></a>**Prelude** | A module that holds nothing of its own and re-exports names defined elsewhere, so that other code can import them with one glob import. All its edges are re-exports. |
 
 In Rust a parent module is often both the facade of its subtree and the holder of the subtree's vocabulary.
 A cycle between such a parent and its children has two halves: the children read the vocabulary upward, and the parent calls downward.
@@ -136,21 +136,21 @@ A Lakos component, a header with its implementation file, corresponds to a modul
 
 | Term | Definition |
 |------|------------|
-| **Rule** | One named check in `arc-rules.toml`, of type `layers`, `forbidden-dependency` or `no-cycles`. Its name is unique across all types. |
-| **Severity** | How bad it is to break a rule: `error`, `warn` or `ignore`. Severity belongs to the rule, and all its violations share it. |
-| **Violation** | A dependency or a tangle that breaks a rule. The dependency can be direct or transitive. A manifest entry and an import between the same two ends are one dependency. Every violation is in exactly one of the three states below. |
-| **Reported** | The state of a violation that is neither allowed nor frozen. Only reported violations affect the exit code. |
-| **Allowed** | Permitted by an `allow` entry on the rule, permanently and on purpose. An entry names an edge that runs against the order the rule's writer has in mind, and the entries of a rule together declare that order. |
-| **Frozen** | Covered by an entry in `arc-baseline.toml`. A frozen violation is debt that is tolerated until someone fixes it and is expected to shrink. |
-| **Silenced** | Allowed or frozen. `--show-silenced` lists silenced violations. Silenced is not a state of its own. |
-| **Baseline** | The set of frozen violations, kept in `arc-baseline.toml` beside the rules file. Only `--generate-baseline` writes it. |
-| **Diagnostic** | A gap in the configuration: a node that an exhaustive `layers` rule leaves in no position, an `except` entry that matches no node, a baseline entry that matches nothing, a baseline entry that freezes more symbols than the edge still carries, an `allow` entry that matches nothing, `allow` entries that put nodes above each other in a circle, a rule pattern that matches nothing, or a catch-all layer that holds nothing. |
-| **Diagnostic level** | Whether a run tolerates the gap a diagnostic names: `allow`, `warn` or `deny`. |
-| **Layer** | One position in a `layers` rule. It holds one or more patterns, or `*` for the nodes that no other layer holds. Patterns in the same layer share its position. |
-| **Exhaustive rule** | A `layers` rule with `exhaustive = true`, which claims to sort everything it addresses. Its crate patterns claim every workspace crate, and its module patterns claim every module of the crates they reach. A rule without the field says nothing about the nodes it does not name. |
-| **Module path pattern** | A module path with optional wildcards, such as `domain`, `domain::service`, `domain::*`, `domain::**`, `domain*` or a bare `**`. Inside one segment, `*` stands for any run of characters. *Pattern* alone means a module path pattern unless the text says otherwise. |
-| **Dependency pattern** | A named list of `allow` entries under `[dependency-patterns]`, which a rule's `allow` list refers to by name. It only selects dependencies; the `allow` list that names it allows them. |
-| **Scope** | The module path pattern in the `scope` field of a `no-cycles` rule. The rule searches only the edges whose two ends the pattern matches. |
+| <a id="rule"></a>**Rule** | One named check in `arc-rules.toml`, of type `layers`, `forbidden-dependency` or `no-cycles`. Its name is unique across all types. |
+| <a id="severity"></a>**Severity** | How bad it is to break a rule: `error`, `warn` or `ignore`. Severity belongs to the rule, and all its violations share it. |
+| <a id="violation"></a>**Violation** | A dependency or a tangle that breaks a rule. The dependency can be direct or transitive. A manifest entry and an import between the same two ends are one dependency. Every violation is in exactly one of the three states below. |
+| <a id="reported"></a>**Reported** | The state of a violation that is neither allowed nor frozen. Only reported violations affect the exit code. |
+| <a id="allowed"></a>**Allowed** | Permitted by an `allow` entry on the rule, permanently and on purpose. An entry names an edge that runs against the order the rule's writer has in mind, and the entries of a rule together declare that order. |
+| <a id="frozen"></a>**Frozen** | Covered by an entry in `arc-baseline.toml`. A frozen violation is debt that is tolerated until someone fixes it and is expected to shrink. |
+| <a id="silenced"></a>**Silenced** | Allowed or frozen. `--show-silenced` lists silenced violations. Silenced is not a state of its own. |
+| <a id="baseline"></a>**Baseline** | The set of frozen violations, kept in `arc-baseline.toml` beside the rules file. Only `--generate-baseline` writes it. |
+| <a id="diagnostic"></a>**Diagnostic** | A gap in the configuration: a node that an exhaustive `layers` rule leaves in no position, an `except` entry that matches no node, a baseline entry that matches nothing, a baseline entry that freezes more symbols than the edge still carries, an `allow` entry that matches nothing, `allow` entries that put nodes above each other in a circle, a rule pattern that matches nothing, or a catch-all layer that holds nothing. |
+| <a id="diagnostic-level"></a>**Diagnostic level** | Whether a run tolerates the gap a diagnostic names: `allow`, `warn` or `deny`. |
+| <a id="layer"></a>**Layer** | One position in a `layers` rule. It holds one or more patterns, or `*` for the nodes that no other layer holds. Patterns in the same layer share its position. |
+| <a id="exhaustive-rule"></a>**Exhaustive rule** | A `layers` rule with `exhaustive = true`, which claims to sort everything it addresses. Its crate patterns claim every workspace crate, and its module patterns claim every module of the crates they reach. A rule without the field says nothing about the nodes it does not name. |
+| <a id="module-path-pattern"></a>**Module path pattern** | A module path with optional wildcards, such as `domain`, `domain::service`, `domain::*`, `domain::**`, `domain*` or a bare `**`. Inside one segment, `*` stands for any run of characters. *Pattern* alone means a module path pattern unless the text says otherwise. |
+| <a id="dependency-pattern"></a>**Dependency pattern** | A named list of `allow` entries under `[dependency-patterns]`, which a rule's `allow` list refers to by name. It only selects dependencies; the `allow` list that names it allows them. |
+| <a id="scope"></a>**Scope** | The module path pattern in the `scope` field of a `no-cycles` rule. The rule searches only the edges whose two ends the pattern matches. |
 
 Semgrep and Detekt call a violation a *finding*.
 
@@ -181,9 +181,9 @@ An exhaustive rule written only from module patterns covers the modules of the c
 
 | Term | Definition |
 |------|------------|
-| **Report** | The blocks that `check` writes to stderr, one per rule that fired. A block is headed by the rule and lists its violations, each with its dependency or tangle and its locations. |
-| **Status** | The outcome of one rule in a run: `ok`, `WARN` when the rule produced only warnings, or `FAILED` when it produced an error. `check` prints one status line on stdout for each checked rule and one for the configuration, whether or not anything fired. |
-| **Location** | A file and a line, such as the place of an import that creates an edge. The report prints a location as `--> path:line`, and the sidebar of the arc diagram lists it. The path is relative to the root of the analyzed workspace, and a file outside the workspace keeps its absolute path. |
+| <a id="report"></a>**Report** | The blocks that `check` writes to stderr, one per rule that fired. A block is headed by the rule and lists its violations, each with its dependency or tangle and its locations. |
+| <a id="status"></a>**Status** | The outcome of one rule in a run: `ok`, `WARN` when the rule produced only warnings, or `FAILED` when it produced an error. `check` prints one status line on stdout for each checked rule and one for the configuration, whether or not anything fired. |
+| <a id="location"></a>**Location** | A file and a line, such as the place of an import that creates an edge. The report prints a location as `--> path:line`, and the sidebar of the arc diagram lists it. The path is relative to the root of the analyzed workspace, and a file outside the workspace keeps its absolute path. |
 
 Severity is configured on a rule, and a status is the result of a run.
 The severity does not determine the status: a rule of severity `error` whose violations are all frozen has status `ok`.
@@ -194,12 +194,12 @@ In the code, the *source* of an edge is the node it starts from, not a location.
 
 | Term | Definition |
 |------|------------|
-| **Code lines** | Tokei's `code` count for a file: its source lines without comments and blank lines. |
-| **Container** | A circle that holds other circles: the workspace, a crate, or a module with children. The file that declares it appears as a leaf inside it. |
-| **Leaf** | The circle of a single file. Size and commits are measured on leaves. |
-| **Hotspot** | One of the top-N files of the workspace, ranked by code lines times commit count. A hotspot is always a leaf. |
-| **Hotspot map** | The view of a workspace as nested circles, sized by code lines and colored by commit activity. |
-| **Label band** | The strip at the top of a container that stays free for the container's label. The container's children are shifted down by its height. |
+| <a id="code-lines"></a>**Code lines** | Tokei's `code` count for a file: its source lines without comments and blank lines. |
+| <a id="container"></a>**Container** | A circle that holds other circles: the workspace, a crate, or a module with children. The file that declares it appears as a leaf inside it. |
+| <a id="leaf"></a>**Leaf** | The circle of a single file. Size and commits are measured on leaves. |
+| <a id="hotspot"></a>**Hotspot** | One of the top-N files of the workspace, ranked by code lines times commit count. A hotspot is always a leaf. |
+| <a id="hotspot-map"></a>**Hotspot map** | The view of a workspace as nested circles, sized by code lines and colored by commit activity. |
+| <a id="label-band"></a>**Label band** | The strip at the top of a container that stays free for the container's label. The container's children are shifted down by its height. |
 
 *LOC* and *lines of code* can include comments and blank lines; code lines never do.
 
@@ -216,10 +216,10 @@ cargo-arc tried one and draws nested circles instead, which show the nesting dep
 
 | Term | Definition |
 |------|------------|
-| **Provider** | A module that other modules import symbols from. |
-| **Consumer** | A module that imports a symbol from a provider in production code. A module that imports a symbol only by `pub use` republishes it and is not its consumer. |
-| **Consumer group** | The symbols of one provider that have exactly the same consumers. |
-| **Consumer locality** | How close the consumers of a consumer group sit to each other in the module tree. It has three cases: a single consumer, several consumers under a common ancestor module that does not contain the provider, or consumers spread across the crate. |
+| <a id="provider"></a>**Provider** | A module that other modules import symbols from. |
+| <a id="consumer"></a>**Consumer** | A module that imports a symbol from a provider in production code. A module that imports a symbol only by `pub use` republishes it and is not its consumer. |
+| <a id="consumer-group"></a>**Consumer group** | The symbols of one provider that have exactly the same consumers. |
+| <a id="consumer-locality"></a>**Consumer locality** | How close the consumers of a consumer group sit to each other in the module tree. It has three cases: a single consumer, several consumers under a common ancestor module that does not contain the provider, or consumers spread across the crate. |
 
 Consumer locality shows whether the symbols of a group could move closer to the modules that use them.
 [ARC_DIAGRAM.md](ARC_DIAGRAM.md#the-sidebar-for-an-arc) gives the sidebar's wording for each case.
@@ -233,12 +233,12 @@ In this file, a *cluster* is a strongly connected component (see [Cycles and clu
 
 | Term | Definition |
 |------|------------|
-| **Arc diagram** | The view of a workspace as a tree of crates and modules, with arcs for the dependencies between them. `cargo arc` renders it, and `cargo arc ui` serves it beside the hotspot map. |
-| **Arc type** | The category of dependency an arc draws: crate-dep, module-dep or re-export. Every arc has exactly one arc type. cargo-arc derives it from the arc's endpoints and its re-export flag and does not store it. |
-| **Re-export** | The arc type of an arc whose imports are all `pub use`, so that it passes names on without depending on them. A single ordinary import on the arc makes it a module-dep instead ([ADR-022](adr/022-reexport-edges-tagged-not-dropped.md)). |
-| **Filter** | A checkbox in the **View** menu that shows or hides part of the diagram. Four filters cover arcs: crate dependencies, module dependencies, re-exports and circular dependencies. The others cover nodes. |
-| **Reading order** | The top-to-bottom sequence of the nodes under one parent. A node comes before the nodes it depends on. Inside a tangle no order can do that for every edge, and the layout picks the order with the least dependency weight pointing up. A tangle of more than eight nodes under one parent is ordered alphabetically instead. |
-| **Upward edge** | An edge whose target sits above its source in the reading order. Inside a tangle some edge must be upward. Outside a tangle, an upward edge occurs only where two subtrees each hold a module that uses a module of the other: a cycle between the subtrees without a cycle between modules. The diagram draws upward edges in their own style. |
+| <a id="arc-diagram"></a>**Arc diagram** | The view of a workspace as a tree of crates and modules, with arcs for the dependencies between them. `cargo arc` renders it, and `cargo arc ui` serves it beside the hotspot map. |
+| <a id="arc-type"></a>**Arc type** | The category of dependency an arc draws: crate-dep, module-dep or re-export. Every arc has exactly one arc type. cargo-arc derives it from the arc's endpoints and its re-export flag and does not store it. |
+| <a id="re-export"></a>**Re-export** | The arc type of an arc whose imports are all `pub use`, so that it passes names on without depending on them. A single ordinary import on the arc makes it a module-dep instead ([ADR-022](adr/022-reexport-edges-tagged-not-dropped.md)). |
+| <a id="filter"></a>**Filter** | A checkbox in the **View** menu that shows or hides part of the diagram. Four filters cover arcs: crate dependencies, module dependencies, re-exports and circular dependencies. The others cover nodes. |
+| <a id="reading-order"></a>**Reading order** | The top-to-bottom sequence of the nodes under one parent. A node comes before the nodes it depends on. Inside a tangle no order can do that for every edge, and the layout picks the order with the least dependency weight pointing up. A tangle of more than eight nodes under one parent is ordered alphabetically instead. |
+| <a id="upward-edge"></a>**Upward edge** | An edge whose target sits above its source in the reading order. Inside a tangle some edge must be upward. Outside a tangle, an upward edge occurs only where two subtrees each hold a module that uses a module of the other: a cycle between the subtrees without a cycle between modules. The diagram draws upward edges in their own style. |
 
 In this section and in [ARC_DIAGRAM.md](ARC_DIAGRAM.md), *diagram* alone means the arc diagram.
 Where a text also covers the hotspot map, say *arc diagram*.
