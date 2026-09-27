@@ -24,49 +24,44 @@ In the arc diagram, an arc is the curve that draws a dependency (see [Arc type](
 
 ## Cycles and clusters
 
-| Term | Definition | Avoid |
-|------|------------|-------|
-| **Cycle** | A circular dependency between modules, `a -> b -> c -> a`. A closed sequence of nodes. | elementary cycle |
-| **Representative cycle** | The cycle that stands in for one edge: the shortest cycle through it, kept once per distinct arc set. Every cycle cargo-arc reports is one of these. | minimal cycle, base cycle |
-| **Counted cycle** | A representative cycle, named for the role it plays: it counts toward a tangle's numbers and is what a feedback arc set is measured against. | reported cycle |
-| **Unlisted cycle** | A cycle the enumeration never names, because a shorter cycle runs through every one of its edges and is listed in its place. | reported cycle |
-| **Cyclic edge** | An edge lying on at least one representative cycle; equivalently, an edge whose endpoints share a non-trivial strongly connected component. The unit the diagram highlights. | back edge |
-| **Cluster** | A strongly connected component of the module graph: the maximal set of modules that all reach each other. At least two modules, one or more cycles, never spans crates. | — |
-| **Tangle** | The same set as a cluster, named for what a reader sees rather than for its graph property. Structure101: "a set of items that form a cyclic dependency graph at any scope". | — |
+| Term | Definition |
+|------|------------|
+| **Cycle** | A closed sequence of modules in which each module depends on the next, such as `a -> b -> c -> a`. |
+| **Representative cycle** | The shortest cycle through one edge. Where several edges have the same shortest cycle, cargo-arc keeps it once. Every cycle cargo-arc reports is a representative cycle. |
+| **Counted cycle** | A representative cycle that a tangle's numbers count and its feedback arc set breaks. In a tangle with at least one cycle that is not frozen, these are the cycles that are not frozen. In a tangle whose cycles are all frozen, they are all of its cycles. |
+| **Unlisted cycle** | A cycle that is not the representative cycle of any of its edges. For each of its edges, cargo-arc lists a shorter or equally short cycle instead. |
+| **Cyclic edge** | An edge that lies on at least one cycle. Its two ends are in the same cluster. The arc diagram highlights cyclic edges. |
+| **Cluster** | A strongly connected component of the module graph with at least two modules: the maximal set of modules that all reach each other. A cluster holds one or more cycles and never spans crates. |
+| **Tangle** | The same set of modules as a cluster. Structure101 defines a tangle as "a set of items that form a cyclic dependency graph at any scope". |
 
-*Cycle* and *circular dependency* are two registers for one thing.
-*Cycle* is the graph-theoretic name and belongs to the analysis; *circular dependency* is the name in dependency analysis, the domain cargo-arc works in, and is the term for anything a user reads.
+*Circular dependency* is the word in dependency analysis for a cycle.
+The code says *cycle*.
+Output a user reads says *circular dependency* in sentences, and *cycle* in counts and table cells.
 
-Inside that output the line decides which of the two: prose says *circular dependency*, while counts and table cells say *cycle*, because they have to fit beside other numbers and are read as a column rather than a sentence.
+Graph theory calls a cycle without a repeated node an *elementary cycle*.
+Every representative cycle is elementary, but cargo-arc never lists all elementary cycles.
 
-*Elementary cycle* names every cycle without a repeated node.
-cargo-arc reports a subset of those and never enumerates them all, so the term overstates what is on offer.
+In a depth-first search, a *back edge* leads from a node to one of its ancestors in the search tree.
+Which edges are back edges depends on where the search starts.
+Whether an edge is cyclic does not.
 
-*Back edge* belongs to a depth-first traversal, and which edges are back edges depends on where that search started.
-A cyclic edge is a property of the graph and holds however it is walked.
+A representative cycle stands in for every cycle through its edge.
+In graph theory, a *minimal cycle* has no chord, an edge that joins two of its nodes without being part of it.
+A representative cycle can have a chord, as long as the shorter cycle that the chord creates does not pass through its edge.
+The *minimum* cycle is the shortest cycle in the whole graph, and its length is the *girth*.
+A representative cycle is the shortest only among the cycles through its edge.
+[ADR-021](adr/021-minimal-cycle-per-edge.md) calls a representative cycle a *minimal cycle* in its title.
 
-A representative cycle represents its edge, and through it the other cycles that cross the edge.
-It is the shortest of them, and the shortness describes that one cycle only.
+A *cycle basis* is a set of cycles from which every cycle of the graph can be built.
+cargo-arc does not choose the representative cycles to form one.
 
-*Minimal* and *minimum* are both taken and both say something else.
-In graph theory a minimal cycle carries no chord, and the minimum is the girth, the shortest cycle anywhere in the graph.
-This one is neither: shortest relative to one edge, and free to carry a chord, because the shortcut a chord opens need not cross that edge.
-*Base cycle* misses a third way.
-A cycle basis generates every cycle of the graph and is smaller than one cycle per edge, so the word promises a completeness that is not there.
-[ADR-021](adr/021-minimal-cycle-per-edge.md) keeps *minimal cycle* in its title; a decision record states the wording of its own day and is not rewritten.
+*Reported* is a state of a violation (see [Rules and violations](#rules-and-violations)).
+A counted cycle in a tangle whose cycles are all frozen is not reported, and an unlisted cycle is never reported.
 
-*Counted cycle* names the role a representative cycle plays once a caller starts tolerating some of them: the cycles a tangle's numbers add up, and the target a feedback arc set is measured against.
-*Reported cycle* fits it worse than it looks: a counted cycle can be frozen, and a frozen cycle counts without ever being reported as a violation.
+The code says *cluster*, and output a user reads says *tangle*.
 
-*Unlisted cycle* sits outside the representative-cycle enumeration itself: a shorter cycle runs through every one of its edges and is listed in its place, so the enumeration never names it.
-*Reported cycle* fits an unlisted cycle no better — unlisted, it can never be reported at all.
-
-*Cluster* and *tangle* are two registers for one set, the same way *cycle* and *circular dependency* are.
-*Cluster* is the graph property and belongs to the analysis, where the underlying term is strongly connected component; *tangle* says how the modules are wound together and is the term for anything a user reads.
-
-A tangle holding exactly one cycle is a *single-cycle tangle*, more than one a *multi-cycle tangle*.
-The report is shaped differently for each.
-Which dependencies the search takes in, and what it prints, is in [RULES.md](RULES.md#no-cycles).
+A tangle with exactly one cycle is a *single-cycle tangle*, and a tangle with more is a *multi-cycle tangle*.
+[RULES.md](RULES.md#no-cycles) describes which dependencies the search includes and how the report differs between the two.
 
 ## Feedback arcs
 
