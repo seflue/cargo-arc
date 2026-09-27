@@ -1,4 +1,4 @@
-# The Diagram
+# The Arc Diagram
 
 `cargo arc` renders a workspace as a single self-contained SVG.
 It draws a tree of crates with their modules nested inside, and arcs that trace the `use` dependencies between them.
@@ -16,7 +16,7 @@ Terms used here are defined in [GLOSSARY.md](GLOSSARY.md).
 ## What you see
 
 Every box is a crate or a module, nested by hierarchy.
-Blue boxes are crates, orange boxes are modules, and grey boxes are external dependencies.
+Blue boxes are crates, orange boxes are modules, and gray boxes are external dependencies.
 
 Every arc is a dependency between two boxes, and carries exactly one arc type:
 
@@ -24,7 +24,7 @@ Every arc is a dependency between two boxes, and carries exactly one arc type:
 - a **module dependency**, a `use` between modules,
 - a **re-export**, an arc whose imports are all `pub use`.
 
-Arcs on a circular dependency are drawn as cyclic edges in their own colour.
+Arcs on a circular dependency are drawn as cyclic edges in their own color.
 A collapsed node folds its children away, and their individual arcs merge into summary arcs on the collapsed box.
 
 ## Interacting
@@ -39,7 +39,7 @@ The toolbar button does the same for the whole tree and flips between **Collapse
 ### Following the editor
 
 A page served by `cargo arc ui` carries a **Follow editor** button in the toolbar, pressed by default.
-While it is pressed, the diagram selects the node of the file the editor shows, as a click on it would, and scrolls until the node and its relations are centred.
+While it is pressed, the diagram selects the node of the file the editor shows, as a click on it would, and scrolls until the node and its relations are centered.
 A node inside a collapsed module is expanded into view first.
 When the cursor stands on a line that appears as a location in the sidebar, that entry is expanded; otherwise the sidebar keeps its expansion state.
 For a node that is already selected the page does not scroll; the sidebar entry of the cursor line still expands.
@@ -88,7 +88,7 @@ It reads `Cluster · <crate>` with the extent of the tangle, `N modules · M cyc
 
 The toolbar holds a substring search over the diagram.
 The scope buttons restrict it to crates, modules or symbols, and `All` searches everything.
-Matches keep their colour while everything else dims, and the count beside the field says how many there are.
+Matches keep their color while everything else dims, and the count beside the field says how many there are.
 
 ## Filters
 
@@ -185,7 +185,7 @@ Click to expand interactively.
 
 The diagram ships two themes, Catppuccin Latte for a light surrounding and
 Catppuccin Mocha for a dark one. Without a choice it follows the system's
-colour scheme, in a browser and in an image viewer alike. `--theme` pins one:
+color scheme, in a browser and in an image viewer alike. `--theme` pins one:
 
 ```bash
 # By name

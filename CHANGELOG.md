@@ -11,23 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `cargo arc ui` switches external crates and test code on and off: toolbar buttons, `:Arc externals on|off` and `:Arc tests on|off`.
-- `cargo arc ui` recomputes the diagram when a `.rs` file or `Cargo.toml` is saved (Neovim only). Toggle with **Recompute on save** or `:Arc on-save on|off`; `:Arc recompute` runs it once.
-- `allow` entries accept `super`, `super::super`, `crate`, `self::*` and `self::**`, relative to the matched module.
-- `[dependency-patterns]` defines named `allow` lists that rules reference as `{ pattern = "<name>" }`.
-- `contradictory-allow` diagnostic: a rule's `allow` entries put nodes above each other in a circle.
+- Hotspot map: visualize the workspace as nested circles, sized by lines of code and colored by number of commits.
+- The diagram selects the file open in Neovim and recomputes when code is saved.
+- External crates and test code can be switched on and off in the diagram.
+- Light and dark themes.
+- Rules can share named `allow` lists, and `allow` entries can name targets relative to the matched module.
 
 ### Changed
 
-- `except` on a rule is renamed to `allow`, `unmatched-except` to `unmatched-allow`. The old keys are rejected.
-- Diagnostics list every name, with a count per line.
-- Search highlights only arcs whose symbols match, and counts modules and edges separately.
+- `except` is renamed to `allow`.
 
 ### Fixed
 
-- Unpinning a tangle sidebar row keeps it expanded.
-- A crate or module used only by tests sorts below its users.
-- An `except` entry under `unlayered-node` that matches no node is reported.
+- Fewer false edges and cycles from import resolution.
+- The symbol count of a cycle edge no longer includes re-exported names.
 
 ## [0.5.0] - 2026-09-14
 

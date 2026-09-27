@@ -18,7 +18,7 @@ Requires a stable Rust toolchain.
 
 ```bash
 # In any Cargo workspace:
-cargo arc -o deps.svg   # the diagram
+cargo arc -o deps.svg   # the arc diagram
 cargo arc check         # the architecture rules
 ```
 
@@ -35,11 +35,17 @@ Arcs between nodes show where dependencies exist.
 - **Select** a node or arc to highlight its relationships
 - **Cycles** — circular dependencies are detected and highlighted
 
+## Hotspot Map
+
+`cargo arc hotspots` shows which files are large and change often, the files that usually cost the most to maintain.
+It ranks them by lines of code times commits and draws the workspace as nested circles, sized by lines and colored by commits.
+`cargo arc ui` serves the map beside the arc diagram, so a hotspot can be looked up there to see what depends on it.
+
 ## In the Editor
 
-The diagram can live beside the code.
+The arc diagram can live beside the code.
 `cargo arc ui` serves it for an editor plugin, and a click on a node or a reference opens the file in the editor.
-In the other direction, the diagram selects the node of the file the editor shows.
+In the other direction, the arc diagram selects the node of the file the editor shows.
 Plugins exist for [Neovim](editors/nvim/README.md), [VS Code](editors/vscode/README.md) and [RustRover](editors/rustrover/README.md).
 
 ## Architecture Rules
@@ -58,7 +64,7 @@ A module under `#[cfg(feature = "hydrate")]` or `#[cfg(target_os = "windows")]` 
 Two modules whose attributes exclude each other are currently reported as one tangle, although the reported circular dependency exists in no build.
 Modules under `#[cfg(test)]` are the exception and stay out unless `--include-tests` is passed.
 
-A `mod` declaration inside a macro invocation is not analysed.
+A `mod` declaration inside a macro invocation is not analyzed.
 Where a crate writes `feature_gate! { pub mod runtime; }`, `runtime` and every module below it are missing from the graph, and a rule naming it reports `unmatched-pattern`.
 
 A pattern reaches the crates under analysis and the modules in them.
@@ -68,7 +74,8 @@ A green run says the rules held over the modules the run walked, and a module a 
 
 ## Documentation
 
-- [docs/DIAGRAM.md](docs/DIAGRAM.md) — the diagram: what it draws, interaction, filters, flags
+- [docs/ARC_DIAGRAM.md](docs/ARC_DIAGRAM.md) — the arc diagram: what it draws, interaction, filters, flags
+- [docs/HOTSPOT_MAP.md](docs/HOTSPOT_MAP.md) — the hotspot map: what it measures, the hotspots, use beside the arc diagram
 - [docs/RULES.md](docs/RULES.md) — the rules: how to start, the baseline, the file format
 - [docs/GLOSSARY.md](docs/GLOSSARY.md) — the terms of the domain
 

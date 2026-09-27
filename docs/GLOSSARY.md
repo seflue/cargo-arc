@@ -1,10 +1,10 @@
 # Glossary
 
-cargo-arc visualises a workspace's module and crate dependencies and detects architecture violations.
+cargo-arc visualizes a workspace's module and crate dependencies and detects architecture violations.
 This file pins the terms whose everyday meaning is too loose for how it uses them.
 
 On conflict this file wins; code, CLI output and documentation follow.
-What the tool does with these things is written elsewhere: checking in [RULES.md](RULES.md), the diagram in [DIAGRAM.md](DIAGRAM.md), implementation in [ARCHITECTURE.md](ARCHITECTURE.md).
+What the tool does with these things is written elsewhere: checking in [RULES.md](RULES.md), the arc diagram in [ARC_DIAGRAM.md](ARC_DIAGRAM.md), the hotspot map in [HOTSPOT_MAP.md](HOTSPOT_MAP.md), implementation in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 *Avoid* means: not as a name for that entry.
 The column holds only words that compete with ours because they are established elsewhere, either in the literature or in another entry of this file, and each of them is taken up in the prose under its table with the reason it does not fit.
@@ -237,7 +237,7 @@ The two do not read off each other in either direction: a rule of severity `erro
 
 *Consumer locality* answers one question: could these symbols move closer to the modules that use them?
 It is three named cases rather than a measured distance.
-The sidebar's wording for the three is in [DIAGRAM.md](DIAGRAM.md#the-sidebar-for-an-arc).
+The sidebar's wording for the three is in [ARC_DIAGRAM.md](ARC_DIAGRAM.md#the-sidebar-for-an-arc).
 
 A group is the unit that moves.
 Its symbols share one set of consumers, so the group's locality holds for every symbol in it.
@@ -245,15 +245,19 @@ Its symbols share one set of consumers, so the group's locality holds for every 
 *Cluster* and *scope* are both taken in this file: a cluster is a strongly connected component, and a scope is the pattern a `no-cycles` rule searches inside.
 Neither has anything to do with who imports a symbol.
 
-## The diagram
+## The arc diagram
 
 | Term | Definition | Avoid |
 |------|------------|-------|
+| **Arc diagram** | The view of a workspace as a tree of crates and modules, with arcs for the dependencies between them. What `cargo arc` renders; `cargo arc ui` serves it beside the hotspot map. | — |
 | **Arc type** | Which of three dependencies an arc draws: crate-dep, module-dep or re-export. Every arc has exactly one, and it is read off the arc's endpoints and its re-export flag rather than stored. | kind, level |
 | **Re-export** | One of the three arc types: an arc whose imports are all `pub use`, so it passes names on rather than depending on them. A single ordinary import behind it makes it a module dependency instead ([ADR-022](adr/022-reexport-edges-tagged-not-dropped.md)). | — |
 | **Filter** | One switch over what the diagram shows, offered as a toolbar checkbox. Four cover arcs (crate dependencies, module dependencies, re-exports, cycles), the others cover nodes. | layer |
 | **Reading order** | The top-to-bottom sequence of the nodes under one parent. A node comes before the nodes it depends on; inside a tangle, where no order can do that for every edge, the layout takes the one that leaves the least dependency weight pointing up. | level, layer |
 | **Upward edge** | An edge whose target sits above its source in the reading order. Inside a tangle some edge has to; outside one it occurs only where two subtrees each hold a module using the other's, a cycle between the subtrees with none between modules. Drawn in its own style. | back edge, reverse dependency |
+
+*Diagram* alone is short for the arc diagram only where the hotspot map is out of reach, as in this section and in [ARC_DIAGRAM.md](ARC_DIAGRAM.md).
+Where both views are in reach, it names neither.
 
 *Kind* is taken twice over and neither use is this one: it says whether a reference sits in production or in test source, and in cargo it classifies a manifest dependency as normal, dev or build.
 Both cut across the arc type, since one pair of crates can carry a production and a test edge of the same type.
@@ -263,7 +267,7 @@ A node carries a type in the same sense, so the two read alike.
 A filter is not a classification.
 Three of the four arc filters select on the arc's type, which is one of crate-dep, module-dep and re-export; the cycles filter selects on a property an arc carries in addition to its type.
 An arc can therefore fall under two filters at once.
-Which arcs a set of filters leaves visible is in [DIAGRAM.md](DIAGRAM.md#filters).
+Which arcs a set of filters leaves visible is in [ARC_DIAGRAM.md](ARC_DIAGRAM.md#filters).
 
 *Layer* is taken twice over and fits neither: it names a position in a `layers` rule, and in the frontend an SVG stacking container.
 All arcs sit in one stacking layer whatever filters cover them, so the two groupings cut across each other.

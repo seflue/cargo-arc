@@ -31,7 +31,7 @@ Node filters and arc filters write the same class for that, `hidden-by-filter` (
 Arc visibility is recomputed from the whole set of active filters rather than toggled per filter, so the result does not depend on the order the checkboxes were clicked.
 The recompute reads the node filters as well and leaves an arc hidden while either endpoint is hidden.
 Neither filter kind can therefore override the other.
-What that means for a reader of the diagram is in [DIAGRAM.md](DIAGRAM.md#filters).
+What that means for a reader of the diagram is in [ARC_DIAGRAM.md](ARC_DIAGRAM.md#filters).
 
 ## Architecture Decision Records
 
