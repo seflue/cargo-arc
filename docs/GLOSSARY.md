@@ -23,7 +23,7 @@ In the arc diagram, an arc is the curve that draws a dependency (see [Arc type](
 
 | Term | Definition |
 |------|------------|
-| **Cycle** | A closed sequence of modules in which each module depends on the next, such as `a -> b -> c -> a`. |
+| **Cycle** | A chain of direct dependencies between modules that leads back to the module it started from, such as `a -> b -> c -> a`. |
 | **Representative cycle** | The shortest cycle through one edge. Where several edges have the same shortest cycle, cargo-arc keeps it once. Every cycle cargo-arc reports is a representative cycle. |
 | **Counted cycle** | A representative cycle that a tangle's numbers count and its feedback arc set breaks. In a tangle with at least one cycle that is not frozen, these are the cycles that are not frozen. In a tangle whose cycles are all frozen, they are all of its cycles. |
 | **Unlisted cycle** | A cycle that is not the representative cycle of any of its edges. For each of its edges, cargo-arc lists a shorter or equally short cycle instead. |
