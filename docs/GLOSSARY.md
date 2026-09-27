@@ -25,7 +25,7 @@ In the arc diagram, an arc is the curve that draws a dependency (see [Arc type](
 |------|------------|
 | **Cycle** | A chain of direct dependencies between modules that leads back to the module it started from, such as `a -> b -> c -> a`. |
 | **Cluster** | A strongly connected component of the module graph with at least two modules: the maximal set of modules that all reach each other. A cluster holds one or more cycles and never spans crates. |
-| **Tangle** | The same set of modules as a cluster. Structure101 defines a tangle as "a set of items that form a cyclic dependency graph at any scope". |
+| **Tangle** | The same set of modules as a cluster. Structure101 [defines a tangle](https://www.sonarsource.com/structure101/docs/java/studio/Content/restructure101/tangles.html) as "a set of items that form a cyclic dependency graph at any scope …". |
 | **Representative cycle** | The shortest cycle through one edge. Several edges can share the same representative cycle. Every cycle cargo-arc reports is a representative cycle. |
 | **Counted cycle** | A representative cycle that a tangle's numbers count and its feedback arc set breaks. In a tangle with at least one cycle that is not frozen, these are the cycles that are not frozen. In a tangle whose cycles are all frozen, they are all of its cycles. |
 | **Unlisted cycle** | A cycle that is not the representative cycle of any of its edges. For each of its edges, cargo-arc lists a shorter or equally short cycle instead. |
