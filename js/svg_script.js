@@ -57,14 +57,33 @@ function jumpIdFromClick(target) {
   return el ? Number(el.dataset.jump) : null;
 }
 
-// The vertical middle of the span covered by the given rects, in their own
-// coordinates; null without rects.
-/** @param {{ y: number, height: number }[]} rects */
-function spanCenter(rects) {
-  if (rects.length === 0) return null;
-  const top = Math.min(...rects.map((r) => r.y));
-  const bottom = Math.max(...rects.map((r) => r.y + r.height));
-  return (top + bottom) / 2;
+// The y to scroll to the top of the window so the node and as many of its
+// related nodes as possible are visible. `view.inset` is the part at the top
+// the toolbar covers; `view.margin` keeps the node off the visible edges.
+// Without a related node that fits next to it, the node is centered.
+/**
+ * @param {{ y: number, height: number }} node
+ * @param {{ y: number, height: number }[]} related
+ * @param {{ height: number, inset: number, margin: number }} view
+ */
+function scrollTarget(node, related, view) {
+  const visible = view.height - view.inset;
+  const nodeCenter = node.y + node.height / 2;
+  const all = [node, ...related];
+  const top = Math.min(...all.map((r) => r.y));
+  const bottom = Math.max(...all.map((r) => r.y + r.height));
+  let center = (top + bottom) / 2;
+  if (bottom - top > visible - 2 * view.margin) {
+    const lowest = node.y + node.height + view.margin - visible / 2;
+    const highest = node.y - view.margin + visible / 2;
+    center = Math.max(lowest, Math.min(center, highest));
+    const shown = related.some(
+      (r) =>
+        r.y >= center - visible / 2 && r.y + r.height <= center + visible / 2,
+    );
+    if (!shown) center = nodeCenter;
+  }
+  return center - visible / 2 - view.inset;
 }
 
 if (typeof module !== 'undefined') {
@@ -74,7 +93,7 @@ if (typeof module !== 'undefined') {
     deriveHoverKey,
     createHoverKeyTracker,
     jumpIdFromClick,
-    spanCenter,
+    scrollTarget,
   };
 }
 
@@ -89,6 +108,7 @@ if (typeof document !== 'undefined') {
         ? __SIDEBAR_SHADOW_PAD__
         : 12;
     const TOGGLE_OFFSET = 14;
+    const SCROLL_MARGIN = 40; // px between a scrolled-to node and the window edge
     const C = STATIC_DATA.classes;
 
     // === Arc weight scaling ===
@@ -264,8 +284,7 @@ if (typeof document !== 'undefined') {
         highlightTiming.immediate();
         const relations = collectNodeRelations(nodeId);
         SidebarLogic.showNode(nodeId, relations);
-        scrollToSpan([
-          nodeId,
+        scrollToSpan(nodeId, [
           ...relations.incoming.map((r) => r.targetId),
           ...relations.outgoing.map((r) => r.targetId),
         ]);
@@ -316,28 +335,35 @@ if (typeof document !== 'undefined') {
     let _isNavigating = false;
 
     function scrollToNode(nodeId) {
-      scrollToSpan([nodeId]);
+      scrollToSpan(nodeId, []);
     }
 
-    // Scrolls the window so the middle of the span the nodes cover sits at
-    // the middle of the viewport, as far as the page allows.
-    function scrollToSpan(nodeIds) {
-      const rects = nodeIds
-        .map((id) => DomAdapter.getNode(id))
-        .filter((rect) => rect !== null)
-        .map((rect) => ({
-          y: parseFloat(rect.getAttribute('y')),
-          height: parseFloat(rect.getAttribute('height')),
-        }));
-      const centerSvg = spanCenter(rects);
-      if (centerSvg === null) return;
+    // Scrolls the window to the node and as many of the related nodes as
+    // fit (see scrollTarget), as far as the page allows.
+    function scrollToSpan(nodeId, relatedIds) {
+      const rectOf = (id) => {
+        const rect = DomAdapter.getNode(id);
+        return rect
+          ? {
+              y: parseFloat(rect.getAttribute('y')),
+              height: parseFloat(rect.getAttribute('height')),
+            }
+          : null;
+      };
+      const node = rectOf(nodeId);
+      if (node === null) return;
+      const related = relatedIds.map(rectOf).filter((rect) => rect !== null);
       const svg = DomAdapter.getSvgRoot();
       if (!svg) return;
       const svgRect = svg.getBoundingClientRect();
       const vb = svg.viewBox.baseVal;
       const scaleY = vb.height / svgRect.height;
-      const centerPage = centerSvg / scaleY + svgRect.top + window.scrollY;
-      const targetScroll = centerPage - window.innerHeight / 2;
+      const topSvg = scrollTarget(node, related, {
+        height: window.innerHeight * scaleY,
+        inset: SidebarLogic._toolbarHeight * scaleY,
+        margin: SCROLL_MARGIN * scaleY,
+      });
+      const targetScroll = topSvg / scaleY + svgRect.top + window.scrollY;
       const maxScroll =
         document.documentElement.scrollHeight - window.innerHeight;
       const clampedTarget = Math.max(0, Math.min(targetScroll, maxScroll));

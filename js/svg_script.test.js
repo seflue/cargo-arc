@@ -30,7 +30,7 @@ import { VirtualEdgeLogic } from './virtual_edge_logic.js';
 const hadDocument = 'document' in global;
 const savedDocument = global.document;
 delete global.document;
-const { jumpIdFromClick, spanCenter } = require('./svg_script.js');
+const { jumpIdFromClick, scrollTarget } = require('./svg_script.js');
 if (hadDocument) global.document = savedDocument;
 
 // Captured before any test can mutate it, so leak-detection tests below
@@ -60,22 +60,43 @@ function resetSidebarHooks() {
   }
 }
 
-describe('spanCenter', () => {
-  test('is the middle between the topmost top and the lowest bottom', () => {
-    const rects = [
-      { y: 100, height: 20 },
-      { y: 40, height: 20 },
-      { y: 200, height: 30 },
+describe('scrollTarget', () => {
+  // A window 1000 high whose top 100 the toolbar covers: 900 visible.
+  const view = { height: 1000, inset: 100, margin: 50 };
+  const visibleTop = (top) => top + view.inset;
+  const visibleBottom = (top) => top + view.height;
+
+  test('centers the span in the visible area when it fits', () => {
+    const node = { y: 2000, height: 20 };
+    const related = [{ y: 2400, height: 20 }];
+    const top = scrollTarget(node, related, view);
+    expect((visibleTop(top) + visibleBottom(top)) / 2).toBe(2210);
+  });
+
+  test('keeps the node visible when the span is taller than the window', () => {
+    const node = { y: 1000, height: 20 };
+    const related = [
+      { y: 1500, height: 20 },
+      { y: 9000, height: 20 },
     ];
-    expect(spanCenter(rects)).toBe((40 + 230) / 2);
+    const top = scrollTarget(node, related, view);
+    expect(visibleTop(top)).toBeLessThanOrEqual(node.y - view.margin);
+    expect(visibleBottom(top)).toBeGreaterThanOrEqual(1520);
   });
 
-  test('is the center of a single rect', () => {
-    expect(spanCenter([{ y: 10, height: 30 }])).toBe(25);
+  test('centers the node when no relation fits next to it', () => {
+    const node = { y: 5000, height: 20 };
+    const related = [
+      { y: 100, height: 20 },
+      { y: 9000, height: 20 },
+    ];
+    const top = scrollTarget(node, related, view);
+    expect((visibleTop(top) + visibleBottom(top)) / 2).toBe(5010);
   });
 
-  test('is null without rects', () => {
-    expect(spanCenter([])).toBeNull();
+  test('centers the node without relations', () => {
+    const top = scrollTarget({ y: 3000, height: 20 }, [], view);
+    expect((visibleTop(top) + visibleBottom(top)) / 2).toBe(3010);
   });
 });
 
