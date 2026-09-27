@@ -37,6 +37,29 @@ if (hadDocument) global.document = savedDocument;
 // have a real default to compare against instead of a hardcoded guess.
 const DEFAULT_TOOLBAR_HEIGHT = SidebarLogic._toolbarHeight;
 
+// svg_script.js's own init wires these hooks on the real, shared SidebarLogic
+// module object to this run's AppState, so sidebar.js's own defaults have to
+// be put back for whichever test file runs next.
+function resetSidebarHooks() {
+  for (const hook of [
+    '_onBadgeClick',
+    '_onCollapseToggle',
+    '_isNodeCollapsed',
+    '_isClusterMode',
+    '_resolvedFocusArc',
+    '_onEdgeHover',
+    '_onEdgeHoverEnd',
+    '_isRowExpanded',
+    '_onRowToggle',
+    '_onRowPinClick',
+    '_onRowFollow',
+    '_onRowsExpandAll',
+    '_onRowsCollapseAll',
+  ]) {
+    SidebarLogic[hook] = null;
+  }
+}
+
 describe('spanCenter', () => {
   test('is the middle between the topmost top and the lowest bottom', () => {
     const rects = [
@@ -428,12 +451,7 @@ function loadSvgPage({
 }
 
 describe("`?select=` on arrival (svg_script.js's init)", () => {
-  afterEach(() => {
-    // svg_script.js's own init assigns this on the real, shared SidebarLogic
-    // module object, so sidebar.js's own default has to be put back for
-    // whichever test file runs next.
-    SidebarLogic._onBadgeClick = null;
-  });
+  afterEach(resetSidebarHooks);
 
   test('selects a module node that has children, not only a leaf, and scrolls to it', () => {
     const { sidebarContent, scrollCalls } = loadSvgPage({
@@ -491,7 +509,7 @@ describe("`?select=` on arrival (svg_script.js's init)", () => {
 
 describe("the SVG's size around a wrapped toolbar (svg_script.js's init)", () => {
   afterEach(() => {
-    SidebarLogic._onBadgeClick = null;
+    resetSidebarHooks();
     // syncToolbarHeight() assigns this on the real, shared SidebarLogic
     // module object too, so it has to be put back the same way.
     SidebarLogic.setToolbarHeight(DEFAULT_TOOLBAR_HEIGHT);
@@ -688,9 +706,7 @@ function loadArcVisibilityPage({
 }
 
 describe('arc visibility across a relayout (applyRestoredView)', () => {
-  afterEach(() => {
-    SidebarLogic._onBadgeClick = null;
-  });
+  afterEach(resetSidebarHooks);
 
   const restoredView = {
     collapsed: [],
