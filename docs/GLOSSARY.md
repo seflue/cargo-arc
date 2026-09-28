@@ -41,14 +41,14 @@ A [tangle](#tangle) with exactly one [cycle](#cycle) is a *single-cycle tangle*,
 [RULES.md](RULES.md#no-cycles) describes which dependencies the search for cycles includes and how the [report](#report) differs between the two.
 
 Graph theory calls a [cycle](#cycle) without a repeated [node](#node) an *elementary cycle*.
-Every [representative cycle](#representative-cycle) is elementary, but cargo-arc never lists all elementary cycles.
+Every [representative cycle](#representative-cycle) is elementary.
 
-A [representative cycle](#representative-cycle) stands in for every [cycle](#cycle) through its [edge](#edge).
-In graph theory, a *minimal cycle* has no chord, an edge that joins two of its [nodes](#node) without being part of it.
+[ADR-021](adr/021-minimal-cycle-per-edge.md) calls a [representative cycle](#representative-cycle) a *minimal cycle* in its title.
+In graph theory, a *chord* of a [cycle](#cycle) is an [edge](#edge) that joins two [nodes](#node) of the cycle but is not part of it.
+A *minimal cycle* has no chord.
 A representative cycle can have a chord, as long as the shorter cycle that the chord creates does not pass through its edge.
 The *minimum* cycle is the shortest cycle in the whole graph, and its length is the *girth*.
 A representative cycle is the shortest only among the cycles through its edge.
-[ADR-021](adr/021-minimal-cycle-per-edge.md) calls a representative cycle a *minimal cycle* in its title.
 
 A *cycle basis* is a set of [cycles](#cycle) from which every cycle of the graph can be built.
 cargo-arc does not choose the [representative cycles](#representative-cycle) to form one.
