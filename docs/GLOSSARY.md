@@ -38,7 +38,7 @@ The output says *circular dependency* in sentences, and *cycle* in counts and ta
 The code says *cluster*, and the output says *tangle*.
 
 A [tangle](#tangle) with exactly one [cycle](#cycle) is a *single-cycle tangle*, and a tangle with more is a *multi-cycle tangle*.
-[RULES.md](RULES.md#no-cycles) describes which dependencies the search includes and how the [report](#report) differs between the two.
+[RULES.md](RULES.md#no-cycles) describes which dependencies the search for cycles includes and how the [report](#report) differs between the two.
 
 Graph theory calls a [cycle](#cycle) without a repeated [node](#node) an *elementary cycle*.
 Every [representative cycle](#representative-cycle) is elementary, but cargo-arc never lists all elementary cycles.
