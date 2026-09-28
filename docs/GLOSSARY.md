@@ -33,9 +33,9 @@ In the [arc diagram](#arc-diagram), an arc is the curve that draws a dependency 
 
 *Circular dependency* is the word in dependency analysis for a [cycle](#cycle).
 The code says *cycle*.
-Output a user reads says *circular dependency* in sentences, and *cycle* in counts and table cells.
+The output says *circular dependency* in sentences, and *cycle* in counts and table cells.
 
-The code says *cluster*, and output a user reads says *tangle*.
+The code says *cluster*, and the output says *tangle*.
 
 A [tangle](#tangle) with exactly one [cycle](#cycle) is a *single-cycle tangle*, and a tangle with more is a *multi-cycle tangle*.
 [RULES.md](RULES.md#no-cycles) describes which dependencies the search includes and how the [report](#report) differs between the two.
