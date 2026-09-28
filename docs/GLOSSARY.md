@@ -50,8 +50,9 @@ A representative cycle can have a chord, as long as the shorter cycle that the c
 The *minimum* cycle is the shortest cycle in the whole graph, and its length is the *girth*.
 A representative cycle is the shortest only among the cycles through its edge.
 
-A *cycle basis* is a set of [cycles](#cycle) from which every cycle of the graph can be built.
-cargo-arc does not choose the [representative cycles](#representative-cycle) to form one.
+A *cycle basis* is a set of [cycles](#cycle) that generates every other cycle of the graph.
+cargo-arc chooses the [representative cycles](#representative-cycle) per [edge](#edge), so that every [cyclic edge](#cyclic-edge) lies on one of them.
+It does not choose them to form a basis.
 
 A [counted cycle](#counted-cycle) is not always [reported](#reported).
 In a [tangle](#tangle) whose [cycles](#cycle) are all [frozen](#frozen), every cycle counts and none is reported.
