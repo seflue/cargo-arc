@@ -27,7 +27,7 @@ In the [arc diagram](#arc-diagram), an arc is the curve that draws a dependency 
 | **<a id="cluster">Cluster</a>** | A strongly connected component of the module graph with at least two modules: the maximal set of modules that all reach each other. A cluster holds one or more [cycles](#cycle) and never spans crates. |
 | **<a id="tangle">Tangle</a>** | The same set of modules as a [cluster](#cluster). Structure101 [defines a tangle](https://www.sonarsource.com/structure101/docs/java/studio/Content/restructure101/tangles.html) as "a set of items that form a cyclic dependency graph at any scope …". |
 | **<a id="representative-cycle">Representative cycle</a>** | The shortest [cycle](#cycle) through one [edge](#edge). Several edges can share the same representative cycle. Every cycle cargo-arc reports is a representative cycle. |
-| **<a id="counted-cycle">Counted cycle</a>** | A [representative cycle](#representative-cycle) of a [tangle](#tangle) that is not [frozen](#frozen). When every cycle of a tangle is frozen, all of them are counted, so that the tangle still has a [feedback arc set](#feedback-arc-set) that shows how to reduce the frozen debt. [Traffic](#traffic) and the feedback arc set consider only counted cycles. |
+| **<a id="counted-cycle">Counted cycle</a>** | A [representative cycle](#representative-cycle) that is not [frozen](#frozen). When every cycle of a [tangle](#tangle) is frozen, all of them are counted, so that the tangle still has a [feedback arc set](#feedback-arc-set) that shows how to reduce the frozen debt. [Traffic](#traffic) and the feedback arc set consider only counted cycles. |
 | **<a id="unlisted-cycle">Unlisted cycle</a>** | A [cycle](#cycle) that is not the [representative cycle](#representative-cycle) of any of its [edges](#edge). For each of its edges, cargo-arc lists a shorter or equally short cycle instead. |
 | **<a id="cyclic-edge">Cyclic edge</a>** | An [edge](#edge) that lies on at least one [cycle](#cycle). Its two ends are in the same [cluster](#cluster). The [arc diagram](#arc-diagram) highlights cyclic edges. |
 
@@ -54,7 +54,7 @@ A *cycle basis* is a set of [cycles](#cycle) that generates every other cycle of
 cargo-arc chooses the [representative cycles](#representative-cycle) per [edge](#edge), so that every [cyclic edge](#cyclic-edge) lies on one of them.
 It does not choose them to form a basis.
 
-A `no-cycles` [rule](#rule) reports a whole [tangle](#tangle) as one [violation](#violation), so the states [reported](#reported) and [frozen](#frozen) belong to the tangle, not to its [cycles](#cycle).
+A `no-cycles` [rule](#rule) reports a whole [tangle](#tangle) as one [violation](#violation), so a [cycle](#cycle) has no state of its own.
 A tangle is frozen when all of its cycles are frozen.
 
 In a depth-first search, a *back edge* leads from a [node](#node) to one of its ancestors in the search tree.
@@ -141,9 +141,9 @@ A Lakos component, a header with its implementation file, corresponds to a modul
 | **<a id="violation">Violation</a>** | A dependency or a [tangle](#tangle) that breaks a [rule](#rule). The dependency can be direct or transitive. A manifest entry and an import between the same two ends are one dependency. Every violation is in exactly one of the three states below. |
 | **<a id="reported">Reported</a>** | The state of a [violation](#violation) that is neither [allowed](#allowed) nor [frozen](#frozen). Only reported violations affect the exit code. |
 | **<a id="allowed">Allowed</a>** | Permitted by an `allow` entry on the [rule](#rule), permanently and on purpose. An entry names an [edge](#edge) that runs against the order the rule's writer has in mind, and the entries of a rule together declare that order. |
-| **<a id="frozen">Frozen</a>** | Covered by an entry in `arc-baseline.toml`. A frozen [violation](#violation) is debt that is tolerated until someone fixes it and is expected to shrink. |
+| **<a id="frozen">Frozen</a>** | Covered by an entry in `arc-baseline.toml`. A frozen [violation](#violation) is debt that is tolerated until someone fixes it and is expected to shrink. A [cycle](#cycle) counts as frozen when entries in `arc-baseline.toml` cover each of its [edges](#edge). |
 | **<a id="silenced">Silenced</a>** | [Allowed](#allowed) or [frozen](#frozen). `--show-silenced` lists silenced [violations](#violation). Silenced is not a state of its own. |
-| **<a id="baseline">Baseline</a>** | The set of [frozen](#frozen) [violations](#violation), kept in `arc-baseline.toml` beside the rules file. Only `--generate-baseline` writes it. |
+| **<a id="baseline">Baseline</a>** | The entries in `arc-baseline.toml`, beside the rules file, that [freeze](#frozen) [violations](#violation). For a `no-cycles` [rule](#rule), an entry covers an [edge](#edge), not a [tangle](#tangle). Only `--generate-baseline` writes the file. |
 | **<a id="diagnostic">Diagnostic</a>** | A gap in the configuration: a [node](#node) that an [exhaustive `layers` rule](#exhaustive-rule) leaves in no position, an `except` entry that matches no node, a [baseline](#baseline) entry that matches nothing, a baseline entry that freezes more symbols than the [edge](#edge) still carries, an `allow` entry that matches nothing, `allow` entries that put nodes above each other in a circle, a [rule](#rule) [pattern](#module-path-pattern) that matches nothing, or a catch-all [architectural layer](#architectural-layer) that holds nothing. |
 | **<a id="diagnostic-level">Diagnostic level</a>** | Whether a run tolerates the gap a [diagnostic](#diagnostic) names: `allow`, `warn` or `deny`. |
 | **<a id="architectural-layer">Architectural layer</a>** | One position in a `layers` [rule](#rule). It holds one or more [patterns](#module-path-pattern), or `*` for the [nodes](#node) that no other layer holds. Patterns in the same layer share its position. |
