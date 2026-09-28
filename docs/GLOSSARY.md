@@ -144,9 +144,9 @@ A Lakos component, a header with its implementation file, corresponds to a modul
 | **<a id="frozen">Frozen</a>** | Covered by an entry in `arc-baseline.toml`. A frozen [violation](#violation) is debt that is tolerated until someone fixes it and is expected to shrink. |
 | **<a id="silenced">Silenced</a>** | [Allowed](#allowed) or [frozen](#frozen). `--show-silenced` lists silenced [violations](#violation). Silenced is not a state of its own. |
 | **<a id="baseline">Baseline</a>** | The set of [frozen](#frozen) [violations](#violation), kept in `arc-baseline.toml` beside the rules file. Only `--generate-baseline` writes it. |
-| **<a id="diagnostic">Diagnostic</a>** | A gap in the configuration: a [node](#node) that an [exhaustive `layers` rule](#exhaustive-rule) leaves in no position, an `except` entry that matches no node, a [baseline](#baseline) entry that matches nothing, a baseline entry that freezes more symbols than the [edge](#edge) still carries, an `allow` entry that matches nothing, `allow` entries that put nodes above each other in a circle, a [rule](#rule) [pattern](#module-path-pattern) that matches nothing, or a catch-all [layer](#layer) that holds nothing. |
+| **<a id="diagnostic">Diagnostic</a>** | A gap in the configuration: a [node](#node) that an [exhaustive `layers` rule](#exhaustive-rule) leaves in no position, an `except` entry that matches no node, a [baseline](#baseline) entry that matches nothing, a baseline entry that freezes more symbols than the [edge](#edge) still carries, an `allow` entry that matches nothing, `allow` entries that put nodes above each other in a circle, a [rule](#rule) [pattern](#module-path-pattern) that matches nothing, or a catch-all [layer](#architectural-layer) that holds nothing. |
 | **<a id="diagnostic-level">Diagnostic level</a>** | Whether a run tolerates the gap a [diagnostic](#diagnostic) names: `allow`, `warn` or `deny`. |
-| **<a id="layer">Layer</a>** | One position in a `layers` [rule](#rule). It holds one or more [patterns](#module-path-pattern), or `*` for the [nodes](#node) that no other layer holds. Patterns in the same layer share its position. |
+| **<a id="architectural-layer">Architectural layer</a>** | One position in a `layers` [rule](#rule). It holds one or more [patterns](#module-path-pattern), or `*` for the [nodes](#node) that no other layer holds. Patterns in the same layer share its position. |
 | **<a id="exhaustive-rule">Exhaustive rule</a>** | A `layers` [rule](#rule) with `exhaustive = true`, which claims to sort everything it addresses. Its crate patterns claim every workspace crate, and its module patterns claim every module of the crates they reach. A rule without the field says nothing about the [nodes](#node) it does not name. |
 | **<a id="module-path-pattern">Module path pattern</a>** | A module path with optional wildcards, such as `domain`, `domain::service`, `domain::*`, `domain::**`, `domain*` or a bare `**`. Inside one segment, `*` stands for any run of characters. *Pattern* alone means a module path pattern unless the text says otherwise. |
 | **<a id="dependency-pattern">Dependency pattern</a>** | A named list of `allow` entries under `[dependency-patterns]`, which a [rule](#rule)'s `allow` list refers to by name. It only selects dependencies; the `allow` list that names it allows them. |
@@ -171,7 +171,8 @@ A shell *glob* also has character classes, alternation and negation.
 A [module path pattern](#module-path-pattern) has none of them.
 Its `*` never crosses a `::`, and `**` stands only as the whole pattern or as its last segment.
 
-In the frontend code, a *layer* is also an SVG stacking order.
+Where the context is clear, as in `RULES.md` and the output of `check`, *layer* alone means an [architectural layer](#architectural-layer).
+In the frontend code, an *SVG layer* is a level in the stacking order.
 In the architecture literature, a *tier* is a deployment boundary.
 
 *Total* and *complete* would claim the whole workspace.
@@ -252,8 +253,7 @@ Three of the four arc [filters](#filter) select on the [arc type](#arc-type).
 The circular-dependencies filter selects on whether the arc is a [cyclic edge](#cyclic-edge), so an arc can fall under two filters at once.
 [ARC_DIAGRAM.md](ARC_DIAGRAM.md#filters) describes which arcs a set of filters leaves visible.
 
-A [layer](#layer) is a position in a `layers` [rule](#rule) or an SVG stacking order.
-All arcs sit in one SVG stacking layer, whichever [filters](#filter) cover them.
+All arcs sit in one *SVG layer*, whichever [filters](#filter) cover them.
 
 A *suppressed* arc is one the diagram does not draw: a crate arc between two crates whose modules a module arc already connects, or, in group mode, an arc that does not touch the selected [node](#node).
 
