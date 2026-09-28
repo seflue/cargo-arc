@@ -25,7 +25,7 @@
 
 <!-- /TOC -->
 `cargo arc check` evaluates a workspace against the rules you write in `arc-rules.toml`.
-Rules sort your crates and modules into layers, forbid circular dependencies between modules, or ban a dependency you name.
+Rules sort your crates and modules into [architectural layers](GLOSSARY.md#architectural-layer), forbid circular dependencies between modules, or ban a dependency you name.
 `check` reports the violations it finds and exits non-zero on any you have not accepted, so you can run it in CI next to the test suite.
 
 ```bash
