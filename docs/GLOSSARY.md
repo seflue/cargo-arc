@@ -54,9 +54,8 @@ A *cycle basis* is a set of [cycles](#cycle) that generates every other cycle of
 cargo-arc chooses the [representative cycles](#representative-cycle) per [edge](#edge), so that every [cyclic edge](#cyclic-edge) lies on one of them.
 It does not choose them to form a basis.
 
-A [counted cycle](#counted-cycle) is not always [reported](#reported).
-In a [tangle](#tangle) whose [cycles](#cycle) are all [frozen](#frozen), every cycle counts and none is reported.
-An [unlisted cycle](#unlisted-cycle) is never reported.
+A `no-cycles` [rule](#rule) reports a whole [tangle](#tangle) as one [violation](#violation), so the states [reported](#reported) and [frozen](#frozen) belong to the tangle, not to its [cycles](#cycle).
+A tangle is frozen when all of its cycles are frozen.
 
 In a depth-first search, a *back edge* leads from a [node](#node) to one of its ancestors in the search tree.
 Which [edges](#edge) are back edges depends on where the search starts.
