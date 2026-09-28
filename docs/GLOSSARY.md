@@ -144,7 +144,7 @@ A Lakos component, a header with its implementation file, corresponds to a modul
 | **<a id="frozen">Frozen</a>** | Covered by an entry in `arc-baseline.toml`. A frozen [violation](#violation) is debt that is tolerated until someone fixes it and is expected to shrink. |
 | **<a id="silenced">Silenced</a>** | [Allowed](#allowed) or [frozen](#frozen). `--show-silenced` lists silenced [violations](#violation). Silenced is not a state of its own. |
 | **<a id="baseline">Baseline</a>** | The set of [frozen](#frozen) [violations](#violation), kept in `arc-baseline.toml` beside the rules file. Only `--generate-baseline` writes it. |
-| **<a id="diagnostic">Diagnostic</a>** | A gap in the configuration: a [node](#node) that an [exhaustive `layers` rule](#exhaustive-rule) leaves in no position, an `except` entry that matches no node, a [baseline](#baseline) entry that matches nothing, a baseline entry that freezes more symbols than the [edge](#edge) still carries, an `allow` entry that matches nothing, `allow` entries that put nodes above each other in a circle, a [rule](#rule) [pattern](#module-path-pattern) that matches nothing, or a catch-all [layer](#architectural-layer) that holds nothing. |
+| **<a id="diagnostic">Diagnostic</a>** | A gap in the configuration: a [node](#node) that an [exhaustive `layers` rule](#exhaustive-rule) leaves in no position, an `except` entry that matches no node, a [baseline](#baseline) entry that matches nothing, a baseline entry that freezes more symbols than the [edge](#edge) still carries, an `allow` entry that matches nothing, `allow` entries that put nodes above each other in a circle, a [rule](#rule) [pattern](#module-path-pattern) that matches nothing, or a catch-all [architectural layer](#architectural-layer) that holds nothing. |
 | **<a id="diagnostic-level">Diagnostic level</a>** | Whether a run tolerates the gap a [diagnostic](#diagnostic) names: `allow`, `warn` or `deny`. |
 | **<a id="architectural-layer">Architectural layer</a>** | One position in a `layers` [rule](#rule). It holds one or more [patterns](#module-path-pattern), or `*` for the [nodes](#node) that no other layer holds. Patterns in the same layer share its position. |
 | **<a id="exhaustive-rule">Exhaustive rule</a>** | A `layers` [rule](#rule) with `exhaustive = true`, which claims to sort everything it addresses. Its crate patterns claim every workspace crate, and its module patterns claim every module of the crates they reach. A rule without the field says nothing about the [nodes](#node) it does not name. |
@@ -171,8 +171,8 @@ A shell *glob* also has character classes, alternation and negation.
 A [module path pattern](#module-path-pattern) has none of them.
 Its `*` never crosses a `::`, and `**` stands only as the whole pattern or as its last segment.
 
-Where the context is clear, as in `RULES.md` and the output of `check`, *layer* alone means an [architectural layer](#architectural-layer).
 In the frontend code, an *SVG layer* is a level in the stacking order.
+Where the context makes clear which one is meant, *layer* alone names an [architectural layer](#architectural-layer) or an SVG layer.
 In the architecture literature, a *tier* is a deployment boundary.
 
 *Total* and *complete* would claim the whole workspace.
