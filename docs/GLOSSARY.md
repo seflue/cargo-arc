@@ -71,7 +71,7 @@ Whether an edge is [cyclic](#cyclic-edge) does not.
 | **<a id="symbol-count">Symbol count</a>** | The number of distinct symbols that cross one [edge](#edge). A symbol counts once, even when several imports on the edge carry it. All [bare imports](#bare-import) on an edge together add one. A symbol imported by `pub use` does not count, unless every import on the edge is a `pub use`. The symbol count breaks ties in the [traffic](#traffic) ranking. In a [single-cycle tangle](#tangle) every edge has the same traffic, so the symbol count alone decides the order. |
 
 Every [feedback arc](#feedback-arc) is a [cyclic edge](#cyclic-edge).
-*Feedback arc* is the established name from the literature on directed graphs, which says *arc* for an [edge](#edge) (see [Nodes and edges](#nodes-and-edges)).
+*Feedback arc* is the established name from the literature on directed graphs, which says *arc* for an [edge](#edge).
 
 In graph theory, a *cut* splits the [nodes](#node) into two parts, and the *cut set* is the set of [edges](#edge) between them.
 A cut concerns connectivity, and a [feedback arc set](#feedback-arc-set) concerns [cycles](#cycle).
@@ -126,7 +126,7 @@ A re-export passes a name on without depending on it, so a prelude depends on no
 In C4, a *container* is an application or a data store, a unit that runs on its own.
 A workspace with several binaries holds several C4 containers, and no module is one.
 Say *container module* for a module and *C4 container* for the deployable unit.
-In the [hotspot map](#hotspot-map), a *container* is a circle that holds other circles (see [Hotspots](#hotspots)).
+In the [hotspot map](#hotspot-map), a [container](#container) is a circle that holds other circles.
 
 Lakos calls a unit that only groups components a *package*; it is not a component itself.
 In Cargo, a *package* is what a `Cargo.toml` describes.
@@ -207,7 +207,7 @@ In the code, the *source* of an [edge](#edge) is the [node](#node) it starts fro
 
 *Group* and *folder* suggest a directory in the file system, and a [container](#container) can also be a crate or the workspace.
 
-A *node* is a crate or module in the dependency graph (see [Nodes and edges](#nodes-and-edges)), and a [leaf](#leaf) is the circle of one file in the [hotspot map](#hotspot-map).
+A [node](#node) is a crate or module in the dependency graph, and a [leaf](#leaf) is the circle of one file in the [hotspot map](#hotspot-map).
 
 A *treemap* nests rectangles.
 cargo-arc tried one and draws nested circles instead, which show the nesting depth better but leave space unused.
@@ -227,7 +227,7 @@ cargo-arc tried one and draws nested circles instead, which show the nesting dep
 A [consumer group](#consumer-group) is the unit that can move.
 Its symbols share one set of [consumers](#consumer), so the group's locality holds for each of them.
 
-In this file, a *cluster* is a strongly connected component (see [Cycles and clusters](#cycles-and-clusters)), and a *scope* is the [pattern](#module-path-pattern) a `no-cycles` [rule](#rule) searches inside (see [Rules and violations](#rules-and-violations)).
+In this file, a [cluster](#cluster) is a strongly connected component, and a [scope](#scope) is the [pattern](#module-path-pattern) a `no-cycles` [rule](#rule) searches inside.
 
 ## The arc diagram
 
@@ -252,7 +252,7 @@ Three of the four arc [filters](#filter) select on the [arc type](#arc-type).
 The circular-dependencies filter selects on whether the arc is a [cyclic edge](#cyclic-edge), so an arc can fall under two filters at once.
 [ARC_DIAGRAM.md](ARC_DIAGRAM.md#filters) describes which arcs a set of filters leaves visible.
 
-A *layer* is a position in a `layers` [rule](#rule) or an SVG stacking order (see [Rules and violations](#rules-and-violations)).
+A [layer](#layer) is a position in a `layers` [rule](#rule) or an SVG stacking order.
 All arcs sit in one SVG stacking layer, whichever [filters](#filter) cover them.
 
 A *suppressed* arc is one the diagram does not draw: a crate arc between two crates whose modules a module arc already connects, or, in group mode, an arc that does not touch the selected [node](#node).
