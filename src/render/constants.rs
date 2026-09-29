@@ -246,6 +246,8 @@ pub(super) struct ToolbarClasses {
     pub dropdown_divider: &'static str,
     /// A labelled `<select>` row in the dropdown panel.
     pub select: &'static str,
+    /// The page-mode host that fixes the toolbar to the viewport.
+    pub page_host: &'static str,
 }
 
 #[allow(dead_code, clippy::struct_field_names)] // "search_" prefix groups related CSS classes
@@ -302,6 +304,8 @@ pub(super) struct SidebarClasses {
     pub symbol_stacked: &'static str,
     pub ext_info: &'static str,
     pub collapse_indicator: &'static str,
+    /// The page-mode host that fixes the sidebar to the viewport.
+    pub page_host: &'static str,
 }
 
 #[allow(dead_code)]
@@ -453,6 +457,7 @@ pub(super) static CSS: CssClassNames = CssClassNames {
         dropdown_panel: "toolbar-dropdown-panel",
         dropdown_divider: "toolbar-dropdown-divider",
         select: "toolbar-select",
+        page_host: "toolbar-page-host",
     },
     labels: LabelClasses {
         arc_count: "arc-count",
@@ -497,6 +502,7 @@ pub(super) static CSS: CssClassNames = CssClassNames {
         symbol_stacked: "sidebar-symbol-stacked",
         ext_info: "sidebar-ext-info",
         collapse_indicator: "sidebar-collapse-indicator",
+        page_host: "sidebar-page-host",
     },
     search: SearchClasses {
         search_active: "search-active",

@@ -37,6 +37,15 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
     let hs = &palette.hotspots;
     let draw = &DRAWING;
     let c = &CSS;
+    // A sidebar row while a selection is pinned: inside the root svg (the
+    // foreignObject sidebar) or inside a page host that follows it.
+    let pinned_rows = |row: &str| {
+        format!(
+            "svg.{pinned} {row}, svg.{pinned} ~ .{host} {row}",
+            pinned = c.relation.has_pinned,
+            host = c.sidebar.page_host
+        )
+    };
 
     vec![
         // Chromium picks a foreignObject inside the svg as scroll anchor; the
@@ -44,6 +53,25 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
         // adjustment back into another scroll, every frame. Firefox never
         // anchors inside an svg, so this matches the behavior tested there.
         CssRule::new("svg", &[("overflow-anchor", "none")]),
+        // Page-mode hosts (see render::render): fixed to the viewport, so no
+        // scroll listener has to move them. They match nothing in a bare SVG.
+        // The toolbar stacks above the sidebar so an open View dropdown
+        // covers it. The sidebar's top and right are written by
+        // js/sidebar.js, which owns the measured toolbar height and the margin.
+        CssRule::class(
+            c.toolbar.page_host,
+            &[
+                ("position", "fixed"),
+                ("top", "0"),
+                ("left", "0"),
+                ("right", "0"),
+                ("z-index", "20"),
+            ],
+        ),
+        CssRule::class(
+            c.sidebar.page_host,
+            &[("position", "fixed"), ("z-index", "10")],
+        ),
         // Node base styles
         CssRule::class(
             c.nodes.crate_node,
@@ -872,10 +900,7 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
         // targets only while a selection is pinned, so the cursor and the icon
         // follow the root's has-pinned class.
         CssRule::new(
-            &format!(
-                "svg.{} .{}[data-jump]",
-                c.relation.has_pinned, c.sidebar.location
-            ),
+            &pinned_rows(&format!(".{}[data-jump]", c.sidebar.location)),
             &[("cursor", "pointer")],
         ),
         // Inline <svg class="sidebar-jump"> at the end of a jump-capable row,
@@ -893,35 +918,27 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
             ],
         ),
         CssRule::new(
-            &format!(
-                "svg.{} .{}:hover .sidebar-jump",
-                c.relation.has_pinned, c.sidebar.location
-            ),
+            &pinned_rows(&format!(".{}:hover .sidebar-jump", c.sidebar.location)),
             &[("visibility", "visible")],
         ),
         // The definition chip on a symbol row (js/sidebar.js _definitionChip)
         // follows the location rows: a click target only while pinned, its
         // icon shown only while the row is hovered.
         CssRule::new(
-            &format!(
-                "svg.{} .sidebar-definition[data-jump]",
-                c.relation.has_pinned
-            ),
+            &pinned_rows(".sidebar-definition[data-jump]"),
             &[("cursor", "pointer")],
         ),
         // A tangle sidebar row's whole symbol line is the jump target (see
         // js/sidebar.js _buildEdgeRow), not only its definition chip.
         CssRule::new(
-            &format!(
-                "svg.{} .sidebar-edge-symbol[data-jump]",
-                c.relation.has_pinned
-            ),
+            &pinned_rows(".sidebar-edge-symbol[data-jump]"),
             &[("cursor", "pointer")],
         ),
         CssRule::new(
             &format!(
-                "svg.{} .{}:hover .sidebar-jump, svg.{} .sidebar-edge-symbol:hover .sidebar-jump",
-                c.relation.has_pinned, c.sidebar.symbol, c.relation.has_pinned
+                "{}, {}",
+                pinned_rows(&format!(".{}:hover .sidebar-jump", c.sidebar.symbol)),
+                pinned_rows(".sidebar-edge-symbol:hover .sidebar-jump")
             ),
             &[("visibility", "visible")],
         ),
@@ -2031,13 +2048,15 @@ mod tests {
     fn test_css_contains_sidebar_location_jump_rule() {
         let css = render_styles();
         let selector = format!(
-            "svg.{} .{}[data-jump]",
-            CSS.relation.has_pinned, CSS.sidebar.location
+            "svg.{pinned} .{loc}[data-jump], svg.{pinned} ~ .{host} .{loc}[data-jump]",
+            pinned = CSS.relation.has_pinned,
+            loc = CSS.sidebar.location,
+            host = CSS.sidebar.page_host
         );
         let idx = css
             .find(&format!("{selector} {{"))
             .unwrap_or_else(|| panic!("CSS should contain a rule for {selector}"));
-        let section = &css[idx..idx + 120];
+        let section = &css[idx..idx + selector.len() + 80];
         assert!(
             section.contains("cursor: pointer"),
             "pinned sidebar-location[data-jump] should set cursor: pointer, got: {section}"
@@ -2052,17 +2071,74 @@ mod tests {
         );
     }
 
+    /// A page-mode sidebar host is a later sibling of the root `<svg>`, so the
+    /// pinned-row rules also reach it through the general-sibling combinator.
     #[test]
-    fn test_css_contains_sidebar_edge_symbol_jump_rule() {
+    fn test_css_pinned_sidebar_rows_also_match_the_page_host() {
         let css = render_styles();
         let selector = format!(
-            "svg.{} .sidebar-edge-symbol[data-jump]",
-            CSS.relation.has_pinned
+            "svg.{pinned} .{loc}[data-jump], svg.{pinned} ~ .{host} .{loc}[data-jump]",
+            pinned = CSS.relation.has_pinned,
+            loc = CSS.sidebar.location,
+            host = CSS.sidebar.page_host
         );
         let idx = css
             .find(&format!("{selector} {{"))
             .unwrap_or_else(|| panic!("CSS should contain a rule for {selector}"));
-        let section = &css[idx..idx + 90];
+        let section = &css[idx..idx + selector.len() + 40];
+        assert!(
+            section.contains("cursor: pointer"),
+            "pinned sidebar-location[data-jump] should set cursor: pointer, got: {section}"
+        );
+    }
+
+    #[test]
+    fn test_css_fixes_the_page_hosts_to_the_viewport() {
+        let css = render_styles();
+        let rule_body = |class: &str| -> String {
+            let idx = css
+                .find(&format!("    .{class} {{"))
+                .unwrap_or_else(|| panic!("CSS should contain a rule for .{class}"));
+            let end = css[idx..].find('}').map_or(css.len(), |i| idx + i);
+            css[idx..end].to_string()
+        };
+        let toolbar = rule_body(CSS.toolbar.page_host);
+        for decl in [
+            "position: fixed",
+            "top: 0",
+            "left: 0",
+            "right: 0",
+            "z-index:",
+        ] {
+            assert!(
+                toolbar.contains(decl),
+                "toolbar host: {decl}, got: {toolbar}"
+            );
+        }
+        let sidebar = rule_body(CSS.sidebar.page_host);
+        assert!(
+            sidebar.contains("position: fixed") && sidebar.contains("z-index:"),
+            "sidebar host should be fixed and stacked, got: {sidebar}"
+        );
+        assert!(
+            !sidebar.contains("top:") && !sidebar.contains("right:"),
+            "the sidebar's top and right come from js/sidebar.js, got: {sidebar}"
+        );
+    }
+
+    #[test]
+    fn test_css_contains_sidebar_edge_symbol_jump_rule() {
+        let css = render_styles();
+        let selector = format!(
+            "svg.{pinned} .sidebar-edge-symbol[data-jump], \
+             svg.{pinned} ~ .{host} .sidebar-edge-symbol[data-jump]",
+            pinned = CSS.relation.has_pinned,
+            host = CSS.sidebar.page_host
+        );
+        let idx = css
+            .find(&format!("{selector} {{"))
+            .unwrap_or_else(|| panic!("CSS should contain a rule for {selector}"));
+        let section = &css[idx..idx + selector.len() + 40];
         assert!(
             section.contains("cursor: pointer"),
             "pinned sidebar-edge-symbol[data-jump] should set cursor: pointer, got: {section}"
@@ -2138,13 +2214,20 @@ mod tests {
             css[idx..end].to_string()
         };
         let pinned = rule_body(&format!(
-            "svg.{} .sidebar-definition[data-jump]",
-            CSS.relation.has_pinned
+            "svg.{pinned} .sidebar-definition[data-jump], \
+             svg.{pinned} ~ .{host} .sidebar-definition[data-jump]",
+            pinned = CSS.relation.has_pinned,
+            host = CSS.sidebar.page_host
         ));
         assert!(pinned.contains("cursor: pointer"), "got: {pinned}");
         let hovered = rule_body(&format!(
-            "svg.{} .{}:hover .sidebar-jump, svg.{} .sidebar-edge-symbol:hover .sidebar-jump",
-            CSS.relation.has_pinned, CSS.sidebar.symbol, CSS.relation.has_pinned
+            "svg.{pinned} .{symbol}:hover .sidebar-jump, \
+             svg.{pinned} ~ .{host} .{symbol}:hover .sidebar-jump, \
+             svg.{pinned} .sidebar-edge-symbol:hover .sidebar-jump, \
+             svg.{pinned} ~ .{host} .sidebar-edge-symbol:hover .sidebar-jump",
+            pinned = CSS.relation.has_pinned,
+            symbol = CSS.sidebar.symbol,
+            host = CSS.sidebar.page_host
         ));
         assert!(hovered.contains("visibility: visible"), "got: {hovered}");
         assert!(
@@ -2204,8 +2287,11 @@ mod tests {
             "sidebar-jump should size the inline icon and hide it until hover, got: {sidebar_icon}"
         );
         let hovered = rule_body(&format!(
-            "svg.{} .{}:hover .sidebar-jump",
-            CSS.relation.has_pinned, CSS.sidebar.location
+            "svg.{pinned} .{loc}:hover .sidebar-jump, \
+             svg.{pinned} ~ .{host} .{loc}:hover .sidebar-jump",
+            pinned = CSS.relation.has_pinned,
+            loc = CSS.sidebar.location,
+            host = CSS.sidebar.page_host
         ));
         assert!(
             hovered.contains("visibility: visible"),

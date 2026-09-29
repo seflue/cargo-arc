@@ -639,7 +639,7 @@ pub(super) fn script_element(static_data: String, entry: &str, config: &RenderCo
         scripts.push(source);
     }
     format!(
-        "  <script><![CDATA[\n{}\n]]></script>\n",
+        "  <script>//<![CDATA[\n{}\n//]]></script>\n",
         scripts.join("\n")
     )
 }
@@ -2744,5 +2744,15 @@ mod tests {
         };
         let script = script_element(String::new(), "svg_script", &config);
         assert!(script.contains(expected), "{expected}");
+    }
+
+    /// The `//` guards keep the script valid as an HTML `<script>` after the
+    /// SVG, where `<![CDATA[` would reach the JS engine as source, and as
+    /// XML, where the markers are still CDATA.
+    #[test]
+    fn script_element_guards_its_cdata_markers_for_html() {
+        let script = script_element(String::new(), "svg_script", &RenderConfig::default());
+        assert!(script.starts_with("  <script>//<![CDATA[\n"), "{script}");
+        assert!(script.ends_with("\n//]]></script>\n"), "{script}");
     }
 }

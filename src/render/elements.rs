@@ -29,17 +29,35 @@ pub(super) fn render_sidebar(width: f32) -> String {
     } else {
         0
     };
-    let cs = &CSS.sidebar;
     // overflow:visible lets box-shadow and border-radius render outside the
     // foreignObject boundary (SVG foreignObject defaults to overflow:hidden).
     // Initial height 500 — JS updatePosition() resizes dynamically to content/viewport
     format!(
         concat!(
             "<foreignObject id=\"relation-sidebar\" x=\"{}\" y=\"0\" width=\"280\" height=\"500\" style=\"display:none; overflow:visible\">\n",
-            "  <div class=\"{}\" xmlns=\"http://www.w3.org/1999/xhtml\"></div>\n",
+            "{}",
             "</foreignObject>\n",
         ),
-        x, cs.root,
+        x,
+        sidebar_markup(),
+    )
+}
+
+/// The empty `sidebar-root` div JS fills, shared by both sidebar hosts.
+fn sidebar_markup() -> String {
+    format!(
+        "  <div class=\"{}\" xmlns=\"http://www.w3.org/1999/xhtml\"></div>\n",
+        CSS.sidebar.root,
+    )
+}
+
+/// The sidebar as the fixed host `div` that follows the root SVG on a page;
+/// JS places it and shows it on selection.
+pub(super) fn render_page_sidebar() -> String {
+    format!(
+        "<div id=\"relation-sidebar\" class=\"{}\" style=\"display:none\">\n{}</div>\n",
+        CSS.sidebar.page_host,
+        sidebar_markup(),
     )
 }
 
@@ -64,8 +82,13 @@ impl ToolbarFacts {
     }
 }
 
+/// The arc page's buttons and its link to the hotspot map, as the shared
+/// toolbar frame takes them for either host.
 #[allow(clippy::too_many_lines, reason = "single cohesive markup template")]
-pub(super) fn render_toolbar(width: f32, facts: ToolbarFacts, config: &RenderConfig) -> String {
+fn toolbar_content(
+    facts: ToolbarFacts,
+    config: &RenderConfig,
+) -> (super::toolbar::Content, super::toolbar::CrossLink) {
     let ct = &CSS.toolbar;
 
     // Only a page served by `cargo arc ui` has a service to switch; a file
@@ -210,7 +233,18 @@ pub(super) fn render_toolbar(width: f32, facts: ToolbarFacts, config: &RenderCon
         href: "/hotspots",
         label: "Hotspot map",
     };
+    (content, cross_link)
+}
+
+pub(super) fn render_toolbar(width: f32, facts: ToolbarFacts, config: &RenderConfig) -> String {
+    let (content, cross_link) = toolbar_content(facts, config);
     super::toolbar::render(width, config, &content, cross_link)
+}
+
+/// The toolbar as the fixed host `div` that follows the root SVG on a page.
+pub(super) fn render_page_toolbar(facts: ToolbarFacts, config: &RenderConfig) -> String {
+    let (content, cross_link) = toolbar_content(facts, config);
+    super::toolbar::in_page(&super::toolbar::markup(config, &content, cross_link))
 }
 
 pub(super) fn render_tree_lines(
@@ -720,6 +754,67 @@ mod tests {
         // Narrow canvas: x should be 0
         let narrow = render_sidebar(200.0);
         assert!(narrow.contains("x=\"0\""));
+    }
+
+    /// The text from `open` up to the last `close`: the overlay's inner
+    /// block, without the host that wraps it.
+    fn between<'a>(markup: &'a str, open: &str, close: &str) -> &'a str {
+        let start = markup.find(open).expect("the inner block opens");
+        let end = markup.rfind(close).expect("the host closes");
+        &markup[start..end]
+    }
+
+    /// Both hosts carry the same `toolbar-root` block, so the page never
+    /// drifts from the SVG's toolbar.
+    #[rstest]
+    #[case::bare(ToolbarFacts::default(), RenderConfig::default())]
+    #[case::served(
+        ToolbarFacts::default(),
+        RenderConfig { with_jump_ids: true, ..RenderConfig::default() }
+    )]
+    #[case::externals(
+        ToolbarFacts {
+            has_externals: true,
+            has_transitive_externals: true,
+            initial_collapsed: true,
+        },
+        RenderConfig { with_jump_ids: true, ..RenderConfig::default() }
+    )]
+    fn page_toolbar_carries_the_same_root_block_as_the_foreign_object(
+        #[case] facts: ToolbarFacts,
+        #[case] config: RenderConfig,
+    ) {
+        let open = format!("<div class=\"{}\"", CSS.toolbar.root);
+        let in_svg = render_toolbar(800.0, facts, &config);
+        let in_page = render_page_toolbar(facts, &config);
+        assert!(
+            in_page.starts_with(&format!("<div class=\"{}\">", CSS.toolbar.page_host)),
+            "{in_page}"
+        );
+        assert!(!in_page.contains("foreignObject"), "{in_page}");
+        assert_eq!(
+            between(&in_svg, &open, "  </foreignObject>"),
+            between(&in_page, &open, "</div>\n"),
+        );
+    }
+
+    #[test]
+    fn page_sidebar_carries_the_same_root_block_as_the_foreign_object() {
+        let open = format!("  <div class=\"{}\"", CSS.sidebar.root);
+        let in_svg = render_sidebar(800.0);
+        let in_page = render_page_sidebar();
+        assert!(
+            in_page.starts_with(&format!(
+                "<div id=\"relation-sidebar\" class=\"{}\" style=\"display:none\">",
+                CSS.sidebar.page_host
+            )),
+            "{in_page}"
+        );
+        assert!(!in_page.contains("foreignObject"), "{in_page}");
+        assert_eq!(
+            between(&in_svg, &open, "</foreignObject>"),
+            between(&in_page, &open, "</div>\n"),
+        );
     }
 
     #[test]

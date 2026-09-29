@@ -1,9 +1,11 @@
-//! The toolbar frame shared by both pages: the `foreignObject`/`toolbar-root`
-//! wrapper, the View dropdown with the appearance block inside it, Follow
-//! editor, Recompute on save and the cross-link to the workspace's other page. `elements::render_toolbar`
+//! The toolbar frame shared by both pages: the `toolbar-root` markup, the View
+//! dropdown with the appearance block inside it, Follow editor, Recompute on
+//! save and the cross-link to the workspace's other page. `elements::render_toolbar`
 //! (the arc diagram) and `hotspots::render_toolbar` (the hotspot map) each
 //! weave their own buttons into [`Content`] and call [`render`]; the arc
-//! page fills every field, the map leaves them at their `Default`.
+//! page fills every field, the map leaves them at their `Default`. The
+//! markup sits in a `foreignObject` inside the SVG ([`in_foreign_object`]) or
+//! in a fixed host `div` after it ([`in_page`]).
 
 use super::constants::{CSS, LAYOUT, RenderConfig};
 
@@ -50,24 +52,13 @@ pub(super) struct CrossLink {
     pub label: &'static str,
 }
 
-/// The toolbar frame: the `foreignObject`/`toolbar-root` wrapper, the View
-/// dropdown (`content.dropdown_filters` above a divider, then the
-/// appearance block every page gets), Follow editor and Recompute on save
-/// (under `config.with_jump_ids`, like the rest of a served page's service
-/// toggles), the cross-link and the jump-status span, with `content`'s
-/// page-specific buttons woven in around them.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "SVG pixel coordinates fit in i32"
-)]
-pub(super) fn render(
-    width: f32,
-    config: &RenderConfig,
-    content: &Content,
-    cross_link: CrossLink,
-) -> String {
+/// The `toolbar-root` div: the View dropdown (`content.dropdown_filters`
+/// above a divider, then the appearance block every page gets), Follow
+/// editor and Recompute on save (under `config.with_jump_ids`, like the rest
+/// of a served page's service toggles), the cross-link and the jump-status
+/// span, with `content`'s page-specific buttons woven in around them.
+pub(super) fn markup(config: &RenderConfig, content: &Content, cross_link: CrossLink) -> String {
     let ct = &CSS.toolbar;
-    let height = height(content) as i32;
 
     let divider = if content.dropdown_filters.is_empty() {
         String::new()
@@ -98,8 +89,6 @@ pub(super) fn render(
 
     format!(
         concat!(
-            "  <foreignObject id=\"toolbar-fo\" x=\"0\" y=\"0\" width=\"{}\" height=\"{}\"",
-            " style=\"display:none; overflow:visible\">\n",
             "    <div class=\"{}\" xmlns=\"http://www.w3.org/1999/xhtml\">\n",
             "{}",
             "      <div class=\"{}\">\n",
@@ -132,10 +121,7 @@ pub(super) fn render(
             "      <span id=\"jump-status\" class=\"{}\"></span>\n",
             "{}",
             "    </div>\n",
-            "  </foreignObject>\n",
         ),
-        width,                    // foreignObject width
-        height,                   // foreignObject height
         ct.root,                  // .toolbar-root
         content.before_dropdown,  // page-specific buttons before the dropdown
         ct.dropdown,              // .toolbar-dropdown container
@@ -154,4 +140,42 @@ pub(super) fn render(
         ct.jump_status,           // .toolbar-jump-status
         content.second_line,      // page-specific line below the buttons
     )
+}
+
+/// `markup` in the toolbar's `foreignObject`, `width` wide and as high as
+/// `content`'s lines.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "SVG pixel coordinates fit in i32"
+)]
+pub(super) fn in_foreign_object(width: f32, content: &Content, markup: &str) -> String {
+    format!(
+        concat!(
+            "  <foreignObject id=\"toolbar-fo\" x=\"0\" y=\"0\" width=\"{}\" height=\"{}\"",
+            " style=\"display:none; overflow:visible\">\n",
+            "{}",
+            "  </foreignObject>\n",
+        ),
+        width,
+        height(content) as i32,
+        markup,
+    )
+}
+
+/// `markup` in the fixed host `div` that follows the root SVG on a page.
+pub(super) fn in_page(markup: &str) -> String {
+    format!(
+        "<div class=\"{}\">\n{}</div>\n",
+        CSS.toolbar.page_host, markup,
+    )
+}
+
+/// The toolbar frame in the SVG: `markup` in its `foreignObject`.
+pub(super) fn render(
+    width: f32,
+    config: &RenderConfig,
+    content: &Content,
+    cross_link: CrossLink,
+) -> String {
+    in_foreign_object(width, content, &markup(config, content, cross_link))
 }

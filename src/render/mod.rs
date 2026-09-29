@@ -16,7 +16,7 @@ pub use constants::{AnalysisSwitches, Document, RenderConfig};
 use css::render_styles;
 use elements::{
     CycleMarks, ToolbarFacts, escape_xml, render_edges, render_header, render_nodes,
-    render_sidebar, render_toolbar, render_tree_lines,
+    render_page_sidebar, render_page_toolbar, render_sidebar, render_toolbar, render_tree_lines,
 };
 pub(crate) use hotspots::render as render_hotspots;
 use positioning::{
@@ -129,11 +129,36 @@ pub fn render(ir: &LayoutIR, config: &RenderConfig) -> String {
         has_transitive_externals,
         initial_collapsed: !collapsed_parents.is_empty(),
     };
-    svg.push_str(&render_toolbar(width, facts, config));
-    svg.push_str(&render_sidebar(width));
-    svg.push_str(&render_script(config, ir, &positioned_all, &parents));
-    svg.push_str("</svg>\n");
+    let script = render_script(config, ir, &positioned_all, &parents);
+    close_with_overlays(&mut svg, width, facts, config, &script);
     svg
+}
+
+/// Close the root SVG around the toolbar, the sidebar and `script`. As
+/// `foreignObject`s they sit inside it; on a page the hosts follow it, so
+/// `getSvgRoot` still finds the root SVG, and precede the script, so they
+/// exist when it runs.
+fn close_with_overlays(
+    svg: &mut String,
+    width: f32,
+    facts: ToolbarFacts,
+    config: &RenderConfig,
+    script: &str,
+) {
+    match config.document {
+        Document::Svg => {
+            svg.push_str(&render_toolbar(width, facts, config));
+            svg.push_str(&render_sidebar(width));
+            svg.push_str(script);
+            svg.push_str("</svg>\n");
+        }
+        Document::Page => {
+            svg.push_str("</svg>\n");
+            svg.push_str(&render_page_toolbar(facts, config));
+            svg.push_str(&render_page_sidebar());
+            svg.push_str(script);
+        }
+    }
 }
 
 /// Wrap `svg` inline in an XHTML page, so a webview keeps its size instead of
@@ -192,6 +217,7 @@ pub fn project_name(workspace_root: &Path) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
+    use super::constants::CSS;
     use super::*;
     use crate::layout::{CycleKind, LayoutEdge};
     use crate::model::EdgeContext;
@@ -325,6 +351,31 @@ mod tests {
             root.starts_with("<svg ") && !root.contains("data-theme"),
             "{root}"
         );
+    }
+
+    #[test]
+    fn page_document_puts_toolbar_sidebar_and_script_after_the_svg() {
+        let page = render(
+            &LayoutIR::new(),
+            &RenderConfig {
+                document: Document::Page,
+                ..RenderConfig::default()
+            },
+        );
+        let svg_end = page.find("</svg>").expect("the root svg closes");
+        let toolbar = page
+            .find(&format!("<div class=\"{}\"", CSS.toolbar.page_host))
+            .expect("the toolbar host is emitted");
+        let sidebar = page
+            .find("id=\"relation-sidebar\"")
+            .expect("the sidebar host is emitted");
+        let script = page.find("<script").expect("the script is emitted");
+        assert!(
+            svg_end < toolbar && toolbar < sidebar && sidebar < script,
+            "{page}"
+        );
+        assert!(!page.contains("<foreignObject"), "{page}");
+        assert!(page.trim_end().ends_with("</script>"), "{page}");
     }
 
     #[test]
