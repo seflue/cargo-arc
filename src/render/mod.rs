@@ -161,13 +161,14 @@ fn close_with_overlays(
     }
 }
 
-/// Wrap `svg` inline in an XHTML page, so a webview keeps its size instead of
-/// shrinking it to the frame. `project` leads the title, since tabs truncate.
+/// Wrap `body` (an SVG, or in page mode the SVG with its overlays and script)
+/// inline in an XHTML page, so a webview keeps its size instead of shrinking
+/// it to the frame. `project` leads the title, since tabs truncate.
 #[must_use]
-pub fn html_page(svg: &str, project: Option<&str>, appearance: Appearance) -> String {
-    let (declaration, svg) = match svg.split_once('\n') {
+pub fn html_page(body: &str, project: Option<&str>, appearance: Appearance) -> String {
+    let (declaration, body) = match body.split_once('\n') {
         Some((first, rest)) if first.starts_with("<?xml") => (first, rest),
-        _ => ("<?xml version=\"1.0\" encoding=\"UTF-8\"?>", svg),
+        _ => ("<?xml version=\"1.0\" encoding=\"UTF-8\"?>", body),
     };
     let title = match project {
         Some(project) => format!("{} · cargo-arc", escape_xml(project)),
@@ -180,7 +181,7 @@ pub fn html_page(svg: &str, project: Option<&str>, appearance: Appearance) -> St
     format!(
         "{declaration}\n\
          <html xmlns=\"http://www.w3.org/1999/xhtml\"{root}><head><title>{title}</title><style>html,body{{height:100%}}svg{{display:block}}</style></head><body style=\"margin:0;background:{background}\">\n\
-         {svg}\n\
+         {body}\n\
          </body></html>\n"
     )
 }

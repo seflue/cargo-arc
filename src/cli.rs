@@ -18,8 +18,8 @@ use crate::hotspots;
 use crate::layout::{JumpTable, LayoutIR, LocationId, build_layout};
 use crate::model::{CrateExportMap, CrateInfo, ModulePathMap, WorkspaceCrates};
 use crate::render::{
-    AnalysisSwitches, Appearance, RenderConfig, THEMES, Theme, html_page, project_name, render,
-    render_hotspots,
+    AnalysisSwitches, Appearance, Document, RenderConfig, THEMES, Theme, html_page, project_name,
+    render, render_hotspots,
 };
 use crate::rules::baseline::{Baseline, BaselineError};
 use crate::rules::config::{ArcConfig, ConfigError};
@@ -249,20 +249,22 @@ pub fn run(args: ArcCommand) -> Result<Judgment> {
 
     let analysis = analyze_for_diagram(&args, args.switches(), !args.no_volatility)?;
 
+    let document = document_for(args.output.as_deref());
     let config = RenderConfig {
         expand_level: args.expand_level,
         theme: args.theme,
+        document,
         ..RenderConfig::default()
     };
-    let svg = render(&analysis.layout, &config);
-    tracing::debug!("phase: render done ({} bytes)", svg.len());
-    let document = diagram_document(
-        svg,
-        args.output.as_deref(),
+    let body = render(&analysis.layout, &config);
+    tracing::debug!("phase: render done ({} bytes)", body.len());
+    let contents = diagram_document(
+        body,
+        document,
         analysis.workspace_root.as_deref(),
         args.theme,
     );
-    write_output(&document, args.output.as_ref())?;
+    write_output(&contents, args.output.as_ref())?;
     // The diagram judges nothing, so it can only ever be clean or an error.
     Ok(Judgment::Clean)
 }
@@ -393,6 +395,7 @@ fn run_ui(args: &ArcCommand, ui_args: &UiArgs) -> Result<Judgment> {
             with_jump_ids: true,
             theme: args.theme,
             switches,
+            document: Document::Page,
             ..RenderConfig::default()
         };
         let arc_svg = render(&analysis.layout, &arc_config);
@@ -549,7 +552,7 @@ fn run_hotspots(args: &ArcCommand, hotspots_args: &HotspotsArgs) -> Result<Judgm
     let svg = render_hotspots(&tree, &packed, &HashMap::new(), &config);
     let document = diagram_document(
         svg,
-        hotspots_args.output.as_deref(),
+        document_for(hotspots_args.output.as_deref()),
         Some(&workspace_root),
         args.theme,
     );
@@ -694,26 +697,35 @@ fn resolve_repo_path(manifest_path: &Path) -> &Path {
         .unwrap_or(Path::new("."))
 }
 
-/// The bytes `-o` writes: the SVG itself, or for an `.html` / `.xhtml` name
+/// The document `-o` writes: an `.html` / `.xhtml` name is the page `arc ui`
+/// serves, any other name and stdout are the bare SVG.
+fn document_for(output: Option<&Path>) -> Document {
+    let wants_page = output
+        .and_then(Path::extension)
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("html") || ext.eq_ignore_ascii_case("xhtml"));
+    if wants_page {
+        Document::Page
+    } else {
+        Document::Svg
+    }
+}
+
+/// The bytes `-o` writes: the SVG itself, or for a `Page` the body wrapped in
 /// the page `arc ui` serves, so the file opens in a browser tab or a
 /// webview at its own size. The page root pins `theme` like the SVG root.
 fn diagram_document(
-    svg: String,
-    output: Option<&Path>,
+    body: String,
+    document: Document,
     workspace_root: Option<&Path>,
     theme: Option<&'static Theme>,
 ) -> String {
-    let wants_html = output
-        .and_then(Path::extension)
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("html") || ext.eq_ignore_ascii_case("xhtml"));
-    if wants_html {
-        html_page(
-            &svg,
+    match document {
+        Document::Page => html_page(
+            &body,
             workspace_root.and_then(project_name),
             Appearance { theme, mode: None },
-        )
-    } else {
-        svg
+        ),
+        Document::Svg => body,
     }
 }
 
@@ -877,20 +889,34 @@ mod tests {
     }
 
     #[test]
-    fn html_output_name_wraps_the_svg_in_a_page() {
-        let svg = "<svg/>".to_string();
+    fn html_output_names_are_a_page() {
         for name in ["deps.html", "deps.xhtml", "deps.HTML"] {
-            let page = diagram_document(svg.clone(), Some(Path::new(name)), None, None);
-            assert!(page.contains("<html"), "{name}: {page}");
-            assert!(page.contains("<svg/>"), "{name}: {page}");
+            assert_eq!(
+                document_for(Some(Path::new(name))),
+                Document::Page,
+                "{name}"
+            );
         }
+    }
+
+    #[test]
+    fn other_output_names_and_stdout_are_the_bare_svg() {
+        assert_eq!(document_for(Some(Path::new("deps.svg"))), Document::Svg);
+        assert_eq!(document_for(None), Document::Svg);
+    }
+
+    #[test]
+    fn a_page_document_wraps_the_body_in_a_page() {
+        let page = diagram_document("<svg/>".to_string(), Document::Page, None, None);
+        assert!(page.contains("<html"), "{page}");
+        assert!(page.contains("<svg/>"), "{page}");
     }
 
     #[test]
     fn html_output_titles_the_page_after_the_workspace_root() {
         let page = diagram_document(
             "<svg/>".to_string(),
-            Some(Path::new("deps.html")),
+            Document::Page,
             Some(Path::new("/home/u/my-ws")),
             None,
         );
@@ -898,13 +924,12 @@ mod tests {
     }
 
     #[test]
-    fn other_output_names_and_stdout_keep_the_svg() {
+    fn an_svg_document_keeps_the_svg() {
         let svg = "<svg/>".to_string();
         assert_eq!(
-            diagram_document(svg.clone(), Some(Path::new("deps.svg")), None, None),
+            diagram_document(svg.clone(), Document::Svg, None, None),
             svg
         );
-        assert_eq!(diagram_document(svg.clone(), None, None, None), svg);
     }
 
     // ===== Task 3.2: check subcommand parsing tests =====
@@ -1096,7 +1121,7 @@ mod tests {
     fn html_output_pins_the_theme_on_the_page_root() {
         let page = diagram_document(
             "<svg/>".to_string(),
-            Some(Path::new("deps.html")),
+            Document::Page,
             None,
             Theme::named("mocha"),
         );

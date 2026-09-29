@@ -2660,3 +2660,37 @@ fn private_use_of_an_external_crate_gives_the_descendant_no_edge() {
          not net's to give), found arcs: {named_arcs:?}"
     );
 }
+
+/// An `.html` output is the page `arc ui` serves: the toolbar and the
+/// sidebar are page elements after the root SVG, not `foreignObject`s.
+#[test]
+fn html_output_serves_the_overlays_as_page_elements() {
+    let (_unused, mut cmd) = fixture_args("multi_crate", false);
+    let temp = tempfile::Builder::new().suffix(".html").tempfile().unwrap();
+    cmd.output = Some(temp.path().to_path_buf());
+
+    let result = run(cmd);
+    assert!(result.is_ok(), "run() should succeed: {result:?}");
+
+    let html = std::fs::read_to_string(temp.path()).unwrap();
+    let svg_end = html.find("</svg>").expect("the page has a root SVG");
+    let sidebar = html
+        .find("id=\"relation-sidebar\"")
+        .expect("the page has a sidebar");
+    assert!(svg_end < sidebar, "the sidebar follows the SVG: {html}");
+    assert!(
+        !html.contains("id=\"toolbar-fo\""),
+        "no foreignObject toolbar in page mode"
+    );
+}
+
+/// An `.svg` output keeps the overlays inside the SVG.
+#[test]
+fn svg_output_keeps_the_overlays_in_foreign_objects() {
+    let (temp, cmd) = fixture_args("multi_crate", false);
+    let result = run(cmd);
+    assert!(result.is_ok(), "run() should succeed: {result:?}");
+
+    let svg = std::fs::read_to_string(temp.path()).unwrap();
+    assert!(svg.contains("<foreignObject id=\"toolbar-fo\""), "{svg}");
+}
