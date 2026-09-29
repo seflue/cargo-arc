@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Toolbar and sidebar no longer disappear during fast scrolling in `cargo arc ui` and in HTML output (`-o deps.html`).
+
 ## [0.6.0] - 2026-09-27
 
 ### Added
