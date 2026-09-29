@@ -542,6 +542,18 @@ pub struct AnalysisSwitches {
     pub tests: bool,
 }
 
+/// What the rendered diagram is embedded in, which decides how the toolbar
+/// and the sidebar are hosted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Document {
+    /// A bare SVG: toolbar and sidebar are `foreignObject`s that follow the
+    /// scroll.
+    #[default]
+    Svg,
+    /// An HTML page: toolbar and sidebar are fixed elements outside the SVG.
+    Page,
+}
+
 /// Configuration for SVG rendering
 #[derive(Debug, Clone)]
 pub struct RenderConfig {
@@ -562,6 +574,9 @@ pub struct RenderConfig {
     /// The hotspot map's commit window, or why it is grey. The arc diagram
     /// ignores it.
     pub volatility: MapVolatility,
+    /// What the diagram is embedded in; the script reads it to place the
+    /// toolbar and the sidebar.
+    pub document: Document,
 }
 
 impl Default for RenderConfig {
@@ -575,6 +590,7 @@ impl Default for RenderConfig {
             theme: None,
             switches: AnalysisSwitches::default(),
             volatility: MapVolatility::default(),
+            document: Document::default(),
         }
     }
 }

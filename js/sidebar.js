@@ -3,7 +3,9 @@
 // @config TOOLBAR_HEIGHT, SIDEBAR_SHADOW_PAD
 // sidebar.js - Relation sidebar for arc usage details
 // Shows usage locations when an arc is selected (pinned)
-// foreignObject-based HTML sidebar with scroll tracking
+// HTML sidebar placed through one of two hosts: a foreignObject in the SVG
+// (follows the scroll, grows the canvas) or a fixed element in the page
+// (docked to the viewport's right edge below the toolbar)
 
 const TOOLBAR_HEIGHT =
   typeof __TOOLBAR_HEIGHT__ !== 'undefined' ? __TOOLBAR_HEIGHT__ : 0;
@@ -596,6 +598,8 @@ const SidebarLogic = {
     this._toolbarHeight = height;
   },
 
+  /** Which element hosts the sidebar; see useHost(). @type {'svg' | 'page'} */
+  _host: 'svg',
   /** Cached X position — set once in show(), reused by updatePosition(). @type {number | null} */
   _cachedX: null,
   /** Cached max arc right X — only changes on collapse/relayout, not on hover. @type {number | null} */
@@ -606,6 +610,25 @@ const SidebarLogic = {
   _originalViewBoxWidth: null,
   /** Sidebar height from the last updatePosition(), reused by followScroll(). @type {number | null} */
   _effectiveHeight: null,
+
+  /**
+   * Choose where the sidebar element lives: 'svg' (a foreignObject, placed in
+   * SVG coordinates) or 'page' (a fixed element, placed in viewport pixels).
+   * @param {'svg' | 'page'} host
+   */
+  useHost(host) {
+    this._host = host;
+  },
+
+  /**
+   * The x the sidebar element is anchored at. Only the SVG host has one: it
+   * sits right of the widest arc. `_placeOnPage` docks the page host at the
+   * right edge, so it never measures arcs.
+   * @returns {number}
+   */
+  _calcHostX() {
+    return this._host === 'page' ? 0 : this._calcX();
+  },
 
   /**
    * Calculate sidebar x in SVG coordinates (right of widest visible arc).
@@ -629,10 +652,21 @@ const SidebarLogic = {
   },
 
   /**
-   * Calculate sidebar y + height in SVG coordinates (tracks scroll).
+   * Calculate sidebar y + height: in SVG coordinates following the scroll on
+   * the SVG host, in viewport pixels below the toolbar on the page host.
    * @returns {{ y: number, height: number }|null}
    */
   _calcPosition() {
+    if (this._host === 'page') {
+      return {
+        y: this._toolbarHeight + SIDEBAR_GAP_TOP,
+        height: Math.round(
+          CanvasSize.visibleArea().height -
+            this._toolbarHeight -
+            SIDEBAR_GAP_TOP,
+        ),
+      };
+    }
     const svg = DomAdapter.getSvgRoot();
     if (!svg) return null;
     const rect = svg.getBoundingClientRect();
@@ -668,7 +702,7 @@ const SidebarLogic = {
       }
       el.style.display = 'block';
       this._isTransient = true;
-      this._cachedX = this._calcX();
+      this._cachedX = this._calcHostX();
       this.updatePosition();
     }, 30);
   },
@@ -712,7 +746,7 @@ const SidebarLogic = {
     this._isTransient = false;
     clearTimeout(this._debounceTimer ?? undefined);
     this._cachedMaxArcRightX = null;
-    this._cachedX = this._calcX();
+    this._cachedX = this._calcHostX();
     this.updatePosition();
   },
 
@@ -1417,7 +1451,7 @@ const SidebarLogic = {
       }
       el.style.display = 'block';
       this._isTransient = true;
-      this._cachedX = this._calcX();
+      this._cachedX = this._calcHostX();
       this.updatePosition();
     }, 30);
   },
@@ -1467,7 +1501,7 @@ const SidebarLogic = {
   },
 
   /**
-   * Update sidebar position (x + y) based on current scroll and viewport.
+   * Update sidebar position and size based on current scroll and viewport.
    */
   updatePosition() {
     const el = this._getElement();
@@ -1475,15 +1509,16 @@ const SidebarLogic = {
     const pos = this._calcPosition();
     if (!pos) return;
 
-    // Dynamic width: expand foreignObject first, shrink-wrap .sidebar-root with
-    // max-content to measure the natural content width, then clamp to bounds.
-    // Previous approach (shrink → measure scrollWidth) failed because nested
-    // overflow containers (sidebar-content has implicit overflow-x:auto) don't
-    // propagate scrollWidth reliably in foreignObject context.
+    // Dynamic width: on the SVG host expand the foreignObject first, shrink-wrap
+    // .sidebar-root with max-content to measure the natural content width, then
+    // clamp to bounds. Previous approach (shrink → measure scrollWidth) failed
+    // because nested overflow containers (sidebar-content has implicit
+    // overflow-x:auto) don't propagate scrollWidth reliably in foreignObject
+    // context.
     /** @type {HTMLElement|null} */
     const innerDiv = el.querySelector('.sidebar-root');
     if (innerDiv) this.resetPaths(innerDiv);
-    el.setAttribute('width', '9999');
+    if (this._host === 'svg') el.setAttribute('width', '9999');
     if (innerDiv) innerDiv.style.width = 'max-content';
     const naturalW = innerDiv ? innerDiv.offsetWidth : 0;
     if (innerDiv) innerDiv.style.width = '';
@@ -1501,6 +1536,43 @@ const SidebarLogic = {
       Math.min(naturalW, vpWidth * 0.5),
     );
 
+    if (this._host === 'page') {
+      this._placeOnPage(el, innerDiv, pos.y, width, effectiveH);
+    } else {
+      this._placeInSvg(el, innerDiv, pos.y, width, effectiveH, vpWidth);
+    }
+    this._effectiveHeight = effectiveH;
+  },
+
+  /**
+   * Apply the measured size to a fixed page element docked at the right edge.
+   * @param {HTMLElement} el
+   * @param {HTMLElement|null} innerDiv
+   * @param {number} top - Distance from the viewport top, in px
+   * @param {number} width
+   * @param {number} height
+   */
+  _placeOnPage(el, innerDiv, top, width, height) {
+    el.style.top = `${top}px`;
+    el.style.right = `${SIDEBAR_MARGIN_RIGHT}px`;
+    el.style.width = `${Math.round(width)}px`;
+    if (innerDiv) {
+      innerDiv.style.height = `${height}px`;
+      this.fitPaths(innerDiv);
+    }
+  },
+
+  /**
+   * Apply the measured size to the foreignObject in SVG coordinates and grow
+   * the canvas when the sidebar extends beyond it.
+   * @param {HTMLElement} el
+   * @param {HTMLElement|null} innerDiv
+   * @param {number} y
+   * @param {number} width
+   * @param {number} effectiveH
+   * @param {number} vpWidth
+   */
+  _placeInSvg(el, innerDiv, y, width, effectiveH, vpWidth) {
     // Re-clamp X with actual width — _calcX() clamps with SIDEBAR_MIN_WIDTH
     // but actual width can be larger, pushing the sidebar beyond viewport
     let x = this._cachedX != null ? this._cachedX : this._calcX();
@@ -1521,17 +1593,16 @@ const SidebarLogic = {
 
     el.setAttribute('width', String(Math.round(width) + SIDEBAR_SHADOW_PAD));
     el.setAttribute('x', String(x));
-    el.setAttribute('y', String(pos.y));
+    el.setAttribute('y', String(y));
     el.setAttribute('height', String(effectiveH + SIDEBAR_SHADOW_PAD));
     if (innerDiv) {
       innerDiv.style.height = `${effectiveH}px`;
       this.fitPaths(innerDiv);
     }
-    this._effectiveHeight = effectiveH;
 
     if (svg) {
       const vb = svg.viewBox.baseVal;
-      this._growCanvasHeight(svg, pos.y + effectiveH + SIDEBAR_SHADOW_PAD);
+      this._growCanvasHeight(svg, y + effectiveH + SIDEBAR_SHADOW_PAD);
 
       // Also expand width when sidebar extends beyond viewBox
       const originalW = this._originalViewBoxWidth ?? vb.width;
@@ -1550,9 +1621,10 @@ const SidebarLogic = {
   /**
    * Move the sidebar to the current scroll position. Width, height and x
    * depend only on content and viewport, so they keep the values of the last
-   * updatePosition().
+   * updatePosition(). The page host is fixed and has nothing to follow.
    */
   followScroll() {
+    if (this._host === 'page') return;
     if (this._effectiveHeight === null) {
       this.updatePosition();
       return;

@@ -1,9 +1,11 @@
 // @module SvgScript
 // @deps ArcLogic, StaticData, AppState, Selectors, DomAdapter, LayerManager, TreeLogic, DerivedState, HighlightRenderer, VirtualEdgeLogic, TextMeasure, SidebarLogic, SearchLogic, Jump, JumpIcons, Follow, Theme, SwitchToggles, OnSaveToggle, ViewSnapshot, PageLink, CanvasSize
-// @config ROW_HEIGHT, MARGIN, TOOLBAR_HEIGHT, SIDEBAR_SHADOW_PAD
+// @config ROW_HEIGHT, MARGIN, TOOLBAR_HEIGHT, SIDEBAR_SHADOW_PAD, OVERLAYS
 // svg_script.js - DOM code for interactive SVG
 // ArcLogic is loaded from arc_logic.js before this file
-// Placeholders replaced at runtime: __ROW_HEIGHT__, __MARGIN__, __TOOLBAR_HEIGHT__
+// Placeholders replaced at runtime: __ROW_HEIGHT__, __MARGIN__, __TOOLBAR_HEIGHT__, __OVERLAYS__
+// (`'svg'`: toolbar and sidebar are foreignObjects that follow the scroll;
+// `'page'`: they are fixed HTML elements outside the SVG)
 
 function createHighlightDebouncer(renderFn, delay) {
   let timer = null;
@@ -107,6 +109,9 @@ if (typeof document !== 'undefined') {
       typeof __SIDEBAR_SHADOW_PAD__ !== 'undefined'
         ? __SIDEBAR_SHADOW_PAD__
         : 12;
+    const OVERLAYS = typeof __OVERLAYS__ !== 'undefined' ? __OVERLAYS__ : 'svg';
+    const PAGE_HOST = OVERLAYS === 'page';
+    SidebarLogic.useHost(OVERLAYS);
     const TOGGLE_OFFSET = 14;
     const SCROLL_MARGIN = 40; // px between a scrolled-to node and the window edge
     const C = STATIC_DATA.classes;
@@ -370,7 +375,8 @@ if (typeof document !== 'undefined') {
       const scrollDistance = Math.abs(clampedTarget - window.scrollY);
       const isLargeScroll = scrollDistance >= window.innerHeight / 4;
 
-      if (isLargeScroll) {
+      // A fixed sidebar has no position to lose while the page scrolls.
+      if (isLargeScroll && !PAGE_HOST) {
         _isNavigating = true;
         const sidebarEl = SidebarLogic._getElement();
         if (sidebarEl) sidebarEl.style.visibility = 'hidden';
@@ -1424,22 +1430,23 @@ if (typeof document !== 'undefined') {
       );
     }
 
-    // Sync foreignObject height with actual toolbar content height (flex-wrap may grow).
-    // The toolbar foreignObject starts with display:none in the static SVG
-    // so it doesn't appear when viewing the file outside a browser.
+    // Measure the toolbar (flex-wrap may grow it) and shift the graph and canvas
+    // by the extra rows. On the SVG host it also reveals and sizes the toolbar
+    // foreignObject, which starts with display:none in the static SVG so it
+    // doesn't appear when viewing the file outside a browser.
     function syncToolbarHeight() {
       const fo = DomAdapter.getElementById('toolbar-fo');
       const root = DomAdapter.querySelector(`.${C.toolbarRoot}`);
       const graph = DomAdapter.getElementById('graph-content');
-      if (!fo || !root) return;
-      fo.style.display = '';
+      if (!root || (!PAGE_HOST && !fo)) return;
+      if (!PAGE_HOST) fo.style.display = '';
       const baseH = root.offsetHeight;
       if (baseH > 0) {
         // Include dropdown panel height when visible (absolutely positioned, outside normal flow)
         const panel = DomAdapter.querySelector(`.${C.toolbarDropdownPanel}`);
         const panelH =
           panel && panel.style.display !== 'none' ? panel.offsetHeight : 0;
-        fo.setAttribute('height', baseH + panelH);
+        if (!PAGE_HOST) fo.setAttribute('height', baseH + panelH);
         // Shift graph content down by the delta between actual and default toolbar height
         const delta = baseH - TOOLBAR_HEIGHT;
         if (graph) {
@@ -1472,6 +1479,7 @@ if (typeof document !== 'undefined') {
 
     // Keep the toolbar at the top-left of the visible area, as wide as it.
     function placeToolbar() {
+      if (PAGE_HOST) return;
       const fo = DomAdapter.getElementById('toolbar-fo');
       const svg = DomAdapter.getSvgRoot();
       if (!fo || !svg) return;
@@ -1490,7 +1498,7 @@ if (typeof document !== 'undefined') {
       fo.setAttribute('width', String(visibleWidth));
     }
 
-    window.addEventListener('scroll', followScroll);
+    if (!PAGE_HOST) window.addEventListener('scroll', followScroll);
     window.addEventListener('resize', () => {
       applyCanvasSize();
       updateToolbarPosition();

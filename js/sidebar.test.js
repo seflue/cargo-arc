@@ -748,7 +748,10 @@ describe('SidebarLogic', () => {
     });
   });
 
-  describe('show/hide/isVisible', () => {
+  describe.each([
+    ['svg'],
+    ['page'],
+  ])('show/hide/isVisible on the %s host', (host) => {
     let fakeEl;
 
     function makeSvgMock(rectTop) {
@@ -796,6 +799,11 @@ describe('SidebarLogic', () => {
       globalThis.window = globalThis.window || {};
       globalThis.window.innerWidth = 1000;
       globalThis.window.innerHeight = 800;
+      SidebarLogic.useHost(host);
+    });
+
+    afterEach(() => {
+      SidebarLogic.useHost('svg');
     });
 
     test('show sets display to block and sets content', () => {
@@ -1588,6 +1596,99 @@ describe('SidebarLogic', () => {
       SidebarLogic.followScroll();
       expect(fakeEl.getAttribute('y')).toBe('20');
       expect(fakeEl.getAttribute('height')).toBe('312');
+    });
+  });
+
+  describe('updatePosition on the page host', () => {
+    let hostEl;
+    let innerDiv;
+    let svgMock;
+    /** @type {string[]} */
+    let svgTouched;
+
+    beforeEach(() => {
+      hostEl = createFakeElement('div');
+      innerDiv = createFakeElement('div');
+      innerDiv.offsetWidth = 400;
+      innerDiv.offsetHeight = 300;
+      hostEl.querySelector = () => innerDiv;
+      svgTouched = [];
+      svgMock = {
+        getBoundingClientRect() {
+          svgTouched.push('getBoundingClientRect');
+          return { left: 0, top: -500, width: 1000, height: 800 };
+        },
+        get viewBox() {
+          svgTouched.push('viewBox');
+          return { baseVal: { width: 1000, height: 800 } };
+        },
+        setAttribute(name) {
+          svgTouched.push(`setAttribute ${name}`);
+        },
+      };
+      globalThis.DomAdapter = {
+        getElementById(id) {
+          if (id === 'relation-sidebar') return hostEl;
+          return null;
+        },
+        getSvgRoot() {
+          return svgMock;
+        },
+        querySelectorAll() {
+          svgTouched.push('querySelectorAll');
+          return [];
+        },
+      };
+      globalThis.window = globalThis.window || {};
+      globalThis.window.innerWidth = 1000;
+      globalThis.window.innerHeight = 600;
+      SidebarLogic.useHost('page');
+    });
+
+    afterEach(() => {
+      SidebarLogic.useHost('svg');
+      SidebarLogic.setToolbarHeight(0);
+      SidebarLogic.hide();
+    });
+
+    test('docks below the toolbar at the right edge without SVG coordinates', () => {
+      SidebarLogic.setToolbarHeight(124);
+      SidebarLogic.show('crate_a-crate_b');
+      expect(hostEl.style.top).toBe('144px');
+      expect(hostEl.style.right).toBe('16px');
+      expect(hostEl.getAttribute('x')).toBeNull();
+      expect(hostEl.getAttribute('y')).toBeNull();
+    });
+
+    test('takes the natural width when it lies between the minimum and half the viewport', () => {
+      SidebarLogic.show('crate_a-crate_b');
+      expect(hostEl.style.width).toBe('400px');
+    });
+
+    test('clamps the width to the minimum and to half the viewport', () => {
+      innerDiv.offsetWidth = 100;
+      SidebarLogic.show('crate_a-crate_b');
+      expect(hostEl.style.width).toBe('280px');
+      innerDiv.offsetWidth = 900;
+      SidebarLogic.updatePosition();
+      expect(hostEl.style.width).toBe('500px');
+    });
+
+    test('ends where the content ends and scrolls inside when it is longer than the window', () => {
+      SidebarLogic.setToolbarHeight(80);
+      SidebarLogic.show('crate_a-crate_b');
+      expect(innerDiv.style.height).toBe('300px');
+      innerDiv.offsetHeight = 900;
+      SidebarLogic.updatePosition();
+      // 600 (window) - 80 (toolbar) - 20 (gap)
+      expect(innerDiv.style.height).toBe('500px');
+    });
+
+    test('measures no arcs and leaves the SVG untouched on show, followScroll and hide', () => {
+      SidebarLogic.show('crate_a-crate_b');
+      SidebarLogic.followScroll();
+      SidebarLogic.hide();
+      expect(svgTouched).toEqual([]);
     });
   });
 

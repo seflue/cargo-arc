@@ -58,6 +58,8 @@ function resetSidebarHooks() {
   ]) {
     SidebarLogic[hook] = null;
   }
+  SidebarLogic.useHost('svg');
+  delete global.__OVERLAYS__;
 }
 
 describe('scrollTarget', () => {
@@ -353,19 +355,23 @@ function makeSvgPageStaticData() {
  * call the init made (`scrollToSpan`'s object-argument call is how to tell
  * apart from `applyRestoredView`'s own two-argument one).
  * `toolbarHeight` is the toolbar's measured height; without it the page has
- * no toolbar. `expandLevel` makes init relayout the diagram.
- * @param {{ search?: string, sessionStorageView?: object, toolbarHeight?: number, expandLevel?: number }} [options]
+ * no toolbar. `expandLevel` makes init relayout the diagram. `overlays` is
+ * the `__OVERLAYS__` placeholder: `'page'` has no `toolbar-fo` frame, and
+ * `windowListeners` lists the event names the init registered on `window`.
+ * @param {{ search?: string, sessionStorageView?: object, toolbarHeight?: number, expandLevel?: number, overlays?: 'svg' | 'page' }} [options]
  */
 function loadSvgPage({
   search = '',
   sessionStorageView,
   toolbarHeight,
   expandLevel,
+  overlays = 'svg',
 } = {}) {
   const dom = createMockDomAdapter();
 
   if (toolbarHeight !== undefined) {
-    dom._registerElement('toolbar-fo', createFakeElement('foreignObject'));
+    if (overlays === 'svg')
+      dom._registerElement('toolbar-fo', createFakeElement('foreignObject'));
     dom._registerElement('graph-content', createFakeElement('g'));
     const toolbarRoot = createFakeElement('div');
     toolbarRoot.offsetHeight = toolbarHeight;
@@ -407,6 +413,7 @@ function loadSvgPage({
   dom._registerElement('relation-sidebar', sidebarEl);
 
   const scrollCalls = [];
+  const windowListeners = [];
 
   global.DomAdapter = dom;
   global.document = {
@@ -415,7 +422,7 @@ function loadSvgPage({
   };
   global.window = {
     matchMedia: () => ({ matches: false, addEventListener() {} }),
-    addEventListener: () => {},
+    addEventListener: (type) => windowListeners.push(type),
     innerWidth: 1000,
     innerHeight: 800,
     scrollX: 0,
@@ -464,11 +471,19 @@ function loadSvgPage({
   global.__ROW_HEIGHT__ = 24;
   global.__MARGIN__ = 20;
   global.__TOOLBAR_HEIGHT__ = 40;
+  global.__OVERLAYS__ = overlays;
 
   delete require.cache[require.resolve('./svg_script.js')];
   require('./svg_script.js');
 
-  return { nodeRects, sidebarContent, scrollCalls, svg };
+  return {
+    nodeRects,
+    sidebarContent,
+    sidebarEl,
+    scrollCalls,
+    svg,
+    windowListeners,
+  };
 }
 
 describe("`?select=` on arrival (svg_script.js's init)", () => {
@@ -528,7 +543,41 @@ describe("`?select=` on arrival (svg_script.js's init)", () => {
   });
 });
 
-describe("the SVG's size around a wrapped toolbar (svg_script.js's init)", () => {
+describe("`?select=` on the page host (svg_script.js's init)", () => {
+  afterEach(resetSidebarHooks);
+
+  test('places the sidebar by style.top, not by a y attribute', () => {
+    const { sidebarEl } = loadSvgPage({
+      search: `?select=${encodeURIComponent('src/mod_a/mod.rs')}`,
+      overlays: 'page',
+    });
+
+    expect(sidebarEl.style.top).toMatch(/^\d+(\.\d+)?px$/);
+    expect(sidebarEl.getAttribute('y')).toBeNull();
+  });
+});
+
+describe("the scroll listener on each overlay host (svg_script.js's init)", () => {
+  afterEach(resetSidebarHooks);
+
+  test('the SVG host follows the scroll', () => {
+    const { windowListeners } = loadSvgPage({ overlays: 'svg' });
+
+    expect(windowListeners).toContain('scroll');
+  });
+
+  test('the page host registers no scroll listener', () => {
+    const { windowListeners } = loadSvgPage({ overlays: 'page' });
+
+    expect(windowListeners).not.toContain('scroll');
+    expect(windowListeners).toContain('resize');
+  });
+});
+
+describe.each([
+  ['svg'],
+  ['page'],
+])("the SVG's size around a wrapped toolbar on the %s host (svg_script.js's init)", (overlays) => {
   afterEach(() => {
     resetSidebarHooks();
     // syncToolbarHeight() assigns this on the real, shared SidebarLogic
@@ -538,15 +587,23 @@ describe("the SVG's size around a wrapped toolbar (svg_script.js's init)", () =>
 
   test('a toolbar wrapped onto extra rows at load makes the SVG taller by those rows', () => {
     // Rendered viewBox 1000x800, toolbar 96 instead of 40: 56 extra.
-    const { svg } = loadSvgPage({ toolbarHeight: 96 });
+    const { svg } = loadSvgPage({ toolbarHeight: 96, overlays });
 
     expect(svg.getAttribute('height')).toBe('856');
   });
 
   test('a relayout keeps the extra toolbar rows in the height', () => {
-    const unwrapped = loadSvgPage({ toolbarHeight: 40, expandLevel: 1 });
+    const unwrapped = loadSvgPage({
+      toolbarHeight: 40,
+      expandLevel: 1,
+      overlays,
+    });
     const unwrappedHeight = Number(unwrapped.svg.getAttribute('height'));
-    const wrapped = loadSvgPage({ toolbarHeight: 96, expandLevel: 1 });
+    const wrapped = loadSvgPage({
+      toolbarHeight: 96,
+      expandLevel: 1,
+      overlays,
+    });
 
     expect(Number(wrapped.svg.getAttribute('height'))).toBe(
       unwrappedHeight + 56,

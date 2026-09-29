@@ -43,6 +43,7 @@ declare const __ROW_HEIGHT__: number;
 declare const __MARGIN__: number;
 declare const __TOOLBAR_HEIGHT__: number;
 declare const __SIDEBAR_SHADOW_PAD__: number;
+declare const __OVERLAYS__: 'svg' | 'page';
 
 // A node's jump target, shared by both pages' node shapes below
 // (`render::static_data::TargetData`).

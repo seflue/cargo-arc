@@ -12,7 +12,7 @@ mod positioning;
 mod static_data;
 mod theme;
 mod toolbar;
-pub use constants::{AnalysisSwitches, RenderConfig};
+pub use constants::{AnalysisSwitches, Document, RenderConfig};
 use css::render_styles;
 use elements::{
     CycleMarks, ToolbarFacts, escape_xml, render_edges, render_header, render_nodes,

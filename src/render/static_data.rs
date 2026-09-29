@@ -1,4 +1,4 @@
-use super::constants::{CSS, DRAWING, LAYOUT, RenderConfig};
+use super::constants::{CSS, DRAWING, Document, LAYOUT, RenderConfig};
 use super::positioning::PositionedItem;
 use super::theme::{Mode, Theme};
 use crate::diagnose::ConsumerLocality;
@@ -627,6 +627,11 @@ pub(super) fn script_element(static_data: String, entry: &str, config: &RenderCo
                 "MARGIN" => config.margin.to_string(),
                 "TOOLBAR_HEIGHT" => LAYOUT.toolbar.height.to_string(),
                 "SIDEBAR_SHADOW_PAD" => LAYOUT.sidebar.shadow_padding().to_string(),
+                "OVERLAYS" => match config.document {
+                    Document::Svg => "\"svg\"",
+                    Document::Page => "\"page\"",
+                }
+                .to_string(),
                 other => panic!("Unknown config key: {other}"),
             };
             source = source.replace(&placeholder, &value);
@@ -2725,5 +2730,19 @@ mod tests {
         let (ir, _) = build_layout(&graph, &analysis, Reexports::Excluded, None);
         let data = static_data_json(&ir);
         assert!(data["symbolLocalities"].as_object().unwrap().is_empty());
+    }
+
+    /// The script learns the overlay host from the config, so a page
+    /// document and an SVG document run different placement code.
+    #[rstest::rstest]
+    #[case::svg(Document::Svg, "? \"svg\" :")]
+    #[case::page(Document::Page, "? \"page\" :")]
+    fn script_carries_the_overlay_host(#[case] document: Document, #[case] expected: &str) {
+        let config = RenderConfig {
+            document,
+            ..RenderConfig::default()
+        };
+        let script = script_element(String::new(), "svg_script", &config);
+        assert!(script.contains(expected), "{expected}");
     }
 }
