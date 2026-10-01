@@ -4,3 +4,4 @@
 *.svg
 node_modules/
 /editors/nvim/deps/
+/js/dist/
