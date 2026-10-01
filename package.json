@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "JavaScript tests for cargo-arc SVG interactivity",
   "type": "module",
+  "packageManager": "bun@1.4.0",
   "scripts": {
     "test": "bun test"
   },

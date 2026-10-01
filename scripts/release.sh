@@ -5,6 +5,10 @@ set -euo pipefail
 
 level="${1:?usage: release.sh <version|major|minor|patch>}"
 
+# The crate ships the page script bundles; a checkout never keeps them.
+trap 'rm -rf js/dist' EXIT
+bun build js/svg_script.js js/hotspot_script.js --format=iife --outdir js/dist
+
 cargo release "$level" --execute
 
 version=$(cargo metadata --no-deps --format-version=1 |
