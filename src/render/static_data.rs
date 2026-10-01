@@ -2,7 +2,7 @@ use super::constants::{CSS, DRAWING, Document, LAYOUT, RenderConfig};
 use super::positioning::PositionedItem;
 use super::theme::{Mode, Theme};
 use crate::diagnose::ConsumerLocality;
-use crate::js_registry::bundle;
+use crate::js_bundle::bundle;
 use crate::layout::{
     CyclicEdgeInfo, ItemKind, LayoutIR, LocatedSource, LocationId, NodeId, TargetKind,
 };
@@ -609,39 +609,31 @@ pub(super) fn render_script(
 ) -> String {
     // Generate STATIC_DATA first (global scope, before IIFE)
     let static_data = generate_static_data(config, ir, positioned, parents);
-    script_element(static_data, "svg_script", config)
+    script_element(&static_data, "svg_script", config)
 }
 
-/// A `<script>` holding `static_data` followed by the `entry` module's
-/// bundle, with each module's config placeholders filled from `config`.
-pub(super) fn script_element(static_data: String, entry: &str, config: &RenderConfig) -> String {
-    // JS modules loaded via build.rs-generated registry: the entry module
-    // and its transitive @deps closure, in topological order.
-    let mut scripts = vec![static_data];
-    for module in bundle(entry) {
-        let mut source = module.source.to_string();
-        for key in module.config_keys {
-            let placeholder = format!("__{key}__");
-            let value = match *key {
-                "ROW_HEIGHT" => config.row_height.to_string(),
-                "MARGIN" => config.margin.to_string(),
-                "TOOLBAR_HEIGHT" => LAYOUT.toolbar.height.to_string(),
-                "SIDEBAR_SHADOW_PAD" => LAYOUT.sidebar.shadow_padding().to_string(),
-                "OVERLAYS" => match config.document {
-                    Document::Svg => "\"svg\"",
-                    Document::Page => "\"page\"",
-                }
-                .to_string(),
-                other => panic!("Unknown config key: {other}"),
-            };
-            source = source.replace(&placeholder, &value);
-        }
-        scripts.push(source);
+/// A `<script>` holding `static_data` followed by the `entry` page's
+/// bundle, with its config placeholders filled from `config`.
+pub(super) fn script_element(static_data: &str, entry: &str, config: &RenderConfig) -> String {
+    let overlays = match config.document {
+        Document::Svg => "\"svg\"",
+        Document::Page => "\"page\"",
+    };
+    let placeholders = [
+        ("__ROW_HEIGHT__", config.row_height.to_string()),
+        ("__MARGIN__", config.margin.to_string()),
+        ("__TOOLBAR_HEIGHT__", LAYOUT.toolbar.height.to_string()),
+        (
+            "__SIDEBAR_SHADOW_PAD__",
+            LAYOUT.sidebar.shadow_padding().to_string(),
+        ),
+        ("__OVERLAYS__", overlays.to_string()),
+    ];
+    let mut source = bundle(entry).to_string();
+    for (placeholder, value) in placeholders {
+        source = source.replace(placeholder, &value);
     }
-    format!(
-        "  <script>//<![CDATA[\n{}\n//]]></script>\n",
-        scripts.join("\n")
-    )
+    format!("  <script>//<![CDATA[\n{static_data}\n{source}\n//]]></script>\n")
 }
 
 #[cfg(test)]
@@ -1228,98 +1220,54 @@ mod tests {
         assert!(!script.contains("\"definition\""));
     }
 
-    // === Registry / Module Order Tests ===
+    // === Bundle Tests ===
 
+    /// The bundle reads `STATIC_DATA` as a global, so the declaration comes
+    /// first.
     #[test]
-    fn test_all_registry_modules_embedded() {
+    fn static_data_precedes_the_bundle() {
         let config = RenderConfig::default();
         let ir = LayoutIR::new();
         let script = render_script(&config, &ir, &[], &HashSet::new());
 
-        // The arc page's bundle must contain at least 12 modules
-        let bundled: Vec<_> = bundle("svg_script").collect();
-        assert!(
-            bundled.len() >= 12,
-            "Expected at least 12 modules in the arc page's bundle, got {}",
-            bundled.len()
-        );
-
-        // Every module in the bundle must appear in the script output
-        for module in bundled {
-            let annotation = format!("// @module {}", module.name);
-            assert!(
-                script.contains(&annotation),
-                "Bundled module '{}' not found in render_script() output.",
-                module.name
-            );
-        }
+        let static_data = script.find("const STATIC_DATA").unwrap();
+        let bundle = script.find("(() => {").unwrap();
+        assert!(static_data < bundle, "{script}");
     }
 
-    #[test]
-    fn test_module_order_deps_before_dependents() {
-        let config = RenderConfig::default();
-        let ir = LayoutIR::new();
-        let script = render_script(&config, &ir, &[], &HashSet::new());
-
-        // Collect positions of each module annotation in the output
-        let positions: Vec<(&str, usize)> = bundle("svg_script")
-            .map(|m| {
-                let pattern = format!("// @module {}", m.name);
-                let pos = script
-                    .find(&pattern)
-                    .unwrap_or_else(|| panic!("Module '{}' not found in script output", m.name));
-                (m.name, pos)
-            })
-            .collect();
-
-        // SvgScript must be last module (highest position)
-        let svg_script_pos = positions.iter().find(|(n, _)| *n == "SvgScript").unwrap().1;
-        for (name, pos) in &positions {
-            if *name != "SvgScript" {
-                assert!(
-                    *pos < svg_script_pos,
-                    "{name} (pos {pos}) must appear before SvgScript (pos {svg_script_pos})"
-                );
-            }
-        }
-
-        // STATIC_DATA (Rust-generated) must appear before all registry modules
-        let static_data_pos = script.find("const STATIC_DATA").unwrap();
-        for (name, pos) in &positions {
-            assert!(
-                static_data_pos < *pos,
-                "STATIC_DATA must appear before {name} (pos {pos})"
-            );
-        }
+    /// The first `__NAME__` placeholder in `script`, upper-case name only, so
+    /// the bundler's own `__defProp`-style helpers do not count.
+    fn first_placeholder(script: &str) -> Option<&str> {
+        script.match_indices("__").find_map(|(start, _)| {
+            let rest = &script[start + 2..];
+            let name_len = rest
+                .find(|c: char| !(c.is_ascii_uppercase() || c == '_'))
+                .unwrap_or(rest.len());
+            let name = rest[..name_len].strip_suffix("__")?;
+            (!name.is_empty() && name.starts_with(|c: char| c.is_ascii_uppercase()))
+                .then(|| &script[start..start + 2 + name_len])
+        })
     }
 
-    /// The arc page's script is `bundle("svg_script")`: every module it pulls
-    /// in is present, and each one appears strictly after all of its own
-    /// declared `@deps`, not merely before a single fixed sink module.
-    #[test]
-    fn test_arc_page_bundle_respects_every_declared_dep() {
-        let config = RenderConfig::default();
-        let ir = LayoutIR::new();
-        let script = render_script(&config, &ir, &[], &HashSet::new());
-
-        let position_of = |name: &str| {
-            let pattern = format!("// @module {name}");
-            script
-                .find(&pattern)
-                .unwrap_or_else(|| panic!("Module '{name}' not found in render_script() output"))
+    #[rstest::rstest]
+    #[case::svg(Document::Svg)]
+    #[case::page(Document::Page)]
+    fn script_fills_every_placeholder(#[case] document: Document) {
+        let config = RenderConfig {
+            document,
+            ..RenderConfig::default()
         };
+        let script = script_element("", "svg_script", &config);
+        assert_eq!(first_placeholder(&script), None);
+    }
 
-        for module in bundle("svg_script") {
-            let module_pos = position_of(module.name);
-            for &dep in module.deps {
-                let dep_pos = position_of(dep);
-                assert!(
-                    dep_pos < module_pos,
-                    "{} (pos {module_pos}) must appear after its dep {dep} (pos {dep_pos})",
-                    module.name
-                );
-            }
-        }
+    #[test]
+    fn first_placeholder_finds_an_unfilled_config_key() {
+        assert_eq!(
+            first_placeholder("a = __ROW_HEIGHT__;"),
+            Some("__ROW_HEIGHT__")
+        );
+        assert_eq!(first_placeholder("var __defProp = 1;"), None);
     }
 
     // === STATIC_DATA Tests ===
@@ -2742,7 +2690,7 @@ mod tests {
             document,
             ..RenderConfig::default()
         };
-        let script = script_element(String::new(), "svg_script", &config);
+        let script = script_element("", "svg_script", &config);
         assert!(script.contains(expected), "{expected}");
     }
 
@@ -2751,7 +2699,7 @@ mod tests {
     /// XML, where the markers are still CDATA.
     #[test]
     fn script_element_guards_its_cdata_markers_for_html() {
-        let script = script_element(String::new(), "svg_script", &RenderConfig::default());
+        let script = script_element("", "svg_script", &RenderConfig::default());
         assert!(script.starts_with("  <script>//<![CDATA[\n"), "{script}");
         assert!(script.ends_with("\n//]]></script>\n"), "{script}");
     }

@@ -1,6 +1,5 @@
-// @module AppState
-// @deps RowState
-// @config
+import { RowState } from './row_state.js';
+
 // app_state.js - Unified application state management
 // Consolidates CollapseState and HighlightState into single state object
 // No DOM dependencies - pure state operations
@@ -409,7 +408,4 @@ const AppState = {
   },
 };
 
-// CommonJS export for tests (Node/Bun)
-if (typeof module !== 'undefined') {
-  module.exports = { AppState };
-}
+export { AppState };

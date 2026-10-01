@@ -12,9 +12,9 @@ version = 1
 # how the diagram gets its shape. `hotspots` shares that position too: it builds
 # the hotspot tree and its packed circles that `render::hotspots` draws, the
 # same relationship `layout` has to the arc diagram; its own imports are
-# `crate::graph` and `crate::volatility`, both below it. `js_registry` gets its
-# own layer just above that: it holds `MODULES` and `bundle`, the transitive
-# `@deps` closure `render::static_data::render_script` and
+# `crate::graph` and `crate::volatility`, both below it. `js_bundle` gets its
+# own layer just above that: it holds the page scripts `build.rs` bundles from
+# `js/`, which `render::static_data::render_script` and
 # `render::hotspots::render_script` each embed for their own entry module. It
 # has no dependency of its own inside the crate, and is not graph analysis, so
 # folding it into the analysis layer would misstate what it does. `ui` serves
@@ -26,7 +26,7 @@ layers = [
   ["cargo-arc::cli"],
   ["cargo-arc::ui"],
   ["cargo-arc::render", "cargo-arc::rules"],
-  ["cargo-arc::js_registry"],
+  ["cargo-arc::js_bundle"],
   ["cargo-arc::diagnose", "cargo-arc::layout", "cargo-arc::analyze", "cargo-arc::hotspots"],
   ["cargo-arc::graph"],
   ["cargo-arc::model", "cargo-arc::volatility"],

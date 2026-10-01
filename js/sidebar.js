@@ -1,6 +1,9 @@
-// @module SidebarLogic
-// @deps StaticData, DomAdapter, Selectors, PathFit, CanvasSize
-// @config TOOLBAR_HEIGHT, SIDEBAR_SHADOW_PAD
+import { CanvasSize } from './canvas_size.js';
+import { DomAdapter } from './dom_adapter.js';
+import { PathFit } from './path_fit.js';
+import { Selectors } from './selectors.js';
+import { StaticData } from './static_data.js';
+
 // sidebar.js - Relation sidebar for arc usage details
 // Shows usage locations when an arc is selected (pinned)
 // HTML sidebar placed through one of two hosts: a foreignObject in the SVG
@@ -1662,7 +1665,4 @@ const SidebarLogic = {
   },
 };
 
-// CommonJS export for tests (Node/Bun)
-if (typeof module !== 'undefined') {
-  module.exports = { SidebarLogic };
-}
+export { SidebarLogic };

@@ -1,6 +1,3 @@
-// @module TextMeasure
-// @deps
-// @config
 // text_metrics.js - Pure text width estimation without DOM
 // Replaces getBBox() calls for text measurement
 
@@ -34,7 +31,4 @@ const TextMeasure = {
   },
 };
 
-// CommonJS export for tests (Node/Bun)
-if (typeof module !== 'undefined') {
-  module.exports = { TextMeasure };
-}
+export { TextMeasure };

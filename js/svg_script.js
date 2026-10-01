@@ -1,9 +1,29 @@
-// @module SvgScript
-// @deps ArcLogic, StaticData, AppState, Selectors, DomAdapter, LayerManager, TreeLogic, DerivedState, HighlightRenderer, VirtualEdgeLogic, TextMeasure, SidebarLogic, SearchLogic, Jump, JumpIcons, Follow, Theme, SwitchToggles, OnSaveToggle, ViewSnapshot, PageLink, CanvasSize
-// @config ROW_HEIGHT, MARGIN, TOOLBAR_HEIGHT, SIDEBAR_SHADOW_PAD, OVERLAYS
+import { AppState } from './app_state.js';
+import { ArcLogic } from './arc_logic.js';
+import { CanvasSize } from './canvas_size.js';
+import { DerivedState } from './derived_state.js';
+import { DomAdapter } from './dom_adapter.js';
+import { Follow } from './follow.js';
+import { HighlightRenderer } from './highlight_renderer.js';
+import { Jump } from './jump.js';
+import { JumpIcons } from './jump_icons.js';
+import { LayerManager } from './layer_manager.js';
+import { OnSaveToggle } from './on_save_toggle.js';
+import { PageLink } from './page_link.js';
+import { SearchLogic } from './search.js';
+import { Selectors } from './selectors.js';
+import { SidebarLogic } from './sidebar.js';
+import { StaticData } from './static_data.js';
+import { SwitchToggles } from './switch_toggles.js';
+import { TextMeasure } from './text_metrics.js';
+import { Theme } from './theme.js';
+import { TreeLogic } from './tree_logic.js';
+import { ViewSnapshot } from './view_snapshot.js';
+import { VirtualEdgeLogic } from './virtual_edge_logic.js';
+
 // svg_script.js - DOM code for interactive SVG
-// ArcLogic is loaded from arc_logic.js before this file
-// Placeholders replaced at runtime: __ROW_HEIGHT__, __MARGIN__, __TOOLBAR_HEIGHT__, __OVERLAYS__
+// Placeholders replaced at runtime: __ROW_HEIGHT__, __MARGIN__, __TOOLBAR_HEIGHT__,
+// __SIDEBAR_SHADOW_PAD__, __OVERLAYS__
 // (`'svg'`: toolbar and sidebar are foreignObjects that follow the scroll;
 // `'page'`: they are fixed HTML elements outside the SVG)
 
@@ -88,16 +108,14 @@ function scrollTarget(node, related, view) {
   return center - visible / 2 - view.inset;
 }
 
-if (typeof module !== 'undefined') {
-  module.exports = {
-    createHighlightDebouncer,
-    createPinnedSidebarRefresher,
-    deriveHoverKey,
-    createHoverKeyTracker,
-    jumpIdFromClick,
-    scrollTarget,
-  };
-}
+export {
+  createHighlightDebouncer,
+  createPinnedSidebarRefresher,
+  deriveHoverKey,
+  createHoverKeyTracker,
+  jumpIdFromClick,
+  scrollTarget,
+};
 
 // IIFE for SVG embedding (DOM-code) - only runs in browser with placeholders replaced
 if (typeof document !== 'undefined') {

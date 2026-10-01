@@ -1,6 +1,7 @@
-// @module HotspotHover
-// @deps HotspotTree, DomAdapter, TextMeasure
-// @config
+import { DomAdapter } from './dom_adapter.js';
+import { HotspotTree } from './hotspot_tree.js';
+import { TextMeasure } from './text_metrics.js';
+
 // hotspot_hover.js - The hover tooltip's content (title, kind, lines,
 // commits, rank or child count) and a small SVG popover that shows it
 // beside the pointer, built the way jump_icons.js builds its popover
@@ -133,15 +134,6 @@ function createHoverTooltip({
   return { show, hide: removeGroup, setCanvasWidth };
 }
 
-// The browser global exposing this module's API.
 const HotspotHover = { tooltipTitle, tooltipRows, createHoverTooltip };
 
-// CommonJS export for tests (Node/Bun)
-if (typeof module !== 'undefined') {
-  module.exports = {
-    tooltipTitle,
-    tooltipRows,
-    createHoverTooltip,
-    HotspotHover,
-  };
-}
+export { tooltipTitle, tooltipRows, createHoverTooltip, HotspotHover };

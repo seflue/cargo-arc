@@ -1,10 +1,11 @@
-// @module DerivedState
-// @deps TreeLogic, ArcLogic, AppState, HighlightLogic
-// @config
+import { AppState } from './app_state.js';
+import { ArcLogic } from './arc_logic.js';
+import { HighlightLogic } from './highlight_logic.js';
+import { TreeLogic } from './tree_logic.js';
+
 // derived_state.js - Pure functions to derive display state from core state
 // Computes highlights and visibility based on selection and collapse state
 // No DOM dependencies - operates on Maps/Sets
-// TreeLogic is loaded before this file (see render.rs load order)
 
 /**
  * @typedef {Object} HighlightState
@@ -673,7 +674,4 @@ const DerivedState = {
   },
 };
 
-// CommonJS export for tests (Node/Bun)
-if (typeof module !== 'undefined') {
-  module.exports = { DerivedState };
-}
+export { DerivedState };

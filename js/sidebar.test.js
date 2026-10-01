@@ -1,15 +1,23 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { CanvasSize } from './canvas_size.js';
-import { createFakeElement } from './dom_adapter.js';
-import { PathFit } from './path_fit.js';
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from 'bun:test';
+import { createFakeElement, DomAdapter } from './dom_adapter.js';
+import { Selectors } from './selectors.js';
 import { SidebarLogic } from './sidebar.js';
+import { StaticData } from './static_data.js';
+import { restoreAll, substitute } from './test_support.js';
 
-globalThis.PathFit = PathFit;
+afterAll(restoreAll);
 
 // Mock Selectors (sidebar.js uses _getMaxArcRightX → Selectors.allArcPaths)
-globalThis.Selectors = {
+substitute(Selectors, {
   allArcPaths: () => '.dep-arc, .cycle-arc, .virtual-arc',
-};
+});
 
 // Mock STATIC_DATA for buildContent tests (structured object format from Phase 1)
 globalThis.STATIC_DATA = {
@@ -105,7 +113,7 @@ globalThis.STATIC_DATA = {
 };
 
 // Mock StaticData module (sidebar.js uses StaticData.getNode for name resolution)
-globalThis.StaticData = {
+substitute(StaticData, {
   getNode(id) {
     return globalThis.STATIC_DATA.nodes?.[id] || null;
   },
@@ -132,9 +140,7 @@ globalThis.StaticData = {
     segments.reverse();
     return { crate, path: segments.join('::') };
   },
-};
-
-globalThis.CanvasSize = CanvasSize;
+});
 
 // sidebar.js measures the visible area on document.documentElement. Tests set
 // the viewport through window.innerWidth/innerHeight; with no scrollbar the
@@ -780,7 +786,7 @@ describe('SidebarLogic', () => {
       fakeEl._innerDiv = innerDiv;
       fakeEl.querySelector = () => fakeEl._innerDiv;
       const svgMock = makeSvgMock(0);
-      globalThis.DomAdapter = {
+      substitute(DomAdapter, {
         getElementById(id) {
           if (id === 'relation-sidebar') return fakeEl;
           return null;
@@ -795,7 +801,7 @@ describe('SidebarLogic', () => {
         querySelectorAll() {
           return [];
         },
-      };
+      });
       globalThis.window = globalThis.window || {};
       globalThis.window.innerWidth = 1000;
       globalThis.window.innerHeight = 800;
@@ -881,7 +887,7 @@ describe('SidebarLogic', () => {
       fakeEl._innerDiv = innerDiv;
       fakeEl.querySelector = () => fakeEl._innerDiv;
       const svgMock = makeSvgMock(0);
-      globalThis.DomAdapter = {
+      substitute(DomAdapter, {
         getElementById(id) {
           if (id === 'relation-sidebar') return fakeEl;
           return null;
@@ -896,7 +902,7 @@ describe('SidebarLogic', () => {
         querySelectorAll() {
           return [];
         },
-      };
+      });
       globalThis.window = globalThis.window || {};
       globalThis.window.innerWidth = 1000;
       globalThis.window.innerHeight = 800;
@@ -970,7 +976,7 @@ describe('SidebarLogic', () => {
         viewBox: { baseVal: { width: 2000, height: 1600 } },
         setAttribute() {},
       };
-      globalThis.DomAdapter = {
+      substitute(DomAdapter, {
         getElementById(id) {
           if (id === 'relation-sidebar') return fakeEl;
           return null;
@@ -981,7 +987,7 @@ describe('SidebarLogic', () => {
         querySelectorAll() {
           return [];
         },
-      };
+      });
       globalThis.window = globalThis.window || {};
       globalThis.window.innerWidth = 1000;
       globalThis.window.innerHeight = 800;
@@ -997,7 +1003,7 @@ describe('SidebarLogic', () => {
     test('starts below a toolbar that wrapped onto extra rows', () => {
       const fakeEl = createFakeElement('foreignObject');
       fakeEl.querySelector = () => createFakeElement('div');
-      globalThis.DomAdapter = {
+      substitute(DomAdapter, {
         getElementById(id) {
           if (id === 'relation-sidebar') return fakeEl;
           return null;
@@ -1014,7 +1020,7 @@ describe('SidebarLogic', () => {
         querySelectorAll() {
           return [];
         },
-      };
+      });
       const renderedHeight = SidebarLogic._toolbarHeight;
       SidebarLogic.setToolbarHeight(124);
       try {
@@ -1059,7 +1065,7 @@ describe('SidebarLogic', () => {
         viewBox: { baseVal: { width: 2000, height: 1600 } },
         setAttribute() {},
       };
-      globalThis.DomAdapter = {
+      substitute(DomAdapter, {
         getElementById(id) {
           if (id === 'relation-sidebar') return fakeEl;
           return null;
@@ -1070,7 +1076,7 @@ describe('SidebarLogic', () => {
         querySelectorAll() {
           return [];
         },
-      };
+      });
       globalThis.window = globalThis.window || {};
       globalThis.window.innerWidth = 1000;
       globalThis.window.innerHeight = 800;
@@ -1105,7 +1111,7 @@ describe('SidebarLogic', () => {
           return { x: 1800, width: 100 };
         },
       };
-      globalThis.DomAdapter = {
+      substitute(DomAdapter, {
         getElementById(id) {
           if (id === 'relation-sidebar') return fakeEl;
           return null;
@@ -1116,7 +1122,7 @@ describe('SidebarLogic', () => {
         querySelectorAll() {
           return [fakeArc];
         },
-      };
+      });
       globalThis.window = globalThis.window || {};
       globalThis.window.innerWidth = 1000;
       globalThis.window.innerHeight = 800;
@@ -1152,7 +1158,7 @@ describe('SidebarLogic', () => {
           return { x: 1800, width: 100 };
         },
       };
-      globalThis.DomAdapter = {
+      substitute(DomAdapter, {
         getElementById(id) {
           if (id === 'relation-sidebar') return fakeEl;
           return null;
@@ -1163,7 +1169,7 @@ describe('SidebarLogic', () => {
         querySelectorAll() {
           return [fakeArc];
         },
-      };
+      });
       // window.innerWidth counts the vertical scrollbar; the visible width
       // (clientWidth) is 15 px narrower, as in a scrolling editor pane.
       globalThis.window = globalThis.window || {};
@@ -1209,7 +1215,7 @@ describe('SidebarLogic', () => {
           return { x: 1800, width: 100 };
         },
       };
-      globalThis.DomAdapter = {
+      substitute(DomAdapter, {
         getElementById(id) {
           if (id === 'relation-sidebar') return fakeEl;
           return null;
@@ -1220,7 +1226,7 @@ describe('SidebarLogic', () => {
         querySelectorAll() {
           return [fakeArc];
         },
-      };
+      });
       globalThis.window = globalThis.window || {};
       globalThis.window.innerWidth = 1000;
       globalThis.window.innerHeight = 800;
@@ -1253,7 +1259,7 @@ describe('SidebarLogic', () => {
         viewBox: { baseVal: { width: 2000, height: 1600 } },
         setAttribute() {},
       };
-      globalThis.DomAdapter = {
+      substitute(DomAdapter, {
         getElementById(id) {
           if (id === 'relation-sidebar') return fakeEl;
           return null;
@@ -1264,7 +1270,7 @@ describe('SidebarLogic', () => {
         querySelectorAll() {
           return [];
         },
-      };
+      });
       globalThis.window = globalThis.window || {};
       globalThis.window.innerWidth = 1000;
       globalThis.window.innerHeight = 2000;
@@ -1295,7 +1301,7 @@ describe('SidebarLogic', () => {
         viewBox: { baseVal: { width: 2000, height: 1600 } },
         setAttribute() {},
       };
-      globalThis.DomAdapter = {
+      substitute(DomAdapter, {
         getElementById(id) {
           if (id === 'relation-sidebar') return fakeEl;
           return null;
@@ -1306,7 +1312,7 @@ describe('SidebarLogic', () => {
         querySelectorAll() {
           return [];
         },
-      };
+      });
       globalThis.window = globalThis.window || {};
       globalThis.window.innerWidth = 1000;
       globalThis.window.innerHeight = 800;
@@ -1335,7 +1341,7 @@ describe('SidebarLogic', () => {
         viewBox: { baseVal: { width: 2000, height: 1600 } },
         setAttribute() {},
       };
-      globalThis.DomAdapter = {
+      substitute(DomAdapter, {
         getElementById(id) {
           if (id === 'relation-sidebar') return fakeEl;
           return null;
@@ -1346,7 +1352,7 @@ describe('SidebarLogic', () => {
         querySelectorAll() {
           return [];
         },
-      };
+      });
       globalThis.window = globalThis.window || {};
       globalThis.window.innerWidth = 1000;
       globalThis.window.innerHeight = 800;
@@ -1375,7 +1381,7 @@ describe('SidebarLogic', () => {
         viewBox: { baseVal: { width: 2000, height: 1600 } },
         setAttribute() {},
       };
-      globalThis.DomAdapter = {
+      substitute(DomAdapter, {
         getElementById(id) {
           if (id === 'relation-sidebar') return fakeEl;
           return null;
@@ -1386,7 +1392,7 @@ describe('SidebarLogic', () => {
         querySelectorAll() {
           return [];
         },
-      };
+      });
       globalThis.window = globalThis.window || {};
       globalThis.window.innerWidth = 1000;
       globalThis.window.innerHeight = 800;
@@ -1415,7 +1421,7 @@ describe('SidebarLogic', () => {
         viewBox: { baseVal: { width: 2000, height: 1600 } },
         setAttribute() {},
       };
-      globalThis.DomAdapter = {
+      substitute(DomAdapter, {
         getElementById(id) {
           if (id === 'relation-sidebar') return fakeEl;
           return null;
@@ -1426,7 +1432,7 @@ describe('SidebarLogic', () => {
         querySelectorAll() {
           return [];
         },
-      };
+      });
       globalThis.window = globalThis.window || {};
       globalThis.window.innerWidth = 1000;
       globalThis.window.innerHeight = 2000;
@@ -1458,7 +1464,7 @@ describe('SidebarLogic', () => {
         viewBox: { baseVal: { width: 2000, height: 1600 } },
         setAttribute() {},
       };
-      globalThis.DomAdapter = {
+      substitute(DomAdapter, {
         getElementById(id) {
           if (id === 'relation-sidebar') return fakeEl;
           return null;
@@ -1469,7 +1475,7 @@ describe('SidebarLogic', () => {
         querySelectorAll() {
           return [];
         },
-      };
+      });
       globalThis.window = globalThis.window || {};
       globalThis.window.innerWidth = 1000;
       globalThis.window.innerHeight = 300;
@@ -1501,7 +1507,7 @@ describe('SidebarLogic', () => {
         },
       };
       const vb = svgMock.viewBox.baseVal;
-      globalThis.DomAdapter = {
+      substitute(DomAdapter, {
         getElementById(id) {
           if (id === 'relation-sidebar') return fakeEl;
           return null;
@@ -1512,7 +1518,7 @@ describe('SidebarLogic', () => {
         querySelectorAll() {
           return [];
         },
-      };
+      });
       globalThis.window = globalThis.window || {};
       globalThis.window.innerWidth = 1000;
       globalThis.window.innerHeight = 600;
@@ -1570,7 +1576,7 @@ describe('SidebarLogic', () => {
       const innerDiv = createFakeElement('div');
       innerDiv.offsetHeight = 300;
       fakeEl.querySelector = () => innerDiv;
-      globalThis.DomAdapter = {
+      substitute(DomAdapter, {
         getElementById(id) {
           if (id === 'relation-sidebar') return fakeEl;
           return null;
@@ -1587,7 +1593,7 @@ describe('SidebarLogic', () => {
         querySelectorAll() {
           return [];
         },
-      };
+      });
       globalThis.window = globalThis.window || {};
       globalThis.window.innerWidth = 1000;
       globalThis.window.innerHeight = 600;
@@ -1626,7 +1632,7 @@ describe('SidebarLogic', () => {
           svgTouched.push(`setAttribute ${name}`);
         },
       };
-      globalThis.DomAdapter = {
+      substitute(DomAdapter, {
         getElementById(id) {
           if (id === 'relation-sidebar') return hostEl;
           return null;
@@ -1638,7 +1644,7 @@ describe('SidebarLogic', () => {
           svgTouched.push('querySelectorAll');
           return [];
         },
-      };
+      });
       globalThis.window = globalThis.window || {};
       globalThis.window.innerWidth = 1000;
       globalThis.window.innerHeight = 600;
@@ -2154,7 +2160,7 @@ describe('SidebarLogic', () => {
       fakeEl._innerDiv = innerDiv;
       fakeEl.querySelector = () => fakeEl._innerDiv;
       const svgMock = makeSvgMock(0);
-      globalThis.DomAdapter = {
+      substitute(DomAdapter, {
         getElementById(id) {
           if (id === 'relation-sidebar') return fakeEl;
           return null;
@@ -2169,7 +2175,7 @@ describe('SidebarLogic', () => {
         querySelectorAll() {
           return [];
         },
-      };
+      });
       globalThis.window = globalThis.window || {};
       globalThis.window.innerWidth = 1000;
       globalThis.window.innerHeight = 800;

@@ -1,6 +1,5 @@
-// @module StaticData
-// @deps ArcLogic
-// @config
+import { ArcLogic } from './arc_logic.js';
+
 // static_data.js - Helper for accessing STATIC_DATA
 // Provides typed access to pre-rendered node/arc data from Rust
 // Eliminates DOM reads for static properties (positions, parents, arc weights)
@@ -301,7 +300,4 @@ const StaticData = {
   },
 };
 
-// CommonJS export for tests (Node/Bun)
-if (typeof module !== 'undefined') {
-  module.exports = { StaticData };
-}
+export { StaticData };

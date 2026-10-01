@@ -1,10 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { ArcLogic } from './arc_logic.js';
 
-globalThis.ArcLogic = ArcLogic;
-
-globalThis.ArcLogic = ArcLogic;
-
 // Mock STATIC_DATA for tests (structured object format from Phase 1)
 const TEST_STATIC_DATA = {
   nodes: {

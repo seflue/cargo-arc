@@ -1,10 +1,6 @@
 // highlight_logic.test.js - Tests for pure highlight calculation functions
 const { expect, test, describe } = require('bun:test');
 
-// Make ArcLogic globally available (simulating browser environment where it's loaded first)
-const { ArcLogic } = require('./arc_logic.js');
-global.ArcLogic = ArcLogic;
-
 const { HighlightLogic } = require('./highlight_logic.js');
 
 describe('HighlightLogic', () => {

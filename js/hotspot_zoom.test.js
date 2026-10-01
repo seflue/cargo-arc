@@ -1,7 +1,4 @@
 import { describe, expect, test } from 'bun:test';
-import { HotspotTree } from './hotspot_tree.js';
-
-global.HotspotTree = HotspotTree;
 
 import {
   easeInOut,

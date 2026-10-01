@@ -1,14 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { AppState } from './app_state.js';
 import { ArcLogic } from './arc_logic.js';
-import { HighlightLogic } from './highlight_logic.js';
-import { TreeLogic } from './tree_logic.js';
-
-// Set globals (simulating browser environment where modules are loaded before derived_state.js)
-global.TreeLogic = TreeLogic;
-global.ArcLogic = ArcLogic;
-global.HighlightLogic = HighlightLogic;
-global.AppState = AppState;
 
 import { DerivedState } from './derived_state.js';
 

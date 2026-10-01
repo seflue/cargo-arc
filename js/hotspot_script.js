@@ -1,6 +1,19 @@
-// @module HotspotScript
-// @deps Theme, DomAdapter, HotspotTree, HotspotZoom, HotspotLabels, HotspotHover, HotspotSelection, HotspotBars, PageLink, Follow, OnSaveToggle, HotspotJumpIcon, Jump, HotspotLayout, PathFit
-// @config
+import { DomAdapter } from './dom_adapter.js';
+import { Follow } from './follow.js';
+import { HotspotBars } from './hotspot_bars.js';
+import { HotspotHover } from './hotspot_hover.js';
+import { HotspotJumpIcon } from './hotspot_jump_icon.js';
+import { HotspotLabels } from './hotspot_labels.js';
+import { HotspotLayout } from './hotspot_layout.js';
+import { HotspotSelection } from './hotspot_selection.js';
+import { HotspotTree } from './hotspot_tree.js';
+import { HotspotZoom } from './hotspot_zoom.js';
+import { Jump } from './jump.js';
+import { OnSaveToggle } from './on_save_toggle.js';
+import { PageLink } from './page_link.js';
+import { PathFit } from './path_fit.js';
+import { Theme } from './theme.js';
+
 // hotspot_script.js - entry module for the hotspot map page. Applies the
 // theme STATIC_DATA carries, wires the map's zoom with its breadcrumb,
 // labels and hover, its
@@ -655,9 +668,7 @@ function buildHotspotMap(themeControl) {
   return { zoomTo, setHover, select, focus, resize };
 }
 
-if (typeof module !== 'undefined') {
-  module.exports = { bootstrapHotspotPage, buildHotspotMap };
-}
+export { bootstrapHotspotPage, buildHotspotMap };
 
 // Only runs in a real browser, not under the test runner.
 if (typeof document !== 'undefined') {

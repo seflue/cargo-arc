@@ -1,6 +1,5 @@
-// @module HotspotZoom
-// @deps HotspotTree
-// @config
+import { HotspotTree } from './hotspot_tree.js';
+
 // hotspot_zoom.js - The zoom: which circle is the target, and the animated
 // view (x, y, radius) that fills the canvas with it. Names and values kept
 // from the prototype (`proto/hotspot-map` @
@@ -71,7 +70,6 @@ function nextZoomTarget(nodes, targetKey, clickedKey) {
   return clickedKey === targetKey ? parentOrRoot(targetKey) : clickedKey;
 }
 
-// The browser global exposing this module's API.
 const HotspotZoom = {
   ZOOM_MS,
   ZOOM_MARGIN,
@@ -82,16 +80,13 @@ const HotspotZoom = {
   nextZoomTarget,
 };
 
-// CommonJS export for tests (Node/Bun)
-if (typeof module !== 'undefined') {
-  module.exports = {
-    ZOOM_MS,
-    ZOOM_MARGIN,
-    easeInOut,
-    viewFor,
-    lerpView,
-    viewBoxAt,
-    nextZoomTarget,
-    HotspotZoom,
-  };
-}
+export {
+  ZOOM_MS,
+  ZOOM_MARGIN,
+  easeInOut,
+  viewFor,
+  lerpView,
+  viewBoxAt,
+  nextZoomTarget,
+  HotspotZoom,
+};

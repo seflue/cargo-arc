@@ -1,13 +1,14 @@
-import { describe, expect, test } from 'bun:test';
+import { afterAll, describe, expect, test } from 'bun:test';
 import { createFakeElement, createMockDomAdapter } from './dom_adapter.js';
-import { HotspotTree } from './hotspot_tree.js';
 import { TextMeasure } from './text_metrics.js';
 
-global.HotspotTree = HotspotTree;
-global.DomAdapter = createMockDomAdapter();
-global.TextMeasure = TextMeasure;
+substitute(DomAdapter, createMockDomAdapter());
 
+import { DomAdapter } from './dom_adapter.js';
 import { createHoverTooltip, tooltipRows } from './hotspot_hover.js';
+import { restoreAll, substitute } from './test_support.js';
+
+afterAll(restoreAll);
 
 // root (crate) -> lib.rs (file, hotspot, ranked), src (module) -> a.rs, b.rs
 function nodes() {

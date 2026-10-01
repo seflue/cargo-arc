@@ -1,8 +1,4 @@
 import { describe, expect, test } from 'bun:test';
-import { HotspotTree } from './hotspot_tree.js';
-
-global.HotspotTree = HotspotTree;
-
 import {
   arcDepth,
   boxesOverlap,
@@ -104,7 +100,7 @@ describe('containerLabel', () => {
 
 describe('containerLabel - deterministic, band-bounded placement (HARD 1)', () => {
   test('a real container label stays inside its band, unlike the old iteration', () => {
-    // This repo's own STATIC_DATA for src/js_registry/mod.rs: the container
+    // This repo's own STATIC_DATA for the former src/js_registry/mod.rs: the container
     // and its actual children (bundle.rs, mod.rs#leaf, table.rs), at the
     // pxPerUnit the default, unzoomed view renders it at
     // (map area side 800 / (2 * root radius 380)).

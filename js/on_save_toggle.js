@@ -1,6 +1,3 @@
-// @module OnSaveToggle
-// @deps
-// @config
 // on_save_toggle.js - The toolbar button that turns recomputing on save on
 // or off. The service holds the state: a click asks it for the opposite, and
 // the button shows what the service's on-save event reports, which every
@@ -43,10 +40,6 @@ function createOnSaveToggle({ post, showState, showStatus, isOn }) {
   };
 }
 
-// The browser global exposing this module's API.
 const OnSaveToggle = { createOnSaveToggle };
 
-// CommonJS export for tests (Node/Bun)
-if (typeof module !== 'undefined') {
-  module.exports = { createOnSaveToggle, OnSaveToggle };
-}
+export { createOnSaveToggle, OnSaveToggle };

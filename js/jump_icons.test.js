@@ -1,7 +1,9 @@
-import { describe, expect, test } from 'bun:test';
-import { createFakeElement } from './dom_adapter.js';
+import { afterAll, describe, expect, test } from 'bun:test';
+import { createFakeElement, DomAdapter } from './dom_adapter.js';
 import { createJumpIcons } from './jump_icons.js';
-import { JumpSymbol } from './jump_symbol.js';
+import { restoreAll, substitute } from './test_support.js';
+
+afterAll(restoreAll);
 
 // Fake elements support the subset of the DOM createJumpIcons touches, plus
 // addEventListener/_fire so tests can trigger the handlers it attaches
@@ -19,10 +21,9 @@ function createFakeSvgElement(tag) {
   return el;
 }
 
-global.DomAdapter = {
+substitute(DomAdapter, {
   createSvgElement: (tag) => createFakeSvgElement(tag),
-};
-global.JumpSymbol = JumpSymbol;
+});
 
 function makeRect(x, y, width, height) {
   const el = createFakeElement('rect');

@@ -1,6 +1,3 @@
-// @module VirtualEdgeLogic
-// @deps ArcLogic
-// @config
 // virtual_edge_logic.js - Pure logic for virtual edge aggregation
 // No DOM dependencies - uses Maps as data structures
 
@@ -131,7 +128,4 @@ const VirtualEdgeLogic = {
   },
 };
 
-// CommonJS export for tests (Node/Bun)
-if (typeof module !== 'undefined') {
-  module.exports = { VirtualEdgeLogic };
-}
+export { VirtualEdgeLogic };

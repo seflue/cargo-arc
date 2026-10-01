@@ -1,6 +1,3 @@
-// @module PageLink
-// @deps
-// @config
 // page_link.js - The `?select=<file>` protocol carrying a selection across
 // the toolbar link between the arc page and the hotspot map.
 
@@ -25,10 +22,6 @@ function parseSelect(search) {
   return new URLSearchParams(search).get('select');
 }
 
-// The browser global exposing this module's API.
 const PageLink = { buildLink, parseSelect };
 
-// CommonJS export for tests (Node/Bun)
-if (typeof module !== 'undefined') {
-  module.exports = { buildLink, parseSelect, PageLink };
-}
+export { buildLink, parseSelect, PageLink };

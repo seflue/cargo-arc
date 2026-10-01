@@ -4,10 +4,8 @@
 
 import { describe, expect, test } from 'bun:test';
 
-// Setup globals (simulating browser environment)
 const { ArcLogic } = require('./arc_logic.js');
-global.ArcLogic = ArcLogic;
-global.HighlightLogic = require('./highlight_logic.js').HighlightLogic;
+const { HighlightLogic } = require('./highlight_logic.js');
 
 const { createFakeElement } = require('./dom_adapter.js');
 const { AppState } = require('./app_state.js');
@@ -26,26 +24,17 @@ describe('Highlight Reset - Separation of Highlight State vs Layout State', () =
     const arrow = createFakeElement('polygon');
 
     // Initial expanded position (100, 307), scale 1.0
-    const initialPoints = global.ArcLogic.getArrowPoints(
-      { x: 100, y: 307 },
-      1.0,
-    );
+    const initialPoints = ArcLogic.getArrowPoints({ x: 100, y: 307 }, 1.0);
     arrow.setAttribute('points', initialPoints);
     expect(arrow.getAttribute('points')).toBe('108,303 100,307 108,311');
 
     // === RELAYOUT: Node collapses, arrow moves to new position (100, 187) ===
-    const newCollapsedPoints = global.ArcLogic.getArrowPoints(
-      { x: 100, y: 187 },
-      1.0,
-    );
+    const newCollapsedPoints = ArcLogic.getArrowPoints({ x: 100, y: 187 }, 1.0);
     arrow.setAttribute('points', newCollapsedPoints);
     expect(arrow.getAttribute('points')).toBe('108,183 100,187 108,191');
 
     // === HIGHLIGHT: User hovers, arrow scales to 1.3 ===
-    const highlightedPoints = global.ArcLogic.getArrowPoints(
-      { x: 100, y: 187 },
-      1.3,
-    );
+    const highlightedPoints = ArcLogic.getArrowPoints({ x: 100, y: 187 }, 1.3);
     arrow.setAttribute('points', highlightedPoints);
     expect(arrow.getAttribute('points')).toBe(
       '110.4,181.8 100,187 110.4,192.2',
@@ -54,14 +43,14 @@ describe('Highlight Reset - Separation of Highlight State vs Layout State', () =
     // === CLEAR HIGHLIGHTS: Should restore scale but KEEP position ===
     // Scale comes from StaticData (simulated as 1.0 here)
     const baseScale = 1.0;
-    const currentTip = global.ArcLogic.parseTipFromPoints(
+    const currentTip = ArcLogic.parseTipFromPoints(
       arrow.getAttribute('points'),
     );
 
     // This is the key: use currentTip (187), not some stored position
     arrow.setAttribute(
       'points',
-      global.ArcLogic.getArrowPoints(
+      ArcLogic.getArrowPoints(
         currentTip, // Keep CURRENT position (layout state from DOM)
         baseScale, // Restore base scale (from StaticData calculation)
       ),
@@ -70,9 +59,7 @@ describe('Highlight Reset - Separation of Highlight State vs Layout State', () =
     // Verify: Arrow should be at collapsed position (187), not expanded position (307)
     expect(arrow.getAttribute('points')).toBe('108,183 100,187 108,191');
 
-    const finalTip = global.ArcLogic.parseTipFromPoints(
-      arrow.getAttribute('points'),
-    );
+    const finalTip = ArcLogic.parseTipFromPoints(arrow.getAttribute('points'));
     expect(finalTip.y).toBe(187); // Collapsed position
     expect(finalTip.y).not.toBe(307); // NOT expanded position
   });
@@ -83,13 +70,13 @@ describe('Highlight Reset - Separation of Highlight State vs Layout State', () =
     // Initial: scale 1.0
     arrow.setAttribute(
       'points',
-      global.ArcLogic.getArrowPoints({ x: 100, y: 200 }, 1.0),
+      ArcLogic.getArrowPoints({ x: 100, y: 200 }, 1.0),
     );
 
     // Highlight: scale to 1.3
     arrow.setAttribute(
       'points',
-      global.ArcLogic.getArrowPoints({ x: 100, y: 200 }, 1.3),
+      ArcLogic.getArrowPoints({ x: 100, y: 200 }, 1.3),
     );
     expect(arrow.getAttribute('points')).toBe(
       '110.4,194.8 100,200 110.4,205.2',
@@ -97,12 +84,12 @@ describe('Highlight Reset - Separation of Highlight State vs Layout State', () =
 
     // Clear highlights: restore scale (calculated from StaticData)
     const baseScale = 1.0; // Would come from ArcLogic.scaleFromStrokeWidth(StaticData.getArcStrokeWidth(arcId))
-    const currentTip = global.ArcLogic.parseTipFromPoints(
+    const currentTip = ArcLogic.parseTipFromPoints(
       arrow.getAttribute('points'),
     );
     arrow.setAttribute(
       'points',
-      global.ArcLogic.getArrowPoints(currentTip, baseScale),
+      ArcLogic.getArrowPoints(currentTip, baseScale),
     );
 
     // Verify: back to scale 1.0
@@ -116,56 +103,52 @@ describe('Highlight Reset - Separation of Highlight State vs Layout State', () =
     // Initial position: Y=300
     arrow.setAttribute(
       'points',
-      global.ArcLogic.getArrowPoints({ x: 100, y: 300 }, 1.0),
+      ArcLogic.getArrowPoints({ x: 100, y: 300 }, 1.0),
     );
 
     // First relayout: collapse to Y=200
     arrow.setAttribute(
       'points',
-      global.ArcLogic.getArrowPoints({ x: 100, y: 200 }, 1.0),
+      ArcLogic.getArrowPoints({ x: 100, y: 200 }, 1.0),
     );
 
     // Highlight
     arrow.setAttribute(
       'points',
-      global.ArcLogic.getArrowPoints({ x: 100, y: 200 }, 1.3),
+      ArcLogic.getArrowPoints({ x: 100, y: 200 }, 1.3),
     );
 
     // Clear - should be at Y=200
-    let currentTip = global.ArcLogic.parseTipFromPoints(
-      arrow.getAttribute('points'),
-    );
+    let currentTip = ArcLogic.parseTipFromPoints(arrow.getAttribute('points'));
     arrow.setAttribute(
       'points',
-      global.ArcLogic.getArrowPoints(currentTip, baseScale),
+      ArcLogic.getArrowPoints(currentTip, baseScale),
     );
-    expect(
-      global.ArcLogic.parseTipFromPoints(arrow.getAttribute('points')).y,
-    ).toBe(200);
+    expect(ArcLogic.parseTipFromPoints(arrow.getAttribute('points')).y).toBe(
+      200,
+    );
 
     // Second relayout: collapse further to Y=100
     arrow.setAttribute(
       'points',
-      global.ArcLogic.getArrowPoints({ x: 100, y: 100 }, 1.0),
+      ArcLogic.getArrowPoints({ x: 100, y: 100 }, 1.0),
     );
 
     // Highlight again
     arrow.setAttribute(
       'points',
-      global.ArcLogic.getArrowPoints({ x: 100, y: 100 }, 1.3),
+      ArcLogic.getArrowPoints({ x: 100, y: 100 }, 1.3),
     );
 
     // Clear - should be at Y=100, NOT Y=200 or Y=300
-    currentTip = global.ArcLogic.parseTipFromPoints(
-      arrow.getAttribute('points'),
-    );
+    currentTip = ArcLogic.parseTipFromPoints(arrow.getAttribute('points'));
     arrow.setAttribute(
       'points',
-      global.ArcLogic.getArrowPoints(currentTip, baseScale),
+      ArcLogic.getArrowPoints(currentTip, baseScale),
     );
-    expect(
-      global.ArcLogic.parseTipFromPoints(arrow.getAttribute('points')).y,
-    ).toBe(100);
+    expect(ArcLogic.parseTipFromPoints(arrow.getAttribute('points')).y).toBe(
+      100,
+    );
   });
 
   test('uses current arrow position from DOM, not stored position', () => {
@@ -176,37 +159,35 @@ describe('Highlight Reset - Separation of Highlight State vs Layout State', () =
     // Initial state
     arrow.setAttribute(
       'points',
-      global.ArcLogic.getArrowPoints({ x: 100, y: 307 }, 1.0),
+      ArcLogic.getArrowPoints({ x: 100, y: 307 }, 1.0),
     );
 
     // Relayout changes position
     arrow.setAttribute(
       'points',
-      global.ArcLogic.getArrowPoints({ x: 100, y: 187 }, 1.0),
+      ArcLogic.getArrowPoints({ x: 100, y: 187 }, 1.0),
     );
 
     // Highlight
     arrow.setAttribute(
       'points',
-      global.ArcLogic.getArrowPoints({ x: 100, y: 187 }, 1.3),
+      ArcLogic.getArrowPoints({ x: 100, y: 187 }, 1.3),
     );
 
     // Clear: must use current position from DOM
-    const currentTip = global.ArcLogic.parseTipFromPoints(
+    const currentTip = ArcLogic.parseTipFromPoints(
       arrow.getAttribute('points'),
     );
     arrow.setAttribute(
       'points',
-      global.ArcLogic.getArrowPoints(
+      ArcLogic.getArrowPoints(
         currentTip, // Current position (source of truth)
         baseScale, // Base scale from StaticData
       ),
     );
 
     // Verify: position matches current layout state (187)
-    const finalTip = global.ArcLogic.parseTipFromPoints(
-      arrow.getAttribute('points'),
-    );
+    const finalTip = ArcLogic.parseTipFromPoints(arrow.getAttribute('points'));
     expect(finalTip.y).toBe(187);
   });
 });
@@ -217,17 +198,17 @@ describe('State Separation: Highlight vs Layout', () => {
     // No stored state needed
 
     // Simulate: arc with 1 usage -> strokeWidth 0.5 -> scale 0.33
-    const strokeWidth = global.ArcLogic.calculateStrokeWidth(1);
-    const scale = global.ArcLogic.scaleFromStrokeWidth(strokeWidth);
+    const strokeWidth = ArcLogic.calculateStrokeWidth(1);
+    const scale = ArcLogic.scaleFromStrokeWidth(strokeWidth);
 
     expect(strokeWidth).toBe(0.5); // MIN strokeWidth
     expect(scale).toBeCloseTo(0.333, 2); // 0.5 / 1.5
 
     // During highlight, scale changes to HIGHLIGHT_SCALE (1.3)
-    expect(global.HighlightLogic.HIGHLIGHT_SCALE).toBe(1.3);
+    expect(HighlightLogic.HIGHLIGHT_SCALE).toBe(1.3);
 
     // When clearing, we recalculate from StaticData (same result)
-    const clearedScale = global.ArcLogic.scaleFromStrokeWidth(strokeWidth);
+    const clearedScale = ArcLogic.scaleFromStrokeWidth(strokeWidth);
     expect(clearedScale).toBeCloseTo(0.333, 2);
   });
 
@@ -237,33 +218,33 @@ describe('State Separation: Highlight vs Layout', () => {
     // Initial layout: Y=300
     arrow.setAttribute(
       'points',
-      global.ArcLogic.getArrowPoints({ x: 100, y: 300 }, 1.0),
+      ArcLogic.getArrowPoints({ x: 100, y: 300 }, 1.0),
     );
-    let tip = global.ArcLogic.parseTipFromPoints(arrow.getAttribute('points'));
+    let tip = ArcLogic.parseTipFromPoints(arrow.getAttribute('points'));
     expect(tip.y).toBe(300);
 
     // Relayout changes position: Y=200
     arrow.setAttribute(
       'points',
-      global.ArcLogic.getArrowPoints({ x: 100, y: 200 }, 1.0),
+      ArcLogic.getArrowPoints({ x: 100, y: 200 }, 1.0),
     );
-    tip = global.ArcLogic.parseTipFromPoints(arrow.getAttribute('points'));
+    tip = ArcLogic.parseTipFromPoints(arrow.getAttribute('points'));
     expect(tip.y).toBe(200);
 
     // Highlight should NOT affect position, only scale
     arrow.setAttribute(
       'points',
-      global.ArcLogic.getArrowPoints({ x: 100, y: 200 }, 1.3),
+      ArcLogic.getArrowPoints({ x: 100, y: 200 }, 1.3),
     );
-    tip = global.ArcLogic.parseTipFromPoints(arrow.getAttribute('points'));
+    tip = ArcLogic.parseTipFromPoints(arrow.getAttribute('points'));
     expect(tip.y).toBe(200); // Position unchanged
 
     // Clear highlight should NOT restore old position (300), only current scale
     arrow.setAttribute(
       'points',
-      global.ArcLogic.getArrowPoints({ x: 100, y: 200 }, 1.0),
+      ArcLogic.getArrowPoints({ x: 100, y: 200 }, 1.0),
     );
-    tip = global.ArcLogic.parseTipFromPoints(arrow.getAttribute('points'));
+    tip = ArcLogic.parseTipFromPoints(arrow.getAttribute('points'));
     expect(tip.y).toBe(200); // Position still at current layout state
   });
 });

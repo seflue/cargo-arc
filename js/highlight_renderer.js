@@ -1,6 +1,6 @@
-// @module HighlightRenderer
-// @deps ArcLogic, LayerManager
-// @config
+import { ArcLogic } from './arc_logic.js';
+import { LayerManager } from './layer_manager.js';
+
 // highlight_renderer.js - Single entry point for applying highlight state to DOM
 // Takes a HighlightState (from DerivedState.deriveHighlightState) and applies it.
 // Reset uses data-iteration (StaticData/virtualArcUsages), not CSS selectors.
@@ -362,7 +362,4 @@ const HighlightRenderer = {
   },
 };
 
-// CommonJS export for tests (Node/Bun)
-if (typeof module !== 'undefined') {
-  module.exports = { HighlightRenderer };
-}
+export { HighlightRenderer };

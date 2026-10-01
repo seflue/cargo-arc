@@ -1,6 +1,7 @@
-// @module HotspotJumpIcon
-// @deps DomAdapter, HotspotLabels, JumpSymbol
-// @config
+import { DomAdapter } from './dom_adapter.js';
+import { HotspotLabels } from './hotspot_labels.js';
+import { JumpSymbol } from './jump_symbol.js';
+
 // hotspot_jump_icon.js - The hotspot map's own jump affordance: one glyph
 // right after the selected leaf's own label, drawing the `#jump-icon` shape
 // `jump_symbol.js` defines, without pulling in jump_icons.js's multi-target
@@ -113,10 +114,6 @@ function createHotspotJumpIcon({ layer, defsHost, onJump, iconClass }) {
   return { show, hide };
 }
 
-// The browser global exposing this module's API.
 const HotspotJumpIcon = { createHotspotJumpIcon, glyphPosition };
 
-// CommonJS export for tests (Node/Bun)
-if (typeof module !== 'undefined') {
-  module.exports = { createHotspotJumpIcon, glyphPosition, HotspotJumpIcon };
-}
+export { createHotspotJumpIcon, glyphPosition, HotspotJumpIcon };

@@ -1,8 +1,4 @@
 import { describe, expect, test } from 'bun:test';
-import { RowState } from './row_state.js';
-
-global.RowState = RowState;
-
 import { AppState } from './app_state.js';
 
 describe('AppState', () => {

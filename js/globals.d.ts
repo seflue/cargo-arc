@@ -1,42 +1,5 @@
-// Cross-file global declarations for tsc --noEmit typecheck.
-// Each production JS file defines a top-level const (global-script pattern);
-// tsc cannot see cross-file globals, so we declare them here.
-
-// Module globals — typeof import preserves the inferred types from each file.
-declare const ArcLogic: typeof import('./arc_logic.js').ArcLogic;
-declare const CanvasSize: typeof import('./canvas_size.js').CanvasSize;
-declare const AppState: typeof import('./app_state.js').AppState;
-declare const DomAdapter: typeof import('./dom_adapter.js').DomAdapter;
-declare const DerivedState: typeof import('./derived_state.js').DerivedState;
-declare const HighlightLogic: typeof import('./highlight_logic.js').HighlightLogic;
-declare const HighlightRenderer: typeof import('./highlight_renderer.js').HighlightRenderer;
-declare const Follow: typeof import('./follow.js').Follow;
-declare const Jump: typeof import('./jump.js').Jump;
-declare const JumpIcons: typeof import('./jump_icons.js').JumpIcons;
-declare const JumpSymbol: typeof import('./jump_symbol.js').JumpSymbol;
-declare const LayerManager: typeof import('./layer_manager.js').LayerManager;
-declare const SearchLogic: typeof import('./search.js').SearchLogic;
-declare const Selectors: typeof import('./selectors.js').Selectors;
-declare const SidebarLogic: typeof import('./sidebar.js').SidebarLogic;
-declare const StaticData: typeof import('./static_data.js').StaticData;
-declare const Theme: typeof import('./theme.js').Theme;
-declare const SwitchToggles: typeof import('./switch_toggles.js').SwitchToggles;
-declare const OnSaveToggle: typeof import('./on_save_toggle.js').OnSaveToggle;
-declare const TreeLogic: typeof import('./tree_logic.js').TreeLogic;
-declare const VirtualEdgeLogic: typeof import('./virtual_edge_logic.js').VirtualEdgeLogic;
-declare const ViewSnapshot: typeof import('./view_snapshot.js').ViewSnapshot;
-declare const TextMeasure: typeof import('./text_metrics.js').TextMeasure;
-declare const PageLink: typeof import('./page_link.js').PageLink;
-declare const PathFit: typeof import('./path_fit.js').PathFit;
-declare const RowState: typeof import('./row_state.js').RowState;
-declare const HotspotTree: typeof import('./hotspot_tree.js').HotspotTree;
-declare const HotspotZoom: typeof import('./hotspot_zoom.js').HotspotZoom;
-declare const HotspotLabels: typeof import('./hotspot_labels.js').HotspotLabels;
-declare const HotspotHover: typeof import('./hotspot_hover.js').HotspotHover;
-declare const HotspotSelection: typeof import('./hotspot_selection.js').HotspotSelection;
-declare const HotspotBars: typeof import('./hotspot_bars.js').HotspotBars;
-declare const HotspotJumpIcon: typeof import('./hotspot_jump_icon.js').HotspotJumpIcon;
-declare const HotspotLayout: typeof import('./hotspot_layout.js').HotspotLayout;
+// Global declarations for tsc --noEmit typecheck: names the page provides
+// outside the ES modules (render-time placeholders and STATIC_DATA).
 
 // Runtime placeholders (replaced by Rust at render time)
 declare const __ROW_HEIGHT__: number;

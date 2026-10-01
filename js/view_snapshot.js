@@ -1,6 +1,3 @@
-// @module ViewSnapshot
-// @deps
-// @config
 // view_snapshot.js - Carries the page's view state across a reload of a
 // recomputed diagram. Node ids are assigned per run, so the snapshot keys
 // a node by the chain of names from its root down to it.
@@ -113,10 +110,6 @@ function restore(snapshot, nodes) {
   };
 }
 
-// The browser global exposing this module's API.
 const ViewSnapshot = { capture, restore };
 
-// CommonJS export for tests (Node/Bun)
-if (typeof module !== 'undefined') {
-  module.exports = { capture, restore, ViewSnapshot };
-}
+export { capture, restore, ViewSnapshot };

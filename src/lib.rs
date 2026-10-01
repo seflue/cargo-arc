@@ -3,7 +3,7 @@ pub mod cli;
 pub mod diagnose;
 pub mod graph;
 pub(crate) mod hotspots;
-mod js_registry;
+mod js_bundle;
 pub mod layout;
 pub mod model;
 pub mod render;

@@ -1,9 +1,5 @@
-// @module HighlightLogic
-// @deps ArcLogic
-// @config
 // highlight_logic.js - Pure calculation functions for highlight effects
 // No DOM dependencies
-// Assumes ArcLogic is available globally (loaded before this in browser, or via test setup)
 
 const HighlightLogic = {
   // Constants
@@ -73,7 +69,4 @@ const HighlightLogic = {
   },
 };
 
-// CommonJS export for tests (Node/Bun)
-if (typeof module !== 'undefined') {
-  module.exports = { HighlightLogic };
-}
+export { HighlightLogic };

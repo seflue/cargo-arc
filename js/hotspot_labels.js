@@ -1,6 +1,5 @@
-// @module HotspotLabels
-// @deps HotspotTree
-// @config
+import { HotspotTree } from './hotspot_tree.js';
+
 // hotspot_labels.js - Whether a circle's label is shown, its size and
 // position: shown once the circle is large enough on screen, sized to fit
 // its label band and dropped where it would overlap an already-placed
@@ -179,7 +178,6 @@ function placeLabels(nodes, targetKey, hoveredKey, pxPerUnit) {
   return result;
 }
 
-// The browser global exposing this module's API.
 const HotspotLabels = {
   LABEL_PX,
   MIN_LABEL_PX,
@@ -198,24 +196,21 @@ const HotspotLabels = {
   placeLabels,
 };
 
-// CommonJS export for tests (Node/Bun)
-if (typeof module !== 'undefined') {
-  module.exports = {
-    LABEL_PX,
-    MIN_LABEL_PX,
-    MIN_LABEL_DIAMETER_PX,
-    CHAR_WIDTH_EM,
-    LINE_HEIGHT_EM,
-    FILE_LABEL_WIDTH_RATIO,
-    arcDepth,
-    labelBand,
-    fileLabel,
-    containerLabel,
-    labelFor,
-    labelReadable,
-    labelBox,
-    boxesOverlap,
-    placeLabels,
-    HotspotLabels,
-  };
-}
+export {
+  LABEL_PX,
+  MIN_LABEL_PX,
+  MIN_LABEL_DIAMETER_PX,
+  CHAR_WIDTH_EM,
+  LINE_HEIGHT_EM,
+  FILE_LABEL_WIDTH_RATIO,
+  arcDepth,
+  labelBand,
+  fileLabel,
+  containerLabel,
+  labelFor,
+  labelReadable,
+  labelBox,
+  boxesOverlap,
+  placeLabels,
+  HotspotLabels,
+};
