@@ -23,10 +23,5 @@ while IFS=$'\t' read -r check status conclusion; do
 done <<<"$checks"
 echo "✅ CI green on origin/main (${head:0:8})"
 
-if [ "${DRY_RUN:-false}" = "true" ]; then
-  echo "⏭️  Dry run, skipping lint and tests"
-  exit 0
-fi
-
 just lint
 just test
