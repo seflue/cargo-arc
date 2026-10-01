@@ -16,6 +16,22 @@ authors = ["Sebastian Flügge"]
 readme = "README.md"
 repository = "https://github.com/seflue/cargo-arc"
 homepage = "https://github.com/seflue/cargo-arc"
+# `include` overrides .gitignore, so the bundles the release recipes write to
+# the ignored js/dist ship. The JS sources and package.json (Bun version) let a
+# packager delete js/dist and rebuild it.
+include = [
+  "/src/**/*.rs",
+  "/build.rs",
+  "/js/*.js",
+  "!/js/*.test.js",
+  "!/js/test_support.js",
+  "/js/dist/*.js",
+  "/package.json",
+  "/README.md",
+  "/CHANGELOG.md",
+  "/LICENSE-APACHE",
+  "/LICENSE-MIT",
+]
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }

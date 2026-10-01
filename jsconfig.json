@@ -9,5 +9,5 @@
     "typeRoots": []
   },
   "include": ["js/**/*.js", "js/globals.d.ts"],
-  "exclude": ["js/**/*.test.js"]
+  "exclude": ["js/**/*.test.js", "js/dist"]
 }
