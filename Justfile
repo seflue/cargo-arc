@@ -11,7 +11,7 @@ test-rust:
     cargo test
 
 test-js:
-    bun test
+    bun test ./js ./editors/vscode
 
 # Rust + JS
 test: test-rust test-js
