@@ -1,6 +1,3 @@
-// @module Follow
-// @deps
-// @config
 // follow.js - Receives the service's focus and follow events and applies a
 // focus to the page while following is on.
 
@@ -95,10 +92,6 @@ function connectEventSource(handler) {
   }
 }
 
-// The browser global exposing this module's API.
 const Follow = { createFollow, connectEventSource };
 
-// CommonJS export for tests (Node/Bun)
-if (typeof module !== 'undefined') {
-  module.exports = { createFollow, connectEventSource, Follow };
-}
+export { createFollow, connectEventSource, Follow };

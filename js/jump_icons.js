@@ -1,6 +1,6 @@
-// @module JumpIcons
-// @deps DomAdapter, JumpSymbol
-// @config
+import { DomAdapter } from './dom_adapter.js';
+import { JumpSymbol } from './jump_symbol.js';
+
 // jump_icons.js - Builds, positions, and times out the jump popover shown
 // next to a hovered node. The `#jump-icon` symbol it draws the chips'
 // popover next to is defined in `jump_symbol.js`, shared with the sidebar
@@ -182,10 +182,6 @@ function createJumpIcons({
   return { show, scheduleHide, cancelHide, hide };
 }
 
-// The browser global exposing this module's API.
 const JumpIcons = { createJumpIcons };
 
-// CommonJS export for tests (Node/Bun)
-if (typeof module !== 'undefined') {
-  module.exports = { createJumpIcons, JumpIcons };
-}
+export { createJumpIcons, JumpIcons };

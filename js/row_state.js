@@ -1,6 +1,3 @@
-// @module RowState
-// @deps
-// @config
 // row_state.js - Transition table for a tangle sidebar edge row's two bits
 // (expanded/collapsed, pinned/unpinned). Pure lookup, no state of its own;
 // AppState reads a row's current state from expandedRows + the pin slot,
@@ -55,7 +52,4 @@ const RowState = {
   },
 };
 
-// CommonJS export for tests (Node/Bun)
-if (typeof module !== 'undefined') {
-  module.exports = { RowState };
-}
+export { RowState };

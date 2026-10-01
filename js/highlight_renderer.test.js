@@ -38,19 +38,10 @@ Object.assign(globalThis.STATIC_DATA.classes, {
 });
 
 import { ArcLogic } from './arc_logic.js';
-
-global.ArcLogic = ArcLogic;
-
-import { Selectors } from './selectors.js';
-
-global.Selectors = Selectors;
-
-import { LayerManager } from './layer_manager.js';
-
-global.LayerManager = LayerManager;
-
 import { createFakeElement, createMockDomAdapter } from './dom_adapter.js';
 import { HighlightRenderer } from './highlight_renderer.js';
+import { LayerManager } from './layer_manager.js';
+import { Selectors } from './selectors.js';
 
 // Helper: create a minimal mock staticData for renderer tests
 function createRendererStaticData(nodeIds, arcData) {

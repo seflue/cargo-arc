@@ -1,6 +1,3 @@
-// @module HotspotLayout
-// @deps
-// @config
 // hotspot_layout.js - The window-sized layout for the hotspot map: the
 // viewBox the root SVG fills, the toolbar and sidebar rects sized to the
 // window, and the square area left over for the packed circles. `hotspot_
@@ -115,7 +112,6 @@ function apply({ svg, toolbarFo, sidebarFo }, layout) {
   }
 }
 
-// The browser global exposing this module's API.
 const HotspotLayout = {
   computeLayout,
   sidebarWidthFor,
@@ -124,14 +120,11 @@ const HotspotLayout = {
   MIN_MAP_AREA_SIZE,
 };
 
-// CommonJS export for tests (Node/Bun)
-if (typeof module !== 'undefined') {
-  module.exports = {
-    computeLayout,
-    sidebarWidthFor,
-    sidebarHeightFor,
-    apply,
-    MIN_MAP_AREA_SIZE,
-    HotspotLayout,
-  };
-}
+export {
+  computeLayout,
+  sidebarWidthFor,
+  sidebarHeightFor,
+  apply,
+  MIN_MAP_AREA_SIZE,
+  HotspotLayout,
+};

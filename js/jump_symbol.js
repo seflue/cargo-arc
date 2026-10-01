@@ -1,6 +1,5 @@
-// @module JumpSymbol
-// @deps DomAdapter
-// @config
+import { DomAdapter } from './dom_adapter.js';
+
 // jump_symbol.js - Defines the shared `#jump-icon` `<symbol>`: a box with an
 // arrow pointing out of its top-right corner. The sidebar rows
 // (`js/sidebar.js`), the arc page's popover (`js/jump_icons.js`) and the
@@ -29,10 +28,6 @@ function defineJumpSymbol(defsHost) {
   defsHost.appendChild(defs);
 }
 
-// The browser global exposing this module's API.
 const JumpSymbol = { defineJumpSymbol };
 
-// CommonJS export for tests (Node/Bun)
-if (typeof module !== 'undefined') {
-  module.exports = { defineJumpSymbol, JumpSymbol };
-}
+export { defineJumpSymbol, JumpSymbol };

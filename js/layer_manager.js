@@ -1,6 +1,3 @@
-// @module LayerManager
-// @deps
-// @config
 const LAYER_TABLE = [
   {
     check: (el, cls) =>
@@ -89,7 +86,4 @@ const LayerManager = {
   },
 };
 
-// Export for Bun/Node
-if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { LayerManager };
-}
+export { LayerManager };

@@ -1,6 +1,9 @@
-import { describe, expect, mock, test } from 'bun:test';
-import { createFakeElement } from './dom_adapter.js';
+import { afterAll, describe, expect, mock, test } from 'bun:test';
+import { createFakeElement, DomAdapter } from './dom_adapter.js';
+import { restoreAll, substitute } from './test_support.js';
 import { bootstrapControls, createTheme } from './theme.js';
+
+afterAll(restoreAll);
 
 const THEMES = {
   light: [{ name: 'latte', label: 'Latte' }],
@@ -219,7 +222,7 @@ describe('bootstrapControls', () => {
       'theme-dark': createFakeSelect(),
     };
     const store = new Map();
-    global.DomAdapter = { getElementById: (id) => elements[id] ?? null };
+    substitute(DomAdapter, { getElementById: (id) => elements[id] ?? null });
     global.document = {
       documentElement: { dataset: {} },
       createElement: (tag) => createFakeElement(tag),

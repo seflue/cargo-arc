@@ -1,6 +1,3 @@
-// @module Jump
-// @deps
-// @config
 // jump.js - Requests a jump target and reports the outcome via a callback.
 
 /** Shown when the service answers 404: the id belongs to an earlier layout. */
@@ -39,10 +36,6 @@ function createJump(request, showMessage) {
   };
 }
 
-// The browser global exposing this module's API.
 const Jump = { createJump, STALE_MESSAGE };
 
-// CommonJS export for tests (Node/Bun)
-if (typeof module !== 'undefined') {
-  module.exports = { createJump, STALE_MESSAGE, Jump };
-}
+export { createJump, STALE_MESSAGE, Jump };

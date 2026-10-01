@@ -1,6 +1,6 @@
 # ADR-014: Discover JS Modules at Build Time
 
-- **Status:** Active
+- **Status:** Superseded: `js/` uses ES module imports, and `build.rs` bundles them with Bun
 - **Decided:** 2026-01-30
 
 ## Context

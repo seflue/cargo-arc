@@ -1,6 +1,3 @@
-// @module SwitchToggles
-// @deps
-// @config
 // switch_toggles.js - The two toolbar buttons that switch an analysis input
 // (external crates, test code). A click asks the service for the opposite
 // state; the button stays busy until the service reports a new page (the
@@ -65,10 +62,6 @@ function postCommand(line) {
   return fetch('command', { method: 'POST', body: line });
 }
 
-// The browser global exposing this module's API.
 const SwitchToggles = { createSwitchToggles, postCommand };
 
-// CommonJS export for tests (Node/Bun)
-if (typeof module !== 'undefined') {
-  module.exports = { createSwitchToggles, postCommand, SwitchToggles };
-}
+export { createSwitchToggles, postCommand, SwitchToggles };

@@ -1,8 +1,6 @@
-// @module DomAdapter
-// @deps Selectors
-// @config
+import { Selectors } from './selectors.js';
+
 // dom_adapter.js - DOM abstraction layer for SVG manipulation
-// Selectors is loaded before this file (see render.rs load order)
 
 function createFakeElement(tagName) {
   const attrs = new Map();
@@ -193,7 +191,4 @@ const DomAdapter = {
   ...createConvenienceMethods(),
 };
 
-// Export for Bun/Node
-if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { DomAdapter, createMockDomAdapter, createFakeElement };
-}
+export { DomAdapter, createMockDomAdapter, createFakeElement };

@@ -1,6 +1,5 @@
-// @module HotspotSelection
-// @deps HotspotZoom
-// @config
+import { HotspotZoom } from './hotspot_zoom.js';
+
 // hotspot_selection.js - What a click on the map does, the leaf node key for
 // a workspace-relative file (an editor follow event), and where such a file
 // resolves to when it arrives from the arc page's own toolbar link.
@@ -58,15 +57,6 @@ function placeForFile(nodes, file) {
   return leafKey === null ? null : { type: 'focus', key: leafKey };
 }
 
-// The browser global exposing this module's API.
 const HotspotSelection = { leafKeyForFile, clickAction, placeForFile };
 
-// CommonJS export for tests (Node/Bun)
-if (typeof module !== 'undefined') {
-  module.exports = {
-    leafKeyForFile,
-    clickAction,
-    placeForFile,
-    HotspotSelection,
-  };
-}
+export { leafKeyForFile, clickAction, placeForFile, HotspotSelection };

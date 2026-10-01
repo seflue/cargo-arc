@@ -1,6 +1,3 @@
-// @module PathFit
-// @deps
-// @config
 // path_fit.js - Shortens a path in a span until it fits: the full path
 // stays in the span's `data-full`, the visible text loses segments before
 // the last part, replaced by `…`. Shared by the arc sidebar and the map's.
@@ -57,10 +54,6 @@ function fitPath(span, separator, overflows) {
   }
 }
 
-// The browser global exposing this module's API.
 const PathFit = { elidePath, resetPath, fitPath };
 
-// CommonJS export for tests (Node/Bun)
-if (typeof module !== 'undefined') {
-  module.exports = { elidePath, resetPath, fitPath, PathFit };
-}
+export { elidePath, resetPath, fitPath, PathFit };

@@ -1,6 +1,3 @@
-// @module CanvasSize
-// @deps
-// @config
 // canvas_size.js - The arc page's root SVG size while its script runs, and
 // the visible page area it and the sidebar are sized against. The rendered
 // size fits the diagram alone, which is right for an SVG shown without the
@@ -42,10 +39,6 @@ function svgWidth(contentWidth, visibleWidth) {
   return Math.max(contentWidth, visibleWidth);
 }
 
-// The browser global exposing this module's API.
 const CanvasSize = { visibleArea, svgHeight, svgWidth };
 
-// CommonJS export for tests (Node/Bun)
-if (typeof module !== 'undefined') {
-  module.exports = { CanvasSize };
-}
+export { CanvasSize };

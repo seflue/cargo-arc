@@ -94,7 +94,7 @@ The arc diagram layout is inspired by Martin Wattenberg's [Arc Diagrams: Visuali
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for project structure and architecture decision records.
 
-Requires [Just](https://github.com/casey/just) as task runner.
+Requires [Just](https://github.com/casey/just) and [Bun](https://bun.sh).
 
 ```bash
 just build

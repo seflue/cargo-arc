@@ -1,6 +1,3 @@
-// @module HotspotBars
-// @deps
-// @config
 // hotspot_bars.js - The sidebar's ranked-bars view of the top-N hotspots:
 // the same list `render::hotspots` already drew as `<li>` rows, reshaped
 // into bars. Bar length is the hotspot's own share of the highest score in
@@ -32,10 +29,6 @@ function hotspotBars(nodes, hotspots) {
   }));
 }
 
-// The browser global exposing this module's API.
 const HotspotBars = { hotspotBars };
 
-// CommonJS export for tests (Node/Bun)
-if (typeof module !== 'undefined') {
-  module.exports = { hotspotBars, HotspotBars };
-}
+export { hotspotBars, HotspotBars };

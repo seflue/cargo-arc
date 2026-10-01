@@ -1,12 +1,10 @@
-import { describe, expect, test } from 'bun:test';
-import { createFakeElement } from './dom_adapter.js';
-import { HotspotLabels } from './hotspot_labels.js';
-import { JumpSymbol } from './jump_symbol.js';
-
-global.HotspotLabels = HotspotLabels;
-global.JumpSymbol = JumpSymbol;
-
+import { afterAll, describe, expect, test } from 'bun:test';
+import { createFakeElement, DomAdapter } from './dom_adapter.js';
 import { createHotspotJumpIcon, glyphPosition } from './hotspot_jump_icon.js';
+import { HotspotLabels } from './hotspot_labels.js';
+import { restoreAll, substitute } from './test_support.js';
+
+afterAll(restoreAll);
 
 // Fake elements support the subset of the DOM createHotspotJumpIcon touches,
 // plus addEventListener/_fire so tests can trigger the click handler it
@@ -24,9 +22,9 @@ function createFakeSvgElement(tag) {
   return el;
 }
 
-global.DomAdapter = {
+substitute(DomAdapter, {
   createSvgElement: (tag) => createFakeSvgElement(tag),
-};
+});
 
 function makeHotspotJumpIcon(overrides = {}) {
   const layer = createFakeSvgElement('g');

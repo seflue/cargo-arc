@@ -1,21 +1,18 @@
-import { describe, expect, test } from 'bun:test';
-import { createFakeElement, createMockDomAdapter } from './dom_adapter.js';
+import { afterAll, describe, expect, test } from 'bun:test';
+import {
+  createFakeElement,
+  createMockDomAdapter,
+  DomAdapter,
+} from './dom_adapter.js';
 import { Follow } from './follow.js';
-import { HotspotBars } from './hotspot_bars.js';
-import { HotspotHover } from './hotspot_hover.js';
 import { HotspotJumpIcon } from './hotspot_jump_icon.js';
 import { HotspotLabels } from './hotspot_labels.js';
 import { HotspotLayout } from './hotspot_layout.js';
-import { HotspotSelection } from './hotspot_selection.js';
-import { HotspotTree } from './hotspot_tree.js';
 import { HotspotZoom } from './hotspot_zoom.js';
-import { Jump } from './jump.js';
-import { JumpSymbol } from './jump_symbol.js';
-import { OnSaveToggle } from './on_save_toggle.js';
 import { PageLink } from './page_link.js';
-import { PathFit } from './path_fit.js';
-import { TextMeasure } from './text_metrics.js';
-import { Theme } from './theme.js';
+import { restore, restoreAll, substitute } from './test_support.js';
+
+afterAll(restoreAll);
 
 // A <select> stub with enough behavior for bootstrapHotspotPage: appendChild
 // (from createFakeElement) plus a no-op addEventListener.
@@ -153,14 +150,14 @@ const elements = {
 // them on a real page. Set them up before requiring it, so its own
 // module-scope bootstrap (guarded on `document`) runs against these stubs
 // rather than whatever an earlier test file left behind.
-global.DomAdapter = {
+substitute(DomAdapter, {
   ...dom,
   getElementById: (id) => elements[id] ?? dom.getElementById(id),
   // HotspotJumpIcon's glyph adds its own click listener (dom_adapter.js's
   // plain createFakeElement does not carry one), the same fixture pattern
   // jump_icons.test.js uses for its own fake SVG elements.
   createSvgElement: (tag) => createFakeInteractiveElement(tag),
-};
+});
 global.document = {
   documentElement: { dataset: {} },
   createElement: (tag) => createFakeElement(tag),
@@ -298,22 +295,6 @@ global.STATIC_DATA = {
     },
   },
 };
-global.Theme = Theme;
-global.HotspotTree = HotspotTree;
-global.HotspotZoom = HotspotZoom;
-global.HotspotLabels = HotspotLabels;
-global.HotspotHover = HotspotHover;
-global.TextMeasure = TextMeasure;
-global.HotspotSelection = HotspotSelection;
-global.HotspotBars = HotspotBars;
-global.PageLink = PageLink;
-global.Follow = Follow;
-global.OnSaveToggle = OnSaveToggle;
-global.HotspotJumpIcon = HotspotJumpIcon;
-global.JumpSymbol = JumpSymbol;
-global.HotspotLayout = HotspotLayout;
-global.PathFit = PathFit;
-global.Jump = Jump;
 // A click on a jump chip would call this; no test here exercises a click.
 global.fetch = () => Promise.resolve({ ok: true });
 
@@ -1057,13 +1038,12 @@ function onServedPage(body) {
   elements['follow-toggle'] = followEl;
   elements['on-save-toggle'] = onSaveEl;
   let handler = null;
-  const realFollow = global.Follow;
-  global.Follow = {
+  substitute(Follow, {
     ...Follow,
     connectEventSource: (h) => {
       handler = h;
     },
-  };
+  });
   const stored = new Map();
   global.sessionStorage = {
     getItem: (key) => stored.get(key) ?? null,
@@ -1082,7 +1062,7 @@ function onServedPage(body) {
   } finally {
     delete elements['follow-toggle'];
     delete elements['on-save-toggle'];
-    global.Follow = realFollow;
+    restore(Follow);
     global.location = { search: '' };
     delete global.sessionStorage;
     showListEl._fire('click');

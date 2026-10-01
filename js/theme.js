@@ -1,6 +1,5 @@
-// @module Theme
-// @deps DomAdapter
-// @config
+import { DomAdapter } from './dom_adapter.js';
+
 // theme.js - Chooses the theme the page shows: a mode (light, dark or the
 // system's) and a theme per mode, from the editor, the root attributes a
 // pinned theme left, the remembered choices and the system setting.
@@ -234,15 +233,6 @@ function bootstrapControls() {
   return themeControl;
 }
 
-// The browser global exposing this module's API.
 const Theme = { createTheme, localStorageAdapter, bootstrapControls };
 
-// CommonJS export for tests (Node/Bun)
-if (typeof module !== 'undefined') {
-  module.exports = {
-    createTheme,
-    localStorageAdapter,
-    bootstrapControls,
-    Theme,
-  };
-}
+export { createTheme, localStorageAdapter, bootstrapControls, Theme };

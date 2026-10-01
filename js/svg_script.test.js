@@ -1,26 +1,14 @@
-import { afterEach, describe, expect, test } from 'bun:test';
-import { AppState } from './app_state.js';
+import { afterAll, afterEach, describe, expect, test } from 'bun:test';
 import { ArcLogic } from './arc_logic.js';
-import { CanvasSize } from './canvas_size.js';
-import { DerivedState } from './derived_state.js';
-import { createFakeElement, createMockDomAdapter } from './dom_adapter.js';
-import { Follow } from './follow.js';
-import { HighlightRenderer } from './highlight_renderer.js';
-import { Jump } from './jump.js';
-import { JumpIcons } from './jump_icons.js';
-import { JumpSymbol } from './jump_symbol.js';
-import { LayerManager } from './layer_manager.js';
-import { OnSaveToggle } from './on_save_toggle.js';
-import { PageLink } from './page_link.js';
-import { SearchLogic } from './search.js';
-import { Selectors } from './selectors.js';
+import {
+  createFakeElement,
+  createMockDomAdapter,
+  DomAdapter,
+} from './dom_adapter.js';
 import { SidebarLogic } from './sidebar.js';
-import { StaticData } from './static_data.js';
-import { SwitchToggles } from './switch_toggles.js';
-import { Theme } from './theme.js';
-import { TreeLogic } from './tree_logic.js';
-import { ViewSnapshot } from './view_snapshot.js';
-import { VirtualEdgeLogic } from './virtual_edge_logic.js';
+import { restoreAll, substitute } from './test_support.js';
+
+afterAll(restoreAll);
 
 // svg_script.js's browser-only init only runs once `document` exists
 // (below); a `document` another test file's own fixture left on `global`
@@ -415,7 +403,7 @@ function loadSvgPage({
   const scrollCalls = [];
   const windowListeners = [];
 
-  global.DomAdapter = dom;
+  substitute(DomAdapter, dom);
   global.document = {
     documentElement: { dataset: {}, scrollHeight: 2000, clientWidth: 1000 },
     createElement: (tag) => createFakeElement(tag),
@@ -444,27 +432,6 @@ function loadSvgPage({
 
   global.STATIC_DATA = makeSvgPageStaticData();
   if (expandLevel !== undefined) global.STATIC_DATA.expandLevel = expandLevel;
-  global.ArcLogic = ArcLogic;
-  global.StaticData = StaticData;
-  global.AppState = AppState;
-  global.Selectors = Selectors;
-  global.LayerManager = LayerManager;
-  global.TreeLogic = TreeLogic;
-  global.DerivedState = DerivedState;
-  global.HighlightRenderer = HighlightRenderer;
-  global.VirtualEdgeLogic = VirtualEdgeLogic;
-  global.SidebarLogic = SidebarLogic;
-  global.SearchLogic = SearchLogic;
-  global.Jump = Jump;
-  global.JumpIcons = JumpIcons;
-  global.JumpSymbol = JumpSymbol;
-  global.Follow = Follow;
-  global.Theme = Theme;
-  global.SwitchToggles = SwitchToggles;
-  global.OnSaveToggle = OnSaveToggle;
-  global.ViewSnapshot = ViewSnapshot;
-  global.PageLink = PageLink;
-  global.CanvasSize = CanvasSize;
 
   // svg_script.js's own runtime placeholders, normally substituted by
   // render.rs before the page ships.
@@ -725,7 +692,7 @@ function loadArcVisibilityPage({
     sel === '.sidebar-root' ? sidebarContent : null;
   dom._registerElement('relation-sidebar', sidebarEl);
 
-  global.DomAdapter = dom;
+  substitute(DomAdapter, dom);
   global.document = {
     documentElement: { dataset: {}, scrollHeight: 2000, clientWidth: 1000 },
     createElement: (tag) => createFakeElement(tag),
@@ -751,27 +718,6 @@ function loadArcVisibilityPage({
   global.fetch = () => Promise.resolve({ ok: true });
 
   global.STATIC_DATA = staticData;
-  global.ArcLogic = ArcLogic;
-  global.StaticData = StaticData;
-  global.AppState = AppState;
-  global.Selectors = Selectors;
-  global.LayerManager = LayerManager;
-  global.TreeLogic = TreeLogic;
-  global.DerivedState = DerivedState;
-  global.HighlightRenderer = HighlightRenderer;
-  global.VirtualEdgeLogic = VirtualEdgeLogic;
-  global.SidebarLogic = SidebarLogic;
-  global.SearchLogic = SearchLogic;
-  global.Jump = Jump;
-  global.JumpIcons = JumpIcons;
-  global.JumpSymbol = JumpSymbol;
-  global.Follow = Follow;
-  global.Theme = Theme;
-  global.SwitchToggles = SwitchToggles;
-  global.OnSaveToggle = OnSaveToggle;
-  global.ViewSnapshot = ViewSnapshot;
-  global.PageLink = PageLink;
-  global.CanvasSize = CanvasSize;
 
   global.__ROW_HEIGHT__ = 24;
   global.__MARGIN__ = 20;

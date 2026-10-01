@@ -1,6 +1,3 @@
-// @module ArcLogic
-// @deps
-// @config
 // arc_logic.js - Pure geometry functions for arcs and arrows
 // No DOM dependencies
 
@@ -213,7 +210,4 @@ const ArcLogic = {
   },
 };
 
-// CommonJS export for tests (Node/Bun)
-if (typeof module !== 'undefined') {
-  module.exports = { ArcLogic };
-}
+export { ArcLogic };

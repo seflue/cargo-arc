@@ -18,12 +18,8 @@ Object.assign(globalThis.STATIC_DATA.classes, {
   cycleArrow: 'cycle-arrow',
 });
 
-import { Selectors } from './selectors.js';
-
-// Set Selectors globally (simulating browser environment where it's loaded before dom_adapter.js)
-global.Selectors = Selectors;
-
 import { createFakeElement, createMockDomAdapter } from './dom_adapter.js';
+import { Selectors } from './selectors.js';
 
 describe('createFakeElement', () => {
   test('setAttribute/getAttribute roundtrip', () => {

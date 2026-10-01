@@ -1,6 +1,7 @@
-// @module SearchLogic
-// @deps StaticData, DomAdapter, AppState
-// @config
+import { AppState } from './app_state.js';
+import { DomAdapter } from './dom_adapter.js';
+import { StaticData } from './static_data.js';
+
 // search.js - Substring search with scope selector and highlight dimming
 
 const SearchLogic = {
@@ -433,7 +434,4 @@ const SearchLogic = {
   },
 };
 
-// CommonJS export for tests (Node/Bun)
-if (typeof module !== 'undefined') {
-  module.exports = { SearchLogic };
-}
+export { SearchLogic };

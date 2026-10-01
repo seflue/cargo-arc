@@ -1,6 +1,3 @@
-// @module Selectors
-// @deps
-// @config
 /**
  * Selectors - CSS selector generators for SVG elements
  * Pure functions, no DOM access - testable in isolation
@@ -50,7 +47,4 @@ const Selectors = {
   },
 };
 
-// Export for Bun/Node
-if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { Selectors };
-}
+export { Selectors };

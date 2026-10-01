@@ -1,4 +1,10 @@
-import { beforeEach, describe, expect, test } from 'bun:test';
+import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
+import { AppState } from './app_state.js';
+import { DomAdapter } from './dom_adapter.js';
+import { StaticData } from './static_data.js';
+import { restoreAll, substitute } from './test_support.js';
+
+afterAll(restoreAll);
 
 // Minimal STATIC_DATA.classes mock
 if (!globalThis.STATIC_DATA) globalThis.STATIC_DATA = {};
@@ -28,7 +34,7 @@ Object.assign(globalThis.STATIC_DATA.classes, {
 });
 
 // Minimal DomAdapter mock
-globalThis.DomAdapter = {
+substitute(DomAdapter, {
   querySelector: () => null,
   querySelectorAll: () => [],
   getElementById: () => null,
@@ -37,20 +43,20 @@ globalThis.DomAdapter = {
   getVisibleArc: () => null,
   getVisibleArrows: () => [],
   getLabelGroup: () => null,
-};
+});
 
 // Minimal StaticData mock
-globalThis.StaticData = {
+substitute(StaticData, {
   getAllNodeIds: () => [],
   getNode: () => null,
   getAllArcIds: () => [],
   getArc: () => null,
-};
+});
 
 // Minimal AppState mock
-globalThis.AppState = {
+substitute(AppState, {
   isCollapsed: () => false,
-};
+});
 
 const { SearchLogic } = require('./search.js');
 

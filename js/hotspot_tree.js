@@ -1,6 +1,3 @@
-// @module HotspotTree
-// @deps
-// @config
 // hotspot_tree.js - Derives the hotspot map's hierarchy from STATIC_DATA's
 // flat node map (each node carries its own parent key, never a child list).
 // Pure: reads only the `nodes` object it is given, never STATIC_DATA or the
@@ -81,16 +78,6 @@ function preorderKeys(nodes) {
   return order;
 }
 
-// The browser global exposing this module's API.
 const HotspotTree = { rootKey, childrenOf, ancestorPath, preorderKeys };
 
-// CommonJS export for tests (Node/Bun)
-if (typeof module !== 'undefined') {
-  module.exports = {
-    rootKey,
-    childrenOf,
-    ancestorPath,
-    preorderKeys,
-    HotspotTree,
-  };
-}
+export { rootKey, childrenOf, ancestorPath, preorderKeys, HotspotTree };

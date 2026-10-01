@@ -17,7 +17,7 @@ src/
 ├── layout.rs    # Tree layout algorithm
 ├── render.rs     # SVG generation
 ├── volatility.rs  # Git history volatility analysis
-├── js_registry.rs # JS dependency validation (build.rs)
+├── js_bundle.rs   # Page scripts bundled from js/ (build.rs)
 ├── cli.rs         # CLI interface (clap)
 ├── lib.rs       # Public API exports
 └── main.rs      # Entry point
@@ -50,7 +50,7 @@ What that means for a reader of the diagram is in [ARC_DIAGRAM.md](ARC_DIAGRAM.m
 | 011 | [Separate State and Derived Data in Frontend](adr/011-state-derived-separation.md) | Active | 2026-01-29 |
 | 012 | [Rebuild DOM on Collapse Instead of Hide/Show](adr/012-dom-rebuild-on-collapse-expand.md) | Active | 2026-01-29 |
 | 013 | [Use syn as Primary Analysis Backend](adr/013-syn-as-primary-analysis-backend.md) | Active | 2026-01-30 |
-| 014 | [Discover JS Modules at Build Time](adr/014-build-time-js-module-registry.md) | Active | 2026-01-30 |
+| 014 | [Discover JS Modules at Build Time](adr/014-build-time-js-module-registry.md) | Superseded | 2026-01-30 |
 | 015 | [Use foreignObject HTML for SVG Panels](adr/015-foreign-object-html-for-panels.md) | Active | 2026-01-31 |
 | 016 | [Replace Tooltip with Persistent Sidebar](adr/016-sidebar-replaces-tooltip.md) | Active | 2026-01-31 |
 | 017 | [SCC Condensation for Deterministic Cycle Resolution](adr/017-scc-condensation-for-cycle-resolution.md) | Active | 2026-02-11 |

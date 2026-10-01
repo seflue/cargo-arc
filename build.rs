@@ -1,45 +1,49 @@
-include!("src/js_registry/parse.rs");
+//! Bundles the page scripts in `js/` into `OUT_DIR`.
+//!
+//! A published crate ships the bundles in `js/dist/` (the release recipes
+//! write them); a git checkout has none and builds them with Bun.
+
+use std::io::ErrorKind;
+use std::path::Path;
+use std::process::Command;
+
+const ENTRIES: [&str; 2] = ["svg_script", "hotspot_script"];
 
 fn main() {
-    let src_dir = std::path::Path::new("js");
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=js");
 
-    // 1. Discover: src/*.js (not *.test.js)
-    let mut modules = Vec::new();
-    let mut sources = Vec::new();
-    for entry in std::fs::read_dir(src_dir).expect("src/ directory") {
-        let entry = entry.expect("dir entry");
-        let file_name = entry.file_name().to_string_lossy().to_string();
-        if !is_module_file(&file_name) {
-            continue;
+    let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR");
+    let out_dir = Path::new(&out_dir);
+    let packaged = Path::new("js/dist");
+
+    if packaged.is_dir() {
+        for entry in ENTRIES {
+            let file = format!("{entry}.js");
+            std::fs::copy(packaged.join(&file), out_dir.join(&file))
+                .unwrap_or_else(|e| panic!("cannot copy js/dist/{file}: {e}"));
         }
-        let content = std::fs::read_to_string(entry.path()).expect("read JS file");
-        modules.push(parse_js_annotations(&content, &file_name));
-        sources.push(content);
+        return;
     }
 
-    // 2. Validate: @deps match actual source references
-    let source_refs: Vec<&str> = sources.iter().map(std::string::String::as_str).collect();
-    validate_source_deps(&modules, &source_refs);
-
-    // 3. Topo sort
-    let sorted = topo_sort(&modules);
-
-    // 3. Generate
-    let code = generate_modules_rs(&modules, &sorted);
-
-    // 4. Write to OUT_DIR
-    let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR");
-    std::fs::write(std::path::Path::new(&out_dir).join("js_modules.rs"), code)
-        .expect("write js_modules.rs");
-
-    // 5. Rerun triggers
-    println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=src/js_registry.rs");
-    for entry in std::fs::read_dir(src_dir).expect("src/") {
-        let entry = entry.expect("entry");
-        let name = entry.file_name().to_string_lossy().to_string();
-        if is_module_file(&name) {
-            println!("cargo:rerun-if-changed=js/{name}");
-        }
+    let output = Command::new("bun")
+        .arg("build")
+        .args(ENTRIES.map(|entry| format!("js/{entry}.js")))
+        .arg("--format=iife")
+        .arg("--outdir")
+        .arg(out_dir)
+        .output();
+    match output {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => panic!(
+            "bun build failed ({}):\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ),
+        Err(e) if e.kind() == ErrorKind::NotFound => panic!(
+            "building cargo-arc from a git checkout needs Bun (https://bun.sh) \
+             to bundle js/; a release from crates.io ships the bundles"
+        ),
+        Err(e) => panic!("cannot run bun: {e}"),
     }
 }

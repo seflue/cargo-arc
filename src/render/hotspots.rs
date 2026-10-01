@@ -559,7 +559,7 @@ pub(crate) fn render(
     svg.push_str("  </g>\n");
     svg.push_str(&render_toolbar(width, config));
     svg.push_str(&sidebar);
-    svg.push_str(&script_element(static_data_js, "hotspot_script", config));
+    svg.push_str(&script_element(&static_data_js, "hotspot_script", config));
     svg.push_str("</svg>\n");
     svg
 }
@@ -871,8 +871,8 @@ mod tests {
     #[test]
     fn the_page_loads_the_hotspot_script_bundle() {
         let (_, _, svg) = rendered_default();
-        assert!(svg.contains("// @module HotspotScript"));
-        assert!(svg.contains("// @module Theme"));
+        assert!(svg.contains("function bootstrapHotspotPage("));
+        assert!(svg.contains("function createTheme("));
     }
 
     /// `hotspot_jump_icon.js` draws its own copy of the `#jump-icon` symbol,
@@ -881,7 +881,6 @@ mod tests {
     #[test]
     fn the_page_does_not_ship_the_jump_popover_chip_code() {
         let (_, _, svg) = rendered_default();
-        assert!(!svg.contains("// @module JumpIcons"), "{svg}");
         assert!(!svg.contains("createJumpIcons"), "{svg}");
         assert!(!svg.contains("CHIP_LABELS"), "{svg}");
     }
