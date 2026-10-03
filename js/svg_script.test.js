@@ -266,6 +266,7 @@ function makeSvgPageStaticData() {
       upwardArrow: 'upward-arrow',
       hasHighlight: 'has-highlight',
       hasPinned: 'has-pinned',
+      scrolling: 'scrolling',
       selectedCrate: 'selectedCrate',
       selectedModule: 'selectedModule',
       selectedExternal: 'selectedExternal',
@@ -345,7 +346,8 @@ function makeSvgPageStaticData() {
  * `toolbarHeight` is the toolbar's measured height; without it the page has
  * no toolbar. `expandLevel` makes init relayout the diagram. `overlays` is
  * the `__OVERLAYS__` placeholder: `'page'` has no `toolbar-fo` frame, and
- * `windowListeners` lists the event names the init registered on `window`.
+ * `windowListeners` lists the `{ type, handler }` pairs the init registered
+ * on `window`.
  * @param {{ search?: string, sessionStorageView?: object, toolbarHeight?: number, expandLevel?: number, overlays?: 'svg' | 'page' }} [options]
  */
 function loadSvgPage({
@@ -410,7 +412,8 @@ function loadSvgPage({
   };
   global.window = {
     matchMedia: () => ({ matches: false, addEventListener() {} }),
-    addEventListener: (type) => windowListeners.push(type),
+    addEventListener: (type, handler) =>
+      windowListeners.push({ type, handler }),
     innerWidth: 1000,
     innerHeight: 800,
     scrollX: 0,
@@ -527,17 +530,41 @@ describe("`?select=` on the page host (svg_script.js's init)", () => {
 describe("the scroll listener on each overlay host (svg_script.js's init)", () => {
   afterEach(resetSidebarHooks);
 
-  test('the SVG host follows the scroll', () => {
-    const { windowListeners } = loadSvgPage({ overlays: 'svg' });
+  /** Calls every scroll listener the init registered. */
+  const scroll = (windowListeners) => {
+    for (const { type, handler } of windowListeners)
+      if (type === 'scroll') handler();
+  };
 
-    expect(windowListeners).toContain('scroll');
+  test('the SVG host follows the scroll', () => {
+    const { windowListeners } = loadSvgPage({
+      overlays: 'svg',
+      toolbarHeight: 40,
+    });
+    const toolbarFo = DomAdapter.getElementById('toolbar-fo');
+    toolbarFo.setAttribute('y', 'before-scroll');
+
+    scroll(windowListeners);
+
+    expect(toolbarFo.getAttribute('y')).not.toBe('before-scroll');
   });
 
-  test('the page host registers no scroll listener', () => {
+  test('the page host registers only the scroll state, no follower', () => {
     const { windowListeners } = loadSvgPage({ overlays: 'page' });
+    const types = windowListeners.map((l) => l.type);
 
-    expect(windowListeners).not.toContain('scroll');
-    expect(windowListeners).toContain('resize');
+    expect(types.filter((t) => t === 'scroll')).toHaveLength(1);
+    expect(types).toContain('resize');
+  });
+
+  test('a scroll marks the SVG as scrolling on both hosts', () => {
+    for (const overlays of /** @type {const} */ (['svg', 'page'])) {
+      const { windowListeners, svg } = loadSvgPage({ overlays });
+
+      scroll(windowListeners);
+
+      expect(svg.classList.contains('scrolling')).toBe(true);
+    }
   });
 });
 

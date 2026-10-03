@@ -131,9 +131,16 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
             &format!(".{}, .{}", c.direction.dep_arc, c.direction.cycle_arc),
             &[("pointer-events", "none")],
         ),
+        // Chromium rasterizes thousands of antialiased arcs on every repaint
+        // while scrolling, and drops segments of the thinnest ones. Firefox
+        // keeps antialiasing: render_styles restores it there.
         CssRule::class(
             c.direction.dep_arc,
-            &[("fill", "none"), ("stroke-width", draw.dep_width)],
+            &[
+                ("fill", "none"),
+                ("stroke-width", draw.dep_width),
+                ("shape-rendering", "optimizeSpeed"),
+            ],
         ),
         CssRule::new(
             &format!(".{}.{}", c.direction.dep_arc, c.direction.downward),
@@ -174,6 +181,12 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
                 ("pointer-events", "stroke"),
                 ("cursor", "pointer"),
             ],
+        ),
+        // Arcs passing under a resting cursor while the page scrolls would
+        // start a hover highlight each, which stalls scrolling in Chromium.
+        CssRule::new(
+            &format!("svg.{} .{}", c.relation.scrolling, c.direction.arc_hitarea),
+            &[("pointer-events", "none")],
         ),
         // Selection
         CssRule::class(
@@ -1736,6 +1749,13 @@ pub(super) fn render_styles() -> String {
     css.push_str("    @media (prefers-reduced-motion: no-preference) {\n");
     css.push_str("      .block-chevron { transition: transform 0.15s ease; }\n");
     css.push_str("    }\n");
+    // Only Firefox recognizes -moz-appearance; it draws the arcs antialiased
+    // and fast, so it keeps what the arc base rule turns off.
+    let _ = writeln!(
+        css,
+        "    @supports (-moz-appearance: none) {{ .{} {{ shape-rendering: auto; }} }}",
+        CSS.direction.dep_arc
+    );
     css.push_str("  </style>\n");
     css
 }
@@ -1784,6 +1804,47 @@ mod tests {
             media_query < pinned,
             "a pinned theme must follow the media query"
         );
+    }
+
+    /// Arcs draw without antialiasing except in Firefox, recognized by
+    /// `-moz-appearance`; the `@supports` block must follow the base rule to
+    /// win the tie in specificity.
+    #[test]
+    fn test_arcs_skip_antialiasing_outside_firefox() {
+        let css = render_styles();
+        let base = css
+            .find(&format!(
+                ".{} {{ fill: none; stroke-width: {}; shape-rendering: optimizeSpeed; }}",
+                CSS.direction.dep_arc, DRAWING.dep_width
+            ))
+            .expect("arc base rule turns antialiasing off");
+        let firefox = css
+            .find(&format!(
+                "@supports (-moz-appearance: none) {{ .{} {{ shape-rendering: auto; }} }}",
+                CSS.direction.dep_arc
+            ))
+            .expect("Firefox keeps antialiasing");
+        assert!(
+            base < firefox,
+            "the Firefox block must follow the base rule"
+        );
+    }
+
+    /// Arcs passing under a resting cursor while the page scrolls must not
+    /// trigger hover: the highlight it starts stalls Chromium's scrolling.
+    #[test]
+    fn test_hitareas_ignore_the_pointer_while_scrolling() {
+        let css = render_styles();
+        // Virtual hit areas carry the arc-hitarea class too.
+        let rule = format!(
+            "svg.{} .{} {{ pointer-events: none; }}",
+            CSS.relation.scrolling, CSS.direction.arc_hitarea
+        );
+        let hitarea = css
+            .find(&format!(".{} {{ fill: none;", CSS.direction.arc_hitarea))
+            .expect("hit-area base rule");
+        let scrolling = css.find(&rule).expect("hit areas off while scrolling");
+        assert!(hitarea < scrolling, "must follow the hit-area base rule");
     }
 
     /// Rules read their colours through `var(--arc-…)`, so the theme in
