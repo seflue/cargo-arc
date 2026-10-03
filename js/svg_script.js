@@ -10,6 +10,7 @@ import { JumpIcons } from './jump_icons.js';
 import { LayerManager } from './layer_manager.js';
 import { OnSaveToggle } from './on_save_toggle.js';
 import { PageLink } from './page_link.js';
+import { ScrollState } from './scroll_state.js';
 import { SearchLogic } from './search.js';
 import { Selectors } from './selectors.js';
 import { SidebarLogic } from './sidebar.js';
@@ -1517,6 +1518,17 @@ if (typeof document !== 'undefined') {
     }
 
     if (!PAGE_HOST) window.addEventListener('scroll', followScroll);
+    const scrollState = ScrollState.createScrollState({
+      setScrolling: (scrolling) => {
+        const classes = DomAdapter.getSvgRoot()?.classList;
+        if (scrolling) classes?.add(C.scrolling);
+        else classes?.remove(C.scrolling);
+      },
+      schedule: (fn, ms) => setTimeout(fn, ms),
+      cancel: (handle) =>
+        clearTimeout(/** @type {ReturnType<typeof setTimeout>} */ (handle)),
+    });
+    window.addEventListener('scroll', scrollState.onScroll, { passive: true });
     window.addEventListener('resize', () => {
       applyCanvasSize();
       updateToolbarPosition();

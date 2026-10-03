@@ -212,6 +212,8 @@ pub(super) struct RelationClasses {
     /// render in the cycle color. Absent, they fall back to dependency styling.
     /// Sits with the other root state classes ([`has_highlight`], [`has_pinned`]).
     pub cluster_mode_on: &'static str,
+    /// Root state class while the page scrolls, set by `js/scroll_state.js`.
+    pub scrolling: &'static str,
 }
 
 #[allow(dead_code)]
@@ -428,6 +430,7 @@ pub(super) static CSS: CssClassNames = CssClassNames {
         glow_cycle: "glow-cycle",
         has_pinned: "has-pinned",
         cluster_mode_on: "cluster-mode-on",
+        scrolling: "scrolling",
     },
     toolbar: ToolbarClasses {
         view_options: "view-options",

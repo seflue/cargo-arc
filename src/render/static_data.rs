@@ -505,6 +505,7 @@ fn generate_static_data(
         ("dimmed", CSS.relation.dimmed),
         ("hasHighlight", CSS.relation.has_highlight),
         ("hasPinned", CSS.relation.has_pinned),
+        ("scrolling", CSS.relation.scrolling),
         ("shadowPath", CSS.relation.shadow_path),
         ("glowIncoming", CSS.relation.glow_incoming),
         ("glowOutgoing", CSS.relation.glow_outgoing),
