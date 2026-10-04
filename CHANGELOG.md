@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Large diagrams no longer stutter when scrolling in Chromium, VS Code and RustRover.
+- Thin arcs no longer break into dashes there. Arcs are drawn without antialiasing outside Firefox.
+
 ## [0.6.1] - 2026-09-29
 
 ### Fixed
