@@ -75,6 +75,10 @@ hir = [
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
+# This lint wants `assert!(v.is_empty())` replaced by `assert_eq!`, which
+# for an empty Vec becomes `assert_eq!(v, [] as [PathBuf; 0])`. In tests,
+# the original is easier to read.
+assert_is_empty = "allow"
 
 [dev-dependencies]
 assert2 = "0.4"
