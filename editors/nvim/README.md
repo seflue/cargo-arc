@@ -11,16 +11,25 @@ Requires Neovim 0.12 and a `cargo-arc` binary that has the `ui` subcommand.
 
 ## Install
 
-Not distributed yet. Load it from this checkout, for example with lazy.nvim:
+With lazy.nvim:
 
 ```lua
-{
-  dir = '/path/to/cargo-arc/editors/nvim',
-  opts = {},
-}
+{ 'seflue/cargo-arc', version = '*', opts = {} }
 ```
 
-For development against this repository, point at the release build:
+`version = '*'` makes lazy.nvim follow the release tags instead of `main`,
+and every release is on crates.io. After every install and update,
+lazy.nvim runs the repository's `build.lua`, which installs the cargo-arc
+release of the checked-out version from crates.io with `cargo install` into
+`stdpath('data')/cargo-arc`, so the binary matches the plugin. The first
+install compiles cargo-arc, takes a while, and needs cargo. lazy.nvim shows
+the build's progress and, if it fails, cargo's error.
+
+The plugin starts the `binary` option if set, else the binary `build.lua`
+installed, else `cargo-arc` from `PATH`.
+
+For development, load the plugin from a checkout and point at its release
+build:
 
 ```lua
 {
@@ -57,13 +66,13 @@ For development against this repository, point at the release build:
 
 `require('cargo-arc').setup({ ... })`, all optional:
 
-| Option          | Default       | Passed as                |
-| --------------- | ------------- | ------------------------ |
-| `binary`        | `'cargo-arc'` | the program, from `PATH` |
-| `manifest_path` | `nil`         | `--manifest-path`        |
-| `features`      | `{}`          | `--features a,b`         |
-| `include_tests` | `false`       | `--include-tests`        |
-| `externals`     | `false`       | `--externals`            |
+| Option          | Default | Passed as                 |
+| --------------- | ------- | ------------------------- |
+| `binary`        | `nil`   | the program (see Install) |
+| `manifest_path` | `nil`   | `--manifest-path`         |
+| `features`      | `{}`    | `--features a,b`          |
+| `include_tests` | `false` | `--include-tests`         |
+| `externals`     | `false` | `--externals`             |
 
 `include_tests` and `externals` set the state a service starts with; `:Arc
 externals` and `:Arc tests` change it while the service runs, and `:Arc

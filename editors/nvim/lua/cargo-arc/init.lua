@@ -1,8 +1,9 @@
 local M = {}
 
 local defaults = {
-  --- The cargo-arc binary; a bare name is looked up in PATH.
-  binary = 'cargo-arc',
+  --- The cargo-arc binary; a bare name is looked up in PATH. nil means the
+  --- one build.lua installed, or `cargo-arc` from PATH if there is none.
+  binary = nil,
   --- Manifest to analyze, relative to Neovim's working directory; nil for
   --- the service's own default, `Cargo.toml` in that directory.
   manifest_path = nil,
@@ -40,6 +41,43 @@ function M.status()
   return { version = service.version, port = service.port, pid = service.process.pid, switches = service.switches }
 end
 
+--- Return the directory build.lua installs cargo-arc into. It lies outside
+--- the checkout because build.lua runs cargo in it, and rust-toolchain.toml
+--- would select its toolchain anywhere inside the checkout.
+--- @return string
+function M.install_root()
+  return vim.fs.joinpath(vim.fn.stdpath('data'), 'cargo-arc')
+end
+
+--- Return the `version` of the `[package]` section in a Cargo.toml, or nil
+--- if it has none.
+--- @param manifest string path to the Cargo.toml
+--- @return string|nil
+function M.package_version(manifest)
+  local section = nil
+  for _, line in ipairs(vim.fn.readfile(manifest)) do
+    section = line:match('^%s*%[([^%]]+)%]') or section
+    local version = line:match('^%s*version%s*=%s*"([^"]+)"')
+    if section == 'package' and version then
+      return version
+    end
+  end
+  return nil
+end
+
+--- @return string
+local function binary()
+  if M.config.binary then
+    return M.config.binary
+  end
+  local exe = vim.fn.has('win32') == 1 and 'cargo-arc.exe' or 'cargo-arc'
+  local built = vim.fs.joinpath(M.install_root(), 'bin', exe)
+  if vim.fn.executable(built) == 1 then
+    return built
+  end
+  return 'cargo-arc'
+end
+
 --- @param port integer
 local function open_page(port)
   vim.ui.open('http://127.0.0.1:' .. port .. '/')
@@ -53,7 +91,7 @@ end
 --- @return string[]
 function M.argv(port, switches)
   local config = M.config
-  local argv = { config.binary, 'arc' }
+  local argv = { binary(), 'arc' }
   if config.manifest_path then
     vim.list_extend(argv, { '--manifest-path', config.manifest_path })
   end
@@ -165,7 +203,8 @@ end
 --- @param switches cargo-arc.Switches|nil
 local function start(replaces, switches)
   local started = { replaces = replaces }
-  local ok, process = pcall(vim.system, M.argv(replaces, switches), {
+  local argv = M.argv(replaces, switches)
+  local ok, process = pcall(vim.system, argv, {
     cwd = vim.fn.getcwd(),
     text = true,
     stdin = true,
@@ -186,7 +225,7 @@ local function start(replaces, switches)
     end)
   end)
   if not ok then
-    vim.notify('cargo-arc: cannot start ' .. M.config.binary .. ': ' .. process, vim.log.levels.ERROR)
+    vim.notify('cargo-arc: cannot start ' .. argv[1] .. ': ' .. process, vim.log.levels.ERROR)
     return
   end
   started.process = process
