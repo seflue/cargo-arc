@@ -4,6 +4,9 @@ local eq = MiniTest.expect.equality
 local T = MiniTest.new_set({
   hooks = {
     pre_case = function()
+      -- A data directory of its own per case, so neither a cargo-arc that
+      -- build.lua installed for the user nor one a case put there leaks in.
+      vim.env.XDG_DATA_HOME = vim.fn.tempname()
       child.restart({ '-u', 'scripts/minimal_init.lua' })
       child.lua([[
         _G.opened = {}
@@ -111,6 +114,51 @@ T['argv']['puts the analysis options before the subcommand as their flags'] = fu
     '--externals',
     'ui',
   })
+end
+
+--- Puts an executable file where build.lua installs cargo-arc in the child
+--- and returns its path.
+local function fake_built_binary()
+  local path = child.lua_get('require("cargo-arc").install_root()') .. '/bin/cargo-arc'
+  vim.fn.mkdir(vim.fs.dirname(path), 'p')
+  vim.fn.writefile({ '#!/bin/sh' }, path)
+  vim.fn.setfperm(path, 'rwxr-xr-x')
+  return path
+end
+
+T['argv']['runs the binary build.lua installed before cargo-arc from PATH'] = function()
+  local built = fake_built_binary()
+  eq(child.lua_get('require("cargo-arc").argv()'), { built, 'arc', 'ui' })
+end
+
+T['argv']['runs the configured binary before the one build.lua installed'] = function()
+  fake_built_binary()
+  child.lua([[require('cargo-arc').setup({ binary = '/opt/cargo-arc' })]])
+  eq(child.lua_get('require("cargo-arc").argv()')[1], '/opt/cargo-arc')
+end
+
+T['package_version'] = MiniTest.new_set()
+
+T['package_version']['reads the version of the package section, not of a dependency'] = function()
+  local manifest = vim.fn.tempname() .. '.toml'
+  vim.fn.writefile({
+    '[workspace]',
+    'version = "9.9.9"',
+    '',
+    '[package]',
+    'name = "cargo-arc"',
+    'version = "1.2.3"',
+    '',
+    '[dependencies]',
+    'clap = { version = "4.5" }',
+  }, manifest)
+  eq(child.lua_get(('require("cargo-arc").package_version("%s")'):format(manifest)), '1.2.3')
+end
+
+T['package_version']['a manifest without a package version gives nil'] = function()
+  local manifest = vim.fn.tempname() .. '.toml'
+  vim.fn.writefile({ '[dependencies]', 'version = "4.5"' }, manifest)
+  eq(child.lua_get(('require("cargo-arc").package_version("%s")'):format(manifest)), vim.NIL)
 end
 
 T['argv']['passes a port to the ui subcommand'] = function()
