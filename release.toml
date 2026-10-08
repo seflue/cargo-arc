@@ -1,4 +1,7 @@
 allow-branch = ["main"]
+# scripts/release.sh publishes: the bundles in the ignored js/dist need
+# `cargo publish --allow-dirty`, which cargo-release cannot pass on.
+publish = false
 tag-name = "v{{version}}"
 pre-release-commit-message = "Release {{version}}"
 pre-release-hook = ["./scripts/pre-release-check.sh"]

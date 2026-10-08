@@ -60,6 +60,7 @@ release-dry version:
     set -euo pipefail
     trap 'rm -rf js/dist' EXIT
     bun build js/svg_script.js js/hotspot_script.js --format=iife --outdir js/dist
+    cargo package --allow-dirty
     cargo release {{version}}
 
 # release: collect changelog bullets under Unreleased first, then run this
