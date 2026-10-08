@@ -31,3 +31,12 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - uses: taiki-e/install-action@just
       - run: just test
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+      - run: cargo +1.88 check --locked

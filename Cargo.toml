@@ -2,6 +2,7 @@
 name = "cargo-arc"
 version = "0.6.2"
 edition = "2024"
+rust-version = "1.88"
 description = "Visualize crate and module dependencies in Cargo workspaces"
 license = "MIT OR Apache-2.0"
 keywords = [
