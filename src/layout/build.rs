@@ -25,7 +25,7 @@ pub enum ItemKind {
         parent: NodeId,
     },
     ExternalSection,
-    ExternalCrate {
+    ExternalPackage {
         parent: NodeId,
         is_direct_dependency: bool,
     },
@@ -191,7 +191,7 @@ impl LayoutIR {
 /// holding every item's jump targets.
 /// Converts graph nodes to `LayoutItems` with proper nesting and edges with cycle markers,
 /// and attaches each cyclic SCC's cluster (crate name, size, and cycles).
-/// `CrateDep` edges are skipped when `ModuleDep` edges exist between the same crates.
+/// `PackageDep` edges are skipped when `ModuleDep` edges exist between the same crates.
 /// `reexports` must match the subgraph `analysis` was computed from.
 /// Target ids are assigned in item order, so runs on the same graph are deterministic.
 /// Target names are the paths relative to `workspace_root`; without a root, or
@@ -214,9 +214,9 @@ pub(crate) fn build_layout(
     let mut external_indices = Vec::new();
     for idx in graph.node_indices() {
         match &graph[idx] {
-            Node::Crate { .. } => crate_indices.push(idx),
+            Node::Package { .. } => crate_indices.push(idx),
             Node::Module { .. } => module_indices.push(idx),
-            Node::ExternalCrate { .. } => external_indices.push(idx),
+            Node::ExternalPackage { .. } => external_indices.push(idx),
         }
     }
 
@@ -440,7 +440,7 @@ fn attach_clusters(
         ir.clusters.insert(
             scc_id,
             ClusterInfo {
-                crate_name: graph[cluster.crate_idx].name().to_string(),
+                crate_name: graph[cluster.package_idx].name().to_string(),
                 module_count: cluster.nodes.len(),
                 cycle_count: cluster.cycles.len(),
                 cycles,
@@ -502,7 +502,7 @@ fn populate_items(
     let mut node_map = HashMap::new();
     for &idx in ordered {
         let (kind, label, source_path, targets) = match &graph[idx] {
-            Node::Crate {
+            Node::Package {
                 name,
                 target_roots,
                 manifest,
@@ -530,7 +530,7 @@ fn populate_items(
                     module_targets(table, file.as_deref(), workspace_root),
                 )
             }
-            Node::ExternalCrate { .. } => continue, // handled by populate_external_items
+            Node::ExternalPackage { .. } => continue, // handled by populate_external_items
         };
 
         let layout_id = ir.add_item(kind, label);
@@ -550,7 +550,7 @@ fn populate_items(
 }
 
 /// Add external crate nodes to the layout IR, preceded by a section header.
-/// Sorted topologically by inter-external `CrateDep` edges so that dependencies appear
+/// Sorted topologically by inter-external `PackageDep` edges so that dependencies appear
 /// below their dependents, eliminating upward edges.  Incoming edge count (descending)
 /// serves as tiebreaker to preserve the "most-used first" aesthetic where topology
 /// does not constrain ordering.
@@ -567,7 +567,7 @@ fn populate_external_items(
         "External Dependencies".to_string(),
     );
 
-    // Build a subgraph of only external nodes + their CrateDep edges.
+    // Build a subgraph of only external nodes + their PackageDep edges.
     let mut ext_graph: DiGraph<NodeIndex, usize> = DiGraph::new();
     let orig_to_local: HashMap<NodeIndex, NodeIndex> = external_indices
         .iter()
@@ -575,7 +575,7 @@ fn populate_external_items(
         .collect();
 
     for edge in graph.edge_references() {
-        if edge.weight().is_production_crate_dep()
+        if edge.weight().is_production_package_dep()
             && let (Some(&src), Some(&dst)) = (
                 orig_to_local.get(&edge.source()),
                 orig_to_local.get(&edge.target()),
@@ -605,7 +605,7 @@ fn populate_external_items(
     });
 
     for &idx in &sorted {
-        if let Node::ExternalCrate {
+        if let Node::ExternalPackage {
             name,
             version,
             is_direct_dependency,
@@ -615,7 +615,7 @@ fn populate_external_items(
         } = &graph[idx]
         {
             let layout_id = ir.add_item(
-                ItemKind::ExternalCrate {
+                ItemKind::ExternalPackage {
                     parent: section_id,
                     is_direct_dependency: *is_direct_dependency,
                 },
@@ -629,8 +629,8 @@ fn populate_external_items(
     }
 }
 
-/// Add dependency edges (`CrateDep` and `ModuleDep`) to the layout IR.
-/// `CrateDep` and `ModuleDep` arms are unified — they share direction + cycle computation
+/// Add dependency edges (`PackageDep` and `ModuleDep`) to the layout IR.
+/// `PackageDep` and `ModuleDep` arms are unified — they share direction + cycle computation
 /// and only differ in suppression check and source locations.
 fn populate_edges(
     ir: &mut LayoutIR,
@@ -645,7 +645,7 @@ fn populate_edges(
         let (src, dst) = (edge.source(), edge.target());
 
         let (locations, context, is_module_dep) = match edge.weight() {
-            EdgeWeight::CrateDep { context } => {
+            EdgeWeight::PackageDep { context } => {
                 if suppressed.contains(&(src, dst)) {
                     continue;
                 }
@@ -696,7 +696,7 @@ fn nesting_depth(idx: NodeIndex, parent_map: &HashMap<NodeIndex, NodeIndex>) -> 
 }
 
 /// Determine cycle kind and cycle IDs for an edge.
-/// `CrateDep` edges are always `Transitive` when in a cycle.
+/// `PackageDep` edges are always `Transitive` when in a cycle.
 /// A `ModuleDep` edge sits on a `Direct` cycle when the two modules import each
 /// other (`a <-> b`), and on a `Transitive` one when the cycle runs through
 /// further modules (`a -> b -> c -> a`).
@@ -876,7 +876,7 @@ impl ArcGraph {
             .collect()
     }
 
-    /// Re-sort crates by aggregated inter-crate dependencies (`CrateDep` + `ModuleDep`).
+    /// Re-sort crates by aggregated inter-crate dependencies (`PackageDep` + `ModuleDep`).
     /// Builds a crate-level dependency graph and runs stable toposort with alphabetical tie-breaking.
     fn order_crates(&self, crate_indices: &[NodeIndex]) -> Vec<NodeIndex> {
         let mut crate_graph: DiGraph<NodeIndex, usize> = DiGraph::new();
@@ -889,8 +889,8 @@ impl ArcGraph {
 
         for edge in self.edge_references() {
             if edge.weight().is_production() {
-                let src_crate = self.owning_crate(edge.source());
-                let dst_crate = self.owning_crate(edge.target());
+                let src_crate = self.owning_package(edge.source());
+                let dst_crate = self.owning_package(edge.target());
                 if src_crate != dst_crate
                     && let (Some(&sc), Some(&dc)) =
                         (orig_to_local.get(&src_crate), orig_to_local.get(&dst_crate))
@@ -904,9 +904,9 @@ impl ArcGraph {
         // with the root crates.
         let mut test_edges: HashMap<(NodeIndex, NodeIndex), usize> = HashMap::new();
         for edge in self.edge_references() {
-            if edge.weight().is_test_crate_dep() {
-                let src_crate = self.owning_crate(edge.source());
-                let dst_crate = self.owning_crate(edge.target());
+            if edge.weight().is_test_package_dep() {
+                let src_crate = self.owning_package(edge.source());
+                let dst_crate = self.owning_package(edge.target());
                 if src_crate != dst_crate
                     && orig_to_local.contains_key(&src_crate)
                     && orig_to_local.contains_key(&dst_crate)
@@ -920,15 +920,15 @@ impl ArcGraph {
         stable_toposort(&crate_graph, |idx| self[idx].name().to_owned())
     }
 
-    /// Find crate pairs where `ModuleDep` edges exist (so `CrateDep` can be suppressed).
+    /// Find crate pairs where `ModuleDep` edges exist (so `PackageDep` can be suppressed).
     /// Entry-point imports create `ModuleDep` edges where one or both endpoints
-    /// are `Node::Crate` (not just `Node::Module`), so we handle all combinations.
+    /// are `Node::Package` (not just `Node::Module`), so we handle all combinations.
     fn suppressed_crate_pairs(&self) -> HashSet<(NodeIndex, NodeIndex)> {
         self.edge_references()
             .filter_map(|edge| match edge.weight() {
                 EdgeWeight::ModuleDep { .. } => {
-                    let src_crate = self.owning_crate(edge.source());
-                    let dst_crate = self.owning_crate(edge.target());
+                    let src_crate = self.owning_package(edge.source());
+                    let dst_crate = self.owning_package(edge.target());
                     (src_crate != dst_crate).then_some((src_crate, dst_crate))
                 }
                 _ => None,
@@ -972,7 +972,7 @@ mod tests {
         DefKind, Definition, EdgeContext, SourceLocation, TargetRoots, TestKind, UsageKind,
     };
     use crate::test_support::{
-        crate_node, crate_node_with_targets, module_node, module_node_with_file,
+        module_node, module_node_with_file, package_node, package_node_with_targets,
     };
     use assert2::check;
     use petgraph::graph::NodeIndex;
@@ -1005,18 +1005,18 @@ mod tests {
         /// Add a crate with child modules and Contains edges.
         /// Path is auto-generated as "/<`crate_name`>".
         fn crate_with_modules(&mut self, crate_name: &str, module_names: &[&str]) -> &mut Self {
-            let crate_idx = self.graph.add_node(crate_node(crate_name));
-            self.names.insert(crate_name.to_string(), crate_idx);
+            let package_idx = self.graph.add_node(package_node(crate_name));
+            self.names.insert(crate_name.to_string(), package_idx);
             for &mod_name in module_names {
-                let mod_idx = self.graph.add_node(module_node(mod_name, crate_idx));
+                let mod_idx = self.graph.add_node(module_node(mod_name, package_idx));
                 self.names.insert(mod_name.to_string(), mod_idx);
                 self.graph
-                    .add_edge(crate_idx, mod_idx, EdgeWeight::Contains);
+                    .add_edge(package_idx, mod_idx, EdgeWeight::Contains);
             }
             self
         }
 
-        /// Add a module not attached to any crate (uses `NodeIndex::new(0)` as `crate_idx`).
+        /// Add a module not attached to any crate (uses `NodeIndex::new(0)` as `package_idx`).
         fn orphan_module(&mut self, name: &str) -> &mut Self {
             let idx = self.graph.add_node(module_node(name, NodeIndex::new(0)));
             self.names.insert(name.to_string(), idx);
@@ -1026,11 +1026,11 @@ mod tests {
         /// Add a nested module under an existing parent (module or crate), with Contains edge.
         fn nested_module(&mut self, parent: &str, child: &str) -> &mut Self {
             let parent_idx = self.names[parent];
-            let crate_idx = match &self.graph[parent_idx] {
-                Node::Module { crate_idx, .. } => *crate_idx,
-                Node::Crate { .. } | Node::ExternalCrate { .. } => parent_idx,
+            let package_idx = match &self.graph[parent_idx] {
+                Node::Module { package_idx, .. } => *package_idx,
+                Node::Package { .. } | Node::ExternalPackage { .. } => parent_idx,
             };
-            let child_idx = self.graph.add_node(module_node(child, crate_idx));
+            let child_idx = self.graph.add_node(module_node(child, package_idx));
             self.names.insert(child.to_string(), child_idx);
             self.graph
                 .add_edge(parent_idx, child_idx, EdgeWeight::Contains);
@@ -1046,7 +1046,7 @@ mod tests {
         ) -> &mut Self {
             let idx = self
                 .graph
-                .add_node(crate_node_with_targets(name, target_roots, manifest));
+                .add_node(package_node_with_targets(name, target_roots, manifest));
             self.names.insert(name.to_string(), idx);
             self
         }
@@ -1054,13 +1054,13 @@ mod tests {
         /// Add a module with a declaring file under an existing parent (module or crate).
         fn module_with_file(&mut self, parent: &str, name: &str, file: &str) -> &mut Self {
             let parent_idx = self.names[parent];
-            let crate_idx = match &self.graph[parent_idx] {
-                Node::Module { crate_idx, .. } => *crate_idx,
-                Node::Crate { .. } | Node::ExternalCrate { .. } => parent_idx,
+            let package_idx = match &self.graph[parent_idx] {
+                Node::Module { package_idx, .. } => *package_idx,
+                Node::Package { .. } | Node::ExternalPackage { .. } => parent_idx,
             };
             let idx = self
                 .graph
-                .add_node(module_node_with_file(name, crate_idx, file));
+                .add_node(module_node_with_file(name, package_idx, file));
             self.names.insert(name.to_string(), idx);
             self.graph.add_edge(parent_idx, idx, EdgeWeight::Contains);
             self
@@ -1075,9 +1075,9 @@ mod tests {
             definitions: &[(&str, usize)],
         ) -> &mut Self {
             let parent_idx = self.names[parent];
-            let crate_idx = match &self.graph[parent_idx] {
-                Node::Module { crate_idx, .. } => *crate_idx,
-                Node::Crate { .. } | Node::ExternalCrate { .. } => parent_idx,
+            let package_idx = match &self.graph[parent_idx] {
+                Node::Module { package_idx, .. } => *package_idx,
+                Node::Package { .. } | Node::ExternalPackage { .. } => parent_idx,
             };
             let definitions = definitions
                 .iter()
@@ -1093,7 +1093,7 @@ mod tests {
                 .collect();
             let idx = self.graph.add_node(Node::Module {
                 name: name.to_string(),
-                crate_idx,
+                package_idx,
                 file: Some(PathBuf::from(file)),
                 definitions,
             });
@@ -1132,28 +1132,28 @@ mod tests {
             self
         }
 
-        /// Add a production `CrateDep` edge.
+        /// Add a production `PackageDep` edge.
         fn crate_dep(&mut self, from: &str, to: &str) -> &mut Self {
             let src = self.names[from];
             let dst = self.names[to];
             self.graph.add_edge(
                 src,
                 dst,
-                EdgeWeight::CrateDep {
+                EdgeWeight::PackageDep {
                     context: EdgeContext::production(),
                 },
             );
             self
         }
 
-        /// Add a test `CrateDep` edge.
+        /// Add a test `PackageDep` edge.
         fn test_crate_dep(&mut self, from: &str, to: &str, kind: TestKind) -> &mut Self {
             let src = self.names[from];
             let dst = self.names[to];
             self.graph.add_edge(
                 src,
                 dst,
-                EdgeWeight::CrateDep {
+                EdgeWeight::PackageDep {
                     context: EdgeContext::test(kind),
                 },
             );
@@ -1162,7 +1162,7 @@ mod tests {
 
         /// Add an external crate node.
         fn external_crate(&mut self, name: &str, version: &str) -> &mut Self {
-            let idx = self.graph.add_node(Node::ExternalCrate {
+            let idx = self.graph.add_node(Node::ExternalPackage {
                 name: name.to_string(),
                 version: version.to_string(),
                 package_id: format!("{name}-pkg"),
@@ -1454,7 +1454,7 @@ mod tests {
         check!(la.pos("crate_b") < la.pos("mod_b1"));
         check!(la.pos("crate_b") < la.pos("mod_b2"));
 
-        // CrateDep edge should be present (no ModuleDeps between crates)
+        // PackageDep edge should be present (no ModuleDeps between crates)
         check!(la.ir.edges.len() == 1);
         check!(la.ir.edges[0].from == la.pos("crate_a"));
         check!(la.ir.edges[0].to == la.pos("crate_b"));
@@ -1967,7 +1967,7 @@ mod tests {
         la.assert_order("ccc", "aaa_kit");
     }
 
-    /// `CrateDep` edges are suppressed whenever a `ModuleDep` exists between the same crate pair,
+    /// `PackageDep` edges are suppressed whenever a `ModuleDep` exists between the same crate pair,
     /// regardless of which node types (Crate or Module) the `ModuleDep` connects.
     ///
     /// - `module_to_entry_point`: `mod_a` (Module) → `crate_b` (Crate entry point)
@@ -2007,7 +2007,7 @@ mod tests {
     })]
     fn test_crate_dep_suppressed(#[case] case: SuppressionCase) {
         let ir = case.build_layout();
-        assert_eq!(ir.edges.len(), 1, "CrateDep should be suppressed");
+        assert_eq!(ir.edges.len(), 1, "PackageDep should be suppressed");
         assert!(
             !ir.edges[0].source_locations.is_empty(),
             "Remaining edge should be ModuleDep"
@@ -2040,14 +2040,14 @@ mod tests {
     #[test]
     fn test_crate_order_respects_inter_crate_module_deps() {
         // When modules in crate_a depend on modules in crate_b
-        // but there is NO CrateDep edge, the crate ordering should still
+        // but there is NO PackageDep edge, the crate ordering should still
         // place crate_a before crate_b (dependent crate first).
         //
         // crate_b added first (lower graph index) to expose index-order bugs.
         let mut b = TestGraphBuilder::new();
         b.crate_with_modules("crate_b", &["mod_b"])
             .crate_with_modules("crate_a", &["mod_a"])
-            .prod_dep("mod_a", "mod_b"); // no CrateDep edge!
+            .prod_dep("mod_a", "mod_b"); // no PackageDep edge!
         let (graph, _) = b.build();
         let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
         let la = LayoutAssert::new(ir);
@@ -2195,12 +2195,12 @@ mod tests {
         let (graph, _) = b.build();
         let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
 
-        // All CrateDep edges between external crates should be Downward
+        // All PackageDep edges between external crates should be Downward
         for edge in &ir.edges {
             let from_item = &ir.items[edge.from];
             let to_item = &ir.items[edge.to];
-            if matches!(from_item.kind, ItemKind::ExternalCrate { .. })
-                && matches!(to_item.kind, ItemKind::ExternalCrate { .. })
+            if matches!(from_item.kind, ItemKind::ExternalPackage { .. })
+                && matches!(to_item.kind, ItemKind::ExternalPackage { .. })
             {
                 check!(
                     edge.direction == EdgeDirection::Downward,

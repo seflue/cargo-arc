@@ -302,7 +302,7 @@ impl<'entries, 'graph> ResolvedAllows<'entries, 'graph> {
     fn crate_of(&self, source: NodeIndex) -> Option<NodeIndex> {
         self.graph[source]
             .is_module()
-            .then(|| self.graph.owning_crate(source))
+            .then(|| self.graph.owning_package(source))
     }
 }
 
@@ -337,35 +337,35 @@ fn segment_matches(pattern: &str, name: &str) -> bool {
 mod tests {
     use super::*;
     use crate::rules::test_support::allow_edge;
-    use crate::test_support::{crate_node, module_node};
+    use crate::test_support::{module_node, package_node};
 
     /// Build a test graph with a crate "test" and modules beneath it.
-    /// Returns (graph, `crate_idx`).
+    /// Returns (graph, `package_idx`).
     fn test_crate_graph() -> (ArcGraph, NodeIndex) {
         let mut graph = ArcGraph::new();
-        let crate_idx = graph.add_node(crate_node("test"));
-        (graph, crate_idx)
+        let package_idx = graph.add_node(package_node("test"));
+        (graph, package_idx)
     }
 
     fn add_module(
         graph: &mut ArcGraph,
         name: &str,
-        crate_idx: NodeIndex,
+        package_idx: NodeIndex,
         parent: NodeIndex,
     ) -> NodeIndex {
-        let idx = graph.add_node(module_node(name, crate_idx));
+        let idx = graph.add_node(module_node(name, package_idx));
         graph.add_edge(parent, idx, EdgeWeight::Contains);
         idx
     }
 
     #[test]
     fn test_resolve_exact_module() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let service = add_module(&mut graph, "service", crate_idx, crate_idx);
-        let inner = add_module(&mut graph, "inner", crate_idx, service);
-        let leaf = add_module(&mut graph, "leaf", crate_idx, inner);
+        let (mut graph, package_idx) = test_crate_graph();
+        let service = add_module(&mut graph, "service", package_idx, package_idx);
+        let inner = add_module(&mut graph, "inner", package_idx, service);
+        let leaf = add_module(&mut graph, "leaf", package_idx, inner);
         // Sibling of the pattern, so the result must stop at the subtree.
-        let _other = add_module(&mut graph, "other", crate_idx, crate_idx);
+        let _other = add_module(&mut graph, "other", package_idx, package_idx);
         let mut result = PatternIndex::build(&graph).resolve("test::service");
         result.sort_unstable();
         let mut expected = vec![service, inner, leaf];
@@ -375,23 +375,23 @@ mod tests {
 
     #[test]
     fn test_resolve_crate() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let mod_a = add_module(&mut graph, "a", crate_idx, crate_idx);
-        let mod_b = add_module(&mut graph, "b", crate_idx, crate_idx);
+        let (mut graph, package_idx) = test_crate_graph();
+        let mod_a = add_module(&mut graph, "a", package_idx, package_idx);
+        let mod_b = add_module(&mut graph, "b", package_idx, package_idx);
         let mut result = PatternIndex::build(&graph).resolve("test");
         result.sort_unstable();
-        let mut expected = vec![crate_idx, mod_a, mod_b];
+        let mut expected = vec![package_idx, mod_a, mod_b];
         expected.sort_unstable();
         assert_eq!(result, expected);
     }
 
     #[test]
     fn test_resolve_children() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let mod_a = add_module(&mut graph, "a", crate_idx, crate_idx);
-        let mod_b = add_module(&mut graph, "b", crate_idx, crate_idx);
+        let (mut graph, package_idx) = test_crate_graph();
+        let mod_a = add_module(&mut graph, "a", package_idx, package_idx);
+        let mod_b = add_module(&mut graph, "b", package_idx, package_idx);
         // Grandchild should NOT be included with *
-        let _grandchild = add_module(&mut graph, "deep", crate_idx, mod_a);
+        let _grandchild = add_module(&mut graph, "deep", package_idx, mod_a);
         let mut result = PatternIndex::build(&graph).resolve("test::*");
         result.sort_unstable();
         let mut expected = vec![mod_a, mod_b];
@@ -401,10 +401,10 @@ mod tests {
 
     #[test]
     fn test_resolve_descendants() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let mod_a = add_module(&mut graph, "a", crate_idx, crate_idx);
-        let mod_b = add_module(&mut graph, "b", crate_idx, crate_idx);
-        let grandchild = add_module(&mut graph, "deep", crate_idx, mod_a);
+        let (mut graph, package_idx) = test_crate_graph();
+        let mod_a = add_module(&mut graph, "a", package_idx, package_idx);
+        let mod_b = add_module(&mut graph, "b", package_idx, package_idx);
+        let grandchild = add_module(&mut graph, "deep", package_idx, mod_a);
         let mut result = PatternIndex::build(&graph).resolve("test::**");
         result.sort_unstable();
         let mut expected = vec![mod_a, mod_b, grandchild];
@@ -424,9 +424,9 @@ mod tests {
     /// has no crate above it, and a leaf has no children.
     #[test]
     fn test_a_relative_target_leading_nowhere_covers_nothing() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let top = add_module(&mut graph, "top", crate_idx, crate_idx);
-        let leaf = add_module(&mut graph, "leaf", crate_idx, top);
+        let (mut graph, package_idx) = test_crate_graph();
+        let top = add_module(&mut graph, "top", package_idx, package_idx);
+        let leaf = add_module(&mut graph, "leaf", package_idx, top);
         let index = PatternIndex::build(&graph);
         let entry = |to: &str| allow_edge("**", to);
 
@@ -436,10 +436,10 @@ mod tests {
                 .covers(source, target)
                 .is_some()
         };
-        assert!(covered("super::super", leaf, crate_idx));
-        assert!(!covered("super::super", top, crate_idx));
-        assert!(covered("crate", top, crate_idx));
-        assert!(!covered("crate", crate_idx, crate_idx));
+        assert!(covered("super::super", leaf, package_idx));
+        assert!(!covered("super::super", top, package_idx));
+        assert!(covered("crate", top, package_idx));
+        assert!(!covered("crate", package_idx, package_idx));
         assert!(covered("self::*", top, leaf));
         assert!(!covered("self::*", leaf, top));
 
@@ -453,7 +453,7 @@ mod tests {
     }
 
     fn add_crate(graph: &mut ArcGraph, name: &str) -> NodeIndex {
-        graph.add_node(crate_node(name))
+        graph.add_node(package_node(name))
     }
 
     #[test]

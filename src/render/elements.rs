@@ -323,7 +323,7 @@ impl CycleMarks {
 
 fn item_parent(kind: &ItemKind) -> Option<NodeId> {
     match kind {
-        ItemKind::Module { parent, .. } | ItemKind::ExternalCrate { parent, .. } => Some(*parent),
+        ItemKind::Module { parent, .. } | ItemKind::ExternalPackage { parent, .. } => Some(*parent),
         ItemKind::Crate | ItemKind::ExternalSection => None,
     }
 }
@@ -351,26 +351,28 @@ pub(super) fn render_nodes(
             (item.x, item.y)
         };
         let class = match &item.kind {
-            ItemKind::Crate => CSS.nodes.crate_node,
+            ItemKind::Crate => CSS.nodes.package_node,
             ItemKind::Module { .. } => CSS.nodes.module,
             ItemKind::ExternalSection => CSS.nodes.external_section,
-            ItemKind::ExternalCrate {
+            ItemKind::ExternalPackage {
                 is_direct_dependency: true,
                 ..
             } => CSS.nodes.external_crate,
-            ItemKind::ExternalCrate {
+            ItemKind::ExternalPackage {
                 is_direct_dependency: false,
                 ..
             } => CSS.nodes.external_transitive,
         };
         let rx = match &item.kind {
             ItemKind::Crate | ItemKind::ExternalSection => LAYOUT.crate_border_radius,
-            ItemKind::Module { .. } | ItemKind::ExternalCrate { .. } => LAYOUT.module_border_radius,
+            ItemKind::Module { .. } | ItemKind::ExternalPackage { .. } => {
+                LAYOUT.module_border_radius
+            }
         };
 
         // data-parent attribute for modules and external crates
         let parent_attr = match &item.kind {
-            ItemKind::Module { parent, .. } | ItemKind::ExternalCrate { parent, .. } => {
+            ItemKind::Module { parent, .. } | ItemKind::ExternalPackage { parent, .. } => {
                 format!(r#" data-parent="{parent}""#)
             }
             ItemKind::Crate | ItemKind::ExternalSection => String::new(),
@@ -469,7 +471,7 @@ fn child_count(positioned: &[PositionedItem], parent_id: NodeId) -> usize {
     positioned
         .iter()
         .filter(|p| match &p.kind {
-            ItemKind::Module { parent, .. } | ItemKind::ExternalCrate { parent, .. } => {
+            ItemKind::Module { parent, .. } | ItemKind::ExternalPackage { parent, .. } => {
                 *parent == parent_id
             }
             ItemKind::Crate | ItemKind::ExternalSection => false,
@@ -655,18 +657,18 @@ fn arc_attrs(edge: &LayoutEdge, from_kind: &ItemKind, to_kind: &ItemKind) -> Arc
         (String::new(), String::new())
     };
 
-    let is_crate_dep = matches!(
+    let is_package_dep = matches!(
         (from_kind, to_kind),
         (
-            ItemKind::Crate | ItemKind::ExternalCrate { .. },
-            ItemKind::Crate | ItemKind::ExternalCrate { .. }
+            ItemKind::Crate | ItemKind::ExternalPackage { .. },
+            ItemKind::Crate | ItemKind::ExternalPackage { .. }
         )
     );
     // Exactly one arc-type class per arc, and the JS arc filter selects on it,
     // so a re-export never answers to the module-dep checkbox.
     let arc_type_class = if edge.reexport {
         cd.reexport_arc
-    } else if is_crate_dep {
+    } else if is_package_dep {
         cd.crate_dep_arc
     } else {
         cd.module_dep_arc

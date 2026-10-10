@@ -9,8 +9,8 @@ use super::use_parser::ReExportMap;
 use super::use_parser::{ResolutionContext, parse_file_dependencies};
 use crate::model::normalize_crate_name;
 use crate::model::{
-    CrateExportMap, CrateInfo, EdgeContext, ModuleInfo, ModulePathMap, ModuleTree, TestKind,
-    UsageKind, WorkspaceCrates,
+    EdgeContext, ModuleInfo, ModulePathMap, ModuleTree, PackageExportMap, PackageInfo, TestKind,
+    UsageKind, WorkspacePackages,
 };
 
 /// Find integration test files in `tests/*.rs`.
@@ -91,7 +91,7 @@ fn walk_modules_for_paths(
 /// Collect all module paths reachable from the crate's targets via filesystem walk.
 /// Returns relative paths without crate prefix, e.g. `{"analyze", "analyze::hir"}`.
 pub(crate) fn collect_syn_module_paths(
-    crate_info: &CrateInfo,
+    crate_info: &PackageInfo,
     include_tests: bool,
 ) -> HashSet<String> {
     let mut paths = HashSet::new();
@@ -138,7 +138,7 @@ fn is_pub(vis: &syn::Visibility) -> bool {
 ///
 /// Ignores `pub mod` declarations (module structure, not exports).
 /// Returns an empty set on any error (no library target, parse failure).
-pub(crate) fn collect_crate_exports(crate_info: &CrateInfo) -> HashSet<String> {
+pub(crate) fn collect_crate_exports(crate_info: &PackageInfo) -> HashSet<String> {
     // Binary targets export nothing.
     let Some(root_file) = crate_info.target_roots.lib_root.as_ref() else {
         return HashSet::new();
@@ -196,9 +196,9 @@ pub(crate) fn collect_crate_exports(crate_info: &CrateInfo) -> HashSet<String> {
 struct WalkContext<'a> {
     crate_name: &'a str,
     workspace_root: &'a Path,
-    workspace_crates: &'a WorkspaceCrates,
+    workspace_crates: &'a WorkspacePackages,
     all_module_paths: &'a ModulePathMap,
-    crate_exports: &'a CrateExportMap,
+    crate_exports: &'a PackageExportMap,
     reexport_map: &'a ReExportMap,
     external_crate_names: &'a std::collections::HashMap<String, String>,
     include_tests: bool,
@@ -317,10 +317,10 @@ fn walk_module_syn(
 /// Analyze module hierarchy via syn + filesystem walk (no rust-analyzer needed).
 /// Drop-in replacement for `hir::analyze_modules()`.
 pub(crate) fn analyze_modules_syn(
-    crate_info: &CrateInfo,
-    workspace_crates: &WorkspaceCrates,
+    crate_info: &PackageInfo,
+    workspace_crates: &WorkspacePackages,
     all_module_paths: &ModulePathMap,
-    crate_exports: &CrateExportMap,
+    crate_exports: &PackageExportMap,
     reexport_map: &ReExportMap,
     external_crate_names: &std::collections::HashMap<String, String>,
     include_tests: bool,
@@ -416,7 +416,7 @@ mod tests {
     use super::*;
     use crate::analyze::use_parser::ModuleExportInfo;
     use crate::model::{DefKind, Definition};
-    use crate::test_support::conventional_crate;
+    use crate::test_support::conventional_package;
     use tempfile::TempDir;
 
     struct TestProject {
@@ -548,7 +548,7 @@ mod tests {
                 .file("src/foo/bar.rs", "")
                 .build();
 
-            let paths = collect_syn_module_paths(&conventional_crate("synth", tmp.path()), false);
+            let paths = collect_syn_module_paths(&conventional_package("synth", tmp.path()), false);
             assert!(
                 paths.contains("foo"),
                 "should contain 'foo', found: {paths:?}"
@@ -564,7 +564,7 @@ mod tests {
         fn test_collect_paths_own_crate() {
             let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
             let paths =
-                collect_syn_module_paths(&conventional_crate("cargo_arc", crate_root), false);
+                collect_syn_module_paths(&conventional_package("cargo_arc", crate_root), false);
 
             for expected in [
                 "analyze",
@@ -592,7 +592,7 @@ mod tests {
                 .file("src/lib.rs", "// empty crate")
                 .build();
 
-            let paths = collect_syn_module_paths(&conventional_crate("empty", tmp.path()), false);
+            let paths = collect_syn_module_paths(&conventional_package("empty", tmp.path()), false);
             assert!(paths.is_empty(), "expected empty set, found: {paths:?}");
         }
 
@@ -605,7 +605,7 @@ mod tests {
                 .file("src/b.rs", "")
                 .build();
 
-            let paths = collect_syn_module_paths(&conventional_crate("mixed", tmp.path()), false);
+            let paths = collect_syn_module_paths(&conventional_package("mixed", tmp.path()), false);
             assert!(paths.contains("a"), "should contain 'a', found: {paths:?}");
             assert!(paths.contains("b"), "should contain 'b', found: {paths:?}");
             assert_eq!(paths.len(), 2);
@@ -632,7 +632,7 @@ mod tests {
                 )
                 .build();
 
-            let exports = collect_crate_exports(&conventional_crate("fixture", tmp.path()));
+            let exports = collect_crate_exports(&conventional_package("fixture", tmp.path()));
             for name in [
                 "helper", "MyStruct", "MyEnum", "MyTrait", "MAX", "GLOBAL", "Alias",
             ] {
@@ -650,7 +650,7 @@ mod tests {
                 .file("src/lib.rs", "pub use some_crate::Widget;\n")
                 .build();
 
-            let exports = collect_crate_exports(&conventional_crate("fixture", tmp.path()));
+            let exports = collect_crate_exports(&conventional_package("fixture", tmp.path()));
             assert!(exports.contains("Widget"), "found: {exports:?}");
             assert_eq!(exports.len(), 1);
         }
@@ -661,7 +661,7 @@ mod tests {
                 .file("src/lib.rs", "pub use some_crate::Original as Alias;\n")
                 .build();
 
-            let exports = collect_crate_exports(&conventional_crate("fixture", tmp.path()));
+            let exports = collect_crate_exports(&conventional_package("fixture", tmp.path()));
             assert!(exports.contains("Alias"), "found: {exports:?}");
             assert!(!exports.contains("Original"), "should not contain Original");
             assert_eq!(exports.len(), 1);
@@ -673,7 +673,7 @@ mod tests {
                 .file("src/lib.rs", "pub use some_crate::{Alpha, Beta};\n")
                 .build();
 
-            let exports = collect_crate_exports(&conventional_crate("fixture", tmp.path()));
+            let exports = collect_crate_exports(&conventional_package("fixture", tmp.path()));
             assert!(exports.contains("Alpha"), "found: {exports:?}");
             assert!(exports.contains("Beta"), "found: {exports:?}");
             assert_eq!(exports.len(), 2);
@@ -693,7 +693,7 @@ mod tests {
                 )
                 .build();
 
-            let exports = collect_crate_exports(&conventional_crate("fixture", tmp.path()));
+            let exports = collect_crate_exports(&conventional_package("fixture", tmp.path()));
             assert!(exports.contains("public_fn"), "found: {exports:?}");
             assert!(!exports.contains("private_fn"));
             assert!(!exports.contains("PrivateStruct"));
@@ -707,7 +707,7 @@ mod tests {
                 .file("src/lib.rs", "pub mod foo;\npub fn real_export() {}\n")
                 .build();
 
-            let exports = collect_crate_exports(&conventional_crate("fixture", tmp.path()));
+            let exports = collect_crate_exports(&conventional_package("fixture", tmp.path()));
             assert!(exports.contains("real_export"), "found: {exports:?}");
             assert!(!exports.contains("foo"), "pub mod should not be an export");
             assert_eq!(exports.len(), 1);
@@ -717,7 +717,7 @@ mod tests {
         fn test_collect_exports_no_entry_file() {
             let tmp = TestProject::new().build();
 
-            let exports = collect_crate_exports(&conventional_crate("fixture", tmp.path()));
+            let exports = collect_crate_exports(&conventional_package("fixture", tmp.path()));
             assert!(exports.is_empty(), "found: {exports:?}");
         }
 
@@ -728,7 +728,7 @@ mod tests {
                 .file("src/main.rs", "pub fn from_main() {}")
                 .build();
 
-            let exports = collect_crate_exports(&conventional_crate("fixture", tmp.path()));
+            let exports = collect_crate_exports(&conventional_package("fixture", tmp.path()));
             assert!(
                 exports.contains("from_lib"),
                 "should contain 'from_lib', found: {exports:?}"
@@ -755,10 +755,10 @@ mod tests {
                 .build();
 
             let tree = analyze_modules_syn(
-                &conventional_crate("fixture", tmp.path()),
-                &WorkspaceCrates::default(),
+                &conventional_package("fixture", tmp.path()),
+                &WorkspacePackages::default(),
                 &ModulePathMap::default(),
-                &CrateExportMap::default(),
+                &PackageExportMap::default(),
                 &ReExportMap::default(),
                 &std::collections::HashMap::new(),
                 false,
@@ -772,8 +772,8 @@ mod tests {
         #[test]
         fn test_analyze_modules_syn_structure() {
             let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-            let crate_info = conventional_crate("cargo-arc", crate_root);
-            let workspace_crates: WorkspaceCrates = ["cargo-arc"]
+            let crate_info = conventional_package("cargo-arc", crate_root);
+            let workspace_crates: WorkspacePackages = ["cargo-arc"]
                 .iter()
                 .map(std::string::ToString::to_string)
                 .collect();
@@ -782,7 +782,7 @@ mod tests {
                 &crate_info,
                 &workspace_crates,
                 &ModulePathMap::default(),
-                &CrateExportMap::default(),
+                &PackageExportMap::default(),
                 &ReExportMap::default(),
                 &std::collections::HashMap::new(),
                 false,
@@ -827,15 +827,15 @@ mod tests {
         #[test]
         fn test_analyze_modules_syn_dependencies() {
             let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-            let crate_info = conventional_crate("cargo-arc", crate_root);
-            let workspace_crates: WorkspaceCrates = ["cargo-arc"]
+            let crate_info = conventional_package("cargo-arc", crate_root);
+            let workspace_crates: WorkspacePackages = ["cargo-arc"]
                 .iter()
                 .map(std::string::ToString::to_string)
                 .collect();
 
             // Collect module paths for accurate dependency resolution
             let paths =
-                collect_syn_module_paths(&conventional_crate("cargo_arc", crate_root), false);
+                collect_syn_module_paths(&conventional_package("cargo_arc", crate_root), false);
             let all_module_paths: ModulePathMap =
                 [("cargo_arc".to_string(), paths)].into_iter().collect();
 
@@ -843,7 +843,7 @@ mod tests {
                 &crate_info,
                 &workspace_crates,
                 &all_module_paths,
-                &CrateExportMap::default(),
+                &PackageExportMap::default(),
                 &ReExportMap::default(),
                 &std::collections::HashMap::new(),
                 false,
@@ -870,8 +870,8 @@ mod tests {
         #[test]
         fn test_analyze_modules_syn_attaches_definitions_by_module_path() {
             let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-            let crate_info = conventional_crate("cargo-arc", crate_root);
-            let workspace_crates: WorkspaceCrates = ["cargo-arc"].into_iter().collect();
+            let crate_info = conventional_package("cargo-arc", crate_root);
+            let workspace_crates: WorkspacePackages = ["cargo-arc"].into_iter().collect();
             let definition = |line| Definition {
                 kind: DefKind::Struct,
                 line,
@@ -895,7 +895,7 @@ mod tests {
                 &crate_info,
                 &workspace_crates,
                 &ModulePathMap::default(),
-                &CrateExportMap::default(),
+                &PackageExportMap::default(),
                 &reexport_map,
                 &std::collections::HashMap::new(),
                 false,
@@ -926,26 +926,27 @@ mod tests {
                 .build();
 
             // collect_syn_module_paths finds "cli"
-            let paths = collect_syn_module_paths(&conventional_crate("binonly", tmp.path()), false);
+            let paths =
+                collect_syn_module_paths(&conventional_package("binonly", tmp.path()), false);
             assert!(
                 paths.contains("cli"),
                 "should contain 'cli', found: {paths:?}"
             );
 
             // collect_crate_exports returns empty (no lib.rs)
-            let exports = collect_crate_exports(&conventional_crate("fixture", tmp.path()));
+            let exports = collect_crate_exports(&conventional_package("fixture", tmp.path()));
             assert!(
                 exports.is_empty(),
                 "binary-only should have no exports, found: {exports:?}"
             );
 
             // analyze_modules_syn builds tree with "cli" child
-            let crate_info = conventional_crate("binonly", tmp.path());
+            let crate_info = conventional_package("binonly", tmp.path());
             let tree = analyze_modules_syn(
                 &crate_info,
-                &WorkspaceCrates::default(),
+                &WorkspacePackages::default(),
                 &ModulePathMap::default(),
-                &CrateExportMap::default(),
+                &PackageExportMap::default(),
                 &ReExportMap::default(),
                 &std::collections::HashMap::new(),
                 false,
@@ -967,12 +968,12 @@ mod tests {
                 .file("src/store/disk.rs", "")
                 .build();
 
-            let crate_info = conventional_crate("fixture", tmp.path());
+            let crate_info = conventional_package("fixture", tmp.path());
             let tree = analyze_modules_syn(
                 &crate_info,
-                &WorkspaceCrates::default(),
+                &WorkspacePackages::default(),
                 &ModulePathMap::default(),
-                &CrateExportMap::default(),
+                &PackageExportMap::default(),
                 &ReExportMap::default(),
                 &std::collections::HashMap::new(),
                 false,
@@ -1001,16 +1002,16 @@ fn main() {
                 )
                 .build();
 
-            let ws: WorkspaceCrates = ["other_crate".to_string()].into_iter().collect();
+            let ws: WorkspacePackages = ["other_crate".to_string()].into_iter().collect();
             let mp: ModulePathMap = [("other_crate".to_string(), HashSet::from(["module".into()]))]
                 .into_iter()
                 .collect();
-            let crate_info = conventional_crate("app", tmp.path());
+            let crate_info = conventional_package("app", tmp.path());
             let tree = analyze_modules_syn(
                 &crate_info,
                 &ws,
                 &mp,
-                &CrateExportMap::default(),
+                &PackageExportMap::default(),
                 &ReExportMap::default(),
                 &std::collections::HashMap::new(),
                 false,
@@ -1021,7 +1022,7 @@ fn main() {
                 tree.root
                     .dependencies
                     .iter()
-                    .any(|d| d.target_crate == "other_crate" && d.target_module == "module"),
+                    .any(|d| d.target_package == "other_crate" && d.target_module == "module"),
                 "should detect path-ref dependency on other_crate::module, found: {:?}",
                 tree.root.dependencies
             );
@@ -1041,16 +1042,16 @@ fn main() {
                 )
                 .build();
 
-            let ws: WorkspaceCrates = ["other_crate".to_string()].into_iter().collect();
+            let ws: WorkspacePackages = ["other_crate".to_string()].into_iter().collect();
             let mp: ModulePathMap = [("other_crate".to_string(), HashSet::from(["module".into()]))]
                 .into_iter()
                 .collect();
-            let crate_info = conventional_crate("app", tmp.path());
+            let crate_info = conventional_package("app", tmp.path());
             let tree = analyze_modules_syn(
                 &crate_info,
                 &ws,
                 &mp,
-                &CrateExportMap::default(),
+                &PackageExportMap::default(),
                 &ReExportMap::default(),
                 &std::collections::HashMap::new(),
                 false,
@@ -1062,7 +1063,7 @@ fn main() {
                 .dependencies
                 .iter()
                 .filter(|d| {
-                    d.target_crate == "other_crate"
+                    d.target_package == "other_crate"
                         && d.target_module == "module"
                         && d.target_item == Some("Item".to_string())
                 })
@@ -1088,12 +1089,12 @@ fn main() {
             )]
             .into_iter()
             .collect();
-            let crate_info = conventional_crate("my_crate", tmp.path());
+            let crate_info = conventional_package("my_crate", tmp.path());
             let tree = analyze_modules_syn(
                 &crate_info,
-                &WorkspaceCrates::default(),
+                &WorkspacePackages::default(),
                 &mp,
-                &CrateExportMap::default(),
+                &PackageExportMap::default(),
                 &ReExportMap::default(),
                 &std::collections::HashMap::new(),
                 false,
@@ -1129,12 +1130,12 @@ fn main() {
             )]
             .into_iter()
             .collect();
-            let crate_info = conventional_crate("my_crate", tmp.path());
+            let crate_info = conventional_package("my_crate", tmp.path());
             let tree = analyze_modules_syn(
                 &crate_info,
-                &WorkspaceCrates::default(),
+                &WorkspacePackages::default(),
                 &mp,
-                &CrateExportMap::default(),
+                &PackageExportMap::default(),
                 &ReExportMap::default(),
                 &std::collections::HashMap::new(),
                 false,
@@ -1166,12 +1167,12 @@ fn main() {
                 .file("src/b.rs", "")
                 .build();
 
-            let crate_info = conventional_crate("mixed", tmp.path());
+            let crate_info = conventional_package("mixed", tmp.path());
             let tree = analyze_modules_syn(
                 &crate_info,
-                &WorkspaceCrates::default(),
+                &WorkspacePackages::default(),
                 &ModulePathMap::default(),
-                &CrateExportMap::default(),
+                &PackageExportMap::default(),
                 &ReExportMap::default(),
                 &std::collections::HashMap::new(),
                 false,
@@ -1197,13 +1198,13 @@ fn main() {
         fn test_child_module_bare_use_resolved() {
             // cargo-arc analyzes itself: render module must have deps on render::css and render::elements
             let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-            let crate_info = conventional_crate("cargo-arc", crate_root);
-            let workspace_crates: WorkspaceCrates = ["cargo-arc"]
+            let crate_info = conventional_package("cargo-arc", crate_root);
+            let workspace_crates: WorkspacePackages = ["cargo-arc"]
                 .iter()
                 .map(std::string::ToString::to_string)
                 .collect();
             let paths =
-                collect_syn_module_paths(&conventional_crate("cargo_arc", crate_root), false);
+                collect_syn_module_paths(&conventional_package("cargo_arc", crate_root), false);
             let all_module_paths: ModulePathMap =
                 [("cargo_arc".to_string(), paths)].into_iter().collect();
 
@@ -1211,7 +1212,7 @@ fn main() {
                 &crate_info,
                 &workspace_crates,
                 &all_module_paths,
-                &CrateExportMap::default(),
+                &PackageExportMap::default(),
                 &ReExportMap::default(),
                 &std::collections::HashMap::new(),
                 false,
@@ -1284,11 +1285,11 @@ fn main() {
         fn test_analyze_crate_with_integration_tests() {
             let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("tests/fixtures/integration_test_crate/crate_with_tests");
-            let crate_info = CrateInfo {
+            let crate_info = PackageInfo {
                 dependencies: vec!["crate_lib".to_string()],
-                ..conventional_crate("crate_with_tests", fixture)
+                ..conventional_package("crate_with_tests", fixture)
             };
-            let ws: WorkspaceCrates = ["crate_with_tests", "crate_lib"]
+            let ws: WorkspacePackages = ["crate_with_tests", "crate_lib"]
                 .iter()
                 .map(std::string::ToString::to_string)
                 .collect();
@@ -1297,7 +1298,7 @@ fn main() {
                 &crate_info,
                 &ws,
                 &ModulePathMap::default(),
-                &CrateExportMap::default(),
+                &PackageExportMap::default(),
                 &ReExportMap::default(),
                 &std::collections::HashMap::new(),
                 true,
@@ -1329,13 +1330,13 @@ fn main() {
         fn test_analyze_crate_without_include_tests_flag() {
             let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("tests/fixtures/integration_test_crate/crate_with_tests");
-            let crate_info = conventional_crate("crate_with_tests", fixture);
+            let crate_info = conventional_package("crate_with_tests", fixture);
 
             let tree = analyze_modules_syn(
                 &crate_info,
-                &WorkspaceCrates::default(),
+                &WorkspacePackages::default(),
                 &ModulePathMap::default(),
-                &CrateExportMap::default(),
+                &PackageExportMap::default(),
                 &ReExportMap::default(),
                 &std::collections::HashMap::new(),
                 false,
@@ -1353,11 +1354,11 @@ fn main() {
         fn test_analyze_test_only_crate() {
             let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("tests/fixtures/integration_test_crate/test_only_crate");
-            let crate_info = CrateInfo {
+            let crate_info = PackageInfo {
                 dependencies: vec!["crate_lib".to_string()],
-                ..conventional_crate("test_only_crate", fixture)
+                ..conventional_package("test_only_crate", fixture)
             };
-            let ws: WorkspaceCrates = ["test_only_crate", "crate_lib"]
+            let ws: WorkspacePackages = ["test_only_crate", "crate_lib"]
                 .iter()
                 .map(std::string::ToString::to_string)
                 .collect();
@@ -1366,7 +1367,7 @@ fn main() {
                 &crate_info,
                 &ws,
                 &ModulePathMap::default(),
-                &CrateExportMap::default(),
+                &PackageExportMap::default(),
                 &ReExportMap::default(),
                 &std::collections::HashMap::new(),
                 true,
@@ -1385,13 +1386,13 @@ fn main() {
         fn test_test_only_crate_is_empty_without_flag() {
             let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("tests/fixtures/integration_test_crate/test_only_crate");
-            let crate_info = conventional_crate("test_only_crate", fixture);
+            let crate_info = conventional_package("test_only_crate", fixture);
 
             let tree = analyze_modules_syn(
                 &crate_info,
-                &WorkspaceCrates::default(),
+                &WorkspacePackages::default(),
                 &ModulePathMap::default(),
-                &CrateExportMap::default(),
+                &PackageExportMap::default(),
                 &ReExportMap::default(),
                 &std::collections::HashMap::new(),
                 false,
@@ -1424,13 +1425,13 @@ mod tests {
             )]
             .into_iter()
             .collect();
-            let crate_info = conventional_crate("my_crate", tmp.path());
+            let crate_info = conventional_package("my_crate", tmp.path());
 
             let tree = analyze_modules_syn(
                 &crate_info,
-                &WorkspaceCrates::default(),
+                &WorkspacePackages::default(),
                 &mp,
-                &CrateExportMap::default(),
+                &PackageExportMap::default(),
                 &ReExportMap::default(),
                 &std::collections::HashMap::new(),
                 false,

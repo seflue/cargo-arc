@@ -231,18 +231,18 @@ fn unlayered_nodes(index: &PatternIndex, config: &ArcConfig) -> Vec<UnsortedNode
 
         let mut claimed: HashSet<NodeIndex> = HashSet::new();
         if patterns.iter().any(|pattern| !pattern.contains("::")) {
-            claimed.extend(graph.node_indices().filter(|&idx| graph[idx].is_crate()));
+            claimed.extend(graph.node_indices().filter(|&idx| graph[idx].is_package()));
         }
 
         let touched: HashSet<NodeIndex> = patterns
             .iter()
             .filter(|pattern| pattern.contains("::"))
             .flat_map(|pattern| index.resolve(pattern))
-            .map(|idx| graph.owning_crate(idx))
+            .map(|idx| graph.owning_package(idx))
             .collect();
         if !touched.is_empty() {
             claimed.extend(graph.node_indices().filter(|&idx| {
-                graph[idx].is_module() && touched.contains(&graph.owning_crate(idx))
+                graph[idx].is_module() && touched.contains(&graph.owning_package(idx))
             }));
         }
 
@@ -495,7 +495,7 @@ mod tests {
     };
     use crate::rules::matching::PatternIndex;
     use crate::rules::test_support::allow_edge;
-    use crate::test_support::{crate_node, module_node};
+    use crate::test_support::{module_node, package_node};
     use petgraph::graph::NodeIndex;
 
     /// Workspace graph with one module per named crate, so that a crate
@@ -503,24 +503,24 @@ mod tests {
     fn workspace(crates: &[&str]) -> ArcGraph {
         let mut graph = ArcGraph::new();
         for name in crates {
-            let crate_idx = graph.add_node(crate_node(name));
-            let module = graph.add_node(module_node("service", crate_idx));
-            graph.add_edge(crate_idx, module, EdgeWeight::Contains);
+            let package_idx = graph.add_node(package_node(name));
+            let module = graph.add_node(module_node("service", package_idx));
+            graph.add_edge(package_idx, module, EdgeWeight::Contains);
         }
         graph
     }
 
     fn add_crate(graph: &mut ArcGraph, name: &str) -> NodeIndex {
-        graph.add_node(crate_node(name))
+        graph.add_node(package_node(name))
     }
 
     fn add_module(
         graph: &mut ArcGraph,
         name: &str,
-        crate_idx: NodeIndex,
+        package_idx: NodeIndex,
         parent: NodeIndex,
     ) -> NodeIndex {
-        let idx = graph.add_node(module_node(name, crate_idx));
+        let idx = graph.add_node(module_node(name, package_idx));
         graph.add_edge(parent, idx, EdgeWeight::Contains);
         idx
     }

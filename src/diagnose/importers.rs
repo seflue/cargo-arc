@@ -141,7 +141,7 @@ mod tests {
     use super::*;
     use crate::graph::EdgeWeight;
     use crate::model::{EdgeContext, SourceLocation};
-    use crate::test_support::{crate_node, module_node};
+    use crate::test_support::{module_node, package_node};
 
     /// Flat builder: every module is a direct crate child. Thin wrapper over
     /// [`nested`]. `deps` are `(from, to, symbols)` production `ModuleDep` edges.
@@ -162,12 +162,12 @@ mod tests {
         deps: &[(usize, usize, &[&str])],
     ) -> (ArcGraph, Vec<NodeIndex>) {
         let mut g = ArcGraph::new();
-        let crate_idx = g.add_node(crate_node("app"));
+        let package_idx = g.add_node(package_node("app"));
         let mut idx = Vec::with_capacity(names.len());
         for (i, name) in names.iter().enumerate() {
-            let n = g.add_node(module_node(name, crate_idx));
+            let n = g.add_node(module_node(name, package_idx));
             let parent = if parents[i] == usize::MAX {
-                crate_idx
+                package_idx
             } else {
                 idx[parents[i]]
             };
@@ -246,11 +246,11 @@ mod tests {
     #[test]
     fn reexport_locations_are_ignored() {
         let mut g = ArcGraph::new();
-        let crate_idx = g.add_node(crate_node("app"));
-        let model = g.add_node(module_node("model", crate_idx));
-        let user = g.add_node(module_node("user", crate_idx));
-        g.add_edge(crate_idx, model, EdgeWeight::Contains);
-        g.add_edge(crate_idx, user, EdgeWeight::Contains);
+        let package_idx = g.add_node(package_node("app"));
+        let model = g.add_node(module_node("model", package_idx));
+        let user = g.add_node(module_node("user", package_idx));
+        g.add_edge(package_idx, model, EdgeWeight::Contains);
+        g.add_edge(package_idx, user, EdgeWeight::Contains);
         g.add_edge(
             user,
             model,
@@ -272,11 +272,11 @@ mod tests {
     fn test_edges_are_ignored() {
         use crate::model::TestKind;
         let mut g = ArcGraph::new();
-        let crate_idx = g.add_node(crate_node("app"));
-        let model = g.add_node(module_node("model", crate_idx));
-        let user = g.add_node(module_node("user", crate_idx));
-        g.add_edge(crate_idx, model, EdgeWeight::Contains);
-        g.add_edge(crate_idx, user, EdgeWeight::Contains);
+        let package_idx = g.add_node(package_node("app"));
+        let model = g.add_node(module_node("model", package_idx));
+        let user = g.add_node(module_node("user", package_idx));
+        g.add_edge(package_idx, model, EdgeWeight::Contains);
+        g.add_edge(package_idx, user, EdgeWeight::Contains);
         g.add_edge(
             user,
             model,

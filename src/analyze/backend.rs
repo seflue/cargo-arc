@@ -7,7 +7,7 @@ use std::path::Path;
 use super::hir::FeatureConfig;
 use super::syn_walker::{analyze_modules_syn, collect_syn_module_paths};
 use super::use_parser::ReExportMap;
-use crate::model::{CrateExportMap, CrateInfo, ModulePathMap, ModuleTree, WorkspaceCrates};
+use crate::model::{ModulePathMap, ModuleTree, PackageExportMap, PackageInfo, WorkspacePackages};
 use std::collections::HashMap;
 
 #[cfg(feature = "hir")]
@@ -52,7 +52,7 @@ impl AnalysisBackend {
 
     /// Collect all module paths for a crate (lightweight).
     #[must_use]
-    pub fn collect_module_paths(&self, crate_info: &CrateInfo) -> HashSet<String> {
+    pub fn collect_module_paths(&self, crate_info: &PackageInfo) -> HashSet<String> {
         match self {
             Self::Syn { include_tests } => collect_syn_module_paths(crate_info, *include_tests),
             #[cfg(feature = "hir")]
@@ -73,10 +73,10 @@ impl AnalysisBackend {
     #[cfg_attr(not(feature = "hir"), allow(clippy::unnecessary_wraps))]
     pub(crate) fn analyze_modules(
         &self,
-        crate_info: &CrateInfo,
-        workspace_crates: &WorkspaceCrates,
+        crate_info: &PackageInfo,
+        workspace_crates: &WorkspacePackages,
         all_module_paths: &ModulePathMap,
-        crate_exports: &CrateExportMap,
+        crate_exports: &PackageExportMap,
         reexport_map: &ReExportMap,
         external_crate_names: &HashMap<String, String>,
     ) -> Result<ModuleTree> {

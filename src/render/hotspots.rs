@@ -570,7 +570,7 @@ mod tests {
     use crate::graph::{ArcGraph, EdgeWeight};
     use crate::hotspots::pack;
     use crate::model::TargetRoots;
-    use crate::test_support::{crate_node_with_targets, module_node_with_file};
+    use crate::test_support::{module_node_with_file, package_node_with_targets};
     use std::collections::BTreeSet;
     use std::path::{Path, PathBuf};
 
@@ -587,7 +587,7 @@ mod tests {
 
     fn single_crate_tree() -> HotspotTree {
         let mut graph = ArcGraph::new();
-        let crate_idx = graph.add_node(crate_node_with_targets(
+        let package_idx = graph.add_node(package_node_with_targets(
             "app",
             TargetRoots {
                 lib_root: Some(PathBuf::from("/ws/app/src/lib.rs")),
@@ -597,10 +597,10 @@ mod tests {
         ));
         let hot_idx = graph.add_node(module_node_with_file(
             "hot",
-            crate_idx,
+            package_idx,
             "/ws/app/src/hot.rs",
         ));
-        graph.add_edge(crate_idx, hot_idx, EdgeWeight::Contains);
+        graph.add_edge(package_idx, hot_idx, EdgeWeight::Contains);
         crate::hotspots::build(&graph, Path::new("/ws"), |_| 100, |_| BTreeSet::new(), 10)
     }
 
@@ -725,9 +725,9 @@ mod tests {
         let (_, _, svg) = rendered_default();
         let data = static_data_of(&svg);
 
-        let crate_node = &data["nodes"]["app/Cargo.toml"];
-        assert_eq!(crate_node["kind"], "crate");
-        assert_eq!(crate_node["name"], "app");
+        let package_node = &data["nodes"]["app/Cargo.toml"];
+        assert_eq!(package_node["kind"], "crate");
+        assert_eq!(package_node["name"], "app");
 
         let leaf = &data["nodes"]["app/src/hot.rs"];
         assert_eq!(leaf["kind"], "file");
@@ -753,20 +753,20 @@ mod tests {
     #[test]
     fn a_containers_own_self_leaf_gets_a_disambiguated_key() {
         let mut graph = ArcGraph::new();
-        let crate_idx = graph.add_node(crate_node_with_targets(
+        let package_idx = graph.add_node(package_node_with_targets(
             "app",
             TargetRoots::default(),
             "/ws/app/Cargo.toml",
         ));
         let outer_idx = graph.add_node(module_node_with_file(
             "outer",
-            crate_idx,
+            package_idx,
             "/ws/app/src/outer/mod.rs",
         ));
-        graph.add_edge(crate_idx, outer_idx, EdgeWeight::Contains);
+        graph.add_edge(package_idx, outer_idx, EdgeWeight::Contains);
         let inner_idx = graph.add_node(module_node_with_file(
             "inner",
-            crate_idx,
+            package_idx,
             "/ws/app/src/outer/inner.rs",
         ));
         graph.add_edge(outer_idx, inner_idx, EdgeWeight::Contains);

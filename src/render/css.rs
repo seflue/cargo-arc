@@ -74,7 +74,7 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
         ),
         // Node base styles
         CssRule::class(
-            c.nodes.crate_node,
+            c.nodes.package_node,
             &[
                 ("fill", n.crate_fill),
                 ("stroke", n.crate_stroke),
@@ -350,7 +350,7 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
         CssRule::new(
             &format!(
                 ".{}, .{}, .{}, .{}, .{}",
-                c.nodes.crate_node,
+                c.nodes.package_node,
                 c.nodes.module,
                 c.nodes.external_transitive,
                 c.direction.dep_arc,
@@ -1855,7 +1855,7 @@ mod tests {
         assert!(
             css.contains(&format!(
                 ".{} {{ fill: var(--arc-node-crate-fill);",
-                CSS.nodes.crate_node
+                CSS.nodes.package_node
             )),
             "got: {css}"
         );
@@ -1983,7 +1983,7 @@ mod tests {
         let css = render_styles();
 
         // Node styles
-        assert!(css.contains(&format!(".{}", CSS.nodes.crate_node)));
+        assert!(css.contains(&format!(".{}", CSS.nodes.package_node)));
         assert!(css.contains(&format!(".{}", CSS.nodes.module)));
         assert!(css.contains(&format!(".{}", CSS.nodes.label)));
         assert!(css.contains(&format!(".{}", CSS.nodes.tree_line)));
@@ -2712,7 +2712,7 @@ mod tests {
         // Verify key selectors reference CSS constants
         let selectors: Vec<&str> = rules.iter().map(|r| r.selector.as_str()).collect();
         assert!(
-            selectors.contains(&format!(".{}", CSS.nodes.crate_node).as_str()),
+            selectors.contains(&format!(".{}", CSS.nodes.package_node).as_str()),
             "Should have .crate rule"
         );
         assert!(

@@ -1,15 +1,15 @@
 //! Test-only constructors for model and graph types.
 
 use crate::graph::Node;
-use crate::model::{CrateInfo, TargetRoots};
+use crate::model::{PackageInfo, TargetRoots};
 use petgraph::graph::NodeIndex;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// A crate node at `/<name>` with no target roots, for tests that only need
+/// A package node at `/<name>` with no target roots, for tests that only need
 /// the graph shape.
-pub(crate) fn crate_node(name: &str) -> Node {
-    Node::Crate {
+pub(crate) fn package_node(name: &str) -> Node {
+    Node::Package {
         name: name.to_string(),
         path: PathBuf::from(format!("/{name}")),
         target_roots: TargetRoots::default(),
@@ -18,22 +18,22 @@ pub(crate) fn crate_node(name: &str) -> Node {
 }
 
 /// A module node without a file, for tests that only need the graph shape.
-pub(crate) fn module_node(name: &str, crate_idx: NodeIndex) -> Node {
+pub(crate) fn module_node(name: &str, package_idx: NodeIndex) -> Node {
     Node::Module {
         name: name.to_string(),
-        crate_idx,
+        package_idx,
         file: None,
         definitions: HashMap::new(),
     }
 }
 
-/// A crate node at `/<name>` with the given target roots and manifest.
-pub(crate) fn crate_node_with_targets(
+/// A package node at `/<name>` with the given target roots and manifest.
+pub(crate) fn package_node_with_targets(
     name: &str,
     target_roots: TargetRoots,
     manifest: impl Into<PathBuf>,
 ) -> Node {
-    Node::Crate {
+    Node::Package {
         name: name.to_string(),
         path: PathBuf::from(format!("/{name}")),
         target_roots,
@@ -44,24 +44,24 @@ pub(crate) fn crate_node_with_targets(
 /// A module node with the given declaring file.
 pub(crate) fn module_node_with_file(
     name: &str,
-    crate_idx: NodeIndex,
+    package_idx: NodeIndex,
     file: impl Into<PathBuf>,
 ) -> Node {
     Node::Module {
         name: name.to_string(),
-        crate_idx,
+        package_idx,
         file: Some(file.into()),
         definitions: HashMap::new(),
     }
 }
 
-/// A crate laid out by Cargo's default convention, with its roots probed from
+/// A package laid out by Cargo's default convention, with its roots probed from
 /// disk. Hand-built fixtures carry no manifest, so there is no cargo metadata
 /// to resolve targets from.
-pub(crate) fn conventional_crate(name: &str, path: impl Into<PathBuf>) -> CrateInfo {
+pub(crate) fn conventional_package(name: &str, path: impl Into<PathBuf>) -> PackageInfo {
     let path = path.into();
     let existing = |p: PathBuf| p.exists().then_some(p);
-    CrateInfo {
+    PackageInfo {
         name: name.to_string(),
         target_roots: TargetRoots {
             lib_root: existing(path.join("src/lib.rs")),

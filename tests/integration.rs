@@ -410,7 +410,7 @@ fn test_entry_point_imports() {
 ///   `test_helper` — standalone test utility, no production deps
 ///
 /// Without --include-tests:
-///   - `CrateDep` edges from dev-dependencies should NOT appear
+///   - `PackageDep` edges from dev-dependencies should NOT appear
 ///   - `test_helper` should NOT appear (no production path)
 ///   - consumer should NOT appear (no production path)
 ///   - Only foundation with its internal module structure should remain

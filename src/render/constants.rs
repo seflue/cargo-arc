@@ -146,7 +146,7 @@ pub(super) static DRAWING: DrawingStyles = DrawingStyles {
 
 #[allow(dead_code)]
 pub(super) struct NodeClasses {
-    pub crate_node: &'static str,
+    pub package_node: &'static str,
     pub module: &'static str,
     pub external_section: &'static str,
     pub external_crate: &'static str,
@@ -378,7 +378,7 @@ pub(super) struct CssClassNames {
 
 pub(super) static CSS: CssClassNames = CssClassNames {
     nodes: NodeClasses {
-        crate_node: "crate",
+        package_node: "crate",
         module: "module",
         external_section: "external-section",
         external_crate: "external",
@@ -616,7 +616,7 @@ mod tests {
     #[test]
     fn test_css_class_names_not_empty() {
         // Every CSS class name field must be a non-empty string
-        assert!(!CSS.nodes.crate_node.is_empty());
+        assert!(!CSS.nodes.package_node.is_empty());
         assert!(!CSS.nodes.module.is_empty());
         assert!(!CSS.nodes.label.is_empty());
         assert!(!CSS.nodes.child_count.is_empty());

@@ -367,18 +367,18 @@ fn generate_static_data(
             ItemKind::Crate => "crate",
             ItemKind::Module { .. } => "module",
             ItemKind::ExternalSection => "external-section",
-            ItemKind::ExternalCrate {
+            ItemKind::ExternalPackage {
                 is_direct_dependency: true,
                 ..
             } => "external",
-            ItemKind::ExternalCrate {
+            ItemKind::ExternalPackage {
                 is_direct_dependency: false,
                 ..
             } => "external-transitive",
         };
         let parent = match &item.kind {
             ItemKind::Crate | ItemKind::ExternalSection => None,
-            ItemKind::Module { parent, .. } | ItemKind::ExternalCrate { parent, .. } => {
+            ItemKind::Module { parent, .. } | ItemKind::ExternalPackage { parent, .. } => {
                 Some(parent.to_string())
             }
         };
@@ -461,7 +461,7 @@ fn generate_static_data(
         .collect();
 
     let classes: BTreeMap<String, String> = [
-        ("crateNode", CSS.nodes.crate_node),
+        ("crateNode", CSS.nodes.package_node),
         ("module", CSS.nodes.module),
         ("externalSection", CSS.nodes.external_section),
         ("externalCrate", CSS.nodes.external_crate),
@@ -645,7 +645,7 @@ mod tests {
     use crate::graph::{ArcGraph, EdgeWeight, Node, Reexports};
     use crate::layout::{JumpTable, JumpTarget, LayoutEdge, LocatedDefinition, build_layout};
     use crate::model::{EdgeContext, SourceLocation};
-    use crate::test_support::{crate_node, module_node};
+    use crate::test_support::{module_node, package_node};
 
     /// The page reads the shadow opacity and the theme names per mode, the
     /// default first, from `STATIC_DATA.theme`.
@@ -2390,12 +2390,12 @@ mod tests {
         // desc, then symbols asc) is decided by the symbol count, not by name —
         // b->a (1 symbol) must rank before c->a (2 symbols).
         let mut graph = ArcGraph::new();
-        let crate_idx = graph.add_node(crate_node("app"));
+        let package_idx = graph.add_node(package_node("app"));
         let mods: Vec<_> = ["a", "b", "c"]
             .iter()
             .map(|&name| {
-                let idx = graph.add_node(module_node(name, crate_idx));
-                graph.add_edge(crate_idx, idx, EdgeWeight::Contains);
+                let idx = graph.add_node(module_node(name, package_idx));
+                graph.add_edge(package_idx, idx, EdgeWeight::Contains);
                 idx
             })
             .collect();
@@ -2440,7 +2440,7 @@ mod tests {
             .items
             .iter()
             .filter_map(|item| match &item.kind {
-                ItemKind::Module { parent, .. } | ItemKind::ExternalCrate { parent, .. } => {
+                ItemKind::Module { parent, .. } | ItemKind::ExternalPackage { parent, .. } => {
                     Some(*parent)
                 }
                 ItemKind::Crate | ItemKind::ExternalSection => None,
@@ -2504,7 +2504,7 @@ mod tests {
             .items
             .iter()
             .filter_map(|item| match &item.kind {
-                ItemKind::Module { parent, .. } | ItemKind::ExternalCrate { parent, .. } => {
+                ItemKind::Module { parent, .. } | ItemKind::ExternalPackage { parent, .. } => {
                     Some(*parent)
                 }
                 ItemKind::Crate | ItemKind::ExternalSection => None,
@@ -2524,10 +2524,10 @@ mod tests {
     /// Build a flat `app` crate with the given child modules; returns the graph.
     fn crate_with(modules: &[&str]) -> ArcGraph {
         let mut graph = ArcGraph::new();
-        let crate_idx = graph.add_node(crate_node("app"));
+        let package_idx = graph.add_node(package_node("app"));
         for &name in modules {
-            let idx = graph.add_node(module_node(name, crate_idx));
-            graph.add_edge(crate_idx, idx, EdgeWeight::Contains);
+            let idx = graph.add_node(module_node(name, package_idx));
+            graph.add_edge(package_idx, idx, EdgeWeight::Contains);
         }
         graph
     }
@@ -2582,11 +2582,11 @@ mod tests {
     /// Add a child module `child` under existing module/crate `parent`.
     fn add_module(graph: &mut ArcGraph, parent: &str, child: &str) {
         let parent_idx = module_idx(graph, parent);
-        let crate_idx = match &graph[parent_idx] {
-            Node::Module { crate_idx, .. } => *crate_idx,
+        let package_idx = match &graph[parent_idx] {
+            Node::Module { package_idx, .. } => *package_idx,
             _ => parent_idx,
         };
-        let child_idx = graph.add_node(module_node(child, crate_idx));
+        let child_idx = graph.add_node(module_node(child, package_idx));
         graph.add_edge(parent_idx, child_idx, EdgeWeight::Contains);
     }
 

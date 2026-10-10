@@ -16,7 +16,7 @@ use crate::diagnose::RepresentativeCycles;
 use crate::graph::{ArcGraph, Reexports};
 use crate::hotspots;
 use crate::layout::{JumpTable, LayoutIR, LocationId, build_layout};
-use crate::model::{CrateExportMap, CrateInfo, ModulePathMap, WorkspaceCrates};
+use crate::model::{ModulePathMap, PackageExportMap, PackageInfo, WorkspacePackages};
 use crate::render::{
     AnalysisSwitches, Appearance, Document, RenderConfig, THEMES, Theme, html_page, project_name,
     render, render_hotspots,
@@ -751,7 +751,7 @@ fn run_volatility_report(
 
 /// Reads the workspace root off `crates`, all of whose members share it.
 /// `None` when the workspace has no crates to determine it from.
-fn workspace_root_of(crates: &[CrateInfo]) -> Option<PathBuf> {
+fn workspace_root_of(crates: &[PackageInfo]) -> Option<PathBuf> {
     crates.first().map(|krate| krate.workspace_root.clone())
 }
 
@@ -765,7 +765,8 @@ fn build_dependency_graph(
     let crates = analyze_workspace(manifest_path, feature_config)?;
     tracing::debug!("phase: workspace analyzed ({} crates)", crates.len());
     let workspace_root = workspace_root_of(&crates);
-    let workspace_crates: WorkspaceCrates = crates.iter().map(|krate| krate.name.clone()).collect();
+    let workspace_crates: WorkspacePackages =
+        crates.iter().map(|krate| krate.name.clone()).collect();
     let backend = AnalysisBackend::new(manifest_path, feature_config, use_hir)?;
 
     let all_module_paths: ModulePathMap = crates
@@ -778,7 +779,7 @@ fn build_dependency_graph(
         .collect();
     tracing::debug!("phase: module paths collected");
 
-    let crate_exports: CrateExportMap = crates
+    let crate_exports: PackageExportMap = crates
         .iter()
         .map(|krate| {
             let name = normalize_crate_name(&krate.name);
@@ -1214,9 +1215,9 @@ mod tests {
 
     #[test]
     fn workspace_root_of_reads_the_first_crates_root() {
-        use crate::model::{CrateInfo, TargetRoots};
+        use crate::model::{PackageInfo, TargetRoots};
 
-        let krate = CrateInfo {
+        let krate = PackageInfo {
             name: "a".into(),
             path: PathBuf::from("/ws/a"),
             workspace_root: PathBuf::from("/ws"),

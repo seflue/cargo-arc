@@ -38,7 +38,7 @@ pub fn render(ir: &LayoutIR, config: &RenderConfig) -> String {
         .items
         .iter()
         .filter_map(|item| match &item.kind {
-            ItemKind::Module { parent, .. } | ItemKind::ExternalCrate { parent, .. } => {
+            ItemKind::Module { parent, .. } | ItemKind::ExternalPackage { parent, .. } => {
                 Some(*parent)
             }
             ItemKind::Crate | ItemKind::ExternalSection => None,
@@ -118,7 +118,7 @@ pub fn render(ir: &LayoutIR, config: &RenderConfig) -> String {
     let has_transitive_externals = ir.items.iter().any(|item| {
         matches!(
             item.kind,
-            ItemKind::ExternalCrate {
+            ItemKind::ExternalPackage {
                 is_direct_dependency: false,
                 ..
             }

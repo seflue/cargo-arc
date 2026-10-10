@@ -207,7 +207,7 @@ impl CycleCluster {
         position: usize,
         total: usize,
     ) -> Self {
-        let crate_name = graph[cluster.crate_idx].name().to_string();
+        let crate_name = graph[cluster.package_idx].name().to_string();
         let place = common_place(graph, &cluster.nodes);
         let resolve_edges = |edges: &[CyclicEdge]| {
             edges
@@ -1116,7 +1116,7 @@ mod tests {
     use crate::rules::config::Diagnostics;
     use crate::rules::diagnostics::{DiagnosticKind, UnsortedNode};
     use crate::rules::test_support::{allow_edge, pattern_edge};
-    use crate::test_support::{crate_node, module_node};
+    use crate::test_support::{module_node, package_node};
     use std::path::PathBuf;
 
     // -- Test graph helpers --
@@ -1147,17 +1147,17 @@ mod tests {
 
     fn test_crate_graph() -> (ArcGraph, NodeIndex) {
         let mut graph = ArcGraph::new();
-        let crate_idx = graph.add_node(crate_node("test"));
-        (graph, crate_idx)
+        let package_idx = graph.add_node(package_node("test"));
+        (graph, package_idx)
     }
 
     fn add_module(
         graph: &mut ArcGraph,
         name: &str,
-        crate_idx: NodeIndex,
+        package_idx: NodeIndex,
         parent: NodeIndex,
     ) -> NodeIndex {
-        let idx = graph.add_node(module_node(name, crate_idx));
+        let idx = graph.add_node(module_node(name, package_idx));
         graph.add_edge(parent, idx, EdgeWeight::Contains);
         idx
     }
@@ -1179,13 +1179,13 @@ mod tests {
         );
     }
 
-    /// A production `CrateDep` edge, as a `Cargo.toml` entry writes it: no
+    /// A production `PackageDep` edge, as a `Cargo.toml` entry writes it: no
     /// locations, because a manifest entry is not an import.
     fn add_crate_dep(graph: &mut ArcGraph, from: NodeIndex, to: NodeIndex) {
         graph.add_edge(
             from,
             to,
-            EdgeWeight::CrateDep {
+            EdgeWeight::PackageDep {
                 context: EdgeContext::production(),
             },
         );
@@ -1286,15 +1286,15 @@ mod tests {
     ) {
         let mut graph = ArcGraph::new();
 
-        let domain = graph.add_node(crate_node("domain"));
+        let domain = graph.add_node(package_node("domain"));
         let service = add_module(&mut graph, "service", domain, domain);
         let model = add_module(&mut graph, "model", domain, domain);
 
-        let infra = graph.add_node(crate_node("infra"));
+        let infra = graph.add_node(package_node("infra"));
         let db = add_module(&mut graph, "db", infra, infra);
         let api = add_module(&mut graph, "api", infra, infra);
 
-        let application = graph.add_node(crate_node("application"));
+        let application = graph.add_node(package_node("application"));
         let handler = add_module(&mut graph, "handler", application, application);
 
         (
@@ -1467,9 +1467,9 @@ mod tests {
 
     #[test]
     fn test_cycles_in_scope() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
-        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
+        let (mut graph, package_idx) = test_crate_graph();
+        let a = add_module(&mut graph, "a", package_idx, package_idx);
+        let b = add_module(&mut graph, "b", package_idx, package_idx);
         // Cycle: a → b → a
         add_production_dep(&mut graph, a, b);
         add_production_dep(&mut graph, b, a);
@@ -1486,9 +1486,9 @@ mod tests {
 
     #[test]
     fn test_pure_reexport_cycle_ignored_by_default() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
-        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
+        let (mut graph, package_idx) = test_crate_graph();
+        let a = add_module(&mut graph, "a", package_idx, package_idx);
+        let b = add_module(&mut graph, "b", package_idx, package_idx);
         // a re-exports from b (pub use), b uses a behaviorally. The cycle exists
         // only through the re-export edge → idiomatic, not real coupling.
         add_reexport_dep(&mut graph, a, b);
@@ -1560,11 +1560,11 @@ mod tests {
 
     #[test]
     fn test_cycles_one_violation_per_cluster() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
-        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
-        let c = add_module(&mut graph, "c", crate_idx, crate_idx);
-        let d = add_module(&mut graph, "d", crate_idx, crate_idx);
+        let (mut graph, package_idx) = test_crate_graph();
+        let a = add_module(&mut graph, "a", package_idx, package_idx);
+        let b = add_module(&mut graph, "b", package_idx, package_idx);
+        let c = add_module(&mut graph, "c", package_idx, package_idx);
+        let d = add_module(&mut graph, "d", package_idx, package_idx);
         // Two triangles sharing edge a -> b: one SCC, two cycles.
         add_production_dep(&mut graph, a, b);
         add_production_dep(&mut graph, b, c);
@@ -1587,9 +1587,9 @@ mod tests {
 
     #[test]
     fn test_cycles_allow_removes_matching_edge_before_search() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
-        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
+        let (mut graph, package_idx) = test_crate_graph();
+        let a = add_module(&mut graph, "a", package_idx, package_idx);
+        let b = add_module(&mut graph, "b", package_idx, package_idx);
         // Cycle: a → b → a, but b → a is allowed.
         add_production_dep(&mut graph, a, b);
         add_production_dep(&mut graph, b, a);
@@ -1620,9 +1620,9 @@ mod tests {
 
     #[test]
     fn test_cycles_allow_on_edge_off_any_cycle_is_not_recorded() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
-        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
+        let (mut graph, package_idx) = test_crate_graph();
+        let a = add_module(&mut graph, "a", package_idx, package_idx);
+        let b = add_module(&mut graph, "b", package_idx, package_idx);
         // a → b is the only edge: nothing here ever forms a cycle.
         add_production_dep(&mut graph, a, b);
 
@@ -1647,11 +1647,11 @@ mod tests {
     /// Crate `test` holding `outer`, which holds `inner`, which holds `deep`,
     /// beside a second top-level module `other`.
     fn nested_module_graph() -> (ArcGraph, NodeIndex, NodeIndex, NodeIndex, NodeIndex) {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let outer = add_module(&mut graph, "outer", crate_idx, crate_idx);
-        let inner = add_module(&mut graph, "inner", crate_idx, outer);
-        let deep = add_module(&mut graph, "deep", crate_idx, inner);
-        let other = add_module(&mut graph, "other", crate_idx, crate_idx);
+        let (mut graph, package_idx) = test_crate_graph();
+        let outer = add_module(&mut graph, "outer", package_idx, package_idx);
+        let inner = add_module(&mut graph, "inner", package_idx, outer);
+        let deep = add_module(&mut graph, "deep", package_idx, inner);
+        let other = add_module(&mut graph, "other", package_idx, package_idx);
         (graph, outer, inner, deep, other)
     }
 
@@ -1678,10 +1678,10 @@ mod tests {
 
     #[test]
     fn test_module_to_crate_root_edge_is_allowed_as_a_super_edge() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let outer = add_module(&mut graph, "outer", crate_idx, crate_idx);
-        add_production_dep(&mut graph, crate_idx, outer);
-        add_production_dep(&mut graph, outer, crate_idx);
+        let (mut graph, package_idx) = test_crate_graph();
+        let outer = add_module(&mut graph, "outer", package_idx, package_idx);
+        add_production_dep(&mut graph, package_idx, outer);
+        add_production_dep(&mut graph, outer, package_idx);
 
         // `test::**` leaves the crate node out; `**` takes it in.
         let result = check_rule(&graph, &no_cycles_allowing("**", "super"), false);
@@ -1735,11 +1735,11 @@ mod tests {
 
     #[test]
     fn test_deep_module_to_crate_root_edge_is_allowed_under_crate() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let outer = add_module(&mut graph, "outer", crate_idx, crate_idx);
-        let inner = add_module(&mut graph, "inner", crate_idx, outer);
-        add_production_dep(&mut graph, crate_idx, inner);
-        add_production_dep(&mut graph, inner, crate_idx);
+        let (mut graph, package_idx) = test_crate_graph();
+        let outer = add_module(&mut graph, "outer", package_idx, package_idx);
+        let inner = add_module(&mut graph, "inner", package_idx, outer);
+        add_production_dep(&mut graph, package_idx, inner);
+        add_production_dep(&mut graph, inner, package_idx);
 
         let result = check_rule(&graph, &no_cycles_allowing("**", "crate"), false);
         assert!(result.reported().next().is_none());
@@ -1851,11 +1851,11 @@ mod tests {
 
     #[test]
     fn test_common_place_nested_modules_share_prefix() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let back = add_module(&mut graph, "back", crate_idx, crate_idx);
-        let hlsl = add_module(&mut graph, "hlsl", crate_idx, back);
-        let writer = add_module(&mut graph, "writer", crate_idx, hlsl);
-        let keywords = add_module(&mut graph, "keywords", crate_idx, hlsl);
+        let (mut graph, package_idx) = test_crate_graph();
+        let back = add_module(&mut graph, "back", package_idx, package_idx);
+        let hlsl = add_module(&mut graph, "hlsl", package_idx, back);
+        let writer = add_module(&mut graph, "writer", package_idx, hlsl);
+        let keywords = add_module(&mut graph, "keywords", package_idx, hlsl);
         assert_eq!(
             common_place(&graph, &[writer, keywords]),
             "test::back::hlsl"
@@ -1864,9 +1864,9 @@ mod tests {
 
     #[test]
     fn test_common_place_flat_modules_share_only_the_crate() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
-        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
+        let (mut graph, package_idx) = test_crate_graph();
+        let a = add_module(&mut graph, "a", package_idx, package_idx);
+        let b = add_module(&mut graph, "b", package_idx, package_idx);
         assert_eq!(common_place(&graph, &[a, b]), "test");
     }
 
@@ -1981,9 +1981,9 @@ mod tests {
 
     #[test]
     fn test_layers_outside_layers() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
-        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
+        let (mut graph, package_idx) = test_crate_graph();
+        let a = add_module(&mut graph, "a", package_idx, package_idx);
+        let b = add_module(&mut graph, "b", package_idx, package_idx);
         // Edge between modules not in any defined layer — should be ignored
         add_production_dep(&mut graph, a, b);
 
@@ -2000,7 +2000,7 @@ mod tests {
         let mut graph = ArcGraph::new();
         let mut index: HashMap<&str, NodeIndex> = HashMap::new();
         for &name in crates {
-            let node = graph.add_node(crate_node(name));
+            let node = graph.add_node(package_node(name));
             index.insert(name, node);
         }
         for &(from, to) in deps {
@@ -2180,9 +2180,9 @@ mod tests {
     /// A "domain" crate plus two crates that do not match `*domain*`.
     fn domain_and_others_graph() -> (ArcGraph, NodeIndex, NodeIndex, NodeIndex) {
         let mut graph = ArcGraph::new();
-        let domain = graph.add_node(crate_node("domain"));
-        let svc_orders = graph.add_node(crate_node("svc_orders"));
-        let svc_billing = graph.add_node(crate_node("svc_billing"));
+        let domain = graph.add_node(package_node("domain"));
+        let svc_orders = graph.add_node(package_node("svc_orders"));
+        let svc_billing = graph.add_node(package_node("svc_billing"));
         (graph, domain, svc_orders, svc_billing)
     }
 
@@ -2224,8 +2224,8 @@ mod tests {
         let rule = catch_all_above_domain_rule();
 
         let mut before = ArcGraph::new();
-        let domain = before.add_node(crate_node("domain"));
-        let svc_orders = before.add_node(crate_node("svc_orders"));
+        let domain = before.add_node(package_node("domain"));
+        let svc_orders = before.add_node(package_node("svc_orders"));
         add_production_dep(&mut before, domain, svc_orders);
         assert_eq!(check_rule(&before, &rule, false).reported().count(), 1);
 
@@ -2262,9 +2262,9 @@ mod tests {
     #[test]
     fn test_layers_overlapping_ordinary_positions_fail_the_run() {
         let mut graph = ArcGraph::new();
-        let crate_idx = graph.add_node(crate_node("svc_application_orders"));
-        add_module(&mut graph, "alpha", crate_idx, crate_idx);
-        add_module(&mut graph, "beta", crate_idx, crate_idx);
+        let package_idx = graph.add_node(package_node("svc_application_orders"));
+        add_module(&mut graph, "alpha", package_idx, package_idx);
+        add_module(&mut graph, "beta", package_idx, package_idx);
 
         let rule = layers_rule_of_ranks(&[&["*application*"], &["*orders*"]]);
         let err = CheckRun::new(&graph, &Baseline::empty(), false)
@@ -2453,9 +2453,9 @@ mod tests {
 
     #[test]
     fn test_a_frozen_cycle_counts_one_hit_per_edge() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
-        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
+        let (mut graph, package_idx) = test_crate_graph();
+        let a = add_module(&mut graph, "a", package_idx, package_idx);
+        let b = add_module(&mut graph, "b", package_idx, package_idx);
         add_production_dep(&mut graph, a, b);
         add_production_dep(&mut graph, b, a);
 
@@ -2472,9 +2472,9 @@ mod tests {
 
     #[test]
     fn test_one_uncovered_edge_keeps_the_cluster_reported() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
-        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
+        let (mut graph, package_idx) = test_crate_graph();
+        let a = add_module(&mut graph, "a", package_idx, package_idx);
+        let b = add_module(&mut graph, "b", package_idx, package_idx);
         add_production_dep(&mut graph, a, b);
         add_production_dep(&mut graph, b, a);
 
@@ -2488,9 +2488,9 @@ mod tests {
 
     #[test]
     fn test_a_frozen_cycle_edge_that_gains_a_symbol_turns_red() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
-        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
+        let (mut graph, package_idx) = test_crate_graph();
+        let a = add_module(&mut graph, "a", package_idx, package_idx);
+        let b = add_module(&mut graph, "b", package_idx, package_idx);
         add_named_dep(&mut graph, a, b, &["Old", "New"]);
         add_named_dep(&mut graph, b, a, &["Back"]);
 
@@ -2518,11 +2518,11 @@ mod tests {
     fn test_leaving_any_single_edge_uncovered_keeps_a_cluster_reported() {
         // The verdict per cycle is derived from the covered edges, so it holds
         // only if every SCC-internal edge lies on a representative cycle.
-        let (mut graph, crate_idx) = test_crate_graph();
-        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
-        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
-        let c = add_module(&mut graph, "c", crate_idx, crate_idx);
-        let d = add_module(&mut graph, "d", crate_idx, crate_idx);
+        let (mut graph, package_idx) = test_crate_graph();
+        let a = add_module(&mut graph, "a", package_idx, package_idx);
+        let b = add_module(&mut graph, "b", package_idx, package_idx);
+        let c = add_module(&mut graph, "c", package_idx, package_idx);
+        let d = add_module(&mut graph, "d", package_idx, package_idx);
         add_production_dep(&mut graph, a, b);
         add_production_dep(&mut graph, b, c);
         add_production_dep(&mut graph, c, a);
@@ -2705,11 +2705,11 @@ mod tests {
 
     #[test]
     fn test_a_wholly_frozen_tangle_is_one_frozen_cluster() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
-        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
-        let c = add_module(&mut graph, "c", crate_idx, crate_idx);
-        let d = add_module(&mut graph, "d", crate_idx, crate_idx);
+        let (mut graph, package_idx) = test_crate_graph();
+        let a = add_module(&mut graph, "a", package_idx, package_idx);
+        let b = add_module(&mut graph, "b", package_idx, package_idx);
+        let c = add_module(&mut graph, "c", package_idx, package_idx);
+        let d = add_module(&mut graph, "d", package_idx, package_idx);
         // Two triangles sharing edge a -> b: one cluster, two rings.
         add_production_dep(&mut graph, a, b);
         add_production_dep(&mut graph, b, c);
@@ -2750,11 +2750,11 @@ mod tests {
 
     #[test]
     fn test_cycle_sharing_an_edge_with_a_frozen_cycle_is_still_reported() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
-        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
-        let c = add_module(&mut graph, "c", crate_idx, crate_idx);
-        let d = add_module(&mut graph, "d", crate_idx, crate_idx);
+        let (mut graph, package_idx) = test_crate_graph();
+        let a = add_module(&mut graph, "a", package_idx, package_idx);
+        let b = add_module(&mut graph, "b", package_idx, package_idx);
+        let c = add_module(&mut graph, "c", package_idx, package_idx);
+        let d = add_module(&mut graph, "d", package_idx, package_idx);
         // a -> b -> c -> a and a -> b -> d -> a share edge a -> b.
         add_production_dep(&mut graph, a, b);
         add_production_dep(&mut graph, b, c);
@@ -2799,11 +2799,11 @@ mod tests {
 
     #[test]
     fn test_freezing_one_cycle_leaves_a_lean_feedback_set_for_the_mixed_rest() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
-        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
-        let c = add_module(&mut graph, "c", crate_idx, crate_idx);
-        let d = add_module(&mut graph, "d", crate_idx, crate_idx);
+        let (mut graph, package_idx) = test_crate_graph();
+        let a = add_module(&mut graph, "a", package_idx, package_idx);
+        let b = add_module(&mut graph, "b", package_idx, package_idx);
+        let c = add_module(&mut graph, "c", package_idx, package_idx);
+        let d = add_module(&mut graph, "d", package_idx, package_idx);
         // a->b->d->a shares edge b->d with the two open cycles b<->c and c<->d.
         add_production_dep(&mut graph, a, b);
         add_production_dep(&mut graph, b, c);
