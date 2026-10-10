@@ -1,6 +1,6 @@
 # Glossary
 
-cargo-arc visualizes a workspace's module and crate dependencies and detects architecture [violations](#violation).
+cargo-arc visualizes a workspace's module and package dependencies and detects architecture [violations](#violation).
 This file defines the terms it uses in a specific sense.
 
 See also [RULES.md](RULES.md), [ARC_DIAGRAM.md](ARC_DIAGRAM.md), [HOTSPOT_MAP.md](HOTSPOT_MAP.md) and [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -9,11 +9,16 @@ See also [RULES.md](RULES.md), [ARC_DIAGRAM.md](ARC_DIAGRAM.md), [HOTSPOT_MAP.md
 
 | Term | Definition |
 |------|------------|
-| **<a id="node">Node</a>** | In Rust, the crates of the workspace and the modules within them are the nodes of the dependency graph. Modules can be nested at any depth. `--externals` adds the external crates the workspace depends on to the graph. [Patterns](#module-path-pattern) match only nodes inside the workspace. |
+| **<a id="package">Package</a>** | The unit at the top of a module tree, which other packages depend on as a whole. In Rust a package is what a `Cargo.toml` describes, and in a Neovim plugin it is a top-level namespace `lua/<name>/`, with the plugin's repository as the workspace. |
+| **<a id="node">Node</a>** | The [packages](#package) of the workspace and the modules within them are the nodes of the dependency graph. Modules can be nested at any depth. `--externals` adds the external packages the workspace depends on to the graph. [Patterns](#module-path-pattern) match only nodes inside the workspace. |
 | **<a id="edge">Edge</a>** | The directed connection from one [node](#node) to another that the first depends on directly. A transitive dependency runs through other nodes and is not an edge. |
-| **<a id="qualified-node-name">Qualified node name</a>** | A [node](#node)'s path starting at its crate: `storage` is the crate, `storage::pool` a module in it. `check` writes both ends of a `layers` or `forbidden-dependency` [violation](#violation) as qualified node names. |
-| **<a id="manifest-edge">Manifest edge</a>** | The [edge](#edge) from one crate to another that the first declares in its `Cargo.toml`. No import in the source code creates it. |
+| **<a id="qualified-node-name">Qualified node name</a>** | A [node](#node)'s path starting at its package: `storage` is the package, `storage::pool` a module in it. `check` writes both ends of a `layers` or `forbidden-dependency` [violation](#violation) as qualified node names. |
+| **<a id="manifest-edge">Manifest edge</a>** | The [edge](#edge) from one package to another that the first declares in its manifest, such as a `Cargo.toml`. No import in the source code creates it. |
 | **<a id="bare-import">Bare import</a>** | An import of a module itself instead of an item in it, such as `use storage::pool;`. |
+
+Rust calls the library or binary that a [package](#package) builds a *crate*, and in everyday use often the package itself.
+Lakos uses *package* for a smaller unit (see [Module roles](#module-roles)).
+The UI and the CLI output use the analyzed language's own word for a package, which is *crate* for Rust.
 
 Graph theory calls a [node](#node) a *vertex*.
 The literature on directed graphs calls an [edge](#edge) an *arc*.
@@ -24,7 +29,7 @@ In the [arc diagram](#arc-diagram), an arc is the curve that draws a dependency 
 | Term | Definition |
 |------|------------|
 | **<a id="cycle">Cycle</a>** | A chain of direct dependencies between modules that leads back to the module it started from, such as `a -> b -> c -> a`. |
-| **<a id="cluster">Cluster</a>** | A strongly connected component of the module graph with at least two modules: the maximal set of modules that all reach each other. A cluster holds one or more [cycles](#cycle) and never spans crates. |
+| **<a id="cluster">Cluster</a>** | A strongly connected component of the module graph with at least two modules: the maximal set of modules that all reach each other. A cluster holds one or more [cycles](#cycle) and never spans packages. |
 | **<a id="tangle">Tangle</a>** | The same set of modules as a [cluster](#cluster). Structure101 [defines a tangle](https://www.sonarsource.com/structure101/docs/java/studio/Content/restructure101/tangles.html) as "a set of items that form a cyclic dependency graph at any scope …". |
 | **<a id="representative-cycle">Representative cycle</a>** | The shortest [cycle](#cycle) through one [edge](#edge). Several edges can share the same representative cycle. Every cycle cargo-arc reports is a representative cycle. |
 | **<a id="counted-cycle">Counted cycle</a>** | A [representative cycle](#representative-cycle) that is not [frozen](#frozen). When every cycle of a [tangle](#tangle) is frozen, all of them are counted, so that the tangle still has a [feedback arc set](#feedback-arc-set) that shows how to reduce the frozen debt. [Traffic](#traffic) and the feedback arc set consider only counted cycles. |
@@ -129,7 +134,7 @@ Say *container module* for a module and *C4 container* for the deployable unit.
 In the [hotspot map](#hotspot-map), a [container](#container) is a circle that holds other circles.
 
 Lakos calls a unit that only groups components a *package*; it is not a component itself.
-In Cargo, a *package* is what a `Cargo.toml` describes.
+Say *Lakos package* for it, since a [package](#package) here is the larger unit at the top of a module tree.
 A Lakos component, a header with its implementation file, corresponds to a module file here.
 
 ## Rules and violations
@@ -147,7 +152,7 @@ A Lakos component, a header with its implementation file, corresponds to a modul
 | **<a id="diagnostic">Diagnostic</a>** | A gap in the configuration: a [node](#node) that an [exhaustive `layers` rule](#exhaustive-rule) leaves in no position, an `except` entry that matches no node, a [baseline](#baseline) entry that matches nothing, a baseline entry that freezes more symbols than the [edge](#edge) still carries, an `allow` entry that matches nothing, `allow` entries that put nodes above each other in a circle, a [rule](#rule) [pattern](#module-path-pattern) that matches nothing, or a catch-all [architectural layer](#architectural-layer) that holds nothing. |
 | **<a id="diagnostic-level">Diagnostic level</a>** | Whether a run tolerates the gap a [diagnostic](#diagnostic) names: `allow`, `warn` or `deny`. |
 | **<a id="architectural-layer">Architectural layer</a>** | One position in a `layers` [rule](#rule). It holds one or more [patterns](#module-path-pattern), or `*` for the [nodes](#node) that no other layer holds. Patterns in the same layer share its position. |
-| **<a id="exhaustive-rule">Exhaustive rule</a>** | A `layers` [rule](#rule) with `exhaustive = true`, which claims to sort everything it addresses. Its crate patterns claim every workspace crate, and its module patterns claim every module of the crates they reach. A rule without the field says nothing about the [nodes](#node) it does not name. |
+| **<a id="exhaustive-rule">Exhaustive rule</a>** | A `layers` [rule](#rule) with `exhaustive = true`, which claims to sort everything it addresses. Its package patterns claim every workspace package, and its module patterns claim every module of the packages they reach. A rule without the field says nothing about the [nodes](#node) it does not name. |
 | **<a id="module-path-pattern">Module path pattern</a>** | A module path with optional wildcards, such as `domain`, `domain::service`, `domain::*`, `domain::**`, `domain*` or a bare `**`. Inside one segment, `*` stands for any run of characters. *Pattern* alone means a module path pattern unless the text says otherwise. |
 | **<a id="dependency-pattern">Dependency pattern</a>** | A named list of `allow` entries under `[dependency-patterns]`, which a [rule](#rule)'s `allow` list refers to by name. It only selects dependencies; the `allow` list that names it allows them. |
 | **<a id="scope">Scope</a>** | The [module path pattern](#module-path-pattern) in the `scope` field of a `no-cycles` [rule](#rule). The rule searches only the [edges](#edge) whose two ends the pattern matches. |
@@ -176,7 +181,7 @@ Where the context makes clear which one is meant, *layer* alone names an [archit
 In the architecture literature, a *tier* is a deployment boundary.
 
 *Total* and *complete* would claim the whole workspace.
-An [exhaustive rule](#exhaustive-rule) written only from module patterns covers the modules of the crates it reaches and says nothing about other crates.
+An [exhaustive rule](#exhaustive-rule) written only from module patterns covers the modules of the packages it reaches and says nothing about other packages.
 
 ### What a run prints
 
@@ -196,7 +201,7 @@ In the code, the *source* of an [edge](#edge) is the [node](#node) it starts fro
 | Term | Definition |
 |------|------------|
 | **<a id="code-lines">Code lines</a>** | Tokei's `code` count for a file: its source lines without comments and blank lines. |
-| **<a id="container">Container</a>** | A circle that holds other circles: the workspace, a crate, or a module with children. The file that declares it appears as a [leaf](#leaf) inside it. |
+| **<a id="container">Container</a>** | A circle that holds other circles: the workspace, a package, or a module with children. The file that declares it appears as a [leaf](#leaf) inside it. |
 | **<a id="leaf">Leaf</a>** | The circle of a single file. Size and commits are measured on leaves. |
 | **<a id="hotspot">Hotspot</a>** | One of the top-N files of the workspace, ranked by [code lines](#code-lines) times commit count. A hotspot is always a [leaf](#leaf). |
 | **<a id="hotspot-map">Hotspot map</a>** | The view of a workspace as nested circles, sized by [code lines](#code-lines) and colored by commit activity. |
@@ -206,9 +211,9 @@ In the code, the *source* of an [edge](#edge) is the [node](#node) it starts fro
 
 *Hot file* names a property that a file has or lacks, and a [hotspot](#hotspot) is a rank among all files.
 
-*Group* and *folder* suggest a directory in the file system, and a [container](#container) can also be a crate or the workspace.
+*Group* and *folder* suggest a directory in the file system, and a [container](#container) can also be a package or the workspace.
 
-A [node](#node) is a crate or module in the dependency graph, and a [leaf](#leaf) is the circle of one file in the [hotspot map](#hotspot-map).
+A [node](#node) is a package or module in the dependency graph, and a [leaf](#leaf) is the circle of one file in the [hotspot map](#hotspot-map).
 
 A *treemap* nests rectangles.
 cargo-arc tried one and draws nested circles instead, which show the nesting depth better but leave space unused.
@@ -220,7 +225,7 @@ cargo-arc tried one and draws nested circles instead, which show the nesting dep
 | **<a id="provider">Provider</a>** | A module that other modules import symbols from. |
 | **<a id="consumer">Consumer</a>** | A module that imports a symbol from a [provider](#provider) in production code. A module that imports a symbol only by `pub use` republishes it and is not its consumer. |
 | **<a id="consumer-group">Consumer group</a>** | The symbols of one [provider](#provider) that have exactly the same [consumers](#consumer). |
-| **<a id="consumer-locality">Consumer locality</a>** | How close the [consumers](#consumer) of a [consumer group](#consumer-group) sit to each other in the module tree. It has three cases: a single consumer, several consumers under a common ancestor module that does not contain the [provider](#provider), or consumers spread across the crate. |
+| **<a id="consumer-locality">Consumer locality</a>** | How close the [consumers](#consumer) of a [consumer group](#consumer-group) sit to each other in the module tree. It has three cases: a single consumer, several consumers under a common ancestor module that does not contain the [provider](#provider), or consumers spread across the package. |
 
 [Consumer locality](#consumer-locality) shows whether the symbols of a group could move closer to the modules that use them.
 [ARC_DIAGRAM.md](ARC_DIAGRAM.md#the-sidebar-for-an-arc) gives the sidebar's wording for each case.
@@ -234,7 +239,7 @@ In this file, a [cluster](#cluster) is a strongly connected component, and a [sc
 
 | Term | Definition |
 |------|------------|
-| **<a id="arc-diagram">Arc diagram</a>** | The view of a workspace as a tree of crates and modules, with arcs for the dependencies between them. `cargo arc` renders it, and `cargo arc ui` serves it beside the [hotspot map](#hotspot-map). |
+| **<a id="arc-diagram">Arc diagram</a>** | The view of a workspace as a tree of packages and modules, with arcs for the dependencies between them. `cargo arc` renders it, and `cargo arc ui` serves it beside the [hotspot map](#hotspot-map). |
 | **<a id="arc-type">Arc type</a>** | The category of dependency an arc draws: crate-dep, module-dep or [re-export](#re-export). Every arc has exactly one arc type. cargo-arc derives it from the arc's endpoints and its re-export flag and does not store it. |
 | **<a id="re-export">Re-export</a>** | The [arc type](#arc-type) of an arc whose imports are all `pub use`, so that it passes names on without depending on them. A single ordinary import on the arc makes it a module-dep instead ([ADR-022](adr/022-reexport-edges-tagged-not-dropped.md)). |
 | **<a id="filter">Filter</a>** | A checkbox in the **View** menu that shows or hides part of the diagram. Four filters cover arcs: crate dependencies, module dependencies, [re-exports](#re-export) and circular dependencies. The others cover [nodes](#node). |
@@ -246,7 +251,7 @@ Where a text also covers the [hotspot map](#hotspot-map), say *arc diagram*.
 
 *Kind* has two other meanings in this project.
 It says whether a reference is in production or in test code, and in Cargo it classifies a manifest dependency as normal, dev or build.
-Both are independent of the [arc type](#arc-type): one pair of crates can have a production [edge](#edge) and a test edge of the same arc type.
+Both are independent of the [arc type](#arc-type): one pair of packages can have a production [edge](#edge) and a test edge of the same arc type.
 *Level* would suggest an order among the three arc types, and they have none.
 
 Three of the four arc [filters](#filter) select on the [arc type](#arc-type).
@@ -255,7 +260,7 @@ The circular-dependencies filter selects on whether the arc is a [cyclic edge](#
 
 All arcs sit in one *SVG layer*, whichever [filters](#filter) cover them.
 
-A *suppressed* arc is one the diagram does not draw: a crate arc between two crates whose modules a module arc already connects, or, in group mode, an arc that does not touch the selected [node](#node).
+A *suppressed* arc is one the diagram does not draw: a crate-dep arc between two packages whose modules a module arc already connects, or, in group mode, an arc that does not touch the selected [node](#node).
 
 The checkbox of the circular-dependencies [filter](#filter) also turns on *cluster mode*, which is not a filter.
 
