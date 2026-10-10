@@ -101,14 +101,14 @@ macro_rules! color_group {
 }
 
 color_group!(NodeColors, "node" {
-    crate_fill => "crate-fill",
-    crate_stroke => "crate-stroke",
+    package_fill => "package-fill",
+    package_stroke => "package-stroke",
     module_fill => "module-fill",
     module_stroke => "module-stroke",
     external_section_fill => "external-section-fill",
     external_section_stroke => "external-section-stroke",
-    external_crate_fill => "external-crate-fill",
-    external_crate_stroke => "external-crate-stroke",
+    external_package_fill => "external-package-fill",
+    external_package_stroke => "external-package-stroke",
     external_transitive_fill => "external-transitive-fill",
     external_transitive_stroke => "external-transitive-stroke",
     /// Label text inside a node.
@@ -130,7 +130,7 @@ color_group!(DirectionColors, "direction" {
 color_group!(
     #[allow(clippy::struct_field_names)] // "_fill" suffix groups related color values
     NodeSelectionColors, "selection" {
-        crate_fill => "crate-fill",
+        package_fill => "package-fill",
         module_fill => "module-fill",
         external_fill => "external-fill",
         external_transitive_fill => "external-transitive-fill",
@@ -317,14 +317,14 @@ pub static LATTE: Theme = {
         mode: Mode::Light,
         palette: ColorPalette {
             nodes: NodeColors {
-                crate_fill: BLUE_100,
-                crate_stroke: BLUE,
+                package_fill: BLUE_100,
+                package_stroke: BLUE,
                 module_fill: ORANGE_100,
                 module_stroke: ORANGE,
                 external_section_fill: GRAY_200,
                 external_section_stroke: GRAY_400,
-                external_crate_fill: GRAY_200,
-                external_crate_stroke: GRAY_600,
+                external_package_fill: GRAY_200,
+                external_package_stroke: GRAY_600,
                 external_transitive_fill: GRAY_100,
                 external_transitive_stroke: "#bbb",
                 text: "#000",
@@ -341,7 +341,7 @@ pub static LATTE: Theme = {
                 reexport: TEAL,
             },
             node_selection: NodeSelectionColors {
-                crate_fill: BLUE_300,
+                package_fill: BLUE_300,
                 module_fill: ORANGE_300,
                 external_fill: GRAY_300,
                 external_transitive_fill: GRAY_200,
@@ -452,14 +452,14 @@ pub static MOCHA: Theme = {
         mode: Mode::Dark,
         palette: ColorPalette {
             nodes: NodeColors {
-                crate_fill: BLUE_TINT,
-                crate_stroke: BLUE,
+                package_fill: BLUE_TINT,
+                package_stroke: BLUE,
                 module_fill: PEACH_TINT,
                 module_stroke: PEACH,
                 external_section_fill: SURFACE0,
                 external_section_stroke: OVERLAY2,
-                external_crate_fill: SURFACE0,
-                external_crate_stroke: SUBTEXT0,
+                external_package_fill: SURFACE0,
+                external_package_stroke: SUBTEXT0,
                 external_transitive_fill: BASE_RAISED,
                 external_transitive_stroke: OVERLAY0,
                 text: TEXT,
@@ -476,7 +476,7 @@ pub static MOCHA: Theme = {
                 reexport: TEAL,
             },
             node_selection: NodeSelectionColors {
-                crate_fill: BLUE_TINT_STRONG,
+                package_fill: BLUE_TINT_STRONG,
                 module_fill: PEACH_TINT_STRONG,
                 external_fill: SURFACE2,
                 external_transitive_fill: SURFACE1,
@@ -548,10 +548,10 @@ mod tests {
 
     #[test]
     fn latte_keeps_the_original_palette() {
-        assert_eq!(LATTE.palette.nodes.crate_fill, "#dbeafe");
+        assert_eq!(LATTE.palette.nodes.package_fill, "#dbeafe");
         assert_eq!(LATTE.palette.direction.downward, "#40a02b");
         assert_eq!(LATTE.palette.sidebar.bg, "#fafafa");
-        assert_eq!(LATTE.palette.node_selection.crate_fill, "#93c5fd");
+        assert_eq!(LATTE.palette.node_selection.package_fill, "#93c5fd");
         assert_eq!(LATTE.palette.relation.dependent, "#8839ef");
     }
 
@@ -566,9 +566,12 @@ mod tests {
 
     #[test]
     fn a_field_is_one_custom_property() {
-        assert_eq!(NodeColors::VARS.crate_fill, "var(--arc-node-crate-fill)");
+        assert_eq!(
+            NodeColors::VARS.package_fill,
+            "var(--arc-node-package-fill)"
+        );
         let (name, value) = LATTE.palette.nodes.variables().next().unwrap();
-        assert_eq!((name, value), ("--arc-node-crate-fill", "#dbeafe"));
+        assert_eq!((name, value), ("--arc-node-package-fill", "#dbeafe"));
     }
 
     /// The heat ramp's endpoints are the map's own, one pair per theme, not

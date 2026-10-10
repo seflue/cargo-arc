@@ -16,7 +16,7 @@ use crate::diagnose::RepresentativeCycles;
 use crate::graph::{ArcGraph, Reexports};
 use crate::hotspots;
 use crate::layout::{JumpTable, LayoutIR, LocationId, build_layout};
-use crate::model::{CrateExportMap, CrateInfo, ModulePathMap, WorkspaceCrates};
+use crate::model::{ModulePathMap, PackageExportMap, PackageInfo, WorkspacePackages};
 use crate::render::{
     AnalysisSwitches, Appearance, Document, RenderConfig, THEMES, Theme, html_page, project_name,
     render, render_hotspots,
@@ -272,7 +272,7 @@ pub fn run(args: ArcCommand) -> Result<Judgment> {
 /// A workspace laid out for a diagram: the dependency graph, the layout
 /// built from it, the jump table [`JumpTable`] assigned while building it,
 /// the workspace root the analysis ran against (`None` when the workspace
-/// has no crates), and the module files that did not parse. The graph is
+/// has no packages), and the module files that did not parse. The graph is
 /// carried alongside the layout so a second page (the hotspot map) can be
 /// built from the same analysis run.
 struct DiagramAnalysis {
@@ -749,10 +749,10 @@ fn run_volatility_report(
     write_output(&report, output)
 }
 
-/// Reads the workspace root off `crates`, all of whose members share it.
-/// `None` when the workspace has no crates to determine it from.
-fn workspace_root_of(crates: &[CrateInfo]) -> Option<PathBuf> {
-    crates.first().map(|krate| krate.workspace_root.clone())
+/// Reads the workspace root off `packages`, all of whose members share it.
+/// `None` when the workspace has no packages to determine it from.
+fn workspace_root_of(packages: &[PackageInfo]) -> Option<PathBuf> {
+    packages.first().map(|krate| krate.workspace_root.clone())
 }
 
 fn build_dependency_graph(
@@ -762,13 +762,14 @@ fn build_dependency_graph(
     externals: bool,
     transitive_deps: bool,
 ) -> Result<(ArcGraph, Option<PathBuf>, Vec<PathBuf>)> {
-    let crates = analyze_workspace(manifest_path, feature_config)?;
-    tracing::debug!("phase: workspace analyzed ({} crates)", crates.len());
-    let workspace_root = workspace_root_of(&crates);
-    let workspace_crates: WorkspaceCrates = crates.iter().map(|krate| krate.name.clone()).collect();
+    let packages = analyze_workspace(manifest_path, feature_config)?;
+    tracing::debug!("phase: workspace analyzed ({} crates)", packages.len());
+    let workspace_root = workspace_root_of(&packages);
+    let workspace_packages: WorkspacePackages =
+        packages.iter().map(|krate| krate.name.clone()).collect();
     let backend = AnalysisBackend::new(manifest_path, feature_config, use_hir)?;
 
-    let all_module_paths: ModulePathMap = crates
+    let all_module_paths: ModulePathMap = packages
         .iter()
         .map(|krate| {
             let name = normalize_crate_name(&krate.name);
@@ -778,7 +779,7 @@ fn build_dependency_graph(
         .collect();
     tracing::debug!("phase: module paths collected");
 
-    let crate_exports: CrateExportMap = crates
+    let package_exports: PackageExportMap = packages
         .iter()
         .map(|krate| {
             let name = normalize_crate_name(&krate.name);
@@ -788,15 +789,15 @@ fn build_dependency_graph(
         .collect();
     tracing::debug!("phase: crate exports collected");
 
-    let reexport_map: ReExportMap = crates
+    let reexport_map: ReExportMap = packages
         .iter()
         .map(|krate| {
             let name = normalize_crate_name(&krate.name);
             let exports = collect_crate_reexports(
                 krate,
                 &all_module_paths,
-                &workspace_crates,
-                &crate_exports,
+                &workspace_packages,
+                &package_exports,
             );
             (name, exports)
         })
@@ -804,7 +805,7 @@ fn build_dependency_graph(
     tracing::debug!("phase: reexport map collected");
 
     // Run externals analysis before module analysis so crate_name_map
-    // is available for use-parser resolution of external crate imports.
+    // is available for use-parser resolution of external package imports.
     let ext_result = if externals {
         use cargo_metadata::MetadataCommand;
         let metadata = MetadataCommand::new().manifest_path(manifest_path).exec()?;
@@ -814,7 +815,7 @@ fn build_dependency_graph(
     };
 
     let empty_name_map = std::collections::HashMap::new();
-    let modules: Vec<_> = crates
+    let modules: Vec<_> = packages
         .iter()
         .filter_map(|krate| {
             let name = normalize_crate_name(&krate.name);
@@ -825,9 +826,9 @@ fn build_dependency_graph(
                 .unwrap_or(&empty_name_map);
             match backend.analyze_modules(
                 krate,
-                &workspace_crates,
+                &workspace_packages,
                 &all_module_paths,
-                &crate_exports,
+                &package_exports,
                 &reexport_map,
                 ext_names,
             ) {
@@ -846,7 +847,7 @@ fn build_dependency_graph(
         .collect();
 
     let graph = ArcGraph::build(
-        &crates,
+        &packages,
         &modules,
         ext_result.as_ref(),
         feature_config.include_tests,
@@ -1208,15 +1209,15 @@ mod tests {
     }
 
     #[test]
-    fn workspace_root_is_none_for_a_workspace_without_crates() {
+    fn workspace_root_is_none_for_a_workspace_without_packages() {
         assert_eq!(workspace_root_of(&[]), None);
     }
 
     #[test]
-    fn workspace_root_of_reads_the_first_crates_root() {
-        use crate::model::{CrateInfo, TargetRoots};
+    fn workspace_root_of_reads_the_first_packages_root() {
+        use crate::model::{PackageInfo, TargetRoots};
 
-        let krate = CrateInfo {
+        let krate = PackageInfo {
             name: "a".into(),
             path: PathBuf::from("/ws/a"),
             workspace_root: PathBuf::from("/ws"),

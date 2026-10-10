@@ -66,17 +66,17 @@ const ArcLogic = {
 
   /**
    * Decide whether any active filter still covers this arc. An arc falls under
-   * the filter for its type (crate/module/reexport) and, if it lies on a cycle,
+   * the filter for its type (package/module/reexport) and, if it lies on a cycle,
    * additionally under the cycles filter. The node filters are checked
    * separately, so a true answer here is a necessary and not a sufficient
    * condition for visibility.
-   * @param {{isCrateDep?: boolean, isModuleDep?: boolean, isReexport?: boolean, isCycle?: boolean}} arcFilters
-   * @param {{crateDep?: boolean, moduleDep?: boolean, reexport?: boolean, cycle?: boolean}} activeFilters
+   * @param {{isPackageDep?: boolean, isModuleDep?: boolean, isReexport?: boolean, isCycle?: boolean}} arcFilters
+   * @param {{packageDep?: boolean, moduleDep?: boolean, reexport?: boolean, cycle?: boolean}} activeFilters
    * @returns {boolean}
    */
   matchesActiveFilters(arcFilters, activeFilters) {
     return Boolean(
-      (arcFilters.isCrateDep && activeFilters.crateDep) ||
+      (arcFilters.isPackageDep && activeFilters.packageDep) ||
         (arcFilters.isModuleDep && activeFilters.moduleDep) ||
         (arcFilters.isReexport && activeFilters.reexport) ||
         (arcFilters.isCycle && activeFilters.cycle),

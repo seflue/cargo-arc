@@ -38,10 +38,10 @@ pub fn render(ir: &LayoutIR, config: &RenderConfig) -> String {
         .items
         .iter()
         .filter_map(|item| match &item.kind {
-            ItemKind::Module { parent, .. } | ItemKind::ExternalCrate { parent, .. } => {
+            ItemKind::Module { parent, .. } | ItemKind::ExternalPackage { parent, .. } => {
                 Some(*parent)
             }
-            ItemKind::Crate | ItemKind::ExternalSection => None,
+            ItemKind::Package | ItemKind::ExternalSection => None,
         })
         .collect();
 
@@ -118,7 +118,7 @@ pub fn render(ir: &LayoutIR, config: &RenderConfig) -> String {
     let has_transitive_externals = ir.items.iter().any(|item| {
         matches!(
             item.kind,
-            ItemKind::ExternalCrate {
+            ItemKind::ExternalPackage {
                 is_direct_dependency: false,
                 ..
             }
@@ -402,7 +402,7 @@ mod tests {
     #[test]
     fn test_render_expand_level_zero() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "my_crate".into());
+        let c = ir.add_item(ItemKind::Package, "my_crate".into());
         let a = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -465,7 +465,7 @@ mod tests {
     #[test]
     fn test_render_expand_level_none_unchanged() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let c = ir.add_item(ItemKind::Package, "c".into());
         ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -507,18 +507,18 @@ mod tests {
     }
 
     #[test]
-    fn test_render_single_crate() {
+    fn test_render_single_package() {
         let mut ir = LayoutIR::new();
-        ir.add_item(ItemKind::Crate, "my_crate".into());
+        ir.add_item(ItemKind::Package, "my_crate".into());
         let svg = render(&ir, &RenderConfig::default());
-        assert!(svg.contains(r#"class="crate""#));
+        assert!(svg.contains(r#"class="package""#));
         assert!(svg.contains("my_crate"));
     }
 
     #[test]
     fn test_render_with_edges() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let c = ir.add_item(ItemKind::Package, "c".into());
         let a = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -543,7 +543,7 @@ mod tests {
     #[test]
     fn test_render_cycle_edges() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let c = ir.add_item(ItemKind::Package, "c".into());
         let a = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -574,7 +574,7 @@ mod tests {
 
         // Test TransitiveCycle
         let mut ir2 = LayoutIR::new();
-        let c2 = ir2.add_item(ItemKind::Crate, "c".into());
+        let c2 = ir2.add_item(ItemKind::Package, "c".into());
         let a2 = ir2.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -626,7 +626,7 @@ mod tests {
     #[test]
     fn test_layer_structure() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let c = ir.add_item(ItemKind::Package, "c".into());
         let a = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -675,7 +675,7 @@ mod tests {
     #[test]
     fn test_jump_popover_layer_is_the_last_layer_in_graph_content() {
         let mut ir = LayoutIR::new();
-        ir.add_item(ItemKind::Crate, "c".into());
+        ir.add_item(ItemKind::Package, "c".into());
         let svg = render(&ir, &RenderConfig::default());
 
         let popover = svg
@@ -697,7 +697,7 @@ mod tests {
     #[test]
     fn test_arcs_in_base_arcs_layer() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let c = ir.add_item(ItemKind::Package, "c".into());
         let a = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -738,32 +738,32 @@ mod tests {
         use crate::model::TestKind;
 
         let mut ir = LayoutIR::new();
-        let crate_id = ir.add_item(ItemKind::Crate, "c".into());
+        let package_id = ir.add_item(ItemKind::Package, "c".into());
         let cycle_start = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
-                parent: crate_id,
+                parent: package_id,
             },
             "a".into(),
         );
         let cycle_end = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
-                parent: crate_id,
+                parent: package_id,
             },
             "b".into(),
         );
         let prod_end = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
-                parent: crate_id,
+                parent: package_id,
             },
             "d".into(),
         );
         let test_end = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
-                parent: crate_id,
+                parent: package_id,
             },
             "e".into(),
         );
@@ -812,7 +812,7 @@ mod tests {
     #[test]
     fn test_hitareas_in_hitareas_layer() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let c = ir.add_item(ItemKind::Package, "c".into());
         let a = ir.add_item(
             ItemKind::Module {
                 nesting: 1,

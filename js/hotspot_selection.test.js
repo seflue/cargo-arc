@@ -5,11 +5,11 @@ import {
   placeForFile,
 } from './hotspot_selection.js';
 
-// root (crate) -> a (module, own leaf 'a/mod.rs' + child a1) -> a1 (file)
+// root (package) -> a (module, own leaf 'a/mod.rs' + child a1) -> a1 (file)
 //              -> b (file)
 function nodes() {
   return {
-    root: { name: 'root', kind: 'crate', file: 'Cargo.toml', lines: 20 },
+    root: { name: 'root', kind: 'package', file: 'Cargo.toml', lines: 20 },
     a: {
       name: 'a',
       kind: 'module',

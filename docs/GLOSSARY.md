@@ -240,7 +240,7 @@ In this file, a [cluster](#cluster) is a strongly connected component, and a [sc
 | Term | Definition |
 |------|------------|
 | **<a id="arc-diagram">Arc diagram</a>** | The view of a workspace as a tree of packages and modules, with arcs for the dependencies between them. `cargo arc` renders it, and `cargo arc ui` serves it beside the [hotspot map](#hotspot-map). |
-| **<a id="arc-type">Arc type</a>** | The category of dependency an arc draws: crate-dep, module-dep or [re-export](#re-export). Every arc has exactly one arc type. cargo-arc derives it from the arc's endpoints and its re-export flag and does not store it. |
+| **<a id="arc-type">Arc type</a>** | The category of dependency an arc draws: package-dep, module-dep or [re-export](#re-export). Every arc has exactly one arc type. cargo-arc derives it from the arc's endpoints and its re-export flag and does not store it. |
 | **<a id="re-export">Re-export</a>** | The [arc type](#arc-type) of an arc whose imports are all `pub use`, so that it passes names on without depending on them. A single ordinary import on the arc makes it a module-dep instead ([ADR-022](adr/022-reexport-edges-tagged-not-dropped.md)). |
 | **<a id="filter">Filter</a>** | A checkbox in the **View** menu that shows or hides part of the diagram. Four filters cover arcs: crate dependencies, module dependencies, [re-exports](#re-export) and circular dependencies. The others cover [nodes](#node). |
 | **<a id="reading-order">Reading order</a>** | The top-to-bottom sequence of the [nodes](#node) under one parent. A node comes before the nodes it depends on. Inside a [tangle](#tangle) no order can do that for every [edge](#edge), and the layout picks the order with the least dependency weight pointing up. A tangle of more than eight nodes under one parent is ordered alphabetically instead. |
@@ -260,7 +260,7 @@ The circular-dependencies filter selects on whether the arc is a [cyclic edge](#
 
 All arcs sit in one *SVG layer*, whichever [filters](#filter) cover them.
 
-A *suppressed* arc is one the diagram does not draw: a crate-dep arc between two packages whose modules a module arc already connects, or, in group mode, an arc that does not touch the selected [node](#node).
+A *suppressed* arc is one the diagram does not draw: a package-dep arc between two packages whose modules a module arc already connects, or, in group mode, an arc that does not touch the selected [node](#node).
 
 The checkbox of the circular-dependencies [filter](#filter) also turns on *cluster mode*, which is not a filter.
 

@@ -31,8 +31,8 @@ pub struct CyclicEdge {
 
 /// One strongly-connected cluster of mutually cyclic modules.
 pub struct Cluster {
-    /// Owning crate node (module cycles are always intra-crate).
-    pub crate_idx: NodeIndex,
+    /// Owning package node (module cycles are always intra-package).
+    pub package_idx: NodeIndex,
     /// All SCC member modules.
     pub nodes: Vec<NodeIndex>,
     /// Indices into [`CycleAnalysis::cycles`] contained in this cluster: its
@@ -137,9 +137,9 @@ impl ArcGraph {
             let feedback_edges =
                 self.feedback_edges(sub, &node_set, &edge_cycles, in_cluster, counts_every_cycle);
             let edges = self.cluster_edges(sub, &node_set, &edge_cycles);
-            let crate_idx = self.owning_crate(nodes[0]);
+            let package_idx = self.owning_package(nodes[0]);
             clusters.push(Cluster {
-                crate_idx,
+                package_idx,
                 nodes,
                 cycles,
                 tolerated: cluster_tolerated,
@@ -406,18 +406,18 @@ mod tests {
     use super::*;
     use crate::graph::{ArcGraph, EdgeWeight, Reexports};
     use crate::model::{EdgeContext, SourceLocation};
-    use crate::test_support::{crate_node, module_node};
+    use crate::test_support::{module_node, package_node};
 
-    /// Single-crate graph: `modules` by name, production `ModuleDep` edges
+    /// Single-package graph: `modules` by name, production `ModuleDep` edges
     /// `(from, to, ref_count)`. Returns the graph and the module node indices.
     fn graph_with(modules: &[&str], deps: &[(usize, usize, usize)]) -> (ArcGraph, Vec<NodeIndex>) {
         let mut g = ArcGraph::new();
-        let crate_idx = g.add_node(crate_node("app"));
+        let package_idx = g.add_node(package_node("app"));
         let idx: Vec<_> = modules
             .iter()
             .map(|m| {
-                let n = g.add_node(module_node(m, crate_idx));
-                g.add_edge(crate_idx, n, EdgeWeight::Contains);
+                let n = g.add_node(module_node(m, package_idx));
+                g.add_edge(package_idx, n, EdgeWeight::Contains);
                 n
             })
             .collect();
@@ -504,11 +504,11 @@ mod tests {
         // `grouped -> split` imports three symbols in one `use` group: one
         // line, one site. `split -> grouped` imports two, one per line.
         let mut graph = ArcGraph::new();
-        let crate_idx = graph.add_node(crate_node("app"));
-        let grouped = graph.add_node(module_node("a", crate_idx));
-        let split = graph.add_node(module_node("b", crate_idx));
-        graph.add_edge(crate_idx, grouped, EdgeWeight::Contains);
-        graph.add_edge(crate_idx, split, EdgeWeight::Contains);
+        let package_idx = graph.add_node(package_node("app"));
+        let grouped = graph.add_node(module_node("a", package_idx));
+        let split = graph.add_node(module_node("b", package_idx));
+        graph.add_edge(package_idx, grouped, EdgeWeight::Contains);
+        graph.add_edge(package_idx, split, EdgeWeight::Contains);
         graph.add_edge(
             grouped,
             split,
@@ -567,10 +567,10 @@ mod tests {
         // removal bias outranks the symbol count, so `child -> parent` is
         // picked despite carrying more.
         let mut graph = ArcGraph::new();
-        let crate_idx = graph.add_node(crate_node("app"));
-        let parent = graph.add_node(module_node("a", crate_idx));
-        let child = graph.add_node(module_node("b", crate_idx));
-        graph.add_edge(crate_idx, parent, EdgeWeight::Contains);
+        let package_idx = graph.add_node(package_node("app"));
+        let parent = graph.add_node(module_node("a", package_idx));
+        let child = graph.add_node(module_node("b", package_idx));
+        graph.add_edge(package_idx, parent, EdgeWeight::Contains);
         graph.add_edge(parent, child, EdgeWeight::Contains);
 
         let reexport_locations = (0..2)
@@ -632,13 +632,13 @@ mod tests {
         // The bias never favours it and the pick goes to the cheapest neutral
         // edge, even though the re-export carries the fewest symbols.
         let mut graph = ArcGraph::new();
-        let crate_idx = graph.add_node(crate_node("app"));
-        let parent = graph.add_node(module_node("a", crate_idx));
-        let child = graph.add_node(module_node("b", crate_idx));
-        let unrelated = graph.add_node(module_node("c", crate_idx));
-        graph.add_edge(crate_idx, parent, EdgeWeight::Contains);
+        let package_idx = graph.add_node(package_node("app"));
+        let parent = graph.add_node(module_node("a", package_idx));
+        let child = graph.add_node(module_node("b", package_idx));
+        let unrelated = graph.add_node(module_node("c", package_idx));
+        graph.add_edge(package_idx, parent, EdgeWeight::Contains);
         graph.add_edge(parent, child, EdgeWeight::Contains);
-        graph.add_edge(crate_idx, unrelated, EdgeWeight::Contains);
+        graph.add_edge(package_idx, unrelated, EdgeWeight::Contains);
 
         let reexport_locations = (0..1)
             .map(|i| SourceLocation {
@@ -704,7 +704,7 @@ mod tests {
 
     #[test]
     fn fewer_symbols_wins_without_a_parent_child_relation() {
-        // a <-> b, siblings under the crate (no Contains edge between them).
+        // a <-> b, siblings under the package (no Contains edge between them).
         // With no module-tree prior to apply, the symbol-count tie-break still
         // decides: a->b carries 2 symbols, b->a carries 5.
         let (g, idx) = graph_with(&["a", "b"], &[(0, 1, 2), (1, 0, 5)]);

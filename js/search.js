@@ -69,7 +69,7 @@ const SearchLogic = {
   /**
    * Execute search with given query and scope.
    * @param {string} query
-   * @param {string} scope - 'all', 'crate', 'module', 'symbol'
+   * @param {string} scope - 'all', 'package', 'module', 'symbol'
    * @returns {number} Number of matches
    */
   executeSearch(query, scope) {
@@ -84,11 +84,11 @@ const SearchLogic = {
 
     const matchedNodes = new Set();
 
-    if (scope === 'all' || scope === 'crate' || scope === 'module') {
+    if (scope === 'all' || scope === 'package' || scope === 'module') {
       for (const nodeId of StaticData.getAllNodeIds()) {
         const node = StaticData.getNode(nodeId);
         if (!node) continue;
-        if (scope === 'crate' && node.type !== 'crate') continue;
+        if (scope === 'package' && node.type !== 'package') continue;
         if (scope === 'module' && node.type !== 'module') continue;
         if (node.name.toLowerCase().includes(q)) {
           matchedNodes.add(nodeId);

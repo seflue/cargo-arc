@@ -9,8 +9,8 @@ use std::sync::LazyLock;
 use syn::spanned::Spanned;
 
 use crate::model::{
-    CrateExportMap, CrateInfo, DefKind, Definition, EdgeContext, ModulePathMap, WorkspaceCrates,
-    normalize_crate_name,
+    DefKind, Definition, EdgeContext, ModulePathMap, PackageExportMap, PackageInfo,
+    WorkspacePackages, normalize_crate_name,
 };
 
 use super::mod_resolver::{child_resolve_dir, extract_mod_declarations, resolve_mod_path};
@@ -24,16 +24,16 @@ struct CollectContext<'a> {
     crate_name: &'a str,
     workspace_root: &'a Path,
     all_module_paths: &'a ModulePathMap,
-    workspace_crates: &'a WorkspaceCrates,
-    crate_exports: &'a CrateExportMap,
+    workspace_crates: &'a WorkspacePackages,
+    crate_exports: &'a PackageExportMap,
 }
 
 /// Collect re-exports and public definitions for all modules in a crate.
 pub(crate) fn collect_crate_reexports(
-    crate_info: &CrateInfo,
+    crate_info: &PackageInfo,
     all_module_paths: &ModulePathMap,
-    workspace_crates: &WorkspaceCrates,
-    crate_exports: &CrateExportMap,
+    workspace_crates: &WorkspacePackages,
+    crate_exports: &PackageExportMap,
 ) -> HashMap<String, ModuleExportInfo> {
     let crate_name = normalize_crate_name(&crate_info.name);
     let ctx = CollectContext {
@@ -221,7 +221,7 @@ fn impl_owner(
         &EdgeContext::production(),
         0,
     )?;
-    if dep.target_crate != ctx.crate_name {
+    if dep.target_package != ctx.crate_name {
         return None;
     }
     let item = dep.target_item?;
@@ -296,7 +296,7 @@ fn collect_use_reexports(
         } else if let Some(original_name) = &dep.target_item {
             let alias_name = alias_path.rsplit("::").next().unwrap_or(alias_path);
             let target = ReExportTarget {
-                crate_name: dep.target_crate.clone(),
+                crate_name: dep.target_package.clone(),
                 module: dep.target_module.clone(),
                 original_name: original_name.clone(),
             };
@@ -374,8 +374,8 @@ fn walk_collect_reexports(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::CrateInfo;
-    use crate::test_support::conventional_crate;
+    use crate::model::PackageInfo;
+    use crate::test_support::conventional_package;
     use std::collections::HashSet;
     use tempfile::TempDir;
 
@@ -391,8 +391,8 @@ mod tests {
         tmp
     }
 
-    fn make_crate_info(tmp: &TempDir, name: &str) -> CrateInfo {
-        conventional_crate(name, tmp.path())
+    fn make_crate_info(tmp: &TempDir, name: &str) -> PackageInfo {
+        conventional_package(name, tmp.path())
     }
 
     // --- Cycles 5-12: collect_crate_reexports ---
@@ -419,8 +419,8 @@ mod tests {
         let result = collect_crate_reexports(
             &crate_info,
             &mp,
-            &WorkspaceCrates::default(),
-            &CrateExportMap::default(),
+            &WorkspacePackages::default(),
+            &PackageExportMap::default(),
         );
 
         let parent_info = result.get("parent").expect("parent should have exports");
@@ -450,8 +450,8 @@ mod tests {
         let result = collect_crate_reexports(
             &crate_info,
             &mp,
-            &WorkspaceCrates::default(),
-            &CrateExportMap::default(),
+            &WorkspacePackages::default(),
+            &PackageExportMap::default(),
         );
 
         let root_info = result.get("").expect("root should have exports");
@@ -487,8 +487,8 @@ mod tests {
         let result = collect_crate_reexports(
             &crate_info,
             &mp,
-            &WorkspaceCrates::default(),
-            &CrateExportMap::default(),
+            &WorkspacePackages::default(),
+            &PackageExportMap::default(),
         );
 
         let child_info = result
@@ -524,8 +524,8 @@ mod tests {
         let result = collect_crate_reexports(
             &crate_info,
             &mp,
-            &WorkspaceCrates::default(),
-            &CrateExportMap::default(),
+            &WorkspacePackages::default(),
+            &PackageExportMap::default(),
         );
 
         let render_info = result.get("render").expect("render should have exports");
@@ -563,8 +563,8 @@ mod tests {
         let result = collect_crate_reexports(
             &crate_info,
             &mp,
-            &WorkspaceCrates::default(),
-            &CrateExportMap::default(),
+            &WorkspacePackages::default(),
+            &PackageExportMap::default(),
         );
 
         let parent_info = result.get("parent").expect("parent should have exports");
@@ -611,8 +611,8 @@ mod tests {
         let result = collect_crate_reexports(
             &crate_info,
             &mp,
-            &WorkspaceCrates::default(),
-            &CrateExportMap::default(),
+            &WorkspacePackages::default(),
+            &PackageExportMap::default(),
         );
 
         let parent_info = result.get("parent").expect("parent should have exports");
@@ -648,8 +648,8 @@ mod tests {
         let result = collect_crate_reexports(
             &crate_info,
             &mp,
-            &WorkspaceCrates::default(),
-            &CrateExportMap::default(),
+            &WorkspacePackages::default(),
+            &PackageExportMap::default(),
         );
 
         let parent_info = result.get("parent").expect("parent should have exports");
@@ -685,8 +685,8 @@ mod tests {
         let result = collect_crate_reexports(
             &crate_info,
             &mp,
-            &WorkspaceCrates::default(),
-            &CrateExportMap::default(),
+            &WorkspacePackages::default(),
+            &PackageExportMap::default(),
         );
 
         let parent_info = result.get("parent").expect("parent should have exports");
@@ -715,8 +715,8 @@ mod tests {
         let result = collect_crate_reexports(
             &crate_info,
             &mp,
-            &WorkspaceCrates::default(),
-            &CrateExportMap::default(),
+            &WorkspacePackages::default(),
+            &PackageExportMap::default(),
         );
 
         let module_info = result.get("module").expect("module should have exports");
@@ -764,8 +764,8 @@ impl AStruct { pub fn method(&self) {} }
         let result = collect_crate_reexports(
             &crate_info,
             &mp,
-            &WorkspaceCrates::default(),
-            &CrateExportMap::default(),
+            &WorkspacePackages::default(),
+            &PackageExportMap::default(),
         );
 
         let defs = &result.get("module").expect("module info").definitions;
@@ -817,8 +817,8 @@ impl AStruct { pub fn method(&self) {} }
         let result = collect_crate_reexports(
             &crate_info,
             &mp,
-            &WorkspaceCrates::default(),
-            &CrateExportMap::default(),
+            &WorkspacePackages::default(),
+            &PackageExportMap::default(),
         );
 
         let defs = &result.get("module").expect("module info").definitions;
@@ -848,8 +848,8 @@ impl AStruct { pub fn method(&self) {} }
         let result = collect_crate_reexports(
             &crate_info,
             &mp,
-            &WorkspaceCrates::default(),
-            &CrateExportMap::default(),
+            &WorkspacePackages::default(),
+            &PackageExportMap::default(),
         );
 
         let module_info = result.get("module").expect("module info");
@@ -884,8 +884,8 @@ impl AStruct { pub fn method(&self) {} }
         let result = collect_crate_reexports(
             &crate_info,
             &mp,
-            &WorkspaceCrates::default(),
-            &CrateExportMap::default(),
+            &WorkspacePackages::default(),
+            &PackageExportMap::default(),
         );
 
         let parent_info = result.get("parent").expect("parent should have exports");
@@ -936,8 +936,8 @@ impl AStruct { pub fn method(&self) {} }
         let result = collect_crate_reexports(
             &crate_info,
             &mp,
-            &WorkspaceCrates::default(),
-            &CrateExportMap::default(),
+            &WorkspacePackages::default(),
+            &PackageExportMap::default(),
         );
 
         let writer = &result["back::writer"].associated;

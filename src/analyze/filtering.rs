@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use tracing::{debug, instrument};
 
 use super::hir::FeatureConfig;
-use crate::model::{WorkspaceCrates, normalize_crate_name};
+use crate::model::{WorkspacePackages, normalize_crate_name};
 
 // --- Dependency filtering types ---
 
@@ -49,7 +49,7 @@ impl<'a> DependencyInfo<'a> {
     pub(super) fn from_node_dep(
         dep: &'a NodeDep,
         name: &'a str,
-        workspace_members: &WorkspaceCrates,
+        workspace_members: &WorkspacePackages,
     ) -> Self {
         let kind = if dep
             .dep_kinds
@@ -130,7 +130,7 @@ fn package_matches_features(
 pub(super) fn find_seed_crates(
     metadata: &Metadata,
     feature_config: &FeatureConfig,
-    workspace_members: &WorkspaceCrates,
+    workspace_members: &WorkspacePackages,
 ) -> HashSet<String> {
     debug!(workspace_members = ?workspace_members);
 
@@ -164,7 +164,7 @@ pub(super) fn find_seed_crates(
 pub(super) fn collect_reachable_crates(
     seeds: HashSet<String>,
     resolved_deps: &HashMap<String, Vec<String>>,
-    workspace_members: &WorkspaceCrates,
+    workspace_members: &WorkspacePackages,
 ) -> HashSet<String> {
     debug!(seeds = ?seeds);
     for (pkg, deps) in resolved_deps {
@@ -223,7 +223,7 @@ mod tests {
         let mut resolved_deps: HashMap<String, Vec<String>> = HashMap::new();
         resolved_deps.insert("A".to_string(), vec!["B".to_string()]);
         resolved_deps.insert("B".to_string(), vec!["C".to_string()]);
-        let workspace: WorkspaceCrates = ["A", "B", "C"].into_iter().collect();
+        let workspace: WorkspacePackages = ["A", "B", "C"].into_iter().collect();
 
         let reachable = collect_reachable_crates(seeds, &resolved_deps, &workspace);
 
@@ -240,7 +240,7 @@ mod tests {
         let mut resolved_deps: HashMap<String, Vec<String>> = HashMap::new();
         resolved_deps.insert("A".to_string(), vec!["B".to_string()]);
         resolved_deps.insert("B".to_string(), vec!["external".to_string()]);
-        let workspace: WorkspaceCrates = ["A", "B"].into_iter().collect();
+        let workspace: WorkspacePackages = ["A", "B"].into_iter().collect();
 
         let reachable = collect_reachable_crates(seeds, &resolved_deps, &workspace);
 
@@ -257,7 +257,7 @@ mod tests {
         let mut resolved_deps: HashMap<String, Vec<String>> = HashMap::new();
         resolved_deps.insert("A".to_string(), vec!["B".to_string()]);
         resolved_deps.insert("B".to_string(), vec!["A".to_string()]);
-        let workspace: WorkspaceCrates = ["A", "B"].into_iter().collect();
+        let workspace: WorkspacePackages = ["A", "B"].into_iter().collect();
 
         let reachable = collect_reachable_crates(seeds, &resolved_deps, &workspace);
 

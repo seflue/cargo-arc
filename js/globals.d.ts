@@ -21,7 +21,7 @@ interface StaticTargetData {
 interface StaticNodeData {
   type: string;
   name: string;
-  // Absent for a node with no module or manifest target (an external crate
+  // Absent for a node with no module or manifest target (an external package
   // or section).
   file?: string;
   parent: string | null;
@@ -79,13 +79,13 @@ interface StaticCycleArcData {
   symbols: number;
 }
 interface StaticClusterData {
-  crate: string;
+  package: string;
   moduleCount: number;
   cycleCount: number;
   cycles: StaticCycleArcData[][];
 }
 interface StaticSymbolLocality {
-  locality: 'singleConsumer' | 'commonAncestor' | 'crateWide';
+  locality: 'singleConsumer' | 'commonAncestor' | 'packageWide';
   module?: string;
   consumers: string[];
 }

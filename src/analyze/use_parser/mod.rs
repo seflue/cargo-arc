@@ -1,8 +1,8 @@
 //! Syn-based use statement parsing for workspace dependency extraction.
 
 use crate::model::{
-    CrateExportMap, DefKind, Definition, DependencyRef, EdgeContext, ModulePathMap, SymbolUse,
-    TestKind, UsageKind, UseCategory, WorkspaceCrates, normalize_crate_name,
+    DefKind, Definition, DependencyRef, EdgeContext, ModulePathMap, PackageExportMap, SymbolUse,
+    TestKind, UsageKind, UseCategory, WorkspacePackages, normalize_crate_name,
 };
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -122,7 +122,7 @@ impl ReExportMap {
     /// Look up the export info of the module a dependency points at, where
     /// the map has it.
     pub(crate) fn module_info(&self, dep: &DependencyRef) -> Option<&ModuleExportInfo> {
-        self.0.get(&dep.target_crate)?.get(&dep.target_module)
+        self.0.get(&dep.target_package)?.get(&dep.target_module)
     }
 }
 
@@ -144,7 +144,7 @@ impl FromIterator<(String, HashMap<String, ModuleExportInfo>)> for ReExportMap {
 /// Resolve re-exports in a [`DependencyRef`]: follow the re-export chain
 /// until the original definition module is found, crossing into another
 /// workspace crate where the chain does.
-/// Modifies `dep.target_crate` and `dep.target_module` in place; a no-op if
+/// Modifies `dep.target_package` and `dep.target_module` in place; a no-op if
 /// no re-export applies. Returns `false` when the chain instead reaches a
 /// name a private `use` bound to something outside the crate (an external
 /// crate) — the caller then produces no edge for `dep` — and `true` otherwise.
@@ -153,14 +153,14 @@ pub(crate) fn resolve_reexport(
     reexport_map: &ReExportMap,
     importer_module: &str,
 ) -> bool {
-    let Some(mut crate_exports) = reexport_map.get(&dep.target_crate) else {
+    let Some(mut crate_exports) = reexport_map.get(&dep.target_package) else {
         return true;
     };
     let mut visited = HashSet::new();
     let mut lookup_name = dep.target_item.clone();
 
     loop {
-        if !visited.insert((dep.target_crate.clone(), dep.target_module.clone())) {
+        if !visited.insert((dep.target_package.clone(), dep.target_module.clone())) {
             break;
         }
         let Some(module_info) = crate_exports.get(&dep.target_module) else {
@@ -177,7 +177,7 @@ pub(crate) fn resolve_reexport(
         // Tier 1: Explicit re-export
         if let Some(target) = module_info.explicit_reexports.get(item) {
             let original_target = dep.target_module.clone();
-            dep.target_crate = target.crate_name.clone();
+            dep.target_package = target.crate_name.clone();
             dep.target_module = target.module.clone();
             tracing::debug!(
                 "re-export resolved: {} -> {} (via re-export in {})",
@@ -186,7 +186,7 @@ pub(crate) fn resolve_reexport(
                 original_target
             );
             lookup_name = Some(target.original_name.clone());
-            let Some(next_exports) = reexport_map.get(&dep.target_crate) else {
+            let Some(next_exports) = reexport_map.get(&dep.target_package) else {
                 break;
             };
             crate_exports = next_exports;
@@ -200,10 +200,10 @@ pub(crate) fn resolve_reexport(
         if is_descendant(importer_module, &dep.target_module)
             && let Some(target) = module_info.private_uses.get(item)
         {
-            dep.target_crate = target.crate_name.clone();
+            dep.target_package = target.crate_name.clone();
             dep.target_module = target.module.clone();
             lookup_name = Some(target.original_name.clone());
-            let Some(next_exports) = reexport_map.get(&dep.target_crate) else {
+            let Some(next_exports) = reexport_map.get(&dep.target_package) else {
                 break;
             };
             crate_exports = next_exports;
@@ -325,10 +325,10 @@ fn is_descendant(module: &str, ancestor: &str) -> bool {
 /// Invariant context for dependency resolution within a single source file.
 pub(crate) struct ResolutionContext<'a> {
     pub(crate) current_crate: &'a str,
-    pub(crate) workspace_crates: &'a WorkspaceCrates,
+    pub(crate) workspace_crates: &'a WorkspacePackages,
     pub(crate) source_file: &'a Path,
     pub(crate) all_module_paths: &'a ModulePathMap,
-    pub(crate) crate_exports: &'a CrateExportMap,
+    pub(crate) crate_exports: &'a PackageExportMap,
     pub(crate) current_module_path: &'a str,
     pub(crate) reexport_map: &'a ReExportMap,
     /// Code-side crate name -> `package_id` for external crates visible to
@@ -860,7 +860,7 @@ fn parse_crate_local_import(
     let (target_module, prefix_len) = find_longest_module_prefix(&parts, module_paths);
 
     Some(DependencyRef {
-        target_crate: normalize_crate_name(ctx.current_crate),
+        target_package: normalize_crate_name(ctx.current_crate),
         target_module,
         target_item: extract_item_from_parts(&parts, prefix_len),
         source_file: ctx.source_file.to_path_buf(),
@@ -914,7 +914,7 @@ fn parse_bare_module_import(
     let (target_module, prefix_len) = find_longest_module_prefix(&effective_parts, module_paths);
 
     Some(DependencyRef {
-        target_crate: normalize_crate_name(ctx.current_crate),
+        target_package: normalize_crate_name(ctx.current_crate),
         target_module,
         target_item: extract_item_from_parts(&effective_parts, prefix_len),
         source_file: ctx.source_file.to_path_buf(),
@@ -967,7 +967,7 @@ fn parse_workspace_import(
     };
 
     Some(DependencyRef {
-        target_crate: crate_name.to_string(),
+        target_package: crate_name.to_string(),
         target_module,
         target_item,
         source_file: ctx.source_file.to_path_buf(),
@@ -1044,7 +1044,7 @@ pub(crate) fn resolve_single_path(
             // Bare workspace crate name (e.g. from `use other_crate::{Foo}` → path = "other_crate")
             if !path.contains("::") && ctx.workspace_crates.contains(path) {
                 Some(DependencyRef {
-                    target_crate: path.to_string(),
+                    target_package: path.to_string(),
                     target_module: String::new(),
                     target_item: None,
                     source_file: ctx.source_file.to_path_buf(),
@@ -1086,7 +1086,7 @@ fn parse_external_crate_import(
     };
 
     Some(DependencyRef {
-        target_crate: first.to_string(),
+        target_package: first.to_string(),
         target_module: String::new(),
         target_item,
         source_file: ctx.source_file.to_path_buf(),
@@ -1474,7 +1474,7 @@ fn classify_binding(
     if dep.target_item.is_none() {
         return Binding::Module(absolute_module_path(ctx, dep));
     }
-    if dep.target_crate == normalize_crate_name(ctx.current_crate) {
+    if dep.target_package == normalize_crate_name(ctx.current_crate) {
         return Binding::OwnItem;
     }
     if parse_bare_module_import(ctx, binding, 0, &EdgeContext::production()).is_some() {
@@ -1486,7 +1486,7 @@ fn classify_binding(
 /// Render a resolved module dependency as a path that `resolve_single_path` can
 /// re-resolve from any position in the file. Another crate's root is its name.
 fn absolute_module_path(ctx: &ResolutionContext, dep: &DependencyRef) -> String {
-    if dep.target_crate == normalize_crate_name(ctx.current_crate) {
+    if dep.target_package == normalize_crate_name(ctx.current_crate) {
         format!("crate::{}", dep.target_module)
     } else {
         dep.full_target()
@@ -1612,7 +1612,7 @@ pub(crate) fn parse_path_ref_dependencies(
 /// or a private glob the file's module sees as a descendant.
 fn glob_exports(ctx: &ResolutionContext, glob: &DependencyRef, name: &str) -> bool {
     ctx.reexport_map
-        .get(&glob.target_crate)
+        .get(&glob.target_package)
         .is_some_and(|crate_exports| {
             module_scope_holds_symbol(
                 crate_exports,

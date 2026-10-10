@@ -9,10 +9,10 @@ pub(super) struct LayoutConstants {
     pub arc_base: f32,
     pub arc_scale: f32,
     pub arrow_length: f32,
-    pub crate_height: f32,
+    pub package_height: f32,
     pub module_height: f32,
     pub tree_line_x_offset: f32,
-    pub crate_border_radius: f32,
+    pub package_border_radius: f32,
     pub module_border_radius: f32,
     pub text_padding_x: f32,
     pub text_y_offset: f32,
@@ -82,10 +82,10 @@ pub(super) static LAYOUT: LayoutConstants = LayoutConstants {
     arc_base: 20.0,
     arc_scale: 15.0,
     arrow_length: 8.0,
-    crate_height: 24.0,
+    package_height: 24.0,
     module_height: 20.0,
     tree_line_x_offset: 10.0,
-    crate_border_radius: 3.0,
+    package_border_radius: 3.0,
     module_border_radius: 2.0,
     text_padding_x: 10.0,
     text_y_offset: 4.0,
@@ -146,10 +146,10 @@ pub(super) static DRAWING: DrawingStyles = DrawingStyles {
 
 #[allow(dead_code)]
 pub(super) struct NodeClasses {
-    pub crate_node: &'static str,
+    pub package_node: &'static str,
     pub module: &'static str,
     pub external_section: &'static str,
-    pub external_crate: &'static str,
+    pub external_package: &'static str,
     pub external_transitive: &'static str,
     pub label: &'static str,
     pub child_count: &'static str,
@@ -176,7 +176,7 @@ pub(super) struct DirectionClasses {
     pub cycle_arc: &'static str,
     pub cycle_arrow: &'static str,
     pub arc_hitarea: &'static str,
-    pub crate_dep_arc: &'static str,
+    pub package_dep_arc: &'static str,
     pub module_dep_arc: &'static str,
     pub reexport_arc: &'static str,
     pub virtual_arc: &'static str,
@@ -186,7 +186,7 @@ pub(super) struct DirectionClasses {
 
 #[allow(dead_code)]
 pub(super) struct NodeSelectionClasses {
-    pub selected_crate: &'static str,
+    pub selected_package: &'static str,
     pub selected_module: &'static str,
     pub selected_external: &'static str,
     pub selected_external_transitive: &'static str,
@@ -290,7 +290,7 @@ pub(super) struct SidebarClasses {
     pub divider: &'static str,
     pub footer: &'static str,
     pub arrow: &'static str,
-    pub node_crate: &'static str,
+    pub node_package: &'static str,
     pub node_module: &'static str,
     pub node_from: &'static str,
     pub node_to: &'static str,
@@ -378,10 +378,10 @@ pub(super) struct CssClassNames {
 
 pub(super) static CSS: CssClassNames = CssClassNames {
     nodes: NodeClasses {
-        crate_node: "crate",
+        package_node: "package",
         module: "module",
         external_section: "external-section",
-        external_crate: "external",
+        external_package: "external",
         external_transitive: "external-transitive",
         label: "label",
         child_count: "child-count",
@@ -401,7 +401,7 @@ pub(super) static CSS: CssClassNames = CssClassNames {
         cycle_arc: "cycle-arc",
         cycle_arrow: "cycle-arrow",
         arc_hitarea: "arc-hitarea",
-        crate_dep_arc: "crate-dep-arc",
+        package_dep_arc: "package-dep-arc",
         module_dep_arc: "module-dep-arc",
         reexport_arc: "reexport-arc",
         virtual_arc: "virtual-arc",
@@ -409,7 +409,7 @@ pub(super) static CSS: CssClassNames = CssClassNames {
         virtual_hitarea: "virtual-hitarea",
     },
     node_selection: NodeSelectionClasses {
-        selected_crate: "selected-crate",
+        selected_package: "selected-package",
         selected_module: "selected-module",
         selected_external: "selected-external",
         selected_external_transitive: "selected-external-transitive",
@@ -489,7 +489,7 @@ pub(super) static CSS: CssClassNames = CssClassNames {
         divider: "sidebar-divider",
         footer: "sidebar-footer",
         arrow: "sidebar-arrow",
-        node_crate: "sidebar-node-crate",
+        node_package: "sidebar-node-package",
         node_module: "sidebar-node-module",
         node_from: "sidebar-node-from",
         node_to: "sidebar-node-to",
@@ -543,7 +543,7 @@ pub(super) static CSS: CssClassNames = CssClassNames {
 };
 
 /// The two analysis inputs a served page can switch while the service runs:
-/// external crates (`--externals`) and test code (`--include-tests`). The
+/// external packages (`--externals`) and test code (`--include-tests`). The
 /// toolbar shows them as the pressed state of two buttons.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AnalysisSwitches {
@@ -569,7 +569,7 @@ pub struct RenderConfig {
     pub row_height: f32,
     pub indent_size: f32,
     pub margin: f32,
-    /// Initial expand level. `None` = all expanded (default), `Some(0)` = crates only.
+    /// Initial expand level. `None` = all expanded (default), `Some(0)` = packages only.
     pub expand_level: Option<usize>,
     /// Whether `STATIC_DATA` writes `targets` and `jump` fields. The ids
     /// exist on the layout either way; this only gates whether render
@@ -616,7 +616,7 @@ mod tests {
     #[test]
     fn test_css_class_names_not_empty() {
         // Every CSS class name field must be a non-empty string
-        assert!(!CSS.nodes.crate_node.is_empty());
+        assert!(!CSS.nodes.package_node.is_empty());
         assert!(!CSS.nodes.module.is_empty());
         assert!(!CSS.nodes.label.is_empty());
         assert!(!CSS.nodes.child_count.is_empty());
@@ -632,14 +632,14 @@ mod tests {
         assert!(!CSS.direction.cycle_arc.is_empty());
         assert!(!CSS.direction.cycle_arrow.is_empty());
         assert!(!CSS.direction.arc_hitarea.is_empty());
-        assert!(!CSS.direction.crate_dep_arc.is_empty());
+        assert!(!CSS.direction.package_dep_arc.is_empty());
         assert!(!CSS.direction.module_dep_arc.is_empty());
         assert!(!CSS.direction.reexport_arc.is_empty());
         assert!(!CSS.direction.virtual_arc.is_empty());
         assert!(!CSS.direction.virtual_arrow.is_empty());
         assert!(!CSS.direction.virtual_hitarea.is_empty());
 
-        assert!(!CSS.node_selection.selected_crate.is_empty());
+        assert!(!CSS.node_selection.selected_package.is_empty());
         assert!(!CSS.node_selection.selected_module.is_empty());
         assert!(!CSS.node_selection.selected_external.is_empty());
         assert!(!CSS.node_selection.group_member.is_empty());

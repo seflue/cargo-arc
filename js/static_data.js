@@ -70,7 +70,7 @@ const StaticData = {
   /**
    * Get cluster data (cycle blocks etc.) for an SCC by ID.
    * @param {string|number} sccId
-   * @returns {{ crate: string, moduleCount: number, cycleCount: number, cycles: Array<Array<{fromId: string, toId: string, symbols: number}>> }|undefined}
+   * @returns {{ package: string, moduleCount: number, cycleCount: number, cycles: Array<Array<{fromId: string, toId: string, symbols: number}>> }|undefined}
    */
   getCluster(sccId) {
     return STATIC_DATA.clusters ? STATIC_DATA.clusters[sccId] : undefined;
@@ -147,38 +147,38 @@ const StaticData = {
   },
 
   /**
-   * Split a node into its owning crate and crate-relative module path.
+   * Split a node into its owning package and package-relative module path.
    *
-   * Walks the `parent` chain up to the owning crate so that distinct modules
+   * Walks the `parent` chain up to the owning package so that distinct modules
    * sharing a leaf name (e.g. `resource` and `device::resource`) stay
    * distinguishable via `path` alone. `crate` is the Cargo package name (dash
-   * form), or null for nodes without a crate ancestor. `path` falls back to the
+   * form), or null for nodes without a package ancestor. `path` falls back to the
    * id itself for unknown nodes.
    * @param {string} nodeId
-   * @returns {{ crate: string|null, path: string }}
+   * @returns {{ package: string|null, path: string }}
    */
   qualifiedParts(nodeId) {
     const node = STATIC_DATA.nodes[nodeId];
-    if (!node) return { crate: null, path: nodeId };
+    if (!node) return { package: null, path: nodeId };
     const segments = [node.name];
-    let crate = null;
+    let packageName = null;
     let parentId = node.parent;
     while (parentId != null) {
       const parent = STATIC_DATA.nodes[parentId];
       if (!parent) break;
-      if (parent.type === 'crate') {
-        crate = parent.name;
+      if (parent.type === 'package') {
+        packageName = parent.name;
         break;
       }
       segments.push(parent.name);
       parentId = parent.parent;
     }
     segments.reverse();
-    return { crate, path: segments.join('::') };
+    return { package: packageName, path: segments.join('::') };
   },
 
   /**
-   * Check if a node is an external type (external-section or external crate).
+   * Check if a node is an external type (external-section or external package).
    * @param {string} nodeId
    * @returns {boolean}
    */
@@ -243,8 +243,8 @@ const StaticData = {
   },
 
   /**
-   * Get external crate nodes grouped by name.
-   * Crates with same name but different versions are grouped together.
+   * Get external package nodes grouped by name.
+   * Packages with same name but different versions are grouped together.
    * @returns {Map<string, string[]>} name -> [nodeId, ...] sorted by version
    */
   getExternalGroups() {

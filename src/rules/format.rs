@@ -331,7 +331,7 @@ fn violation_body(out: &mut String, violation: &Violation) {
                 );
             }
             // The pair heads the block, so the edges it runs through go below
-            // it, each over the imports that write it. A crate dependency has
+            // it, each over the imports that write it. A package dependency has
             // no imports, so its edges stand alone.
             for written in via {
                 let _ = writeln!(out, "    {}", edge(&written.edge));
@@ -479,7 +479,7 @@ mod tests {
     use super::*;
     use crate::model::SourceLocation;
     use crate::rules::engine::{CycleClusterEdge, Violation, WrittenEdge};
-    use crate::test_support::{crate_node, module_node};
+    use crate::test_support::{module_node, package_node};
     use std::path::PathBuf;
 
     /// Single-cycle, single-edge `CycleCluster` fixture for tests that only
@@ -488,7 +488,7 @@ mod tests {
         CycleCluster {
             position: 1,
             total: 1,
-            crate_name: "app".into(),
+            package_name: "app".into(),
             place: "app".into(),
             modules: 2,
             shape: ClusterShape::SingleCycle {
@@ -624,7 +624,7 @@ mod tests {
         );
     }
 
-    /// A crate dependency is written in a manifest, not at a location the
+    /// A package dependency is written in a manifest, not at a location the
     /// report can point at. Its edges stand alone.
     #[test]
     fn test_format_edges_without_locations_still_stand() {
@@ -1148,7 +1148,7 @@ mod tests {
     }
 
     #[test]
-    fn test_format_unlayered_crate_and_module_share_one_line() {
+    fn test_format_unlayered_package_and_module_share_one_line() {
         let result = CheckResult {
             diagnostics: vec![
                 unlayered("architecture layers", "app::store", DiagnosticLevel::Warn),
@@ -1683,7 +1683,7 @@ mod tests {
         let cluster = CycleCluster {
             position: 1,
             total: 1,
-            crate_name: "app".into(),
+            package_name: "app".into(),
             place: "app".into(),
             modules: 2,
             shape: ClusterShape::SingleCycle {
@@ -1720,16 +1720,16 @@ mod tests {
     use crate::diagnose::RepresentativeCycles;
     use crate::model::EdgeContext;
 
-    /// Single-crate graph "app" with modules by name and production `ModuleDep`
+    /// Single-package graph "app" with modules by name and production `ModuleDep`
     /// edges `(from, to, ref_count)`.
     fn cyc_graph(modules: &[&str], deps: &[(usize, usize, usize)]) -> ArcGraph {
         let mut g = ArcGraph::new();
-        let crate_idx = g.add_node(crate_node("app"));
+        let package_idx = g.add_node(package_node("app"));
         let idx: Vec<_> = modules
             .iter()
             .map(|m| {
-                let n = g.add_node(module_node(m, crate_idx));
-                g.add_edge(crate_idx, n, EdgeWeight::Contains);
+                let n = g.add_node(module_node(m, package_idx));
+                g.add_edge(package_idx, n, EdgeWeight::Contains);
                 n
             })
             .collect();

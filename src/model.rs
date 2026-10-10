@@ -19,7 +19,7 @@ pub struct SourceLocation {
     pub via_reexport: bool,
 }
 
-/// Which dependency edge, as the crate-qualified names of its endpoints.
+/// Which dependency edge, as the package-qualified names of its endpoints.
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Edge {
     pub from: String,
@@ -126,21 +126,21 @@ pub struct Definition {
 /// All insertion paths normalize names, and `contains()` normalizes its input,
 /// so lookups are O(1) and callers never need to think about normalization.
 #[derive(Debug, Default, Clone)]
-pub struct WorkspaceCrates(HashSet<String>);
+pub struct WorkspacePackages(HashSet<String>);
 
-impl FromIterator<String> for WorkspaceCrates {
+impl FromIterator<String> for WorkspacePackages {
     fn from_iter<I: IntoIterator<Item = String>>(iter: I) -> Self {
         Self(iter.into_iter().map(|s| normalize_crate_name(&s)).collect())
     }
 }
 
-impl<'a> FromIterator<&'a str> for WorkspaceCrates {
+impl<'a> FromIterator<&'a str> for WorkspacePackages {
     fn from_iter<I: IntoIterator<Item = &'a str>>(iter: I) -> Self {
         Self(iter.into_iter().map(normalize_crate_name).collect())
     }
 }
 
-impl WorkspaceCrates {
+impl WorkspacePackages {
     pub fn insert(&mut self, name: &str) -> bool {
         self.0.insert(normalize_crate_name(name))
     }
@@ -170,12 +170,12 @@ pub(crate) fn normalize_crate_name(name: &str) -> String {
     name.replace('-', "_")
 }
 
-/// Crate name → set of module paths (e.g. `{"analyze", "analyze::hir"}`).
+/// Package name → set of module paths (e.g. `{"analyze", "analyze::hir"}`).
 #[derive(Debug, Default, Clone)]
 pub struct ModulePathMap(HashMap<String, HashSet<String>>);
 
 impl ModulePathMap {
-    /// Return the module paths for a crate, or an empty set if unknown.
+    /// Return the module paths for a package, or an empty set if unknown.
     #[must_use]
     pub fn get_or_empty(&self, key: &str) -> &HashSet<String> {
         static EMPTY: std::sync::LazyLock<HashSet<String>> = std::sync::LazyLock::new(HashSet::new);
@@ -196,18 +196,18 @@ impl FromIterator<(String, HashSet<String>)> for ModulePathMap {
     }
 }
 
-/// Crate name → set of exported symbol names.
+/// Package name → set of exported symbol names.
 #[derive(Debug, Default, Clone)]
-pub struct CrateExportMap(HashMap<String, HashSet<String>>);
+pub struct PackageExportMap(HashMap<String, HashSet<String>>);
 
-impl Deref for CrateExportMap {
+impl Deref for PackageExportMap {
     type Target = HashMap<String, HashSet<String>>;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl FromIterator<(String, HashSet<String>)> for CrateExportMap {
+impl FromIterator<(String, HashSet<String>)> for PackageExportMap {
     fn from_iter<I: IntoIterator<Item = (String, HashSet<String>)>>(iter: I) -> Self {
         Self(iter.into_iter().collect())
     }
@@ -277,7 +277,7 @@ pub enum TestKind {
 }
 
 #[derive(Debug, Clone)]
-pub struct CrateInfo {
+pub struct PackageInfo {
     pub name: String,
     pub path: PathBuf,
     pub workspace_root: PathBuf,
@@ -290,10 +290,10 @@ pub struct CrateInfo {
 }
 
 /// Source files of a package's lib and bin targets, absolute, as Cargo
-/// resolved them. Workspace crates and external packages share the shape.
+/// resolved them. Workspace packages and external packages share the shape.
 #[derive(Debug, Clone, Default)]
 pub struct TargetRoots {
-    /// `None` for binary-only crates. Cargo lets `[lib] path` point anywhere,
+    /// `None` for binary-only packages. Cargo lets `[lib] path` point anywhere,
     /// so this is not always `src/lib.rs`.
     pub lib_root: Option<PathBuf>,
     /// Likewise not always `src/main.rs`.
@@ -347,7 +347,7 @@ pub struct SymbolUse {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DependencyRef {
-    pub target_crate: String,
+    pub target_package: String,
     pub target_module: String,
     pub target_item: Option<String>,
     /// Relative to the workspace root; a file outside it stays absolute.
@@ -368,12 +368,12 @@ impl DependencyRef {
     #[must_use]
     pub fn full_target(&self) -> String {
         match (&self.target_item, self.target_module.is_empty()) {
-            (Some(item), true) => format!("{}::{}", self.target_crate, item),
+            (Some(item), true) => format!("{}::{}", self.target_package, item),
             (Some(item), false) => {
-                format!("{}::{}::{}", self.target_crate, self.target_module, item)
+                format!("{}::{}::{}", self.target_package, self.target_module, item)
             }
-            (None, true) => self.target_crate.clone(),
-            (None, false) => format!("{}::{}", self.target_crate, self.target_module),
+            (None, true) => self.target_package.clone(),
+            (None, false) => format!("{}::{}", self.target_package, self.target_module),
         }
     }
 
@@ -382,9 +382,9 @@ impl DependencyRef {
     #[must_use]
     pub fn module_target(&self) -> String {
         if self.target_module.is_empty() {
-            self.target_crate.clone()
+            self.target_package.clone()
         } else {
-            format!("{}::{}", self.target_crate, self.target_module)
+            format!("{}::{}", self.target_package, self.target_module)
         }
     }
 
@@ -422,7 +422,7 @@ pub struct ModuleInfo {
     pub name: String,
     pub full_path: String,
     /// Absolute path of the file that declares this module. `None` for the
-    /// root of a crate without a lib or bin target, which has no file, and
+    /// root of a package without a lib or bin target, which has no file, and
     /// under the `hir` backend for a module whose VFS path is not on disk.
     pub file: Option<PathBuf>,
     pub children: Vec<ModuleInfo>,
@@ -439,9 +439,9 @@ pub struct ModuleTree {
     pub unparsed: Vec<PathBuf>,
 }
 
-/// Metadata for a single external crate (one entry per version).
+/// Metadata for a single external package (one entry per version).
 #[derive(Debug, Clone)]
-pub(crate) struct ExternalCrateInfo {
+pub(crate) struct ExternalPackageInfo {
     pub(crate) name: String,
     pub(crate) version: String,
     pub(crate) package_id: String,
@@ -450,7 +450,7 @@ pub(crate) struct ExternalCrateInfo {
     pub(crate) manifest: PathBuf,
 }
 
-/// Dependency edge between two external crates.
+/// Dependency edge between two external packages.
 #[derive(Debug, Clone)]
 pub(crate) struct ExternalDep {
     pub(crate) from_pkg_id: String,
@@ -458,10 +458,10 @@ pub(crate) struct ExternalDep {
     pub(crate) dep_kinds: Vec<DependencyKind>,
 }
 
-/// Dependency edge from a workspace crate to an external crate.
+/// Dependency edge from a workspace package to an external package.
 #[derive(Debug, Clone)]
 pub(crate) struct WorkspaceExternalDep {
-    pub(crate) workspace_crate: String,
+    pub(crate) workspace_package: String,
     pub(crate) external_pkg_id: String,
     pub(crate) dep_kinds: Vec<DependencyKind>,
 }
@@ -469,12 +469,12 @@ pub(crate) struct WorkspaceExternalDep {
 /// Result of external dependency analysis from cargo metadata.
 #[derive(Debug)]
 pub(crate) struct ExternalsResult {
-    pub(crate) crates: Vec<ExternalCrateInfo>,
+    pub(crate) packages: Vec<ExternalPackageInfo>,
     pub(crate) external_deps: Vec<ExternalDep>,
     pub(crate) workspace_deps: Vec<WorkspaceExternalDep>,
     /// `workspace_crate_name` -> (`code_name` -> `package_id`).
-    /// Per-workspace-crate map because different workspace crates can depend on
-    /// different versions of the same external crate.
+    /// Per-workspace-package map because different workspace packages can depend on
+    /// different versions of the same external package.
     pub(crate) crate_name_map: HashMap<String, HashMap<String, String>>,
 }
 
@@ -601,7 +601,7 @@ mod tests {
     #[test]
     fn test_dependency_ref_carries_context() {
         let prod_dep = DependencyRef {
-            target_crate: "my_crate".to_string(),
+            target_package: "my_crate".to_string(),
             target_module: "graph".to_string(),
             target_item: None,
             source_file: PathBuf::from("src/lib.rs"),
@@ -613,7 +613,7 @@ mod tests {
         assert_eq!(prod_dep.context, EdgeContext::production());
 
         let test_dep = DependencyRef {
-            target_crate: "my_crate".to_string(),
+            target_package: "my_crate".to_string(),
             target_module: "graph".to_string(),
             target_item: None,
             source_file: PathBuf::from("src/lib.rs"),
@@ -631,7 +631,7 @@ mod tests {
     #[test]
     fn test_dependency_ref_struct() {
         let dep = DependencyRef {
-            target_crate: "my_crate".to_string(),
+            target_package: "my_crate".to_string(),
             target_module: "graph".to_string(),
             target_item: None,
             source_file: PathBuf::from("src/cli.rs"),
@@ -640,7 +640,7 @@ mod tests {
             via_reexport: false,
             uses: Vec::new(),
         };
-        assert_eq!(dep.target_crate, "my_crate");
+        assert_eq!(dep.target_package, "my_crate");
         assert_eq!(dep.target_module, "graph");
         assert!(dep.target_item.is_none());
         assert_eq!(dep.source_file, PathBuf::from("src/cli.rs"));
@@ -650,7 +650,7 @@ mod tests {
     #[test]
     fn test_dependency_ref_full_target() {
         let dep = DependencyRef {
-            target_crate: "crate".to_string(),
+            target_package: "crate".to_string(),
             target_module: "graph".to_string(),
             target_item: Some("build".to_string()),
             source_file: PathBuf::new(),
@@ -665,7 +665,7 @@ mod tests {
     #[test]
     fn test_dependency_ref_module_target() {
         let dep = DependencyRef {
-            target_crate: "crate".to_string(),
+            target_package: "crate".to_string(),
             target_module: "graph".to_string(),
             target_item: Some("build".to_string()),
             source_file: PathBuf::new(),
@@ -680,7 +680,7 @@ mod tests {
     #[test]
     fn test_dependency_ref_full_target_no_item() {
         let dep = DependencyRef {
-            target_crate: "crate".to_string(),
+            target_package: "crate".to_string(),
             target_module: "graph".to_string(),
             target_item: None,
             source_file: PathBuf::new(),
@@ -695,7 +695,7 @@ mod tests {
     #[test]
     fn test_module_target_empty_module() {
         let dep = DependencyRef {
-            target_crate: "crate_b".to_string(),
+            target_package: "crate_b".to_string(),
             target_module: String::new(),
             target_item: None,
             source_file: PathBuf::new(),
@@ -710,7 +710,7 @@ mod tests {
     #[test]
     fn test_full_target_empty_module_with_item() {
         let dep = DependencyRef {
-            target_crate: "crate_b".to_string(),
+            target_package: "crate_b".to_string(),
             target_module: String::new(),
             target_item: Some("Symbol".to_string()),
             source_file: PathBuf::new(),
@@ -725,7 +725,7 @@ mod tests {
     #[test]
     fn test_full_target_empty_module_no_item() {
         let dep = DependencyRef {
-            target_crate: "crate_b".to_string(),
+            target_package: "crate_b".to_string(),
             target_module: String::new(),
             target_item: None,
             source_file: PathBuf::new(),
@@ -738,8 +738,8 @@ mod tests {
     }
 
     #[test]
-    fn test_workspace_crates_normalizes_on_insert() {
-        let mut ws = WorkspaceCrates::default();
+    fn test_workspace_packages_normalizes_on_insert() {
+        let mut ws = WorkspacePackages::default();
         ws.insert("my-lib");
         assert!(ws.contains("my_lib"), "should find normalized name");
         assert!(
@@ -749,8 +749,8 @@ mod tests {
     }
 
     #[test]
-    fn test_workspace_crates_from_iter_normalizes() {
-        let ws: WorkspaceCrates = ["core-utils", "my-lib"].into_iter().collect();
+    fn test_workspace_packages_from_iter_normalizes() {
+        let ws: WorkspacePackages = ["core-utils", "my-lib"].into_iter().collect();
         assert!(ws.contains("core_utils"));
         assert!(ws.contains("core-utils"));
         assert!(ws.contains("my_lib"));
@@ -758,19 +758,19 @@ mod tests {
     }
 
     #[test]
-    fn test_workspace_crates_iter_returns_normalized() {
-        let ws: WorkspaceCrates = ["core-utils"].into_iter().collect();
+    fn test_workspace_packages_iter_returns_normalized() {
+        let ws: WorkspacePackages = ["core-utils"].into_iter().collect();
         let names: Vec<&str> = ws.iter().map(std::string::String::as_str).collect();
         assert_eq!(names, vec!["core_utils"]);
     }
 
     #[test]
-    fn test_workspace_crates_len_and_is_empty() {
-        let empty = WorkspaceCrates::default();
+    fn test_workspace_packages_len_and_is_empty() {
+        let empty = WorkspacePackages::default();
         assert!(empty.is_empty());
         assert_eq!(empty.len(), 0);
 
-        let ws: WorkspaceCrates = ["a", "b"].into_iter().collect();
+        let ws: WorkspacePackages = ["a", "b"].into_iter().collect();
         assert!(!ws.is_empty());
         assert_eq!(ws.len(), 2);
     }
@@ -784,7 +784,7 @@ mod tests {
             children: vec![],
             definitions: HashMap::new(),
             dependencies: vec![DependencyRef {
-                target_crate: "crate".to_string(),
+                target_package: "crate".to_string(),
                 target_module: "graph".to_string(),
                 target_item: None,
                 source_file: PathBuf::from("src/cli.rs"),
