@@ -199,7 +199,7 @@ describe('placeLabels', () => {
   // their centred labels collide at this pxPerUnit.
   function nodes() {
     return {
-      root: { name: 'root', kind: 'crate', cx: 0, cy: 0, r: 200, lines: 20 },
+      root: { name: 'root', kind: 'package', cx: 0, cy: 0, r: 200, lines: 20 },
       near: {
         name: 'near',
         kind: 'file',

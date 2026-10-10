@@ -2,7 +2,7 @@
 
 use super::filtering::{DependencyInfo, collect_reachable_crates, find_seed_crates};
 use super::hir::FeatureConfig;
-use crate::model::{CrateInfo, TargetRoots, WorkspaceCrates, normalize_crate_name};
+use crate::model::{PackageInfo, TargetRoots, WorkspacePackages, normalize_crate_name};
 use anyhow::{Context, Result};
 use cargo_metadata::MetadataCommand;
 use std::collections::HashSet;
@@ -17,7 +17,7 @@ use tracing::debug;
 struct WorkspaceContext<'a> {
     pkg_id_to_name: std::collections::HashMap<&'a str, &'a str>,
     workspace_member_ids: HashSet<&'a str>,
-    workspace_member_names: WorkspaceCrates,
+    workspace_member_names: WorkspacePackages,
 }
 
 /// Runs cargo metadata with the given feature configuration.
@@ -56,7 +56,7 @@ fn build_workspace_context(metadata: &cargo_metadata::Metadata) -> WorkspaceCont
         .map(|id| id.repr.as_str())
         .collect();
 
-    let workspace_member_names: WorkspaceCrates = metadata
+    let workspace_member_names: WorkspacePackages = metadata
         .workspace_packages()
         .iter()
         .map(|p| p.name.as_str())
@@ -151,18 +151,18 @@ fn is_lib_target(target: &cargo_metadata::Target) -> bool {
         .any(|k| matches!(k, Lib | RLib | DyLib | CDyLib | StaticLib | ProcMacro))
 }
 
-/// Builds a `CrateInfo` from a package and its resolved dependencies.
+/// Builds a `PackageInfo` from a package and its resolved dependencies.
 fn build_crate_info(
     pkg: &cargo_metadata::Package,
     workspace_root: &Path,
     prod_deps: &DependencyMap,
     dev_deps: &DependencyMap,
-) -> CrateInfo {
+) -> PackageInfo {
     let normalized_name = normalize_crate_name(&pkg.name);
     let dependencies = prod_deps.get(&normalized_name).cloned().unwrap_or_default();
     let dev_dependencies = dev_deps.get(&normalized_name).cloned().unwrap_or_default();
 
-    CrateInfo {
+    PackageInfo {
         name: pkg.name.to_string(),
         path: pkg.manifest_path.parent().unwrap().into(),
         workspace_root: workspace_root.to_path_buf(),
@@ -192,14 +192,14 @@ pub(crate) fn target_roots(pkg: &cargo_metadata::Package) -> TargetRoots {
     }
 }
 
-/// Filters and builds `CrateInfo` list from workspace packages.
+/// Filters and builds `PackageInfo` list from workspace packages.
 fn build_filtered_crates(
     metadata: &cargo_metadata::Metadata,
     prod_deps: &DependencyMap,
     dev_deps: &DependencyMap,
     feature_config: &FeatureConfig,
-    workspace_member_names: &WorkspaceCrates,
-) -> Vec<CrateInfo> {
+    workspace_member_names: &WorkspacePackages,
+) -> Vec<PackageInfo> {
     let seeds = find_seed_crates(metadata, feature_config, workspace_member_names);
 
     if seeds.is_empty() && !feature_config.features.is_empty() {
@@ -217,7 +217,7 @@ fn build_filtered_crates(
         "final crate filtering"
     );
 
-    let crates: Vec<CrateInfo> = metadata
+    let crates: Vec<PackageInfo> = metadata
         .workspace_packages()
         .into_iter()
         .filter(|pkg| should_include_crate(pkg, &reachable, feature_config))
@@ -246,7 +246,7 @@ fn build_filtered_crates(
 pub fn analyze_workspace(
     manifest_path: &Path,
     feature_config: &FeatureConfig,
-) -> Result<Vec<CrateInfo>> {
+) -> Result<Vec<PackageInfo>> {
     let metadata = run_cargo_metadata(manifest_path, feature_config)?;
 
     let resolve = metadata
@@ -333,13 +333,13 @@ mod tests {
     mod custom_target_paths {
         use super::*;
 
-        fn crates() -> Vec<CrateInfo> {
+        fn crates() -> Vec<PackageInfo> {
             let manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("tests/fixtures/custom_root_workspace/Cargo.toml");
             analyze_workspace(&manifest, &FeatureConfig::default()).expect("should analyze")
         }
 
-        fn root_names(krate: &CrateInfo) -> Vec<String> {
+        fn root_names(krate: &PackageInfo) -> Vec<String> {
             krate
                 .target_roots
                 .files()

@@ -10,7 +10,7 @@ afterAll(restoreAll);
 if (!globalThis.STATIC_DATA) globalThis.STATIC_DATA = {};
 if (!globalThis.STATIC_DATA.classes) globalThis.STATIC_DATA.classes = {};
 Object.assign(globalThis.STATIC_DATA.classes, {
-  crateNode: 'crate',
+  packageNode: 'crate',
   module: 'module',
   searchMatch: 'search-match',
   searchMatchParent: 'search-match-parent',
@@ -27,7 +27,7 @@ Object.assign(globalThis.STATIC_DATA.classes, {
   arcCount: 'arc-count',
   arcCountBg: 'arc-count-bg',
   externalSection: 'external-section',
-  externalCrate: 'external',
+  externalPackage: 'external',
   externalTransitive: 'external-transitive',
   searchActive: 'search-active',
   treeLine: 'tree-line',
@@ -97,7 +97,7 @@ describe('SearchLogic', () => {
       StaticData.getAllNodeIds = () => ['crate-1'];
       StaticData.getNode = (id) =>
         id === 'crate-1'
-          ? { name: 'my-crate', type: 'crate', parent: null }
+          ? { name: 'my-crate', type: 'package', parent: null }
           : null;
 
       // Execute a real search to set active state
@@ -129,7 +129,11 @@ describe('SearchLogic', () => {
       const origGetAllNodeIds = StaticData.getAllNodeIds;
       StaticData.getAllNodeIds = () => ['n1'];
       const origGetNode = StaticData.getNode;
-      StaticData.getNode = () => ({ name: 'foo', type: 'crate', parent: null });
+      StaticData.getNode = () => ({
+        name: 'foo',
+        type: 'package',
+        parent: null,
+      });
 
       SearchLogic.executeSearch('foo', 'all');
       expect(SearchLogic.isActive()).toBe(true);
@@ -142,7 +146,11 @@ describe('SearchLogic', () => {
       const origGetAllNodeIds = StaticData.getAllNodeIds;
       StaticData.getAllNodeIds = () => ['n1'];
       const origGetNode = StaticData.getNode;
-      StaticData.getNode = () => ({ name: 'foo', type: 'crate', parent: null });
+      StaticData.getNode = () => ({
+        name: 'foo',
+        type: 'package',
+        parent: null,
+      });
 
       SearchLogic.executeSearch('foo', 'all');
       SearchLogic.clearSearch();
@@ -171,9 +179,9 @@ describe('SearchLogic', () => {
       StaticData.getAllNodeIds = () => ['a', 'b', 'c'];
       StaticData.getNode = (id) =>
         ({
-          a: { name: 'auth-service', type: 'crate', parent: null },
+          a: { name: 'auth-service', type: 'package', parent: null },
           b: { name: 'core', type: 'module', parent: null },
-          c: { name: 'auth-utils', type: 'crate', parent: null },
+          c: { name: 'auth-utils', type: 'package', parent: null },
         })[id];
 
       const result = SearchLogic.executeSearch('auth', 'all');
@@ -193,9 +201,9 @@ describe('SearchLogic', () => {
       StaticData.getAllNodeIds = () => ['a', 'b', 'c'];
       StaticData.getNode = (id) =>
         ({
-          a: { name: 'auth-service', type: 'crate', parent: null },
-          b: { name: 'auth-utils', type: 'crate', parent: null },
-          c: { name: 'database', type: 'crate', parent: null },
+          a: { name: 'auth-service', type: 'package', parent: null },
+          b: { name: 'auth-utils', type: 'package', parent: null },
+          c: { name: 'database', type: 'package', parent: null },
         })[id];
 
       // Tracking fake elements: count classList.add/remove calls
@@ -285,11 +293,11 @@ describe('SearchLogic', () => {
       StaticData.getAllNodeIds = () => ['a', 'b'];
       StaticData.getNode = (id) =>
         ({
-          a: { name: 'foo', type: 'crate', parent: null },
+          a: { name: 'foo', type: 'package', parent: null },
           b: { name: 'foo-mod', type: 'module', parent: null },
         })[id];
 
-      const result = SearchLogic.executeSearch('foo', 'crate');
+      const result = SearchLogic.executeSearch('foo', 'package');
       expect(result).toBe(1);
       expect(SearchLogic.getMatchedNodeIds().has('a')).toBe(true);
       expect(SearchLogic.getMatchedNodeIds().has('b')).toBe(false);
@@ -304,7 +312,7 @@ describe('SearchLogic', () => {
       StaticData.getAllNodeIds = () => ['int-1', 'ext-1', 'ext-2'];
       StaticData.getNode = (id) =>
         ({
-          'int-1': { name: 'my-app', type: 'crate', parent: null },
+          'int-1': { name: 'my-app', type: 'package', parent: null },
           'ext-1': { name: 'serde', type: 'external', parent: null },
           'ext-2': { name: 'tokio', type: 'external-transitive', parent: null },
         })[id];
@@ -327,7 +335,7 @@ describe('SearchLogic', () => {
       StaticData.getAllNodeIds = () => ['int-1', 'ext-1'];
       StaticData.getNode = (id) =>
         ({
-          'int-1': { name: 'my-app', type: 'crate', parent: null },
+          'int-1': { name: 'my-app', type: 'package', parent: null },
           'ext-1': { name: 'serde', type: 'external', parent: null },
         })[id];
 
@@ -377,7 +385,9 @@ describe('SearchLogic', () => {
 
       StaticData.getAllNodeIds = () => ['n1'];
       StaticData.getNode = (id) =>
-        id === 'n1' ? { name: 'my-crate', type: 'crate', parent: null } : null;
+        id === 'n1'
+          ? { name: 'my-crate', type: 'package', parent: null }
+          : null;
 
       const svgClasses = new Set();
       DomAdapter.getSvgRoot = () => ({
@@ -487,8 +497,8 @@ describe('SearchLogic', () => {
       StaticData.getAllNodeIds = () => ['n1', 'n2'];
       StaticData.getNode = (id) =>
         ({
-          n1: { name: 'my-crate', type: 'crate', parent: null },
-          n2: { name: 'other', type: 'crate', parent: null },
+          n1: { name: 'my-crate', type: 'package', parent: null },
+          n2: { name: 'other', type: 'package', parent: null },
         })[id];
       StaticData.getAllArcIds = () => ['arc-1'];
       StaticData.getArc = (id) =>
@@ -577,8 +587,8 @@ describe('SearchLogic', () => {
       StaticData.getAllNodeIds = () => ['n1', 'n2'];
       StaticData.getNode = (id) =>
         ({
-          n1: { name: 'my-crate', type: 'crate', parent: null },
-          n2: { name: 'other', type: 'crate', parent: null },
+          n1: { name: 'my-crate', type: 'package', parent: null },
+          n2: { name: 'other', type: 'package', parent: null },
         })[id];
       StaticData.getAllArcIds = () => ['arc-1'];
       StaticData.getArc = (id) =>
@@ -653,8 +663,8 @@ describe('SearchLogic', () => {
       StaticData.getAllNodeIds = () => ['n1', 'n2'];
       StaticData.getNode = (id) =>
         ({
-          n1: { name: 'alpha', type: 'crate', parent: null },
-          n2: { name: 'beta', type: 'crate', parent: null },
+          n1: { name: 'alpha', type: 'package', parent: null },
+          n2: { name: 'beta', type: 'package', parent: null },
         })[id];
       StaticData.getAllArcIds = () => ['arc-1'];
       StaticData.getArc = (id) =>
@@ -724,8 +734,8 @@ describe('SearchLogic', () => {
       StaticData.getAllNodeIds = () => ['n1', 'n2'];
       StaticData.getNode = (id) =>
         ({
-          n1: { name: 'hashmap-utils', type: 'crate', parent: null },
-          n2: { name: 'other', type: 'crate', parent: null },
+          n1: { name: 'hashmap-utils', type: 'package', parent: null },
+          n2: { name: 'other', type: 'package', parent: null },
         })[id];
       StaticData.getAllArcIds = () => ['arc-1'];
       StaticData.getArc = (id) =>
@@ -794,7 +804,7 @@ describe('SearchLogic', () => {
       StaticData.getNode = (id) =>
         ({
           n1: { name: 'hir-lower', type: 'module', parent: null },
-          n2: { name: 'other', type: 'crate', parent: null },
+          n2: { name: 'other', type: 'package', parent: null },
           n3: { name: 'checker-mod', type: 'module', parent: null },
         })[id];
       StaticData.getAllArcIds = () => ['arc-1'];
@@ -867,13 +877,13 @@ describe('SearchLogic', () => {
       const origQuerySelectorAll = DomAdapter.querySelectorAll;
       const origIsCollapsed = AppState.isCollapsed;
 
-      // mod-a is inside collapsed crate-x; n2 is a top-level, visible crate.
+      // mod-a is inside collapsed crate-x; n2 is a top-level, visible package.
       StaticData.getAllNodeIds = () => ['crate-x', 'mod-a', 'n2'];
       StaticData.getNode = (id) =>
         ({
-          'crate-x': { name: 'crate-x', type: 'crate', parent: null },
+          'crate-x': { name: 'crate-x', type: 'package', parent: null },
           'mod-a': { name: 'mod-a', type: 'module', parent: 'crate-x' },
-          n2: { name: 'other', type: 'crate', parent: null },
+          n2: { name: 'other', type: 'package', parent: null },
         })[id];
       StaticData.getAllArcIds = () => ['arc-1'];
       StaticData.getArc = (id) =>
@@ -940,9 +950,9 @@ describe('SearchLogic', () => {
       StaticData.getAllNodeIds = () => ['n1', 'n2', 'n3'];
       StaticData.getNode = (id) =>
         ({
-          n1: { name: 'alpha', type: 'crate', parent: null },
-          n2: { name: 'beta', type: 'crate', parent: null },
-          n3: { name: 'target-crate', type: 'crate', parent: null },
+          n1: { name: 'alpha', type: 'package', parent: null },
+          n2: { name: 'beta', type: 'package', parent: null },
+          n3: { name: 'target-crate', type: 'package', parent: null },
         })[id];
       StaticData.getAllArcIds = () => ['arc-1'];
       StaticData.getArc = (id) =>
@@ -998,7 +1008,7 @@ describe('SearchLogic', () => {
 
       StaticData.getAllNodeIds = () => ['n1'];
       StaticData.getNode = (id) =>
-        id === 'n1' ? { name: 'HashMap', type: 'crate', parent: null } : null;
+        id === 'n1' ? { name: 'HashMap', type: 'package', parent: null } : null;
       StaticData.getAllArcIds = () => [];
       StaticData.getArc = () => null;
 

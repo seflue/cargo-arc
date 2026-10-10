@@ -23,7 +23,7 @@ pub(crate) enum FollowState {
 /// One of the two analysis inputs that can change while the service runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Switch {
-    /// External crates in the analysis (`--externals`).
+    /// External packages in the analysis (`--externals`).
     Externals,
     /// Test code in the analysis (`--include-tests`).
     Tests,
@@ -413,7 +413,7 @@ mod tests {
         )
     }
 
-    /// Two crates' manifests (`my_crate` at id 0, `other` at id 1) and one
+    /// Two packages' manifests (`my_crate` at id 0, `other` at id 1) and one
     /// workspace-relative source location (id 2), the way `build_layout`
     /// would have assigned them.
     fn service_over_root(root: &str) -> JumpService<'static> {
@@ -656,14 +656,14 @@ mod tests {
     }
 
     #[test]
-    fn ready_line_names_the_crate_version_and_port() {
+    fn ready_line_names_the_package_version_and_port() {
         assert_eq!(
             JumpService::ready_line(4321),
             format!("arc ready {} 4321\n", env!("CARGO_PKG_VERSION"))
         );
     }
 
-    /// One crate whose manifest is registered absolute (node "0"), one
+    /// One package whose manifest is registered absolute (node "0"), one
     /// module whose file is registered workspace-relative (node "1"), with
     /// two edge locations on `src/mod_a.rs`: ids 2 and 3 on line 5, id 4 on
     /// line 9; and one member outside the root, registered absolute (node

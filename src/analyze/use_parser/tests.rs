@@ -4,18 +4,18 @@ use crate::model::{DefKind, Definition};
 use std::path::Path;
 use std::sync::LazyLock;
 
-static DEFAULT_WS: LazyLock<WorkspaceCrates> = LazyLock::new(WorkspaceCrates::default);
+static DEFAULT_WS: LazyLock<WorkspacePackages> = LazyLock::new(WorkspacePackages::default);
 static DEFAULT_MP: LazyLock<ModulePathMap> = LazyLock::new(ModulePathMap::default);
-static DEFAULT_EXPORTS: LazyLock<CrateExportMap> = LazyLock::new(CrateExportMap::default);
+static DEFAULT_EXPORTS: LazyLock<PackageExportMap> = LazyLock::new(PackageExportMap::default);
 static DEFAULT_REEXPORT_MAP: LazyLock<ReExportMap> = LazyLock::new(ReExportMap::default);
 static DEFAULT_EXT_NAMES: LazyLock<HashMap<String, String>> = LazyLock::new(HashMap::new);
 
 struct ResolutionContextBuilder<'a> {
     current_crate: &'a str,
-    workspace_crates: &'a WorkspaceCrates,
+    workspace_crates: &'a WorkspacePackages,
     source_file: &'a Path,
     all_module_paths: &'a ModulePathMap,
-    crate_exports: &'a CrateExportMap,
+    crate_exports: &'a PackageExportMap,
     current_module_path: &'a str,
     reexport_map: &'a ReExportMap,
     external_crate_names: &'a HashMap<String, String>,
@@ -40,7 +40,7 @@ impl<'a> ResolutionContextBuilder<'a> {
         self
     }
 
-    fn workspace_crates(mut self, ws: &'a WorkspaceCrates) -> Self {
+    fn workspace_crates(mut self, ws: &'a WorkspacePackages) -> Self {
         self.workspace_crates = ws;
         self
     }
@@ -50,7 +50,7 @@ impl<'a> ResolutionContextBuilder<'a> {
         self
     }
 
-    fn crate_exports(mut self, exports: &'a CrateExportMap) -> Self {
+    fn crate_exports(mut self, exports: &'a PackageExportMap) -> Self {
         self.crate_exports = exports;
         self
     }
@@ -200,7 +200,7 @@ mod normalize_tests {
         let deps = parse_workspace_dependencies(&uses, &ctx);
         assert_eq!(deps.len(), 1);
         let dep = &deps[0];
-        assert_eq!(dep.target_crate, "my_crate");
+        assert_eq!(dep.target_package, "my_crate");
         assert_eq!(dep.target_module, "graph");
         assert_eq!(dep.target_item, Some("build".to_string()));
     }
@@ -212,7 +212,7 @@ mod normalize_tests {
         let deps = parse_workspace_dependencies(&uses, &ctx);
         assert_eq!(deps.len(), 1);
         let dep = &deps[0];
-        assert_eq!(dep.target_crate, "my_crate");
+        assert_eq!(dep.target_package, "my_crate");
         assert_eq!(dep.target_module, "graph");
         assert!(dep.target_item.is_none());
         assert_eq!(dep.line, 1);
@@ -220,7 +220,7 @@ mod normalize_tests {
 
     #[test]
     fn test_process_use_statement_workspace_crate() {
-        let ws: WorkspaceCrates = ["other_crate".to_string()].into_iter().collect();
+        let ws: WorkspacePackages = ["other_crate".to_string()].into_iter().collect();
         let uses = parse_test_uses("use other_crate::utils;");
         let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs"))
             .workspace_crates(&ws)
@@ -228,13 +228,13 @@ mod normalize_tests {
         let deps = parse_workspace_dependencies(&uses, &ctx);
         assert_eq!(deps.len(), 1);
         let dep = &deps[0];
-        assert_eq!(dep.target_crate, "other_crate");
+        assert_eq!(dep.target_package, "other_crate");
         assert_eq!(dep.target_module, "utils");
     }
 
     #[test]
     fn test_process_use_statement_workspace_crate_with_hyphen() {
-        let ws: WorkspaceCrates = ["my-lib".to_string()].into_iter().collect();
+        let ws: WorkspacePackages = ["my-lib".to_string()].into_iter().collect();
         let uses = parse_test_uses("use my_lib::feature;");
         let ctx = ResolutionContextBuilder::new(Path::new("src/main.rs"))
             .current_crate("app")
@@ -243,7 +243,7 @@ mod normalize_tests {
         let deps = parse_workspace_dependencies(&uses, &ctx);
         assert_eq!(deps.len(), 1);
         let dep = &deps[0];
-        assert_eq!(dep.target_crate, "my_lib");
+        assert_eq!(dep.target_package, "my_lib");
         assert_eq!(dep.target_module, "feature");
     }
 
@@ -262,7 +262,7 @@ mod normalize_tests {
             .build();
         let deps = parse_workspace_dependencies(&uses, &ctx);
         assert_eq!(deps.len(), 1, "self:: should resolve: {deps:?}");
-        assert_eq!(deps[0].target_crate, "my_crate");
+        assert_eq!(deps[0].target_package, "my_crate");
         assert_eq!(deps[0].target_module, "render::helper");
     }
 
@@ -281,13 +281,13 @@ mod normalize_tests {
             .build();
         let deps = parse_workspace_dependencies(&uses, &ctx);
         assert_eq!(deps.len(), 1, "super:: should resolve: {deps:?}");
-        assert_eq!(deps[0].target_crate, "my_crate");
+        assert_eq!(deps[0].target_package, "my_crate");
         assert_eq!(deps[0].target_module, "parent");
     }
 
     #[test]
     fn test_process_use_statement_external_filtered() {
-        let ws: WorkspaceCrates = ["my_crate".to_string()].into_iter().collect();
+        let ws: WorkspacePackages = ["my_crate".to_string()].into_iter().collect();
         let uses = parse_test_uses("use serde::Serialize;");
         let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs"))
             .workspace_crates(&ws)
@@ -375,7 +375,7 @@ mod submodule_tests {
 
     #[test]
     fn test_workspace_import_submodule() {
-        let ws: WorkspaceCrates = ["other_crate".to_string()].into_iter().collect();
+        let ws: WorkspacePackages = ["other_crate".to_string()].into_iter().collect();
         let mp: ModulePathMap = [(
             "other_crate".to_string(),
             HashSet::from(["foo".into(), "foo::bar".into()]),
@@ -396,7 +396,7 @@ mod submodule_tests {
 
     #[test]
     fn test_workspace_import_cross_crate_deep() {
-        let ws: WorkspaceCrates = ["other_crate".to_string()].into_iter().collect();
+        let ws: WorkspacePackages = ["other_crate".to_string()].into_iter().collect();
         let mp: ModulePathMap = [(
             "other_crate".to_string(),
             HashSet::from(["sub".into(), "sub::deep".into()]),
@@ -417,7 +417,7 @@ mod submodule_tests {
 
     #[test]
     fn test_cross_crate_no_paths_fallback() {
-        let ws: WorkspaceCrates = ["other_crate".to_string()].into_iter().collect();
+        let ws: WorkspacePackages = ["other_crate".to_string()].into_iter().collect();
         let uses = parse_test_uses("use other_crate::foo::bar::Baz;");
         let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs"))
             .workspace_crates(&ws)
@@ -467,7 +467,7 @@ use other_crate::utils;
 use serde::Serialize;
 use std::collections::HashMap;
 ";
-        let ws: WorkspaceCrates = ["my_crate".to_string(), "other_crate".to_string()]
+        let ws: WorkspacePackages = ["my_crate".to_string(), "other_crate".to_string()]
             .into_iter()
             .collect();
         let uses = parse_test_uses(source);
@@ -479,11 +479,11 @@ use std::collections::HashMap;
         assert_eq!(deps.len(), 2, "found: {deps:?}");
         assert!(
             deps.iter()
-                .any(|d| d.target_crate == "my_crate" && d.target_module == "graph")
+                .any(|d| d.target_package == "my_crate" && d.target_module == "graph")
         );
         assert!(
             deps.iter()
-                .any(|d| d.target_crate == "other_crate" && d.target_module == "utils")
+                .any(|d| d.target_package == "other_crate" && d.target_module == "utils")
         );
     }
 
@@ -740,7 +740,7 @@ pub(crate) use model::Node;
 use other_crate::utils;
 use serde::Serialize;
 ";
-        let ws: WorkspaceCrates = ["my_crate".to_string(), "other_crate".to_string()]
+        let ws: WorkspacePackages = ["my_crate".to_string(), "other_crate".to_string()]
             .into_iter()
             .collect();
         let mp: ModulePathMap = [(
@@ -765,19 +765,19 @@ use serde::Serialize;
 
         // Bare module multi-import (pub use)
         assert!(
-            deps.iter().any(|d| d.target_crate == "my_crate"
+            deps.iter().any(|d| d.target_package == "my_crate"
                 && d.target_module == "cli"
                 && d.target_item == Some("Args".to_string())),
             "missing cli::Args"
         );
         assert!(
-            deps.iter().any(|d| d.target_crate == "my_crate"
+            deps.iter().any(|d| d.target_package == "my_crate"
                 && d.target_module == "cli"
                 && d.target_item == Some("Cargo".to_string())),
             "missing cli::Cargo"
         );
         assert!(
-            deps.iter().any(|d| d.target_crate == "my_crate"
+            deps.iter().any(|d| d.target_package == "my_crate"
                 && d.target_module == "cli"
                 && d.target_item == Some("run".to_string())),
             "missing cli::run"
@@ -785,7 +785,7 @@ use serde::Serialize;
 
         // crate:: prefix
         assert!(
-            deps.iter().any(|d| d.target_crate == "my_crate"
+            deps.iter().any(|d| d.target_package == "my_crate"
                 && d.target_module == "graph"
                 && d.target_item == Some("build".to_string())),
             "missing graph::build"
@@ -793,7 +793,7 @@ use serde::Serialize;
 
         // Bare module pub(crate)
         assert!(
-            deps.iter().any(|d| d.target_crate == "my_crate"
+            deps.iter().any(|d| d.target_package == "my_crate"
                 && d.target_module == "model"
                 && d.target_item == Some("Node".to_string())),
             "missing model::Node"
@@ -802,7 +802,7 @@ use serde::Serialize;
         // Workspace crate
         assert!(
             deps.iter()
-                .any(|d| d.target_crate == "other_crate" && d.target_module == "utils"),
+                .any(|d| d.target_package == "other_crate" && d.target_module == "utils"),
             "missing other_crate::utils"
         );
     }
@@ -821,7 +821,7 @@ mod bare_module_tests {
             .build();
         let dep = parse_bare_module_import(&ctx, "cli::Args", 1, &EdgeContext::production());
         let dep = dep.expect("should parse bare module import");
-        assert_eq!(dep.target_crate, "my_crate");
+        assert_eq!(dep.target_package, "my_crate");
         assert_eq!(dep.target_module, "cli");
         assert_eq!(dep.target_item, Some("Args".to_string()));
     }
@@ -856,7 +856,7 @@ mod bare_module_tests {
             &EdgeContext::production(),
         );
         let dep = dep.expect("should parse deep bare module import");
-        assert_eq!(dep.target_crate, "my_crate");
+        assert_eq!(dep.target_package, "my_crate");
         assert_eq!(dep.target_module, "analyze::use_parser");
         assert_eq!(dep.target_item, Some("normalize".to_string()));
     }
@@ -871,7 +871,7 @@ mod bare_module_tests {
             .build();
         let dep = parse_bare_module_import(&ctx, "cli", 1, &EdgeContext::production());
         let dep = dep.expect("should parse module-only bare import");
-        assert_eq!(dep.target_crate, "my_crate");
+        assert_eq!(dep.target_package, "my_crate");
         assert_eq!(dep.target_module, "cli");
         assert!(dep.target_item.is_none());
     }
@@ -888,7 +888,7 @@ mod bare_module_tests {
         let deps = parse_workspace_dependencies(&uses, &ctx);
         assert_eq!(deps.len(), 1);
         let dep = &deps[0];
-        assert_eq!(dep.target_crate, "my_crate");
+        assert_eq!(dep.target_package, "my_crate");
         assert_eq!(dep.target_module, "cli");
         assert_eq!(dep.target_item, Some("Args".to_string()));
         assert!(!dep.via_reexport);
@@ -906,7 +906,7 @@ mod bare_module_tests {
         let deps = parse_workspace_dependencies(&uses, &ctx);
         assert_eq!(deps.len(), 1);
         let dep = &deps[0];
-        assert_eq!(dep.target_crate, "my_crate");
+        assert_eq!(dep.target_package, "my_crate");
         assert_eq!(dep.target_module, "cli");
         assert_eq!(dep.target_item, Some("Args".to_string()));
         assert!(dep.via_reexport);
@@ -923,7 +923,7 @@ mod bare_module_tests {
             .build();
         let deps = parse_workspace_dependencies(&uses, &ctx);
         assert_eq!(deps.len(), 3, "should return 3 deps: {deps:?}");
-        assert!(deps.iter().all(|d| d.target_crate == "my_crate"));
+        assert!(deps.iter().all(|d| d.target_package == "my_crate"));
         assert!(deps.iter().all(|d| d.target_module == "cli"));
         assert!(
             deps.iter()
@@ -950,7 +950,7 @@ mod bare_module_tests {
             .build();
         let deps = parse_workspace_dependencies(&uses, &ctx);
         assert_eq!(deps.len(), 1, "glob should return 1 dep: {deps:?}");
-        assert_eq!(deps[0].target_crate, "my_crate");
+        assert_eq!(deps[0].target_package, "my_crate");
         assert_eq!(deps[0].target_module, "cli");
         assert_eq!(deps[0].target_item, Some("*".to_string()));
     }
@@ -971,7 +971,7 @@ mod bare_module_tests {
         let dep =
             parse_bare_module_import(&ctx, "css::render_styles", 1, &EdgeContext::production());
         let dep = dep.expect("should resolve child module");
-        assert_eq!(dep.target_crate, "my_crate");
+        assert_eq!(dep.target_package, "my_crate");
         assert_eq!(dep.target_module, "render::css");
         assert_eq!(dep.target_item, Some("render_styles".to_string()));
     }
@@ -1162,11 +1162,11 @@ mod entry_point_tests {
 
     #[test]
     fn test_entry_point_export_detected() {
-        let ws: WorkspaceCrates = ["other_crate".to_string()].into_iter().collect();
+        let ws: WorkspacePackages = ["other_crate".to_string()].into_iter().collect();
         let mp: ModulePathMap = [("other_crate".to_string(), HashSet::from(["sub_mod".into()]))]
             .into_iter()
             .collect();
-        let exports: CrateExportMap = [(
+        let exports: PackageExportMap = [(
             "other_crate".to_string(),
             HashSet::from(["MyStruct".into()]),
         )]
@@ -1181,18 +1181,18 @@ mod entry_point_tests {
         let deps = parse_workspace_dependencies(&uses, &ctx);
         assert_eq!(deps.len(), 1);
         let dep = &deps[0];
-        assert_eq!(dep.target_crate, "other_crate");
+        assert_eq!(dep.target_package, "other_crate");
         assert_eq!(dep.target_module, "");
         assert_eq!(dep.target_item, Some("MyStruct".to_string()));
     }
 
     #[test]
     fn test_non_export_stays_fallback() {
-        let ws: WorkspaceCrates = ["other_crate".to_string()].into_iter().collect();
+        let ws: WorkspacePackages = ["other_crate".to_string()].into_iter().collect();
         let mp: ModulePathMap = [("other_crate".to_string(), HashSet::from(["sub_mod".into()]))]
             .into_iter()
             .collect();
-        let exports: CrateExportMap = [("other_crate".to_string(), HashSet::new())]
+        let exports: PackageExportMap = [("other_crate".to_string(), HashSet::new())]
             .into_iter()
             .collect();
         let uses = parse_test_uses("use other_crate::Unknown;");
@@ -1210,11 +1210,11 @@ mod entry_point_tests {
 
     #[test]
     fn test_real_module_not_affected() {
-        let ws: WorkspaceCrates = ["other_crate".to_string()].into_iter().collect();
+        let ws: WorkspacePackages = ["other_crate".to_string()].into_iter().collect();
         let mp: ModulePathMap = [("other_crate".to_string(), HashSet::from(["sub_mod".into()]))]
             .into_iter()
             .collect();
-        let exports: CrateExportMap =
+        let exports: PackageExportMap =
             [("other_crate".to_string(), HashSet::from(["sub_mod".into()]))]
                 .into_iter()
                 .collect();
@@ -1236,21 +1236,21 @@ mod entry_point_tests {
         // Without module path info, `use other_crate::{Foo, Bar}` resolves each
         // symbol as a module-level fallback (target_module="Foo", no target_item).
         // The dependency on other_crate is still correctly detected.
-        let ws: WorkspaceCrates = ["other_crate".to_string()].into_iter().collect();
+        let ws: WorkspacePackages = ["other_crate".to_string()].into_iter().collect();
         let uses = parse_test_uses("use other_crate::{Foo, Bar};");
         let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs"))
             .workspace_crates(&ws)
             .build();
         let deps = parse_workspace_dependencies(&uses, &ctx);
         assert_eq!(deps.len(), 2, "should return 2 deps: {deps:?}");
-        assert!(deps.iter().all(|d| d.target_crate == "other_crate"));
+        assert!(deps.iter().all(|d| d.target_package == "other_crate"));
         assert!(deps.iter().any(|d| d.target_module == "Foo"));
         assert!(deps.iter().any(|d| d.target_module == "Bar"));
     }
 
     #[test]
     fn test_entry_point_glob_import() {
-        let ws: WorkspaceCrates = ["other_crate".to_string()].into_iter().collect();
+        let ws: WorkspacePackages = ["other_crate".to_string()].into_iter().collect();
         let uses = parse_test_uses("use other_crate::*;");
         let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs"))
             .workspace_crates(&ws)
@@ -1676,7 +1676,7 @@ mod path_ref_resolution_tests {
 
     #[test]
     fn test_parse_path_refs_workspace_crate() {
-        let ws: WorkspaceCrates = ["other_crate".to_string()].into_iter().collect();
+        let ws: WorkspacePackages = ["other_crate".to_string()].into_iter().collect();
         let mp: ModulePathMap = [("other_crate".to_string(), HashSet::from(["module".into()]))]
             .into_iter()
             .collect();
@@ -1696,7 +1696,7 @@ mod path_ref_resolution_tests {
             1,
             "should resolve workspace crate path: {deps:?}"
         );
-        assert_eq!(deps[0].target_crate, "other_crate");
+        assert_eq!(deps[0].target_package, "other_crate");
         assert_eq!(deps[0].target_module, "module");
         assert_eq!(deps[0].target_item, Some("item".to_string()));
         assert_eq!(deps[0].line, 5);
@@ -1718,7 +1718,7 @@ mod path_ref_resolution_tests {
             .build();
         let deps = resolve_root_refs(paths, &ctx);
         assert_eq!(deps.len(), 1, "should resolve crate-local path: {deps:?}");
-        assert_eq!(deps[0].target_crate, "my_crate");
+        assert_eq!(deps[0].target_package, "my_crate");
         assert_eq!(deps[0].target_module, "module");
         assert_eq!(deps[0].target_item, Some("item".to_string()));
     }
@@ -1734,7 +1734,7 @@ mod path_ref_resolution_tests {
             .build();
         let deps = resolve_root_refs(paths, &ctx);
         assert_eq!(deps.len(), 1, "should resolve bare module path: {deps:?}");
-        assert_eq!(deps[0].target_crate, "my_crate");
+        assert_eq!(deps[0].target_package, "my_crate");
         assert_eq!(deps[0].target_module, "cli");
         assert_eq!(deps[0].target_item, Some("Args".to_string()));
     }
@@ -1763,8 +1763,8 @@ mod path_ref_resolution_tests {
 
     #[test]
     fn test_parse_path_refs_entry_point() {
-        let ws: WorkspaceCrates = ["other_crate".to_string()].into_iter().collect();
-        let exports: CrateExportMap = [(
+        let ws: WorkspacePackages = ["other_crate".to_string()].into_iter().collect();
+        let exports: PackageExportMap = [(
             "other_crate".to_string(),
             HashSet::from(["MyStruct".into()]),
         )]
@@ -1782,14 +1782,14 @@ mod path_ref_resolution_tests {
             .build();
         let deps = resolve_root_refs(paths, &ctx);
         assert_eq!(deps.len(), 1, "should resolve entry-point path: {deps:?}");
-        assert_eq!(deps[0].target_crate, "other_crate");
+        assert_eq!(deps[0].target_package, "other_crate");
         assert_eq!(deps[0].target_module, "");
         assert_eq!(deps[0].target_item, Some("MyStruct".to_string()));
     }
 
     #[test]
     fn test_parse_path_refs_dedup() {
-        let ws: WorkspaceCrates = ["other_crate".to_string()].into_iter().collect();
+        let ws: WorkspacePackages = ["other_crate".to_string()].into_iter().collect();
         let mp: ModulePathMap = [("other_crate".to_string(), HashSet::from(["module".into()]))]
             .into_iter()
             .collect();
@@ -1909,7 +1909,7 @@ mod relative_import_e2e_tests {
         let deps = parse_workspace_dependencies(&uses, &ctx);
         assert_eq!(deps.len(), 1, "super::filtering should resolve: {deps:?}");
         let dep = &deps[0];
-        assert_eq!(dep.target_crate, "my_crate");
+        assert_eq!(dep.target_package, "my_crate");
         assert_eq!(dep.target_module, "analyze::filtering");
         assert_eq!(dep.target_item, Some("DependencyInfo".to_string()));
     }
@@ -1940,7 +1940,7 @@ mod relative_import_e2e_tests {
             2,
             "super::use_parser multi-import should resolve: {deps:?}"
         );
-        assert!(deps.iter().all(|d| d.target_crate == "my_crate"));
+        assert!(deps.iter().all(|d| d.target_package == "my_crate"));
         assert!(
             deps.iter()
                 .all(|d| d.target_module == "analyze::use_parser")
@@ -1988,7 +1988,7 @@ mod relative_import_e2e_tests {
             .build();
         let deps = parse_workspace_dependencies(&uses, &ctx);
         assert_eq!(deps.len(), 1, "self::child should resolve: {deps:?}");
-        assert_eq!(deps[0].target_crate, "my_crate");
+        assert_eq!(deps[0].target_package, "my_crate");
         assert_eq!(deps[0].target_module, "render::child");
         assert_eq!(deps[0].target_item, Some("Item".to_string()));
     }
@@ -2129,7 +2129,7 @@ mod context_aware_dedup_tests {
     #[test]
     fn test_same_target_different_context_not_deduped_path_ref() {
         // Production and Test dep on same path ref must both survive dedup
-        let ws: WorkspaceCrates = ["other_crate".to_string()].into_iter().collect();
+        let ws: WorkspacePackages = ["other_crate".to_string()].into_iter().collect();
         let mp: ModulePathMap = [("other_crate".to_string(), HashSet::from(["module".into()]))]
             .into_iter()
             .collect();
@@ -2167,7 +2167,7 @@ mod context_aware_dedup_tests {
     #[test]
     fn test_same_target_same_context_still_deduped() {
         // Two Production deps on same symbol should still be deduped
-        let ws: WorkspaceCrates = ["other_crate".to_string()].into_iter().collect();
+        let ws: WorkspacePackages = ["other_crate".to_string()].into_iter().collect();
         let mp: ModulePathMap = [("other_crate".to_string(), HashSet::from(["module".into()]))]
             .into_iter()
             .collect();
@@ -2200,7 +2200,7 @@ mod context_aware_dedup_tests {
     #[test]
     fn test_dedup_merges_features_path_ref() {
         // Same target+kind with different features → one dep with merged features
-        let ws: WorkspaceCrates = ["other_crate".to_string()].into_iter().collect();
+        let ws: WorkspacePackages = ["other_crate".to_string()].into_iter().collect();
         let mp: ModulePathMap = [("other_crate".to_string(), HashSet::from(["module".into()]))]
             .into_iter()
             .collect();
@@ -2466,7 +2466,7 @@ mod resolve_reexport_tests {
 
     fn test_dep(crate_name: &str, module: &str, item: Option<&str>) -> DependencyRef {
         DependencyRef {
-            target_crate: crate_name.to_string(),
+            target_package: crate_name.to_string(),
             target_module: module.to_string(),
             target_item: item.map(String::from),
             source_file: PathBuf::from("src/lib.rs"),
@@ -2949,13 +2949,13 @@ mod external_crate_tests {
         let dep = resolve_single_path(&ctx, "serde::Deserialize", 1, &EdgeContext::production(), 0);
         assert!(dep.is_some(), "should resolve external crate import");
         let dep = dep.unwrap();
-        assert_eq!(dep.target_crate, "serde");
+        assert_eq!(dep.target_package, "serde");
         assert_eq!(dep.target_item, Some("Deserialize".to_string()));
     }
 
     #[test]
     fn test_resolve_external_does_not_shadow_workspace() {
-        let ws: WorkspaceCrates = ["serde"].into_iter().collect();
+        let ws: WorkspacePackages = ["serde"].into_iter().collect();
         let ext_names: HashMap<String, String> =
             [("serde".to_string(), "serde-pkg-id".to_string())]
                 .into_iter()
@@ -2969,7 +2969,7 @@ mod external_crate_tests {
         assert!(dep.is_some());
         let dep = dep.unwrap();
         // Workspace import resolution takes priority
-        assert_eq!(dep.target_crate, "serde");
+        assert_eq!(dep.target_package, "serde");
     }
 
     #[test]
@@ -3042,7 +3042,7 @@ mod file_binding_tests {
 
     #[test]
     fn test_alias_map_binds_workspace_module() {
-        let ws: WorkspaceCrates = ["other_crate".to_string()].into_iter().collect();
+        let ws: WorkspacePackages = ["other_crate".to_string()].into_iter().collect();
         let mp: ModulePathMap = [("other_crate".to_string(), HashSet::from(["module".into()]))]
             .into_iter()
             .collect();
@@ -3150,7 +3150,7 @@ mod file_binding_tests {
         let deps = parse_path_ref_dependencies(&root_path_refs(paths), &ctx, &bindings);
         assert_eq!(deps.len(), 1, "the reference resolves once: {deps:?}");
         assert_eq!(
-            deps[0].target_crate, "remote_lib",
+            deps[0].target_package, "remote_lib",
             "the binding names the other crate, not the module beside the file: {deps:?}"
         );
     }
@@ -3529,7 +3529,7 @@ mod use_category_tests {
     /// tuple-struct or variant constructor, anything else a fn.
     #[test]
     fn a_call_of_an_unknown_name_goes_by_spelling() {
-        let ws: WorkspaceCrates = ["other".to_string()].into_iter().collect();
+        let ws: WorkspacePackages = ["other".to_string()].into_iter().collect();
         let mp: ModulePathMap = [
             ("my_crate".to_string(), HashSet::from(["vocab".into()])),
             ("other".to_string(), HashSet::from(["types".into()])),

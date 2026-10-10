@@ -1,4 +1,4 @@
-//! Workspace/crate/module/file hierarchy with sizes, commits and ranks.
+//! Workspace/package/module/file hierarchy with sizes, commits and ranks.
 
 use crate::graph::{ArcGraph, EdgeWeight, Node};
 use crate::volatility::{Commit, VolatilityConfig};
@@ -7,8 +7,8 @@ use petgraph::visit::EdgeRef;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-/// A workspace, crate, container module or file in the hotspot tree,
-/// identified by its workspace-relative file (a crate by its `Cargo.toml`).
+/// A workspace, package, container module or file in the hotspot tree,
+/// identified by its workspace-relative file (a package by its `Cargo.toml`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HotspotNode {
     pub name: String,
@@ -26,7 +26,7 @@ pub struct HotspotNode {
 #[serde(rename_all = "lowercase")]
 pub enum HotspotKind {
     Workspace,
-    Crate,
+    Package,
     Module,
     File,
 }
@@ -94,7 +94,7 @@ pub(crate) fn sorted_children(node: &HotspotNode) -> Vec<&HotspotNode> {
     children
 }
 
-/// Build the hotspot tree from `graph`'s crates, modules and `Contains` edges,
+/// Build the hotspot tree from `graph`'s packages, modules and `Contains` edges,
 /// asking `lines` and `commits` per absolute file path; `n` caps `hotspots`.
 pub fn build<L, C>(
     graph: &ArcGraph,
@@ -107,19 +107,19 @@ where
     L: Fn(&Path) -> usize,
     C: Fn(&Path) -> BTreeSet<Commit>,
 {
-    let crate_indices: Vec<_> = graph
+    let package_indices: Vec<_> = graph
         .node_indices()
-        .filter(|&idx| graph[idx].is_crate())
+        .filter(|&idx| graph[idx].is_package())
         .collect();
 
-    let root = if let [only] = crate_indices[..] {
-        build_crate(graph, only, workspace_root, &lines, &commits).0
+    let root = if let [only] = package_indices[..] {
+        build_package(graph, only, workspace_root, &lines, &commits).0
     } else {
-        let crates: Vec<(HotspotNode, BTreeSet<Commit>)> = crate_indices
+        let packages: Vec<(HotspotNode, BTreeSet<Commit>)> = package_indices
             .iter()
-            .map(|&idx| build_crate(graph, idx, workspace_root, &lines, &commits))
+            .map(|&idx| build_package(graph, idx, workspace_root, &lines, &commits))
             .collect();
-        build_workspace_root(crates, workspace_root)
+        build_workspace_root(packages, workspace_root)
     };
 
     let max_file_commits = max_file_commits(&root);
@@ -165,17 +165,17 @@ fn rank_leaves(root: &HotspotNode, n: usize) -> Vec<HotspotNode> {
     leaves.into_iter().cloned().collect()
 }
 
-/// Wrap `crates` in a workspace root, sorted by name, whose commits are the
+/// Wrap `packages` in a workspace root, sorted by name, whose commits are the
 /// union of theirs.
 fn build_workspace_root(
-    mut crates: Vec<(HotspotNode, BTreeSet<Commit>)>,
+    mut packages: Vec<(HotspotNode, BTreeSet<Commit>)>,
     workspace_root: &Path,
 ) -> HotspotNode {
-    crates.sort_by(|(a, _), (b, _)| a.name.cmp(&b.name));
+    packages.sort_by(|(a, _), (b, _)| a.name.cmp(&b.name));
 
-    let lines_sum: usize = crates.iter().map(|(c, _)| c.lines).sum();
+    let lines_sum: usize = packages.iter().map(|(c, _)| c.lines).sum();
     let mut all_commits = BTreeSet::new();
-    let children: Vec<HotspotNode> = crates
+    let children: Vec<HotspotNode> = packages
         .into_iter()
         .map(|(node, commits)| {
             all_commits.extend(commits);
@@ -245,7 +245,7 @@ fn leaf(
     }
 }
 
-fn build_crate<L, C>(
+fn build_package<L, C>(
     graph: &ArcGraph,
     idx: NodeIndex,
     workspace_root: &Path,
@@ -256,7 +256,7 @@ where
     L: Fn(&Path) -> usize,
     C: Fn(&Path) -> BTreeSet<Commit>,
 {
-    let Node::Crate {
+    let Node::Package {
         name,
         target_roots,
         manifest,
@@ -294,7 +294,7 @@ where
 
     let node = HotspotNode {
         name: name.clone(),
-        kind: HotspotKind::Crate,
+        kind: HotspotKind::Package,
         file: relative(workspace_root, manifest),
         lines: lines_sum,
         commits: subtree_commits.len(),
@@ -371,13 +371,13 @@ mod tests {
     use super::*;
     use crate::graph::ArcGraph;
     use crate::model::TargetRoots;
-    use crate::test_support::{crate_node_with_targets, module_node, module_node_with_file};
+    use crate::test_support::{module_node, module_node_with_file, package_node_with_targets};
     use std::path::{Path, PathBuf};
 
     #[test]
-    fn a_crate_root_target_is_a_leaf_in_the_crate() {
+    fn a_package_root_target_is_a_leaf_in_the_package() {
         let mut graph = ArcGraph::new();
-        graph.add_node(crate_node_with_targets(
+        graph.add_node(package_node_with_targets(
             "app",
             TargetRoots {
                 lib_root: Some(PathBuf::from("/ws/app/src/lib.rs")),
@@ -388,7 +388,7 @@ mod tests {
 
         let tree = build(&graph, Path::new("/ws"), |_| 10, no_commits, 10);
 
-        assert_eq!(tree.root.kind, HotspotKind::Crate);
+        assert_eq!(tree.root.kind, HotspotKind::Package);
         assert_eq!(tree.root.name, "app");
         assert_eq!(tree.root.file, PathBuf::from("app/Cargo.toml"));
         assert_eq!(tree.root.children.len(), 1);
@@ -411,17 +411,17 @@ mod tests {
     #[test]
     fn a_module_without_children_is_a_leaf() {
         let mut graph = ArcGraph::new();
-        let crate_idx = graph.add_node(crate_node_with_targets(
+        let package_idx = graph.add_node(package_node_with_targets(
             "app",
             TargetRoots::default(),
             "/ws/app/Cargo.toml",
         ));
         let cli_idx = graph.add_node(module_node_with_file(
             "cli",
-            crate_idx,
+            package_idx,
             "/ws/app/src/cli.rs",
         ));
-        graph.add_edge(crate_idx, cli_idx, crate::graph::EdgeWeight::Contains);
+        graph.add_edge(package_idx, cli_idx, crate::graph::EdgeWeight::Contains);
 
         let tree = build(&graph, Path::new("/ws"), |_| 4, no_commits, 10);
 
@@ -438,20 +438,20 @@ mod tests {
     #[test]
     fn a_module_with_children_is_a_container_holding_its_own_file_as_a_leaf() {
         let mut graph = ArcGraph::new();
-        let crate_idx = graph.add_node(crate_node_with_targets(
+        let package_idx = graph.add_node(package_node_with_targets(
             "app",
             TargetRoots::default(),
             "/ws/app/Cargo.toml",
         ));
         let analyze_idx = graph.add_node(module_node_with_file(
             "analyze",
-            crate_idx,
+            package_idx,
             "/ws/app/src/analyze/mod.rs",
         ));
-        graph.add_edge(crate_idx, analyze_idx, crate::graph::EdgeWeight::Contains);
+        graph.add_edge(package_idx, analyze_idx, crate::graph::EdgeWeight::Contains);
         let hir_idx = graph.add_node(module_node_with_file(
             "hir",
-            crate_idx,
+            package_idx,
             "/ws/app/src/analyze/hir.rs",
         ));
         graph.add_edge(analyze_idx, hir_idx, crate::graph::EdgeWeight::Contains);
@@ -486,9 +486,9 @@ mod tests {
     }
 
     #[test]
-    fn several_crates_get_a_workspace_root_a_single_crate_does_not() {
+    fn several_packages_get_a_workspace_root_a_single_package_does_not() {
         let mut graph = ArcGraph::new();
-        graph.add_node(crate_node_with_targets(
+        graph.add_node(package_node_with_targets(
             "app",
             TargetRoots {
                 lib_root: Some(PathBuf::from("/ws/app/src/lib.rs")),
@@ -496,7 +496,7 @@ mod tests {
             },
             "/ws/app/Cargo.toml",
         ));
-        graph.add_node(crate_node_with_targets(
+        graph.add_node(package_node_with_targets(
             "core",
             TargetRoots {
                 lib_root: Some(PathBuf::from("/ws/core/src/lib.rs")),
@@ -535,29 +535,29 @@ mod tests {
     #[test]
     fn leaves_rank_by_lines_times_commits_ties_by_name() {
         let mut graph = ArcGraph::new();
-        let crate_idx = graph.add_node(crate_node_with_targets(
+        let package_idx = graph.add_node(package_node_with_targets(
             "app",
             TargetRoots::default(),
             "/ws/app/Cargo.toml",
         ));
         let hot_idx = graph.add_node(module_node_with_file(
             "hot",
-            crate_idx,
+            package_idx,
             "/ws/app/src/hot.rs",
         ));
-        graph.add_edge(crate_idx, hot_idx, crate::graph::EdgeWeight::Contains);
+        graph.add_edge(package_idx, hot_idx, crate::graph::EdgeWeight::Contains);
         let cold_idx = graph.add_node(module_node_with_file(
             "cold",
-            crate_idx,
+            package_idx,
             "/ws/app/src/cold.rs",
         ));
-        graph.add_edge(crate_idx, cold_idx, crate::graph::EdgeWeight::Contains);
+        graph.add_edge(package_idx, cold_idx, crate::graph::EdgeWeight::Contains);
         let quiet_idx = graph.add_node(module_node_with_file(
             "quiet",
-            crate_idx,
+            package_idx,
             "/ws/app/src/quiet.rs",
         ));
-        graph.add_edge(crate_idx, quiet_idx, crate::graph::EdgeWeight::Contains);
+        graph.add_edge(package_idx, quiet_idx, crate::graph::EdgeWeight::Contains);
 
         let mut commits = std::collections::HashMap::new();
         commits.insert(
@@ -595,20 +595,20 @@ mod tests {
     #[test]
     fn a_container_has_no_rank_even_when_its_own_file_is_ranked() {
         let mut graph = ArcGraph::new();
-        let crate_idx = graph.add_node(crate_node_with_targets(
+        let package_idx = graph.add_node(package_node_with_targets(
             "app",
             TargetRoots::default(),
             "/ws/app/Cargo.toml",
         ));
         let outer_idx = graph.add_node(module_node_with_file(
             "outer",
-            crate_idx,
+            package_idx,
             "/ws/app/src/outer.rs",
         ));
-        graph.add_edge(crate_idx, outer_idx, crate::graph::EdgeWeight::Contains);
+        graph.add_edge(package_idx, outer_idx, crate::graph::EdgeWeight::Contains);
         let inner_idx = graph.add_node(module_node_with_file(
             "inner",
-            crate_idx,
+            package_idx,
             "/ws/app/src/outer/inner.rs",
         ));
         graph.add_edge(outer_idx, inner_idx, crate::graph::EdgeWeight::Contains);
@@ -632,26 +632,26 @@ mod tests {
     #[test]
     fn container_commits_are_the_union_not_the_sum_of_shared_commits() {
         let mut graph = ArcGraph::new();
-        let crate_idx = graph.add_node(crate_node_with_targets(
+        let package_idx = graph.add_node(package_node_with_targets(
             "app",
             TargetRoots::default(),
             "/ws/app/Cargo.toml",
         ));
         let outer_idx = graph.add_node(module_node_with_file(
             "outer",
-            crate_idx,
+            package_idx,
             "/ws/app/src/outer.rs",
         ));
-        graph.add_edge(crate_idx, outer_idx, crate::graph::EdgeWeight::Contains);
+        graph.add_edge(package_idx, outer_idx, crate::graph::EdgeWeight::Contains);
         let hot_idx = graph.add_node(module_node_with_file(
             "hot",
-            crate_idx,
+            package_idx,
             "/ws/app/src/hot.rs",
         ));
         graph.add_edge(outer_idx, hot_idx, crate::graph::EdgeWeight::Contains);
         let cold_idx = graph.add_node(module_node_with_file(
             "cold",
-            crate_idx,
+            package_idx,
             "/ws/app/src/cold.rs",
         ));
         graph.add_edge(outer_idx, cold_idx, crate::graph::EdgeWeight::Contains);
@@ -679,7 +679,7 @@ mod tests {
     #[test]
     fn a_workspace_nested_in_the_repository_still_emits_workspace_relative_paths() {
         let mut graph = ArcGraph::new();
-        graph.add_node(crate_node_with_targets(
+        graph.add_node(package_node_with_targets(
             "app",
             TargetRoots {
                 lib_root: Some(PathBuf::from("/repo/sub/workspace/app/src/lib.rs")),
@@ -703,13 +703,17 @@ mod tests {
     #[test]
     fn a_module_with_no_declaring_file_has_no_place_in_the_tree() {
         let mut graph = ArcGraph::new();
-        let crate_idx = graph.add_node(crate_node_with_targets(
+        let package_idx = graph.add_node(package_node_with_targets(
             "app",
             TargetRoots::default(),
             "/ws/app/Cargo.toml",
         ));
-        let fileless_idx = graph.add_node(module_node("ghost", crate_idx));
-        graph.add_edge(crate_idx, fileless_idx, crate::graph::EdgeWeight::Contains);
+        let fileless_idx = graph.add_node(module_node("ghost", package_idx));
+        graph.add_edge(
+            package_idx,
+            fileless_idx,
+            crate::graph::EdgeWeight::Contains,
+        );
 
         let tree = build(&graph, Path::new("/ws"), |_| 5, no_commits, 10);
 

@@ -143,7 +143,7 @@ fn node_keys(ordered: &[(&HotspotNode, Option<usize>)]) -> Vec<String> {
 fn reference_commits(tree: &HotspotTree, kind: HotspotKind) -> usize {
     match kind {
         HotspotKind::File => tree.max_file_commits,
-        HotspotKind::Workspace | HotspotKind::Crate | HotspotKind::Module => tree.total_commits,
+        HotspotKind::Workspace | HotspotKind::Package | HotspotKind::Module => tree.total_commits,
     }
 }
 
@@ -570,7 +570,7 @@ mod tests {
     use crate::graph::{ArcGraph, EdgeWeight};
     use crate::hotspots::pack;
     use crate::model::TargetRoots;
-    use crate::test_support::{crate_node_with_targets, module_node_with_file};
+    use crate::test_support::{module_node_with_file, package_node_with_targets};
     use std::collections::BTreeSet;
     use std::path::{Path, PathBuf};
 
@@ -585,9 +585,9 @@ mod tests {
         serde_json::from_str(json_str).expect("valid JSON")
     }
 
-    fn single_crate_tree() -> HotspotTree {
+    fn single_package_tree() -> HotspotTree {
         let mut graph = ArcGraph::new();
-        let crate_idx = graph.add_node(crate_node_with_targets(
+        let package_idx = graph.add_node(package_node_with_targets(
             "app",
             TargetRoots {
                 lib_root: Some(PathBuf::from("/ws/app/src/lib.rs")),
@@ -597,10 +597,10 @@ mod tests {
         ));
         let hot_idx = graph.add_node(module_node_with_file(
             "hot",
-            crate_idx,
+            package_idx,
             "/ws/app/src/hot.rs",
         ));
-        graph.add_edge(crate_idx, hot_idx, EdgeWeight::Contains);
+        graph.add_edge(package_idx, hot_idx, EdgeWeight::Contains);
         crate::hotspots::build(&graph, Path::new("/ws"), |_| 100, |_| BTreeSet::new(), 10)
     }
 
@@ -609,7 +609,7 @@ mod tests {
     /// module need before inspecting the tree, the packed circles or the
     /// SVG.
     fn rendered_default() -> (HotspotTree, Vec<PackedCircle>, String) {
-        let tree = single_crate_tree();
+        let tree = single_package_tree();
         let packed = pack(&tree);
         let svg = render(&tree, &packed, &HashMap::new(), &RenderConfig::default());
         (tree, packed, svg)
@@ -617,7 +617,7 @@ mod tests {
 
     /// `single_crate_tree()` rendered grey, as `--no-volatility` would.
     fn rendered_grey() -> String {
-        let tree = single_crate_tree();
+        let tree = single_package_tree();
         let config = RenderConfig {
             volatility: MapVolatility::Grey(GreyCause::Flag),
             ..RenderConfig::default()
@@ -725,9 +725,9 @@ mod tests {
         let (_, _, svg) = rendered_default();
         let data = static_data_of(&svg);
 
-        let crate_node = &data["nodes"]["app/Cargo.toml"];
-        assert_eq!(crate_node["kind"], "crate");
-        assert_eq!(crate_node["name"], "app");
+        let package_node = &data["nodes"]["app/Cargo.toml"];
+        assert_eq!(package_node["kind"], "package");
+        assert_eq!(package_node["name"], "app");
 
         let leaf = &data["nodes"]["app/src/hot.rs"];
         assert_eq!(leaf["kind"], "file");
@@ -753,20 +753,20 @@ mod tests {
     #[test]
     fn a_containers_own_self_leaf_gets_a_disambiguated_key() {
         let mut graph = ArcGraph::new();
-        let crate_idx = graph.add_node(crate_node_with_targets(
+        let package_idx = graph.add_node(package_node_with_targets(
             "app",
             TargetRoots::default(),
             "/ws/app/Cargo.toml",
         ));
         let outer_idx = graph.add_node(module_node_with_file(
             "outer",
-            crate_idx,
+            package_idx,
             "/ws/app/src/outer/mod.rs",
         ));
-        graph.add_edge(crate_idx, outer_idx, EdgeWeight::Contains);
+        graph.add_edge(package_idx, outer_idx, EdgeWeight::Contains);
         let inner_idx = graph.add_node(module_node_with_file(
             "inner",
-            crate_idx,
+            package_idx,
             "/ws/app/src/outer/inner.rs",
         ));
         graph.add_edge(outer_idx, inner_idx, EdgeWeight::Contains);
@@ -807,7 +807,7 @@ mod tests {
     /// instead of one message covering all of them.
     #[test]
     fn the_volatility_note_names_the_flag_as_the_cause_when_given() {
-        let tree = single_crate_tree();
+        let tree = single_package_tree();
         let packed = pack(&tree);
         let config = RenderConfig {
             volatility: MapVolatility::Grey(GreyCause::Flag),
@@ -824,7 +824,7 @@ mod tests {
 
     #[test]
     fn the_volatility_note_names_git_as_the_cause_when_unavailable() {
-        let tree = single_crate_tree();
+        let tree = single_package_tree();
         let packed = pack(&tree);
         let config = RenderConfig {
             volatility: MapVolatility::Grey(GreyCause::GitUnavailable),
@@ -841,7 +841,7 @@ mod tests {
 
     #[test]
     fn the_volatility_note_names_the_empty_window_as_the_cause() {
-        let tree = single_crate_tree();
+        let tree = single_package_tree();
         let packed = pack(&tree);
         let config = RenderConfig {
             volatility: MapVolatility::Grey(GreyCause::NoCommitsInWindow { months: 6 }),
@@ -858,7 +858,7 @@ mod tests {
 
     #[test]
     fn rendering_twice_is_deterministic() {
-        let tree = single_crate_tree();
+        let tree = single_package_tree();
         let packed = pack(&tree);
         let config = RenderConfig::default();
         let targets = HashMap::new();
@@ -885,7 +885,7 @@ mod tests {
         assert!(!svg.contains("CHIP_LABELS"), "{svg}");
     }
 
-    /// A crate with one leaf ranked as a hotspot, rendered with the default config.
+    /// A package with one leaf ranked as a hotspot, rendered with the default config.
     fn rendered_with_one_hotspot() -> String {
         let leaf = HotspotNode {
             name: "hot".to_string(),
@@ -898,7 +898,7 @@ mod tests {
         let tree = HotspotTree {
             root: HotspotNode {
                 name: "app".to_string(),
-                kind: HotspotKind::Crate,
+                kind: HotspotKind::Package,
                 file: PathBuf::from("app/Cargo.toml"),
                 lines: 100,
                 commits: 5,
@@ -968,7 +968,7 @@ mod tests {
 
     #[test]
     fn sidebar_header_names_the_workspace_and_the_commit_window() {
-        let tree = single_crate_tree();
+        let tree = single_package_tree();
         let config = RenderConfig {
             volatility: MapVolatility::Window { months: 3 },
             ..RenderConfig::default()
@@ -1021,7 +1021,7 @@ mod tests {
         let tree = HotspotTree {
             root: HotspotNode {
                 name: "app".to_string(),
-                kind: HotspotKind::Crate,
+                kind: HotspotKind::Package,
                 file: PathBuf::from("app/Cargo.toml"),
                 lines: 100,
                 commits: 10,
@@ -1037,7 +1037,7 @@ mod tests {
 
         // round(100 * sqrt(5) / sqrt(8)) = 79: the leaf against the busiest file.
         assert_eq!(data["nodes"]["app/src/hot.rs"]["fillPercent"], 79);
-        // sqrt(10) / sqrt(10) = 1: the crate saturates against the workspace total.
+        // sqrt(10) / sqrt(10) = 1: the package saturates against the workspace total.
         assert_eq!(data["nodes"]["app/Cargo.toml"]["fillPercent"], 100);
     }
 
@@ -1103,7 +1103,7 @@ mod tests {
     /// the same idiom the arc page's own `NodeData.targets` uses.
     #[test]
     fn a_leaf_with_an_assigned_id_carries_one_jump_target_under_with_jump_ids() {
-        let tree = single_crate_tree();
+        let tree = single_package_tree();
         let packed = pack(&tree);
         let mut targets = HashMap::new();
         targets.insert(PathBuf::from("app/src/hot.rs"), LocationId::from(7));
@@ -1122,7 +1122,7 @@ mod tests {
         assert_eq!(leaf_targets[0]["name"], "hot.rs");
         assert_eq!(leaf_targets[0]["jump"], 7);
 
-        // The crate container has no id of its own in `targets` (only files
+        // The package container has no id of its own in `targets` (only files
         // get one) and carries no target field at all.
         assert!(data["nodes"]["app/Cargo.toml"].get("targets").is_none());
     }
@@ -1131,7 +1131,7 @@ mod tests {
     /// same button; a written file has no service to recompute.
     #[test]
     fn a_served_map_carries_the_on_save_button() {
-        let tree = single_crate_tree();
+        let tree = single_package_tree();
         let packed = pack(&tree);
         let served = RenderConfig {
             with_jump_ids: true,
@@ -1149,7 +1149,7 @@ mod tests {
     /// documents for the arc page.
     #[test]
     fn targets_are_not_serialized_without_with_jump_ids() {
-        let tree = single_crate_tree();
+        let tree = single_package_tree();
         let packed = pack(&tree);
         let mut targets = HashMap::new();
         targets.insert(PathBuf::from("app/src/hot.rs"), LocationId::from(7));

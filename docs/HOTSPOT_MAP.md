@@ -15,8 +15,8 @@ Terms used here are defined in [GLOSSARY.md](GLOSSARY.md).
 
 Size is a file's lines of code, without comments and blank lines.
 Change is the number of commits that touched the file in the last six months.
-Every file is a circle of that size, nested inside its module and crate, and its color runs from cold to hot with its commits.
-A crate or module adds up its files, so the map also tells which part of the workspace holds the size and the churn.
+Every file is a circle of that size, nested inside its module and package, and its color runs from cold to hot with its commits.
+A package or module adds up its files, so the map also tells which part of the workspace holds the size and the churn.
 
 `--volatility-months` sets a different window, for example `cargo arc --volatility-months 12 hotspots`.
 Without a git repository, or with `--no-volatility`, the map shows size only.

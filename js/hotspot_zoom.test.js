@@ -78,7 +78,7 @@ describe('nextZoomTarget', () => {
   //      -> b (file, lines 8)
   function nodes() {
     return {
-      root: { name: 'root', kind: 'crate', lines: 10 },
+      root: { name: 'root', kind: 'package', lines: 10 },
       a: { name: 'a', kind: 'module', parent: 'root', lines: 5 },
       b: { name: 'b', kind: 'file', parent: 'root', lines: 8 },
       a1: { name: 'a1', kind: 'file', parent: 'a', lines: 3 },

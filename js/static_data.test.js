@@ -5,7 +5,7 @@ import { ArcLogic } from './arc_logic.js';
 const TEST_STATIC_DATA = {
   nodes: {
     crate: {
-      type: 'crate',
+      type: 'package',
       parent: null,
       x: 0,
       y: 0,
@@ -648,7 +648,7 @@ describe('StaticData', () => {
 
     test('returns 0 for node with nesting 0', () => {
       TEST_STATIC_DATA.nodes.root_crate = {
-        type: 'crate',
+        type: 'package',
         parent: null,
         x: 0,
         y: 0,
@@ -773,7 +773,7 @@ describe('StaticData', () => {
       const saved = globalThis.STATIC_DATA;
       globalThis.STATIC_DATA = {
         nodes: {
-          krate: { type: 'crate', name: 'my-crate', parent: null },
+          krate: { type: 'package', name: 'my-crate', parent: null },
           topStore: { type: 'module', name: 'store', parent: 'krate' },
           core: { type: 'module', name: 'core', parent: 'krate' },
           coreStore: { type: 'module', name: 'store', parent: 'core' },
@@ -783,19 +783,19 @@ describe('StaticData', () => {
       };
       try {
         expect(StaticData.qualifiedParts('topStore')).toEqual({
-          crate: 'my-crate',
+          package: 'my-crate',
           path: 'store',
         });
         expect(StaticData.qualifiedParts('coreStore')).toEqual({
-          crate: 'my-crate',
+          package: 'my-crate',
           path: 'core::store',
         });
         expect(StaticData.qualifiedParts('orphan')).toEqual({
-          crate: null,
+          package: null,
           path: 'lonely',
         });
         expect(StaticData.qualifiedParts('missing')).toEqual({
-          crate: null,
+          package: null,
           path: 'missing',
         });
       } finally {
@@ -809,9 +809,9 @@ describe('StaticData', () => {
       const saved = globalThis.STATIC_DATA;
       globalThis.STATIC_DATA = {
         nodes: {
-          krate: { type: 'crate', name: 'app', file: 'app/Cargo.toml' },
+          krate: { type: 'package', name: 'app', file: 'app/Cargo.toml' },
           hot: { type: 'module', name: 'hot', file: 'app/src/hot.rs' },
-          external: { type: 'crate', name: 'serde' },
+          external: { type: 'package', name: 'serde' },
         },
         arcs: {},
       };
@@ -827,7 +827,7 @@ describe('StaticData', () => {
       const saved = globalThis.STATIC_DATA;
       globalThis.STATIC_DATA = {
         nodes: {
-          external: { type: 'crate', name: 'serde' },
+          external: { type: 'package', name: 'serde' },
         },
         arcs: {},
       };

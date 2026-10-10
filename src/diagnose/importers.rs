@@ -41,8 +41,8 @@ pub enum ConsumerLocality<N> {
     SingleConsumer(N),
     /// All consumers share a common module ancestor (the node), provider outside it.
     CommonAncestor(N),
-    /// Spread across the crate, no common module below the crate root.
-    CrateWide,
+    /// Spread across the package, no common module below the package root.
+    PackageWide,
 }
 
 impl ArcGraph {
@@ -131,7 +131,7 @@ impl ArcGraph {
             Some(ancestor) if !self.containment_subtree(ancestor).contains(&provider) => {
                 ConsumerLocality::CommonAncestor(ancestor)
             }
-            _ => ConsumerLocality::CrateWide,
+            _ => ConsumerLocality::PackageWide,
         }
     }
 }
@@ -141,9 +141,9 @@ mod tests {
     use super::*;
     use crate::graph::EdgeWeight;
     use crate::model::{EdgeContext, SourceLocation};
-    use crate::test_support::{crate_node, module_node};
+    use crate::test_support::{module_node, package_node};
 
-    /// Flat builder: every module is a direct crate child. Thin wrapper over
+    /// Flat builder: every module is a direct package child. Thin wrapper over
     /// [`nested`]. `deps` are `(from, to, symbols)` production `ModuleDep` edges.
     fn graph_with(
         modules: &[&str],
@@ -153,7 +153,7 @@ mod tests {
     }
 
     /// Build a module tree. `parents[i]` is the index (into the returned vec)
-    /// of module `i`'s parent module, or `usize::MAX` for a direct crate child;
+    /// of module `i`'s parent module, or `usize::MAX` for a direct package child;
     /// a parent must be listed before its children. `deps` are
     /// `(from, to, symbols)` production `ModuleDep` edges.
     fn nested(
@@ -162,12 +162,12 @@ mod tests {
         deps: &[(usize, usize, &[&str])],
     ) -> (ArcGraph, Vec<NodeIndex>) {
         let mut g = ArcGraph::new();
-        let crate_idx = g.add_node(crate_node("app"));
+        let package_idx = g.add_node(package_node("app"));
         let mut idx = Vec::with_capacity(names.len());
         for (i, name) in names.iter().enumerate() {
-            let n = g.add_node(module_node(name, crate_idx));
+            let n = g.add_node(module_node(name, package_idx));
             let parent = if parents[i] == usize::MAX {
-                crate_idx
+                package_idx
             } else {
                 idx[parents[i]]
             };
@@ -246,11 +246,11 @@ mod tests {
     #[test]
     fn reexport_locations_are_ignored() {
         let mut g = ArcGraph::new();
-        let crate_idx = g.add_node(crate_node("app"));
-        let model = g.add_node(module_node("model", crate_idx));
-        let user = g.add_node(module_node("user", crate_idx));
-        g.add_edge(crate_idx, model, EdgeWeight::Contains);
-        g.add_edge(crate_idx, user, EdgeWeight::Contains);
+        let package_idx = g.add_node(package_node("app"));
+        let model = g.add_node(module_node("model", package_idx));
+        let user = g.add_node(module_node("user", package_idx));
+        g.add_edge(package_idx, model, EdgeWeight::Contains);
+        g.add_edge(package_idx, user, EdgeWeight::Contains);
         g.add_edge(
             user,
             model,
@@ -272,11 +272,11 @@ mod tests {
     fn test_edges_are_ignored() {
         use crate::model::TestKind;
         let mut g = ArcGraph::new();
-        let crate_idx = g.add_node(crate_node("app"));
-        let model = g.add_node(module_node("model", crate_idx));
-        let user = g.add_node(module_node("user", crate_idx));
-        g.add_edge(crate_idx, model, EdgeWeight::Contains);
-        g.add_edge(crate_idx, user, EdgeWeight::Contains);
+        let package_idx = g.add_node(package_node("app"));
+        let model = g.add_node(module_node("model", package_idx));
+        let user = g.add_node(module_node("user", package_idx));
+        g.add_edge(package_idx, model, EdgeWeight::Contains);
+        g.add_edge(package_idx, user, EdgeWeight::Contains);
         g.add_edge(
             user,
             model,
@@ -314,8 +314,8 @@ mod tests {
     }
 
     #[test]
-    fn no_common_module_ancestor_is_crate_wide() {
-        // Two top-level consumers share only the crate root.
+    fn no_common_module_ancestor_is_package_wide() {
+        // Two top-level consumers share only the package root.
         let (g, _idx) = nested(
             &["model", "user", "admin"],
             &[usize::MAX, usize::MAX, usize::MAX],
@@ -324,12 +324,12 @@ mod tests {
         let provider = &g.importer_partition().providers[0];
         assert_eq!(
             provider.consumer_groups[0].locality,
-            ConsumerLocality::CrateWide
+            ConsumerLocality::PackageWide
         );
     }
 
     #[test]
-    fn ancestor_containing_provider_is_crate_wide() {
+    fn ancestor_containing_provider_is_package_wide() {
         // core provider; its own children a & b are the consumers.
         let (g, _idx) = nested(
             &["core", "a", "b"],
@@ -339,7 +339,7 @@ mod tests {
         let provider = &g.importer_partition().providers[0];
         assert_eq!(
             provider.consumer_groups[0].locality,
-            ConsumerLocality::CrateWide
+            ConsumerLocality::PackageWide
         );
     }
 }

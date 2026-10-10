@@ -20,7 +20,7 @@ Object.assign(globalThis.STATIC_DATA.classes, {
   cycleArrow: 'cycle-arrow',
   hasHighlight: 'has-highlight',
   hasPinned: 'has-pinned',
-  selectedCrate: 'selectedCrate',
+  selectedPackage: 'selectedPackage',
   selectedModule: 'selectedModule',
   selectedExternal: 'selectedExternal',
   depNode: 'depNode',
@@ -104,17 +104,17 @@ describe('HighlightRenderer', () => {
       // Apply state to populate dirty set
       HighlightRenderer.apply(dom, staticData, new Map(), {
         nodeHighlights: new Map([
-          ['n1', { role: 'current', cssClass: 'selectedCrate' }],
+          ['n1', { role: 'current', cssClass: 'selectedPackage' }],
         ]),
         arcHighlights: new Map(),
         shadowData: new Map(),
         promotedHitareas: new Set(),
       });
-      expect(nodeEl.classList.contains(C.selectedCrate)).toBe(true);
+      expect(nodeEl.classList.contains(C.selectedPackage)).toBe(true);
 
       // Reset clears only dirty-set nodes
       HighlightRenderer.apply(dom, staticData, new Map(), null);
-      expect(nodeEl.classList.contains(C.selectedCrate)).toBe(false);
+      expect(nodeEl.classList.contains(C.selectedPackage)).toBe(false);
     });
 
     test('resets regular arc strokeWidth to base from staticData', () => {

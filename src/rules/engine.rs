@@ -143,7 +143,7 @@ pub enum ViolationDetail {
 }
 
 /// One edge as the code writes it: the pair it connects and the imports that
-/// write it, none for a crate dependency.
+/// write it, none for a package dependency.
 #[derive(Debug)]
 pub struct WrittenEdge {
     pub edge: Edge,
@@ -157,8 +157,8 @@ pub struct CycleCluster {
     /// state; reported and silenced tangles are numbered separately.
     pub position: usize,
     pub total: usize,
-    pub crate_name: String,
-    /// Common module prefix of all members, or the crate alone when they share
+    pub package_name: String,
+    /// Common module prefix of all members, or the package alone when they share
     /// none. A cluster is not a stable object (one new edge can merge two of
     /// them), so a name would promise an identity it doesn't have; the cluster
     /// is never the argument of a command, only a location for one.
@@ -172,15 +172,15 @@ pub struct CycleCluster {
 #[derive(Debug)]
 pub enum ClusterShape {
     SingleCycle {
-        /// Crate-relative member names.
+        /// Package-relative member names.
         members: Vec<String>,
-        /// Every edge of the cycle, crate-relative names, ranked as
+        /// Every edge of the cycle, package-relative names, ranked as
         /// `Cluster::edges`.
         edges: Vec<CycleClusterEdge>,
     },
     MultiCycle {
         cycles: usize,
-        /// Feedback edges, crate-relative names, ranked as `Cluster::feedback_edges`.
+        /// Feedback edges, package-relative names, ranked as `Cluster::feedback_edges`.
         feedback_edges: Vec<CycleClusterEdge>,
         /// Carries `Cluster::counts_every_cycle`: set when `feedback_edges`
         /// breaks every cycle of the cluster, unset in a mixed cluster.
@@ -207,14 +207,14 @@ impl CycleCluster {
         position: usize,
         total: usize,
     ) -> Self {
-        let crate_name = graph[cluster.crate_idx].name().to_string();
+        let package_name = graph[cluster.package_idx].name().to_string();
         let place = common_place(graph, &cluster.nodes);
         let resolve_edges = |edges: &[CyclicEdge]| {
             edges
                 .iter()
                 .map(|edge| CycleClusterEdge {
-                    from: rel_name(graph, edge.from, &crate_name),
-                    to: rel_name(graph, edge.to, &crate_name),
+                    from: rel_name(graph, edge.from, &package_name),
+                    to: rel_name(graph, edge.to, &package_name),
                     cycles: edge.cycles,
                     symbols: edge.symbols,
                 })
@@ -225,7 +225,7 @@ impl CycleCluster {
             let members = named_cycle
                 .nodes
                 .iter()
-                .map(|&idx| rel_name(graph, idx, &crate_name))
+                .map(|&idx| rel_name(graph, idx, &package_name))
                 .collect();
             // `cluster.edges` holds every SCC-internal edge, which can run
             // through a frozen cycle sharing the SCC with this one. Keep only
@@ -236,8 +236,8 @@ impl CycleCluster {
                 .iter()
                 .filter(|edge| on_cycle.contains(&(edge.from, edge.to)))
                 .map(|edge| CycleClusterEdge {
-                    from: rel_name(graph, edge.from, &crate_name),
-                    to: rel_name(graph, edge.to, &crate_name),
+                    from: rel_name(graph, edge.from, &package_name),
+                    to: rel_name(graph, edge.to, &package_name),
                     cycles: edge.cycles,
                     symbols: edge.symbols,
                 })
@@ -253,7 +253,7 @@ impl CycleCluster {
         Self {
             position,
             total,
-            crate_name,
+            package_name,
             place,
             modules: cluster.nodes.len(),
             shape,
@@ -377,8 +377,8 @@ fn cycle_edges(cycle: &Cycle) -> impl Iterator<Item = (NodeIndex, NodeIndex)> + 
         .map(|(&from, &to)| (from, to))
 }
 
-/// Common `::`-prefix over the crate-qualified names of `nodes`, segment-wise.
-/// Module cycles are intra-crate, so at least the crate segment is always
+/// Common `::`-prefix over the package-qualified names of `nodes`, segment-wise.
+/// Module cycles are intra-package, so at least the package segment is always
 /// shared.
 fn common_place(graph: &ArcGraph, nodes: &[NodeIndex]) -> String {
     let mut paths = nodes.iter().map(|&n| {
@@ -396,11 +396,11 @@ fn common_place(graph: &ArcGraph, nodes: &[NodeIndex]) -> String {
     prefix.join("::")
 }
 
-/// Fully-qualified module name with the leading `<crate_name>::` stripped.
-fn rel_name(graph: &ArcGraph, idx: NodeIndex, crate_name: &str) -> String {
+/// Fully-qualified module name with the leading `<package_name>::` stripped.
+fn rel_name(graph: &ArcGraph, idx: NodeIndex, package_name: &str) -> String {
     let qualified = graph.qualified_name(idx);
     qualified
-        .strip_prefix(&format!("{crate_name}::"))
+        .strip_prefix(&format!("{package_name}::"))
         .map(String::from)
         .unwrap_or(qualified)
 }
@@ -736,7 +736,7 @@ impl<'graph> CheckRun<'graph> {
                 layer_index.insert(idx, pos);
             }
         }
-        // A crate's qualified name is a prefix of its modules', so it sorts
+        // A package's qualified name is a prefix of its modules', so it sorts
         // first and names the place the reader has to edit, rather than an
         // arbitrary module beneath it.
         if let Some(&(node, first_pos, second_pos)) = overlaps
@@ -1116,7 +1116,7 @@ mod tests {
     use crate::rules::config::Diagnostics;
     use crate::rules::diagnostics::{DiagnosticKind, UnsortedNode};
     use crate::rules::test_support::{allow_edge, pattern_edge};
-    use crate::test_support::{crate_node, module_node};
+    use crate::test_support::{module_node, package_node};
     use std::path::PathBuf;
 
     // -- Test graph helpers --
@@ -1145,19 +1145,19 @@ mod tests {
         Baseline::load(&path).unwrap()
     }
 
-    fn test_crate_graph() -> (ArcGraph, NodeIndex) {
+    fn test_package_graph() -> (ArcGraph, NodeIndex) {
         let mut graph = ArcGraph::new();
-        let crate_idx = graph.add_node(crate_node("test"));
-        (graph, crate_idx)
+        let package_idx = graph.add_node(package_node("test"));
+        (graph, package_idx)
     }
 
     fn add_module(
         graph: &mut ArcGraph,
         name: &str,
-        crate_idx: NodeIndex,
+        package_idx: NodeIndex,
         parent: NodeIndex,
     ) -> NodeIndex {
-        let idx = graph.add_node(module_node(name, crate_idx));
+        let idx = graph.add_node(module_node(name, package_idx));
         graph.add_edge(parent, idx, EdgeWeight::Contains);
         idx
     }
@@ -1179,13 +1179,13 @@ mod tests {
         );
     }
 
-    /// A production `CrateDep` edge, as a `Cargo.toml` entry writes it: no
+    /// A production `PackageDep` edge, as a `Cargo.toml` entry writes it: no
     /// locations, because a manifest entry is not an import.
-    fn add_crate_dep(graph: &mut ArcGraph, from: NodeIndex, to: NodeIndex) {
+    fn add_package_dep(graph: &mut ArcGraph, from: NodeIndex, to: NodeIndex) {
         graph.add_edge(
             from,
             to,
-            EdgeWeight::CrateDep {
+            EdgeWeight::PackageDep {
                 context: EdgeContext::production(),
             },
         );
@@ -1269,11 +1269,11 @@ mod tests {
         );
     }
 
-    /// Build a multi-crate graph:
-    /// - crate "domain" with modules: service, model
-    /// - crate "infra" with modules: db, api
-    /// - crate "application" with module: handler
-    fn multi_crate_graph() -> (
+    /// Build a multi-package graph:
+    /// - package "domain" with modules: service, model
+    /// - package "infra" with modules: db, api
+    /// - package "application" with module: handler
+    fn multi_package_graph() -> (
         ArcGraph,
         NodeIndex,
         NodeIndex,
@@ -1286,15 +1286,15 @@ mod tests {
     ) {
         let mut graph = ArcGraph::new();
 
-        let domain = graph.add_node(crate_node("domain"));
+        let domain = graph.add_node(package_node("domain"));
         let service = add_module(&mut graph, "service", domain, domain);
         let model = add_module(&mut graph, "model", domain, domain);
 
-        let infra = graph.add_node(crate_node("infra"));
+        let infra = graph.add_node(package_node("infra"));
         let db = add_module(&mut graph, "db", infra, infra);
         let api = add_module(&mut graph, "api", infra, infra);
 
-        let application = graph.add_node(crate_node("application"));
+        let application = graph.add_node(package_node("application"));
         let handler = add_module(&mut graph, "handler", application, application);
 
         (
@@ -1315,7 +1315,7 @@ mod tests {
     #[test]
     fn test_forbidden_violation_found() {
         let (mut graph, _domain, service, _model, _infra, db, _api, _app, _handler) =
-            multi_crate_graph();
+            multi_package_graph();
         // domain::service → infra::db (forbidden)
         add_production_dep(&mut graph, service, db);
 
@@ -1334,7 +1334,7 @@ mod tests {
     #[test]
     fn test_forbidden_no_violation() {
         let (mut graph, _domain, service, _model, _infra, _db, _api, _application, handler) =
-            multi_crate_graph();
+            multi_package_graph();
         // domain::service → application::handler (allowed, rule forbids domain→infra)
         add_production_dep(&mut graph, service, handler);
 
@@ -1346,7 +1346,7 @@ mod tests {
     #[test]
     fn test_forbidden_multiple_violations() {
         let (mut graph, _domain, service, model, _infra, db, api, _app, _handler) =
-            multi_crate_graph();
+            multi_package_graph();
         // Two forbidden edges: service→db and model→api
         add_production_dep(&mut graph, service, db);
         add_production_dep(&mut graph, model, api);
@@ -1359,7 +1359,7 @@ mod tests {
     #[test]
     fn test_forbidden_ignores_test_edges() {
         let (mut graph, _domain, service, _model, _infra, db, _api, _app, _handler) =
-            multi_crate_graph();
+            multi_package_graph();
         // Test-only edge: should not trigger violation
         add_test_dep(&mut graph, service, db);
 
@@ -1368,11 +1368,11 @@ mod tests {
         assert!(reported.is_empty());
     }
 
-    /// Multi-crate graph carrying the single production edge
+    /// Multi-package graph carrying the single production edge
     /// `domain::service → infra::db`, the one the rule below reports on.
     fn service_to_db_graph() -> ArcGraph {
         let (mut graph, _domain, service, _model, _infra, db, _api, _app, _handler) =
-            multi_crate_graph();
+            multi_package_graph();
         add_production_dep(&mut graph, service, db);
         graph
     }
@@ -1467,9 +1467,9 @@ mod tests {
 
     #[test]
     fn test_cycles_in_scope() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
-        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
+        let (mut graph, package_idx) = test_package_graph();
+        let a = add_module(&mut graph, "a", package_idx, package_idx);
+        let b = add_module(&mut graph, "b", package_idx, package_idx);
         // Cycle: a → b → a
         add_production_dep(&mut graph, a, b);
         add_production_dep(&mut graph, b, a);
@@ -1486,9 +1486,9 @@ mod tests {
 
     #[test]
     fn test_pure_reexport_cycle_ignored_by_default() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
-        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
+        let (mut graph, package_idx) = test_package_graph();
+        let a = add_module(&mut graph, "a", package_idx, package_idx);
+        let b = add_module(&mut graph, "b", package_idx, package_idx);
         // a re-exports from b (pub use), b uses a behaviorally. The cycle exists
         // only through the re-export edge → idiomatic, not real coupling.
         add_reexport_dep(&mut graph, a, b);
@@ -1511,7 +1511,7 @@ mod tests {
     #[test]
     fn test_cycles_outside_scope() {
         let (mut graph, _domain, _service, _model, _infra, db, api, _app, _handler) =
-            multi_crate_graph();
+            multi_package_graph();
         // Cycle in infra: db → api → db
         add_production_dep(&mut graph, db, api);
         add_production_dep(&mut graph, api, db);
@@ -1526,7 +1526,7 @@ mod tests {
     #[test]
     fn test_no_cycles() {
         let (mut graph, _domain, service, model, _infra, _db, _api, _app, _handler) =
-            multi_crate_graph();
+            multi_package_graph();
         // Linear: service → model (no cycle)
         add_production_dep(&mut graph, service, model);
 
@@ -1539,14 +1539,14 @@ mod tests {
     #[test]
     fn test_cycles_global_scope() {
         let (mut graph, _domain, _service, _model, _infra, db, api, _app, _handler) =
-            multi_crate_graph();
-        // Add two more modules in separate crates for two independent cycles
-        let crate_a = graph
+            multi_package_graph();
+        // Add two more modules in separate packages for two independent cycles
+        let package_a = graph
             .node_indices()
             .find(|&i| graph[i].name() == "domain")
             .unwrap();
-        let a1 = add_module(&mut graph, "x", crate_a, crate_a);
-        let a2 = add_module(&mut graph, "y", crate_a, crate_a);
+        let a1 = add_module(&mut graph, "x", package_a, package_a);
+        let a2 = add_module(&mut graph, "y", package_a, package_a);
         add_production_dep(&mut graph, a1, a2);
         add_production_dep(&mut graph, a2, a1);
         add_production_dep(&mut graph, db, api);
@@ -1560,11 +1560,11 @@ mod tests {
 
     #[test]
     fn test_cycles_one_violation_per_cluster() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
-        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
-        let c = add_module(&mut graph, "c", crate_idx, crate_idx);
-        let d = add_module(&mut graph, "d", crate_idx, crate_idx);
+        let (mut graph, package_idx) = test_package_graph();
+        let a = add_module(&mut graph, "a", package_idx, package_idx);
+        let b = add_module(&mut graph, "b", package_idx, package_idx);
+        let c = add_module(&mut graph, "c", package_idx, package_idx);
+        let d = add_module(&mut graph, "d", package_idx, package_idx);
         // Two triangles sharing edge a -> b: one SCC, two cycles.
         add_production_dep(&mut graph, a, b);
         add_production_dep(&mut graph, b, c);
@@ -1587,9 +1587,9 @@ mod tests {
 
     #[test]
     fn test_cycles_allow_removes_matching_edge_before_search() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
-        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
+        let (mut graph, package_idx) = test_package_graph();
+        let a = add_module(&mut graph, "a", package_idx, package_idx);
+        let b = add_module(&mut graph, "b", package_idx, package_idx);
         // Cycle: a → b → a, but b → a is allowed.
         add_production_dep(&mut graph, a, b);
         add_production_dep(&mut graph, b, a);
@@ -1620,9 +1620,9 @@ mod tests {
 
     #[test]
     fn test_cycles_allow_on_edge_off_any_cycle_is_not_recorded() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
-        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
+        let (mut graph, package_idx) = test_package_graph();
+        let a = add_module(&mut graph, "a", package_idx, package_idx);
+        let b = add_module(&mut graph, "b", package_idx, package_idx);
         // a → b is the only edge: nothing here ever forms a cycle.
         add_production_dep(&mut graph, a, b);
 
@@ -1644,14 +1644,14 @@ mod tests {
         no_cycles_rule("no cycles in test", scope, vec![allow_edge("**", to)])
     }
 
-    /// Crate `test` holding `outer`, which holds `inner`, which holds `deep`,
+    /// Package `test` holding `outer`, which holds `inner`, which holds `deep`,
     /// beside a second top-level module `other`.
     fn nested_module_graph() -> (ArcGraph, NodeIndex, NodeIndex, NodeIndex, NodeIndex) {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let outer = add_module(&mut graph, "outer", crate_idx, crate_idx);
-        let inner = add_module(&mut graph, "inner", crate_idx, outer);
-        let deep = add_module(&mut graph, "deep", crate_idx, inner);
-        let other = add_module(&mut graph, "other", crate_idx, crate_idx);
+        let (mut graph, package_idx) = test_package_graph();
+        let outer = add_module(&mut graph, "outer", package_idx, package_idx);
+        let inner = add_module(&mut graph, "inner", package_idx, outer);
+        let deep = add_module(&mut graph, "deep", package_idx, inner);
+        let other = add_module(&mut graph, "other", package_idx, package_idx);
         (graph, outer, inner, deep, other)
     }
 
@@ -1677,13 +1677,13 @@ mod tests {
     }
 
     #[test]
-    fn test_module_to_crate_root_edge_is_allowed_as_a_super_edge() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let outer = add_module(&mut graph, "outer", crate_idx, crate_idx);
-        add_production_dep(&mut graph, crate_idx, outer);
-        add_production_dep(&mut graph, outer, crate_idx);
+    fn test_module_to_package_root_edge_is_allowed_as_a_super_edge() {
+        let (mut graph, package_idx) = test_package_graph();
+        let outer = add_module(&mut graph, "outer", package_idx, package_idx);
+        add_production_dep(&mut graph, package_idx, outer);
+        add_production_dep(&mut graph, outer, package_idx);
 
-        // `test::**` leaves the crate node out; `**` takes it in.
+        // `test::**` leaves the package node out; `**` takes it in.
         let result = check_rule(&graph, &no_cycles_allowing("**", "super"), false);
         assert!(result.reported().next().is_none());
         let allowed: Vec<_> = result.allowed().collect();
@@ -1734,12 +1734,12 @@ mod tests {
     }
 
     #[test]
-    fn test_deep_module_to_crate_root_edge_is_allowed_under_crate() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let outer = add_module(&mut graph, "outer", crate_idx, crate_idx);
-        let inner = add_module(&mut graph, "inner", crate_idx, outer);
-        add_production_dep(&mut graph, crate_idx, inner);
-        add_production_dep(&mut graph, inner, crate_idx);
+    fn test_deep_module_to_package_root_edge_is_allowed_under_crate() {
+        let (mut graph, package_idx) = test_package_graph();
+        let outer = add_module(&mut graph, "outer", package_idx, package_idx);
+        let inner = add_module(&mut graph, "inner", package_idx, outer);
+        add_production_dep(&mut graph, package_idx, inner);
+        add_production_dep(&mut graph, inner, package_idx);
 
         let result = check_rule(&graph, &no_cycles_allowing("**", "crate"), false);
         assert!(result.reported().next().is_none());
@@ -1851,11 +1851,11 @@ mod tests {
 
     #[test]
     fn test_common_place_nested_modules_share_prefix() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let back = add_module(&mut graph, "back", crate_idx, crate_idx);
-        let hlsl = add_module(&mut graph, "hlsl", crate_idx, back);
-        let writer = add_module(&mut graph, "writer", crate_idx, hlsl);
-        let keywords = add_module(&mut graph, "keywords", crate_idx, hlsl);
+        let (mut graph, package_idx) = test_package_graph();
+        let back = add_module(&mut graph, "back", package_idx, package_idx);
+        let hlsl = add_module(&mut graph, "hlsl", package_idx, back);
+        let writer = add_module(&mut graph, "writer", package_idx, hlsl);
+        let keywords = add_module(&mut graph, "keywords", package_idx, hlsl);
         assert_eq!(
             common_place(&graph, &[writer, keywords]),
             "test::back::hlsl"
@@ -1863,10 +1863,10 @@ mod tests {
     }
 
     #[test]
-    fn test_common_place_flat_modules_share_only_the_crate() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
-        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
+    fn test_common_place_flat_modules_share_only_the_package() {
+        let (mut graph, package_idx) = test_package_graph();
+        let a = add_module(&mut graph, "a", package_idx, package_idx);
+        let b = add_module(&mut graph, "b", package_idx, package_idx);
         assert_eq!(common_place(&graph, &[a, b]), "test");
     }
 
@@ -1875,7 +1875,7 @@ mod tests {
     #[test]
     fn test_layers_valid_top_down() {
         let (mut graph, _domain, service, _model, _infra, db, _api, _app, _handler) =
-            multi_crate_graph();
+            multi_package_graph();
         // domain::service → infra::db (top-down: domain is higher layer)
         add_production_dep(&mut graph, service, db);
 
@@ -1888,7 +1888,7 @@ mod tests {
     #[test]
     fn test_layers_violation_bottom_up() {
         let (mut graph, _domain, service, _model, _infra, db, _api, _app, _handler) =
-            multi_crate_graph();
+            multi_package_graph();
         // infra::db → domain::service (bottom-up in top-down rule = violation)
         add_production_dep(&mut graph, db, service);
 
@@ -1906,7 +1906,7 @@ mod tests {
     #[test]
     fn test_layers_skip_layer() {
         let (mut graph, _domain, service, _model, _infra, db, _api, _app, _handler) =
-            multi_crate_graph();
+            multi_package_graph();
         // domain::service → infra::db (skipping application layer — allowed in top-down)
         add_production_dep(&mut graph, service, db);
 
@@ -1936,7 +1936,7 @@ mod tests {
     #[test]
     fn test_layers_equal_rank_edge_is_not_a_violation() {
         let (mut graph, _domain, _service, _model, _infra, db, _api, _app, handler) =
-            multi_crate_graph();
+            multi_package_graph();
         // infra::db → application::handler, both on the same rank
         add_production_dep(&mut graph, db, handler);
 
@@ -1953,7 +1953,7 @@ mod tests {
     #[test]
     fn test_layers_equal_rank_still_bound_by_the_ordering() {
         let (mut graph, _domain, service, _model, _infra, db, _api, _app, _handler) =
-            multi_crate_graph();
+            multi_package_graph();
         // infra::db → domain::service, upward out of the shared rank
         add_production_dep(&mut graph, db, service);
 
@@ -1964,11 +1964,11 @@ mod tests {
     }
 
     /// The order within a rank carries no meaning: reversing it must not change
-    /// the verdict. This is the defect that made equal-rank crates unexpressible.
+    /// the verdict. This is the defect that made equal-rank packages unexpressible.
     #[test]
     fn test_layers_order_within_a_rank_does_not_matter() {
         let (mut graph, _domain, _service, _model, _infra, db, _api, _app, handler) =
-            multi_crate_graph();
+            multi_package_graph();
         add_production_dep(&mut graph, db, handler);
 
         for rank in [["infra", "application"], ["application", "infra"]] {
@@ -1981,9 +1981,9 @@ mod tests {
 
     #[test]
     fn test_layers_outside_layers() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
-        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
+        let (mut graph, package_idx) = test_package_graph();
+        let a = add_module(&mut graph, "a", package_idx, package_idx);
+        let b = add_module(&mut graph, "b", package_idx, package_idx);
         // Edge between modules not in any defined layer — should be ignored
         add_production_dep(&mut graph, a, b);
 
@@ -1993,14 +1993,14 @@ mod tests {
         assert!(reported.is_empty());
     }
 
-    /// One crate node per name in `crates`, plus a production dependency for
+    /// One package node per name in `packages`, plus a production dependency for
     /// every pair in `deps`. Both take names rather than indices, because the
     /// layers tests below assert on names.
-    fn crate_graph(crates: &[&str], deps: &[(&str, &str)]) -> ArcGraph {
+    fn package_graph(packages: &[&str], deps: &[(&str, &str)]) -> ArcGraph {
         let mut graph = ArcGraph::new();
         let mut index: HashMap<&str, NodeIndex> = HashMap::new();
-        for &name in crates {
-            let node = graph.add_node(crate_node(name));
+        for &name in packages {
+            let node = graph.add_node(package_node(name));
             index.insert(name, node);
         }
         for &(from, to) in deps {
@@ -2011,8 +2011,8 @@ mod tests {
 
     /// `a → b → c → d`, one dependency each. No rule below positions `c`, so
     /// `b` reaches `d` without an edge saying so.
-    fn chain_of_four_crates() -> ArcGraph {
-        crate_graph(&["a", "b", "c", "d"], &[("a", "b"), ("b", "c"), ("c", "d")])
+    fn chain_of_four_packages() -> ArcGraph {
+        package_graph(&["a", "b", "c", "d"], &[("a", "b"), ("b", "c"), ("c", "d")])
     }
 
     /// The edges a violation runs through, as `(from, to)` pairs.
@@ -2034,29 +2034,29 @@ mod tests {
     }
 
     #[test]
-    fn test_layers_dependency_over_an_unpositioned_crate_is_a_violation() {
+    fn test_layers_dependency_over_an_unpositioned_package_is_a_violation() {
         let rule = layers_rule(&["a", "d", "b"], vec![]);
-        let result = check_rule(&chain_of_four_crates(), &rule, false);
+        let result = check_rule(&chain_of_four_packages(), &rule, false);
         let reported: Vec<_> = result.reported().collect();
         assert_eq!(reported.len(), 1, "one pair, one violation: {reported:?}");
         assert_eq!(violation_pair(reported[0]), ("b", "d"));
         assert_eq!(via_pairs(reported[0]), [("b", "c"), ("c", "d")]);
     }
 
-    /// The same crates under an order they obey. Reaching `d` over `c` is no
+    /// The same packages under an order they obey. Reaching `d` over `c` is no
     /// more a violation than reaching it directly.
     #[test]
-    fn test_layers_dependency_over_an_unpositioned_crate_may_run_downward() {
+    fn test_layers_dependency_over_an_unpositioned_package_may_run_downward() {
         let rule = layers_rule(&["a", "b", "d"], vec![]);
-        let result = check_rule(&chain_of_four_crates(), &rule, false);
+        let result = check_rule(&chain_of_four_packages(), &rule, false);
         assert!(result.reported().next().is_none());
     }
 
-    /// The same pair reachable over either of two crates. The report takes the
-    /// crate that sorts first, on every run.
+    /// The same pair reachable over either of two packages. The report takes the
+    /// package that sorts first, on every run.
     #[test]
     fn test_layers_equal_path_lengths_resolve_by_name() {
-        let graph = crate_graph(
+        let graph = package_graph(
             &["b", "d", "k", "m"],
             &[("b", "k"), ("k", "d"), ("b", "m"), ("m", "d")],
         );
@@ -2069,11 +2069,11 @@ mod tests {
         }
     }
 
-    /// Two edges beat three, even when the crates of the longer way sort first
+    /// Two edges beat three, even when the packages of the longer way sort first
     /// by name.
     #[test]
     fn test_layers_the_longer_way_is_not_reported() {
-        let graph = crate_graph(
+        let graph = package_graph(
             &["b", "d", "p", "q", "z"],
             &[("b", "z"), ("z", "d"), ("b", "p"), ("p", "q"), ("q", "d")],
         );
@@ -2088,7 +2088,7 @@ mod tests {
     /// import, and nothing it runs through.
     #[test]
     fn test_layers_written_edge_wins_over_the_longer_path() {
-        let graph = crate_graph(&["b", "c", "d"], &[("b", "c"), ("c", "d"), ("b", "d")]);
+        let graph = package_graph(&["b", "c", "d"], &[("b", "c"), ("c", "d"), ("b", "d")]);
         let rule = layers_rule(&["d", "b"], vec![]);
         let result = check_rule(&graph, &rule, false);
         let reported: Vec<_> = result.reported().collect();
@@ -2104,11 +2104,11 @@ mod tests {
         );
     }
 
-    /// A `Cargo.toml` entry and an import between the same two crates: one
+    /// A `Cargo.toml` entry and an import between the same two packages: one
     /// dependency, not two. [ca-0476]
     #[test]
-    fn test_a_crate_dep_and_a_named_dep_between_the_same_pair_are_one_violation() {
-        let mut graph = crate_graph(&["a", "b"], &[]);
+    fn test_a_package_dep_and_a_named_dep_between_the_same_pair_are_one_violation() {
+        let mut graph = package_graph(&["a", "b"], &[]);
         let a = graph
             .node_indices()
             .find(|&i| graph[i].name() == "a")
@@ -2117,7 +2117,7 @@ mod tests {
             .node_indices()
             .find(|&i| graph[i].name() == "b")
             .unwrap();
-        add_crate_dep(&mut graph, a, b);
+        add_package_dep(&mut graph, a, b);
         add_named_dep(&mut graph, a, b, &["Thing"]);
         let rule = Rule {
             name: "no b in a".into(),
@@ -2148,8 +2148,9 @@ mod tests {
     /// symbol: the merged dependency is still reported once, not split into a
     /// covered manifest half and an uncovered import half. [ca-0476]
     #[test]
-    fn test_a_crate_dep_and_a_named_dep_stay_reported_when_the_baseline_holds_a_different_symbol() {
-        let mut graph = crate_graph(&["a", "b"], &[]);
+    fn test_a_package_dep_and_a_named_dep_stay_reported_when_the_baseline_holds_a_different_symbol()
+    {
+        let mut graph = package_graph(&["a", "b"], &[]);
         let a = graph
             .node_indices()
             .find(|&i| graph[i].name() == "a")
@@ -2158,7 +2159,7 @@ mod tests {
             .node_indices()
             .find(|&i| graph[i].name() == "b")
             .unwrap();
-        add_crate_dep(&mut graph, a, b);
+        add_package_dep(&mut graph, a, b);
         add_named_dep(&mut graph, a, b, &["Thing"]);
         let rule = Rule {
             name: "no b in a".into(),
@@ -2177,12 +2178,12 @@ mod tests {
         assert!(result.frozen().next().is_none());
     }
 
-    /// A "domain" crate plus two crates that do not match `*domain*`.
+    /// A "domain" package plus two packages that do not match `*domain*`.
     fn domain_and_others_graph() -> (ArcGraph, NodeIndex, NodeIndex, NodeIndex) {
         let mut graph = ArcGraph::new();
-        let domain = graph.add_node(crate_node("domain"));
-        let svc_orders = graph.add_node(crate_node("svc_orders"));
-        let svc_billing = graph.add_node(crate_node("svc_billing"));
+        let domain = graph.add_node(package_node("domain"));
+        let svc_orders = graph.add_node(package_node("svc_orders"));
+        let svc_billing = graph.add_node(package_node("svc_billing"));
         (graph, domain, svc_orders, svc_billing)
     }
 
@@ -2220,12 +2221,12 @@ mod tests {
     }
 
     #[test]
-    fn test_catch_all_needs_no_rule_change_when_a_crate_is_added() {
+    fn test_catch_all_needs_no_rule_change_when_a_package_is_added() {
         let rule = catch_all_above_domain_rule();
 
         let mut before = ArcGraph::new();
-        let domain = before.add_node(crate_node("domain"));
-        let svc_orders = before.add_node(crate_node("svc_orders"));
+        let domain = before.add_node(package_node("domain"));
+        let svc_orders = before.add_node(package_node("svc_orders"));
         add_production_dep(&mut before, domain, svc_orders);
         assert_eq!(check_rule(&before, &rule, false).reported().count(), 1);
 
@@ -2256,15 +2257,15 @@ mod tests {
         );
     }
 
-    /// Both positions match the crate itself, which pulls its modules along:
+    /// Both positions match the package itself, which pulls its modules along:
     /// three nodes overlap, not one, so a run naming an arbitrary one of them
     /// would disagree with itself between runs.
     #[test]
     fn test_layers_overlapping_ordinary_positions_fail_the_run() {
         let mut graph = ArcGraph::new();
-        let crate_idx = graph.add_node(crate_node("svc_application_orders"));
-        add_module(&mut graph, "alpha", crate_idx, crate_idx);
-        add_module(&mut graph, "beta", crate_idx, crate_idx);
+        let package_idx = graph.add_node(package_node("svc_application_orders"));
+        add_module(&mut graph, "alpha", package_idx, package_idx);
+        add_module(&mut graph, "beta", package_idx, package_idx);
 
         let rule = layers_rule_of_ranks(&[&["*application*"], &["*orders*"]]);
         let err = CheckRun::new(&graph, &Baseline::empty(), false)
@@ -2280,7 +2281,7 @@ mod tests {
     #[test]
     fn test_layers_allow_allows_matching_edge() {
         let (mut graph, _domain, service, _model, _infra, db, _api, _app, _handler) =
-            multi_crate_graph();
+            multi_package_graph();
         // infra::db → domain::service (bottom-up in top-down rule), but excepted.
         add_production_dep(&mut graph, db, service);
 
@@ -2298,7 +2299,7 @@ mod tests {
     #[test]
     fn test_check_rules_mixed() {
         let (mut graph, _domain, service, _model, _infra, db, api, _app, _handler) =
-            multi_crate_graph();
+            multi_package_graph();
         // Forbidden: service → db
         add_production_dep(&mut graph, service, db);
         // Cycle: db → api → db
@@ -2324,7 +2325,7 @@ mod tests {
 
     #[test]
     fn test_check_rules_empty() {
-        let (graph, _) = test_crate_graph();
+        let (graph, _) = test_package_graph();
         let config = config_of(vec![]);
         let result = check_rules(&graph, &config, &Baseline::empty(), false).unwrap();
         assert!(result.reported().next().is_none());
@@ -2415,12 +2416,12 @@ mod tests {
     }
 
     #[test]
-    fn test_check_rules_reports_a_crate_an_exhaustive_rule_leaves_unsorted() {
+    fn test_check_rules_reports_a_package_an_exhaustive_rule_leaves_unsorted() {
         let (mut graph, _domain, service, _model, _infra, db, _api, _app, _handler) =
-            multi_crate_graph();
+            multi_package_graph();
         add_production_dep(&mut graph, service, db);
 
-        // The layers rule names two of the three crates and declares itself
+        // The layers rule names two of the three packages and declares itself
         // exhaustive, so the third is a gap.
         let mut rule = layers_rule(&["infra", "domain"], vec![]);
         let RuleKind::Layers(params) = &mut rule.kind else {
@@ -2453,9 +2454,9 @@ mod tests {
 
     #[test]
     fn test_a_frozen_cycle_counts_one_hit_per_edge() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
-        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
+        let (mut graph, package_idx) = test_package_graph();
+        let a = add_module(&mut graph, "a", package_idx, package_idx);
+        let b = add_module(&mut graph, "b", package_idx, package_idx);
         add_production_dep(&mut graph, a, b);
         add_production_dep(&mut graph, b, a);
 
@@ -2472,9 +2473,9 @@ mod tests {
 
     #[test]
     fn test_one_uncovered_edge_keeps_the_cluster_reported() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
-        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
+        let (mut graph, package_idx) = test_package_graph();
+        let a = add_module(&mut graph, "a", package_idx, package_idx);
+        let b = add_module(&mut graph, "b", package_idx, package_idx);
         add_production_dep(&mut graph, a, b);
         add_production_dep(&mut graph, b, a);
 
@@ -2488,9 +2489,9 @@ mod tests {
 
     #[test]
     fn test_a_frozen_cycle_edge_that_gains_a_symbol_turns_red() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
-        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
+        let (mut graph, package_idx) = test_package_graph();
+        let a = add_module(&mut graph, "a", package_idx, package_idx);
+        let b = add_module(&mut graph, "b", package_idx, package_idx);
         add_named_dep(&mut graph, a, b, &["Old", "New"]);
         add_named_dep(&mut graph, b, a, &["Back"]);
 
@@ -2518,11 +2519,11 @@ mod tests {
     fn test_leaving_any_single_edge_uncovered_keeps_a_cluster_reported() {
         // The verdict per cycle is derived from the covered edges, so it holds
         // only if every SCC-internal edge lies on a representative cycle.
-        let (mut graph, crate_idx) = test_crate_graph();
-        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
-        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
-        let c = add_module(&mut graph, "c", crate_idx, crate_idx);
-        let d = add_module(&mut graph, "d", crate_idx, crate_idx);
+        let (mut graph, package_idx) = test_package_graph();
+        let a = add_module(&mut graph, "a", package_idx, package_idx);
+        let b = add_module(&mut graph, "b", package_idx, package_idx);
+        let c = add_module(&mut graph, "c", package_idx, package_idx);
+        let d = add_module(&mut graph, "d", package_idx, package_idx);
         add_production_dep(&mut graph, a, b);
         add_production_dep(&mut graph, b, c);
         add_production_dep(&mut graph, c, a);
@@ -2600,7 +2601,7 @@ mod tests {
     #[test]
     fn test_severity_ignore_filtered() {
         let (mut graph, _domain, service, _model, _infra, db, _api, _app, _handler) =
-            multi_crate_graph();
+            multi_package_graph();
         add_production_dep(&mut graph, service, db);
 
         let config = config_of(vec![Rule {
@@ -2631,7 +2632,7 @@ mod tests {
     #[test]
     fn test_a_frozen_edge_that_gains_a_symbol_is_reported_with_what_it_froze() {
         let (mut graph, _domain, service, _model, _infra, db, _api, _app, _handler) =
-            multi_crate_graph();
+            multi_package_graph();
         add_named_dep(&mut graph, service, db, &["Pool", "Row"]);
 
         let rule = no_infra_in_domain(vec![]);
@@ -2657,7 +2658,7 @@ mod tests {
         // Otherwise the entry reads as freezing nothing, while it does match
         // its edge and only stopped covering it.
         let (mut graph, _domain, service, _model, _infra, db, _api, _app, _handler) =
-            multi_crate_graph();
+            multi_package_graph();
         add_named_dep(&mut graph, service, db, &["Pool", "Row"]);
 
         let rule = no_infra_in_domain(vec![]);
@@ -2675,7 +2676,7 @@ mod tests {
     #[test]
     fn test_a_frozen_edge_stays_frozen_when_it_carries_less() {
         let (mut graph, _domain, service, _model, _infra, db, _api, _app, _handler) =
-            multi_crate_graph();
+            multi_package_graph();
         add_named_dep(&mut graph, service, db, &["Pool"]);
 
         let rule = no_infra_in_domain(vec![]);
@@ -2705,11 +2706,11 @@ mod tests {
 
     #[test]
     fn test_a_wholly_frozen_tangle_is_one_frozen_cluster() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
-        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
-        let c = add_module(&mut graph, "c", crate_idx, crate_idx);
-        let d = add_module(&mut graph, "d", crate_idx, crate_idx);
+        let (mut graph, package_idx) = test_package_graph();
+        let a = add_module(&mut graph, "a", package_idx, package_idx);
+        let b = add_module(&mut graph, "b", package_idx, package_idx);
+        let c = add_module(&mut graph, "c", package_idx, package_idx);
+        let d = add_module(&mut graph, "d", package_idx, package_idx);
         // Two triangles sharing edge a -> b: one cluster, two rings.
         add_production_dep(&mut graph, a, b);
         add_production_dep(&mut graph, b, c);
@@ -2750,11 +2751,11 @@ mod tests {
 
     #[test]
     fn test_cycle_sharing_an_edge_with_a_frozen_cycle_is_still_reported() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
-        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
-        let c = add_module(&mut graph, "c", crate_idx, crate_idx);
-        let d = add_module(&mut graph, "d", crate_idx, crate_idx);
+        let (mut graph, package_idx) = test_package_graph();
+        let a = add_module(&mut graph, "a", package_idx, package_idx);
+        let b = add_module(&mut graph, "b", package_idx, package_idx);
+        let c = add_module(&mut graph, "c", package_idx, package_idx);
+        let d = add_module(&mut graph, "d", package_idx, package_idx);
         // a -> b -> c -> a and a -> b -> d -> a share edge a -> b.
         add_production_dep(&mut graph, a, b);
         add_production_dep(&mut graph, b, c);
@@ -2799,11 +2800,11 @@ mod tests {
 
     #[test]
     fn test_freezing_one_cycle_leaves_a_lean_feedback_set_for_the_mixed_rest() {
-        let (mut graph, crate_idx) = test_crate_graph();
-        let a = add_module(&mut graph, "a", crate_idx, crate_idx);
-        let b = add_module(&mut graph, "b", crate_idx, crate_idx);
-        let c = add_module(&mut graph, "c", crate_idx, crate_idx);
-        let d = add_module(&mut graph, "d", crate_idx, crate_idx);
+        let (mut graph, package_idx) = test_package_graph();
+        let a = add_module(&mut graph, "a", package_idx, package_idx);
+        let b = add_module(&mut graph, "b", package_idx, package_idx);
+        let c = add_module(&mut graph, "c", package_idx, package_idx);
+        let d = add_module(&mut graph, "d", package_idx, package_idx);
         // a->b->d->a shares edge b->d with the two open cycles b<->c and c<->d.
         add_production_dep(&mut graph, a, b);
         add_production_dep(&mut graph, b, c);
@@ -2843,7 +2844,7 @@ mod tests {
     #[test]
     fn test_baseline_generated_from_a_run_covers_the_next_run() {
         let (mut graph, _domain, service, _model, _infra, db, api, _app, _handler) =
-            multi_crate_graph();
+            multi_package_graph();
         add_production_dep(&mut graph, service, db);
         add_production_dep(&mut graph, db, api);
         add_production_dep(&mut graph, api, db);

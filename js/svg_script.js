@@ -1289,7 +1289,7 @@ if (typeof document !== 'undefined') {
       const isOn = (selector) =>
         !!DomAdapter.querySelector(selector)?.classList.contains(C.checked);
       return {
-        crateDep: isOn('#crate-dep-checkbox'),
+        packageDep: isOn('#package-dep-checkbox'),
         moduleDep: isOn('#module-dep-checkbox'),
         reexport: isOn('#reexport-dep-checkbox'),
         cycle: isOn('#cycles-checkbox'),
@@ -1299,7 +1299,7 @@ if (typeof document !== 'undefined') {
     // Derive from an arc's classes which filters cover it.
     function arcFilters(arc) {
       return {
-        isCrateDep: arc.classList.contains(C.crateDepArc),
+        isPackageDep: arc.classList.contains(C.packageDepArc),
         isModuleDep: arc.classList.contains(C.moduleDepArc),
         isReexport: arc.classList.contains(C.reexportArc),
         isCycle: arc.classList.contains(C.cycleArc),
@@ -1556,7 +1556,7 @@ if (typeof document !== 'undefined') {
     // The view menu's checkboxes, in the order they are restored: the
     // transitive one needs the external one on.
     const CHECKBOXES = [
-      'crate-dep-checkbox',
+      'package-dep-checkbox',
       'module-dep-checkbox',
       'reexport-dep-checkbox',
       'cycles-checkbox',
@@ -1784,11 +1784,11 @@ if (typeof document !== 'undefined') {
         if (collapsed) window.scrollTo(0, 0);
       },
     );
-    DomAdapter.querySelector('#crate-dep-checkbox')
+    DomAdapter.querySelector('#package-dep-checkbox')
       ?.closest('label')
       ?.addEventListener('click', (e) => {
         e.stopPropagation();
-        toggleFilterCheckbox('#crate-dep-checkbox');
+        toggleFilterCheckbox('#package-dep-checkbox');
       });
 
     DomAdapter.querySelector('#module-dep-checkbox')

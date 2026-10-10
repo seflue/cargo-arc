@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { capture, restore } from './view_snapshot.js';
 
-/** A crate `app` with module `core` and its child `util`, plus crate `lib`. */
+/** A package `app` with module `core` and its child `util`, plus package `lib`. */
 const nodes = {
   0: { name: 'app', parent: null },
   1: { name: 'core', parent: '0' },
@@ -20,7 +20,7 @@ const renumbered = {
 const view = {
   collapsed: new Set(['1']),
   selection: { type: 'node', id: '2' },
-  checks: { 'crate-dep-checkbox': true, 'reexport-dep-checkbox': false },
+  checks: { 'package-dep-checkbox': true, 'reexport-dep-checkbox': false },
   search: { query: 'ut', scope: 'module' },
   follow: false,
   scroll: { x: 0, y: 120 },
@@ -32,7 +32,7 @@ describe('capture and restore', () => {
     expect(restored).toEqual({
       collapsed: ['1'],
       selection: { type: 'node', id: '2' },
-      checks: { 'crate-dep-checkbox': true, 'reexport-dep-checkbox': false },
+      checks: { 'package-dep-checkbox': true, 'reexport-dep-checkbox': false },
       search: { query: 'ut', scope: 'module' },
       follow: false,
       scroll: { x: 0, y: 120 },

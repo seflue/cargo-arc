@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/cargo-arc)](https://crates.io/crates/cargo-arc)
 [![CI](https://github.com/seflue/cargo-arc/actions/workflows/ci.yml/badge.svg)](https://github.com/seflue/cargo-arc/actions/workflows/ci.yml)
 
-`cargo arc` draws a Cargo workspace as a collapsible arc diagram in SVG, a tree of your crates and their modules connected by arcs that trace the `use` dependencies between them.
+`cargo arc` draws a Cargo workspace as a collapsible arc diagram in SVG, a tree of your packages and their modules connected by arcs that trace the `use` dependencies between them.
 `cargo arc check` holds the same workspace against architecture rules you write down, and fails the build when one breaks.
 
 ## Installation
@@ -26,10 +26,10 @@ Open the generated SVG in a browser.
 
 ## What You See
 
-Your workspace shows up as a tree — crates with their modules nested inside.
+Your workspace shows up as a tree — packages with their modules nested inside.
 Arcs between nodes show where dependencies exist.
 
-- **Boxes** — crates and modules, nested by hierarchy
+- **Boxes** — packages and modules, nested by hierarchy
 - **Arcs** — dependencies between any two nodes
 - **Collapse** a node to fold its children — individual dependencies merge into summary arcs
 - **Select** a node or arc to highlight its relationships
@@ -51,7 +51,7 @@ Plugins exist for [Neovim](editors/nvim/README.md), [VS Code](editors/vscode/REA
 ## Architecture Rules
 
 Circular dependencies are forbidden by default, and a workspace without a rules file is checked against that one rule.
-`arc-rules.toml` states which crate may depend on which, which modules or crates may never depend directly on which, and where circular dependencies are permitted after all.
+`arc-rules.toml` states which package may depend on which, which modules or packages may never depend directly on which, and where circular dependencies are permitted after all.
 `cargo arc check` reports what it finds, and a reported error makes it exit non-zero, so it belongs in CI next to the test suite.
 
 A workspace that has grown for years rarely comes out clean on the first run.
@@ -65,10 +65,10 @@ Two modules whose attributes exclude each other are currently reported as one ta
 Modules under `#[cfg(test)]` are the exception and stay out unless `--include-tests` is passed.
 
 A `mod` declaration inside a macro invocation is not analyzed.
-Where a crate writes `feature_gate! { pub mod runtime; }`, `runtime` and every module below it are missing from the graph, and a rule naming it reports `unmatched-pattern`.
+Where a package writes `feature_gate! { pub mod runtime; }`, `runtime` and every module below it are missing from the graph, and a rule naming it reports `unmatched-pattern`.
 
-A pattern reaches the crates under analysis and the modules in them.
-A crate the workspace only depends on is not a node, so a rule about a third-party crate matches nothing.
+A pattern reaches the packages under analysis and the modules in them.
+A package the workspace only depends on is not a node, so a rule about a third-party package matches nothing.
 
 A green run says the rules held over the modules the run walked, and a module a macro declares is not one of them.
 

@@ -1,6 +1,6 @@
 //! External crate dependency analysis using cargo metadata.
 
-use crate::model::{ExternalCrateInfo, ExternalDep, ExternalsResult, WorkspaceExternalDep};
+use crate::model::{ExternalDep, ExternalPackageInfo, ExternalsResult, WorkspaceExternalDep};
 use cargo_metadata::{DependencyKind, Metadata};
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -13,8 +13,8 @@ fn is_relevant_dep(dep: &cargo_metadata::NodeDep) -> bool {
     })
 }
 
-fn build_external_crate_info(pkg: &cargo_metadata::Package) -> ExternalCrateInfo {
-    ExternalCrateInfo {
+fn build_external_crate_info(pkg: &cargo_metadata::Package) -> ExternalPackageInfo {
+    ExternalPackageInfo {
         name: pkg.name.to_string(),
         version: pkg.version.to_string(),
         package_id: pkg.id.repr.clone(),
@@ -37,7 +37,7 @@ fn collect_dep_kinds(dep: &cargo_metadata::NodeDep) -> Vec<DependencyKind> {
 }
 
 struct ReachableExternals {
-    seen: HashMap<String, ExternalCrateInfo>,
+    seen: HashMap<String, ExternalPackageInfo>,
     crate_name_map: HashMap<String, HashMap<String, String>>,
 }
 
@@ -55,7 +55,7 @@ fn collect_reachable_externals(
         .map(|n| (n.id.repr.as_str(), n.deps.as_slice()))
         .collect();
 
-    let mut seen: HashMap<String, ExternalCrateInfo> = HashMap::new();
+    let mut seen: HashMap<String, ExternalPackageInfo> = HashMap::new();
     let mut crate_name_map: HashMap<String, HashMap<String, String>> = HashMap::new();
     let mut bfs_queue: VecDeque<String> = VecDeque::new();
 
@@ -127,7 +127,7 @@ fn collect_reachable_externals(
 pub(crate) fn analyze_externals(metadata: &Metadata, transitive: bool) -> ExternalsResult {
     let Some(resolve) = metadata.resolve.as_ref() else {
         return ExternalsResult {
-            crates: Vec::new(),
+            packages: Vec::new(),
             external_deps: Vec::new(),
             workspace_deps: Vec::new(),
             crate_name_map: HashMap::new(),
@@ -173,7 +173,7 @@ pub(crate) fn analyze_externals(metadata: &Metadata, transitive: bool) -> Extern
                 let ws_name = pkg_by_id.get(node_id).map_or("?", |p| p.name.as_str());
 
                 workspace_deps.push(WorkspaceExternalDep {
-                    workspace_crate: crate::model::normalize_crate_name(ws_name),
+                    workspace_package: crate::model::normalize_crate_name(ws_name),
                     external_pkg_id: dep_id.to_string(),
                     dep_kinds,
                 });
@@ -188,7 +188,7 @@ pub(crate) fn analyze_externals(metadata: &Metadata, transitive: bool) -> Extern
     }
 
     ExternalsResult {
-        crates: reachable.seen.into_values().collect(),
+        packages: reachable.seen.into_values().collect(),
         external_deps,
         workspace_deps,
         crate_name_map: reachable.crate_name_map,
@@ -212,7 +212,7 @@ mod tests {
     #[test]
     fn test_externals_result_construction() {
         let result = ExternalsResult {
-            crates: vec![ExternalCrateInfo {
+            packages: vec![ExternalPackageInfo {
                 name: "serde".to_string(),
                 version: "1.0.0".to_string(),
                 package_id: "serde 1.0.0 (registry+...)".to_string(),
@@ -225,7 +225,7 @@ mod tests {
                 dep_kinds: vec![DependencyKind::Normal],
             }],
             workspace_deps: vec![WorkspaceExternalDep {
-                workspace_crate: "my_crate".to_string(),
+                workspace_package: "my_crate".to_string(),
                 external_pkg_id: "serde 1.0.0".to_string(),
                 dep_kinds: vec![DependencyKind::Normal],
             }],
@@ -238,8 +238,8 @@ mod tests {
             },
         };
 
-        assert_eq!(result.crates.len(), 1);
-        assert_eq!(result.crates[0].name, "serde");
+        assert_eq!(result.packages.len(), 1);
+        assert_eq!(result.packages[0].name, "serde");
         assert_eq!(result.external_deps.len(), 1);
         assert_eq!(result.workspace_deps.len(), 1);
         assert_eq!(result.crate_name_map["my_crate"]["serde"], "serde 1.0.0");
@@ -251,7 +251,7 @@ mod tests {
         let result = analyze_externals(&metadata, false);
 
         // cargo-arc has external deps like petgraph, syn, clap
-        assert!(!result.crates.is_empty(), "should find external crates");
+        assert!(!result.packages.is_empty(), "should find external crates");
         assert!(
             !result.workspace_deps.is_empty(),
             "should find workspace->external deps"
@@ -277,7 +277,7 @@ mod tests {
         let metadata = own_metadata();
         let result = analyze_externals(&metadata, false);
 
-        let crate_names: Vec<&str> = result.crates.iter().map(|c| c.name.as_str()).collect();
+        let crate_names: Vec<&str> = result.packages.iter().map(|c| c.name.as_str()).collect();
         assert!(
             crate_names.contains(&"petgraph"),
             "should find petgraph, got: {crate_names:?}"
@@ -298,7 +298,7 @@ mod tests {
         let result = analyze_externals(&metadata, false);
 
         let petgraph = result
-            .crates
+            .packages
             .iter()
             .find(|c| c.name == "petgraph")
             .expect("petgraph is a dependency");
@@ -332,7 +332,7 @@ mod tests {
         let result = analyze_externals(&metadata, false);
 
         // cargo-arc itself should NOT appear as an external crate
-        let external_names: Vec<&str> = result.crates.iter().map(|c| c.name.as_str()).collect();
+        let external_names: Vec<&str> = result.packages.iter().map(|c| c.name.as_str()).collect();
         assert!(
             !external_names.contains(&"cargo-arc"),
             "workspace crate should not appear in externals"
@@ -379,7 +379,7 @@ mod tests {
 
         // Every collected crate must appear in at least one edge
         let orphans: Vec<&str> = result
-            .crates
+            .packages
             .iter()
             .map(|c| c.package_id.as_str())
             .filter(|id| !connected.contains(id))

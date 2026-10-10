@@ -18,8 +18,8 @@ use {
     super::use_parser::{ResolutionContext, parse_workspace_dependencies_from_source},
     crate::model::normalize_crate_name,
     crate::model::{
-        CrateExportMap, CrateInfo, DependencyRef, ModuleInfo, ModulePathMap, ModuleTree,
-        WorkspaceCrates,
+        DependencyRef, ModuleInfo, ModulePathMap, ModuleTree, PackageExportMap, PackageInfo,
+        WorkspacePackages,
     },
     anyhow::{Context, Result},
     ra_ap_cfg::{CfgAtom, CfgDiff},
@@ -121,7 +121,7 @@ pub fn load_workspace_hir(
 /// Finds a specific crate in an already-loaded workspace by matching its path.
 #[cfg(feature = "hir")]
 pub(crate) fn find_crate_in_workspace(
-    crate_info: &CrateInfo,
+    crate_info: &PackageInfo,
     host: &ide::AnalysisHost,
     vfs: &ra_ap_vfs::Vfs,
 ) -> Result<hir::Crate> {
@@ -222,12 +222,12 @@ fn collect_module_paths_recursive(
 /// `workspace_crates` should contain all workspace crate names for inter-crate dependency detection.
 #[cfg(feature = "hir")]
 pub fn analyze_modules(
-    crate_info: &CrateInfo,
+    crate_info: &PackageInfo,
     host: &ide::AnalysisHost,
     vfs: &ra_ap_vfs::Vfs,
-    workspace_crates: &WorkspaceCrates,
+    workspace_crates: &WorkspacePackages,
     all_module_paths: &ModulePathMap,
-    crate_exports: &CrateExportMap,
+    crate_exports: &PackageExportMap,
     external_crate_names: &std::collections::HashMap<String, String>,
 ) -> Result<ModuleTree> {
     // Find crate in already-loaded workspace
@@ -264,9 +264,9 @@ struct HirWalkContext<'a> {
     vfs: &'a ra_ap_vfs::Vfs,
     workspace_root: &'a Path,
     crate_name: &'a str,
-    workspace_crates: &'a WorkspaceCrates,
+    workspace_crates: &'a WorkspacePackages,
     all_module_paths: &'a ModulePathMap,
-    crate_exports: &'a CrateExportMap,
+    crate_exports: &'a PackageExportMap,
     external_crate_names: &'a std::collections::HashMap<String, String>,
 }
 
@@ -514,7 +514,8 @@ mod hir_tests {
             let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
             let crates = analyze_workspace(&manifest, &FeatureConfig::default())
                 .expect("should analyze workspace");
-            let workspace_crates: WorkspaceCrates = crates.iter().map(|c| c.name.clone()).collect();
+            let workspace_crates: WorkspacePackages =
+                crates.iter().map(|c| c.name.clone()).collect();
             let cargo_arc = crates.iter().find(|c| c.name == "cargo-arc").unwrap();
 
             let (host, vfs) = load_workspace_hir(&manifest, &FeatureConfig::default())
@@ -525,7 +526,7 @@ mod hir_tests {
                 &vfs,
                 &workspace_crates,
                 &ModulePathMap::default(),
-                &CrateExportMap::default(),
+                &PackageExportMap::default(),
             )
             .expect("should analyze modules");
 
@@ -560,7 +561,8 @@ mod hir_tests {
             let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
             let crates = analyze_workspace(&manifest, &FeatureConfig::default())
                 .expect("should analyze workspace");
-            let workspace_crates: WorkspaceCrates = crates.iter().map(|c| c.name.clone()).collect();
+            let workspace_crates: WorkspacePackages =
+                crates.iter().map(|c| c.name.clone()).collect();
             let cargo_arc = crates.iter().find(|c| c.name == "cargo-arc").unwrap();
 
             let (host, vfs) = load_workspace_hir(&manifest, &FeatureConfig::default())
@@ -571,7 +573,7 @@ mod hir_tests {
                 &vfs,
                 &workspace_crates,
                 &ModulePathMap::default(),
-                &CrateExportMap::default(),
+                &PackageExportMap::default(),
             )
             .expect("should analyze modules");
 
@@ -592,7 +594,8 @@ mod hir_tests {
             let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
             let crates = analyze_workspace(&manifest, &FeatureConfig::default())
                 .expect("should analyze workspace");
-            let workspace_crates: WorkspaceCrates = crates.iter().map(|c| c.name.clone()).collect();
+            let workspace_crates: WorkspacePackages =
+                crates.iter().map(|c| c.name.clone()).collect();
             let cargo_arc = crates.iter().find(|c| c.name == "cargo-arc").unwrap();
 
             let (host, vfs) = load_workspace_hir(&manifest, &FeatureConfig::default())
@@ -603,7 +606,7 @@ mod hir_tests {
                 &vfs,
                 &workspace_crates,
                 &ModulePathMap::default(),
-                &CrateExportMap::default(),
+                &PackageExportMap::default(),
             )
             .expect("should analyze modules");
 

@@ -66,9 +66,9 @@ pub(super) fn render_page_sidebar() -> String {
 /// caller's choice.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct ToolbarFacts {
-    /// The diagram has an external crates section.
+    /// The diagram has an external packages section.
     pub has_externals: bool,
-    /// At least one external crate is a transitive dependency.
+    /// At least one external package is a transitive dependency.
     pub has_transitive_externals: bool,
     /// Some nodes start collapsed (an expand level is set), so the button
     /// offers to expand rather than collapse.
@@ -157,7 +157,7 @@ fn toolbar_content(
     let dropdown_filters = format!(
         concat!(
             "          <label class=\"{}\">\n",
-            "            <span class=\"{} {}\" id=\"crate-dep-checkbox\"></span>\n",
+            "            <span class=\"{} {}\" id=\"package-dep-checkbox\"></span>\n",
             "            Show Crate Dependencies\n",
             "          </label>\n",
             "          <label class=\"{}\">\n",
@@ -199,7 +199,7 @@ fn toolbar_content(
             "        </div>\n",
             "        <div id=\"scope-selector\" class=\"{}\">\n",
             "          <button class=\"{} {}\" data-scope=\"all\">All</button>\n",
-            "          <button class=\"{}\" data-scope=\"crate\">Crate</button>\n",
+            "          <button class=\"{}\" data-scope=\"package\">Crate</button>\n",
             "          <button class=\"{}\" data-scope=\"module\">Module</button>\n",
             "          <button class=\"{}\" data-scope=\"symbol\">Symbol</button>\n",
             "        </div>\n",
@@ -323,8 +323,8 @@ impl CycleMarks {
 
 fn item_parent(kind: &ItemKind) -> Option<NodeId> {
     match kind {
-        ItemKind::Module { parent, .. } | ItemKind::ExternalCrate { parent, .. } => Some(*parent),
-        ItemKind::Crate | ItemKind::ExternalSection => None,
+        ItemKind::Module { parent, .. } | ItemKind::ExternalPackage { parent, .. } => Some(*parent),
+        ItemKind::Package | ItemKind::ExternalSection => None,
     }
 }
 
@@ -351,29 +351,31 @@ pub(super) fn render_nodes(
             (item.x, item.y)
         };
         let class = match &item.kind {
-            ItemKind::Crate => CSS.nodes.crate_node,
+            ItemKind::Package => CSS.nodes.package_node,
             ItemKind::Module { .. } => CSS.nodes.module,
             ItemKind::ExternalSection => CSS.nodes.external_section,
-            ItemKind::ExternalCrate {
+            ItemKind::ExternalPackage {
                 is_direct_dependency: true,
                 ..
-            } => CSS.nodes.external_crate,
-            ItemKind::ExternalCrate {
+            } => CSS.nodes.external_package,
+            ItemKind::ExternalPackage {
                 is_direct_dependency: false,
                 ..
             } => CSS.nodes.external_transitive,
         };
         let rx = match &item.kind {
-            ItemKind::Crate | ItemKind::ExternalSection => LAYOUT.crate_border_radius,
-            ItemKind::Module { .. } | ItemKind::ExternalCrate { .. } => LAYOUT.module_border_radius,
+            ItemKind::Package | ItemKind::ExternalSection => LAYOUT.package_border_radius,
+            ItemKind::Module { .. } | ItemKind::ExternalPackage { .. } => {
+                LAYOUT.module_border_radius
+            }
         };
 
-        // data-parent attribute for modules and external crates
+        // data-parent attribute for modules and external packages
         let parent_attr = match &item.kind {
-            ItemKind::Module { parent, .. } | ItemKind::ExternalCrate { parent, .. } => {
+            ItemKind::Module { parent, .. } | ItemKind::ExternalPackage { parent, .. } => {
                 format!(r#" data-parent="{parent}""#)
             }
-            ItemKind::Crate | ItemKind::ExternalSection => String::new(),
+            ItemKind::Package | ItemKind::ExternalSection => String::new(),
         };
 
         // data-has-children attribute for parents
@@ -469,10 +471,10 @@ fn child_count(positioned: &[PositionedItem], parent_id: NodeId) -> usize {
     positioned
         .iter()
         .filter(|p| match &p.kind {
-            ItemKind::Module { parent, .. } | ItemKind::ExternalCrate { parent, .. } => {
+            ItemKind::Module { parent, .. } | ItemKind::ExternalPackage { parent, .. } => {
                 *parent == parent_id
             }
-            ItemKind::Crate | ItemKind::ExternalSection => false,
+            ItemKind::Package | ItemKind::ExternalSection => false,
         })
         .count()
 }
@@ -655,19 +657,19 @@ fn arc_attrs(edge: &LayoutEdge, from_kind: &ItemKind, to_kind: &ItemKind) -> Arc
         (String::new(), String::new())
     };
 
-    let is_crate_dep = matches!(
+    let is_package_dep = matches!(
         (from_kind, to_kind),
         (
-            ItemKind::Crate | ItemKind::ExternalCrate { .. },
-            ItemKind::Crate | ItemKind::ExternalCrate { .. }
+            ItemKind::Package | ItemKind::ExternalPackage { .. },
+            ItemKind::Package | ItemKind::ExternalPackage { .. }
         )
     );
     // Exactly one arc-type class per arc, and the JS arc filter selects on it,
     // so a re-export never answers to the module-dep checkbox.
     let arc_type_class = if edge.reexport {
         cd.reexport_arc
-    } else if is_crate_dep {
-        cd.crate_dep_arc
+    } else if is_package_dep {
+        cd.package_dep_arc
     } else {
         cd.module_dep_arc
     };
@@ -841,7 +843,7 @@ mod tests {
     #[test]
     fn test_tree_lines() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "parent".into());
+        let c = ir.add_item(ItemKind::Package, "parent".into());
         ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -860,7 +862,7 @@ mod tests {
     #[test]
     fn test_render_tree_lines_have_data_attributes() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "parent".into());
+        let c = ir.add_item(ItemKind::Package, "parent".into());
         ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -886,7 +888,7 @@ mod tests {
     #[test]
     fn test_nodes_have_ids() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let c = ir.add_item(ItemKind::Package, "c".into());
         ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -915,7 +917,7 @@ mod tests {
     #[test]
     fn test_render_has_parent_data_attribute() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "parent_crate".into());
+        let c = ir.add_item(ItemKind::Package, "parent_crate".into());
         ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -946,7 +948,7 @@ mod tests {
     #[test]
     fn test_render_has_children_attribute() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "parent_crate".into());
+        let c = ir.add_item(ItemKind::Package, "parent_crate".into());
         ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -977,7 +979,7 @@ mod tests {
     #[test]
     fn test_render_collapse_toggle_present() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "parent".into());
+        let c = ir.add_item(ItemKind::Package, "parent".into());
         ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -1012,7 +1014,7 @@ mod tests {
     #[test]
     fn test_render_child_count_tspan() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "parent".into());
+        let c = ir.add_item(ItemKind::Package, "parent".into());
         ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -1047,7 +1049,7 @@ mod tests {
     #[test]
     fn test_render_collapsed_parent_counts_children_and_offers_expand() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "parent".into());
+        let c = ir.add_item(ItemKind::Package, "parent".into());
         for child in ["first", "second"] {
             ir.add_item(
                 ItemKind::Module {
@@ -1082,7 +1084,7 @@ mod tests {
         );
     }
 
-    /// Crate `root` holding `alpha` and `beta` (a cycle between them) and
+    /// Package `root` holding `alpha` and `beta` (a cycle between them) and
     /// `plain` (off any cycle), plus parent `outer` under `root` holding
     /// `inner`, which closes a second cycle with `alpha`.
     struct CycleFixture {
@@ -1097,7 +1099,7 @@ mod tests {
 
     fn cycle_fixture() -> CycleFixture {
         let mut ir = LayoutIR::new();
-        let root = ir.add_item(ItemKind::Crate, "root".into());
+        let root = ir.add_item(ItemKind::Package, "root".into());
         let module = |ir: &mut LayoutIR, name: &str, nesting: u32, parent: NodeId| {
             ir.add_item(ItemKind::Module { nesting, parent }, name.into())
         };
@@ -1217,7 +1219,7 @@ mod tests {
             )),
             "collapsed parent above a cycle should show the marker, got: {outer_label}"
         );
-        // The crate is expanded, so its slot stays empty even though it is above a cycle.
+        // The package is expanded, so its slot stays empty even though it is above a cycle.
         assert!(label_line(&output, "root").contains(&format!(
             "id=\"cycle-marker-{}\" class=\"{}\"></tspan>",
             fx.root, CSS.nodes.cycle_marker
@@ -1256,7 +1258,7 @@ mod tests {
 \u{20}       <button id=\"view-dropdown-btn\" class=\"toolbar-html-btn toolbar-dropdown-btn\">View \u{25be}</button>\n\
 \u{20}       <div class=\"toolbar-dropdown-panel\" style=\"display:none\">\n\
 \u{20}         <label class=\"toolbar-toggle\">\n\
-\u{20}           <span class=\"toolbar-checkbox checked\" id=\"crate-dep-checkbox\"></span>\n\
+\u{20}           <span class=\"toolbar-checkbox checked\" id=\"package-dep-checkbox\"></span>\n\
 \u{20}           Show Crate Dependencies\n\
 \u{20}         </label>\n\
 \u{20}         <label class=\"toolbar-toggle\">\n\
@@ -1302,7 +1304,7 @@ mod tests {
 \u{20}       </div>\n\
 \u{20}       <div id=\"scope-selector\" class=\"toolbar-scope\">\n\
 \u{20}         <button class=\"toolbar-scope-btn active\" data-scope=\"all\">All</button>\n\
-\u{20}         <button class=\"toolbar-scope-btn\" data-scope=\"crate\">Crate</button>\n\
+\u{20}         <button class=\"toolbar-scope-btn\" data-scope=\"package\">Crate</button>\n\
 \u{20}         <button class=\"toolbar-scope-btn\" data-scope=\"module\">Module</button>\n\
 \u{20}         <button class=\"toolbar-scope-btn\" data-scope=\"symbol\">Symbol</button>\n\
 \u{20}       </div>\n\
@@ -1352,7 +1354,7 @@ mod tests {
             "Should have dropdown panel"
         );
         assert!(
-            output.contains(r#"id="crate-dep-checkbox""#),
+            output.contains(r#"id="package-dep-checkbox""#),
             "Should have crate-dep checkbox"
         );
         assert!(
@@ -1500,7 +1502,7 @@ mod tests {
     #[test]
     fn test_edges_have_data_attributes() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let c = ir.add_item(ItemKind::Package, "c".into());
         let a = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -1541,7 +1543,7 @@ mod tests {
     #[test]
     fn test_arc_has_hitarea_and_visible_path() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let c = ir.add_item(ItemKind::Package, "c".into());
         let a = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -1593,10 +1595,10 @@ mod tests {
     }
 
     #[test]
-    fn test_crate_dep_edges_have_class() {
+    fn test_package_dep_edges_have_class() {
         let mut ir = LayoutIR::new();
-        let c1 = ir.add_item(ItemKind::Crate, "crate_a".into());
-        let c2 = ir.add_item(ItemKind::Crate, "crate_b".into());
+        let c1 = ir.add_item(ItemKind::Package, "crate_a".into());
+        let c2 = ir.add_item(ItemKind::Package, "crate_b".into());
         ir.edges
             .push(LayoutEdge::new(c1, c2, EdgeContext::production()));
         let config = RenderConfig::default();
@@ -1606,15 +1608,15 @@ mod tests {
 
         let output = render_edges(&positioned_index, &ir, config.row_height, None);
         assert!(
-            output.contains("crate-dep-arc"),
-            "Crate-to-crate edges should have crate-dep-arc class"
+            output.contains("package-dep-arc"),
+            "Crate-to-crate edges should have package-dep-arc class"
         );
     }
 
     #[test]
     fn test_reexport_edges_have_teal_class_default_hidden() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let c = ir.add_item(ItemKind::Package, "c".into());
         let a = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -1670,7 +1672,7 @@ mod tests {
     #[test]
     fn test_edge_to_collapsed_endpoint_keeps_its_own_classes() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let c = ir.add_item(ItemKind::Package, "c".into());
         let a = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -1720,7 +1722,7 @@ mod tests {
     #[test]
     fn test_edge_to_collapsed_endpoint_keeps_hidden_by_filter_too() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let c = ir.add_item(ItemKind::Package, "c".into());
         let a = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -1783,7 +1785,7 @@ mod tests {
     #[test]
     fn test_data_cycle_ids_attribute() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let c = ir.add_item(ItemKind::Package, "c".into());
         let a = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -1870,7 +1872,7 @@ mod tests {
         // mode off, they fall back to the normal directional dependency color.
         // cycle-arc is an additive marker gated by the container state.
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let c = ir.add_item(ItemKind::Package, "c".into());
         let a = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -1913,7 +1915,7 @@ mod tests {
     #[test]
     fn test_multi_cycle_ids_attribute() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let c = ir.add_item(ItemKind::Package, "c".into());
         let a = ir.add_item(
             ItemKind::Module {
                 nesting: 1,

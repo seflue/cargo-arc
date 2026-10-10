@@ -271,7 +271,7 @@ const SidebarLogic = {
    * @param {Object} rel - Relation entry {targetId, weight, usages, arcId}
    * @param {string} nodeId - Selected node ID
    * @param {string} nodeName - Selected node display name
-   * @param {string} nodeType - Selected node type (crate/module)
+   * @param {string} nodeType - Selected node type (package/module)
    * @param {'incoming'|'outgoing'} direction
    * @param {number} [maxFromLen=0] - Minimum badge width (ch) for from-badge
    * @param {number} [maxToLen=0] - Minimum badge width (ch) for to-badge
@@ -423,7 +423,7 @@ const SidebarLogic = {
   },
 
   /**
-   * Format node display name, appending version for external crates.
+   * Format node display name, appending version for external packages.
    * @param {Object|null} node - Node data from StaticData
    * @param {string} fallback - Fallback ID if node is null
    * @returns {string}
@@ -468,7 +468,7 @@ const SidebarLogic = {
       label = `only used by ${nameOf(sl.module)}`;
     } else if (sl.locality === 'commonAncestor') {
       label = `used under ${nameOf(sl.module)}`;
-    } else if (sl.locality === 'crateWide') {
+    } else if (sl.locality === 'packageWide') {
       label = `widely used (${sl.consumers?.length ?? 0} modules)`;
     } else {
       return '';
@@ -790,7 +790,7 @@ const SidebarLogic = {
     );
 
     let html = `<div class="sidebar-header">`;
-    html += `<span class="sidebar-title">Cluster \u00b7 ${cl.crate}</span>`;
+    html += `<span class="sidebar-title">Cluster \u00b7 ${cl.package}</span>`;
     if (hasCollapsible) {
       html += `<div class="sidebar-header-actions">`;
       html += `<button class="sidebar-collapse-all">+</button>`;
@@ -920,10 +920,10 @@ const SidebarLogic = {
   },
 
   /**
-   * Shortest unique suffix of a node's crate-relative module path, computed
+   * Shortest unique suffix of a node's package-relative module path, computed
    * against every other node in the same SCC. Starts at the leaf and grows
    * left segment by segment until no other node in `sccNodeIds` shares the
-   * same suffix. Never includes the crate prefix.
+   * same suffix. Never includes the package prefix.
    * @param {string} nodeId
    * @param {Iterable<string>} sccNodeIds - All node ids in the SCC.
    * @param {Map<string, string[]>} [segmentsById] - Precomputed path segments

@@ -96,13 +96,13 @@ describe('ArcLogic.matchesActiveFilters', () => {
   });
 
   test('crate-dep arc follows the crate-dep filter', () => {
-    const arcFilters = { isCrateDep: true };
-    expect(ArcLogic.matchesActiveFilters(arcFilters, { crateDep: true })).toBe(
-      true,
-    );
-    expect(ArcLogic.matchesActiveFilters(arcFilters, { crateDep: false })).toBe(
-      false,
-    );
+    const arcFilters = { isPackageDep: true };
+    expect(
+      ArcLogic.matchesActiveFilters(arcFilters, { packageDep: true }),
+    ).toBe(true);
+    expect(
+      ArcLogic.matchesActiveFilters(arcFilters, { packageDep: false }),
+    ).toBe(false);
   });
 
   test('reexport arc follows the reexport filter', () => {

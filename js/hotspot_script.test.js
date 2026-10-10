@@ -38,7 +38,7 @@ function createFakeInteractiveElement(tag) {
   return el;
 }
 
-// A minimal but structurally real map: a crate root with one ranked leaf
+// A minimal but structurally real map: a package root with one ranked leaf
 // (so the details panel, the hotspot list and the bars view all have real
 // content to render), plus the sidebar and toolbar elements this task
 // wires. Built with the same mock adapter production code and other tests
@@ -224,7 +224,7 @@ global.STATIC_DATA = {
     // always-visible sidebar beside the circle), so buildHotspotMap derives
     // its viewport from the root's own position, not the SVG width.
     root: {
-      kind: 'crate',
+      kind: 'package',
       name: 'root',
       file: 'Cargo.toml',
       cx: 200,
@@ -500,7 +500,7 @@ describe('hotspot_script entry', () => {
     // resize either way, so it cannot tell a real re-frame from a snap
     // back to the root that reads the root's data straight from STATIC_DATA.
     const container = {
-      kind: 'crate',
+      kind: 'package',
       name: 'container',
       file: 'container',
       parent: 'root',

@@ -129,7 +129,7 @@ const HighlightRenderer = {
    */
   _resetNodeClasses(dom, C) {
     const nodeClasses = [
-      C.selectedCrate,
+      C.selectedPackage,
       C.selectedModule,
       C.selectedExternal,
       C.selectedExternalTransitive,
