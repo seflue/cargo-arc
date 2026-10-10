@@ -23,7 +23,7 @@ substitute(Selectors, {
 globalThis.STATIC_DATA = {
   nodes: {
     crate_a: {
-      type: 'crate',
+      type: 'package',
       name: 'crate_a',
       parent: null,
       x: 0,
@@ -33,7 +33,7 @@ globalThis.STATIC_DATA = {
       hasChildren: false,
     },
     crate_b: {
-      type: 'crate',
+      type: 'package',
       name: 'crate_b',
       parent: null,
       x: 0,
@@ -123,22 +123,22 @@ substitute(StaticData, {
   qualifiedParts(nodeId) {
     const nodes = globalThis.STATIC_DATA.nodes;
     const node = nodes?.[nodeId];
-    if (!node) return { crate: null, path: nodeId };
+    if (!node) return { package: null, path: nodeId };
     const segments = [node.name];
-    let crate = null;
+    let packageName = null;
     let parentId = node.parent;
     while (parentId != null) {
       const parent = nodes?.[parentId];
       if (!parent) break;
-      if (parent.type === 'crate') {
-        crate = parent.name;
+      if (parent.type === 'package') {
+        packageName = parent.name;
         break;
       }
       segments.push(parent.name);
       parentId = parent.parent;
     }
     segments.reverse();
-    return { crate, path: segments.join('::') };
+    return { package: packageName, path: segments.join('::') };
   },
 });
 
@@ -625,7 +625,7 @@ describe('SidebarLogic', () => {
             module: 'x',
             consumers: ['x', 'z'],
           },
-          Wide: { locality: 'crateWide', consumers: ['x', 'z'] },
+          Wide: { locality: 'packageWide', consumers: ['x', 'z'] },
         },
       };
       const html = SidebarLogic.buildContent(
@@ -645,7 +645,7 @@ describe('SidebarLogic', () => {
       );
       expect(html).toContain('sidebar-locality-commonAncestor');
       expect(html).toContain('used under x');
-      expect(html).toContain('sidebar-locality-crateWide');
+      expect(html).toContain('sidebar-locality-packageWide');
       expect(html).toContain('widely used (2 modules)');
     });
 
@@ -2325,8 +2325,8 @@ describe('SidebarLogic', () => {
     test('selected node has sidebar-node-selected class', () => {
       const html = SidebarLogic.buildNodeContent('crate_a', makeRelations());
       expect(html).toContain('sidebar-node-selected');
-      // Should appear on the selected node badge (crate_a is type crate)
-      expect(html).toContain('sidebar-node-crate sidebar-node-selected');
+      // Should appear on the selected node badge (crate_a is type package)
+      expect(html).toContain('sidebar-node-package sidebar-node-selected');
     });
 
     test('header badge has sidebar-node-selected class', () => {
@@ -2336,7 +2336,7 @@ describe('SidebarLogic', () => {
       );
       expect(headerMatch).not.toBeNull();
       expect(headerMatch[0]).toContain(
-        'sidebar-node-crate sidebar-node-selected',
+        'sidebar-node-package sidebar-node-selected',
       );
     });
 
@@ -2441,7 +2441,7 @@ describe('SidebarLogic', () => {
       savedClusters = globalThis.STATIC_DATA.clusters;
       globalThis.STATIC_DATA.clusters = {
         0: {
-          crate: 'my_crate',
+          package: 'my_crate',
           moduleCount: 4,
           cycleCount: 3,
           cycles: [
@@ -2701,7 +2701,7 @@ describe('SidebarLogic', () => {
       }
       globalThis.STATIC_DATA.clusters = {
         0: {
-          crate: 'my_crate',
+          package: 'my_crate',
           moduleCount: 4,
           cycleCount: 3,
           cycles: [cycleAbc, cycleAbd, cycleAbcd],
@@ -2808,7 +2808,7 @@ describe('SidebarLogic', () => {
 
     test('an expanded edge row shows the definition chip on its symbols', () => {
       globalThis.STATIC_DATA.symbolLocalities = {
-        b: { Foo: { locality: 'crateWide', consumers: ['a'] } },
+        b: { Foo: { locality: 'packageWide', consumers: ['a'] } },
       };
       const html = SidebarLogic._buildEdgeRow(
         { fromId: 'a', toId: 'b', symbols: 1 },
@@ -3479,7 +3479,7 @@ describe('SidebarLogic', () => {
       };
       globalThis.STATIC_DATA.clusters = {
         0: {
-          crate: 'my_crate',
+          package: 'my_crate',
           moduleCount: 2,
           cycleCount: 1,
           cycles: [
@@ -3780,7 +3780,7 @@ describe('SidebarLogic', () => {
       // 'a-b' is a non-closing edge in both blocks.
       globalThis.STATIC_DATA.clusters = {
         0: {
-          crate: 'my_crate',
+          package: 'my_crate',
           moduleCount: 3,
           cycleCount: 2,
           cycles: [
@@ -4061,7 +4061,7 @@ describe('SidebarLogic', () => {
     });
 
     test('returns name without version for regular nodes', () => {
-      const node = { name: 'my_crate', type: 'crate' };
+      const node = { name: 'my_crate', type: 'package' };
       expect(SidebarLogic._formatNodeName(node, 'id')).toBe('my_crate');
     });
 
@@ -4607,7 +4607,7 @@ describe('SidebarLogic', () => {
 
     test('external node with version includes version in length', () => {
       globalThis.STATIC_DATA.nodes.ext_serde = {
-        type: 'crate',
+        type: 'package',
         name: 'serde',
         version: '1.0.0',
         parent: null,

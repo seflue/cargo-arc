@@ -21,7 +21,7 @@ import { DerivedState } from './derived_state.js';
 const TEST_STATIC_DATA = {
   nodes: {
     crate: {
-      type: 'crate',
+      type: 'package',
       parent: null,
       x: 0,
       y: 0,
@@ -759,7 +759,7 @@ describe('DerivedState', () => {
       expect(result.nodeHighlights.has('fn_3')).toBe(true);
     });
 
-    test('node click: crate type gets selectedCrate class', () => {
+    test('node click: crate type gets selectedPackage class', () => {
       AppState.setSelection(appState, 'node', 'crate');
       const result = DerivedState.deriveHighlightState(
         appState,
@@ -772,7 +772,7 @@ describe('DerivedState', () => {
 
       expect(result.nodeHighlights.get('crate')).toEqual({
         role: 'current',
-        cssClass: 'selectedCrate',
+        cssClass: 'selectedPackage',
       });
     });
 
@@ -857,7 +857,7 @@ describe('DerivedState', () => {
         nodes: {
           ...TEST_STATIC_DATA.nodes,
           ext_crate: {
-            type: 'crate',
+            type: 'package',
             parent: null,
             x: 200,
             y: 300,
@@ -2069,7 +2069,7 @@ describe('DerivedState', () => {
     const EXTERNAL_DATA = {
       nodes: {
         crate: {
-          type: 'crate',
+          type: 'package',
           parent: null,
           x: 0,
           y: 0,

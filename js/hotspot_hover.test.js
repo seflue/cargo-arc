@@ -10,12 +10,12 @@ import { restoreAll, substitute } from './test_support.js';
 
 afterAll(restoreAll);
 
-// root (crate) -> lib.rs (file, hotspot, ranked), src (module) -> a.rs, b.rs
+// root (package) -> lib.rs (file, hotspot, ranked), src (module) -> a.rs, b.rs
 function nodes() {
   return {
     root: {
       name: 'app',
-      kind: 'crate',
+      kind: 'package',
       file: 'app/Cargo.toml',
       lines: 40,
       commits: 9,

@@ -76,8 +76,8 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
         CssRule::class(
             c.nodes.package_node,
             &[
-                ("fill", n.crate_fill),
-                ("stroke", n.crate_stroke),
+                ("fill", n.package_fill),
+                ("stroke", n.package_stroke),
                 ("stroke-width", "1.5"),
             ],
         ),
@@ -98,10 +98,10 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
             ],
         ),
         CssRule::class(
-            c.nodes.external_crate,
+            c.nodes.external_package,
             &[
-                ("fill", n.external_crate_fill),
-                ("stroke", n.external_crate_stroke),
+                ("fill", n.external_package_fill),
+                ("stroke", n.external_package_stroke),
                 ("stroke-width", "1.5"),
             ],
         ),
@@ -190,8 +190,8 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
         ),
         // Selection
         CssRule::class(
-            c.node_selection.selected_crate,
-            &[("fill", ns.crate_fill), ("stroke-width", "3")],
+            c.node_selection.selected_package,
+            &[("fill", ns.package_fill), ("stroke-width", "3")],
         ),
         CssRule::class(
             c.node_selection.selected_module,
@@ -263,7 +263,7 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
             &format!(
                 "svg.{} rect:not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.jump-popover)",
                 c.relation.has_highlight,
-                c.node_selection.selected_crate,
+                c.node_selection.selected_package,
                 c.node_selection.selected_module,
                 c.node_selection.selected_external,
                 c.node_selection.selected_external_transitive,
@@ -282,7 +282,7 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
             &format!(
                 "svg.{} rect:not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.jump-popover)",
                 c.relation.has_pinned,
-                c.node_selection.selected_crate,
+                c.node_selection.selected_package,
                 c.node_selection.selected_module,
                 c.node_selection.selected_external,
                 c.node_selection.selected_external_transitive,
@@ -1070,7 +1070,7 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
                 ("-webkit-user-select", "none"),
             ],
         ),
-        // Consumer-locality tag (single-consumer / common-home / crate-wide
+        // Consumer-locality tag (single-consumer / common-home / package-wide
         // fact): literal class string from sidebar.js, no constants.rs entry.
         // Neutral pill; the words carry the meaning, a locality-specific colour
         // is deferred.
@@ -1277,9 +1277,9 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
         ),
         // Node badges repeat the node's diagram colours.
         CssRule::class(
-            c.sidebar.node_crate,
+            c.sidebar.node_package,
             &[
-                ("background", n.crate_fill),
+                ("background", n.package_fill),
                 ("padding", "1px 4px"),
                 ("border-radius", "3px"),
             ],
@@ -1301,10 +1301,10 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
             &[("border", &format!("2px solid {}", r.dependency))],
         ),
         CssRule::new(
-            &format!(".{}.{}", c.sidebar.node_crate, c.sidebar.node_selected),
+            &format!(".{}.{}", c.sidebar.node_package, c.sidebar.node_selected),
             &[
-                ("background", ns.crate_fill),
-                ("border", &format!("2px solid {}", n.crate_stroke)),
+                ("background", ns.package_fill),
+                ("border", &format!("2px solid {}", n.package_stroke)),
             ],
         ),
         CssRule::new(
@@ -1317,7 +1317,7 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
         CssRule::class(
             c.sidebar.node_external,
             &[
-                ("background", n.external_crate_fill),
+                ("background", n.external_package_fill),
                 ("padding", "1px 4px"),
                 ("border-radius", "3px"),
             ],
@@ -1342,7 +1342,10 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
             &format!(".{}.{}", c.sidebar.node_external, c.sidebar.node_selected),
             &[
                 ("background", ns.external_fill),
-                ("border", &format!("2px solid {}", n.external_crate_stroke)),
+                (
+                    "border",
+                    &format!("2px solid {}", n.external_package_stroke),
+                ),
             ],
         ),
         CssRule::new(
@@ -1425,7 +1428,7 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
         // `non-scaling-stroke` keeps it at the width declared here
         // regardless of zoom.
         // A leaf (a file) paints more opaque than a container (a workspace,
-        // crate or module), so the files a hotspot map actually ranks stand
+        // package or module), so the files a hotspot map actually ranks stand
         // out over the containers holding them. The override binds through
         // both classes, so its specificity beats the plain circle rule
         // regardless of which one this sheet declares first.
@@ -1770,20 +1773,20 @@ mod tests {
     #[test]
     fn test_stylesheet_declares_every_theme_as_custom_properties() {
         let css = render_styles();
-        let crate_fill = |theme: &Theme| {
+        let package_fill = |theme: &Theme| {
             format!(
-                "{{ --arc-node-crate-fill: {};",
-                theme.palette.nodes.crate_fill
+                "{{ --arc-node-package-fill: {};",
+                theme.palette.nodes.package_fill
             )
         };
         assert!(
-            css.contains(&format!(":root {}", crate_fill(&LATTE))),
+            css.contains(&format!(":root {}", package_fill(&LATTE))),
             "light theme on :root, got: {css}"
         );
         assert!(
             css.contains(&format!(
                 "@media (prefers-color-scheme: dark) {{ :root {}",
-                crate_fill(&MOCHA)
+                package_fill(&MOCHA)
             )),
             "dark theme under the media query, got: {css}"
         );
@@ -1792,7 +1795,7 @@ mod tests {
                 css.contains(&format!(
                     ":root[data-theme=\"{}\"] {}",
                     theme.name,
-                    crate_fill(theme)
+                    package_fill(theme)
                 )),
                 "{} pinned by data-theme, got: {css}",
                 theme.name
@@ -1854,7 +1857,7 @@ mod tests {
         let css = render_styles();
         assert!(
             css.contains(&format!(
-                ".{} {{ fill: var(--arc-node-crate-fill);",
+                ".{} {{ fill: var(--arc-node-package-fill);",
                 CSS.nodes.package_node
             )),
             "got: {css}"
@@ -1905,7 +1908,7 @@ mod tests {
     #[test]
     fn test_css_rules_take_their_colors_from_the_given_palette() {
         let mut other = LATTE.palette;
-        other.nodes.crate_fill = "#123456";
+        other.nodes.package_fill = "#123456";
         other.toolbar.bg = "#654321";
         other.sidebar.text_muted = "#abcdef";
         let css = |palette: &ColorPalette| {
@@ -1995,7 +1998,7 @@ mod tests {
         assert!(css.contains(&format!(".{}", CSS.direction.arc_hitarea)));
 
         // Selection styles
-        assert!(css.contains(&format!(".{}", CSS.node_selection.selected_crate)));
+        assert!(css.contains(&format!(".{}", CSS.node_selection.selected_package)));
         assert!(css.contains(&format!(".{}", CSS.node_selection.selected_module)));
         assert!(css.contains(&format!(".{}", CSS.node_selection.selected_external)));
 
@@ -2023,7 +2026,7 @@ mod tests {
         assert!(css.contains(&format!(".{}", CSS.labels.hidden_by_filter)));
 
         // Color values present
-        assert!(css.contains(LATTE.palette.nodes.crate_fill));
+        assert!(css.contains(LATTE.palette.nodes.package_fill));
         assert!(css.contains(LATTE.palette.direction.downward));
         assert!(css.contains(LATTE.palette.relation.dependency));
     }
@@ -2524,24 +2527,24 @@ mod tests {
     fn test_css_contains_sidebar_node_selected() {
         let css = render_styles();
         assert!(
-            css.contains(".sidebar-node-crate.sidebar-node-selected"),
-            "CSS should contain .sidebar-node-crate.sidebar-node-selected"
+            css.contains(".sidebar-node-package.sidebar-node-selected"),
+            "CSS should contain .sidebar-node-package.sidebar-node-selected"
         );
         assert!(
             css.contains(".sidebar-node-module.sidebar-node-selected"),
             "CSS should contain .sidebar-node-module.sidebar-node-selected"
         );
-        // Crate selected: selection fill + crate stroke as border
-        let crate_rule_idx = css
-            .find(".sidebar-node-crate.sidebar-node-selected")
+        // Package selected: selection fill + package stroke as border
+        let package_rule_idx = css
+            .find(".sidebar-node-package.sidebar-node-selected")
             .unwrap();
-        let crate_section = &css[crate_rule_idx..crate_rule_idx + 200];
+        let package_section = &css[package_rule_idx..package_rule_idx + 200];
         assert!(
-            crate_section.contains(ColorPalette::VARS.node_selection.crate_fill),
+            package_section.contains(ColorPalette::VARS.node_selection.package_fill),
             "Crate selected should use the crate selection fill"
         );
         assert!(
-            crate_section.contains(ColorPalette::VARS.nodes.crate_stroke),
+            package_section.contains(ColorPalette::VARS.nodes.package_stroke),
             "Crate selected should use the crate stroke as border"
         );
         // Module selected: selection fill + module stroke as border
@@ -2563,7 +2566,7 @@ mod tests {
     fn test_css_contains_sidebar_external_node_selected() {
         let css = render_styles();
 
-        // External selected: selection fill + external crate stroke as border
+        // External selected: selection fill + external package stroke as border
         let ext_rule_idx = css
             .find(".sidebar-node-external.sidebar-node-selected")
             .unwrap();
@@ -2573,7 +2576,7 @@ mod tests {
             "External selected should use the external selection fill"
         );
         assert!(
-            ext_section.contains(ColorPalette::VARS.nodes.external_crate_stroke),
+            ext_section.contains(ColorPalette::VARS.nodes.external_package_stroke),
             "External selected should use the external crate stroke as border"
         );
 
@@ -2713,7 +2716,7 @@ mod tests {
         let selectors: Vec<&str> = rules.iter().map(|r| r.selector.as_str()).collect();
         assert!(
             selectors.contains(&format!(".{}", CSS.nodes.package_node).as_str()),
-            "Should have .crate rule"
+            "Should have .package rule"
         );
         assert!(
             selectors.contains(&format!(".{}", CSS.nodes.module).as_str()),

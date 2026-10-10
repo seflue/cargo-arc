@@ -507,11 +507,11 @@ mod tests {
     }
 
     #[test]
-    fn test_render_single_crate() {
+    fn test_render_single_package() {
         let mut ir = LayoutIR::new();
         ir.add_item(ItemKind::Package, "my_crate".into());
         let svg = render(&ir, &RenderConfig::default());
-        assert!(svg.contains(r#"class="crate""#));
+        assert!(svg.contains(r#"class="package""#));
         assert!(svg.contains("my_crate"));
     }
 
@@ -738,32 +738,32 @@ mod tests {
         use crate::model::TestKind;
 
         let mut ir = LayoutIR::new();
-        let crate_id = ir.add_item(ItemKind::Package, "c".into());
+        let package_id = ir.add_item(ItemKind::Package, "c".into());
         let cycle_start = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
-                parent: crate_id,
+                parent: package_id,
             },
             "a".into(),
         );
         let cycle_end = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
-                parent: crate_id,
+                parent: package_id,
             },
             "b".into(),
         );
         let prod_end = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
-                parent: crate_id,
+                parent: package_id,
             },
             "d".into(),
         );
         let test_end = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
-                parent: crate_id,
+                parent: package_id,
             },
             "e".into(),
         );

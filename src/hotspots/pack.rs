@@ -515,7 +515,7 @@ mod tests {
         let lines = children.iter().map(|c| c.lines).sum();
         HotspotNode {
             name: name.to_string(),
-            kind: HotspotKind::Crate,
+            kind: HotspotKind::Package,
             file: PathBuf::from(file),
             lines,
             commits: 0,

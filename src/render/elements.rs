@@ -66,9 +66,9 @@ pub(super) fn render_page_sidebar() -> String {
 /// caller's choice.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct ToolbarFacts {
-    /// The diagram has an external crates section.
+    /// The diagram has an external packages section.
     pub has_externals: bool,
-    /// At least one external crate is a transitive dependency.
+    /// At least one external package is a transitive dependency.
     pub has_transitive_externals: bool,
     /// Some nodes start collapsed (an expand level is set), so the button
     /// offers to expand rather than collapse.
@@ -157,7 +157,7 @@ fn toolbar_content(
     let dropdown_filters = format!(
         concat!(
             "          <label class=\"{}\">\n",
-            "            <span class=\"{} {}\" id=\"crate-dep-checkbox\"></span>\n",
+            "            <span class=\"{} {}\" id=\"package-dep-checkbox\"></span>\n",
             "            Show Crate Dependencies\n",
             "          </label>\n",
             "          <label class=\"{}\">\n",
@@ -199,7 +199,7 @@ fn toolbar_content(
             "        </div>\n",
             "        <div id=\"scope-selector\" class=\"{}\">\n",
             "          <button class=\"{} {}\" data-scope=\"all\">All</button>\n",
-            "          <button class=\"{}\" data-scope=\"crate\">Crate</button>\n",
+            "          <button class=\"{}\" data-scope=\"package\">Crate</button>\n",
             "          <button class=\"{}\" data-scope=\"module\">Module</button>\n",
             "          <button class=\"{}\" data-scope=\"symbol\">Symbol</button>\n",
             "        </div>\n",
@@ -357,20 +357,20 @@ pub(super) fn render_nodes(
             ItemKind::ExternalPackage {
                 is_direct_dependency: true,
                 ..
-            } => CSS.nodes.external_crate,
+            } => CSS.nodes.external_package,
             ItemKind::ExternalPackage {
                 is_direct_dependency: false,
                 ..
             } => CSS.nodes.external_transitive,
         };
         let rx = match &item.kind {
-            ItemKind::Package | ItemKind::ExternalSection => LAYOUT.crate_border_radius,
+            ItemKind::Package | ItemKind::ExternalSection => LAYOUT.package_border_radius,
             ItemKind::Module { .. } | ItemKind::ExternalPackage { .. } => {
                 LAYOUT.module_border_radius
             }
         };
 
-        // data-parent attribute for modules and external crates
+        // data-parent attribute for modules and external packages
         let parent_attr = match &item.kind {
             ItemKind::Module { parent, .. } | ItemKind::ExternalPackage { parent, .. } => {
                 format!(r#" data-parent="{parent}""#)
@@ -669,7 +669,7 @@ fn arc_attrs(edge: &LayoutEdge, from_kind: &ItemKind, to_kind: &ItemKind) -> Arc
     let arc_type_class = if edge.reexport {
         cd.reexport_arc
     } else if is_package_dep {
-        cd.crate_dep_arc
+        cd.package_dep_arc
     } else {
         cd.module_dep_arc
     };
@@ -1084,7 +1084,7 @@ mod tests {
         );
     }
 
-    /// Crate `root` holding `alpha` and `beta` (a cycle between them) and
+    /// Package `root` holding `alpha` and `beta` (a cycle between them) and
     /// `plain` (off any cycle), plus parent `outer` under `root` holding
     /// `inner`, which closes a second cycle with `alpha`.
     struct CycleFixture {
@@ -1219,7 +1219,7 @@ mod tests {
             )),
             "collapsed parent above a cycle should show the marker, got: {outer_label}"
         );
-        // The crate is expanded, so its slot stays empty even though it is above a cycle.
+        // The package is expanded, so its slot stays empty even though it is above a cycle.
         assert!(label_line(&output, "root").contains(&format!(
             "id=\"cycle-marker-{}\" class=\"{}\"></tspan>",
             fx.root, CSS.nodes.cycle_marker
@@ -1258,7 +1258,7 @@ mod tests {
 \u{20}       <button id=\"view-dropdown-btn\" class=\"toolbar-html-btn toolbar-dropdown-btn\">View \u{25be}</button>\n\
 \u{20}       <div class=\"toolbar-dropdown-panel\" style=\"display:none\">\n\
 \u{20}         <label class=\"toolbar-toggle\">\n\
-\u{20}           <span class=\"toolbar-checkbox checked\" id=\"crate-dep-checkbox\"></span>\n\
+\u{20}           <span class=\"toolbar-checkbox checked\" id=\"package-dep-checkbox\"></span>\n\
 \u{20}           Show Crate Dependencies\n\
 \u{20}         </label>\n\
 \u{20}         <label class=\"toolbar-toggle\">\n\
@@ -1304,7 +1304,7 @@ mod tests {
 \u{20}       </div>\n\
 \u{20}       <div id=\"scope-selector\" class=\"toolbar-scope\">\n\
 \u{20}         <button class=\"toolbar-scope-btn active\" data-scope=\"all\">All</button>\n\
-\u{20}         <button class=\"toolbar-scope-btn\" data-scope=\"crate\">Crate</button>\n\
+\u{20}         <button class=\"toolbar-scope-btn\" data-scope=\"package\">Crate</button>\n\
 \u{20}         <button class=\"toolbar-scope-btn\" data-scope=\"module\">Module</button>\n\
 \u{20}         <button class=\"toolbar-scope-btn\" data-scope=\"symbol\">Symbol</button>\n\
 \u{20}       </div>\n\
@@ -1354,7 +1354,7 @@ mod tests {
             "Should have dropdown panel"
         );
         assert!(
-            output.contains(r#"id="crate-dep-checkbox""#),
+            output.contains(r#"id="package-dep-checkbox""#),
             "Should have crate-dep checkbox"
         );
         assert!(
@@ -1595,7 +1595,7 @@ mod tests {
     }
 
     #[test]
-    fn test_crate_dep_edges_have_class() {
+    fn test_package_dep_edges_have_class() {
         let mut ir = LayoutIR::new();
         let c1 = ir.add_item(ItemKind::Package, "crate_a".into());
         let c2 = ir.add_item(ItemKind::Package, "crate_b".into());
@@ -1608,8 +1608,8 @@ mod tests {
 
         let output = render_edges(&positioned_index, &ir, config.row_height, None);
         assert!(
-            output.contains("crate-dep-arc"),
-            "Crate-to-crate edges should have crate-dep-arc class"
+            output.contains("package-dep-arc"),
+            "Crate-to-crate edges should have package-dep-arc class"
         );
     }
 

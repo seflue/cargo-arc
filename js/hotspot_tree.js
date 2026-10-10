@@ -6,7 +6,7 @@
 
 /**
  * The one node with no `parent` field: the synthetic workspace root, or a
- * single crate's own root when the workspace has only one crate.
+ * single package's own root when the workspace has only one package.
  * @param {Record<string, {parent?: string}>} nodes
  * @returns {string}
  */

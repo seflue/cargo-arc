@@ -1,5 +1,5 @@
 // switch_toggles.js - The two toolbar buttons that switch an analysis input
-// (external crates, test code). A click asks the service for the opposite
+// (external packages, test code). A click asks the service for the opposite
 // state; the button stays busy until the service reports a new page (the
 // page then reloads) or an error.
 

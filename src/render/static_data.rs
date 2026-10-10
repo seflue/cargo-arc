@@ -69,7 +69,7 @@ struct NodeData {
     name: String,
     /// Workspace-relative path identifying this node across pages (the
     /// hotspot map keys its own data by the same path); absent for a node
-    /// with no module or manifest target (an external crate or section).
+    /// with no module or manifest target (an external package or section).
     #[serde(skip_serializing_if = "Option::is_none")]
     file: Option<String>,
     parent: Option<String>,
@@ -182,8 +182,8 @@ struct CycleData {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ClusterData {
-    #[serde(rename = "crate")]
-    crate_name: String,
+    #[serde(rename = "package")]
+    package_name: String,
     module_count: usize,
     cycle_count: usize,
     cycles: Vec<Vec<CycleArcData>>,
@@ -206,7 +206,7 @@ fn cycle_arc_data(edge: &CyclicEdgeInfo) -> CycleArcData {
 }
 
 /// Consumer locality of one symbol of a provider. `module` names the common
-/// home for `singleConsumer`/`commonAncestor`; absent for `crateWide`.
+/// home for `singleConsumer`/`commonAncestor`; absent for `packageWide`.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SymbolLocalityData {
@@ -364,7 +364,7 @@ fn generate_static_data(
     for pos in positioned {
         let item = &ir.items[pos.id];
         let node_type = match &item.kind {
-            ItemKind::Package => "crate",
+            ItemKind::Package => "package",
             ItemKind::Module { .. } => "module",
             ItemKind::ExternalSection => "external-section",
             ItemKind::ExternalPackage {
@@ -461,10 +461,10 @@ fn generate_static_data(
         .collect();
 
     let classes: BTreeMap<String, String> = [
-        ("crateNode", CSS.nodes.package_node),
+        ("packageNode", CSS.nodes.package_node),
         ("module", CSS.nodes.module),
         ("externalSection", CSS.nodes.external_section),
-        ("externalCrate", CSS.nodes.external_crate),
+        ("externalPackage", CSS.nodes.external_package),
         ("externalTransitive", CSS.nodes.external_transitive),
         ("label", CSS.nodes.label),
         ("cycleNode", CSS.nodes.cycle_node),
@@ -482,13 +482,13 @@ fn generate_static_data(
         ("cycleArrow", CSS.direction.cycle_arrow),
         ("clusterModeOn", CSS.relation.cluster_mode_on),
         ("arcHitarea", CSS.direction.arc_hitarea),
-        ("crateDepArc", CSS.direction.crate_dep_arc),
+        ("packageDepArc", CSS.direction.package_dep_arc),
         ("moduleDepArc", CSS.direction.module_dep_arc),
         ("reexportArc", CSS.direction.reexport_arc),
         ("virtualArc", CSS.direction.virtual_arc),
         ("virtualArrow", CSS.direction.virtual_arrow),
         ("virtualHitarea", CSS.direction.virtual_hitarea),
-        ("selectedCrate", CSS.node_selection.selected_crate),
+        ("selectedPackage", CSS.node_selection.selected_package),
         ("selectedModule", CSS.node_selection.selected_module),
         ("selectedExternal", CSS.node_selection.selected_external),
         (
@@ -543,7 +543,7 @@ fn generate_static_data(
             (
                 scc.to_string(),
                 ClusterData {
-                    crate_name: c.package_name.clone(),
+                    package_name: c.package_name.clone(),
                     module_count: c.module_count,
                     cycle_count: c.cycle_count,
                     cycles: c
@@ -570,7 +570,7 @@ fn generate_static_data(
                         ConsumerLocality::CommonAncestor(m) => {
                             ("commonAncestor", Some(m.to_string()))
                         }
-                        ConsumerLocality::PackageWide => ("crateWide", None),
+                        ConsumerLocality::PackageWide => ("packageWide", None),
                     };
                     (
                         symbol.clone(),
@@ -969,7 +969,7 @@ mod tests {
 
     // === RenderConfig jump switch in STATIC_DATA ===
 
-    /// A crate item (lib, bin, manifest targets), a module item (one target),
+    /// A package item (lib, bin, manifest targets), a module item (one target),
     /// one edge between them carrying a source location, and the module's
     /// definition of the crossing symbol `Foo`, each already bearing the id
     /// `build_layout` would have assigned it.
@@ -1118,13 +1118,13 @@ mod tests {
             .unwrap();
         let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
 
-        let crate_targets = data["nodes"][c.to_string()]["targets"].as_array().unwrap();
-        let kinds: Vec<&str> = crate_targets
+        let package_targets = data["nodes"][c.to_string()]["targets"].as_array().unwrap();
+        let kinds: Vec<&str> = package_targets
             .iter()
             .map(|t| t["kind"].as_str().unwrap())
             .collect();
         assert_eq!(kinds, vec!["lib", "bin", "manifest"]);
-        let names: Vec<&str> = crate_targets
+        let names: Vec<&str> = package_targets
             .iter()
             .map(|t| t["name"].as_str().unwrap())
             .collect();
@@ -1138,7 +1138,7 @@ mod tests {
         let jump_id_of = |v: &serde_json::Value| -> LocationId {
             serde_json::from_value(v["jump"].clone()).expect("value has a jump id")
         };
-        let json_target_ids: Vec<LocationId> = crate_targets
+        let json_target_ids: Vec<LocationId> = package_targets
             .iter()
             .chain(module_targets.iter())
             .map(jump_id_of)
@@ -1335,9 +1335,9 @@ mod tests {
             .unwrap();
         let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
 
-        // Node 0 (crate)
+        // Node 0 (package)
         let node0 = &data["nodes"]["0"];
-        assert_eq!(node0["type"], "crate");
+        assert_eq!(node0["type"], "package");
         assert_eq!(node0["name"], "test_crate");
         assert!(node0["parent"].is_null());
         assert_eq!(node0["hasChildren"], true);
@@ -1724,8 +1724,8 @@ mod tests {
             "classes should contain highlightedArc"
         );
         assert!(
-            classes.contains_key("selectedCrate"),
-            "classes should contain selectedCrate"
+            classes.contains_key("selectedPackage"),
+            "classes should contain selectedPackage"
         );
         assert!(
             classes.contains_key("selectedExternal"),
@@ -1744,8 +1744,8 @@ mod tests {
             "classes should contain externalSection"
         );
         assert!(
-            classes.contains_key("externalCrate"),
-            "classes should contain externalCrate"
+            classes.contains_key("externalPackage"),
+            "classes should contain externalPackage"
         );
         assert!(
             classes.contains_key("externalTransitive"),
@@ -1801,8 +1801,8 @@ mod tests {
             CSS.relation.highlighted_arc
         );
         assert_eq!(
-            data["classes"]["selectedCrate"],
-            CSS.node_selection.selected_crate
+            data["classes"]["selectedPackage"],
+            CSS.node_selection.selected_package
         );
         assert_eq!(
             data["classes"]["selectedExternal"],
@@ -1817,7 +1817,10 @@ mod tests {
             data["classes"]["externalSection"],
             CSS.nodes.external_section
         );
-        assert_eq!(data["classes"]["externalCrate"], CSS.nodes.external_crate);
+        assert_eq!(
+            data["classes"]["externalPackage"],
+            CSS.nodes.external_package
+        );
         assert_eq!(
             data["classes"]["externalTransitive"],
             CSS.nodes.external_transitive
@@ -2085,7 +2088,7 @@ mod tests {
             },
             "m_c".into(),
         );
-        // Cycle nodes a, b, m_c are in SCC 0; the crate node is not.
+        // Cycle nodes a, b, m_c are in SCC 0; the package node is not.
         ir.items[a].scc_id = Some(0);
         ir.items[b].scc_id = Some(0);
         ir.items[m_c].scc_id = Some(0);
@@ -2161,7 +2164,7 @@ mod tests {
         assert_eq!(data["arcs"]["1-2"]["sccId"], serde_json::json!(0));
         assert_eq!(data["nodes"]["1"]["sccId"], serde_json::json!(0));
 
-        // Non-cycle arc "1-3" and the crate node "0" have no sccId.
+        // Non-cycle arc "1-3" and the package node "0" have no sccId.
         assert!(data["arcs"]["1-3"].get("sccId").is_none());
         assert!(data["nodes"]["0"].get("sccId").is_none());
     }
@@ -2364,7 +2367,7 @@ mod tests {
         let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
 
         let cl = &data["clusters"]["0"];
-        assert_eq!(cl["crate"], "app");
+        assert_eq!(cl["package"], "app");
         assert_eq!(cl["moduleCount"], 2);
         assert_eq!(cl["cycleCount"], 1);
         let cycles = cl["cycles"].as_array().unwrap();
@@ -2521,8 +2524,8 @@ mod tests {
         serde_json::from_str(json_str).expect("valid JSON")
     }
 
-    /// Build a flat `app` crate with the given child modules; returns the graph.
-    fn crate_with(modules: &[&str]) -> ArcGraph {
+    /// Build a flat `app` package with the given child modules; returns the graph.
+    fn package_with(modules: &[&str]) -> ArcGraph {
         let mut graph = ArcGraph::new();
         let package_idx = graph.add_node(package_node("app"));
         for &name in modules {
@@ -2562,7 +2565,7 @@ mod tests {
     #[test]
     fn test_static_data_symbol_locality_single_consumer() {
         // model provides Foo only to user: single consumer, home = user.
-        let mut graph = crate_with(&["model", "user"]);
+        let mut graph = package_with(&["model", "user"]);
         prod_dep_syms(&mut graph, "user", "model", &["Foo"]);
 
         let analysis = graph
@@ -2579,7 +2582,7 @@ mod tests {
         assert_eq!(sl["consumers"], serde_json::json!([user_id.to_string()]));
     }
 
-    /// Add a child module `child` under existing module/crate `parent`.
+    /// Add a child module `child` under existing module/package `parent`.
     fn add_module(graph: &mut ArcGraph, parent: &str, child: &str) {
         let parent_idx = module_idx(graph, parent);
         let package_idx = match &graph[parent_idx] {
@@ -2603,7 +2606,7 @@ mod tests {
     fn test_static_data_symbol_locality_common_ancestor() {
         // parser & reexport (both under analyze) import Foo from model:
         // common ancestor analyze, provider outside -> home = analyze.
-        let mut graph = crate_with(&["model", "analyze"]);
+        let mut graph = package_with(&["model", "analyze"]);
         add_module(&mut graph, "analyze", "parser");
         add_module(&mut graph, "analyze", "reexport");
         prod_dep_syms(&mut graph, "parser", "model", &["Foo"]);
@@ -2629,9 +2632,9 @@ mod tests {
     }
 
     #[test]
-    fn test_static_data_symbol_locality_crate_wide() {
-        // Two top-level consumers, no shared module ancestor -> crate-wide, no home.
-        let mut graph = crate_with(&["model", "user", "admin"]);
+    fn test_static_data_symbol_locality_package_wide() {
+        // Two top-level consumers, no shared module ancestor -> package-wide, no home.
+        let mut graph = package_with(&["model", "user", "admin"]);
         prod_dep_syms(&mut graph, "user", "model", &["Foo"]);
         prod_dep_syms(&mut graph, "admin", "model", &["Foo"]);
 
@@ -2643,7 +2646,7 @@ mod tests {
 
         let data = static_data_json(&ir);
         let sl = &data["symbolLocalities"][id_of("model").to_string()]["Foo"];
-        assert_eq!(sl["locality"], "crateWide");
+        assert_eq!(sl["locality"], "packageWide");
         assert!(sl.get("module").is_none(), "crate-wide has no home");
         assert_eq!(
             symbol_ids(&sl["consumers"]),
@@ -2656,7 +2659,7 @@ mod tests {
     #[test]
     fn test_static_data_symbol_locality_reexport_only_absent() {
         // A pure re-export edge is republication, not use: no locality entry.
-        let mut graph = crate_with(&["model", "user"]);
+        let mut graph = package_with(&["model", "user"]);
         let (user, model) = (module_idx(&graph, "user"), module_idx(&graph, "model"));
         graph.add_edge(
             user,

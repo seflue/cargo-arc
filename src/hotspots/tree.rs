@@ -26,7 +26,7 @@ pub struct HotspotNode {
 #[serde(rename_all = "lowercase")]
 pub enum HotspotKind {
     Workspace,
-    Crate,
+    Package,
     Module,
     File,
 }
@@ -294,7 +294,7 @@ where
 
     let node = HotspotNode {
         name: name.clone(),
-        kind: HotspotKind::Crate,
+        kind: HotspotKind::Package,
         file: relative(workspace_root, manifest),
         lines: lines_sum,
         commits: subtree_commits.len(),
@@ -388,7 +388,7 @@ mod tests {
 
         let tree = build(&graph, Path::new("/ws"), |_| 10, no_commits, 10);
 
-        assert_eq!(tree.root.kind, HotspotKind::Crate);
+        assert_eq!(tree.root.kind, HotspotKind::Package);
         assert_eq!(tree.root.name, "app");
         assert_eq!(tree.root.file, PathBuf::from("app/Cargo.toml"));
         assert_eq!(tree.root.children.len(), 1);

@@ -86,7 +86,7 @@ fn extract_package_names(svg: &str) -> Vec<String> {
     let nodes = data["nodes"].as_object().expect("nodes is object");
     nodes
         .values()
-        .filter(|n| n["type"] == "crate")
+        .filter(|n| n["type"] == "package")
         .map(|n| n["name"].as_str().unwrap().to_string())
         .collect()
 }

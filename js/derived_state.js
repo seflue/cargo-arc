@@ -294,8 +294,8 @@ const DerivedState = {
     const primaryNode = staticData.getNode(selection.id);
     if (primaryNode) {
       const cssClass =
-        primaryNode.type === 'crate'
-          ? 'selectedCrate'
+        primaryNode.type === 'package'
+          ? 'selectedPackage'
           : primaryNode.type === 'external-transitive'
             ? 'selectedExternalTransitive'
             : primaryNode.type === 'external-section' ||

@@ -236,7 +236,7 @@ describe('ArcLogic', () => {
 // fresh module evaluation (`require.cache` cleared first) against its own
 // fixture instead of calling an exported function repeatedly.
 
-// A crate root with one container module (`mod_a`, has children) and one
+// A package root with one container module (`mod_a`, has children) and one
 // leaf inside it (`leaf_b`) - enough to tell "a module with children" apart
 // from a plain leaf. No arcs: the relations panel and highlight pipeline
 // still run, just over an empty set.
@@ -267,7 +267,7 @@ function makeSvgPageStaticData() {
       hasHighlight: 'has-highlight',
       hasPinned: 'has-pinned',
       scrolling: 'scrolling',
-      selectedCrate: 'selectedCrate',
+      selectedPackage: 'selectedPackage',
       selectedModule: 'selectedModule',
       selectedExternal: 'selectedExternal',
       selectedExternalTransitive: 'selectedExternalTransitive',
@@ -286,7 +286,7 @@ function makeSvgPageStaticData() {
       checked: 'checked',
       clusterModeOn: 'cluster-mode-on',
       collapsed: 'collapsed',
-      crateDepArc: 'crate-dep-arc',
+      packageDepArc: 'package-dep-arc',
       moduleDepArc: 'module-dep-arc',
       reexportArc: 'reexport-arc',
       hiddenByFilter: 'hidden-by-filter',
@@ -299,7 +299,7 @@ function makeSvgPageStaticData() {
     expandLevel: null,
     nodes: {
       root: {
-        type: 'crate',
+        type: 'package',
         name: 'root',
         file: 'Cargo.toml',
         parent: null,
@@ -620,7 +620,7 @@ describe.each([
 // loaded with both of an arc's endpoints already visible exercises the same
 // `updateOriginalEdges` branch an expand would land in.
 //
-// Two plain modules under one crate, connected by one arc pre-classed the way
+// Two plain modules under one package, connected by one arc pre-classed the way
 // Rust bakes it (`hidden-by-filter` by default, or `collapsed` when the
 // endpoint starts hidden by expand-level).
 function loadArcVisibilityPage({
@@ -632,7 +632,7 @@ function loadArcVisibilityPage({
 
   const nodes = {
     root: {
-      type: 'crate',
+      type: 'package',
       name: 'root',
       file: 'Cargo.toml',
       parent: null,

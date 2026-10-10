@@ -48,7 +48,7 @@ pub(super) struct PositionedItem {
 }
 
 /// Get the nesting depth for an item kind.
-/// Crate/ExternalSection = 0, Module = its nesting field, `ExternalPackage` = 1.
+/// Package/ExternalSection = 0, Module = its nesting field, `ExternalPackage` = 1.
 #[allow(clippy::cast_possible_truncation)] // nesting u32 fits in usize
 pub(super) fn item_nesting(kind: &ItemKind) -> usize {
     match kind {
@@ -102,7 +102,7 @@ pub(super) fn calculate_positions(
                 ItemKind::ExternalPackage { .. } => 1,
             };
             let height = match &item.kind {
-                ItemKind::Package | ItemKind::ExternalSection => LAYOUT.crate_height,
+                ItemKind::Package | ItemKind::ExternalSection => LAYOUT.package_height,
                 ItemKind::Module { .. } | ItemKind::ExternalPackage { .. } => LAYOUT.module_height,
             };
             PositionedItem {
