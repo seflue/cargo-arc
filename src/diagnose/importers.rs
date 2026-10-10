@@ -41,8 +41,8 @@ pub enum ConsumerLocality<N> {
     SingleConsumer(N),
     /// All consumers share a common module ancestor (the node), provider outside it.
     CommonAncestor(N),
-    /// Spread across the crate, no common module below the crate root.
-    CrateWide,
+    /// Spread across the package, no common module below the package root.
+    PackageWide,
 }
 
 impl ArcGraph {
@@ -131,7 +131,7 @@ impl ArcGraph {
             Some(ancestor) if !self.containment_subtree(ancestor).contains(&provider) => {
                 ConsumerLocality::CommonAncestor(ancestor)
             }
-            _ => ConsumerLocality::CrateWide,
+            _ => ConsumerLocality::PackageWide,
         }
     }
 }
@@ -143,7 +143,7 @@ mod tests {
     use crate::model::{EdgeContext, SourceLocation};
     use crate::test_support::{module_node, package_node};
 
-    /// Flat builder: every module is a direct crate child. Thin wrapper over
+    /// Flat builder: every module is a direct package child. Thin wrapper over
     /// [`nested`]. `deps` are `(from, to, symbols)` production `ModuleDep` edges.
     fn graph_with(
         modules: &[&str],
@@ -153,7 +153,7 @@ mod tests {
     }
 
     /// Build a module tree. `parents[i]` is the index (into the returned vec)
-    /// of module `i`'s parent module, or `usize::MAX` for a direct crate child;
+    /// of module `i`'s parent module, or `usize::MAX` for a direct package child;
     /// a parent must be listed before its children. `deps` are
     /// `(from, to, symbols)` production `ModuleDep` edges.
     fn nested(
@@ -314,8 +314,8 @@ mod tests {
     }
 
     #[test]
-    fn no_common_module_ancestor_is_crate_wide() {
-        // Two top-level consumers share only the crate root.
+    fn no_common_module_ancestor_is_package_wide() {
+        // Two top-level consumers share only the package root.
         let (g, _idx) = nested(
             &["model", "user", "admin"],
             &[usize::MAX, usize::MAX, usize::MAX],
@@ -324,12 +324,12 @@ mod tests {
         let provider = &g.importer_partition().providers[0];
         assert_eq!(
             provider.consumer_groups[0].locality,
-            ConsumerLocality::CrateWide
+            ConsumerLocality::PackageWide
         );
     }
 
     #[test]
-    fn ancestor_containing_provider_is_crate_wide() {
+    fn ancestor_containing_provider_is_package_wide() {
         // core provider; its own children a & b are the consumers.
         let (g, _idx) = nested(
             &["core", "a", "b"],
@@ -339,7 +339,7 @@ mod tests {
         let provider = &g.importer_partition().providers[0];
         assert_eq!(
             provider.consumer_groups[0].locality,
-            ConsumerLocality::CrateWide
+            ConsumerLocality::PackageWide
         );
     }
 }

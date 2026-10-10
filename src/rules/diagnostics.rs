@@ -498,11 +498,11 @@ mod tests {
     use crate::test_support::{module_node, package_node};
     use petgraph::graph::NodeIndex;
 
-    /// Workspace graph with one module per named crate, so that a crate
+    /// Workspace graph with one module per named package, so that a package
     /// pattern and a module pattern both have something to resolve to.
-    fn workspace(crates: &[&str]) -> ArcGraph {
+    fn workspace(packages: &[&str]) -> ArcGraph {
         let mut graph = ArcGraph::new();
-        for name in crates {
+        for name in packages {
             let package_idx = graph.add_node(package_node(name));
             let module = graph.add_node(module_node("service", package_idx));
             graph.add_edge(package_idx, module, EdgeWeight::Contains);
@@ -510,7 +510,7 @@ mod tests {
         graph
     }
 
-    fn add_crate(graph: &mut ArcGraph, name: &str) -> NodeIndex {
+    fn add_package(graph: &mut ArcGraph, name: &str) -> NodeIndex {
         graph.add_node(package_node(name))
     }
 
@@ -689,7 +689,7 @@ mod tests {
     }
 
     #[test]
-    fn an_exhaustive_crate_rule_claims_every_workspace_crate() {
+    fn an_exhaustive_package_rule_claims_every_workspace_package() {
         let graph = workspace(&["domain", "infra", "xtask"]);
         let config = config_of(
             vec![exhaustive_layers_rule(
@@ -703,12 +703,12 @@ mod tests {
     }
 
     #[test]
-    fn an_exhaustive_module_rule_claims_the_modules_of_the_crates_it_touches() {
+    fn an_exhaustive_module_rule_claims_the_modules_of_the_packages_it_touches() {
         let mut graph = ArcGraph::new();
-        let app = add_crate(&mut graph, "app");
+        let app = add_package(&mut graph, "app");
         add_module(&mut graph, "service", app, app);
         add_module(&mut graph, "store", app, app);
-        let xtask = add_crate(&mut graph, "xtask");
+        let xtask = add_package(&mut graph, "xtask");
         add_module(&mut graph, "service", xtask, xtask);
 
         let config = config_of(
@@ -716,15 +716,15 @@ mod tests {
             Diagnostics::default(),
         );
         // Neither `app` nor `xtask` nor `xtask::service` is claimed: the
-        // module pattern says nothing about the crate node or other crates.
+        // module pattern says nothing about the package node or other packages.
         assert_eq!(unlayered(&diagnose(&graph, &config)), ["app::store"]);
     }
 
     #[test]
-    fn an_exhaustive_module_rule_leaves_the_crate_node_alone() {
+    fn an_exhaustive_module_rule_leaves_the_package_node_alone() {
         // The assertion the repo's own arc-rules.toml rests on.
         let mut graph = ArcGraph::new();
-        let app = add_crate(&mut graph, "app");
+        let app = add_package(&mut graph, "app");
         add_module(&mut graph, "service", app, app);
 
         let config = config_of(
@@ -737,12 +737,12 @@ mod tests {
     #[test]
     fn an_exhaustive_mixed_rule_makes_both_demands() {
         let mut graph = ArcGraph::new();
-        let app = add_crate(&mut graph, "app");
+        let app = add_package(&mut graph, "app");
         add_module(&mut graph, "service", app, app);
         add_module(&mut graph, "store", app, app);
-        let infra = add_crate(&mut graph, "infra");
+        let infra = add_package(&mut graph, "infra");
         add_module(&mut graph, "db", infra, infra);
-        let xtask = add_crate(&mut graph, "xtask");
+        let xtask = add_package(&mut graph, "xtask");
         add_module(&mut graph, "tool", xtask, xtask);
 
         let config = config_of(
@@ -752,7 +752,7 @@ mod tests {
             )],
             Diagnostics::default(),
         );
-        // The crate pattern `infra` claims all three crates, so `app` and
+        // The package pattern `infra` claims all three packages, so `app` and
         // `xtask` are gaps; the module pattern claims `app`'s modules, so
         // `app::store` is a gap too, folded into `app` by the topmost filter.
         assert_eq!(unlayered(&diagnose(&graph, &config)), ["app", "xtask"]);
@@ -761,7 +761,7 @@ mod tests {
     #[test]
     fn only_the_topmost_unsorted_module_is_reported() {
         let mut graph = ArcGraph::new();
-        let app = add_crate(&mut graph, "app");
+        let app = add_package(&mut graph, "app");
         let service = add_module(&mut graph, "service", app, app);
         add_module(&mut graph, "inner", app, service);
         add_module(&mut graph, "store", app, app);
@@ -778,7 +778,7 @@ mod tests {
         // A position holding several patterns is the shape this repo's own
         // rules file uses, so all of them have to count, not just the first.
         let mut graph = ArcGraph::new();
-        let app = add_crate(&mut graph, "app");
+        let app = add_package(&mut graph, "app");
         add_module(&mut graph, "service", app, app);
         add_module(&mut graph, "store", app, app);
         add_module(&mut graph, "report", app, app);
@@ -804,7 +804,7 @@ mod tests {
         // `app::*` names the direct children only, so `inner` is unsorted with
         // a sorted parent: it is topmost itself and reported in its own right.
         let mut graph = ArcGraph::new();
-        let app = add_crate(&mut graph, "app");
+        let app = add_package(&mut graph, "app");
         let service = add_module(&mut graph, "service", app, app);
         add_module(&mut graph, "inner", app, service);
         add_module(&mut graph, "store", app, app);
@@ -821,7 +821,7 @@ mod tests {
 
     #[test]
     fn an_exhaustive_module_pattern_that_matches_nothing_claims_nothing() {
-        // A misspelled module pattern touches no crate, so the module claim has
+        // A misspelled module pattern touches no package, so the module claim has
         // nothing to range over and `unmatched-pattern` carries the report alone.
         let graph = workspace(&["domain", "infra"]);
         let config = config_of(
@@ -834,8 +834,8 @@ mod tests {
     }
 
     #[test]
-    fn an_exhaustive_crate_pattern_that_matches_nothing_still_claims_every_crate() {
-        // The other half of the asymmetry: a crate pattern claims the workspace
+    fn an_exhaustive_package_pattern_that_matches_nothing_still_claims_every_package() {
+        // The other half of the asymmetry: a package pattern claims the workspace
         // whether or not it resolves, so the typo costs two diagnostics.
         let graph = workspace(&["domain", "infra"]);
         let config = config_of(
@@ -853,7 +853,7 @@ mod tests {
     #[test]
     fn an_excepted_node_takes_its_modules_with_it() {
         let mut graph = ArcGraph::new();
-        let app = add_crate(&mut graph, "app");
+        let app = add_package(&mut graph, "app");
         let service = add_module(&mut graph, "service", app, app);
         add_module(&mut graph, "inner", app, service);
         add_module(&mut graph, "store", app, app);
@@ -938,7 +938,7 @@ mod tests {
     }
 
     #[test]
-    fn without_a_layers_rule_no_crate_is_unlayered() {
+    fn without_a_layers_rule_no_package_is_unlayered() {
         // A config that never claims a layering leaves no gap: silence there
         // is its own statement, not an omission.
         let graph = workspace(&["domain", "xtask"]);
@@ -1058,10 +1058,10 @@ mod tests {
 
     // ===== contradictory-allow =====
 
-    /// Crate `core` holding `a`, which holds `deep`, beside `b` and `error`.
+    /// Package `core` holding `a`, which holds `deep`, beside `b` and `error`.
     fn nested_graph() -> ArcGraph {
         let mut graph = ArcGraph::new();
-        let core = add_crate(&mut graph, "core");
+        let core = add_package(&mut graph, "core");
         let a = add_module(&mut graph, "a", core, core);
         add_module(&mut graph, "deep", core, a);
         add_module(&mut graph, "b", core, core);
@@ -1247,7 +1247,7 @@ mod tests {
         assert_eq!(levels, [DiagnosticLevel::Deny]);
     }
 
-    /// The ordinary positions already name every crate in the fixture, so the
+    /// The ordinary positions already name every package in the fixture, so the
     /// catch-all catches nothing: the same class of dead configuration as a
     /// pattern that matches no module, reported under the same diagnostic name.
     #[test]

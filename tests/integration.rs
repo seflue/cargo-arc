@@ -80,8 +80,8 @@ fn parse_static_data(svg: &str) -> Value {
     serde_json::from_str(json_str).expect("STATIC_DATA should be valid JSON")
 }
 
-/// Extract crate names that appear as nodes in the SVG `STATIC_DATA`.
-fn extract_crate_names(svg: &str) -> Vec<String> {
+/// Extract package names that appear as nodes in the SVG `STATIC_DATA`.
+fn extract_package_names(svg: &str) -> Vec<String> {
     let data = parse_static_data(svg);
     let nodes = data["nodes"].as_object().expect("nodes is object");
     nodes
@@ -150,7 +150,7 @@ fn extract_arc_symbols(svg: &str) -> std::collections::HashMap<(String, String),
 }
 
 #[test]
-fn test_multi_crate_fixture() {
+fn test_multi_package_fixture() {
     let (temp, cmd) = fixture_args("multi_crate", false);
 
     let result = run(cmd);
@@ -161,7 +161,7 @@ fn test_multi_crate_fixture() {
     // Valid SVG structure
     assert!(svg.contains("<svg"), "should have svg element");
 
-    // Both crates visible
+    // Both packages visible
     assert!(svg.contains("crate_a"), "should show crate_a");
     assert!(svg.contains("crate_b"), "should show crate_b");
 
@@ -210,10 +210,10 @@ fn test_custom_target_paths_fixture() {
     );
 }
 
-/// Crates whose root file declares no submodules carry no `Contains` edge and
-/// therefore reach the layout only through a production crate dependency.
+/// Packages whose root file declares no submodules carry no `Contains` edge and
+/// therefore reach the layout only through a production package dependency.
 #[test]
-fn test_single_file_crates_stay_in_layout() {
+fn test_single_file_packages_stay_in_layout() {
     let (temp, cmd) = fixture_args("single_file_crates", false);
 
     let result = run(cmd);
@@ -221,12 +221,12 @@ fn test_single_file_crates_stay_in_layout() {
 
     let svg = std::fs::read_to_string(temp.path()).unwrap();
     let nodes = extract_node_names(&svg);
-    let crates = extract_crate_names(&svg);
+    let packages = extract_package_names(&svg);
 
     for expected in ["app-core", "app-leaf", "app-tool"] {
         assert!(
-            crates.iter().any(|c| c == expected),
-            "should show '{expected}', found: {crates:?}"
+            packages.iter().any(|c| c == expected),
+            "should show '{expected}', found: {packages:?}"
         );
     }
 
@@ -251,13 +251,13 @@ fn test_leaf_binary_stays_in_layout() {
     assert!(result.is_ok(), "run() should succeed: {result:?}");
 
     let svg = std::fs::read_to_string(temp.path()).unwrap();
-    let crates = extract_crate_names(&svg);
+    let packages = extract_package_names(&svg);
     assert!(
-        crates.iter().any(|c| c == "zebra-app"),
-        "should show 'zebra-app', found: {crates:?}"
+        packages.iter().any(|c| c == "zebra-app"),
+        "should show 'zebra-app', found: {packages:?}"
     );
 
-    // The crate-level arcs are suppressed by the module-level ones they duplicate.
+    // The package-level arcs are suppressed by the module-level ones they duplicate.
     let arcs = resolve_arc_names(&extract_arcs(&svg), &extract_node_names(&svg));
     assert!(
         arcs.iter()
@@ -385,7 +385,7 @@ fn test_entry_point_imports() {
     // Valid SVG structure
     assert!(svg.contains("<svg"), "should have svg element");
 
-    // Both crates visible
+    // Both packages visible
     assert!(svg.contains("crate_a"), "should show crate_a");
     assert!(svg.contains("crate_b"), "should show crate_b");
 
@@ -402,10 +402,10 @@ fn test_entry_point_imports() {
     );
 }
 
-/// Dev-dependency crate appears as phantom node without --include-tests.
+/// Dev-dependency package appears as phantom node without --include-tests.
 ///
 /// Fixture topology (`dev_dep_sorting)`:
-///   foundation  — production crate with modules (handler, service, models, common, `test_support`)
+///   foundation  — production package with modules (handler, service, models, common, `test_support`)
 ///   consumer    — only dev-depends on foundation + `test_helper`
 ///   `test_helper` — standalone test utility, no production deps
 ///
@@ -416,7 +416,7 @@ fn test_entry_point_imports() {
 ///   - Only foundation with its internal module structure should remain
 ///
 /// With --include-tests:
-///   - All three crates visible
+///   - All three packages visible
 ///   - consumer→foundation and `consumer→test_helper` arcs present
 ///   - `foundation→test_helper` arc present
 #[test]
@@ -575,33 +575,33 @@ fn debug_lists_the_uses_of_an_edge_with_category() {
 }
 
 #[test]
-fn test_dev_dep_crate_hidden_without_include_tests() {
+fn test_dev_dep_package_hidden_without_include_tests() {
     let (temp, cmd) = fixture_args("dev_dep_sorting", false);
     let result = run(cmd);
     assert!(result.is_ok(), "run() should succeed: {result:?}");
 
     let svg = std::fs::read_to_string(temp.path()).unwrap();
-    let crates = extract_crate_names(&svg);
+    let packages = extract_package_names(&svg);
     let nodes = extract_node_names(&svg);
     let arcs = extract_arcs(&svg);
     let named_arcs = resolve_arc_names(&arcs, &nodes);
 
     // test_helper has no production consumers → should be hidden
     assert!(
-        !crates.contains(&"test_helper".to_string()),
-        "test_helper should NOT appear without --include-tests (phantom node), but found crates: {crates:?}"
+        !packages.contains(&"test_helper".to_string()),
+        "test_helper should NOT appear without --include-tests (phantom node), but found packages: {packages:?}"
     );
 
     // shared_lib is only reachable via test_helper's prod dep → transitive test infra → should be hidden
     assert!(
-        !crates.contains(&"shared_lib".to_string()),
-        "shared_lib should NOT appear without --include-tests (transitive dev-dep), but found crates: {crates:?}"
+        !packages.contains(&"shared_lib".to_string()),
+        "shared_lib should NOT appear without --include-tests (transitive dev-dep), but found packages: {packages:?}"
     );
 
     // consumer only has dev-deps → should be hidden too
     assert!(
-        !crates.contains(&"consumer".to_string()),
-        "consumer should NOT appear without --include-tests (only dev-deps), but found crates: {crates:?}"
+        !packages.contains(&"consumer".to_string()),
+        "consumer should NOT appear without --include-tests (only dev-deps), but found packages: {packages:?}"
     );
 
     // No test-context arcs should exist
@@ -616,7 +616,7 @@ fn test_dev_dep_crate_hidden_without_include_tests() {
 
     // foundation should still be visible with its production modules
     assert!(
-        crates.contains(&"foundation".to_string()),
+        packages.contains(&"foundation".to_string()),
         "foundation should remain visible (production crate)"
     );
     assert!(
@@ -638,35 +638,35 @@ fn test_dev_dep_crate_hidden_without_include_tests() {
 }
 
 #[test]
-fn test_dev_dep_crate_visible_with_include_tests() {
+fn test_dev_dep_package_visible_with_include_tests() {
     let (temp, cmd) = fixture_args("dev_dep_sorting", true);
     let result = run(cmd);
     assert!(result.is_ok(), "run() should succeed: {result:?}");
 
     let svg = std::fs::read_to_string(temp.path()).unwrap();
-    let crates = extract_crate_names(&svg);
+    let packages = extract_package_names(&svg);
 
-    // All four crates should be visible with --include-tests
+    // All four packages should be visible with --include-tests
     assert!(
-        crates.contains(&"foundation".to_string()),
+        packages.contains(&"foundation".to_string()),
         "foundation should be visible with --include-tests"
     );
     assert!(
-        crates.contains(&"consumer".to_string()),
+        packages.contains(&"consumer".to_string()),
         "consumer should be visible with --include-tests"
     );
     assert!(
-        crates.contains(&"test_helper".to_string()),
+        packages.contains(&"test_helper".to_string()),
         "test_helper should be visible with --include-tests"
     );
     assert!(
-        crates.contains(&"shared_lib".to_string()),
+        packages.contains(&"shared_lib".to_string()),
         "shared_lib should be visible with --include-tests"
     );
 }
 
 /// Success criterion: a default run's `STATIC_DATA` carries neither `targets`
-/// (crate/module jump targets) nor `jump` (usage-location jump ids).
+/// (package/module jump targets) nor `jump` (usage-location jump ids).
 #[test]
 fn default_static_data_carries_no_jump_fields() {
     let (temp, cmd) = fixture_args("multi_crate", false);
@@ -838,7 +838,7 @@ fn cargo_arc_hotspots(
     )
 }
 
-/// `--no-volatility` greys the whole map: sizes are still drawn (the crate
+/// `--no-volatility` greys the whole map: sizes are still drawn (the package
 /// and file nodes are all present), but nothing carries a rank and the
 /// hotspot list is empty. No error either way.
 #[test]
@@ -994,7 +994,7 @@ fn test_check_with_violations() {
     );
 }
 
-/// A location prints relative to the workspace root, not to the crate that
+/// A location prints relative to the workspace root, not to the package that
 /// owns the file: it opens from wherever the manifest given to `-m` sits.
 #[test]
 fn locations_are_relative_to_the_workspace_root() {
@@ -1030,11 +1030,11 @@ fn locations_stay_workspace_relative_for_a_member_manifest() {
     );
 }
 
-/// Two violations from different crates whose files sit at the same path
-/// under their own crate root must not print the same location: the anchor
+/// Two violations from different packages whose files sit at the same path
+/// under their own package root must not print the same location: the anchor
 /// has to be the workspace root, or the two would be indistinguishable.
 #[test]
-fn locations_from_different_crates_do_not_collide() {
+fn locations_from_different_packages_do_not_collide() {
     let (_dir, manifest) = writable_fixture_copy("arch_violation_workspace");
     let root = manifest.parent().unwrap();
 
@@ -1063,8 +1063,8 @@ fn locations_from_different_crates_do_not_collide() {
     )
     .unwrap();
 
-    // Both crate roots gain the same forbidden import on the same line, so a
-    // path relative to the crate itself would read identically for both.
+    // Both package roots gain the same forbidden import on the same line, so a
+    // path relative to the package itself would read identically for both.
     for member in ["application", "domain"] {
         let lib = root.join(member).join("src/lib.rs");
         let existing = std::fs::read_to_string(&lib).unwrap();
@@ -1098,9 +1098,9 @@ fn locations_from_different_crates_do_not_collide() {
 }
 
 /// The diagram side of the same anchor: a `UsageLocation.file` in
-/// `STATIC_DATA` carries the crate prefix too.
+/// `STATIC_DATA` carries the package prefix too.
 #[test]
-fn static_data_usage_locations_carry_the_crate_prefix() {
+fn static_data_usage_locations_carry_the_package_prefix() {
     let (temp, cmd) = fixture_args("arch_violation_workspace", false);
 
     let result = run(cmd);
@@ -1124,7 +1124,7 @@ fn static_data_usage_locations_carry_the_crate_prefix() {
 
 /// Runs `check` on the transitive fixture (`a → b → c → d`, one dependency
 /// each) with one of its rules files. None of them positions `c`, so every
-/// dependency between two positioned crates runs through an unpositioned one.
+/// dependency between two positioned packages runs through an unpositioned one.
 fn transitive_layers_check(rules_file: &str) -> (i32, Vec<String>) {
     let rules = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
         "tests/fixtures/transitive_layers_workspace/{rules_file}"
@@ -1144,7 +1144,7 @@ fn layers_hold_when_the_order_follows_the_code() {
 /// Both orders put `d` above `b`, and `b` reaches `d` through `c`. The pair is
 /// reported, not the edges that carry it.
 #[test]
-fn layers_report_a_dependency_running_through_an_unpositioned_crate() {
+fn layers_report_a_dependency_running_through_an_unpositioned_package() {
     for rules_file in ["layers-d-a-b.toml", "layers-a-d-b.toml"] {
         let (code, edges) = transitive_layers_check(rules_file);
         assert_eq!(code, 1, "{rules_file} puts d above b, edges: {edges:?}");
@@ -1366,7 +1366,7 @@ fn test_check_gives_the_configuration_its_own_status_line() {
 [config]
 version = 1
 
-# multi_crate has no cycles, so the rule comes out clean. Its allow entry names
+# multi_package has no cycles, so the rule comes out clean. Its allow entry names
 # a module that does not exist, and that gap is what fails the run.
 [[rules]]
 type = "no-cycles"
@@ -1939,7 +1939,7 @@ scope = "domain::**"
 
 // ===== Phase 6: configuration diagnostics =====
 
-/// Rules file naming only two of the fixture's three crates as layers, so
+/// Rules file naming only two of the fixture's three packages as layers, so
 /// `domain` is left unsorted. `exhaustive` writes `exhaustive = true` into the
 /// rule; `diagnostics` is appended verbatim.
 fn layers_without_domain(dir: &tempfile::TempDir, exhaustive: bool, diagnostics: &str) -> PathBuf {
@@ -1970,7 +1970,7 @@ direction = "top-down"
 }
 
 #[test]
-fn test_check_reports_a_crate_an_exhaustive_rule_leaves_unsorted() {
+fn test_check_reports_a_package_an_exhaustive_rule_leaves_unsorted() {
     let dir = tempfile::tempdir().unwrap();
     let rules_path = layers_without_domain(&dir, true, "");
     let rules_arg = format!("--rules={}", rules_path.display());
@@ -1988,7 +1988,7 @@ fn test_check_reports_a_crate_an_exhaustive_rule_leaves_unsorted() {
 }
 
 #[test]
-fn test_check_says_nothing_about_a_crate_when_the_rule_is_not_exhaustive() {
+fn test_check_says_nothing_about_a_package_when_the_rule_is_not_exhaustive() {
     let dir = tempfile::tempdir().unwrap();
     let rules_path = layers_without_domain(&dir, false, "");
     let rules_arg = format!("--rules={}", rules_path.display());
@@ -2003,7 +2003,7 @@ fn test_check_says_nothing_about_a_crate_when_the_rule_is_not_exhaustive() {
 }
 
 #[test]
-fn test_check_stays_quiet_about_a_crate_on_the_except_list() {
+fn test_check_stays_quiet_about_a_package_on_the_except_list() {
     let dir = tempfile::tempdir().unwrap();
     let rules_path = layers_without_domain(
         &dir,
@@ -2142,7 +2142,7 @@ allow = [
 
 #[test]
 fn test_check_denies_a_rule_pattern_that_matches_nothing() {
-    // `crate::` is not a prefix a rules file can use: it names no crate of the
+    // `crate::` is not a prefix a rules file can use: it names no package of the
     // workspace, so the rule reaches nothing and the run must not stay green.
     let dir = tempfile::tempdir().unwrap();
     let rules_path = dir.path().join("arc-rules.toml");
@@ -2591,10 +2591,10 @@ fn an_edge_made_only_of_reexports_keeps_every_name_with_include_reexports() {
 /// `consumer::db` holds a private `use provider::store::Handle;`, and its
 /// child `consumer::db::address` names the symbol through it with
 /// `use super::Handle;`. The edge belongs to `provider::store`, the module
-/// that defines `Handle`, the same rule already applied within one crate.
-/// Today it lands on the importer's own crate instead.
+/// that defines `Handle`, the same rule already applied within one package.
+/// Today it lands on the importer's own package instead.
 #[test]
-fn cross_crate_private_use_edge_attaches_to_the_definer() {
+fn cross_package_private_use_edge_attaches_to_the_definer() {
     let (temp, cmd) = fixture_args("cross_crate_reexport", false);
 
     let result = run(cmd);
@@ -2633,14 +2633,14 @@ fn cross_crate_private_use_edge_attaches_to_the_definer() {
     );
 }
 
-/// `net` holds a private `use external_lib::Client;` to a crate outside the
+/// `net` holds a private `use external_lib::Client;` to a package outside the
 /// workspace, and its child `net::endpoint` names the symbol through it with
 /// `use super::Client;`. Re-export collection resolves without external
-/// crates and cannot place `external_lib::Client`, so the reference is
+/// packages and cannot place `external_lib::Client`, so the reference is
 /// neither the ancestor's binding nor the descendant's own: it produces no
 /// edge. Today it stays attached to `net`, the ancestor.
 #[test]
-fn private_use_of_an_external_crate_gives_the_descendant_no_edge() {
+fn private_use_of_an_external_package_gives_the_descendant_no_edge() {
     let (temp, cmd) = fixture_args("private_use_external_crate", false);
 
     let result = run(cmd);

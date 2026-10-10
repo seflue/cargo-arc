@@ -1,4 +1,4 @@
-//! The HTTP transport for the jump service, and the only module in the crate
+//! The HTTP transport for the jump service, and the only module in the package
 //! that imports `tiny_http` or starts a thread. Requests are answered one
 //! after the other on the calling thread; the editor's stdin lines, the
 //! recomputation and each page's event stream get a thread of their own.
@@ -420,14 +420,14 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    /// Two crates, each contributing only its manifest target: `a` at id 0,
+    /// Two packages, each contributing only its manifest target: `a` at id 0,
     /// `b` at id 1. The hotspot map gets its own, distinguishable SVG, as
     /// `run_ui` would render from the same analysis run; both pages share
     /// the table. The service never recomputes.
     fn two_entry_service() -> JumpService<'static> {
         let mut ir = LayoutIR::new();
-        ir.add_item(ItemKind::Crate, "a".into());
-        ir.add_item(ItemKind::Crate, "b".into());
+        ir.add_item(ItemKind::Package, "a".into());
+        ir.add_item(ItemKind::Package, "b".into());
         let svg = render(&ir, &RenderConfig::default());
 
         let mut table = JumpTable::new();

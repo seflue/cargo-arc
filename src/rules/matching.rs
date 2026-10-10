@@ -45,7 +45,7 @@ impl<'graph> PatternIndex<'graph> {
     /// Resolve a module path pattern to matching graph nodes.
     ///
     /// Supported patterns:
-    /// - `"domain"` — the crate and every module in it
+    /// - `"domain"` — the package and every module in it
     /// - `"domain::service"` — that module and every module in it
     /// - `"domain::*"` — the direct children of `domain`
     /// - `"domain::**"` — every module in `domain`, not `domain` itself
@@ -252,7 +252,7 @@ impl<'entries, 'graph> ResolvedAllows<'entries, 'graph> {
         match to {
             ResolvedTarget::Nodes(nodes) => nodes.contains(&target),
             ResolvedTarget::Ancestor(levels) => self.ancestor_of(source, *levels) == Some(target),
-            ResolvedTarget::Crate => self.crate_of(source) == Some(target),
+            ResolvedTarget::Crate => self.package_of(source) == Some(target),
             ResolvedTarget::Children => self.parent_of.get(&target) == Some(&source),
             ResolvedTarget::Descendants => {
                 let mut node = target;
@@ -273,7 +273,7 @@ impl<'entries, 'graph> ResolvedAllows<'entries, 'graph> {
             ResolvedTarget::Ancestor(levels) => {
                 self.ancestor_of(source, *levels).into_iter().collect()
             }
-            ResolvedTarget::Crate => self.crate_of(source).into_iter().collect(),
+            ResolvedTarget::Crate => self.package_of(source).into_iter().collect(),
             ResolvedTarget::Children => self.children_of.get(&source).cloned().unwrap_or_default(),
             ResolvedTarget::Descendants => {
                 let mut found = Vec::new();
@@ -297,9 +297,9 @@ impl<'entries, 'graph> ResolvedAllows<'entries, 'graph> {
         Some(node)
     }
 
-    /// The crate root of a module; `None` for a crate node, which `crate`
+    /// The package root of a module; `None` for a package node, which `crate`
     /// does not point back at.
-    fn crate_of(&self, source: NodeIndex) -> Option<NodeIndex> {
+    fn package_of(&self, source: NodeIndex) -> Option<NodeIndex> {
         self.graph[source]
             .is_module()
             .then(|| self.graph.owning_package(source))
@@ -339,9 +339,9 @@ mod tests {
     use crate::rules::test_support::allow_edge;
     use crate::test_support::{module_node, package_node};
 
-    /// Build a test graph with a crate "test" and modules beneath it.
+    /// Build a test graph with a package "test" and modules beneath it.
     /// Returns (graph, `package_idx`).
-    fn test_crate_graph() -> (ArcGraph, NodeIndex) {
+    fn test_package_graph() -> (ArcGraph, NodeIndex) {
         let mut graph = ArcGraph::new();
         let package_idx = graph.add_node(package_node("test"));
         (graph, package_idx)
@@ -360,7 +360,7 @@ mod tests {
 
     #[test]
     fn test_resolve_exact_module() {
-        let (mut graph, package_idx) = test_crate_graph();
+        let (mut graph, package_idx) = test_package_graph();
         let service = add_module(&mut graph, "service", package_idx, package_idx);
         let inner = add_module(&mut graph, "inner", package_idx, service);
         let leaf = add_module(&mut graph, "leaf", package_idx, inner);
@@ -374,8 +374,8 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_crate() {
-        let (mut graph, package_idx) = test_crate_graph();
+    fn test_resolve_package() {
+        let (mut graph, package_idx) = test_package_graph();
         let mod_a = add_module(&mut graph, "a", package_idx, package_idx);
         let mod_b = add_module(&mut graph, "b", package_idx, package_idx);
         let mut result = PatternIndex::build(&graph).resolve("test");
@@ -387,7 +387,7 @@ mod tests {
 
     #[test]
     fn test_resolve_children() {
-        let (mut graph, package_idx) = test_crate_graph();
+        let (mut graph, package_idx) = test_package_graph();
         let mod_a = add_module(&mut graph, "a", package_idx, package_idx);
         let mod_b = add_module(&mut graph, "b", package_idx, package_idx);
         // Grandchild should NOT be included with *
@@ -401,7 +401,7 @@ mod tests {
 
     #[test]
     fn test_resolve_descendants() {
-        let (mut graph, package_idx) = test_crate_graph();
+        let (mut graph, package_idx) = test_package_graph();
         let mod_a = add_module(&mut graph, "a", package_idx, package_idx);
         let mod_b = add_module(&mut graph, "b", package_idx, package_idx);
         let grandchild = add_module(&mut graph, "deep", package_idx, mod_a);
@@ -414,17 +414,17 @@ mod tests {
 
     #[test]
     fn test_resolve_nonexistent() {
-        let (graph, _) = test_crate_graph();
+        let (graph, _) = test_package_graph();
         let result = PatternIndex::build(&graph).resolve("nonexistent");
         assert!(result.is_empty());
     }
 
     /// A relative `to` that leads off the containment tree matches nothing:
-    /// no node stands two levels above a top-level module, the crate node
-    /// has no crate above it, and a leaf has no children.
+    /// no node stands two levels above a top-level module, the package node
+    /// has no package above it, and a leaf has no children.
     #[test]
     fn test_a_relative_target_leading_nowhere_covers_nothing() {
-        let (mut graph, package_idx) = test_crate_graph();
+        let (mut graph, package_idx) = test_package_graph();
         let top = add_module(&mut graph, "top", package_idx, package_idx);
         let leaf = add_module(&mut graph, "leaf", package_idx, top);
         let index = PatternIndex::build(&graph);
@@ -452,18 +452,18 @@ mod tests {
         );
     }
 
-    fn add_crate(graph: &mut ArcGraph, name: &str) -> NodeIndex {
+    fn add_package(graph: &mut ArcGraph, name: &str) -> NodeIndex {
         graph.add_node(package_node(name))
     }
 
     #[test]
-    fn test_resolve_wildcard_crate_suffix_brings_modules() {
+    fn test_resolve_wildcard_package_suffix_brings_modules() {
         let mut graph = ArcGraph::new();
-        let orders = add_crate(&mut graph, "app_orders");
+        let orders = add_package(&mut graph, "app_orders");
         let orders_service = add_module(&mut graph, "service", orders, orders);
-        let orders_v2 = add_crate(&mut graph, "app_orders_v2");
+        let orders_v2 = add_package(&mut graph, "app_orders_v2");
         let orders_v2_service = add_module(&mut graph, "service", orders_v2, orders_v2);
-        let billing = add_crate(&mut graph, "app_billing");
+        let billing = add_package(&mut graph, "app_billing");
 
         let mut result = PatternIndex::build(&graph).resolve("app_orders*");
         result.sort_unstable();
@@ -476,8 +476,8 @@ mod tests {
     #[test]
     fn test_resolve_wildcard_infix_matches_middle_of_name() {
         let mut graph = ArcGraph::new();
-        let orders = add_crate(&mut graph, "app_orders");
-        let billing = add_crate(&mut graph, "app_billing");
+        let orders = add_package(&mut graph, "app_orders");
+        let billing = add_package(&mut graph, "app_billing");
 
         let result = PatternIndex::build(&graph).resolve("*orders*");
         assert_eq!(result, vec![orders]);
@@ -487,7 +487,7 @@ mod tests {
     #[test]
     fn test_resolve_wildcard_does_not_cross_segment_boundary() {
         let mut graph = ArcGraph::new();
-        let core = add_crate(&mut graph, "core");
+        let core = add_package(&mut graph, "core");
         let service = add_module(&mut graph, "service", core, core);
         let _inner = add_module(&mut graph, "inner", core, service);
 
@@ -498,11 +498,11 @@ mod tests {
     #[test]
     fn test_resolve_wildcard_base_before_descendants() {
         let mut graph = ArcGraph::new();
-        let orders = add_crate(&mut graph, "app_orders");
+        let orders = add_package(&mut graph, "app_orders");
         let orders_service = add_module(&mut graph, "service", orders, orders);
-        let billing = add_crate(&mut graph, "app_billing");
+        let billing = add_package(&mut graph, "app_billing");
         let billing_service = add_module(&mut graph, "service", billing, billing);
-        let infra = add_crate(&mut graph, "infra_db");
+        let infra = add_package(&mut graph, "infra_db");
 
         let mut result = PatternIndex::build(&graph).resolve("app_*::**");
         result.sort_unstable();
@@ -516,7 +516,7 @@ mod tests {
 
     #[test]
     fn test_resolve_wildcard_no_match_is_empty() {
-        let (graph, _) = test_crate_graph();
+        let (graph, _) = test_package_graph();
         let result = PatternIndex::build(&graph).resolve("no_such_*");
         assert!(result.is_empty());
     }
@@ -524,9 +524,9 @@ mod tests {
     #[test]
     fn test_resolve_bare_double_star_matches_all_non_external() {
         let mut graph = ArcGraph::new();
-        let orders = add_crate(&mut graph, "app_orders");
+        let orders = add_package(&mut graph, "app_orders");
         let orders_service = add_module(&mut graph, "service", orders, orders);
-        let billing = add_crate(&mut graph, "app_billing");
+        let billing = add_package(&mut graph, "app_billing");
 
         let mut result = PatternIndex::build(&graph).resolve("**");
         result.sort_unstable();

@@ -31,7 +31,7 @@ pub struct CyclicEdge {
 
 /// One strongly-connected cluster of mutually cyclic modules.
 pub struct Cluster {
-    /// Owning crate node (module cycles are always intra-crate).
+    /// Owning package node (module cycles are always intra-package).
     pub package_idx: NodeIndex,
     /// All SCC member modules.
     pub nodes: Vec<NodeIndex>,
@@ -408,7 +408,7 @@ mod tests {
     use crate::model::{EdgeContext, SourceLocation};
     use crate::test_support::{module_node, package_node};
 
-    /// Single-crate graph: `modules` by name, production `ModuleDep` edges
+    /// Single-package graph: `modules` by name, production `ModuleDep` edges
     /// `(from, to, ref_count)`. Returns the graph and the module node indices.
     fn graph_with(modules: &[&str], deps: &[(usize, usize, usize)]) -> (ArcGraph, Vec<NodeIndex>) {
         let mut g = ArcGraph::new();
@@ -704,7 +704,7 @@ mod tests {
 
     #[test]
     fn fewer_symbols_wins_without_a_parent_child_relation() {
-        // a <-> b, siblings under the crate (no Contains edge between them).
+        // a <-> b, siblings under the package (no Contains edge between them).
         // With no module-tree prior to apply, the symbol-count tie-break still
         // decides: a->b carries 2 symbols, b->a carries 5.
         let (g, idx) = graph_with(&["a", "b"], &[(0, 1, 2), (1, 0, 5)]);

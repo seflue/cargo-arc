@@ -52,7 +52,7 @@ pub(super) struct PositionedItem {
 #[allow(clippy::cast_possible_truncation)] // nesting u32 fits in usize
 pub(super) fn item_nesting(kind: &ItemKind) -> usize {
     match kind {
-        ItemKind::Crate | ItemKind::ExternalSection => 0,
+        ItemKind::Package | ItemKind::ExternalSection => 0,
         ItemKind::Module { nesting, .. } => *nesting as usize,
         ItemKind::ExternalPackage { .. } => 1,
     }
@@ -97,12 +97,12 @@ pub(super) fn calculate_positions(
         .enumerate()
         .map(|(index, item)| {
             let nesting = match &item.kind {
-                ItemKind::Crate | ItemKind::ExternalSection => 0,
+                ItemKind::Package | ItemKind::ExternalSection => 0,
                 ItemKind::Module { nesting, .. } => *nesting,
                 ItemKind::ExternalPackage { .. } => 1,
             };
             let height = match &item.kind {
-                ItemKind::Crate | ItemKind::ExternalSection => LAYOUT.crate_height,
+                ItemKind::Package | ItemKind::ExternalSection => LAYOUT.crate_height,
                 ItemKind::Module { .. } | ItemKind::ExternalPackage { .. } => LAYOUT.module_height,
             };
             PositionedItem {
@@ -163,7 +163,7 @@ mod tests {
     #[test]
     fn test_box_width_from_longest_label() {
         let mut ir = LayoutIR::new();
-        ir.add_item(ItemKind::Crate, "cli".into());
+        ir.add_item(ItemKind::Package, "cli".into());
         ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -180,7 +180,7 @@ mod tests {
     #[test]
     fn test_box_width_leaves_a_gap_between_longest_label_and_toggle() {
         let mut ir = LayoutIR::new();
-        ir.add_item(ItemKind::Crate, "a_long_crate_name".into());
+        ir.add_item(ItemKind::Package, "a_long_crate_name".into());
 
         let width = calculate_box_width(&ir);
         let text_end = LAYOUT.text_padding_x + calculate_text_width("a_long_crate_name");
@@ -195,7 +195,7 @@ mod tests {
     #[test]
     fn test_canvas_width_includes_max_arc() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let c = ir.add_item(ItemKind::Package, "c".into());
         // 10 Module für große Arc-Distanz
         for i in 0..10 {
             ir.add_item(
@@ -230,7 +230,7 @@ mod tests {
     #[allow(clippy::float_cmp)] // every box copies the one box_width, so identity is the claim
     fn test_all_boxes_same_width() {
         let mut ir = LayoutIR::new();
-        ir.add_item(ItemKind::Crate, "short".into());
+        ir.add_item(ItemKind::Package, "short".into());
         ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -262,7 +262,7 @@ mod tests {
                 width: 100.0,
                 height: 24.0,
                 label: "crate".into(),
-                kind: ItemKind::Crate,
+                kind: ItemKind::Package,
             },
             PositionedItem {
                 id: 1,
@@ -327,7 +327,7 @@ mod tests {
             width: 100.0,
             height: 24.0,
             label: "crate".into(),
-            kind: ItemKind::Crate,
+            kind: ItemKind::Package,
         }];
 
         let visible: HashSet<NodeId> = HashSet::new();
@@ -338,7 +338,7 @@ mod tests {
 
     #[test]
     fn test_item_nesting_variants() {
-        assert_eq!(item_nesting(&ItemKind::Crate), 0);
+        assert_eq!(item_nesting(&ItemKind::Package), 0);
         assert_eq!(item_nesting(&ItemKind::ExternalSection), 0);
         assert_eq!(
             item_nesting(&ItemKind::Module {
@@ -366,7 +366,7 @@ mod tests {
     #[test]
     fn test_canvas_includes_toolbar_height() {
         let mut ir = LayoutIR::new();
-        ir.add_item(ItemKind::Crate, "test".into());
+        ir.add_item(ItemKind::Package, "test".into());
         let config = RenderConfig::default();
         let box_width = calculate_box_width(&ir);
         let positioned = calculate_positions(&ir, &config, box_width);

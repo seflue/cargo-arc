@@ -324,7 +324,7 @@ impl CycleMarks {
 fn item_parent(kind: &ItemKind) -> Option<NodeId> {
     match kind {
         ItemKind::Module { parent, .. } | ItemKind::ExternalPackage { parent, .. } => Some(*parent),
-        ItemKind::Crate | ItemKind::ExternalSection => None,
+        ItemKind::Package | ItemKind::ExternalSection => None,
     }
 }
 
@@ -351,7 +351,7 @@ pub(super) fn render_nodes(
             (item.x, item.y)
         };
         let class = match &item.kind {
-            ItemKind::Crate => CSS.nodes.package_node,
+            ItemKind::Package => CSS.nodes.package_node,
             ItemKind::Module { .. } => CSS.nodes.module,
             ItemKind::ExternalSection => CSS.nodes.external_section,
             ItemKind::ExternalPackage {
@@ -364,7 +364,7 @@ pub(super) fn render_nodes(
             } => CSS.nodes.external_transitive,
         };
         let rx = match &item.kind {
-            ItemKind::Crate | ItemKind::ExternalSection => LAYOUT.crate_border_radius,
+            ItemKind::Package | ItemKind::ExternalSection => LAYOUT.crate_border_radius,
             ItemKind::Module { .. } | ItemKind::ExternalPackage { .. } => {
                 LAYOUT.module_border_radius
             }
@@ -375,7 +375,7 @@ pub(super) fn render_nodes(
             ItemKind::Module { parent, .. } | ItemKind::ExternalPackage { parent, .. } => {
                 format!(r#" data-parent="{parent}""#)
             }
-            ItemKind::Crate | ItemKind::ExternalSection => String::new(),
+            ItemKind::Package | ItemKind::ExternalSection => String::new(),
         };
 
         // data-has-children attribute for parents
@@ -474,7 +474,7 @@ fn child_count(positioned: &[PositionedItem], parent_id: NodeId) -> usize {
             ItemKind::Module { parent, .. } | ItemKind::ExternalPackage { parent, .. } => {
                 *parent == parent_id
             }
-            ItemKind::Crate | ItemKind::ExternalSection => false,
+            ItemKind::Package | ItemKind::ExternalSection => false,
         })
         .count()
 }
@@ -660,8 +660,8 @@ fn arc_attrs(edge: &LayoutEdge, from_kind: &ItemKind, to_kind: &ItemKind) -> Arc
     let is_package_dep = matches!(
         (from_kind, to_kind),
         (
-            ItemKind::Crate | ItemKind::ExternalPackage { .. },
-            ItemKind::Crate | ItemKind::ExternalPackage { .. }
+            ItemKind::Package | ItemKind::ExternalPackage { .. },
+            ItemKind::Package | ItemKind::ExternalPackage { .. }
         )
     );
     // Exactly one arc-type class per arc, and the JS arc filter selects on it,
@@ -843,7 +843,7 @@ mod tests {
     #[test]
     fn test_tree_lines() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "parent".into());
+        let c = ir.add_item(ItemKind::Package, "parent".into());
         ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -862,7 +862,7 @@ mod tests {
     #[test]
     fn test_render_tree_lines_have_data_attributes() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "parent".into());
+        let c = ir.add_item(ItemKind::Package, "parent".into());
         ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -888,7 +888,7 @@ mod tests {
     #[test]
     fn test_nodes_have_ids() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let c = ir.add_item(ItemKind::Package, "c".into());
         ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -917,7 +917,7 @@ mod tests {
     #[test]
     fn test_render_has_parent_data_attribute() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "parent_crate".into());
+        let c = ir.add_item(ItemKind::Package, "parent_crate".into());
         ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -948,7 +948,7 @@ mod tests {
     #[test]
     fn test_render_has_children_attribute() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "parent_crate".into());
+        let c = ir.add_item(ItemKind::Package, "parent_crate".into());
         ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -979,7 +979,7 @@ mod tests {
     #[test]
     fn test_render_collapse_toggle_present() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "parent".into());
+        let c = ir.add_item(ItemKind::Package, "parent".into());
         ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -1014,7 +1014,7 @@ mod tests {
     #[test]
     fn test_render_child_count_tspan() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "parent".into());
+        let c = ir.add_item(ItemKind::Package, "parent".into());
         ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -1049,7 +1049,7 @@ mod tests {
     #[test]
     fn test_render_collapsed_parent_counts_children_and_offers_expand() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "parent".into());
+        let c = ir.add_item(ItemKind::Package, "parent".into());
         for child in ["first", "second"] {
             ir.add_item(
                 ItemKind::Module {
@@ -1099,7 +1099,7 @@ mod tests {
 
     fn cycle_fixture() -> CycleFixture {
         let mut ir = LayoutIR::new();
-        let root = ir.add_item(ItemKind::Crate, "root".into());
+        let root = ir.add_item(ItemKind::Package, "root".into());
         let module = |ir: &mut LayoutIR, name: &str, nesting: u32, parent: NodeId| {
             ir.add_item(ItemKind::Module { nesting, parent }, name.into())
         };
@@ -1502,7 +1502,7 @@ mod tests {
     #[test]
     fn test_edges_have_data_attributes() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let c = ir.add_item(ItemKind::Package, "c".into());
         let a = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -1543,7 +1543,7 @@ mod tests {
     #[test]
     fn test_arc_has_hitarea_and_visible_path() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let c = ir.add_item(ItemKind::Package, "c".into());
         let a = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -1597,8 +1597,8 @@ mod tests {
     #[test]
     fn test_crate_dep_edges_have_class() {
         let mut ir = LayoutIR::new();
-        let c1 = ir.add_item(ItemKind::Crate, "crate_a".into());
-        let c2 = ir.add_item(ItemKind::Crate, "crate_b".into());
+        let c1 = ir.add_item(ItemKind::Package, "crate_a".into());
+        let c2 = ir.add_item(ItemKind::Package, "crate_b".into());
         ir.edges
             .push(LayoutEdge::new(c1, c2, EdgeContext::production()));
         let config = RenderConfig::default();
@@ -1616,7 +1616,7 @@ mod tests {
     #[test]
     fn test_reexport_edges_have_teal_class_default_hidden() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let c = ir.add_item(ItemKind::Package, "c".into());
         let a = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -1672,7 +1672,7 @@ mod tests {
     #[test]
     fn test_edge_to_collapsed_endpoint_keeps_its_own_classes() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let c = ir.add_item(ItemKind::Package, "c".into());
         let a = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -1722,7 +1722,7 @@ mod tests {
     #[test]
     fn test_edge_to_collapsed_endpoint_keeps_hidden_by_filter_too() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let c = ir.add_item(ItemKind::Package, "c".into());
         let a = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -1785,7 +1785,7 @@ mod tests {
     #[test]
     fn test_data_cycle_ids_attribute() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let c = ir.add_item(ItemKind::Package, "c".into());
         let a = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -1872,7 +1872,7 @@ mod tests {
         // mode off, they fall back to the normal directional dependency color.
         // cycle-arc is an additive marker gated by the container state.
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let c = ir.add_item(ItemKind::Package, "c".into());
         let a = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -1915,7 +1915,7 @@ mod tests {
     #[test]
     fn test_multi_cycle_ids_attribute() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let c = ir.add_item(ItemKind::Package, "c".into());
         let a = ir.add_item(
             ItemKind::Module {
                 nesting: 1,

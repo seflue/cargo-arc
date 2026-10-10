@@ -227,13 +227,13 @@ pub enum Direction {
 
 /// Where an `allow` entry's `to` points: a module path pattern of its own, or
 /// a place relative to the node `from` matched. A relative target that
-/// resolves to nothing (the crate node has no `super`) matches nothing.
+/// resolves to nothing (the package node has no `super`) matches nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AllowTarget {
     Path(String),
     /// `super`, `super::super`, ...: the ancestor that many levels up.
     Ancestor(NonZeroUsize),
-    /// `crate`: the root of the crate `from` lies in.
+    /// `crate`: the root of the package `from` lies in.
     Crate,
     /// `self::*`: the direct children of `from`.
     Children,
@@ -435,7 +435,7 @@ pub struct NoCyclesRule {
 /// positions do not match.
 ///
 /// Several patterns per ordinary rank exist because a rank is not always one
-/// crate. Written either as a bare pattern (`"domain"`) or as a list
+/// package. Written either as a bare pattern (`"domain"`) or as a list
 /// (`["adapter_a", "adapter_b"]`); listing equals separately would make the
 /// list order assert a ranking between them. The catch-all is written as the
 /// bare string `"*"` or the single-element list `["*"]`.
@@ -1267,7 +1267,7 @@ mod tests {
         );
     }
 
-    /// Crates of equal rank share one entry. Without this they need one entry
+    /// Packages of equal rank share one entry. Without this they need one entry
     /// each, and the list is ordered, so the order asserts a ranking the
     /// architecture does not have.
     #[test]

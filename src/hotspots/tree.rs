@@ -1,4 +1,4 @@
-//! Workspace/crate/module/file hierarchy with sizes, commits and ranks.
+//! Workspace/package/module/file hierarchy with sizes, commits and ranks.
 
 use crate::graph::{ArcGraph, EdgeWeight, Node};
 use crate::volatility::{Commit, VolatilityConfig};
@@ -7,8 +7,8 @@ use petgraph::visit::EdgeRef;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-/// A workspace, crate, container module or file in the hotspot tree,
-/// identified by its workspace-relative file (a crate by its `Cargo.toml`).
+/// A workspace, package, container module or file in the hotspot tree,
+/// identified by its workspace-relative file (a package by its `Cargo.toml`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HotspotNode {
     pub name: String,
@@ -94,7 +94,7 @@ pub(crate) fn sorted_children(node: &HotspotNode) -> Vec<&HotspotNode> {
     children
 }
 
-/// Build the hotspot tree from `graph`'s crates, modules and `Contains` edges,
+/// Build the hotspot tree from `graph`'s packages, modules and `Contains` edges,
 /// asking `lines` and `commits` per absolute file path; `n` caps `hotspots`.
 pub fn build<L, C>(
     graph: &ArcGraph,
@@ -107,19 +107,19 @@ where
     L: Fn(&Path) -> usize,
     C: Fn(&Path) -> BTreeSet<Commit>,
 {
-    let crate_indices: Vec<_> = graph
+    let package_indices: Vec<_> = graph
         .node_indices()
         .filter(|&idx| graph[idx].is_package())
         .collect();
 
-    let root = if let [only] = crate_indices[..] {
-        build_crate(graph, only, workspace_root, &lines, &commits).0
+    let root = if let [only] = package_indices[..] {
+        build_package(graph, only, workspace_root, &lines, &commits).0
     } else {
-        let crates: Vec<(HotspotNode, BTreeSet<Commit>)> = crate_indices
+        let packages: Vec<(HotspotNode, BTreeSet<Commit>)> = package_indices
             .iter()
-            .map(|&idx| build_crate(graph, idx, workspace_root, &lines, &commits))
+            .map(|&idx| build_package(graph, idx, workspace_root, &lines, &commits))
             .collect();
-        build_workspace_root(crates, workspace_root)
+        build_workspace_root(packages, workspace_root)
     };
 
     let max_file_commits = max_file_commits(&root);
@@ -165,17 +165,17 @@ fn rank_leaves(root: &HotspotNode, n: usize) -> Vec<HotspotNode> {
     leaves.into_iter().cloned().collect()
 }
 
-/// Wrap `crates` in a workspace root, sorted by name, whose commits are the
+/// Wrap `packages` in a workspace root, sorted by name, whose commits are the
 /// union of theirs.
 fn build_workspace_root(
-    mut crates: Vec<(HotspotNode, BTreeSet<Commit>)>,
+    mut packages: Vec<(HotspotNode, BTreeSet<Commit>)>,
     workspace_root: &Path,
 ) -> HotspotNode {
-    crates.sort_by(|(a, _), (b, _)| a.name.cmp(&b.name));
+    packages.sort_by(|(a, _), (b, _)| a.name.cmp(&b.name));
 
-    let lines_sum: usize = crates.iter().map(|(c, _)| c.lines).sum();
+    let lines_sum: usize = packages.iter().map(|(c, _)| c.lines).sum();
     let mut all_commits = BTreeSet::new();
-    let children: Vec<HotspotNode> = crates
+    let children: Vec<HotspotNode> = packages
         .into_iter()
         .map(|(node, commits)| {
             all_commits.extend(commits);
@@ -245,7 +245,7 @@ fn leaf(
     }
 }
 
-fn build_crate<L, C>(
+fn build_package<L, C>(
     graph: &ArcGraph,
     idx: NodeIndex,
     workspace_root: &Path,
@@ -375,7 +375,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     #[test]
-    fn a_crate_root_target_is_a_leaf_in_the_crate() {
+    fn a_package_root_target_is_a_leaf_in_the_package() {
         let mut graph = ArcGraph::new();
         graph.add_node(package_node_with_targets(
             "app",
@@ -486,7 +486,7 @@ mod tests {
     }
 
     #[test]
-    fn several_crates_get_a_workspace_root_a_single_crate_does_not() {
+    fn several_packages_get_a_workspace_root_a_single_package_does_not() {
         let mut graph = ArcGraph::new();
         graph.add_node(package_node_with_targets(
             "app",

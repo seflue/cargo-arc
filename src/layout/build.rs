@@ -19,7 +19,7 @@ pub type NodeId = usize;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ItemKind {
-    Crate,
+    Package,
     Module {
         nesting: u32,
         parent: NodeId,
@@ -143,7 +143,7 @@ pub struct CyclicEdgeInfo {
 
 #[derive(Debug)]
 pub struct ClusterInfo {
-    pub crate_name: String,
+    pub package_name: String,
     pub module_count: usize,
     pub cycle_count: usize,
     /// Cycles as ordered edge blocks: `cycles[i]` holds one cycle's edges in
@@ -190,8 +190,8 @@ impl LayoutIR {
 /// Build `LayoutIR` from graph and cycle information, alongside the `JumpTable`
 /// holding every item's jump targets.
 /// Converts graph nodes to `LayoutItems` with proper nesting and edges with cycle markers,
-/// and attaches each cyclic SCC's cluster (crate name, size, and cycles).
-/// `PackageDep` edges are skipped when `ModuleDep` edges exist between the same crates.
+/// and attaches each cyclic SCC's cluster (package name, size, and cycles).
+/// `PackageDep` edges are skipped when `ModuleDep` edges exist between the same packages.
 /// `reexports` must match the subgraph `analysis` was computed from.
 /// Target ids are assigned in item order, so runs on the same graph are deterministic.
 /// Target names are the paths relative to `workspace_root`; without a root, or
@@ -208,21 +208,21 @@ pub(crate) fn build_layout(
     let edge_to_cycles = &analysis.edge_cycles;
     let parent_map = graph.parent_map();
 
-    // 3-way partition: workspace crates, modules, external crates
-    let mut crate_indices = Vec::new();
+    // 3-way partition: workspace packages, modules, external packages
+    let mut package_indices = Vec::new();
     let mut module_indices = Vec::new();
     let mut external_indices = Vec::new();
     for idx in graph.node_indices() {
         match &graph[idx] {
-            Node::Package { .. } => crate_indices.push(idx),
+            Node::Package { .. } => package_indices.push(idx),
             Node::Module { .. } => module_indices.push(idx),
             Node::ExternalPackage { .. } => external_indices.push(idx),
         }
     }
 
-    let crate_indices = graph.order_crates(&crate_indices);
+    let package_indices = graph.order_packages(&package_indices);
     let reachable = graph.production_reachable();
-    let ordered = graph.order_items(&crate_indices, &module_indices, &reachable);
+    let ordered = graph.order_items(&package_indices, &module_indices, &reachable);
     let mut node_map = populate_items(
         &mut ir,
         graph,
@@ -244,7 +244,7 @@ pub(crate) fn build_layout(
         );
     }
 
-    let suppressed = graph.suppressed_crate_pairs();
+    let suppressed = graph.suppressed_package_pairs();
     populate_edges(
         &mut ir,
         graph,
@@ -271,9 +271,9 @@ fn target_name(path: &Path, workspace_root: Option<&Path>) -> String {
         .to_string()
 }
 
-/// Insert a crate's (or external crate's) jump targets: its lib root, then
+/// Insert a package's (or external package's) jump targets: its lib root, then
 /// each bin root, then its manifest, all at line 1.
-fn crate_targets(
+fn package_targets(
     table: &mut JumpTable,
     target_roots: &TargetRoots,
     manifest: &Path,
@@ -387,7 +387,7 @@ fn attach_symbol_localities(
         let mut symbols: BTreeMap<String, SymbolLocality> = BTreeMap::new();
         for group in provider.consumer_groups {
             // Translate the common-home node into layout space; a node absent
-            // from the layout degrades to `CrateWide` rather than dropping the
+            // from the layout degrades to `PackageWide` rather than dropping the
             // symbol.
             let locality = match group.locality {
                 ConsumerLocality::SingleConsumer(n) => node_map
@@ -398,9 +398,9 @@ fn attach_symbol_localities(
                     .get(&m)
                     .copied()
                     .map(ConsumerLocality::CommonAncestor),
-                ConsumerLocality::CrateWide => Some(ConsumerLocality::CrateWide),
+                ConsumerLocality::PackageWide => Some(ConsumerLocality::PackageWide),
             }
-            .unwrap_or(ConsumerLocality::CrateWide);
+            .unwrap_or(ConsumerLocality::PackageWide);
             let consumers: Vec<NodeId> = group
                 .consumers
                 .iter()
@@ -440,7 +440,7 @@ fn attach_clusters(
         ir.clusters.insert(
             scc_id,
             ClusterInfo {
-                crate_name: graph[cluster.package_idx].name().to_string(),
+                package_name: graph[cluster.package_idx].name().to_string(),
                 module_count: cluster.nodes.len(),
                 cycle_count: cluster.cycles.len(),
                 cycles,
@@ -508,10 +508,10 @@ fn populate_items(
                 manifest,
                 ..
             } => (
-                ItemKind::Crate,
+                ItemKind::Package,
                 name.clone(),
                 None,
-                crate_targets(table, target_roots, manifest, workspace_root),
+                package_targets(table, target_roots, manifest, workspace_root),
             ),
             Node::Module { name, file, .. } => {
                 let nesting = nesting_depth(idx, parent_map);
@@ -538,7 +538,7 @@ fn populate_items(
         ir.items[layout_id].source_path = source_path;
         ir.items[layout_id].scc_id = node_scc.get(&idx).copied();
         // Under the key `STATIC_DATA` writes for the node. Workspace nodes
-        // only: an external crate's files lie outside the root the editor's
+        // only: an external package's files lie outside the root the editor's
         // paths are resolved against.
         table.insert_node_files(
             &layout_id.to_string(),
@@ -549,7 +549,7 @@ fn populate_items(
     node_map
 }
 
-/// Add external crate nodes to the layout IR, preceded by a section header.
+/// Add external package nodes to the layout IR, preceded by a section header.
 /// Sorted topologically by inter-external `PackageDep` edges so that dependencies appear
 /// below their dependents, eliminating upward edges.  Incoming edge count (descending)
 /// serves as tiebreaker to preserve the "most-used first" aesthetic where topology
@@ -623,7 +623,7 @@ fn populate_external_items(
             );
             ir.items[layout_id].version = Some(version.clone());
             ir.items[layout_id].targets =
-                crate_targets(table, target_roots, manifest, workspace_root);
+                package_targets(table, target_roots, manifest, workspace_root);
             node_map.insert(idx, layout_id);
         }
     }
@@ -742,7 +742,7 @@ impl<N> IncrementEdge for DiGraph<N, usize> {
 }
 
 /// Add aggregated test-context edges to an ordering graph built from
-/// production edges (`order_crates`, `build_sibling_dep_graph`), trying each
+/// production edges (`order_packages`, `build_sibling_dep_graph`), trying each
 /// in turn by aggregated weight descending, then by (source, target) name.
 /// An edge is added only if the target cannot already reach the source:
 /// otherwise it would reverse a production edge between the same pair, or
@@ -876,83 +876,85 @@ impl ArcGraph {
             .collect()
     }
 
-    /// Re-sort crates by aggregated inter-crate dependencies (`PackageDep` + `ModuleDep`).
-    /// Builds a crate-level dependency graph and runs stable toposort with alphabetical tie-breaking.
-    fn order_crates(&self, crate_indices: &[NodeIndex]) -> Vec<NodeIndex> {
-        let mut crate_graph: DiGraph<NodeIndex, usize> = DiGraph::new();
-        let mut sorted_crates = crate_indices.to_vec();
-        sorted_crates.sort_unstable_by_key(|n| n.index());
-        let orig_to_local: HashMap<NodeIndex, petgraph::graph::NodeIndex> = sorted_crates
+    /// Re-sort packages by aggregated inter-package dependencies (`PackageDep` + `ModuleDep`).
+    /// Builds a package-level dependency graph and runs stable toposort with alphabetical tie-breaking.
+    fn order_packages(&self, package_indices: &[NodeIndex]) -> Vec<NodeIndex> {
+        let mut package_graph: DiGraph<NodeIndex, usize> = DiGraph::new();
+        let mut sorted_packages = package_indices.to_vec();
+        sorted_packages.sort_unstable_by_key(|n| n.index());
+        let orig_to_local: HashMap<NodeIndex, petgraph::graph::NodeIndex> = sorted_packages
             .iter()
-            .map(|&ci| (ci, crate_graph.add_node(ci)))
+            .map(|&ci| (ci, package_graph.add_node(ci)))
             .collect();
 
         for edge in self.edge_references() {
             if edge.weight().is_production() {
-                let src_crate = self.owning_package(edge.source());
-                let dst_crate = self.owning_package(edge.target());
-                if src_crate != dst_crate
-                    && let (Some(&sc), Some(&dc)) =
-                        (orig_to_local.get(&src_crate), orig_to_local.get(&dst_crate))
+                let src_package = self.owning_package(edge.source());
+                let dst_package = self.owning_package(edge.target());
+                if src_package != dst_package
+                    && let (Some(&sc), Some(&dc)) = (
+                        orig_to_local.get(&src_package),
+                        orig_to_local.get(&dst_package),
+                    )
                 {
-                    crate_graph.increment_edge(sc, dc);
+                    package_graph.increment_edge(sc, dc);
                 }
             }
         }
 
-        // Test-only dependency crates sort below their testers, not above
-        // with the root crates.
+        // Test-only dependency packages sort below their testers, not above
+        // with the root packages.
         let mut test_edges: HashMap<(NodeIndex, NodeIndex), usize> = HashMap::new();
         for edge in self.edge_references() {
             if edge.weight().is_test_package_dep() {
-                let src_crate = self.owning_package(edge.source());
-                let dst_crate = self.owning_package(edge.target());
-                if src_crate != dst_crate
-                    && orig_to_local.contains_key(&src_crate)
-                    && orig_to_local.contains_key(&dst_crate)
+                let src_package = self.owning_package(edge.source());
+                let dst_package = self.owning_package(edge.target());
+                if src_package != dst_package
+                    && orig_to_local.contains_key(&src_package)
+                    && orig_to_local.contains_key(&dst_package)
                 {
-                    *test_edges.entry((src_crate, dst_crate)).or_insert(0) += 1;
+                    *test_edges.entry((src_package, dst_package)).or_insert(0) += 1;
                 }
             }
         }
-        add_soft_test_edges(&mut crate_graph, self, &orig_to_local, test_edges);
+        add_soft_test_edges(&mut package_graph, self, &orig_to_local, test_edges);
 
-        stable_toposort(&crate_graph, |idx| self[idx].name().to_owned())
+        stable_toposort(&package_graph, |idx| self[idx].name().to_owned())
     }
 
-    /// Find crate pairs where `ModuleDep` edges exist (so `PackageDep` can be suppressed).
+    /// Find package pairs where `ModuleDep` edges exist (so `PackageDep` can be suppressed).
     /// Entry-point imports create `ModuleDep` edges where one or both endpoints
     /// are `Node::Package` (not just `Node::Module`), so we handle all combinations.
-    fn suppressed_crate_pairs(&self) -> HashSet<(NodeIndex, NodeIndex)> {
+    fn suppressed_package_pairs(&self) -> HashSet<(NodeIndex, NodeIndex)> {
         self.edge_references()
             .filter_map(|edge| match edge.weight() {
                 EdgeWeight::ModuleDep { .. } => {
-                    let src_crate = self.owning_package(edge.source());
-                    let dst_crate = self.owning_package(edge.target());
-                    (src_crate != dst_crate).then_some((src_crate, dst_crate))
+                    let src_package = self.owning_package(edge.source());
+                    let dst_package = self.owning_package(edge.target());
+                    (src_package != dst_package).then_some((src_package, dst_package))
                 }
                 _ => None,
             })
             .collect()
     }
 
-    /// Group modules under reachable crates and collect orphans.
+    /// Group modules under reachable packages and collect orphans.
     fn order_items(
         &self,
-        crate_indices: &[NodeIndex],
+        package_indices: &[NodeIndex],
         module_indices: &[NodeIndex],
         reachable: &HashSet<NodeIndex>,
     ) -> Vec<NodeIndex> {
         let mut ordered = Vec::new();
         let mut added = HashSet::new();
-        for &ci in crate_indices {
+        for &ci in package_indices {
             if !reachable.contains(&ci) {
                 continue;
             }
             ordered.push(ci);
             ordered.extend(self.ordered_children(ci, module_indices, &mut added));
         }
-        // Orphans: modules not claimed by any reachable crate
+        // Orphans: modules not claimed by any reachable package
         for &mi in module_indices {
             if !added.contains(&mi) {
                 ordered.push(mi);
@@ -1002,11 +1004,11 @@ mod tests {
             }
         }
 
-        /// Add a crate with child modules and Contains edges.
-        /// Path is auto-generated as "/<`crate_name`>".
-        fn crate_with_modules(&mut self, crate_name: &str, module_names: &[&str]) -> &mut Self {
-            let package_idx = self.graph.add_node(package_node(crate_name));
-            self.names.insert(crate_name.to_string(), package_idx);
+        /// Add a package with child modules and Contains edges.
+        /// Path is auto-generated as "/<`package_name`>".
+        fn package_with_modules(&mut self, package_name: &str, module_names: &[&str]) -> &mut Self {
+            let package_idx = self.graph.add_node(package_node(package_name));
+            self.names.insert(package_name.to_string(), package_idx);
             for &mod_name in module_names {
                 let mod_idx = self.graph.add_node(module_node(mod_name, package_idx));
                 self.names.insert(mod_name.to_string(), mod_idx);
@@ -1016,14 +1018,14 @@ mod tests {
             self
         }
 
-        /// Add a module not attached to any crate (uses `NodeIndex::new(0)` as `package_idx`).
+        /// Add a module not attached to any package (uses `NodeIndex::new(0)` as `package_idx`).
         fn orphan_module(&mut self, name: &str) -> &mut Self {
             let idx = self.graph.add_node(module_node(name, NodeIndex::new(0)));
             self.names.insert(name.to_string(), idx);
             self
         }
 
-        /// Add a nested module under an existing parent (module or crate), with Contains edge.
+        /// Add a nested module under an existing parent (module or package), with Contains edge.
         fn nested_module(&mut self, parent: &str, child: &str) -> &mut Self {
             let parent_idx = self.names[parent];
             let package_idx = match &self.graph[parent_idx] {
@@ -1037,8 +1039,8 @@ mod tests {
             self
         }
 
-        /// Add a crate with target roots and a manifest, no child modules.
-        fn crate_with_targets(
+        /// Add a package with target roots and a manifest, no child modules.
+        fn package_with_targets(
             &mut self,
             name: &str,
             target_roots: TargetRoots,
@@ -1051,7 +1053,7 @@ mod tests {
             self
         }
 
-        /// Add a module with a declaring file under an existing parent (module or crate).
+        /// Add a module with a declaring file under an existing parent (module or package).
         fn module_with_file(&mut self, parent: &str, name: &str, file: &str) -> &mut Self {
             let parent_idx = self.names[parent];
             let package_idx = match &self.graph[parent_idx] {
@@ -1133,7 +1135,7 @@ mod tests {
         }
 
         /// Add a production `PackageDep` edge.
-        fn crate_dep(&mut self, from: &str, to: &str) -> &mut Self {
+        fn package_dep(&mut self, from: &str, to: &str) -> &mut Self {
             let src = self.names[from];
             let dst = self.names[to];
             self.graph.add_edge(
@@ -1147,7 +1149,7 @@ mod tests {
         }
 
         /// Add a test `PackageDep` edge.
-        fn test_crate_dep(&mut self, from: &str, to: &str, kind: TestKind) -> &mut Self {
+        fn test_package_dep(&mut self, from: &str, to: &str, kind: TestKind) -> &mut Self {
             let src = self.names[from];
             let dst = self.names[to];
             self.graph.add_edge(
@@ -1160,8 +1162,8 @@ mod tests {
             self
         }
 
-        /// Add an external crate node.
-        fn external_crate(&mut self, name: &str, version: &str) -> &mut Self {
+        /// Add an external package node.
+        fn external_package(&mut self, name: &str, version: &str) -> &mut Self {
             let idx = self.graph.add_node(Node::ExternalPackage {
                 name: name.to_string(),
                 version: version.to_string(),
@@ -1313,14 +1315,14 @@ mod tests {
     // === Build Layout Tests ===
 
     #[test]
-    fn test_build_layout_single_crate() {
+    fn test_build_layout_single_package() {
         let mut b = TestGraphBuilder::new();
-        b.crate_with_modules("my_crate", &["mod_a", "mod_b"])
+        b.package_with_modules("my_crate", &["mod_a", "mod_b"])
             .prod_dep("mod_a", "mod_b");
         let (graph, _) = b.build();
         let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
 
-        // Should have 3 items (1 crate + 2 modules)
+        // Should have 3 items (1 package + 2 modules)
         assert_eq!(ir.items.len(), 3);
 
         // Should have 1 dependency edge (mod_a -> mod_b)
@@ -1354,9 +1356,9 @@ mod tests {
 
     #[test]
     fn test_cycle_ids_propagation() {
-        // Build graph: crate with 6 modules, two independent cycles
+        // Build graph: package with 6 modules, two independent cycles
         let mut b = TestGraphBuilder::new();
-        b.crate_with_modules("test", &["a", "b", "c", "d", "e", "f"])
+        b.package_with_modules("test", &["a", "b", "c", "d", "e", "f"])
             // Cycle 1: A → B → C → A
             .prod_dep("a", "b")
             .prod_dep("b", "c")
@@ -1413,7 +1415,8 @@ mod tests {
         // it should be marked as Downward. When the reverse happens (earlier depends on later),
         // it should be marked as Upward.
         let mut b = TestGraphBuilder::new();
-        b.crate_with_modules("test", &["a", "b"]).prod_dep("a", "b"); // a depends on b
+        b.package_with_modules("test", &["a", "b"])
+            .prod_dep("a", "b"); // a depends on b
         let (graph, _) = b.build();
         let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
 
@@ -1432,29 +1435,29 @@ mod tests {
     }
 
     #[test]
-    fn test_build_layout_multi_crate_grouping() {
-        // Simulate a workspace with 2 crates, each having 2 modules
+    fn test_build_layout_multi_package_grouping() {
+        // Simulate a workspace with 2 packages, each having 2 modules
         let mut b = TestGraphBuilder::new();
-        b.crate_with_modules("crate_a", &["mod_a1", "mod_a2"])
-            .crate_with_modules("crate_b", &["mod_b1", "mod_b2"])
-            .crate_dep("crate_a", "crate_b");
+        b.package_with_modules("crate_a", &["mod_a1", "mod_a2"])
+            .package_with_modules("crate_b", &["mod_b1", "mod_b2"])
+            .package_dep("crate_a", "crate_b");
         let (graph, _) = b.build();
         let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
         let la = LayoutAssert::new(ir);
 
         check!(la.ir.items.len() == 6);
 
-        // Crate A's modules between crate_a and crate_b
+        // Package A's modules between crate_a and crate_b
         check!(la.pos("crate_a") < la.pos("mod_a1"));
         check!(la.pos("mod_a1") < la.pos("crate_b"));
         check!(la.pos("crate_a") < la.pos("mod_a2"));
         check!(la.pos("mod_a2") < la.pos("crate_b"));
 
-        // Crate B's modules after crate_b
+        // Package B's modules after crate_b
         check!(la.pos("crate_b") < la.pos("mod_b1"));
         check!(la.pos("crate_b") < la.pos("mod_b2"));
 
-        // PackageDep edge should be present (no ModuleDeps between crates)
+        // PackageDep edge should be present (no ModuleDeps between packages)
         check!(la.ir.edges.len() == 1);
         check!(la.ir.edges[0].from == la.pos("crate_a"));
         check!(la.ir.edges[0].to == la.pos("crate_b"));
@@ -1464,7 +1467,7 @@ mod tests {
 
     #[test]
     fn test_layout_item_creation() {
-        let crate_item = LayoutItem::new(0, ItemKind::Crate, "my_crate");
+        let package_item = LayoutItem::new(0, ItemKind::Package, "my_crate");
         let module_item = LayoutItem::new(
             1,
             ItemKind::Module {
@@ -1473,7 +1476,7 @@ mod tests {
             },
             "my_module",
         );
-        assert_eq!(crate_item.label, "my_crate");
+        assert_eq!(package_item.label, "my_crate");
         assert_eq!(module_item.id, 1);
         match module_item.kind {
             ItemKind::Module { nesting, parent } => {
@@ -1507,26 +1510,29 @@ mod tests {
     fn test_layout_ir_builder() {
         let mut ir = LayoutIR::new();
 
-        let crate_id = ir.add_item(ItemKind::Crate, "my_crate".to_string());
+        let package_id = ir.add_item(ItemKind::Package, "my_crate".to_string());
         let mod_id = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
-                parent: crate_id,
+                parent: package_id,
             },
             "my_module".to_string(),
         );
-        ir.edges
-            .push(LayoutEdge::new(crate_id, mod_id, EdgeContext::production()));
+        ir.edges.push(LayoutEdge::new(
+            package_id,
+            mod_id,
+            EdgeContext::production(),
+        ));
 
         assert_eq!(ir.items.len(), 2);
         assert_eq!(ir.edges.len(), 1);
-        assert_eq!(ir.items[crate_id].label, "my_crate");
+        assert_eq!(ir.items[package_id].label, "my_crate");
     }
 
     #[test]
     fn test_layout_item_defaults() {
         let mut ir = LayoutIR::new();
-        let id = ir.add_item(ItemKind::Crate, "test".to_string());
+        let id = ir.add_item(ItemKind::Package, "test".to_string());
         check!(ir.items[id].source_path.is_none());
         check!(ir.items[id].volatility.is_none());
     }
@@ -1538,7 +1544,7 @@ mod tests {
             bin_roots: vec![PathBuf::from("/ws/app/src/main.rs")],
         };
         let mut b = TestGraphBuilder::new();
-        b.crate_with_targets("app", target_roots, "/ws/app/Cargo.toml")
+        b.package_with_targets("app", target_roots, "/ws/app/Cargo.toml")
             .module_with_file("app", "mod_a", "/ws/app/src/mod_a.rs");
         let (graph, _) = b.build();
         let (ir, table) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
@@ -1603,7 +1609,7 @@ mod tests {
             bin_roots: vec![PathBuf::from("/ws/app/src/main.rs")],
         };
         let mut b = TestGraphBuilder::new();
-        b.crate_with_targets("app", target_roots, "/ws/app/Cargo.toml")
+        b.package_with_targets("app", target_roots, "/ws/app/Cargo.toml")
             .module_with_file("app", "mod_a", "/ws/app/src/mod_a.rs");
         let (graph, _) = b.build();
         let (ir, table) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
@@ -1635,7 +1641,7 @@ mod tests {
     #[test]
     fn build_layout_assigns_jump_ids_to_symbol_definitions() {
         let mut b = TestGraphBuilder::new();
-        b.crate_with_modules("app", &[])
+        b.package_with_modules("app", &[])
             .module_with_definitions("app", "mod_a", "/ws/app/src/mod_a.rs", &[("Widget", 7)])
             .module_with_file("app", "mod_b", "/ws/app/src/mod_b.rs")
             .prod_dep_with_location(
@@ -1678,7 +1684,7 @@ mod tests {
             bin_roots: vec![PathBuf::from("/ws/app/src/bin/tool.rs")],
         };
         let mut b = TestGraphBuilder::new();
-        b.crate_with_targets("app", target_roots, "/ws/app/Cargo.toml")
+        b.package_with_targets("app", target_roots, "/ws/app/Cargo.toml")
             .module_with_file("app", "mod_a", "/ws/app/src/foo/mod.rs");
         let (graph, _) = b.build();
         let (ir, _) = build_layout(
@@ -1703,7 +1709,7 @@ mod tests {
             bin_roots: vec![],
         };
         let mut b = TestGraphBuilder::new();
-        b.crate_with_targets("dep", target_roots, "/registry/dep-1.0/Cargo.toml");
+        b.package_with_targets("dep", target_roots, "/registry/dep-1.0/Cargo.toml");
         let (graph, _) = b.build();
 
         let (ir, _) = build_layout(
@@ -1737,7 +1743,7 @@ mod tests {
             bin_roots: vec![],
         };
         let mut b = TestGraphBuilder::new();
-        b.crate_with_targets("app", target_roots, "/ws/app/Cargo.toml")
+        b.package_with_targets("app", target_roots, "/ws/app/Cargo.toml")
             .module_with_file("app", "mod_a", "/ws/app/src/mod_a.rs")
             .module_with_file("app", "mod_b", "/ws/app/src/mod_b.rs")
             .prod_dep_with_locations(
@@ -1825,14 +1831,14 @@ mod tests {
 
     #[test]
     fn test_nested_module_hierarchy_ordering() {
-        // Setup: Crate mit nested Modulen
-        // crate
+        // Setup: Package mit nested Modulen
+        // package
         // ├── parent
         // │   ├── alpha_child
         // │   └── zebra_child
         // └── other_module (alphabetisch vor "parent", aber kein Kind)
         let mut b = TestGraphBuilder::new();
-        b.crate_with_modules("test_crate", &["other_module", "parent"])
+        b.package_with_modules("test_crate", &["other_module", "parent"])
             .nested_module("parent", "alpha_child")
             .nested_module("parent", "zebra_child");
         let (graph, _) = b.build();
@@ -1859,7 +1865,7 @@ mod tests {
         la.assert_order("alpha_child", "zebra_child");
     }
 
-    /// Module ordering: crate with N modules + deps → assert full sequence.
+    /// Module ordering: package with N modules + deps → assert full sequence.
     ///
     /// - `topo_overrides_alphabetical`: zebra→beta→alpha reverses alphabetical (dependents first)
     /// - `topo_matches_alphabetical`: A→B→C — topo order matches alphabetical
@@ -1880,7 +1886,7 @@ mod tests {
         #[case] expected_order: &[&str],
     ) {
         let mut b = TestGraphBuilder::new();
-        b.crate_with_modules("test", modules);
+        b.package_with_modules("test", modules);
         for &(from, to) in deps {
             b.prod_dep(from, to);
         }
@@ -1895,7 +1901,7 @@ mod tests {
     fn test_test_edges_do_not_affect_sibling_sort_order() {
         let mut b = TestGraphBuilder::new();
         // Production: alpha depends on beta → alpha should come first
-        b.crate_with_modules("my_crate", &["alpha", "beta"])
+        b.package_with_modules("my_crate", &["alpha", "beta"])
             .prod_dep("alpha", "beta")
             // Test: beta depends on alpha (reverse direction) → must NOT affect order
             .test_dep("beta", "alpha", TestKind::Unit);
@@ -1907,14 +1913,14 @@ mod tests {
     }
 
     #[test]
-    fn test_test_edges_do_not_affect_crate_sort_order() {
+    fn test_test_edges_do_not_affect_package_sort_order() {
         let mut b = TestGraphBuilder::new();
         // Production: aaa depends on bbb → aaa first
-        b.crate_with_modules("aaa", &["mod_a"])
-            .crate_with_modules("bbb", &["mod_b"])
-            .crate_dep("aaa", "bbb")
+        b.package_with_modules("aaa", &["mod_a"])
+            .package_with_modules("bbb", &["mod_b"])
+            .package_dep("aaa", "bbb")
             // Test: bbb depends on aaa (reverse) → must NOT affect order
-            .test_crate_dep("bbb", "aaa", TestKind::Unit);
+            .test_package_dep("bbb", "aaa", TestKind::Unit);
         let (graph, _) = b.build();
         let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
         let la = LayoutAssert::new(ir);
@@ -1923,13 +1929,13 @@ mod tests {
     }
 
     #[test]
-    fn test_dev_dependency_crate_sorts_below_its_test_users() {
+    fn test_dev_dependency_package_sorts_below_its_test_users() {
         let mut b = TestGraphBuilder::new();
-        b.crate_with_modules("aaa_kit", &["mod_kit"])
-            .crate_with_modules("bbb", &["mod_b"])
-            .crate_with_modules("ccc", &["mod_c"])
-            .test_crate_dep("bbb", "aaa_kit", TestKind::Unit)
-            .test_crate_dep("ccc", "aaa_kit", TestKind::Unit);
+        b.package_with_modules("aaa_kit", &["mod_kit"])
+            .package_with_modules("bbb", &["mod_b"])
+            .package_with_modules("ccc", &["mod_c"])
+            .test_package_dep("bbb", "aaa_kit", TestKind::Unit)
+            .test_package_dep("ccc", "aaa_kit", TestKind::Unit);
         let (graph, _) = b.build();
         let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
         let la = LayoutAssert::new(ir);
@@ -1939,13 +1945,13 @@ mod tests {
     }
 
     #[test]
-    fn test_dev_dependency_crate_with_prod_dep_sorts_between_users_and_dep() {
+    fn test_dev_dependency_package_with_prod_dep_sorts_between_users_and_dep() {
         let mut b = TestGraphBuilder::new();
-        b.crate_with_modules("aaa_kit", &["mod_kit"])
-            .crate_with_modules("bbb", &["mod_b"])
-            .crate_with_modules("zzz_shared", &["mod_shared"])
-            .test_crate_dep("bbb", "aaa_kit", TestKind::Unit)
-            .crate_dep("aaa_kit", "zzz_shared");
+        b.package_with_modules("aaa_kit", &["mod_kit"])
+            .package_with_modules("bbb", &["mod_b"])
+            .package_with_modules("zzz_shared", &["mod_shared"])
+            .test_package_dep("bbb", "aaa_kit", TestKind::Unit)
+            .package_dep("aaa_kit", "zzz_shared");
         let (graph, _) = b.build();
         let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
         let la = LayoutAssert::new(ir);
@@ -1956,7 +1962,7 @@ mod tests {
     #[test]
     fn test_test_only_sibling_module_sorts_below_its_test_users() {
         let mut b = TestGraphBuilder::new();
-        b.crate_with_modules("my_crate", &["aaa_kit", "bbb", "ccc"])
+        b.package_with_modules("my_crate", &["aaa_kit", "bbb", "ccc"])
             .test_dep("bbb", "aaa_kit", TestKind::Unit)
             .test_dep("ccc", "aaa_kit", TestKind::Unit);
         let (graph, _) = b.build();
@@ -1967,15 +1973,15 @@ mod tests {
         la.assert_order("ccc", "aaa_kit");
     }
 
-    /// `PackageDep` edges are suppressed whenever a `ModuleDep` exists between the same crate pair,
-    /// regardless of which node types (Crate or Module) the `ModuleDep` connects.
+    /// `PackageDep` edges are suppressed whenever a `ModuleDep` exists between the same package pair,
+    /// regardless of which node types (Package or Module) the `ModuleDep` connects.
     ///
-    /// - `module_to_entry_point`: `mod_a` (Module) → `crate_b` (Crate entry point)
-    /// - `crate_to_crate`: `crate_a` (Crate root/lib.rs) → `crate_b` (Crate entry point)
-    /// - `crate_to_module`: `crate_a` (Crate root/lib.rs) → `mod_b` (Module, not entry point)
+    /// - `module_to_entry_point`: `mod_a` (Module) → `crate_b` (Package entry point)
+    /// - `package_to_package`: `crate_a` (Package root/lib.rs) → `crate_b` (Package entry point)
+    /// - `package_to_module`: `crate_a` (Package root/lib.rs) → `mod_b` (Module, not entry point)
     struct SuppressionCase {
-        crate_a_modules: &'static [&'static str],
-        crate_b_modules: &'static [&'static str],
+        package_a_modules: &'static [&'static str],
+        package_b_modules: &'static [&'static str],
         dep_from: &'static str,
         dep_to: &'static str,
     }
@@ -1983,9 +1989,9 @@ mod tests {
     impl SuppressionCase {
         fn build_layout(&self) -> LayoutIR {
             let mut b = TestGraphBuilder::new();
-            b.crate_with_modules("crate_a", self.crate_a_modules)
-                .crate_with_modules("crate_b", self.crate_b_modules)
-                .crate_dep("crate_a", "crate_b")
+            b.package_with_modules("crate_a", self.package_a_modules)
+                .package_with_modules("crate_b", self.package_b_modules)
+                .package_dep("crate_a", "crate_b")
                 .prod_dep_located(self.dep_from, self.dep_to);
             let (graph, _) = b.build();
             super::build_layout(&graph, &no_cycles(), Reexports::Excluded, None).0
@@ -1994,18 +2000,18 @@ mod tests {
 
     #[rstest]
     #[case::module_to_entry_point(SuppressionCase {
-        crate_a_modules: &["mod_a"], crate_b_modules: &[],
+        package_a_modules: &["mod_a"], package_b_modules: &[],
         dep_from: "mod_a", dep_to: "crate_b",
     })]
-    #[case::crate_to_crate(SuppressionCase {
-        crate_a_modules: &["dummy_a"], crate_b_modules: &["dummy_b"],
+    #[case::package_to_package(SuppressionCase {
+        package_a_modules: &["dummy_a"], package_b_modules: &["dummy_b"],
         dep_from: "crate_a", dep_to: "crate_b",
     })]
-    #[case::crate_to_module(SuppressionCase {
-        crate_a_modules: &["dummy_a"], crate_b_modules: &["mod_b"],
+    #[case::package_to_module(SuppressionCase {
+        package_a_modules: &["dummy_a"], package_b_modules: &["mod_b"],
         dep_from: "crate_a", dep_to: "mod_b",
     })]
-    fn test_crate_dep_suppressed(#[case] case: SuppressionCase) {
+    fn test_package_dep_suppressed(#[case] case: SuppressionCase) {
         let ir = case.build_layout();
         assert_eq!(ir.edges.len(), 1, "PackageDep should be suppressed");
         assert!(
@@ -2020,13 +2026,13 @@ mod tests {
         // parent_a::child_a depends on parent_b::child_b
         // Expected: parent_a before parent_b (subtree dependency aggregation)
         //
-        // crate
+        // package
         // ├── parent_a         <-- should come FIRST (its subtree depends on parent_b's subtree)
         // │   └── child_a      <-- depends on child_b
         // └── parent_b         <-- should come SECOND (dependency target)
         //     └── child_b      <-- used by child_a
         let mut b = TestGraphBuilder::new();
-        b.crate_with_modules("test_crate", &["parent_a", "parent_b"])
+        b.package_with_modules("test_crate", &["parent_a", "parent_b"])
             .nested_module("parent_a", "child_a")
             .nested_module("parent_b", "child_b")
             .prod_dep("child_a", "child_b");
@@ -2038,15 +2044,15 @@ mod tests {
     }
 
     #[test]
-    fn test_crate_order_respects_inter_crate_module_deps() {
+    fn test_package_order_respects_inter_package_module_deps() {
         // When modules in crate_a depend on modules in crate_b
-        // but there is NO PackageDep edge, the crate ordering should still
-        // place crate_a before crate_b (dependent crate first).
+        // but there is NO PackageDep edge, the package ordering should still
+        // place crate_a before crate_b (dependent package first).
         //
         // crate_b added first (lower graph index) to expose index-order bugs.
         let mut b = TestGraphBuilder::new();
-        b.crate_with_modules("crate_b", &["mod_b"])
-            .crate_with_modules("crate_a", &["mod_a"])
+        b.package_with_modules("crate_b", &["mod_b"])
+            .package_with_modules("crate_a", &["mod_a"])
             .prod_dep("mod_a", "mod_b"); // no PackageDep edge!
         let (graph, _) = b.build();
         let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
@@ -2069,7 +2075,7 @@ mod tests {
 
     #[test]
     fn test_cross_subtree_cycles_weighted_asymmetric() {
-        // Topology: 4 module groups under one crate
+        // Topology: 4 module groups under one package
         //   A (A1, A2, A3)  — no cycle involvement
         //   B (B1, B2)      — B1 in both cycles
         //   C               — standalone, cycle with B1
@@ -2096,7 +2102,7 @@ mod tests {
         //
         // Expected SCC order: D, B, C (minimum upward, lexicographic tiebreak)
         let mut b = TestGraphBuilder::new();
-        b.crate_with_modules("test_crate", &["a", "b", "c", "d"])
+        b.package_with_modules("test_crate", &["a", "b", "c", "d"])
             .nested_module("a", "a1")
             .nested_module("a", "a2")
             .nested_module("a", "a3")
@@ -2148,7 +2154,7 @@ mod tests {
         // d is interleaved before c because d's dependent (a) is already placed,
         // giving d a lower barycenter score (0.0) than c (whose dependent b has score 1.0).
         let mut b = TestGraphBuilder::new();
-        b.crate_with_modules("test", &["a", "b", "c", "d"])
+        b.package_with_modules("test", &["a", "b", "c", "d"])
             .prod_dep("a", "d")
             .prod_dep("b", "c");
         let (graph, _) = b.build();
@@ -2163,7 +2169,7 @@ mod tests {
         // Symmetric diamond: A→C, A→D, B→C, B→D
         // Equal barycenter scores → alphabetical fallback
         let mut b = TestGraphBuilder::new();
-        b.crate_with_modules("test", &["a", "b", "c", "d"])
+        b.package_with_modules("test", &["a", "b", "c", "d"])
             .prod_dep("a", "c")
             .prod_dep("a", "d")
             .prod_dep("b", "c")
@@ -2181,21 +2187,21 @@ mod tests {
 
     #[test]
     fn test_transitive_external_deps_no_upward_edges() {
-        // Workspace crate depends on serde, serde depends on proc-macro2.
+        // Workspace package depends on serde, serde depends on proc-macro2.
         // Old sort: proc-macro2 had more incoming edges → placed above serde → upward edge.
         // Fixed sort: topological order ensures serde (dependent) above proc-macro2 (leaf).
         let mut b = TestGraphBuilder::new();
-        b.crate_with_modules("my_app", &[])
-            .external_crate("serde", "1.0.0")
-            .external_crate("proc-macro2", "1.0.0")
+        b.package_with_modules("my_app", &[])
+            .external_package("serde", "1.0.0")
+            .external_package("proc-macro2", "1.0.0")
             // my_app depends on serde
-            .crate_dep("my_app", "serde")
+            .package_dep("my_app", "serde")
             // serde depends on proc-macro2 (transitive external dep)
-            .crate_dep("serde", "proc-macro2");
+            .package_dep("serde", "proc-macro2");
         let (graph, _) = b.build();
         let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
 
-        // All PackageDep edges between external crates should be Downward
+        // All PackageDep edges between external packages should be Downward
         for edge in &ir.edges {
             let from_item = &ir.items[edge.from];
             let to_item = &ir.items[edge.to];
@@ -2225,7 +2231,7 @@ mod tests {
         // to make the group acyclic), so cycle blocks rotate to start at
         // m1, not m0.
         let mut b = TestGraphBuilder::new();
-        b.crate_with_modules("app", &["m0", "m1", "m2", "m3"])
+        b.package_with_modules("app", &["m0", "m1", "m2", "m3"])
             .prod_dep("m0", "m1")
             .prod_dep("m1", "m2")
             .prod_dep("m2", "m0")
@@ -2266,18 +2272,18 @@ mod tests {
 
     #[test]
     fn test_external_deps_incoming_count_tiebreaker() {
-        // Two external crates with no inter-external edges but different incoming counts.
-        // Both are depended on by workspace crates, but tokio has more dependents.
+        // Two external packages with no inter-external edges but different incoming counts.
+        // Both are depended on by workspace packages, but tokio has more dependents.
         // Tiebreaker: higher incoming count → placed first.
         let mut b = TestGraphBuilder::new();
-        b.crate_with_modules("app_a", &[])
-            .crate_with_modules("app_b", &[])
-            .external_crate("alpha_crate", "1.0.0")
-            .external_crate("tokio", "1.0.0")
+        b.package_with_modules("app_a", &[])
+            .package_with_modules("app_b", &[])
+            .external_package("alpha_crate", "1.0.0")
+            .external_package("tokio", "1.0.0")
             // Both apps depend on tokio (2 incoming), only app_a depends on alpha_crate (1 incoming)
-            .crate_dep("app_a", "tokio")
-            .crate_dep("app_b", "tokio")
-            .crate_dep("app_a", "alpha_crate");
+            .package_dep("app_a", "tokio")
+            .package_dep("app_b", "tokio")
+            .package_dep("app_a", "alpha_crate");
         let (graph, _) = b.build();
         let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
         let la = LayoutAssert::new(ir);

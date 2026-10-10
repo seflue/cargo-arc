@@ -511,7 +511,7 @@ mod tests {
         }
     }
 
-    fn krate(name: &str, file: &str, children: Vec<HotspotNode>) -> HotspotNode {
+    fn package(name: &str, file: &str, children: Vec<HotspotNode>) -> HotspotNode {
         let lines = children.iter().map(|c| c.lines).sum();
         HotspotNode {
             name: name.to_string(),
@@ -580,7 +580,7 @@ mod tests {
 
     fn small_tree() -> HotspotTree {
         HotspotTree {
-            root: krate(
+            root: package(
                 "app",
                 "app/Cargo.toml",
                 vec![
@@ -690,7 +690,7 @@ mod tests {
                 leaf("index.rs", "crates/engine/src/mesh/index.rs", 0),
             ],
         );
-        let engine = krate(
+        let engine = package(
             "engine",
             "crates/engine/Cargo.toml",
             vec![
@@ -710,7 +710,7 @@ mod tests {
                 leaf("check.rs", "crates/cli/src/commands/check.rs", 25),
             ],
         );
-        let cli = krate(
+        let cli = package(
             "cli",
             "crates/cli/Cargo.toml",
             vec![

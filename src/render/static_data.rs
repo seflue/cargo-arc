@@ -364,7 +364,7 @@ fn generate_static_data(
     for pos in positioned {
         let item = &ir.items[pos.id];
         let node_type = match &item.kind {
-            ItemKind::Crate => "crate",
+            ItemKind::Package => "crate",
             ItemKind::Module { .. } => "module",
             ItemKind::ExternalSection => "external-section",
             ItemKind::ExternalPackage {
@@ -377,7 +377,7 @@ fn generate_static_data(
             } => "external-transitive",
         };
         let parent = match &item.kind {
-            ItemKind::Crate | ItemKind::ExternalSection => None,
+            ItemKind::Package | ItemKind::ExternalSection => None,
             ItemKind::Module { parent, .. } | ItemKind::ExternalPackage { parent, .. } => {
                 Some(parent.to_string())
             }
@@ -543,7 +543,7 @@ fn generate_static_data(
             (
                 scc.to_string(),
                 ClusterData {
-                    crate_name: c.crate_name.clone(),
+                    crate_name: c.package_name.clone(),
                     module_count: c.module_count,
                     cycle_count: c.cycle_count,
                     cycles: c
@@ -570,7 +570,7 @@ fn generate_static_data(
                         ConsumerLocality::CommonAncestor(m) => {
                             ("commonAncestor", Some(m.to_string()))
                         }
-                        ConsumerLocality::CrateWide => ("crateWide", None),
+                        ConsumerLocality::PackageWide => ("crateWide", None),
                     };
                     (
                         symbol.clone(),
@@ -835,7 +835,7 @@ mod tests {
         use std::path::PathBuf;
 
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let c = ir.add_item(ItemKind::Package, "c".into());
         let a = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -977,7 +977,7 @@ mod tests {
         use std::path::PathBuf;
 
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "app".into());
+        let c = ir.add_item(ItemKind::Package, "app".into());
         let m = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -1276,7 +1276,7 @@ mod tests {
     #[test]
     fn test_static_data_basic_structure() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "test_crate".into());
+        let c = ir.add_item(ItemKind::Package, "test_crate".into());
         ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -1310,7 +1310,7 @@ mod tests {
     #[test]
     fn test_static_data_node_properties() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "test_crate".into());
+        let c = ir.add_item(ItemKind::Package, "test_crate".into());
         ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -1353,7 +1353,7 @@ mod tests {
     #[test]
     fn test_static_data_node_positions() {
         let mut ir = LayoutIR::new();
-        ir.add_item(ItemKind::Crate, "test_crate".into());
+        ir.add_item(ItemKind::Package, "test_crate".into());
 
         let config = RenderConfig::default();
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
@@ -1371,7 +1371,7 @@ mod tests {
         use std::path::PathBuf;
 
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let c = ir.add_item(ItemKind::Package, "c".into());
         let a = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -1429,7 +1429,7 @@ mod tests {
     #[test]
     fn test_static_data_arc_context_field() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let c = ir.add_item(ItemKind::Package, "c".into());
         let a = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -1473,7 +1473,7 @@ mod tests {
     #[test]
     fn test_static_data_arc_empty_usages() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let c = ir.add_item(ItemKind::Package, "c".into());
         let a = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -1515,7 +1515,7 @@ mod tests {
         use std::path::PathBuf;
 
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let c = ir.add_item(ItemKind::Package, "c".into());
         let a = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -1584,7 +1584,7 @@ mod tests {
     #[test]
     fn test_static_data_valid_js_syntax() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "test".into());
+        let c = ir.add_item(ItemKind::Package, "test".into());
         ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -1654,7 +1654,7 @@ mod tests {
         use std::path::PathBuf;
 
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let c = ir.add_item(ItemKind::Package, "c".into());
         let a = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -1992,7 +1992,7 @@ mod tests {
         use std::path::PathBuf;
 
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let c = ir.add_item(ItemKind::Package, "c".into());
         let a = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -2063,7 +2063,7 @@ mod tests {
     fn test_static_data_cycle_info() {
         // Graph with a cycle: A -> B -> C -> A (cycle_ids=[0])
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "c".into());
+        let c = ir.add_item(ItemKind::Package, "c".into());
         let a = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -2170,7 +2170,7 @@ mod tests {
     fn test_static_data_multi_cycle_ids() {
         // Graph with overlapping cycles: B<->C (cycle 0) + B<->D (cycle 1)
         let mut ir = LayoutIR::new();
-        let crt = ir.add_item(ItemKind::Crate, "c".into());
+        let crt = ir.add_item(ItemKind::Package, "c".into());
         let b = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -2258,7 +2258,7 @@ mod tests {
     fn test_static_data_edge_in_two_cycles() {
         // Edge that belongs to two cycles simultaneously
         let mut ir = LayoutIR::new();
-        let crt = ir.add_item(ItemKind::Crate, "c".into());
+        let crt = ir.add_item(ItemKind::Package, "c".into());
         let a = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -2302,7 +2302,7 @@ mod tests {
     #[test]
     fn test_static_data_clusters() {
         let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Crate, "app".into());
+        let c = ir.add_item(ItemKind::Package, "app".into());
         let a = ir.add_item(
             ItemKind::Module {
                 nesting: 1,
@@ -2332,7 +2332,7 @@ mod tests {
         ir.clusters.insert(
             0,
             crate::layout::ClusterInfo {
-                crate_name: "app".into(),
+                package_name: "app".into(),
                 module_count: 2,
                 cycle_count: 1,
                 cycles: vec![vec![
@@ -2443,7 +2443,7 @@ mod tests {
                 ItemKind::Module { parent, .. } | ItemKind::ExternalPackage { parent, .. } => {
                     Some(*parent)
                 }
-                ItemKind::Crate | ItemKind::ExternalSection => None,
+                ItemKind::Package | ItemKind::ExternalSection => None,
             })
             .collect();
         let script = render_script(&config, &ir, &positioned, &parents);
@@ -2507,7 +2507,7 @@ mod tests {
                 ItemKind::Module { parent, .. } | ItemKind::ExternalPackage { parent, .. } => {
                     Some(*parent)
                 }
-                ItemKind::Crate | ItemKind::ExternalSection => None,
+                ItemKind::Package | ItemKind::ExternalSection => None,
             })
             .collect();
         let script = render_script(&config, ir, &positioned, &parents);
