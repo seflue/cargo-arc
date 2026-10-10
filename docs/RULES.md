@@ -25,7 +25,7 @@
 
 <!-- /TOC -->
 `cargo arc check` evaluates a workspace against the rules you write in `arc-rules.toml`.
-Rules sort your crates and modules into [architectural layers](GLOSSARY.md#architectural-layer), forbid circular dependencies between modules, or ban a dependency you name.
+Rules sort your packages and modules into [architectural layers](GLOSSARY.md#architectural-layer), forbid circular dependencies between modules, or ban a dependency you name.
 `check` reports the violations it finds and exits non-zero on any you have not accepted, so you can run it in CI next to the test suite.
 
 ```bash
@@ -72,7 +72,7 @@ Every new cycle is reported.
 Write one rule, run, read what it says, freeze what you accept, then write the next one.
 A run that generates a baseline over several rules at once freezes their violations before anyone has decided about any of them, and a baseline nobody has read does not shrink.
 
-A `layers` rule states the order of your crates, one entry in `layers` per position:
+A `layers` rule states the order of your packages, one entry in `layers` per position:
 
 ```toml
 [[rules]]
@@ -151,14 +151,14 @@ error: configuration
     in rule "architecture layers", in no layer, so its own place goes unchecked
 ```
 
-A pattern without `::` names a crate, and a rule carrying one claims every workspace crate.
+A pattern without `::` names a package, and a rule carrying one claims every workspace package.
 The rule above sorts `cli`, `storage`, `services` and `core`, so anything else is a gap.
-A pattern with `::` names a module, and a rule carrying one claims every module of the crates its module patterns reach, saying nothing about the other crates and nothing about the crate nodes themselves.
+A pattern with `::` names a module, and a rule carrying one claims every module of the packages its module patterns reach, saying nothing about the other packages and nothing about the package nodes themselves.
 A rule that mixes both kinds of pattern makes both claims side by side.
 
 Only the topmost unsorted node of a containment chain is reported.
-A crate left out entirely is one gap, not one per module underneath it.
-A crate one exhaustive rule places is still reported against a second exhaustive rule that leaves it out.
+A package left out entirely is one gap, not one per module underneath it.
+A package one exhaustive rule places is still reported against a second exhaustive rule that leaves it out.
 
 If the node was forgotten, put it in a layer.
 If it is outside the architecture on purpose (build tooling, examples, benchmarks), say so in the diagnostic:
@@ -170,7 +170,7 @@ unlayered-node = { level = "deny", except = ["xtask"] }
 
 The `allow` list of a rule does not reach the diagnostics, which is why this list exists separately.
 Inventing a layer for `xtask` does not work.
-It puts the crate in the order, and every dependency between it and a node in another position is then judged against that order.
+It puts the package in the order, and every dependency between it and a node in another position is then judged against that order.
 The names here are patterns like any other, so an excepted node takes the modules below it with it.
 
 An entry that matches no node — a typo, or a node since renamed or removed — is reported too, under `unlayered-node` at its level.
@@ -200,9 +200,9 @@ Neither file has to sit in the workspace under test.
 Two rules files in one directory share the one `arc-baseline.toml` there, so a copy made to try a rule out reads the entries of the original and reports its own violations as frozen.
 
 `--manifest-path` selects the workspace, not a part of it.
-Pointed at a member crate's `Cargo.toml`, it analyzes the whole workspace that crate belongs to.
-Without `--rules`, both files are looked up beside the manifest the flag names, so pointing at a member crate looks for `arc-rules.toml` in that crate's directory and not in the workspace root.
-Most member crates have no rules file there, and the run then falls back to the implicit check over the whole workspace: the rules in the workspace root are not read.
+Pointed at a member package's `Cargo.toml`, it analyzes the whole workspace that package belongs to.
+Without `--rules`, both files are looked up beside the manifest the flag names, so pointing at a member package looks for `arc-rules.toml` in that package's directory and not in the workspace root.
+Most member packages have no rules file there, and the run then falls back to the implicit check over the whole workspace: the rules in the workspace root are not read.
 Pass `--rules` to keep them.
 
 ### The `[config]` table
@@ -220,33 +220,33 @@ Unknown keys are rejected rather than ignored, so a typo in a rule or a diagnost
 
 ### Module path patterns
 
-A module path pattern names crates and modules by their path:
+A module path pattern names packages and modules by their path:
 
 | Pattern | Matches |
 |---------|---------|
-| `core` | the crate `core`, and every module in it |
+| `core` | the package `core`, and every module in it |
 | `core::model` | the module `core::model`, and every module in it |
 | `core::*` | the direct children of `core` |
 | `core::**` | every module below `core`, not `core` itself |
-| `core*` | every crate starting with `core`, and every module in each |
+| `core*` | every package starting with `core`, and every module in each |
 | `**` | everything in the workspace |
 
-There is no pattern for a crate on its own.
-`core` takes its modules with it, and `core::**` leaves the crate out.
-An `allow` entry with a crate name on both sides therefore covers every dependency between the modules inside it.
+There is no pattern for a package on its own.
+`core` takes its modules with it, and `core::**` leaves the package out.
+An `allow` entry with a package name on both sides therefore covers every dependency between the modules inside it.
 Inside one segment, `*` stands for any run of characters, including none.
 It may sit anywhere in the segment and appear more than once, but never crosses a `::`.
-So `core*` names every crate that starts with `core`, and `*_test` every one that ends with `_test`.
+So `core*` names every package that starts with `core`, and `*_test` every one that ends with `_test`.
 Any segment of a path may hold one, so `core::*::error` matches `core::model::error` and `core::api::error`.
-A pattern always starts at a crate name; there is no `crate::` prefix, because a rules file applies to the workspace and not from inside one crate.
-That first segment is the package name as `Cargo.toml` writes it, so a crate named `data-store` is `data-store` in a pattern and not `data_store`.
-Outside a `layers` position, `*` is an ordinary pattern and matches every crate together with its modules.
+A pattern always starts at a package name; there is no `crate::` prefix, because a rules file applies to the workspace and not from inside one package.
+That first segment is the package name as `Cargo.toml` writes it, so a package named `data-store` is `data-store` in a pattern and not `data_store`.
+Outside a `layers` position, `*` is an ordinary pattern and matches every package together with its modules.
 A `layers` position may hold `*` only alone, and it is then the catch-all layer, described under [`layers`](#layers).
 
-A pattern reaches the crates under analysis and the modules in them, and nothing else.
-A crate the workspace depends on lies outside that reach, so `to = "tokio"` matches nothing.
+A pattern reaches the packages under analysis and the modules in them, and nothing else.
+A package the workspace depends on lies outside that reach, so `to = "tokio"` matches nothing.
 
-A crate has the dependencies its `Cargo.toml` declares, and a module has the imports written in its own file.
+A package has the dependencies its `Cargo.toml` declares, and a module has the imports written in its own file.
 `storage` covers those, and `storage::**` does not, because it leaves out `storage` itself.
 Both cover the modules of `storage`.
 `storage*` and `storage*::**` divide the same way.
@@ -293,7 +293,7 @@ Such an entry names two layered nodes, so a silenced edge is never a step of a l
 A dependency with an endpoint no layer matches is still not checked, and neither is the place of that node itself; without `exhaustive = true` nothing says which nodes those are.
 
 A position written as the bare string `"*"`, or the single-element list `["*"]`, is the catch-all layer.
-It holds every node the rule's other positions do not match, so once a rule carries one, no crate is left unlayered by it.
+It holds every node the rule's other positions do not match, so once a rule carries one, no package is left unlayered by it.
 Its place in the list is its rank like any other position.
 A rule may carry at most one catch-all, and it must stand alone in its position.
 Both are refused when the rules file loads.
@@ -317,7 +317,7 @@ direction = "top-down"
 ```
 
 This forbids `core` from depending on anything outside itself.
-A dependency the other way, or between any two crates that share the catch-all, is permitted, because `layers` only judges across positions, never within one.
+A dependency the other way, or between any two packages that share the catch-all, is permitted, because `layers` only judges across positions, never within one.
 
 ### `forbidden-dependency`
 
@@ -349,15 +349,15 @@ from = "storage"
 to = "services"
 ```
 
-A crate name covers every module in the crate, so `storage::pool` matches `from` while `services::worker` matches `to`.
+A package name covers every module in the package, so `storage::pool` matches `from` while `services::worker` matches `to`.
 
 A node matching `from` that depends directly on a node matching `to` is a violation, whether or not a `layers` rule would allow it.
 Every import and manifest entry between the same two nodes belongs to that one violation.
 A dependency that reaches `services` over a module in between is not reported, and `layers` is the only rule that follows a route like that.
 
 `from` and `to` hold one pattern each, and a node may match both.
-`from = "**"` matches every node in the workspace, the crate named in `to` and its modules included.
-Its own modules match `from`, so the rule also reports dependencies from one module of that crate to another.
+`from = "**"` matches every node in the workspace, the package named in `to` and its modules included.
+Its own modules match `from`, so the rule also reports dependencies from one module of that package to another.
 
 Like every rule, it judges production dependencies only.
 An import written under `#[cfg(test)]` or in a build script is not one, and neither is a dev-dependency.
@@ -374,8 +374,8 @@ scope = "**"
 `scope` is the pattern the search runs inside.
 An edge takes part when the pattern matches both of its ends.
 A cycle running through a module the pattern leaves out is therefore never found.
-`scope` holds one pattern and a pattern has no negation, so a scope over the whole workspace except one crate cannot be written.
-An [`allow`](#allow) entry naming that crate on both sides does that job instead, because it takes every dependency inside the crate out before the search.
+`scope` holds one pattern and a pattern has no negation, so a scope over the whole workspace except one package cannot be written.
+An [`allow`](#allow) entry naming that package on both sides does that job instead, because it takes every dependency inside the package out before the search.
 
 Violations are reported per tangle.
 A tangle holding one cycle prints a `cycle:` line naming its modules in order, then one row per edge on it.
@@ -420,8 +420,8 @@ allow = [
 ]
 ```
 
-The crate root contains its top-level modules, so an edge from such a module to its own crate is removed too, where `scope` takes the crate in at all.
-`super::super` reaches the module two levels up instead, and `crate` the root of the crate from anywhere inside it.
+The package root contains its top-level modules, so an edge from such a module to its own package is removed too, where `scope` takes the package in at all.
+`super::super` reaches the module two levels up instead, and `crate` the root of the package from anywhere inside it.
 A removed edge that lay on a cycle is counted as *allowed* and listed under `--show-silenced`; one that lay on none raises no count.
 The dependency down from the containing module stays in the search, and so does a cycle between two modules under the same parent.
 
@@ -471,7 +471,7 @@ Both sides are patterns, so the entry allows every dependency from one side to t
 Here that is any module in `storage::migrations` reaching any module in `services::schema`.
 An entry allows the one direction it names, and the dependency back needs its own entry.
 The two sides may hold the same pattern, and the entry then allows every dependency between the modules it matches, in either direction.
-With a crate name on both sides that is every dependency inside the crate, and under `no-cycles` no cycle within it is left to find.
+With a package name on both sides that is every dependency inside the package, and under `no-cycles` no cycle within it is left to find.
 An entry wider than the dependency you meant to allow is never reported.
 `unmatched-allow` fires when one of the two patterns matches no module, and says nothing about how much an entry that does match allows.
 An entry may also name modules the rule never reaches, outside a `no-cycles` rule's `scope` or outside the `from` and `to` of a `forbidden-dependency`.
@@ -502,19 +502,19 @@ Deleting either entry leaves the pair acyclic all the same.
 
 An entry names the odd edge: the one that runs against the order you have in mind, where `to` may depend on `from` by default and the edge back up is the one you tolerate.
 The entries of a rule together declare that order, and `contradictory-allow` fires when they put nodes above each other in a circle: one entry `core::a → core::b` beside another `core::b → core::a`, or `to = "super"` beside `to = "self::*"`.
-An entry with the same pattern on both sides ranks nothing, and neither does a pair one entry covers in both directions, which is what a crate name in `to` does for the modules inside it.
+An entry with the same pattern on both sides ranks nothing, and neither does a pair one entry covers in both directions, which is what a package name in `to` does for the modules inside it.
 
 `to` may be relative to the module `from` matched, so one entry covers the same shape everywhere in the tree:
 
 | `to` | Reaches |
 |------|---------|
-| `super` | the module containing `from`, or the crate for a top-level module |
+| `super` | the module containing `from`, or the package for a top-level module |
 | `super::super` | the module two levels up; every further `::super` one more |
-| `crate` | the root of the crate `from` lies in |
+| `crate` | the root of the package `from` lies in |
 | `self::*` | the direct children of `from` |
 | `self::**` | every module under `from` |
 
-A relative `to` that leads nowhere, `super` from the crate node or `self::*` from a leaf module, matches nothing and is not reported.
+A relative `to` that leads nowhere, `super` from the package node or `self::*` from a leaf module, matches nothing and is not reported.
 `unmatched-allow` asks about the `from` pattern of such an entry only.
 Other forms starting with `self`, `super` or `crate` are refused when the file is loaded.
 
@@ -673,7 +673,7 @@ error[forbidden-dependency]: no services in storage
     --> storage/src/pool.rs:31
 ```
 
-A pair appears once in a rule's block: where `Cargo.toml` and an import in the crate's root file write the same dependency, that is one violation, one line, counted once, with the import's locations underneath.
+A pair appears once in a rule's block: where `Cargo.toml` and an import in the package's root file write the same dependency, that is one violation, one line, counted once, with the import's locations underneath.
 
 A manifest edge has no line of source behind it, so it is reported without a `-->` underneath and freezes without symbols:
 
@@ -739,7 +739,7 @@ cargo arc --manifest-path crates/Cargo.toml --include-reexports check
 
 The rest of what `cargo arc --help` lists belongs to the diagram.
 `check` accepts them and ignores them.
-`--externals` before `check` changes nothing, because no rule pattern ever matches a crate outside the workspace.
+`--externals` before `check` changes nothing, because no rule pattern ever matches a package outside the workspace.
 
 #### What the feature flags change
 
@@ -752,7 +752,7 @@ A workspace whose features exclude one another carries the imports of all of the
 
 `--features` does one thing more.
 Only the workspace members that declare one of the named features are analyzed, together with the members those reach through their dependencies.
-A rule whose pattern names one of the crates left out reports `unmatched-pattern`.
-A feature name no crate in the workspace declares ends the run at exit 2, refused by `cargo metadata`.
-`--all-features` and `--no-default-features` leave the set of analyzed crates alone.
+A rule whose pattern names one of the packages left out reports `unmatched-pattern`.
+A feature name no package in the workspace declares ends the run at exit 2, refused by `cargo metadata`.
+`--all-features` and `--no-default-features` leave the set of analyzed packages alone.
 
