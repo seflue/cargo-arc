@@ -18,11 +18,13 @@ pub use hir::{analyze_modules, cargo_config_with_features, load_workspace_hir};
 pub use rust::Rust;
 pub use workspace::analyze_workspace;
 
-use crate::model::Analysis;
+use crate::model::{Analysis, LanguageProfile};
 
 /// The analysis of one language: reads a project and delivers the packages,
 /// module trees and externals the dependency graph is built from.
 pub(crate) trait LanguageAdapter {
     #[allow(clippy::missing_errors_doc)]
     fn analyze(&self) -> anyhow::Result<Analysis>;
+
+    fn profile(&self) -> &'static LanguageProfile;
 }

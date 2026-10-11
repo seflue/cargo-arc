@@ -8,12 +8,13 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use tracing_subscriber::EnvFilter;
 
+use crate::analyze::rust::PROFILE as RUST_PROFILE;
 use crate::analyze::{FeatureConfig, LanguageAdapter, Rust};
 use crate::diagnose::RepresentativeCycles;
 use crate::graph::{ArcGraph, Reexports};
 use crate::hotspots;
 use crate::layout::{JumpTable, LayoutIR, LocationId, build_layout};
-use crate::model::PackageInfo;
+use crate::model::{LanguageProfile, PackageInfo};
 use crate::render::{
     AnalysisSwitches, Appearance, Document, RenderConfig, THEMES, Theme, html_page, project_name,
     render, render_hotspots,
@@ -240,7 +241,12 @@ pub fn run(args: ArcCommand) -> Result<Judgment> {
     };
 
     if args.volatility {
-        run_volatility_report(&args.common.manifest_path, vol_config, args.output.as_ref())?;
+        run_volatility_report(
+            &args.common.manifest_path,
+            &RUST_PROFILE,
+            vol_config,
+            args.output.as_ref(),
+        )?;
         return Ok(Judgment::Clean);
     }
 
@@ -251,6 +257,7 @@ pub fn run(args: ArcCommand) -> Result<Judgment> {
         expand_level: args.expand_level,
         theme: args.theme,
         document,
+        wording: &analysis.profile.wording,
         ..RenderConfig::default()
     };
     let body = render(&analysis.layout, &config);
@@ -273,6 +280,7 @@ pub fn run(args: ArcCommand) -> Result<Judgment> {
 /// carried alongside the layout so a second page (the hotspot map) can be
 /// built from the same analysis run.
 struct DiagramAnalysis {
+    profile: &'static LanguageProfile,
     graph: ArcGraph,
     layout: LayoutIR,
     jump_table: JumpTable,
@@ -297,28 +305,32 @@ impl ArcCommand {
 /// map, so the arc layout's own enrichment would only be discarded work.
 /// Rendering is the caller's job: the callers (`run`, `run_ui`) build their
 /// own [`RenderConfig`] and render `analysis.layout` with it.
-fn analyze_for_diagram(
-    args: &ArcCommand,
-    switches: AnalysisSwitches,
-    with_volatility: bool,
-) -> Result<DiagramAnalysis> {
-    let feature_config = FeatureConfig {
-        include_tests: switches.tests,
-        ..build_feature_config(&args.common)
-    };
-
+/// The language adapter `args` ask for, with `switches` in place of the
+/// flags they stand for.
+fn adapter_for(args: &ArcCommand, switches: AnalysisSwitches) -> Rust {
     #[cfg(feature = "hir")]
     let use_hir = args.hir;
     #[cfg(not(feature = "hir"))]
     let use_hir = false;
 
-    let adapter = Rust {
+    Rust {
         manifest_path: args.common.manifest_path.clone(),
-        feature_config,
+        feature_config: FeatureConfig {
+            include_tests: switches.tests,
+            ..build_feature_config(&args.common)
+        },
         use_hir,
         externals: switches.externals,
         transitive_deps: args.transitive_deps,
-    };
+    }
+}
+
+fn analyze_for_diagram(
+    args: &ArcCommand,
+    switches: AnalysisSwitches,
+    with_volatility: bool,
+) -> Result<DiagramAnalysis> {
+    let adapter = adapter_for(args, switches);
     let (graph, workspace_root, unparsed) =
         build_dependency_graph(&adapter, adapter.feature_config.include_tests)?;
     let reexports = Reexports::from(args.common.include_reexports);
@@ -338,10 +350,16 @@ fn analyze_for_diagram(
             low_threshold: args.volatility_low,
             high_threshold: args.volatility_high,
         };
-        enrich_volatility(&mut layout, &args.common.manifest_path, vol_config);
+        enrich_volatility(
+            &mut layout,
+            &args.common.manifest_path,
+            adapter.profile(),
+            vol_config,
+        );
     }
 
     Ok(DiagramAnalysis {
+        profile: adapter.profile(),
         graph,
         layout,
         jump_table,
@@ -395,12 +413,18 @@ fn run_ui(args: &ArcCommand, ui_args: &UiArgs) -> Result<Judgment> {
             theme: args.theme,
             switches,
             document: Document::Page,
+            wording: &analysis.profile.wording,
             ..RenderConfig::default()
         };
         let arc_svg = render(&analysis.layout, &arc_config);
 
-        let (tree, volatility) =
-            build_hotspot_tree(args, &analysis.graph, &workspace_root, DEFAULT_HOTSPOTS);
+        let (tree, volatility) = build_hotspot_tree(
+            args,
+            &analysis.graph,
+            analysis.profile,
+            &workspace_root,
+            DEFAULT_HOTSPOTS,
+        );
         let packed = hotspots::pack(&tree);
 
         let mut table = analysis.jump_table;
@@ -430,6 +454,7 @@ fn run_ui(args: &ArcCommand, ui_args: &UiArgs) -> Result<Judgment> {
         initial,
         switches,
         workspace_root,
+        adapter_for(args, switches).profile(),
         args.theme,
         Box::new(move |switches| {
             let (root, pages, unparsed) = pages(switches)?;
@@ -455,6 +480,7 @@ fn run_ui(args: &ArcCommand, ui_args: &UiArgs) -> Result<Judgment> {
 fn build_hotspot_tree(
     args: &ArcCommand,
     graph: &ArcGraph,
+    profile: &LanguageProfile,
     workspace_root: &Path,
     hotspots_n: usize,
 ) -> (hotspots::HotspotTree, hotspots::MapVolatility) {
@@ -466,7 +492,8 @@ fn build_hotspot_tree(
             months,
             ..VolatilityConfig::default()
         });
-        match analyzer.analyze(resolve_repo_path(&args.common.manifest_path)) {
+        let repo_path = resolve_repo_path(&args.common.manifest_path);
+        match analyzer.analyze(repo_path, profile) {
             Ok(()) => Ok(analyzer),
             Err(err) => {
                 tracing::warn!("Volatility analysis skipped: {err}");
@@ -479,7 +506,7 @@ fn build_hotspot_tree(
         workspace_root,
         // An unreadable file becomes a zero-line leaf rather than failing
         // the whole map over one file.
-        |file: &Path| hotspots::code_lines(file).unwrap_or(0),
+        |file: &Path| hotspots::code_lines(file, profile.tokei_language).unwrap_or(0),
         |file: &Path| {
             volatility.as_ref().map_or_else(
                 |_| BTreeSet::new(),
@@ -535,6 +562,7 @@ fn run_hotspots(args: &ArcCommand, hotspots_args: &HotspotsArgs) -> Result<Judgm
     let (tree, volatility) = build_hotspot_tree(
         args,
         &analysis.graph,
+        analysis.profile,
         &workspace_root,
         hotspots_args.hotspots,
     );
@@ -734,12 +762,13 @@ fn write_output(content: &str, output: Option<&PathBuf>) -> Result<()> {
 
 fn run_volatility_report(
     manifest_path: &Path,
+    profile: &LanguageProfile,
     vol_config: VolatilityConfig,
     output: Option<&PathBuf>,
 ) -> Result<()> {
     let repo_path = resolve_repo_path(manifest_path);
     let mut analyzer = VolatilityAnalyzer::new(vol_config);
-    analyzer.analyze(repo_path)?;
+    analyzer.analyze(repo_path, profile)?;
     let report = analyzer.format_report();
     write_output(&report, output)
 }
@@ -779,10 +808,15 @@ fn build_dependency_graph(
     Ok((graph, workspace_root, unparsed))
 }
 
-fn enrich_volatility(layout: &mut LayoutIR, manifest_path: &Path, vol_config: VolatilityConfig) {
+fn enrich_volatility(
+    layout: &mut LayoutIR,
+    manifest_path: &Path,
+    profile: &LanguageProfile,
+    vol_config: VolatilityConfig,
+) {
     let repo_path = resolve_repo_path(manifest_path);
     let mut analyzer = VolatilityAnalyzer::new(vol_config);
-    match analyzer.analyze(repo_path) {
+    match analyzer.analyze(repo_path, profile) {
         Ok(()) => {
             for item in &mut layout.items {
                 if let Some(ref path) = item.source_path {
@@ -1144,6 +1178,10 @@ mod tests {
 
         struct Fake;
         impl LanguageAdapter for Fake {
+            fn profile(&self) -> &'static LanguageProfile {
+                &crate::analyze::rust::PROFILE
+            }
+
             fn analyze(&self) -> Result<Analysis> {
                 let package = PackageInfo {
                     name: "plugin".into(),
@@ -1364,7 +1402,13 @@ mod tests {
             "--no-volatility",
         ]);
 
-        let (_tree, cause) = build_hotspot_tree(&cmd, &graph, &workspace_root, DEFAULT_HOTSPOTS);
+        let (_tree, cause) = build_hotspot_tree(
+            &cmd,
+            &graph,
+            &RUST_PROFILE,
+            &workspace_root,
+            DEFAULT_HOTSPOTS,
+        );
 
         assert_eq!(
             cause,
@@ -1387,7 +1431,13 @@ mod tests {
             manifest.to_str().unwrap(),
         ]);
 
-        let (_tree, cause) = build_hotspot_tree(&cmd, &graph, &workspace_root, DEFAULT_HOTSPOTS);
+        let (_tree, cause) = build_hotspot_tree(
+            &cmd,
+            &graph,
+            &RUST_PROFILE,
+            &workspace_root,
+            DEFAULT_HOTSPOTS,
+        );
 
         assert_eq!(
             cause,
@@ -1419,7 +1469,13 @@ mod tests {
             "3",
         ]);
 
-        let (_tree, cause) = build_hotspot_tree(&cmd, &graph, &workspace_root, DEFAULT_HOTSPOTS);
+        let (_tree, cause) = build_hotspot_tree(
+            &cmd,
+            &graph,
+            &RUST_PROFILE,
+            &workspace_root,
+            DEFAULT_HOTSPOTS,
+        );
 
         assert_eq!(
             cause,

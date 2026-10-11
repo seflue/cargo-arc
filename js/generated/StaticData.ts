@@ -6,5 +6,6 @@ import type { CycleData } from "./CycleData";
 import type { NodeData } from "./NodeData";
 import type { SymbolLocalityData } from "./SymbolLocalityData";
 import type { ThemeData } from "./ThemeData";
+import type { WordingData } from "./WordingData";
 
-export type StaticData = { nodes: { [key in string]: NodeData }, arcs: { [key in string]: ArcData }, cycles: Array<CycleData>, classes: CssClassNames, clusters: { [key in string]: ClusterData }, symbolLocalities: { [key in string]: { [key in string]: SymbolLocalityData } }, expandLevel?: number, theme: ThemeData, };
+export type StaticData = { nodes: { [key in string]: NodeData }, arcs: { [key in string]: ArcData }, cycles: Array<CycleData>, classes: CssClassNames, clusters: { [key in string]: ClusterData }, symbolLocalities: { [key in string]: { [key in string]: SymbolLocalityData } }, expandLevel?: number, theme: ThemeData, wording: WordingData, };

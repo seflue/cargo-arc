@@ -5,15 +5,15 @@ use std::path::Path;
 
 use tokei::{Config, LanguageType};
 
-/// Count the code lines in `file` with tokei's Rust grammar, leaving out
-/// comments and blank lines.
+/// Count the code lines in `file` with tokei's grammar for `language`,
+/// leaving out comments and blank lines.
 ///
 /// # Errors
 ///
 /// Returns an error if `file` cannot be read.
-pub fn code_lines(file: &Path) -> io::Result<usize> {
+pub fn code_lines(file: &Path, language: LanguageType) -> io::Result<usize> {
     let source = std::fs::read_to_string(file)?;
-    let stats = LanguageType::Rust.parse_from_str(source, &Config::default());
+    let stats = language.parse_from_str(source, &Config::default());
     Ok(stats.code)
 }
 
@@ -31,7 +31,7 @@ mod tests {
         writeln!(file, "    // another comment").unwrap();
         writeln!(file, "}}").unwrap();
 
-        let lines = super::code_lines(file.path()).unwrap();
+        let lines = super::code_lines(file.path(), tokei::LanguageType::Rust).unwrap();
 
         assert_eq!(lines, 3);
     }
@@ -47,8 +47,20 @@ mod tests {
         writeln!(file, "    a + b").unwrap();
         writeln!(file, "}}").unwrap();
 
-        let lines = super::code_lines(file.path()).unwrap();
+        let lines = super::code_lines(file.path(), tokei::LanguageType::Rust).unwrap();
 
         assert_eq!(lines, 3);
+    }
+
+    #[test]
+    fn counts_in_the_given_language() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(file, "-- a comment").unwrap();
+        writeln!(file, "local M = {{}}").unwrap();
+        writeln!(file, "return M").unwrap();
+
+        let lines = super::code_lines(file.path(), tokei::LanguageType::Lua).unwrap();
+
+        assert_eq!(lines, 2);
     }
 }

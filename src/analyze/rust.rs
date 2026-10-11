@@ -13,7 +13,19 @@ use super::syn_walker::collect_crate_exports;
 use super::use_parser::ReExportMap;
 use super::workspace::analyze_workspace;
 use crate::model::{
-    Analysis, ModulePathMap, PackageExportMap, WorkspacePackages, normalize_crate_name,
+    Analysis, LanguageProfile, ModulePathMap, PackageExportMap, Wording, WorkspacePackages,
+    normalize_crate_name,
+};
+
+pub(crate) static PROFILE: LanguageProfile = LanguageProfile {
+    wording: Wording {
+        package: "crate",
+        packages: "crates",
+        manifest: "Cargo.toml",
+    },
+    extensions: &["rs"],
+    manifest_files: &["Cargo.toml"],
+    tokei_language: tokei::LanguageType::Rust,
 };
 
 /// A Cargo workspace, read through `cargo metadata` and parsed with syn, or
@@ -27,6 +39,10 @@ pub struct Rust {
 }
 
 impl LanguageAdapter for Rust {
+    fn profile(&self) -> &'static LanguageProfile {
+        &PROFILE
+    }
+
     fn analyze(&self) -> Result<Analysis> {
         let manifest_path = self.manifest_path.as_path();
         let packages = analyze_workspace(manifest_path, &self.feature_config)?;
@@ -118,6 +134,15 @@ impl LanguageAdapter for Rust {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn the_profile_tells_rust_sources_and_cargo_manifests_apart() {
+        assert!(PROFILE.is_source(Path::new("/ws/src/lib.rs")));
+        assert!(!PROFILE.is_source(Path::new("/ws/src/lib.RS")));
+        assert!(!PROFILE.is_source(Path::new("/ws/Cargo.toml")));
+        assert!(PROFILE.is_manifest(Path::new("/ws/a/Cargo.toml")));
+        assert!(!PROFILE.is_manifest(Path::new("/ws/arc-rules.toml")));
+    }
 
     #[test]
     fn an_analysis_survives_a_json_round_trip() {

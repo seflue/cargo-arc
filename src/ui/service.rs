@@ -10,6 +10,7 @@ use anyhow::Result;
 use serde::Serialize;
 
 use crate::layout::{JumpTable, Location, LocationId};
+use crate::model::LanguageProfile;
 use crate::render::{AnalysisSwitches, Appearance, Mode, Theme, html_page, project_name};
 
 /// Whether the page follows the editor's cursor. Passed through from stdin
@@ -165,6 +166,8 @@ pub(crate) struct JumpService<'a> {
     /// Read by every request, written only by the swap after a run.
     current: RwLock<Current>,
     root: PathBuf,
+    /// The analyzed language, whose files a save must touch to rerun.
+    profile: &'static LanguageProfile,
     /// The theme `--theme` pinned, if any.
     theme: Option<&'static Theme>,
     /// The last mode the editor sent. Held so that a page loaded after the
@@ -180,12 +183,14 @@ impl<'a> JumpService<'a> {
         pages: Pages,
         switches: AnalysisSwitches,
         root: PathBuf,
+        profile: &'static LanguageProfile,
         theme: Option<&'static Theme>,
         recompute: Recompute<'a>,
     ) -> Self {
         Self {
             current: RwLock::new(Current { pages, switches }),
             root,
+            profile,
             theme,
             editor_mode: Mutex::new(None),
             on_save: AtomicBool::new(true),
@@ -233,12 +238,11 @@ impl<'a> JumpService<'a> {
         self.on_save.store(on, Ordering::Relaxed);
     }
 
-    /// Whether the analysis reads `path` (absolute): a Rust source file or a
-    /// manifest under the workspace root.
+    /// Whether the analysis reads `path` (absolute): a source file or a
+    /// manifest of the analyzed language under the workspace root.
     pub(crate) fn reads(&self, path: &Path) -> bool {
         path.starts_with(&self.root)
-            && (path.extension().is_some_and(|ext| ext == "rs")
-                || path.file_name().is_some_and(|name| name == "Cargo.toml"))
+            && (self.profile.is_source(path) || self.profile.is_manifest(path))
     }
 
     /// The switches the served page was computed with.
@@ -382,6 +386,8 @@ fn workspace_relative(path: &Path, root: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analyze::rust::PROFILE as RUST_PROFILE;
+    use crate::model::Wording;
     use std::path::Path;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -408,6 +414,7 @@ mod tests {
             },
             AnalysisSwitches::default(),
             PathBuf::from(root),
+            &RUST_PROFILE,
             theme,
             Box::new(|_| anyhow::bail!("this service does not recompute")),
         )
@@ -461,6 +468,7 @@ mod tests {
             },
             AnalysisSwitches::default(),
             PathBuf::from("/ws"),
+            &RUST_PROFILE,
             None,
             recompute,
         );
@@ -642,6 +650,7 @@ mod tests {
             },
             AnalysisSwitches::default(),
             PathBuf::from("/ws"),
+            &RUST_PROFILE,
             None,
             Box::new(|_| anyhow::bail!("this service does not recompute")),
         );
@@ -855,6 +864,37 @@ mod tests {
                 on: false,
             })
         );
+    }
+
+    #[test]
+    fn reads_the_files_of_the_analyzed_language() {
+        static WIDGETS: LanguageProfile = LanguageProfile {
+            wording: Wording {
+                package: "widget",
+                packages: "widgets",
+                manifest: "widgets.cfg",
+            },
+            extensions: &["lua"],
+            manifest_files: &["widgets.cfg"],
+            tokei_language: tokei::LanguageType::Lua,
+        };
+        let service = JumpService::new(
+            Pages {
+                arc: Diagram { svg: String::new() },
+                hotspots: Diagram { svg: String::new() },
+                table: JumpTable::new(),
+            },
+            AnalysisSwitches::default(),
+            PathBuf::from("/ws"),
+            &WIDGETS,
+            None,
+            Box::new(|_| anyhow::bail!("this service does not recompute")),
+        );
+
+        assert!(service.reads(Path::new("/ws/lua/a/init.lua")));
+        assert!(service.reads(Path::new("/ws/widgets.cfg")));
+        assert!(!service.reads(Path::new("/ws/src/lib.rs")));
+        assert!(!service.reads(Path::new("/ws/Cargo.toml")));
     }
 
     #[test]

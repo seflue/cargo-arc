@@ -9,6 +9,11 @@ afterAll(restoreAll);
 // Minimal STATIC_DATA.classes mock
 if (!globalThis.STATIC_DATA) globalThis.STATIC_DATA = {};
 if (!globalThis.STATIC_DATA.classes) globalThis.STATIC_DATA.classes = {};
+globalThis.STATIC_DATA.wording = {
+  package: 'crate',
+  packages: 'crates',
+  manifest: 'Cargo.toml',
+};
 Object.assign(globalThis.STATIC_DATA.classes, {
   nodes: {
     packageNode: 'crate',
@@ -799,7 +804,7 @@ describe('SearchLogic', () => {
     });
 
     // The result count is split by kind, using the project's
-    // vocabulary for node kinds and edges (docs/GLOSSARY.md).
+    // wording for node kinds and edges (docs/GLOSSARY.md).
     test('result count splits by kind: modules and edges', () => {
       const origGetAllNodeIds = StaticData.getAllNodeIds;
       const origGetNode = StaticData.getNode;
@@ -871,6 +876,38 @@ describe('SearchLogic', () => {
       DomAdapter.getLabelGroup = origGetLabelGroup;
       DomAdapter.querySelectorAll = origQuerySelectorAll;
       DomAdapter.getElementById = origGetElementById;
+    });
+
+    test('result count names packages in the language word', () => {
+      const origWording = globalThis.STATIC_DATA.wording;
+      globalThis.STATIC_DATA.wording = {
+        package: 'widget',
+        packages: 'widgets',
+        manifest: 'widgets.cfg',
+      };
+      const origGetNode = StaticData.getNode;
+      StaticData.getNode = (id) =>
+        ({
+          p1: { name: 'one', type: 'package', parent: null },
+          p2: { name: 'two', type: 'external', parent: null },
+          m1: { name: 'three', type: 'module', parent: 'p1' },
+        })[id];
+
+      try {
+        expect(
+          SearchLogic._formatResultCount(new Set(['p1']), new Set(), 0),
+        ).toBe('1 widget');
+        expect(
+          SearchLogic._formatResultCount(
+            new Set(['p1', 'm1']),
+            new Set(['p2']),
+            0,
+          ),
+        ).toBe('2 widgets, 1 module');
+      } finally {
+        StaticData.getNode = origGetNode;
+        globalThis.STATIC_DATA.wording = origWording;
+      }
     });
 
     // A symbol-matched arc whose endpoint sits inside a collapsed

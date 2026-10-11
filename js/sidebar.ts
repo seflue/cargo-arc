@@ -149,7 +149,7 @@ const SidebarLogic = {
 
     html += `<div class="${S.content}">`;
     if (groups.length === 0) {
-      html += `<div class="${S.usageGroup}">Cargo.toml dependency</div>`;
+      html += `<div class="${S.usageGroup}">${STATIC_DATA.wording.manifest} dependency</div>`;
     } else {
       const sorted = [...groups].sort(
         (a, b) => b.locations.length - a.locations.length,
@@ -180,7 +180,7 @@ const SidebarLogic = {
     const symbolCount = groups.filter((g) => g.symbol).length;
     let footerText =
       groups.length === 0
-        ? 'Cargo.toml dependency'
+        ? `${STATIC_DATA.wording.manifest} dependency`
         : `${totalLocs} References \u00b7 ${symbolCount} Symbols`;
     if (overrideData?.originalArcs?.length) {
       footerText += ` \u00b7 ${overrideData.originalArcs.length} hidden Dependencies`;
@@ -341,7 +341,8 @@ const SidebarLogic = {
       html += `<span class="${fromClass} ${S.symbolName}"${fromStyle} data-node-id="${fromId}">${fromName}${this._renderCollapseIndicator(fromId)}</span>`;
       html += `<span class="${S.arrow}">&#x2192;</span>`;
       html += `<span class="${toClass} ${S.symbolName}"${toStyle} data-node-id="${toId}">${toName}${this._renderCollapseIndicator(toId)}</span>`;
-      html += `<span class="${S.extInfo}" title="Cargo.toml dependency &#8212; source references are not tracked for external crates">i</span>`;
+      const words = STATIC_DATA.wording;
+      html += `<span class="${S.extInfo}" title="${words.manifest} dependency &#8212; source references are not tracked for external ${words.packages}">i</span>`;
       html += `</div>`;
       html += `</div>`;
       return html;

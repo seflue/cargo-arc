@@ -194,10 +194,15 @@ const SearchLogic = {
       nodeKindCounts.set(kind, (nodeKindCounts.get(kind) ?? 0) + 1);
     }
 
+    const words = STATIC_DATA.wording;
+    const nouns = {
+      package: [words.package, words.packages],
+      module: ['module', 'modules'],
+    };
     const parts = [];
-    for (const kind of ['crate', 'module']) {
+    for (const kind of ['package', 'module'] as const) {
       const n = nodeKindCounts.get(kind) ?? 0;
-      if (n > 0) parts.push(`${n} ${kind}${n !== 1 ? 's' : ''}`);
+      if (n > 0) parts.push(`${n} ${nouns[kind][n !== 1 ? 1 : 0]}`);
     }
     if (edgeCount > 0) {
       parts.push(`${edgeCount} edge${edgeCount !== 1 ? 's' : ''}`);
@@ -207,12 +212,12 @@ const SearchLogic = {
   },
 
   /**
-   * A node's kind for the result count: 'module', or 'crate' for anything
+   * A node's kind for the result count: 'module', or 'package' for anything
    * else (including external and transitive-external nodes).
    */
-  _nodeKind(nodeId: string): 'crate' | 'module' {
+  _nodeKind(nodeId: string): 'package' | 'module' {
     const node = StaticData.getNode(nodeId);
-    return node?.type === 'module' ? 'module' : 'crate';
+    return node?.type === 'module' ? 'module' : 'package';
   },
 
   /**

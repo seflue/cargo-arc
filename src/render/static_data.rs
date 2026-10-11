@@ -6,6 +6,7 @@ use crate::js_bundle::bundle;
 use crate::layout::{
     CyclicEdgeInfo, ItemKind, LayoutIR, LocatedSource, LocationId, NodeId, TargetKind,
 };
+use crate::model::Wording;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
@@ -25,6 +26,26 @@ struct StaticData {
     #[cfg_attr(test, ts(optional))]
     expand_level: Option<usize>,
     theme: ThemeData,
+    wording: WordingData,
+}
+
+/// The analyzed language's words the page shows, see `model::Wording`.
+#[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+struct WordingData {
+    package: &'static str,
+    packages: &'static str,
+    manifest: &'static str,
+}
+
+impl From<&Wording> for WordingData {
+    fn from(words: &Wording) -> Self {
+        Self {
+            package: words.package,
+            packages: words.packages,
+            manifest: words.manifest,
+        }
+    }
 }
 
 /// What the page needs to style and choose themes: the glow opacity it
@@ -542,6 +563,7 @@ fn generate_static_data(
         symbol_localities,
         expand_level: config.expand_level,
         theme: ThemeData::current(),
+        wording: config.wording.into(),
     }
 }
 
@@ -1299,6 +1321,32 @@ mod tests {
         assert_eq!(arc.usages[0].symbol, "MyStruct");
         assert_eq!(arc.usages[0].locations[0].file, "src/a.rs");
         assert_eq!(arc.usages[0].locations[0].line, 5);
+    }
+
+    #[test]
+    fn static_data_carries_the_language_vocabulary() {
+        static WIDGETS: Wording = Wording {
+            package: "widget",
+            packages: "widgets",
+            manifest: "widgets.cfg",
+        };
+        let ir = LayoutIR::new();
+        let config = RenderConfig {
+            wording: &WIDGETS,
+            ..RenderConfig::default()
+        };
+        let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
+
+        let data = generate_static_data(&config, &ir, &positioned, &HashSet::new());
+
+        assert_eq!(
+            serde_json::to_value(&data.wording).unwrap(),
+            serde_json::json!({
+                "package": "widget",
+                "packages": "widgets",
+                "manifest": "widgets.cfg"
+            })
+        );
     }
 
     #[test]

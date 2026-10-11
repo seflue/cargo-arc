@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ops::Deref;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct SourceLocation {
@@ -484,8 +484,44 @@ pub(crate) struct ExternalsResult {
     pub(crate) workspace_deps: Vec<WorkspaceExternalDep>,
 }
 
-/// What a language adapter delivers about a project. Serializable, so an
-/// adapter can also run as a separate process.
+/// What a language brings besides its analysis: the words the page shows and
+/// the files that count as its source.
+#[derive(Debug)]
+pub struct LanguageProfile {
+    pub wording: Wording,
+    /// Source file extensions, without the dot.
+    pub extensions: &'static [&'static str],
+    /// File names of the manifests that declare package dependencies.
+    pub manifest_files: &'static [&'static str],
+    /// The language tokei counts code lines as.
+    pub tokei_language: tokei::LanguageType,
+}
+
+impl LanguageProfile {
+    #[must_use]
+    pub fn is_source(&self, path: &Path) -> bool {
+        path.extension()
+            .is_some_and(|ext| self.extensions.iter().any(|wanted| ext == *wanted))
+    }
+
+    #[must_use]
+    pub fn is_manifest(&self, path: &Path) -> bool {
+        path.file_name()
+            .is_some_and(|name| self.manifest_files.iter().any(|wanted| name == *wanted))
+    }
+}
+
+/// The language's own words for what the diagram shows.
+#[derive(Debug)]
+pub struct Wording {
+    /// A package, singular and lowercase.
+    pub package: &'static str,
+    pub packages: &'static str,
+    /// What the page calls the manifest that declares package dependencies.
+    pub manifest: &'static str,
+}
+
+/// What a language adapter delivers about a project.
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Analysis {
     pub(crate) packages: Vec<PackageInfo>,
