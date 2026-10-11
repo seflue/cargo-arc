@@ -9,7 +9,7 @@ level="${1:?usage: release.sh <version|major|minor|patch>}"
 # cargo publish counts them as uncommitted changes, hence --allow-dirty;
 # cargo-release has already refused any other change in the tree.
 trap 'rm -rf js/dist' EXIT
-bun build js/svg_script.js js/hotspot_script.js --format=iife --outdir js/dist
+bun build js/svg_script.ts js/hotspot_script.ts --format=iife --outdir js/dist
 
 # Package and build it before tagging, so a broken package stops the
 # release early.

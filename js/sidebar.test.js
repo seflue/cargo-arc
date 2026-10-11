@@ -14,7 +14,7 @@ import { restoreAll, substitute } from './test_support.js';
 
 afterAll(restoreAll);
 
-// Mock Selectors (sidebar.js uses _getMaxArcRightX → Selectors.allArcPaths)
+// Mock Selectors (sidebar.ts uses _getMaxArcRightX → Selectors.allArcPaths)
 substitute(Selectors, {
   allArcPaths: () => '.dep-arc, .cycle-arc, .virtual-arc',
 });
@@ -154,7 +154,7 @@ globalThis.STATIC_DATA = {
   },
 };
 
-// Mock StaticData module (sidebar.js uses StaticData.getNode for name resolution)
+// Mock StaticData module (sidebar.ts uses StaticData.getNode for name resolution)
 substitute(StaticData, {
   getNode(id) {
     return globalThis.STATIC_DATA.nodes?.[id] || null;
@@ -184,7 +184,7 @@ substitute(StaticData, {
   },
 });
 
-// sidebar.js measures the visible area on document.documentElement. Tests set
+// sidebar.ts measures the visible area on document.documentElement. Tests set
 // the viewport through window.innerWidth/innerHeight; with no scrollbar the
 // visible area is the same, so the mock mirrors those values.
 globalThis.document = {
@@ -3248,7 +3248,7 @@ describe('SidebarLogic', () => {
 
   // Minimal DOM parsed from the HTML the sidebar actually renders, since the
   // project has no jsdom. Tests therefore run against the real selector
-  // strings in sidebar.js. Supports only what those selectors use: descendant
+  // strings in sidebar.ts. Supports only what those selectors use: descendant
   // `.class`/`[attr]` lookups, `:scope > a > b` child chains, and
   // classList/attr/dataset/closest.
   function parseCompound(compound) {
@@ -4022,7 +4022,7 @@ describe('SidebarLogic', () => {
     // A minimal stand-in for AppState's click/hover slots (getSelection's
     // click-priority-over-hover, rowPinClick's toggle-or-move, setHover
     // guarded by a pin), just enough to drive _resolvedFocusArc the way
-    // svg_script.js wires it.
+    // svg_script.ts wires it.
     function makeFakeSelection() {
       let click = null;
       let hover = null;

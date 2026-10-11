@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.base.json",
+  "include": [
+    "js/hotspot_*.ts",
+    "js/jump_icons.ts",
+    "js/globals.d.ts",
+    "js/hotspot_page.d.ts"
+  ]
+}

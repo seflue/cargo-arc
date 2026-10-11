@@ -197,7 +197,7 @@ color_group!(
 );
 
 color_group!(
-    /// The jump popover next to a hovered node (`js/jump_icons.js`).
+    /// The jump popover next to a hovered node (`js/jump_icons.ts`).
     PopoverColors, "popover" {
         bg => "bg",
         border => "border",

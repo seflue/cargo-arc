@@ -176,7 +176,7 @@ fn circle_style(commits: usize, reference: usize) -> String {
     )
 }
 
-/// Return the SVG root at 100% of its container, which `hotspot_layout.js`
+/// Return the SVG root at 100% of its container, which `hotspot_layout.ts`
 /// fills to the window; `viewBox` keeps the size for a file opened without JS.
 fn render_hotspot_header(width: f32, height: f32, theme: Option<&Theme>) -> String {
     let pinned = theme.map_or(String::new(), |theme| {
@@ -191,7 +191,7 @@ fn render_hotspot_header(width: f32, height: f32, theme: Option<&Theme>) -> Stri
 }
 
 /// Return the map's part of the shared toolbar: no buttons of its own, and
-/// the breadcrumb as the second line, filled by `hotspot_script.js`.
+/// the breadcrumb as the second line, filled by `hotspot_script.ts`.
 fn toolbar_content() -> super::toolbar::Content {
     super::toolbar::Content {
         second_line: format!(
@@ -336,7 +336,7 @@ fn sidebar_header(workspace: &str, volatility: MapVolatility) -> String {
 }
 
 /// Render the sidebar below the toolbar at `top`: header, details panel,
-/// ranked list, list/bars toggle and grey note. `hotspot_script.js` fills in
+/// ranked list, list/bars toggle and grey note. `hotspot_script.ts` fills in
 /// the details and drives the toggle.
 fn render_hotspot_sidebar(
     width: f32,
@@ -857,7 +857,7 @@ mod tests {
         assert!(svg.contains("function createTheme("));
     }
 
-    /// `hotspot_jump_icon.js` draws its own copy of the `#jump-icon` symbol,
+    /// `hotspot_jump_icon.ts` draws its own copy of the `#jump-icon` symbol,
     /// so the emitted page must not ship `JumpIcons`'s popover and chip code
     /// just for that one glyph (the arc page's own bundle still does).
     #[test]

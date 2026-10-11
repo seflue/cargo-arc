@@ -34,14 +34,14 @@ fn main() {
             .unwrap_or_else(|e| panic!("cannot list js/: {e}"))
             .path();
         let name = path.to_string_lossy();
-        if name.ends_with(".js") && !name.ends_with(".test.js") {
+        if name.ends_with(".ts") && !name.ends_with(".d.ts") {
             println!("cargo:rerun-if-changed={name}");
         }
     }
 
     let output = Command::new("bun")
         .arg("build")
-        .args(ENTRIES.map(|entry| format!("js/{entry}.js")))
+        .args(ENTRIES.map(|entry| format!("js/{entry}.ts")))
         .arg("--format=iife")
         .arg("--outdir")
         .arg(out_dir)

@@ -23,9 +23,8 @@ homepage = "https://github.com/seflue/cargo-arc"
 include = [
   "/src/**/*.rs",
   "/build.rs",
-  "/js/*.js",
-  "!/js/*.test.js",
-  "!/js/test_support.js",
+  "/js/*.ts",
+  "!/js/*.d.ts",
   "/js/dist/*.js",
   "/package.json",
   "/README.md",

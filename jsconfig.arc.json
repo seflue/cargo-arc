@@ -1,5 +1,0 @@
-{
-  "extends": "./jsconfig.base.json",
-  "include": ["js/*.js", "js/globals.d.ts", "js/arc_page.d.ts"],
-  "exclude": ["js/*.test.js", "js/hotspot_*.js", "js/jump_icons.js"]
-}

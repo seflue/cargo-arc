@@ -23,7 +23,7 @@ function createFakeSelect() {
 }
 
 // An element with real addEventListener/_fire, so tests can trigger the
-// handlers hotspot_script.js attaches (pattern: makeBadgeMock in
+// handlers hotspot_script.ts attaches (pattern: makeBadgeMock in
 // sidebar.test.js, createFakeSvgElement in jump_icons.test.js).
 function createFakeInteractiveElement(tag) {
   const el = createFakeElement(tag);
@@ -145,7 +145,7 @@ const elements = {
   'jump-status': jumpStatusEl,
   'toolbar-fo': toolbarFoEl,
 };
-// hotspot_script.js reads DomAdapter, document, window, location, Theme and
+// hotspot_script.ts reads DomAdapter, document, window, location, Theme and
 // STATIC_DATA as bare globals, the way the concatenated bundle provides
 // them on a real page. Set them up before requiring it, so its own
 // module-scope bootstrap (guarded on `document`) runs against these stubs
@@ -153,7 +153,7 @@ const elements = {
 substitute(DomAdapter, {
   ...dom,
   getElementById: (id) => elements[id] ?? dom.getElementById(id),
-  // HotspotJumpIcon's glyph adds its own click listener (dom_adapter.js's
+  // HotspotJumpIcon's glyph adds its own click listener (dom_adapter.ts's
   // plain createFakeElement does not carry one), the same fixture pattern
   // jump_icons.test.js uses for its own fake SVG elements.
   createSvgElement: (tag) => createFakeInteractiveElement(tag),
@@ -202,7 +202,7 @@ global.STATIC_DATA = {
       detailsTitle: 'hotspot-details-title',
       tooltip: 'hotspot-tooltip',
       // A value only this fixture would produce, so the test below only
-      // passes if `hotspot_script.js` actually forwards it into the icon.
+      // passes if `hotspot_script.ts` actually forwards it into the icon.
       jumpIcon: 'fixture-jump-icon',
     },
   },

@@ -287,7 +287,7 @@ pub(super) fn render_tree_lines(
 }
 
 /// Glyph a collapsed parent shows while it hides a cycle node; the same
-/// loop-closer the sidebar puts before a closing edge (js/sidebar.js).
+/// loop-closer the sidebar puts before a closing edge (js/sidebar.ts).
 pub(super) const CYCLE_MARKER: &str = "\u{21ba}";
 
 /// Which nodes a cycle touches, for the label styling under cluster mode.
