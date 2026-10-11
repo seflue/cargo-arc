@@ -79,7 +79,7 @@ const TEST_STATIC_DATA = {
     'fn_1-fn_2': {
       from: 'fn_1',
       to: 'fn_2',
-      context: { kind: 'production', subKind: null, features: [] },
+      context: { kind: 'production', subKind: null },
       usages: [
         {
           symbol: 'helper',
@@ -91,7 +91,7 @@ const TEST_STATIC_DATA = {
     'fn_1-fn_3': {
       from: 'fn_1',
       to: 'fn_3',
-      context: { kind: 'production', subKind: null, features: [] },
+      context: { kind: 'production', subKind: null },
       usages: [
         {
           symbol: 'process',
@@ -106,7 +106,7 @@ const TEST_STATIC_DATA = {
     'mod_b-mod_a': {
       from: 'mod_b',
       to: 'mod_a',
-      context: { kind: 'production', subKind: null, features: [] },
+      context: { kind: 'production', subKind: null },
       usages: [
         {
           symbol: 'init',
@@ -118,7 +118,7 @@ const TEST_STATIC_DATA = {
     'crate-mod_a': {
       from: 'crate',
       to: 'mod_a',
-      context: { kind: 'production', subKind: null, features: [] },
+      context: { kind: 'production', subKind: null },
       usages: [
         {
           symbol: 'mod_a',
@@ -130,7 +130,7 @@ const TEST_STATIC_DATA = {
     'crate-mod_b': {
       from: 'crate',
       to: 'mod_b',
-      context: { kind: 'production', subKind: null, features: [] },
+      context: { kind: 'production', subKind: null },
       usages: [
         {
           symbol: 'mod_b',
@@ -142,7 +142,7 @@ const TEST_STATIC_DATA = {
     'mod_a-fn_1': {
       from: 'mod_a',
       to: 'fn_1',
-      context: { kind: 'production', subKind: null, features: [] },
+      context: { kind: 'production', subKind: null },
       usages: [
         {
           symbol: 'fn_1',
@@ -154,7 +154,7 @@ const TEST_STATIC_DATA = {
     'mod_a-fn_2': {
       from: 'mod_a',
       to: 'fn_2',
-      context: { kind: 'production', subKind: null, features: [] },
+      context: { kind: 'production', subKind: null },
       usages: [
         {
           symbol: 'fn_2',
@@ -166,7 +166,7 @@ const TEST_STATIC_DATA = {
     'mod_b-fn_3': {
       from: 'mod_b',
       to: 'fn_3',
-      context: { kind: 'production', subKind: null, features: [] },
+      context: { kind: 'production', subKind: null },
       usages: [
         {
           symbol: 'fn_3',
@@ -269,7 +269,7 @@ const PARENT_ARC_DATA = {
     'p-c1': {
       from: 'p',
       to: 'c1',
-      context: { kind: 'production', subKind: null, features: [] },
+      context: { kind: 'production', subKind: null },
       usages: [
         {
           symbol: 'c1_fn',
@@ -281,7 +281,7 @@ const PARENT_ARC_DATA = {
     'p-c2': {
       from: 'p',
       to: 'c2',
-      context: { kind: 'production', subKind: null, features: [] },
+      context: { kind: 'production', subKind: null },
       usages: [
         {
           symbol: 'c2_fn',
@@ -293,7 +293,7 @@ const PARENT_ARC_DATA = {
     'c1-c3': {
       from: 'c1',
       to: 'c3',
-      context: { kind: 'production', subKind: null, features: [] },
+      context: { kind: 'production', subKind: null },
       usages: [
         {
           symbol: 'c3_fn',
@@ -594,7 +594,7 @@ describe('DerivedState', () => {
           'child1-child2': {
             from: 'child1',
             to: 'child2',
-            context: { kind: 'production', subKind: null, features: [] },
+            context: { kind: 'production', subKind: null },
             usages: [
               {
                 symbol: 'helper',
@@ -871,7 +871,7 @@ describe('DerivedState', () => {
           'crate-ext_crate': {
             from: 'crate',
             to: 'ext_crate',
-            context: { kind: 'production', subKind: null, features: [] },
+            context: { kind: 'production', subKind: null },
             usages: [
               {
                 symbol: 'external_call',
@@ -1222,7 +1222,7 @@ describe('DerivedState', () => {
           'A-B': {
             from: 'A',
             to: 'B',
-            context: { kind: 'production', subKind: null, features: [] },
+            context: { kind: 'production', subKind: null },
             usages: [
               {
                 symbol: 'prod_fn',
@@ -1234,7 +1234,7 @@ describe('DerivedState', () => {
           'B-A': {
             from: 'B',
             to: 'A',
-            context: { kind: 'test', subKind: 'unit', features: [] },
+            context: { kind: 'test', subKind: 'unit' },
             usages: [
               {
                 symbol: 'test_fn',
@@ -1303,7 +1303,7 @@ describe('DerivedState', () => {
           'X-Y': {
             from: 'X',
             to: 'Y',
-            context: { kind: 'test', subKind: 'unit', features: [] },
+            context: { kind: 'test', subKind: 'unit' },
             usages: [
               {
                 symbol: 'test_only',
@@ -1430,7 +1430,7 @@ describe('DerivedState', () => {
     const mkArc = (from, to, sccId) => ({
       from,
       to,
-      context: { kind: 'production', subKind: null, features: [] },
+      context: { kind: 'production', subKind: null },
       usages: [
         {
           symbol: 's',
@@ -1722,7 +1722,7 @@ describe('DerivedState', () => {
     const mkArc = (from, to, sccId) => ({
       from,
       to,
-      context: { kind: 'production', subKind: null, features: [] },
+      context: { kind: 'production', subKind: null },
       usages: [
         {
           symbol: 's',
@@ -1894,7 +1894,7 @@ describe('DerivedState', () => {
             from: 'X',
             to: 'Y',
             cycleIds: [0],
-            context: { kind: 'production', subKind: null, features: [] },
+            context: { kind: 'production', subKind: null },
             usages: [
               {
                 symbol: 'sym1',
@@ -1907,7 +1907,7 @@ describe('DerivedState', () => {
             from: 'Y',
             to: 'X',
             cycleIds: [0],
-            context: { kind: 'production', subKind: null, features: [] },
+            context: { kind: 'production', subKind: null },
             usages: [
               {
                 symbol: 'sym2',
@@ -1983,7 +1983,7 @@ describe('DerivedState', () => {
             from: 'P',
             to: 'Q',
             cycleIds: [0],
-            context: { kind: 'production', subKind: null, features: [] },
+            context: { kind: 'production', subKind: null },
             usages: [
               {
                 symbol: 'sym1',
@@ -1996,7 +1996,7 @@ describe('DerivedState', () => {
             from: 'Q',
             to: 'R',
             cycleIds: [0],
-            context: { kind: 'production', subKind: null, features: [] },
+            context: { kind: 'production', subKind: null },
             usages: [
               {
                 symbol: 'sym2',
@@ -2009,7 +2009,7 @@ describe('DerivedState', () => {
             from: 'R',
             to: 'P',
             cycleIds: [0],
-            context: { kind: 'production', subKind: null, features: [] },
+            context: { kind: 'production', subKind: null },
             usages: [
               {
                 symbol: 'sym3',
@@ -2118,7 +2118,7 @@ describe('DerivedState', () => {
         'mod_a-serde': {
           from: 'mod_a',
           to: 'serde',
-          context: { kind: 'production', subKind: null, features: [] },
+          context: { kind: 'production', subKind: null },
           usages: [
             {
               symbol: 'Serialize',
@@ -2130,7 +2130,7 @@ describe('DerivedState', () => {
         'mod_a-tokio': {
           from: 'mod_a',
           to: 'tokio',
-          context: { kind: 'production', subKind: null, features: [] },
+          context: { kind: 'production', subKind: null },
           usages: [
             {
               symbol: 'spawn',
@@ -2145,7 +2145,7 @@ describe('DerivedState', () => {
         'crate-mod_a': {
           from: 'crate',
           to: 'mod_a',
-          context: { kind: 'production', subKind: null, features: [] },
+          context: { kind: 'production', subKind: null },
           usages: [
             {
               symbol: 'mod_a',

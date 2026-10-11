@@ -45,7 +45,7 @@ const TEST_STATIC_DATA = {
     'fn_1-fn_2': {
       from: 'fn_1',
       to: 'fn_2',
-      context: { kind: 'production', subKind: null, features: [] },
+      context: { kind: 'production', subKind: null },
       usages: [
         {
           symbol: 'call_fn2',
@@ -57,7 +57,7 @@ const TEST_STATIC_DATA = {
     'mod_a-crate': {
       from: 'mod_a',
       to: 'crate',
-      context: { kind: 'production', subKind: null, features: [] },
+      context: { kind: 'production', subKind: null },
       usages: [
         {
           symbol: 'use_crate',
@@ -73,7 +73,7 @@ const TEST_STATIC_DATA = {
     'fn_1-crate': {
       from: 'fn_1',
       to: 'crate',
-      context: { kind: 'production', subKind: null, features: [] },
+      context: { kind: 'production', subKind: null },
       cycleIds: [0],
       usages: [
         {
@@ -89,7 +89,7 @@ const TEST_STATIC_DATA = {
     'crate-fn_1': {
       from: 'crate',
       to: 'fn_1',
-      context: { kind: 'production', subKind: null, features: [] },
+      context: { kind: 'production', subKind: null },
       cycleIds: [0],
       usages: [
         {
@@ -226,7 +226,7 @@ describe('StaticData', () => {
       TEST_STATIC_DATA.arcs['test-arc'] = {
         from: 'fn_1',
         to: 'fn_2',
-        context: { kind: 'test', subKind: 'unit', features: [] },
+        context: { kind: 'test', subKind: 'unit' },
         usages: [
           {
             symbol: 'test_fn',
