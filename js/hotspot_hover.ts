@@ -8,12 +8,15 @@ import { TextMeasure } from './text_metrics.js';
 // (self-contained SVG, ADR-006 - no separate stylesheet, no foreignObject).
 
 /** The number of direct children `key` has, for a container's tooltip row. */
-function childCount(nodes, key) {
+function childCount(
+  nodes: Record<string, { parent?: string; name: string; lines: number }>,
+  key: string,
+) {
   return HotspotTree.childrenOf(nodes).get(key)?.length ?? 0;
 }
 
 /** The tooltip's title: the node's path, or its name when it has none (the workspace root). */
-function tooltipTitle(node) {
+function tooltipTitle(node: { file: string; name: string }) {
   return node.file || node.name;
 }
 
@@ -76,7 +79,7 @@ function createHoverTooltip({
   canvasWidth: number;
   tooltipClass?: string;
 }) {
-  let group = null;
+  let group: SVGElement | null = null;
   // Live, not the value captured at creation: a resize calls `setCanvasWidth`
   // so a tooltip already open (or shown next) clamps against the current
   // canvas, not the one measured when the page first loaded.
@@ -119,19 +122,24 @@ function createHoverTooltip({
     g.setAttribute('class', tooltipClass);
 
     const bg = DomAdapter.createSvgElement('rect');
-    bg.setAttribute('x', x);
-    bg.setAttribute('y', y);
-    bg.setAttribute('width', boxWidth);
-    bg.setAttribute('height', height);
-    bg.setAttribute('rx', 3);
+    bg.setAttribute('x', String(x));
+    bg.setAttribute('y', String(y));
+    bg.setAttribute('width', String(boxWidth));
+    bg.setAttribute('height', String(height));
+    bg.setAttribute('rx', String(3));
     g.appendChild(bg);
 
     lines.forEach((line, index) => {
       const text = DomAdapter.createSvgElement('text');
-      text.setAttribute('x', x + TOOLTIP_PAD);
+      text.setAttribute('x', String(x + TOOLTIP_PAD));
       text.setAttribute(
         'y',
-        y + TOOLTIP_PAD + TOOLTIP_LINE_HEIGHT * index + TOOLTIP_LINE_HEIGHT / 2,
+        String(
+          y +
+            TOOLTIP_PAD +
+            TOOLTIP_LINE_HEIGHT * index +
+            TOOLTIP_LINE_HEIGHT / 2,
+        ),
       );
       text.textContent = line;
       g.appendChild(text);
@@ -142,7 +150,7 @@ function createHoverTooltip({
   }
 
   /** Called on resize, so a tooltip clamps against the current canvas width. */
-  function setCanvasWidth(newWidth) {
+  function setCanvasWidth(newWidth: number) {
     width = newWidth;
   }
 

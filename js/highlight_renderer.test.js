@@ -48,7 +48,7 @@ Object.assign(globalThis.STATIC_DATA.classes, {
 });
 
 import { ArcLogic } from './arc_logic.js';
-import { createFakeElement, createMockDomAdapter } from './dom_adapter.js';
+import { createFakeElement, createMockDomAdapter } from './dom_mock.js';
 import { HighlightRenderer } from './highlight_renderer.js';
 import { LayerManager } from './layer_manager.js';
 import { Selectors } from './selectors.js';

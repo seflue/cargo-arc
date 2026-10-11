@@ -1,6 +1,7 @@
 import { AppState } from './app_state.js';
 import { ArcLogic } from './arc_logic.js';
 import { HighlightLogic } from './highlight_logic.js';
+import type { StaticData } from './static_data.js';
 import { TreeLogic } from './tree_logic.js';
 
 // derived_state.ts - Pure functions to derive display state from core state
@@ -36,6 +37,20 @@ export interface HighlightState {
   isPinned: boolean;
 }
 
+type Position = { x: number; y: number; width: number; height: number };
+type ArcPathContext = { maxRight: number; rowHeight: number; yOffset: number };
+type ArcDescriptor = {
+  key: string;
+  fromId: string;
+  toId: string;
+  fromInSet: boolean;
+  toInSet: boolean;
+  originalWidth: number;
+  isVirtual: boolean;
+  isNonProduction?: boolean;
+  isCycle?: boolean;
+};
+
 const DerivedState = {
   /**
    * Derive which nodes are visible based on collapsed and filter state.
@@ -48,7 +63,7 @@ const DerivedState = {
    */
   deriveNodeVisibility(
     collapsed: Set<string>,
-    staticData: any,
+    staticData: typeof StaticData,
     hiddenByFilter?: Set<string>,
   ): Set<string> {
     const parentMap = staticData.buildParentMap();
@@ -75,7 +90,10 @@ const DerivedState = {
    * @param staticData - StaticData accessor
    * @returns - Set of visible arc IDs
    */
-  deriveArcVisibility(visibleNodes: Set<string>, staticData: any): Set<string> {
+  deriveArcVisibility(
+    visibleNodes: Set<string>,
+    staticData: typeof StaticData,
+  ): Set<string> {
     const visibleArcs = new Set<string>();
 
     for (const arcId of staticData.getAllArcIds()) {
@@ -121,7 +139,7 @@ const DerivedState = {
   deriveHighlightSet(
     nodeId: string,
     collapsed: Set<string>,
-    staticData: any,
+    staticData: typeof StaticData,
   ): Set<string> {
     const result = new Set([nodeId]);
 
@@ -180,34 +198,32 @@ const DerivedState = {
    */
   computeCurrentPositions(
     collapsed: Set<string>,
-    staticData: any,
+    staticData: typeof StaticData,
     margin: number,
     toolbarHeight: number,
     rowHeight: number,
-    widthOverrides,
-    hiddenByFilter,
-  ): Map<string, { x: number; y: number; width: number; height: number }> {
+    widthOverrides?: Map<string, number>,
+    hiddenByFilter?: Set<string>,
+  ): Map<string, Position> {
     const visibleNodes = this.deriveNodeVisibility(
       collapsed,
       staticData,
       hiddenByFilter,
     );
-    const positions = new Map();
+    const positions = new Map<string, Position>();
 
     // Sort visible nodes by original Y position
-    const sortedIds = [...visibleNodes].sort((a, b) => {
-      const posA = staticData.getOriginalPosition(a);
-      const posB = staticData.getOriginalPosition(b);
-      return posA.y - posB.y;
-    });
+    const sorted = [...visibleNodes]
+      .flatMap((nodeId) => {
+        const orig = staticData.getOriginalPosition(nodeId);
+        return orig ? [{ nodeId, orig }] : [];
+      })
+      .sort((a, b) => a.orig.y - b.orig.y);
 
     // Compute new Y positions based on visible order
     let currentY = margin + toolbarHeight;
-    for (const nodeId of sortedIds) {
-      const orig = staticData.getOriginalPosition(nodeId);
-      const width = widthOverrides?.has(nodeId)
-        ? widthOverrides.get(nodeId)
-        : orig.width;
+    for (const { nodeId, orig } of sorted) {
+      const width = widthOverrides?.get(nodeId) ?? orig.width;
       positions.set(nodeId, {
         x: orig.x,
         y: currentY,
@@ -231,14 +247,11 @@ const DerivedState = {
    * @returns null when no active selection
    */
   deriveHighlightState(
-    appState: any,
-    staticData: any,
-    virtualArcUsages: Map<string, Array<any>>,
+    appState: AppState,
+    staticData: typeof StaticData,
+    virtualArcUsages: Map<string, ArcData['usages']>,
     hiddenByFilter: Set<string>,
-    positions: Map<
-      string,
-      { x: number; y: number; width: number; height: number }
-    >,
+    positions: Map<string, Position>,
     rowHeight: number,
   ): HighlightState | null {
     const selection = AppState.getSelection(appState);
@@ -247,7 +260,7 @@ const DerivedState = {
       AppState.isClusterMode(appState) && selectedScc != null;
     if (selection.mode === 'none' && !clusterActive) return null;
 
-    const result = {
+    const result: HighlightState = {
       nodeHighlights: new Map(),
       arcHighlights: new Map(),
       shadowData: new Map(),
@@ -256,15 +269,16 @@ const DerivedState = {
       // has-pinned affordances apply before any inner edge is pinned.
       isPinned: selection.mode === 'click' || clusterActive,
     };
-    const ctx = {
+    const ctx: ArcPathContext = {
       maxRight: this.computeMaxRight(positions),
       rowHeight,
       yOffset: 3,
     };
 
-    if (selection.type === 'node') {
+    const { type, id } = selection;
+    if (type === 'node' && id !== null) {
       this._deriveForNodeSelection(
-        selection,
+        id,
         appState,
         staticData,
         virtualArcUsages,
@@ -273,9 +287,9 @@ const DerivedState = {
         ctx,
         result,
       );
-    } else if (selection.type === 'arc') {
+    } else if (type === 'arc' && id !== null) {
       this._deriveForArcSelection(
-        selection,
+        id,
         selectedScc,
         clusterActive,
         staticData,
@@ -301,22 +315,22 @@ const DerivedState = {
 
   /** @private Node-selection: highlight set + all connected arcs (regular + virtual). */
   _deriveForNodeSelection(
-    selection,
-    appState,
-    staticData,
-    virtualArcUsages,
-    hiddenByFilter,
-    positions,
-    ctx,
-    result,
+    selectedId: string,
+    appState: AppState,
+    staticData: typeof StaticData,
+    virtualArcUsages: Map<string, ArcData['usages']>,
+    hiddenByFilter: Set<string>,
+    positions: Map<string, Position>,
+    ctx: ArcPathContext,
+    result: HighlightState,
   ) {
     const highlightSet = this.deriveHighlightSet(
-      selection.id,
+      selectedId,
       appState.collapsed,
       staticData,
     );
 
-    const primaryNode = staticData.getNode(selection.id);
+    const primaryNode = staticData.getNode(selectedId);
     if (primaryNode) {
       const cssClass =
         primaryNode.type === 'package'
@@ -327,13 +341,13 @@ const DerivedState = {
                 primaryNode.type === 'external'
               ? 'selectedExternal'
               : 'selectedModule';
-      result.nodeHighlights.set(selection.id, { role: 'current', cssClass });
+      result.nodeHighlights.set(selectedId, { role: 'current', cssClass });
     }
 
     // Group mode: mark children as group-member so they are not dimmed
     if (highlightSet.size > 1) {
       for (const nodeId of highlightSet) {
-        if (nodeId !== selection.id) {
+        if (nodeId !== selectedId) {
           result.nodeHighlights.set(nodeId, {
             role: 'group-member',
             cssClass: 'groupMember',
@@ -349,13 +363,13 @@ const DerivedState = {
         hiddenByFilter,
         highlightSet,
         groupMode,
-        selection.id,
+        selectedId,
       ),
       ...this._collectVirtualArcDescs(
         virtualArcUsages,
         highlightSet,
         groupMode,
-        selection.id,
+        selectedId,
       ),
     ];
     this._processArcDescriptors(descs, positions, ctx, result);
@@ -367,11 +381,11 @@ const DerivedState = {
         !arc ||
         !arc.cycleIds ||
         arc.cycleIds.length === 0 ||
-        arc.from !== selection.id
+        arc.from !== selectedId
       )
         continue;
       const partner = arc.to;
-      const reverseArc = staticData.getArc(`${partner}-${selection.id}`);
+      const reverseArc = staticData.getArc(`${partner}-${selectedId}`);
       if (reverseArc?.cycleIds && reverseArc.cycleIds.length > 0) {
         const existing = result.nodeHighlights.get(partner);
         if (!existing || existing.role !== 'current') {
@@ -391,17 +405,16 @@ const DerivedState = {
    *  the selected SCC (or no SCC selected at all) is ignored as a focus and
    *  falls back to the whole-SCC highlight / plain single-edge pick. */
   _deriveForArcSelection(
-    selection,
-    selectedScc,
-    clusterActive,
-    staticData,
-    virtualArcUsages,
-    hiddenByFilter,
-    positions,
-    ctx,
-    result,
+    arcId: string,
+    selectedScc: number | null,
+    clusterActive: boolean,
+    staticData: typeof StaticData,
+    virtualArcUsages: Map<string, ArcData['usages']>,
+    hiddenByFilter: Set<string>,
+    positions: Map<string, Position>,
+    ctx: ArcPathContext,
+    result: HighlightState,
   ) {
-    const arcId = selection.id;
     const [fromId, toId] = arcId.split('-');
 
     const arc = staticData.getArc(arcId);
@@ -428,7 +441,7 @@ const DerivedState = {
       cssClass: 'depNode',
     });
 
-    const descs = [];
+    const descs: ArcDescriptor[] = [];
     if (arc && !hiddenByFilter.has(arcId)) {
       descs.push({
         key: arcId,
@@ -441,8 +454,8 @@ const DerivedState = {
         isCycle: isFocusArc,
       });
     }
-    if (virtualArcUsages.has(arcId)) {
-      const usages = virtualArcUsages.get(arcId);
+    const usages = virtualArcUsages.get(arcId);
+    if (usages) {
       const count = usages.reduce((sum, g) => sum + g.locations.length, 0);
       descs.push({
         key: `v:${arcId}`,
@@ -463,12 +476,12 @@ const DerivedState = {
    *  focused, and as the fallback when the focused edge lies outside the
    *  selected SCC. */
   _deriveForClusterWide(
-    selectedScc,
-    staticData,
-    hiddenByFilter,
-    positions,
-    ctx,
-    result,
+    selectedScc: number | null,
+    staticData: typeof StaticData,
+    hiddenByFilter: Set<string>,
+    positions: Map<string, Position>,
+    ctx: ArcPathContext,
+    result: HighlightState,
   ) {
     for (const nodeId of staticData.getAllNodeIds()) {
       if (staticData.getNode(nodeId)?.sccId === selectedScc) {
@@ -479,7 +492,7 @@ const DerivedState = {
       }
     }
 
-    const descs = [];
+    const descs: ArcDescriptor[] = [];
     for (const arcId of staticData.getAllArcIds()) {
       const arc = staticData.getArc(arcId);
       if (arc?.sccId === selectedScc && !hiddenByFilter.has(arcId)) {
@@ -506,13 +519,13 @@ const DerivedState = {
    *  @param selectionId - The primarily selected node (parent).
    */
   _collectRegularArcDescs(
-    staticData,
-    hiddenByFilter,
-    highlightSet,
+    staticData: typeof StaticData,
+    hiddenByFilter: Set<string>,
+    highlightSet: Set<string>,
     groupMode: boolean,
     selectionId: string,
-  ) {
-    const descs = [];
+  ): ArcDescriptor[] {
+    const descs: ArcDescriptor[] = [];
     for (const arcId of staticData.getAllArcIds()) {
       if (hiddenByFilter.has(arcId)) continue;
       const arc = staticData.getArc(arcId);
@@ -542,12 +555,12 @@ const DerivedState = {
    *  @param selectionId - The primarily selected node (parent).
    */
   _collectVirtualArcDescs(
-    virtualArcUsages,
-    highlightSet,
+    virtualArcUsages: Map<string, ArcData['usages']>,
+    highlightSet: Set<string>,
     groupMode: boolean,
     selectionId: string,
-  ) {
-    const descs = [];
+  ): ArcDescriptor[] {
+    const descs: ArcDescriptor[] = [];
     for (const [vArcId, usages] of virtualArcUsages) {
       const [fromId, toId] = vArcId.split('-');
       const fromInSet = highlightSet.has(fromId);
@@ -573,7 +586,12 @@ const DerivedState = {
    *  are established before non-production arcs — _markEndpointNodes only sets
    *  roles that are unset or group-member, so production wins on conflict.
    */
-  _processArcDescriptors(descriptors, positions, ctx, result) {
+  _processArcDescriptors(
+    descriptors: ArcDescriptor[],
+    positions: Map<string, Position>,
+    ctx: ArcPathContext,
+    result: HighlightState,
+  ) {
     descriptors.sort(
       (a, b) => (a.isNonProduction ? 1 : 0) - (b.isNonProduction ? 1 : 0),
     );
@@ -612,13 +630,13 @@ const DerivedState = {
 
   /** @private Compute highlight entry + shadow for a single arc. */
   _computeArcHighlightEntry(
-    originalWidth,
-    isVirtual,
-    relationType,
-    fromPos,
-    toPos,
-    ctx,
-    isCycle,
+    originalWidth: number,
+    isVirtual: boolean,
+    relationType: string,
+    fromPos: Position | undefined,
+    toPos: Position | undefined,
+    ctx: ArcPathContext,
+    isCycle: boolean,
   ) {
     const highlightWidth =
       HighlightLogic.calculateHighlightWidth(originalWidth);
@@ -638,12 +656,12 @@ const DerivedState = {
 
   /** @private Compute shadow glow data for an arc path. */
   _computeShadowEntry(
-    originalWidth,
-    relationType,
-    fromPos,
-    toPos,
-    ctx,
-    isCycle,
+    originalWidth: number,
+    relationType: string,
+    fromPos: Position | undefined,
+    toPos: Position | undefined,
+    ctx: ArcPathContext,
+    isCycle: boolean,
   ) {
     if (!fromPos || !toPos) return null;
     const pathData = ArcLogic.calculateArcPathFromPositions(
@@ -671,7 +689,13 @@ const DerivedState = {
   /** @private Set CSS classes for arc endpoint nodes.
    *  depNode/dependentNode may override group-member (to give green/purple border).
    */
-  _markEndpointNodes(fromId, toId, _fromInSet, _toInSet, nodeHighlights) {
+  _markEndpointNodes(
+    fromId: string,
+    toId: string,
+    _fromInSet: boolean,
+    _toInSet: boolean,
+    nodeHighlights: HighlightState['nodeHighlights'],
+  ) {
     const fromRole = nodeHighlights.get(fromId)?.role;
     if (!fromRole || fromRole === 'group-member') {
       nodeHighlights.set(fromId, {

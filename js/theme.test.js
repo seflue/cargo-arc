@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, mock, test } from 'bun:test';
-import { createFakeElement, DomAdapter } from './dom_adapter.js';
+import { DomAdapter } from './dom_adapter.js';
+import { createFakeElement } from './dom_mock.js';
 import { restoreAll, substitute } from './test_support.js';
 import { bootstrapControls, createTheme } from './theme.js';
 

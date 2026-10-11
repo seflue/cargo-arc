@@ -26,13 +26,23 @@ const PAD_PX = 2; // screen-space clearance between a child and its container's 
 // width - far finer than a font size can visibly differ by.
 const FONT_SIZE_SOLVE_ROUNDS = 30;
 
-const diameter = (node) => 2 * node.r;
-const isFile = (node) => node.kind === 'file';
-const textWidth = (name, fontSize) => CHAR_WIDTH_EM * fontSize * name.length;
-const textHeight = (fontSize) => LINE_HEIGHT_EM * fontSize;
+type LabelNode = {
+  kind: string;
+  name: string;
+  cx: number;
+  cy: number;
+  r: number;
+};
+type Box = { x: number; y: number; width: number; height: number };
+
+const diameter = (node: { r: number }) => 2 * node.r;
+const isFile = (node: { kind: string }) => node.kind === 'file';
+const textWidth = (name: string, fontSize: number) =>
+  CHAR_WIDTH_EM * fontSize * name.length;
+const textHeight = (fontSize: number) => LINE_HEIGHT_EM * fontSize;
 
 /** How far below a circle's top point its edge has dropped at a horizontal offset from the centre. */
-function arcDepth(radius, offset) {
+function arcDepth(radius: number, offset: number) {
   return radius - Math.sqrt(Math.max(0, radius * radius - offset * offset));
 }
 
@@ -52,7 +62,7 @@ function labelBand(
 }
 
 /** A file label sits at the centre, sized to its circle. */
-function fileLabel(node, pxPerUnit) {
+function fileLabel(node: LabelNode, pxPerUnit: number) {
   const chars = Math.max(node.name.length, 3);
   const fitsWidth =
     (FILE_LABEL_WIDTH_RATIO * diameter(node)) / (CHAR_WIDTH_EM * chars);
@@ -71,8 +81,14 @@ function fileLabel(node, pxPerUnit) {
  * single fixed point instead of the width/depth pair oscillating between
  * two answers, as a fixed-point iteration on this same relation once did.
  */
-function solveContainerFontSize(name, radius, band, wanted, padUnits) {
-  const target = (fontSize) => {
+function solveContainerFontSize(
+  name: string,
+  radius: number,
+  band: number,
+  wanted: number,
+  padUnits: number,
+) {
+  const target = (fontSize: number) => {
     const depth = padUnits + arcDepth(radius, textWidth(name, fontSize) / 2);
     return Math.max(0, Math.min(wanted, (band - depth) / LINE_HEIGHT_EM));
   };
@@ -92,7 +108,7 @@ function solveContainerFontSize(name, radius, band, wanted, padUnits) {
  * bottom. `PAD_PX` is a screen clearance like `LABEL_PX`, converted to
  * layout units by the same `/ pxPerUnit` division.
  */
-function containerLabel(node, band, pxPerUnit) {
+function containerLabel(node: LabelNode, band: number, pxPerUnit: number) {
   const top = node.cy - node.r;
   const padUnits = PAD_PX / pxPerUnit;
   const wanted = Math.min(LABEL_PX / pxPerUnit, band / LINE_HEIGHT_EM);
@@ -113,26 +129,39 @@ function containerLabel(node, band, pxPerUnit) {
 }
 
 /** Font size and centre line for `node`; a file is centred, a container hangs from its band. */
-function labelFor(node, children, pxPerUnit) {
+function labelFor(
+  node: LabelNode,
+  children: { cy: number; r: number }[],
+  pxPerUnit: number,
+) {
   return isFile(node)
     ? fileLabel(node, pxPerUnit)
     : containerLabel(node, labelBand(node, children), pxPerUnit);
 }
 
-function labelReadable(node, fontSize, pxPerUnit) {
+function labelReadable(
+  node: { r: number },
+  fontSize: number,
+  pxPerUnit: number,
+) {
   return (
     diameter(node) * pxPerUnit >= MIN_LABEL_DIAMETER_PX &&
     fontSize * pxPerUnit >= MIN_LABEL_PX
   );
 }
 
-function labelBox(node, text, fontSize, y) {
+function labelBox(
+  node: { cx: number },
+  text: string,
+  fontSize: number,
+  y: number,
+): Box {
   const width = textWidth(text, fontSize);
   const height = textHeight(fontSize);
   return { x: node.cx - width / 2, y: y - height / 2, width, height };
 }
 
-function boxesOverlap(a, b) {
+function boxesOverlap(a: Box, b: Box) {
   return (
     a.x < b.x + b.width &&
     b.x < a.x + a.width &&
@@ -170,7 +199,7 @@ function placeLabels(
     HotspotTree.ancestorPath(nodes, targetKey).slice(0, -1),
   );
   const children = HotspotTree.childrenOf(nodes);
-  const placed = [];
+  const placed: Box[] = [];
   const result = new Map();
 
   for (const key of HotspotTree.preorderKeys(nodes)) {

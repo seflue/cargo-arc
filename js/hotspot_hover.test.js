@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from 'bun:test';
-import { createFakeElement, createMockDomAdapter } from './dom_adapter.js';
+import { createFakeElement, createMockDomAdapter } from './dom_mock.js';
 import { TextMeasure } from './text_metrics.js';
 
 substitute(DomAdapter, createMockDomAdapter());

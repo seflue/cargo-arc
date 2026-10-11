@@ -64,7 +64,7 @@ function nextZoomTarget(
   targetKey: string,
   clickedKey: string | null | undefined,
 ): string {
-  const parentOrRoot = (key) =>
+  const parentOrRoot = (key: string) =>
     nodes[key]?.parent ?? HotspotTree.rootKey(nodes);
   if (clickedKey == null) return parentOrRoot(targetKey);
   const clicked = nodes[clickedKey];

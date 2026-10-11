@@ -1,9 +1,6 @@
 import { afterAll, describe, expect, test } from 'bun:test';
-import {
-  createFakeElement,
-  createMockDomAdapter,
-  DomAdapter,
-} from './dom_adapter.js';
+import { DomAdapter } from './dom_adapter.js';
+import { createFakeElement, createMockDomAdapter } from './dom_mock.js';
 import { Follow } from './follow.js';
 import { HotspotJumpIcon } from './hotspot_jump_icon.js';
 import { HotspotLabels } from './hotspot_labels.js';
@@ -153,7 +150,7 @@ const elements = {
 substitute(DomAdapter, {
   ...dom,
   getElementById: (id) => elements[id] ?? dom.getElementById(id),
-  // HotspotJumpIcon's glyph adds its own click listener (dom_adapter.ts's
+  // HotspotJumpIcon's glyph adds its own click listener (dom_mock.js's
   // plain createFakeElement does not carry one), the same fixture pattern
   // jump_icons.test.js uses for its own fake SVG elements.
   createSvgElement: (tag) => createFakeInteractiveElement(tag),

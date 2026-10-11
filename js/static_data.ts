@@ -249,13 +249,13 @@ const StaticData = {
     outgoing: Array<{
       targetId: string;
       weight: number;
-      usages: Array<any>;
+      usages: ArcData['usages'];
       arcId: string;
     }>;
     incoming: Array<{
       targetId: string;
       weight: number;
-      usages: Array<any>;
+      usages: ArcData['usages'];
       arcId: string;
     }>;
   } {
@@ -278,7 +278,7 @@ const StaticData = {
         });
       }
     }
-    const byTreeOrder = (a, b) => {
+    const byTreeOrder = (a: { targetId: string }, b: { targetId: string }) => {
       const yA = this.getOriginalPosition(a.targetId)?.y ?? Infinity;
       const yB = this.getOriginalPosition(b.targetId)?.y ?? Infinity;
       return yA - yB;

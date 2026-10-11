@@ -1,16 +1,21 @@
 import { ArcLogic } from './arc_logic.js';
 import type { HighlightState } from './derived_state.js';
+import type { DomAdapter } from './dom_adapter.js';
 import { LayerManager } from './layer_manager.js';
+import type { StaticData } from './static_data.js';
 
 // highlight_renderer.ts - Single entry point for applying highlight state to DOM
 // Takes a HighlightState (from DerivedState.deriveHighlightState) and applies it.
 // Reset uses data-iteration (StaticData/virtualArcUsages), not CSS selectors.
 
+type Dom = typeof DomAdapter;
+type Classes = typeof STATIC_DATA.classes;
+
 const HighlightRenderer = {
   // Dirty sets: track which elements were styled in last apply() for O(1) reset
-  _prevNodeIds: new Set(),
-  _prevRegularArcIds: new Set(),
-  _prevVirtualArcIds: new Set(),
+  _prevNodeIds: new Set<string>(),
+  _prevRegularArcIds: new Set<string>(),
+  _prevVirtualArcIds: new Set<string>(),
 
   /**
    * Apply highlight state to DOM. Resets only previously-styled elements, then applies state.
@@ -20,18 +25,18 @@ const HighlightRenderer = {
    * @param state - Highlight state from deriveHighlightState, or null to reset
    */
   apply(
-    dom: any,
-    staticData: any,
-    virtualArcUsages: Map<string, Array<any>>,
+    dom: Dom,
+    staticData: typeof StaticData,
+    virtualArcUsages: Map<string, ArcData['usages']>,
     state: HighlightState | null,
   ) {
     const C = STATIC_DATA.classes;
     this.resetToBase(dom, C, staticData, virtualArcUsages);
 
     if (!state) {
-      this._prevNodeIds = new Set();
-      this._prevRegularArcIds = new Set();
-      this._prevVirtualArcIds = new Set();
+      this._prevNodeIds = new Set<string>();
+      this._prevRegularArcIds = new Set<string>();
+      this._prevVirtualArcIds = new Set<string>();
       return;
     }
 
@@ -49,8 +54,8 @@ const HighlightRenderer = {
 
     // Update dirty sets for next reset
     this._prevNodeIds = new Set(state.nodeHighlights.keys());
-    this._prevRegularArcIds = new Set();
-    this._prevVirtualArcIds = new Set();
+    this._prevRegularArcIds = new Set<string>();
+    this._prevVirtualArcIds = new Set<string>();
     for (const [key, { isVirtual }] of state.arcHighlights) {
       if (isVirtual) {
         this._prevVirtualArcIds.add(key.slice(2));
@@ -69,10 +74,10 @@ const HighlightRenderer = {
    * @param virtualArcUsages - Runtime virtual arc usage map
    */
   resetToBase(
-    dom: any,
-    C: any,
-    staticData: any,
-    virtualArcUsages: Map<string, Array<any>>,
+    dom: Dom,
+    C: Classes,
+    staticData: typeof StaticData,
+    virtualArcUsages: Map<string, ArcData['usages']>,
   ) {
     this._resetDimming(dom, C);
     this._resetLayers(dom);
@@ -85,7 +90,7 @@ const HighlightRenderer = {
   /**
    * Remove has-highlight class from SVG root (CSS-only dimming reset).
    */
-  _resetDimming(dom, C) {
+  _resetDimming(dom: Dom, C: Classes) {
     const svg = dom.getSvgRoot();
     if (svg) {
       svg.classList.remove(C.relation.hasHighlight);
@@ -96,7 +101,7 @@ const HighlightRenderer = {
   /**
    * Add has-highlight class to SVG root (CSS-only dimming activation).
    */
-  _activateDimming(dom, C, isPinned) {
+  _activateDimming(dom: Dom, C: Classes, isPinned: boolean) {
     const svg = dom.getSvgRoot();
     if (svg) {
       svg.classList.add(C.relation.hasHighlight);
@@ -107,8 +112,8 @@ const HighlightRenderer = {
   /**
    * Move all elements from highlight layers back to base layers.
    */
-  _resetLayers(dom) {
-    const moveBack = (highlightId, baseId) => {
+  _resetLayers(dom: Dom) {
+    const moveBack = (highlightId: string, baseId: string) => {
       const hl = dom.getElementById(highlightId);
       const bl = dom.getElementById(baseId);
       if (hl && bl) {
@@ -129,14 +134,14 @@ const HighlightRenderer = {
   /**
    * Clear all shadow paths from shadow layer.
    */
-  _clearShadowLayer(dom) {
+  _clearShadowLayer(dom: Dom) {
     LayerManager.clearLayer(LayerManager.LAYERS.SHADOWS, dom);
   },
 
   /**
    * Remove highlight CSS classes from previously-highlighted nodes (dirty-set).
    */
-  _resetNodeClasses(dom, C) {
+  _resetNodeClasses(dom: Dom, C: Classes) {
     const nodeClasses = [
       C.nodeSelection.selectedPackage,
       C.nodeSelection.selectedModule,
@@ -158,7 +163,7 @@ const HighlightRenderer = {
   /**
    * Reset previously-highlighted regular arcs to base styling (dirty-set).
    */
-  _resetArcStyles(dom, C, staticData) {
+  _resetArcStyles(dom: Dom, C: Classes, staticData: typeof StaticData) {
     for (const arcId of this._prevRegularArcIds) {
       const originalWidth = staticData.getArcStrokeWidth(arcId);
       const arc = dom.getArc(arcId);
@@ -171,7 +176,9 @@ const HighlightRenderer = {
       const scale = ArcLogic.scaleFromStrokeWidth(originalWidth);
       dom.getArrows(arcId).forEach((arrow) => {
         arrow.classList.remove(C.relation.highlightedArrow);
-        const tip = ArcLogic.parseTipFromPoints(arrow.getAttribute('points'));
+        const points = arrow.getAttribute('points');
+        if (points === null) return;
+        const tip = ArcLogic.parseTipFromPoints(points);
         if (tip) {
           arrow.setAttribute('points', ArcLogic.getArrowPoints(tip, scale));
         }
@@ -191,12 +198,18 @@ const HighlightRenderer = {
   /**
    * Set CSS classes on highlighted nodes.
    */
-  _applyNodeClasses(dom, C, nodeHighlights) {
+  _applyNodeClasses(
+    dom: Dom,
+    C: Classes,
+    nodeHighlights: HighlightState['nodeHighlights'],
+  ) {
+    const nodeSelection: Record<string, string> = C.nodeSelection;
+    const relation: Record<string, string> = C.relation;
     for (const [nodeId, { cssClass }] of nodeHighlights) {
       const node = dom.getNode(nodeId);
       // A selection role (selected*, groupMember, cycleMember) or a relation
       // role (depNode, dependentNode).
-      const cls = C.nodeSelection[cssClass] ?? C.relation[cssClass];
+      const cls = nodeSelection[cssClass] ?? relation[cssClass];
       if (node) node.classList.add(cls);
     }
   },
@@ -205,7 +218,11 @@ const HighlightRenderer = {
    * Set highlighted class and stroke-width on arcs, plus label highlighting.
    * Keys: "from-to" for regular arcs, "v:from-to" for virtual arcs.
    */
-  _applyArcHighlights(dom, C, arcHighlights) {
+  _applyArcHighlights(
+    dom: Dom,
+    C: Classes,
+    arcHighlights: HighlightState['arcHighlights'],
+  ) {
     for (const [key, { highlightWidth, isVirtual }] of arcHighlights) {
       const arcId = isVirtual ? key.slice(2) : key;
 
@@ -242,7 +259,11 @@ const HighlightRenderer = {
   /**
    * Scale arrows to match highlight widths.
    */
-  _applyArrowScaling(dom, C, arcHighlights) {
+  _applyArrowScaling(
+    dom: Dom,
+    C: Classes,
+    arcHighlights: HighlightState['arcHighlights'],
+  ) {
     for (const [key, { arrowScale, isVirtual }] of arcHighlights) {
       const arcId = isVirtual ? key.slice(2) : key;
       const arrows = isVirtual
@@ -253,7 +274,9 @@ const HighlightRenderer = {
 
       arrows.forEach((arrow) => {
         arrow.classList.add(C.relation.highlightedArrow);
-        const tip = ArcLogic.parseTipFromPoints(arrow.getAttribute('points'));
+        const points = arrow.getAttribute('points');
+        if (points === null) return;
+        const tip = ArcLogic.parseTipFromPoints(points);
         if (tip) {
           arrow.setAttribute(
             'points',
@@ -268,7 +291,12 @@ const HighlightRenderer = {
    * Create shadow glow paths by cloning arc elements and applying pre-computed styling.
    * pathLength is estimated from the actual DOM path (authoritative for display).
    */
-  _createShadows(dom, C, shadowData) {
+  _createShadows(
+    dom: Dom,
+    C: Classes,
+    shadowData: HighlightState['shadowData'],
+  ) {
+    const relation: Record<string, string> = C.relation;
     const shadowLayer = dom.getElementById(LayerManager.LAYERS.SHADOWS);
     if (!shadowLayer) return;
 
@@ -286,14 +314,16 @@ const HighlightRenderer = {
 
       for (const arc of arcs) {
         if (!arc) continue;
-        const shadow = arc.cloneNode(false);
+        const shadow = arc.cloneNode(false) as SVGElement;
         shadow.classList.remove(C.direction.downward, C.direction.upward);
         shadow.classList.add(C.relation.shadowPath);
-        shadow.classList.add(C.relation[glowClass]);
+        shadow.classList.add(relation[glowClass]);
         shadow.removeAttribute('id');
         shadow.removeAttribute('data-arc-id');
 
-        const pathLength = ArcLogic.estimatePathLength(arc.getAttribute('d'));
+        const pathLength = ArcLogic.estimatePathLength(
+          arc.getAttribute('d') ?? '',
+        );
         shadow.style.strokeWidth = `${shadowWidth}px`;
         shadow.setAttribute('opacity', STATIC_DATA.theme.shadowOpacity);
         shadow.style.strokeLinecap = 'round';
@@ -308,7 +338,12 @@ const HighlightRenderer = {
   /**
    * Move highlighted arcs, arrows, labels, and hitareas to highlight layers (higher z-order).
    */
-  _promoteToHighlightLayers(dom, C, arcHighlights, promotedHitareas) {
+  _promoteToHighlightLayers(
+    dom: Dom,
+    C: Classes,
+    arcHighlights: HighlightState['arcHighlights'],
+    promotedHitareas: HighlightState['promotedHitareas'],
+  ) {
     for (const [key, { isVirtual }] of arcHighlights) {
       const arcId = isVirtual ? key.slice(2) : key;
 
@@ -345,7 +380,11 @@ const HighlightRenderer = {
    * Reset previously-highlighted virtual arcs to base styling (dirty-set + cache).
    * Uses DomAdapter cache (getArc/getArrows/getLabelGroup) instead of querySelectorAll.
    */
-  _resetVirtualArcStyles(dom, C, virtualArcUsages) {
+  _resetVirtualArcStyles(
+    dom: Dom,
+    C: Classes,
+    virtualArcUsages: Map<string, ArcData['usages']>,
+  ) {
     for (const arcId of this._prevVirtualArcIds) {
       const usages = virtualArcUsages.get(arcId);
       if (!usages) continue;
@@ -363,7 +402,9 @@ const HighlightRenderer = {
       // Virtual arrows (from cache)
       dom.getArrows(arcId).forEach((arrow) => {
         arrow.classList.remove(C.relation.highlightedArrow);
-        const tip = ArcLogic.parseTipFromPoints(arrow.getAttribute('points'));
+        const points = arrow.getAttribute('points');
+        if (points === null) return;
+        const tip = ArcLogic.parseTipFromPoints(points);
         if (tip) {
           arrow.setAttribute('points', ArcLogic.getArrowPoints(tip, scale));
         }

@@ -6,7 +6,8 @@ import {
   expect,
   test,
 } from 'bun:test';
-import { createFakeElement, DomAdapter } from './dom_adapter.js';
+import { DomAdapter } from './dom_adapter.js';
+import { createFakeElement } from './dom_mock.js';
 import { Selectors } from './selectors.js';
 import { SidebarLogic } from './sidebar.js';
 import { StaticData } from './static_data.js';
