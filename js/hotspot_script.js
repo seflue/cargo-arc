@@ -26,10 +26,10 @@ function bootstrapHotspotPage() {
 
 // Named once, in `render::hotspots::render`'s own `CSS.hotspots`; STATIC_DATA
 // carries the names so JS never repeats them as a separate literal.
-const CIRCLE_CLASS = STATIC_DATA.classes.circle;
-const LIST_ITEM_CLASS = STATIC_DATA.classes.listItem;
-const HOVER_CLASS = STATIC_DATA.classes.hover;
-const SELECTED_CLASS = STATIC_DATA.classes.selected;
+const CIRCLE_CLASS = STATIC_DATA.classes.hotspots.circle;
+const LIST_ITEM_CLASS = STATIC_DATA.classes.hotspots.listItem;
+const HOVER_CLASS = STATIC_DATA.classes.hotspots.hover;
+const SELECTED_CLASS = STATIC_DATA.classes.hotspots.selected;
 
 /** The `data-file` key a circle (or its click target) belongs to, or `null` outside any circle. */
 function circleKeyAt(event) {
@@ -174,7 +174,7 @@ function buildHotspotMap(themeControl) {
   const tooltip = HotspotHover.createHoverTooltip({
     layer: tooltipLayer,
     canvasWidth,
-    tooltipClass: STATIC_DATA.classes.tooltip,
+    tooltipClass: STATIC_DATA.classes.hotspots.tooltip,
   });
 
   function showJumpStatus(text) {
@@ -193,7 +193,7 @@ function buildHotspotMap(themeControl) {
     layer: jumpLayer,
     defsHost: svg,
     onJump: (id) => jumper.jump(id),
-    iconClass: STATIC_DATA.classes.jumpIcon,
+    iconClass: STATIC_DATA.classes.hotspots.jumpIcon,
   });
 
   const circles = new Map();
@@ -377,7 +377,7 @@ function buildHotspotMap(themeControl) {
     }
     const { title, rows } = HotspotHover.tooltipRows(nodes, selectedKey);
     detailsEl.innerHTML =
-      `<div class="${STATIC_DATA.classes.detailsTitle}">${escapeHtml(title)}</div><table>` +
+      `<div class="${STATIC_DATA.classes.hotspots.detailsTitle}">${escapeHtml(title)}</div><table>` +
       rows
         .map(
           ([label, value]) =>
@@ -454,9 +454,9 @@ function buildHotspotMap(themeControl) {
       .map(
         (bar) =>
           `<li class="${LIST_ITEM_CLASS}" data-file="${escapeHtml(bar.key)}">` +
-          `<span class="${c.barLabel}" data-full="${escapeHtml(bar.file)}">${escapeHtml(bar.file)}</span>` +
-          `<span class="${c.barTrack}" style="display:block;height:8px">` +
-          `<span class="${c.barFill}" style="display:block;height:100%;` +
+          `<span class="${c.hotspots.barLabel}" data-full="${escapeHtml(bar.file)}">${escapeHtml(bar.file)}</span>` +
+          `<span class="${c.hotspots.barTrack}" style="display:block;height:8px">` +
+          `<span class="${c.hotspots.barFill}" style="display:block;height:100%;` +
           `width:${bar.widthPercent.toFixed(1)}%;background:` +
           `color-mix(in srgb, var(--arc-hotspot-hot) ${bar.fillPercent}%, var(--arc-hotspot-cold))">` +
           '</span></span></li>',

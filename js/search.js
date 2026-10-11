@@ -158,7 +158,7 @@ const SearchLogic = {
     this._state.contextNodeIds = contextMatches;
     this._state.active = true;
     const svg = DomAdapter.getSvgRoot();
-    if (svg) svg.classList.add(STATIC_DATA.classes.searchActive);
+    if (svg) svg.classList.add(STATIC_DATA.classes.search.searchActive);
 
     const nodeMatchCount = directMatches.size + parentMatches.size;
     const total = nodeMatchCount + matchedArcs.size;
@@ -221,7 +221,7 @@ const SearchLogic = {
   clearSearch() {
     this._clearDom();
     const svg = DomAdapter.getSvgRoot();
-    if (svg) svg.classList.remove(STATIC_DATA.classes.searchActive);
+    if (svg) svg.classList.remove(STATIC_DATA.classes.search.searchActive);
     this._state.active = false;
     this._state.query = '';
     this._state.matchedNodeIds = new Set();
@@ -265,13 +265,13 @@ const SearchLogic = {
     const C = STATIC_DATA.classes;
 
     for (const nodeId of this._state.matchedNodeIds) {
-      this._setNodeClass(nodeId, C.searchMatch, false);
+      this._setNodeClass(nodeId, C.search.searchMatch, false);
     }
     for (const nodeId of this._state.matchParentIds) {
-      this._setNodeClass(nodeId, C.searchMatchParent, false);
+      this._setNodeClass(nodeId, C.search.searchMatchParent, false);
     }
     for (const nodeId of this._state.contextNodeIds) {
-      this._setNodeClass(nodeId, C.searchContext, false);
+      this._setNodeClass(nodeId, C.search.searchContext, false);
     }
 
     this._clearArcMatches();
@@ -283,14 +283,14 @@ const SearchLogic = {
 
     for (const arcId of this._state.matchedArcIds) {
       const arc = DomAdapter.getVisibleArc(arcId);
-      if (arc) arc.classList.remove(C.searchMatch);
+      if (arc) arc.classList.remove(C.search.searchMatch);
       for (const arrow of DomAdapter.getVisibleArrows(arcId)) {
-        arrow.classList.remove(C.searchMatch);
+        arrow.classList.remove(C.search.searchMatch);
       }
       const labelGroup = DomAdapter.getLabelGroup(arcId);
       if (labelGroup) {
         for (const child of labelGroup.children) {
-          child.classList.remove(C.searchMatch);
+          child.classList.remove(C.search.searchMatch);
         }
       }
       this._setVirtualArcMatch(arcId, false);
@@ -313,16 +313,17 @@ const SearchLogic = {
 
     const C = STATIC_DATA.classes;
     const virtualArcId = `${visibleFrom}-${visibleTo}`;
-    const toggle = (el) => el.classList[add ? 'add' : 'remove'](C.searchMatch);
+    const toggle = (el) =>
+      el.classList[add ? 'add' : 'remove'](C.search.searchMatch);
 
     DomAdapter.querySelectorAll(
-      `.${C.virtualArc}[data-arc-id="${virtualArcId}"]`,
+      `.${C.direction.virtualArc}[data-arc-id="${virtualArcId}"]`,
     ).forEach(toggle);
     DomAdapter.querySelectorAll(
-      `.${C.virtualArrow}[data-vedge="${virtualArcId}"]`,
+      `.${C.direction.virtualArrow}[data-vedge="${virtualArcId}"]`,
     ).forEach(toggle);
     DomAdapter.querySelectorAll(
-      `.${C.arcCount}[data-vedge="${virtualArcId}"]`,
+      `.${C.labels.arcCount}[data-vedge="${virtualArcId}"]`,
     ).forEach(toggle);
   },
 
@@ -336,25 +337,25 @@ const SearchLogic = {
     // Remove classes from nodes that left their set
     for (const nodeId of oldDirect) {
       if (!newDirect.has(nodeId)) {
-        this._setNodeClass(nodeId, C.searchMatch, false);
+        this._setNodeClass(nodeId, C.search.searchMatch, false);
       }
     }
     for (const nodeId of oldParent) {
       if (!newParent.has(nodeId) || newDirect.has(nodeId)) {
-        this._setNodeClass(nodeId, C.searchMatchParent, false);
+        this._setNodeClass(nodeId, C.search.searchMatchParent, false);
       }
     }
 
     // Add classes to nodes that joined their set
     for (const nodeId of newDirect) {
       if (!oldDirect.has(nodeId)) {
-        this._setNodeClass(nodeId, C.searchMatch, true);
+        this._setNodeClass(nodeId, C.search.searchMatch, true);
       }
     }
     for (const nodeId of newParent) {
       if (newDirect.has(nodeId)) continue;
       if (!oldParent.has(nodeId)) {
-        this._setNodeClass(nodeId, C.searchMatchParent, true);
+        this._setNodeClass(nodeId, C.search.searchMatchParent, true);
       }
     }
   },
@@ -368,12 +369,12 @@ const SearchLogic = {
 
     for (const nodeId of oldContext) {
       if (!newContext.has(nodeId)) {
-        this._setNodeClass(nodeId, C.searchContext, false);
+        this._setNodeClass(nodeId, C.search.searchContext, false);
       }
     }
     for (const nodeId of newContext) {
       if (!oldContext.has(nodeId)) {
-        this._setNodeClass(nodeId, C.searchContext, true);
+        this._setNodeClass(nodeId, C.search.searchContext, true);
       }
     }
   },
@@ -383,7 +384,7 @@ const SearchLogic = {
     if (!rect) return;
     rect.classList.toggle(className, add);
     const label = rect.nextElementSibling;
-    if (label?.classList.contains(STATIC_DATA.classes.label)) {
+    if (label?.classList.contains(STATIC_DATA.classes.nodes.label)) {
       label.classList.toggle(className, add);
     }
   },
@@ -395,14 +396,14 @@ const SearchLogic = {
     // Add search-match to matched arc elements so CSS excludes them from dimming
     for (const arcId of matchedArcs) {
       const arc = DomAdapter.getVisibleArc(arcId);
-      if (arc) arc.classList.add(C.searchMatch);
+      if (arc) arc.classList.add(C.search.searchMatch);
       for (const arrow of DomAdapter.getVisibleArrows(arcId)) {
-        arrow.classList.add(C.searchMatch);
+        arrow.classList.add(C.search.searchMatch);
       }
       const labelGroup = DomAdapter.getLabelGroup(arcId);
       if (labelGroup) {
         for (const child of labelGroup.children) {
-          child.classList.add(C.searchMatch);
+          child.classList.add(C.search.searchMatch);
         }
       }
       this._setVirtualArcMatch(arcId, true);
@@ -429,7 +430,7 @@ const SearchLogic = {
     if (!selector) return;
     const buttons = selector.querySelectorAll('[data-scope]');
     buttons.forEach((btn) => {
-      btn.classList.toggle(C.toolbarScopeActive, btn.dataset.scope === scope);
+      btn.classList.toggle(C.toolbar.scopeActive, btn.dataset.scope === scope);
     });
   },
 };

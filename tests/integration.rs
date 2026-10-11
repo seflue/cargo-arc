@@ -675,7 +675,10 @@ fn default_static_data_carries_no_jump_fields() {
     assert!(result.is_ok(), "run() should succeed: {result:?}");
 
     let svg = std::fs::read_to_string(temp.path()).unwrap();
-    let json = serde_json::to_string(&parse_static_data(&svg)).unwrap();
+    let mut data = parse_static_data(&svg);
+    // The class map has a `jump` key of its own.
+    data.as_object_mut().unwrap().remove("classes");
+    let json = serde_json::to_string(&data).unwrap();
 
     assert!(
         !json.contains("\"targets\""),
