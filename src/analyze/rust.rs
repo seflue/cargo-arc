@@ -8,14 +8,12 @@ use super::LanguageAdapter;
 use super::backend::AnalysisBackend;
 use super::externals::analyze_externals;
 use super::hir::FeatureConfig;
+use super::packages::{ModulePathMap, PackageExportMap, WorkspacePackages};
 use super::reexports::collect_crate_reexports;
 use super::syn_walker::collect_crate_exports;
 use super::use_parser::ReExportMap;
 use super::workspace::analyze_workspace;
-use crate::model::{
-    Analysis, LanguageProfile, ModulePathMap, PackageExportMap, Wording, WorkspacePackages,
-    normalize_crate_name,
-};
+use crate::model::{Analysis, LanguageProfile, Wording};
 
 pub(crate) static PROFILE: LanguageProfile = LanguageProfile {
     wording: Wording {
@@ -30,7 +28,7 @@ pub(crate) static PROFILE: LanguageProfile = LanguageProfile {
 
 /// A Cargo workspace, read through `cargo metadata` and parsed with syn, or
 /// with rust-analyzer HIR when `use_hir` is set.
-pub struct Rust {
+pub(crate) struct Rust {
     pub manifest_path: PathBuf,
     pub feature_config: FeatureConfig,
     pub use_hir: bool,
@@ -53,35 +51,26 @@ impl LanguageAdapter for Rust {
 
         let all_module_paths: ModulePathMap = packages
             .iter()
-            .map(|krate| {
-                let name = normalize_crate_name(&krate.name);
-                let paths = backend.collect_module_paths(krate);
-                (name, paths)
-            })
+            .map(|krate| (krate.key.clone(), backend.collect_module_paths(krate)))
             .collect();
         tracing::debug!("phase: module paths collected");
 
         let package_exports: PackageExportMap = packages
             .iter()
-            .map(|krate| {
-                let name = normalize_crate_name(&krate.name);
-                let exports = collect_crate_exports(krate);
-                (name, exports)
-            })
+            .map(|krate| (krate.key.clone(), collect_crate_exports(krate)))
             .collect();
         tracing::debug!("phase: crate exports collected");
 
         let reexport_map: ReExportMap = packages
             .iter()
             .map(|krate| {
-                let name = normalize_crate_name(&krate.name);
                 let exports = collect_crate_reexports(
                     krate,
                     &all_module_paths,
                     &workspace_packages,
                     &package_exports,
                 );
-                (name, exports)
+                (krate.key.clone(), exports)
             })
             .collect();
         tracing::debug!("phase: reexport map collected");
@@ -101,9 +90,8 @@ impl LanguageAdapter for Rust {
         let modules = packages
             .iter()
             .filter_map(|krate| {
-                let name = normalize_crate_name(&krate.name);
-                tracing::debug!("analyzing crate: {name}");
-                let ext_names = crate_name_map.get(&name).unwrap_or(&empty_name_map);
+                tracing::debug!("analyzing crate: {}", krate.key);
+                let ext_names = crate_name_map.get(&krate.key).unwrap_or(&empty_name_map);
                 match backend.analyze_modules(
                     krate,
                     &workspace_packages,

@@ -736,7 +736,7 @@ mod tests {
     use super::super::positioning::{calculate_box_width, calculate_positions};
     use super::*;
     use crate::layout::LayoutEdge;
-    use crate::model::{EdgeContext, Wording};
+    use crate::model::EdgeContext;
     use rstest::rstest;
     use std::collections::HashMap;
 
@@ -1467,17 +1467,14 @@ mod tests {
 
     #[test]
     fn the_toolbar_names_packages_in_the_language_word() {
-        static WIDGETS: Wording = Wording {
-            package: "widget",
-            packages: "widgets",
-            manifest: "widgets.cfg",
-        };
+        use crate::test_support::WIDGETS;
+
         let toolbar = render_toolbar(
             800.0,
             ToolbarFacts::default(),
             &RenderConfig {
                 with_jump_ids: true,
-                wording: &WIDGETS,
+                wording: &WIDGETS.wording,
                 ..RenderConfig::default()
             },
         );

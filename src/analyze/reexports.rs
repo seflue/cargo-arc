@@ -8,10 +8,8 @@ use std::path::Path;
 use std::sync::LazyLock;
 use syn::spanned::Spanned;
 
-use crate::model::{
-    DefKind, Definition, EdgeContext, ModulePathMap, PackageExportMap, PackageInfo,
-    WorkspacePackages, normalize_crate_name,
-};
+use super::packages::{ModulePathMap, PackageExportMap, WorkspacePackages, normalize_crate_name};
+use crate::model::{DefKind, Definition, EdgeContext, PackageInfo};
 
 use super::mod_resolver::{child_resolve_dir, extract_mod_declarations, resolve_mod_path};
 use super::use_parser::{

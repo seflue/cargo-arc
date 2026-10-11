@@ -15,12 +15,9 @@ pub struct FeatureConfig {
 
 #[cfg(feature = "hir")]
 use {
+    super::packages::{ModulePathMap, PackageExportMap, WorkspacePackages, normalize_crate_name},
     super::use_parser::{ResolutionContext, parse_workspace_dependencies_from_source},
-    crate::model::normalize_crate_name,
-    crate::model::{
-        DependencyRef, ModuleInfo, ModulePathMap, ModuleTree, PackageExportMap, PackageInfo,
-        WorkspacePackages,
-    },
+    crate::model::{DependencyRef, ModuleInfo, ModuleTree, PackageInfo},
     anyhow::{Context, Result},
     ra_ap_cfg::{CfgAtom, CfgDiff},
     ra_ap_hir as hir, ra_ap_ide as ide, ra_ap_load_cargo as load_cargo, ra_ap_paths as paths,

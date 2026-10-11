@@ -5,12 +5,11 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use super::mod_resolver::{ModDecl, child_resolve_dir, extract_mod_declarations, resolve_mod_path};
+use super::packages::{ModulePathMap, PackageExportMap, WorkspacePackages, normalize_crate_name};
 use super::use_parser::ReExportMap;
 use super::use_parser::{ResolutionContext, parse_file_dependencies};
-use crate::model::normalize_crate_name;
 use crate::model::{
-    EdgeContext, EntryKind, ModuleInfo, ModulePathMap, ModuleTree, PackageExportMap, PackageInfo,
-    TestKind, UsageKind, WorkspacePackages,
+    EdgeContext, EntryKind, ModuleInfo, ModuleTree, PackageInfo, TestKind, UsageKind,
 };
 
 /// Find integration test files in `tests/*.rs`.

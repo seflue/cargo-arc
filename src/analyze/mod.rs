@@ -5,6 +5,7 @@ pub(crate) mod externals;
 mod filtering;
 mod hir;
 mod mod_resolver;
+pub(crate) mod packages;
 mod reexports;
 pub(crate) mod rust;
 mod syn_walker;
@@ -15,7 +16,7 @@ pub use backend::AnalysisBackend;
 pub use hir::FeatureConfig;
 #[cfg(feature = "hir")]
 pub use hir::{analyze_modules, cargo_config_with_features, load_workspace_hir};
-pub use rust::Rust;
+pub(crate) use rust::Rust;
 pub use workspace::analyze_workspace;
 
 use crate::model::{Analysis, LanguageProfile};

@@ -25,8 +25,8 @@ fn build_external_crate_info(pkg: &cargo_metadata::Package) -> ExternalPackageIn
     }
 }
 
-/// Production when any kind is normal, a test edge when only dev kinds
-/// remain, `None` for a build-only dependency.
+/// Classify a dependency: production when any kind is normal, a test edge
+/// when only dev kinds remain, `None` for a build-only dependency.
 fn edge_context(dep: &cargo_metadata::NodeDep) -> Option<EdgeContext> {
     let kinds = || dep.dep_kinds.iter().map(|dk| dk.kind);
     if kinds().any(|kind| kind == DependencyKind::Normal) {
@@ -74,7 +74,7 @@ fn collect_reachable_externals(
         }
 
         let ws_name = pkg_by_id.get(node_id).map_or("?", |p| p.name.as_str());
-        let normalized_ws_name = crate::model::normalize_crate_name(ws_name);
+        let normalized_ws_name = super::packages::normalize_crate_name(ws_name);
 
         for dep in &node.deps {
             let dep_id = dep.pkg.repr.as_str();
@@ -183,7 +183,7 @@ pub(crate) fn analyze_externals(
                 let ws_name = pkg_by_id.get(node_id).map_or("?", |p| p.name.as_str());
 
                 workspace_deps.push(WorkspaceExternalDep {
-                    workspace_package: crate::model::normalize_crate_name(ws_name),
+                    workspace_package: super::packages::normalize_crate_name(ws_name),
                     external_pkg_id: dep_id.to_string(),
                     context,
                 });
@@ -232,7 +232,7 @@ mod tests {
         );
 
         // cargo_metadata itself should be in the crate_name_map
-        let ws_name = crate::model::normalize_crate_name("cargo-arc");
+        let ws_name = crate::analyze::packages::normalize_crate_name("cargo-arc");
         assert!(
             crate_name_map.contains_key(&ws_name),
             "crate_name_map should contain cargo_arc, got keys: {:?}",

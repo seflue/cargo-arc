@@ -3,8 +3,7 @@
 //! Types used across analyze and graph modules, extracted to break circular dependencies.
 
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::ops::Deref;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -119,98 +118,6 @@ pub enum DefKind {
 pub struct Definition {
     pub kind: DefKind,
     pub line: usize,
-}
-
-/// Workspace crate names, stored in normalized form (hyphens → underscores).
-///
-/// All insertion paths normalize names, and `contains()` normalizes its input,
-/// so lookups are O(1) and callers never need to think about normalization.
-#[derive(Debug, Default, Clone)]
-pub struct WorkspacePackages(HashSet<String>);
-
-impl FromIterator<String> for WorkspacePackages {
-    fn from_iter<I: IntoIterator<Item = String>>(iter: I) -> Self {
-        Self(iter.into_iter().map(|s| normalize_crate_name(&s)).collect())
-    }
-}
-
-impl<'a> FromIterator<&'a str> for WorkspacePackages {
-    fn from_iter<I: IntoIterator<Item = &'a str>>(iter: I) -> Self {
-        Self(iter.into_iter().map(normalize_crate_name).collect())
-    }
-}
-
-impl WorkspacePackages {
-    pub fn insert(&mut self, name: &str) -> bool {
-        self.0.insert(normalize_crate_name(name))
-    }
-
-    /// Check membership, normalizing the input name.
-    #[must_use]
-    pub fn contains(&self, name: &str) -> bool {
-        self.0.contains(&normalize_crate_name(name))
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = &String> {
-        self.0.iter()
-    }
-
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-}
-
-pub(crate) fn normalize_crate_name(name: &str) -> String {
-    name.replace('-', "_")
-}
-
-/// Package name → set of module paths (e.g. `{"analyze", "analyze::hir"}`).
-#[derive(Debug, Default, Clone)]
-pub struct ModulePathMap(HashMap<String, HashSet<String>>);
-
-impl ModulePathMap {
-    /// Return the module paths for a package, or an empty set if unknown.
-    #[must_use]
-    pub fn get_or_empty(&self, key: &str) -> &HashSet<String> {
-        static EMPTY: std::sync::LazyLock<HashSet<String>> = std::sync::LazyLock::new(HashSet::new);
-        self.0.get(key).unwrap_or(&EMPTY)
-    }
-}
-
-impl Deref for ModulePathMap {
-    type Target = HashMap<String, HashSet<String>>;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl FromIterator<(String, HashSet<String>)> for ModulePathMap {
-    fn from_iter<I: IntoIterator<Item = (String, HashSet<String>)>>(iter: I) -> Self {
-        Self(iter.into_iter().collect())
-    }
-}
-
-/// Package name → set of exported symbol names.
-#[derive(Debug, Default, Clone)]
-pub struct PackageExportMap(HashMap<String, HashSet<String>>);
-
-impl Deref for PackageExportMap {
-    type Target = HashMap<String, HashSet<String>>;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl FromIterator<(String, HashSet<String>)> for PackageExportMap {
-    fn from_iter<I: IntoIterator<Item = (String, HashSet<String>)>>(iter: I) -> Self {
-        Self(iter.into_iter().collect())
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -785,44 +692,6 @@ mod tests {
             uses: Vec::new(),
         };
         assert_eq!(dep.full_target(), "crate_b");
-    }
-
-    #[test]
-    fn test_workspace_packages_normalizes_on_insert() {
-        let mut ws = WorkspacePackages::default();
-        ws.insert("my-lib");
-        assert!(ws.contains("my_lib"), "should find normalized name");
-        assert!(
-            ws.contains("my-lib"),
-            "should find hyphenated name via normalization"
-        );
-    }
-
-    #[test]
-    fn test_workspace_packages_from_iter_normalizes() {
-        let ws: WorkspacePackages = ["core-utils", "my-lib"].into_iter().collect();
-        assert!(ws.contains("core_utils"));
-        assert!(ws.contains("core-utils"));
-        assert!(ws.contains("my_lib"));
-        assert!(ws.contains("my-lib"));
-    }
-
-    #[test]
-    fn test_workspace_packages_iter_returns_normalized() {
-        let ws: WorkspacePackages = ["core-utils"].into_iter().collect();
-        let names: Vec<&str> = ws.iter().map(std::string::String::as_str).collect();
-        assert_eq!(names, vec!["core_utils"]);
-    }
-
-    #[test]
-    fn test_workspace_packages_len_and_is_empty() {
-        let empty = WorkspacePackages::default();
-        assert!(empty.is_empty());
-        assert_eq!(empty.len(), 0);
-
-        let ws: WorkspacePackages = ["a", "b"].into_iter().collect();
-        assert!(!ws.is_empty());
-        assert_eq!(ws.len(), 2);
     }
 
     #[test]

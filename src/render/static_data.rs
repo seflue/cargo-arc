@@ -1325,14 +1325,11 @@ mod tests {
 
     #[test]
     fn static_data_carries_the_language_vocabulary() {
-        static WIDGETS: Wording = Wording {
-            package: "widget",
-            packages: "widgets",
-            manifest: "widgets.cfg",
-        };
+        use crate::test_support::WIDGETS;
+
         let ir = LayoutIR::new();
         let config = RenderConfig {
-            wording: &WIDGETS,
+            wording: &WIDGETS.wording,
             ..RenderConfig::default()
         };
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));

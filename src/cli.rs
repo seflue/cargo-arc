@@ -9,7 +9,7 @@ use std::process::ExitCode;
 use tracing_subscriber::EnvFilter;
 
 use crate::analyze::rust::PROFILE as RUST_PROFILE;
-use crate::analyze::{FeatureConfig, LanguageAdapter, Rust};
+use crate::analyze::{self, FeatureConfig, LanguageAdapter};
 use crate::diagnose::RepresentativeCycles;
 use crate::graph::{ArcGraph, Reexports};
 use crate::hotspots;
@@ -307,13 +307,13 @@ impl ArcCommand {
 /// own [`RenderConfig`] and render `analysis.layout` with it.
 /// The language adapter `args` ask for, with `switches` in place of the
 /// flags they stand for.
-fn adapter_for(args: &ArcCommand, switches: AnalysisSwitches) -> Rust {
+fn adapter_for(args: &ArcCommand, switches: AnalysisSwitches) -> analyze::Rust {
     #[cfg(feature = "hir")]
     let use_hir = args.hir;
     #[cfg(not(feature = "hir"))]
     let use_hir = false;
 
-    Rust {
+    analyze::Rust {
         manifest_path: args.common.manifest_path.clone(),
         feature_config: FeatureConfig {
             include_tests: switches.tests,
@@ -590,7 +590,7 @@ fn run_hotspots(args: &ArcCommand, hotspots_args: &HotspotsArgs) -> Result<Judgm
 /// Run the `check` subcommand: load rules, evaluate against graph, report violations.
 fn run_check(check_args: &CheckArgs, common: &CommonArgs) -> Result<Judgment> {
     // Check mode runs neither HIR nor externals.
-    let adapter = Rust {
+    let adapter = analyze::Rust {
         manifest_path: common.manifest_path.clone(),
         feature_config: build_feature_config(common),
         use_hir: false,
@@ -1148,8 +1148,8 @@ mod tests {
 
     // ===== workspace root beside the graph =====
 
-    fn rust_adapter(manifest_path: PathBuf) -> Rust {
-        Rust {
+    fn rust_adapter(manifest_path: PathBuf) -> analyze::Rust {
+        analyze::Rust {
             manifest_path,
             feature_config: FeatureConfig::default(),
             use_hir: false,

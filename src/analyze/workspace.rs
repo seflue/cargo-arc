@@ -2,7 +2,8 @@
 
 use super::filtering::{DependencyInfo, collect_reachable_crates, find_seed_crates};
 use super::hir::FeatureConfig;
-use crate::model::{EntryFile, PackageInfo, WorkspacePackages, normalize_crate_name};
+use super::packages::{WorkspacePackages, normalize_crate_name};
+use crate::model::{EntryFile, PackageInfo};
 use anyhow::{Context, Result};
 use cargo_metadata::MetadataCommand;
 use std::collections::HashSet;

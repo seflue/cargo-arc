@@ -1,10 +1,23 @@
 //! Test-only constructors for model and graph types.
 
+use crate::analyze::packages::normalize_crate_name;
 use crate::graph::Node;
-use crate::model::{EntryFile, PackageInfo};
+use crate::model::{EntryFile, LanguageProfile, PackageInfo, Wording};
 use petgraph::graph::NodeIndex;
 use std::collections::HashMap;
 use std::path::PathBuf;
+
+/// A made-up language whose packages are widgets, declared in `widgets.cfg`.
+pub(crate) static WIDGETS: LanguageProfile = LanguageProfile {
+    wording: Wording {
+        package: "widget",
+        packages: "widgets",
+        manifest: "widgets.cfg",
+    },
+    extensions: &["lua"],
+    manifest_files: &["widgets.cfg"],
+    tokei_language: tokei::LanguageType::Lua,
+};
 
 /// A package node at `/<name>` with no entry files, for tests that only need
 /// the graph shape.
@@ -63,7 +76,7 @@ pub(crate) fn conventional_package(name: &str, path: impl Into<PathBuf>) -> Pack
     let existing = |p: PathBuf| p.exists().then_some(p);
     PackageInfo {
         name: name.to_string(),
-        key: name.replace('-', "_"),
+        key: normalize_crate_name(name),
         entry_files: existing(path.join("src/lib.rs"))
             .map(EntryFile::lib)
             .into_iter()

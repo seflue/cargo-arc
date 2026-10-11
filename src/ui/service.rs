@@ -387,7 +387,6 @@ fn workspace_relative(path: &Path, root: &Path) -> String {
 mod tests {
     use super::*;
     use crate::analyze::rust::PROFILE as RUST_PROFILE;
-    use crate::model::Wording;
     use std::path::Path;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -868,16 +867,8 @@ mod tests {
 
     #[test]
     fn reads_the_files_of_the_analyzed_language() {
-        static WIDGETS: LanguageProfile = LanguageProfile {
-            wording: Wording {
-                package: "widget",
-                packages: "widgets",
-                manifest: "widgets.cfg",
-            },
-            extensions: &["lua"],
-            manifest_files: &["widgets.cfg"],
-            tokei_language: tokei::LanguageType::Lua,
-        };
+        use crate::test_support::WIDGETS;
+
         let service = JumpService::new(
             Pages {
                 arc: Diagram { svg: String::new() },

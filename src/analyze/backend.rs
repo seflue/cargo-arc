@@ -5,15 +5,16 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use super::hir::FeatureConfig;
+use super::packages::{ModulePathMap, PackageExportMap, WorkspacePackages};
 use super::syn_walker::{analyze_modules_syn, collect_syn_module_paths};
 use super::use_parser::ReExportMap;
-use crate::model::{ModulePathMap, ModuleTree, PackageExportMap, PackageInfo, WorkspacePackages};
+use crate::model::{ModuleTree, PackageInfo};
 use std::collections::HashMap;
 
 #[cfg(feature = "hir")]
 use {
     super::hir::{collect_hir_module_paths, find_crate_in_workspace, load_workspace_hir},
-    crate::model::normalize_crate_name,
+    super::packages::normalize_crate_name,
     ra_ap_ide as ide,
 };
 
