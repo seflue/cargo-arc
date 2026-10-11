@@ -52,9 +52,14 @@ function crumbKeyAt(event: Event) {
   return crumb ? crumb.getAttribute('data-crumb') : null;
 }
 
+/** The HTML panel inside the sidebar's `foreignObject`. */
+function sidebarPanel(sidebarFo: Element | null) {
+  return (sidebarFo?.firstElementChild ?? null) as HTMLElement | null;
+}
+
 /** The path spans in the sidebar: rows and bar labels carrying `data-full`. */
 function sidebarPaths(sidebarFo: Element | null) {
-  const inner = sidebarFo?.firstElementChild;
+  const inner = sidebarPanel(sidebarFo);
   return inner ? [...inner.querySelectorAll<HTMLElement>('[data-full]')] : [];
 }
 
@@ -64,7 +69,7 @@ function sidebarPaths(sidebarFo: Element | null) {
  * `undefined` when there is nothing to measure.
  */
 function measureSidebarWidth(sidebarFo: Element | null) {
-  const inner = sidebarFo?.firstElementChild as HTMLElement | null | undefined;
+  const inner = sidebarPanel(sidebarFo);
   if (!sidebarFo || !inner) return undefined;
   for (const span of sidebarPaths(sidebarFo)) PathFit.resetPath(span);
   sidebarFo.setAttribute('width', '9999');
@@ -88,7 +93,7 @@ function fitSidebarPaths(sidebarFo: Element | null) {
  * over the map below it.
  */
 function fitSidebarHeight(sidebarFo: Element | null, freeHeight: number) {
-  const inner = sidebarFo?.firstElementChild as HTMLElement | null | undefined;
+  const inner = sidebarPanel(sidebarFo);
   if (!sidebarFo || !inner) return;
   inner.style.height = 'auto';
   const height = HotspotLayout.sidebarHeightFor(inner.offsetHeight, freeHeight);
@@ -589,9 +594,7 @@ function buildHotspotMap(
     if (typeof stored.selected === 'string' && nodes[stored.selected]) {
       select(stored.selected);
     }
-    if (stored.bars === true && showListEl && showBarsEl && listEl) {
-      showView(true);
-    }
+    if (stored.bars === true) showView(true);
   }
 
   // The follow and on-save toggles are rendered only for a map served by

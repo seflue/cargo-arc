@@ -1,4 +1,4 @@
-import { DomAdapter } from './dom_adapter.js';
+import { DomAdapter, numberAttribute } from './dom_adapter.js';
 import { JumpSymbol } from './jump_symbol.js';
 
 // jump_icons.ts - Builds, positions, and times out the jump popover shown
@@ -132,10 +132,10 @@ function createJumpIcons({
     cancelHide();
     removeGroup();
 
-    const x = parseFloat(rect.getAttribute('x') ?? '');
-    const y = parseFloat(rect.getAttribute('y') ?? '');
-    const width = parseFloat(rect.getAttribute('width') ?? '');
-    const height = parseFloat(rect.getAttribute('height') ?? '');
+    const x = numberAttribute(rect, 'x');
+    const y = numberAttribute(rect, 'y');
+    const width = numberAttribute(rect, 'width');
+    const height = numberAttribute(rect, 'height');
     const chipsWidth =
       targets.reduce((sum, t) => sum + chipWidth(t), 0) +
       (targets.length - 1) * CHIP_GAP;
