@@ -409,6 +409,7 @@ fn respond<R: std::io::Read>(request: Request, response: Response<R>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analyze::rust::PROFILE as RUST_PROFILE;
     use crate::layout::{ItemKind, JumpTable, LayoutIR};
     use crate::render::{AnalysisSwitches, RenderConfig, render};
     use crate::ui::service::{Diagram, Pages};
@@ -446,6 +447,7 @@ mod tests {
             },
             AnalysisSwitches::default(),
             PathBuf::from("/ws"),
+            &RUST_PROFILE,
             None,
             Box::new(|_| anyhow::bail!("this service does not recompute")),
         )
@@ -718,6 +720,7 @@ mod tests {
             },
             AnalysisSwitches::default(),
             PathBuf::from("/ws"),
+            &RUST_PROFILE,
             None,
             Box::new(move |switches| {
                 counter.fetch_add(1, Ordering::SeqCst);
@@ -862,6 +865,7 @@ mod tests {
             },
             AnalysisSwitches::default(),
             PathBuf::from("/ws"),
+            &RUST_PROFILE,
             None,
             Box::new(|_| Err(anyhow::anyhow!("no such\nmanifest").context("analysis failed"))),
         );
@@ -914,6 +918,7 @@ mod tests {
             },
             AnalysisSwitches::default(),
             PathBuf::from("/ws"),
+            &RUST_PROFILE,
             None,
             Box::new(|switches| {
                 if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
