@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, test } from 'bun:test';
-import { createFakeElement, DomAdapter } from './dom_adapter.js';
+import { DomAdapter } from './dom_adapter.js';
+import { createFakeElement } from './dom_mock.js';
 import { createHotspotJumpIcon, glyphPosition } from './hotspot_jump_icon.js';
 import { HotspotLabels } from './hotspot_labels.js';
 import { restoreAll, substitute } from './test_support.js';

@@ -1,3 +1,5 @@
+import type { ArcLogic } from './arc_logic.js';
+
 // virtual_edge_logic.ts - Pure logic for virtual edge aggregation
 // No DOM dependencies - uses Maps as data structures
 
@@ -34,7 +36,7 @@ const VirtualEdgeLogic = {
     string,
     {
       count: number;
-      hiddenEdgeData: string[];
+      hiddenEdgeData: ArcData['usages'][];
       directions: string[];
       originalArcs: string[];
       fromId: string;
@@ -97,7 +99,7 @@ const VirtualEdgeLogic = {
       string,
       {
         count: number;
-        hiddenEdgeData: string[];
+        hiddenEdgeData: ArcData['usages'][];
         directions: string[];
         originalArcs: string[];
         fromId: string;
@@ -109,7 +111,7 @@ const VirtualEdgeLogic = {
       { x: number; y: number; width: number; height: number }
     >,
     maxRight: number,
-    arcLogic: any,
+    arcLogic: typeof ArcLogic,
     rowHeight: number,
   ): Map<
     string,
@@ -117,7 +119,7 @@ const VirtualEdgeLogic = {
       fromId: string;
       toId: string;
       count: number;
-      hiddenEdgeData: string[];
+      hiddenEdgeData: ArcData['usages'][];
       arc: object;
       strokeWidth: number;
       direction: string;

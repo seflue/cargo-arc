@@ -7,7 +7,7 @@ import { describe, expect, test } from 'bun:test';
 const { ArcLogic } = require('./arc_logic.js');
 const { HighlightLogic } = require('./highlight_logic.js');
 
-const { createFakeElement } = require('./dom_adapter.js');
+const { createFakeElement } = require('./dom_mock.js');
 const { AppState } = require('./app_state.js');
 
 describe('Highlight Reset - Separation of Highlight State vs Layout State', () => {

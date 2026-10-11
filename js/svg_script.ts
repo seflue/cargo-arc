@@ -746,7 +746,7 @@ if (typeof document !== 'undefined') {
         visiblePositionY.set(nodeId, currentY);
 
         // Update rect position
-        node.setAttribute('y', currentY);
+        node.setAttribute('y', String(currentY));
 
         // Update label position (next text sibling)
         const label = node.nextElementSibling;
@@ -755,16 +755,16 @@ if (typeof document !== 'undefined') {
           label.tagName === 'text' &&
           label.classList.contains(C.nodes.label)
         ) {
-          label.setAttribute('y', currentY + height / 2 + 4);
+          label.setAttribute('y', String(currentY + height / 2 + 4));
         }
 
         // Update toggle icon position (if exists)
         const toggle = DomAdapter.getCollapseToggle(nodeId);
         if (toggle) {
-          toggle.setAttribute('y', currentY + height / 2 + 4);
+          toggle.setAttribute('y', String(currentY + height / 2 + 4));
           const nodeX = parseFloat(node.getAttribute('x'));
           const nodeW = parseFloat(node.getAttribute('width'));
-          toggle.setAttribute('x', nodeX + nodeW - TOGGLE_OFFSET);
+          toggle.setAttribute('x', String(nodeX + nodeW - TOGGLE_OFFSET));
         }
 
         // Update tree lines
@@ -1058,10 +1058,10 @@ if (typeof document !== 'undefined') {
           const textWidth = text.length * 6; // ~6px per char at 10px font
           const bg = DomAdapter.createSvgElement('rect');
           bg.setAttribute('class', C.labels.arcCountBg);
-          bg.setAttribute('x', x - textWidth / 2 - padding);
-          bg.setAttribute('y', y - 8 - padding);
-          bg.setAttribute('width', textWidth + padding * 2);
-          bg.setAttribute('height', 12 + padding * 2);
+          bg.setAttribute('x', String(x - textWidth / 2 - padding));
+          bg.setAttribute('y', String(y - 8 - padding));
+          bg.setAttribute('width', String(textWidth + padding * 2));
+          bg.setAttribute('height', String(12 + padding * 2));
           bg.setAttribute('rx', '2');
 
           const countLabel = DomAdapter.createSvgElement('text');
@@ -1216,11 +1216,14 @@ if (typeof document !== 'undefined') {
             nodeRect.getAttribute('data-original-width'),
           );
           const newWidth = Math.max(originalWidth, neededWidth);
-          nodeRect.setAttribute('width', newWidth);
+          nodeRect.setAttribute('width', String(newWidth));
           // Reposition toggle icon to right edge of expanded box
           if (toggleIcon) {
             const nodeX = parseFloat(nodeRect.getAttribute('x'));
-            toggleIcon.setAttribute('x', nodeX + newWidth - TOGGLE_OFFSET);
+            toggleIcon.setAttribute(
+              'x',
+              String(nodeX + newWidth - TOGGLE_OFFSET),
+            );
           }
         }
       } else {
@@ -1233,7 +1236,7 @@ if (typeof document !== 'undefined') {
             const nodeX = parseFloat(nodeRect.getAttribute('x'));
             toggleIcon.setAttribute(
               'x',
-              nodeX + parseFloat(originalWidth) - TOGGLE_OFFSET,
+              String(nodeX + parseFloat(originalWidth) - TOGGLE_OFFSET),
             );
           }
         }
@@ -1472,17 +1475,19 @@ if (typeof document !== 'undefined') {
     // doesn't appear when viewing the file outside a browser.
     function syncToolbarHeight() {
       const fo = DomAdapter.getElementById('toolbar-fo');
-      const root = DomAdapter.querySelector(`.${C.toolbar.root}`);
+      const root = DomAdapter.querySelector<HTMLElement>(`.${C.toolbar.root}`);
       const graph = DomAdapter.getElementById('graph-content');
       if (!root || (!PAGE_HOST && !fo)) return;
       if (!PAGE_HOST) fo.style.display = '';
       const baseH = root.offsetHeight;
       if (baseH > 0) {
         // Include dropdown panel height when visible (absolutely positioned, outside normal flow)
-        const panel = DomAdapter.querySelector(`.${C.toolbar.dropdownPanel}`);
+        const panel = DomAdapter.querySelector<HTMLElement>(
+          `.${C.toolbar.dropdownPanel}`,
+        );
         const panelH =
           panel && panel.style.display !== 'none' ? panel.offsetHeight : 0;
-        if (!PAGE_HOST) fo.setAttribute('height', baseH + panelH);
+        if (!PAGE_HOST) fo.setAttribute('height', String(baseH + panelH));
         // Shift graph content down by the delta between actual and default toolbar height
         const delta = baseH - TOOLBAR_HEIGHT;
         if (graph) {

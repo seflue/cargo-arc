@@ -8,19 +8,21 @@ import { RowState } from './row_state.js';
 // clickSelection is persistent (survives hover changes), hoverSelection is transient.
 // getSelection() returns click-priority-over-hover semantics.
 
+type AppState = {
+  collapsed: Set<string>;
+  clickSelection: { type: 'node' | 'arc' | null; id: string | null };
+  hoverSelection: { type: 'node' | 'arc' | null; id: string | null };
+  hiddenArcIds: Set<string>;
+  clusterMode: boolean;
+  selectedScc: number | null;
+  expandedRows: Set<string>;
+};
+
 const AppState = {
   /**
    * Create new AppState
    */
-  create(): {
-    collapsed: Set<string>;
-    clickSelection: { type: 'node' | 'arc' | null; id: string | null };
-    hoverSelection: { type: 'node' | 'arc' | null; id: string | null };
-    hiddenArcIds: Set<string>;
-    clusterMode: boolean;
-    selectedScc: number | null;
-    expandedRows: Set<string>;
-  } {
+  create(): AppState {
     return {
       collapsed: new Set(),
       clickSelection: { type: null, id: null },
@@ -34,18 +36,18 @@ const AppState = {
 
   // === Collapse Operations ===
 
-  isCollapsed(state: any, nodeId: string): boolean {
+  isCollapsed(state: AppState, nodeId: string): boolean {
     return state.collapsed.has(nodeId);
   },
 
-  isRowExpanded(state: any, arcId: string): boolean {
+  isRowExpanded(state: AppState, arcId: string): boolean {
     return state.expandedRows.has(arcId);
   },
 
   /**
    * Set collapsed state for node
    */
-  setCollapsed(state: any, nodeId: string, collapsed: boolean) {
+  setCollapsed(state: AppState, nodeId: string, collapsed: boolean) {
     if (collapsed) {
       state.collapsed.add(nodeId);
     } else {
@@ -57,7 +59,7 @@ const AppState = {
    * Toggle collapsed state
    * @returns - New collapsed state
    */
-  toggleCollapsed(state: any, nodeId: string): boolean {
+  toggleCollapsed(state: AppState, nodeId: string): boolean {
     const wasCollapsed = this.isCollapsed(state, nodeId);
     this.setCollapsed(state, nodeId, !wasCollapsed);
     return !wasCollapsed;
@@ -69,7 +71,7 @@ const AppState = {
    * Resolve the current selection with click-priority-over-hover semantics.
    * Returns clickSelection if present, otherwise hoverSelection, otherwise none.
    */
-  getSelection(state: any): {
+  getSelection(state: AppState): {
     mode: 'click' | 'hover' | 'none';
     type: string | null;
     id: string | null;
@@ -94,42 +96,42 @@ const AppState = {
   /**
    * Set click selection (persistent, survives hover changes)
    */
-  setSelection(state: any, type: 'node' | 'arc', id: string) {
+  setSelection(state: AppState, type: 'node' | 'arc', id: string) {
     state.clickSelection = { type, id };
   },
 
   /**
    * Set hover selection (transient, does NOT touch clickSelection)
    */
-  setHover(state: any, type: 'node' | 'arc', id: string) {
+  setHover(state: AppState, type: 'node' | 'arc', id: string) {
     state.hoverSelection = { type, id };
   },
 
   /**
    * Clear click selection only (hover selection is unaffected)
    */
-  clearSelection(state: any) {
+  clearSelection(state: AppState) {
     state.clickSelection = { type: null, id: null };
   },
 
   /**
    * Clear hover selection only (click selection is unaffected)
    */
-  clearHover(state: any) {
+  clearHover(state: AppState) {
     state.hoverSelection = { type: null, id: null };
   },
 
   /**
    * Check if specific element is click-selected (pinned)
    */
-  isSelected(state: any, type: 'node' | 'arc', id: string): boolean {
+  isSelected(state: AppState, type: 'node' | 'arc', id: string): boolean {
     return state.clickSelection.type === type && state.clickSelection.id === id;
   },
 
   /**
    * Check if anything is pinned (has a click selection)
    */
-  hasPinnedSelection(state: any): boolean {
+  hasPinnedSelection(state: AppState): boolean {
     return state.clickSelection.type !== null;
   },
 
@@ -138,7 +140,7 @@ const AppState = {
    * If same element is click-selected, deselects. Otherwise selects new element.
    * @returns - true if newly selected, false if deselected
    */
-  toggleSelection(state: any, type: 'node' | 'arc', id: string): boolean {
+  toggleSelection(state: AppState, type: 'node' | 'arc', id: string): boolean {
     if (this.isSelected(state, type, id)) {
       this.clearSelection(state);
       return false;
@@ -159,7 +161,7 @@ const AppState = {
   /**
    * Get the currently selected SCC (Ebene 1).
    */
-  getSelectedScc(state: any): number | null {
+  getSelectedScc(state: AppState): number | null {
     return state.selectedScc;
   },
 
@@ -167,7 +169,7 @@ const AppState = {
    * Transition function for a click on an arc, cycle or not.
    * @param sccId - SCC of the clicked arc, if any
    */
-  clickEdge(state: any, arcId: string, sccId: number | null | undefined) {
+  clickEdge(state: AppState, arcId: string, sccId: number | null | undefined) {
     if (sccId == null) {
       // Non-cycle edge: leaves cluster selection, falls back to the
       // pre-existing single-edge toggle behavior.
@@ -209,7 +211,7 @@ const AppState = {
   /**
    * Click into empty space: reset SCC selection, pin and hover.
    */
-  clickEmpty(state: any) {
+  clickEmpty(state: AppState) {
     this._enterScc(state, null);
     this.clearSelection(state);
     this.clearHover(state);
@@ -226,7 +228,7 @@ const AppState = {
    * different rows, so its expandedRows is meaningless once the sidebar
    * moves on — dropped on every selectedScc change, including to null.
    */
-  _enterScc(state: any, sccId: number | null) {
+  _enterScc(state: AppState, sccId: number | null) {
     if (state.selectedScc === sccId) return;
     state.selectedScc = sccId;
     state.expandedRows.clear();
@@ -235,7 +237,7 @@ const AppState = {
   /**
    * Read a tangle row's current state from its two bits.
    */
-  rowState(state: any, arcId: string): 'CU' | 'EU' | 'CP' | 'EP' {
+  rowState(state: AppState, arcId: string): 'CU' | 'EU' | 'CP' | 'EP' {
     const expanded = this.isRowExpanded(state, arcId);
     const pinned = this.isSelected(state, 'arc', arcId);
     if (expanded) return pinned ? 'EP' : 'EU';
@@ -245,7 +247,11 @@ const AppState = {
   /**
    * Write a row's next state back into expandedRows and the pin slot.
    */
-  applyRowState(state: any, arcId: string, next: 'CU' | 'EU' | 'CP' | 'EP') {
+  applyRowState(
+    state: AppState,
+    arcId: string,
+    next: 'CU' | 'EU' | 'CP' | 'EP',
+  ) {
     if (next === 'EU' || next === 'EP') state.expandedRows.add(arcId);
     else state.expandedRows.delete(arcId);
     if (next === 'CP' || next === 'EP') {
@@ -258,7 +264,7 @@ const AppState = {
   /**
    * Triangle click: flip a row's expand bit, the pin stays untouched.
    */
-  rowToggle(state: any, arcId: string) {
+  rowToggle(state: AppState, arcId: string) {
     this.applyRowState(
       state,
       arcId,
@@ -273,7 +279,11 @@ const AppState = {
    * unpin would, so it too stays expanded.
    * @param sccId - SCC of the row's edge (open cluster)
    */
-  rowPinClick(state: any, arcId: string, sccId: number | null | undefined) {
+  rowPinClick(
+    state: AppState,
+    arcId: string,
+    sccId: number | null | undefined,
+  ) {
     if (sccId != null) this._enterScc(state, sccId);
     const next = RowState[this.rowState(state, arcId)].pinClick();
     if (next === 'EP') {
@@ -291,14 +301,14 @@ const AppState = {
    * collapse-all control; the caller resolves which arc ids belong to the
    * open tangle.
    */
-  rowsExpandAll(state: any, arcIds: Iterable<string>) {
+  rowsExpandAll(state: AppState, arcIds: Iterable<string>) {
     for (const arcId of arcIds) state.expandedRows.add(arcId);
   },
 
   /**
    * Collapse every given row, whatever its pin.
    */
-  rowsCollapseAll(state: any, arcIds: Iterable<string>) {
+  rowsCollapseAll(state: AppState, arcIds: Iterable<string>) {
     for (const arcId of arcIds) state.expandedRows.delete(arcId);
   },
 
@@ -306,7 +316,7 @@ const AppState = {
    * The editor's cursor landed on a row's jump target: expand it, pin
    * untouched.
    */
-  rowFollow(state: any, arcId: string) {
+  rowFollow(state: AppState, arcId: string) {
     this.applyRowState(
       state,
       arcId,
@@ -319,36 +329,37 @@ const AppState = {
   /**
    * Mark arc as hidden by filter
    */
-  hideArc(state: any, arcId: string) {
+  hideArc(state: AppState, arcId: string) {
     state.hiddenArcIds.add(arcId);
   },
 
   /**
    * Mark arc as visible (remove from hidden set)
    */
-  showArc(state: any, arcId: string) {
+  showArc(state: AppState, arcId: string) {
     state.hiddenArcIds.delete(arcId);
   },
 
-  isArcHidden(state: any, arcId: string): boolean {
+  isArcHidden(state: AppState, arcId: string): boolean {
     return state.hiddenArcIds.has(arcId);
   },
 
   /**
    * Get pinned (click) selection.
    */
-  getPinned(state: any): null | { type: string; id: string } {
-    if (state.clickSelection.type === null) return null;
-    return { ...state.clickSelection };
+  getPinned(state: AppState): null | { type: string; id: string } {
+    const { type, id } = state.clickSelection;
+    if (type === null || id === null) return null;
+    return { type, id };
   },
 
   // === Cluster Mode ===
 
-  isClusterMode(state: any): boolean {
+  isClusterMode(state: AppState): boolean {
     return state.clusterMode;
   },
 
-  setClusterMode(state: any, on: boolean) {
+  setClusterMode(state: AppState, on: boolean) {
     state.clusterMode = on;
   },
 };

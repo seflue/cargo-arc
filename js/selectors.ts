@@ -3,29 +3,29 @@
  * Pure functions, no DOM access - testable in isolation
  */
 const Selectors = {
-  nodeId: (id) => `node-${id}`,
-  countId: (id) => `count-${id}`,
-  cycleMarkerId: (id) => `cycle-marker-${id}`,
+  nodeId: (id: string) => `node-${id}`,
+  countId: (id: string) => `count-${id}`,
+  cycleMarkerId: (id: string) => `cycle-marker-${id}`,
 
-  baseArc: (arcId) => {
+  baseArc: (arcId: string) => {
     const c = STATIC_DATA.classes;
     return `.${c.direction.depArc}[data-arc-id="${arcId}"], .${c.direction.cycleArc}[data-arc-id="${arcId}"]`;
   },
-  hitarea: (arcId) =>
+  hitarea: (arcId: string) =>
     `.${STATIC_DATA.classes.direction.arcHitarea}[data-arc-id="${arcId}"]`,
-  arrows: (arcId) => `polygon[data-edge="${arcId}"]`,
-  virtualArrows: (arcId) =>
+  arrows: (arcId: string) => `polygon[data-edge="${arcId}"]`,
+  virtualArrows: (arcId: string) =>
     `[data-vedge="${arcId}"]:not(.${STATIC_DATA.classes.labels.arcCount})`,
-  virtualArc: (from, to) =>
+  virtualArc: (from: string, to: string) =>
     `.${STATIC_DATA.classes.direction.virtualArc}[data-from="${from}"][data-to="${to}"]`,
-  labelGroup: (arcId) =>
+  labelGroup: (arcId: string) =>
     `.${STATIC_DATA.classes.labels.arcCountGroup}[data-vedge="${arcId}"]`,
 
   // Identity selectors (parametrized)
-  collapseToggle: (nodeId) =>
+  collapseToggle: (nodeId: string) =>
     `.${STATIC_DATA.classes.nodes.collapseToggle}[data-target="${nodeId}"]`,
-  treeLineChild: (nodeId) => `line[data-child="${nodeId}"]`,
-  treeLineParent: (nodeId) => `line[data-parent="${nodeId}"]`,
+  treeLineChild: (nodeId: string) => `line[data-child="${nodeId}"]`,
+  treeLineParent: (nodeId: string) => `line[data-parent="${nodeId}"]`,
 
   // Category selectors (batch operations)
   allHitareas: () => `.${STATIC_DATA.classes.direction.arcHitarea}`,

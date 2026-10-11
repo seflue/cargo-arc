@@ -26,12 +26,14 @@ const SIDEBAR_MIN_WIDTH = 280;
 // long labels; below this budget the second node stays, above it the header drops
 // to head + closing edge so the CSS net never has to cut the closing edge itself.
 const CYCLE_HEADER_MAX_CHARS = 48;
+
+type NodeRelations = ReturnType<typeof StaticData.getNodeRelations>;
 // The rows the collapse-all button drives: the relation rows of a node
 // sidebar and the symbol rows of an arc sidebar, both direct children of
 // the content's usage groups. A node sidebar nests a second level of
 // collapsible symbol rows inside each relation row; those start expanded and
 // must not count, or the first click would collapse instead of expand.
-const collapsibleSymbolSelector = (S) =>
+const collapsibleSymbolSelector = (S: typeof STATIC_DATA.classes.sidebar) =>
   `:scope > .${S.usageGroup} > .${S.symbol}[data-collapsible]`;
 
 const SidebarLogic = {
@@ -66,7 +68,7 @@ const SidebarLogic = {
     locations: Array<{ file: string; line: number }>;
     definition?: { file: string; line: number; jump: number };
   }> {
-    const bySymbol = new Map();
+    const bySymbol = new Map<string, (typeof groups)[number]>();
     for (const g of groups) {
       const key = g.symbol || '';
       const existing = bySymbol.get(key);
@@ -194,10 +196,7 @@ const SidebarLogic = {
    * @param nodeId - The selected node ID
    * @param relations - From collectNodeRelations() (filtered + virtual arcs)
    */
-  buildNodeContent(
-    nodeId: string,
-    relations: { incoming: Array<any>; outgoing: Array<any> },
-  ): string {
+  buildNodeContent(nodeId: string, relations: NodeRelations): string {
     const S = STATIC_DATA.classes.sidebar;
     const node = StaticData.getNode(nodeId);
     const nodeName = this._formatNodeName(node, nodeId);
@@ -282,7 +281,7 @@ const SidebarLogic = {
    * @param [maxToLen=0] - Minimum badge width (ch) for to-badge
    */
   _buildRelationSection(
-    rel: any,
+    rel: NodeRelations['incoming'][number],
     nodeId: string,
     nodeName: string,
     nodeType: string,
@@ -392,14 +391,14 @@ const SidebarLogic = {
    * @param nodeName - Display name of the selected node
    */
   _computeMaxBadgeLengths(
-    relations: { incoming: Array<any>; outgoing: Array<any> },
+    relations: NodeRelations,
     nodeId: string,
     nodeName: string,
   ): {
     incoming: { maxFrom: number; maxTo: number };
     outgoing: { maxFrom: number; maxTo: number };
   } {
-    const effectiveLen = (id, name) => {
+    const effectiveLen = (id: string, name: string) => {
       let len = name.length;
       if (StaticData.hasChildren(id)) {
         const collapsed = this._isNodeCollapsed?.(id);
@@ -437,7 +436,7 @@ const SidebarLogic = {
    * @param node - Node data from StaticData
    * @param fallback - Fallback ID if node is null
    */
-  _formatNodeName(node: any, fallback: string): string {
+  _formatNodeName(node: NodeData | undefined, fallback: string): string {
     if (!node) return fallback;
     if (node.version) return `${node.name} v${node.version}`;
     return node.name;
@@ -469,12 +468,12 @@ const SidebarLogic = {
       typeof STATIC_DATA !== 'undefined' &&
       STATIC_DATA.symbolLocalities?.[providerId]?.[symbol];
     if (!sl) return '';
-    const nameOf = (id) => StaticData.getNode(id)?.name ?? id;
+    const nameOf = (id: string) => StaticData.getNode(id)?.name ?? id;
     let label: string;
     if (sl.locality === 'singleConsumer') {
-      label = `only used by ${nameOf(sl.module)}`;
+      label = `only used by ${nameOf(sl.module ?? '')}`;
     } else if (sl.locality === 'commonAncestor') {
-      label = `used under ${nameOf(sl.module)}`;
+      label = `used under ${nameOf(sl.module ?? '')}`;
     } else if (sl.locality === 'packageWide') {
       label = `widely used (${sl.consumers?.length ?? 0} modules)`;
     } else {
@@ -562,7 +561,9 @@ const SidebarLogic = {
    */
   _getMaxArcRightX(): number {
     if (this._cachedMaxArcRightX != null) return this._cachedMaxArcRightX;
-    const arcs = DomAdapter.querySelectorAll(Selectors.allArcPaths());
+    const arcs = DomAdapter.querySelectorAll<SVGGraphicsElement>(
+      Selectors.allArcPaths(),
+    );
     let maxX = 0;
     for (const arc of arcs) {
       if (arc.style.display === 'none') continue;
@@ -787,7 +788,7 @@ const SidebarLogic = {
 
     // Cache each edge's crossing symbols once; the hasCollapsible scan and
     // the row builder would otherwise both call _edgeSymbols per edge.
-    const symbolsByArcId = new Map();
+    const symbolsByArcId = new Map<string, ArcData['usages']>();
     for (const cycle of cl.cycles) {
       for (const edge of cycle) {
         const arcId = `${edge.fromId}-${edge.toId}`;
@@ -831,8 +832,8 @@ const SidebarLogic = {
         StaticData.qualifiedParts(id).path.split('::'),
       ]),
     );
-    const labelCache = new Map();
-    const seenArcIds = new Set();
+    const labelCache = new Map<string, string>();
+    const seenArcIds = new Set<string>();
     cl.cycles.forEach((cycle, index) => {
       html += this._buildCycleBlock(
         cycle,
@@ -873,7 +874,7 @@ const SidebarLogic = {
     focusArcId: string | undefined,
     seenArcIds: Set<string>,
     sccNodeIds: Set<string>,
-    symbolsByArcId: Map<string, Array<any>>,
+    symbolsByArcId: Map<string, ArcData['usages']>,
     segmentsById?: Map<string, string[]>,
     labelCache?: Map<string, string>,
   ): string {
@@ -943,7 +944,7 @@ const SidebarLogic = {
     sccNodeIds: Iterable<string>,
     segmentsById?: Map<string, string[]>,
   ): string {
-    const pathSegments = (id) =>
+    const pathSegments = (id: string) =>
       segmentsById?.get(id) ?? StaticData.qualifiedParts(id).path.split('::');
     const segments = pathSegments(nodeId);
     const otherSegments = [...sccNodeIds]
@@ -1033,7 +1034,7 @@ const SidebarLogic = {
    * Crossing symbols for a cluster edge, real imports only. `pub use`
    * re-exports ride the same edge but are not part of the cycle (ADR-022).
    */
-  _edgeSymbols(edge: CycleArcData): Array<any> {
+  _edgeSymbols(edge: CycleArcData): ArcData['usages'] {
     const arcId = `${edge.fromId}-${edge.toId}`;
     return (
       (typeof STATIC_DATA !== 'undefined' &&
@@ -1053,7 +1054,7 @@ const SidebarLogic = {
    */
   _buildEdgeRow(
     edge: CycleArcData,
-    symbols: Array<any>,
+    symbols: ArcData['usages'],
     focusArcId: string | undefined,
     extraClasses: string[] = [],
   ): string {
@@ -1286,38 +1287,39 @@ const SidebarLogic = {
     allBtn.innerHTML = allCollapsed ? '+' : '−';
   },
 
-  _setupCollapseHandlers(root) {
+  _setupCollapseHandlers(root: HTMLElement) {
     const S = STATIC_DATA.classes.sidebar;
     if (!root || !root.querySelector) return;
-    const content = root.querySelector(`.${S.content}`);
+    const content = root.querySelector<HTMLElement>(`.${S.content}`);
     if (!content) return;
     content.addEventListener('click', (e) => {
+      const target = e.target as Element;
       // A location row's, definition chip's or symbol row's click is a jump,
       // handled on the document; the row around it keeps its pin and
       // expansion state.
-      if (e.target.closest?.(`.${S.location}[data-jump]`)) return;
-      if (e.target.closest?.(`.${S.definition}[data-jump]`)) return;
-      if (e.target.closest?.(`.${S.edgeSymbol}[data-jump]`)) return;
+      if (target.closest?.(`.${S.location}[data-jump]`)) return;
+      if (target.closest?.(`.${S.definition}[data-jump]`)) return;
+      if (target.closest?.(`.${S.edgeSymbol}[data-jump]`)) return;
       // Cluster rows: the triangle toggles expansion, the rest of the head
       // pins/unpins. The two never share a click. A non-expandable row's
       // triangle is an empty placeholder, not a toggle, so it pins too.
-      const edgeRow = e.target.closest?.(`.${S.edgeRow}`);
+      const edgeRow = target.closest?.<HTMLElement>(`.${S.edgeRow}`);
       if (edgeRow) {
         const head = edgeRow.querySelector?.(`.${S.edgeHead}`);
         if (
-          e.target.closest?.(`.${S.toggle}`) &&
+          target.closest?.(`.${S.toggle}`) &&
           head?.hasAttribute('data-collapsible')
         ) {
           SidebarLogic._handleRowToggle(edgeRow, root, content);
-        } else if (e.target.closest?.(`.${S.edgeHead}`)) {
+        } else if (target.closest?.(`.${S.edgeHead}`)) {
           SidebarLogic._handleRowPinClick(edgeRow, root, content);
         }
         return;
       }
-      const symbolEl = e.target.closest(`.${S.symbol}`);
+      const symbolEl = target.closest<HTMLElement>(`.${S.symbol}`);
       if (!symbolEl) return;
       if (!symbolEl.hasAttribute('data-collapsible')) return;
-      const locsEl = symbolEl.nextElementSibling;
+      const locsEl = symbolEl.nextElementSibling as HTMLElement;
       const isCollapsed = symbolEl.getAttribute('data-collapsed') === 'true';
       if (isCollapsed) {
         symbolEl.removeAttribute('data-collapsed');
@@ -1334,7 +1336,9 @@ const SidebarLogic = {
       SidebarLogic.updatePosition();
     });
     if (root.querySelectorAll) {
-      const indicators = root.querySelectorAll(`.${S.collapseIndicator}`);
+      const indicators = root.querySelectorAll<HTMLElement>(
+        `.${S.collapseIndicator}`,
+      );
       for (const indicator of indicators) {
         indicator.addEventListener('click', (e) => {
           e.stopPropagation();
@@ -1343,7 +1347,7 @@ const SidebarLogic = {
           }
         });
       }
-      const badges = root.querySelectorAll('[data-node-id]');
+      const badges = root.querySelectorAll<HTMLElement>('[data-node-id]');
       for (const badge of badges) {
         badge.addEventListener('click', (e) => {
           e.stopPropagation();
@@ -1356,7 +1360,7 @@ const SidebarLogic = {
       // above) pins it and drives expansion. Hover changes neither, but the
       // focus mark tracks _resolvedFocusArc (pin-or-hover), so it has to be
       // refreshed on both ends of a hover too, not only on click.
-      const edgeRows = root.querySelectorAll(`.${S.edgeRow}`);
+      const edgeRows = root.querySelectorAll<HTMLElement>(`.${S.edgeRow}`);
       for (const row of edgeRows) {
         row.addEventListener('mouseenter', () => {
           if (SidebarLogic._onEdgeHover) {
@@ -1404,14 +1408,14 @@ const SidebarLogic = {
         return;
       }
       const symbols = [
-        ...content.querySelectorAll(collapsibleSymbolSelector(S)),
+        ...content.querySelectorAll<HTMLElement>(collapsibleSymbolSelector(S)),
       ];
       if (!symbols.length) return;
       const anyExpanded = symbols.some(
         (s) => s.getAttribute('data-collapsed') !== 'true',
       );
       for (const symbolEl of symbols) {
-        const locsEl = symbolEl.nextElementSibling;
+        const locsEl = symbolEl.nextElementSibling as HTMLElement;
         const toggle = symbolEl.querySelector(`.${S.toggle}`);
         if (anyExpanded) {
           symbolEl.setAttribute('data-collapsed', 'true');
@@ -1431,20 +1435,14 @@ const SidebarLogic = {
   /**
    * Show sidebar with content for given node (pinned click).
    */
-  showNode(
-    nodeId: string,
-    relations: { incoming: Array<any>; outgoing: Array<any> },
-  ) {
+  showNode(nodeId: string, relations: NodeRelations) {
     this._showWithContent(this.buildNodeContent(nodeId, relations));
   },
 
   /**
    * Show sidebar transiently for node hover. Debounced.
    */
-  showTransientNode(
-    nodeId: string,
-    relations: { incoming: Array<any>; outgoing: Array<any> },
-  ) {
+  showTransientNode(nodeId: string, relations: NodeRelations) {
     const S = STATIC_DATA.classes.sidebar;
     clearTimeout(this._debounceTimer ?? undefined);
     this._debounceTimer = setTimeout(() => {

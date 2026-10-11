@@ -1,4 +1,11 @@
-const LAYER_TABLE = [
+type LayerKey = keyof typeof LayerManager.LAYERS;
+type ElementLookup = { getElementById(id: string): Element | null };
+
+const LAYER_TABLE: {
+  check: (el: Element, cls: typeof STATIC_DATA.classes) => boolean;
+  base: LayerKey;
+  highlight: LayerKey;
+}[] = [
   {
     check: (el, cls) =>
       el.classList?.contains(cls.direction.depArc) ||
@@ -60,7 +67,11 @@ const LayerManager = {
    * @param layerId - Target layer ID
    * @param domAdapter - DomAdapter instance
    */
-  moveToLayer(element: Element | null, layerId: string, domAdapter: any) {
+  moveToLayer(
+    element: Element | null,
+    layerId: string,
+    domAdapter: ElementLookup,
+  ) {
     if (element && layerId) {
       domAdapter.getElementById(layerId)?.appendChild(element);
     }
@@ -71,7 +82,7 @@ const LayerManager = {
    * @param layerId - Layer ID to clear
    * @param domAdapter - DomAdapter instance
    */
-  clearLayer(layerId: string, domAdapter: any) {
+  clearLayer(layerId: string, domAdapter: ElementLookup) {
     const layer = domAdapter.getElementById(layerId);
     if (layer) {
       while (layer.firstChild) layer.removeChild(layer.firstChild);
@@ -83,7 +94,7 @@ const LayerManager = {
    * @param element - Element to move
    * @param domAdapter - DomAdapter instance
    */
-  moveToHighlightLayer(element: Element | null, domAdapter: any) {
+  moveToHighlightLayer(element: Element | null, domAdapter: ElementLookup) {
     const layerId = this.getLayerForElement(element, true);
     if (layerId) this.moveToLayer(element, layerId, domAdapter);
   },

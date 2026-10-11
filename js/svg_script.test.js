@@ -1,10 +1,7 @@
 import { afterAll, afterEach, describe, expect, test } from 'bun:test';
 import { ArcLogic } from './arc_logic.js';
-import {
-  createFakeElement,
-  createMockDomAdapter,
-  DomAdapter,
-} from './dom_adapter.js';
+import { DomAdapter } from './dom_adapter.js';
+import { createFakeElement, createMockDomAdapter } from './dom_mock.js';
 import { SidebarLogic } from './sidebar.js';
 import { restoreAll, substitute } from './test_support.js';
 

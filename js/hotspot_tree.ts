@@ -23,11 +23,11 @@ function rootKey(nodes: Record<string, { parent?: string }>): string {
 function childrenOf(
   nodes: Record<string, { parent?: string; name: string; lines: number }>,
 ): Map<string, string[]> {
-  const byParent = new Map();
+  const byParent = new Map<string, string[]>();
   for (const [key, node] of Object.entries(nodes)) {
     if (node.parent == null) continue;
     if (!byParent.has(node.parent)) byParent.set(node.parent, []);
-    byParent.get(node.parent).push(key);
+    byParent.get(node.parent)?.push(key);
   }
   for (const children of byParent.values()) {
     children.sort((a, b) => {
@@ -51,8 +51,12 @@ function ancestorPath(
   nodes: Record<string, { parent?: string }>,
   key: string,
 ): string[] {
-  const path = [];
-  for (let step = key; step !== undefined; step = nodes[step]?.parent) {
+  const path: string[] = [];
+  for (
+    let step: string | undefined = key;
+    step !== undefined;
+    step = nodes[step]?.parent
+  ) {
     path.unshift(step);
   }
   return path;
@@ -67,8 +71,8 @@ function preorderKeys(
   nodes: Record<string, { parent?: string; name: string; lines: number }>,
 ): string[] {
   const children = childrenOf(nodes);
-  const order = [];
-  const visit = (key) => {
+  const order: string[] = [];
+  const visit = (key: string) => {
     order.push(key);
     for (const child of children.get(key) ?? []) visit(child);
   };

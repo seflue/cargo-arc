@@ -9,23 +9,25 @@ const SearchLogic = {
     active: false,
     query: '',
     scope: 'all',
-    matchedNodeIds: new Set(),
-    matchParentIds: new Set(),
-    matchedArcIds: new Set(),
-    contextNodeIds: new Set(),
+    matchedNodeIds: new Set<string>(),
+    matchParentIds: new Set<string>(),
+    matchedArcIds: new Set<string>(),
+    contextNodeIds: new Set<string>(),
     debounceTimer: null as number | null,
   },
+  _appState: null as AppState | null,
 
   /**
    * Initialize search event listeners.
    * @param appState - AppState instance (for collapse checks)
    */
-  init(appState: any) {
+  init(appState: AppState) {
     this._appState = appState;
 
-    const input = DomAdapter.querySelector('#search-input');
-    const clearBtn = DomAdapter.querySelector('#search-clear');
-    const scopeSelector = DomAdapter.querySelector('#scope-selector');
+    const input = DomAdapter.querySelector<HTMLInputElement>('#search-input');
+    const clearBtn = DomAdapter.querySelector<HTMLElement>('#search-clear');
+    const scopeSelector =
+      DomAdapter.querySelector<HTMLElement>('#scope-selector');
 
     if (input) {
       input.addEventListener('input', (e) => this._onInput(e));
@@ -40,17 +42,19 @@ const SearchLogic = {
     }
     if (scopeSelector) {
       scopeSelector.addEventListener('click', (e) => {
-        const btn = e.target.closest('[data-scope]');
+        if (!(e.target instanceof Element)) return;
+        const btn = e.target.closest<HTMLElement>('[data-scope]');
         if (!btn) return;
         e.stopPropagation();
-        this.setScope(btn.dataset.scope);
+        this.setScope(btn.dataset.scope ?? '');
       });
     }
   },
 
-  _onInput(e) {
+  _onInput(e: Event) {
+    if (!(e.target instanceof HTMLInputElement)) return;
     const query = e.target.value;
-    const clearBtn = DomAdapter.querySelector('#search-clear');
+    const clearBtn = DomAdapter.querySelector<HTMLElement>('#search-clear');
     if (clearBtn) clearBtn.style.display = query ? 'block' : 'none';
 
     clearTimeout(this._state.debounceTimer ?? undefined);
@@ -80,7 +84,7 @@ const SearchLogic = {
     this._state.query = q;
     this._state.scope = scope;
 
-    const matchedNodes = new Set();
+    const matchedNodes = new Set<string>();
 
     if (scope === 'all' || scope === 'package' || scope === 'module') {
       for (const nodeId of StaticData.getAllNodeIds()) {
@@ -96,8 +100,8 @@ const SearchLogic = {
 
     // An arc matches by its own symbols only; a name match on a
     // node no longer spreads to the arcs touching it.
-    const matchedArcs = new Set();
-    const contextNodeIds = new Set();
+    const matchedArcs = new Set<string>();
+    const contextNodeIds = new Set<string>();
 
     if (scope === 'all' || scope === 'symbol') {
       for (const arcId of StaticData.getAllArcIds()) {
@@ -115,8 +119,8 @@ const SearchLogic = {
     }
 
     // Collapsed-parent-resolution
-    const directMatches = new Set();
-    const parentMatches = new Set();
+    const directMatches = new Set<string>();
+    const parentMatches = new Set<string>();
 
     for (const nodeId of matchedNodes) {
       const visible = this._resolveVisibleAncestor(nodeId);
@@ -130,7 +134,7 @@ const SearchLogic = {
     // A matched arc's endpoints are context, not matches: visible,
     // no match style, not counted. A node that is already a real match
     // keeps that match instead.
-    const contextMatches = new Set();
+    const contextMatches = new Set<string>();
     for (const nodeId of contextNodeIds) {
       const visible = this._resolveVisibleAncestor(nodeId);
       if (directMatches.has(visible) || parentMatches.has(visible)) continue;
@@ -220,10 +224,10 @@ const SearchLogic = {
     if (svg) svg.classList.remove(STATIC_DATA.classes.search.searchActive);
     this._state.active = false;
     this._state.query = '';
-    this._state.matchedNodeIds = new Set();
-    this._state.matchParentIds = new Set();
-    this._state.matchedArcIds = new Set();
-    this._state.contextNodeIds = new Set();
+    this._state.matchedNodeIds = new Set<string>();
+    this._state.matchParentIds = new Set<string>();
+    this._state.matchedArcIds = new Set<string>();
+    this._state.contextNodeIds = new Set<string>();
 
     const countEl = DomAdapter.getElementById('search-result-count');
     if (countEl) countEl.textContent = '';
@@ -298,7 +302,7 @@ const SearchLogic = {
    * visible element then, only the virtual one aggregating it does.
    * No-op when both endpoints are visible, since no virtual arc exists.
    */
-  _setVirtualArcMatch(arcId, add) {
+  _setVirtualArcMatch(arcId: string, add: boolean) {
     const arc = StaticData.getArc(arcId);
     if (!arc) return;
     const visibleFrom = this._resolveVisibleAncestor(arc.from);
@@ -308,7 +312,7 @@ const SearchLogic = {
 
     const C = STATIC_DATA.classes;
     const virtualArcId = `${visibleFrom}-${visibleTo}`;
-    const toggle = (el) =>
+    const toggle = (el: Element) =>
       el.classList[add ? 'add' : 'remove'](C.search.searchMatch);
 
     DomAdapter.querySelectorAll(
@@ -326,7 +330,12 @@ const SearchLogic = {
    * Diff old vs new match sets; only touch DOM elements whose state changed.
    * Reduces DOM mutations from O(total) to O(delta) during incremental typing.
    */
-  _applySearchDiff(oldDirect, oldParent, newDirect, newParent) {
+  _applySearchDiff(
+    oldDirect: Set<string>,
+    oldParent: Set<string>,
+    newDirect: Set<string>,
+    newParent: Set<string>,
+  ) {
     const C = STATIC_DATA.classes;
 
     // Remove classes from nodes that left their set
@@ -359,7 +368,7 @@ const SearchLogic = {
    * Diff old vs new context-node sets, same delta-only approach as
    * _applySearchDiff.
    */
-  _applyContextDiff(oldContext, newContext) {
+  _applyContextDiff(oldContext: Set<string>, newContext: Set<string>) {
     const C = STATIC_DATA.classes;
 
     for (const nodeId of oldContext) {
@@ -374,7 +383,7 @@ const SearchLogic = {
     }
   },
 
-  _setNodeClass(nodeId, className, add) {
+  _setNodeClass(nodeId: string, className: string, add: boolean) {
     const rect = DomAdapter.getNode(nodeId);
     if (!rect) return;
     rect.classList.toggle(className, add);
@@ -385,7 +394,7 @@ const SearchLogic = {
   },
 
   /** Add search-match class to matched arc elements (CSS-only dimming via svg.search-active). */
-  _applyArcMatches(matchedArcs) {
+  _applyArcMatches(matchedArcs: Set<string>) {
     const C = STATIC_DATA.classes;
 
     // Add search-match to matched arc elements so CSS excludes them from dimming
@@ -405,12 +414,13 @@ const SearchLogic = {
     }
   },
 
-  _resolveVisibleAncestor(nodeId) {
+  _resolveVisibleAncestor(nodeId: string) {
+    const appState = this._appState;
     let current = nodeId;
     while (current) {
       const node = StaticData.getNode(current);
       if (!node || node.parent == null) return current;
-      if (AppState.isCollapsed(this._appState, node.parent)) {
+      if (appState && AppState.isCollapsed(appState, node.parent)) {
         current = node.parent;
       } else {
         return current;
@@ -419,11 +429,11 @@ const SearchLogic = {
     return nodeId;
   },
 
-  _updateScopeButtons(scope) {
+  _updateScopeButtons(scope: string) {
     const C = STATIC_DATA.classes;
     const selector = DomAdapter.querySelector('#scope-selector');
     if (!selector) return;
-    const buttons = selector.querySelectorAll('[data-scope]');
+    const buttons = selector.querySelectorAll<HTMLElement>('[data-scope]');
     buttons.forEach((btn) => {
       btn.classList.toggle(C.toolbar.scopeActive, btn.dataset.scope === scope);
     });

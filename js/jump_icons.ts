@@ -7,7 +7,12 @@ import { JumpSymbol } from './jump_symbol.js';
 // rows and the hotspot map's own single icon.
 
 /** Chip text per target kind (STATIC_DATA `targets[i].kind`). */
-const CHIP_LABELS = { lib: 'lib', bin: 'bin', manifest: 'toml', module: 'mod' };
+const CHIP_LABELS: Record<string, string> = {
+  lib: 'lib',
+  bin: 'bin',
+  manifest: 'toml',
+  module: 'mod',
+};
 /** Transparent strip between the node's edge and the popover, in SVG units. */
 const BRIDGE_WIDTH = 4;
 /** Padding inside the popover background, in SVG units. */
@@ -20,6 +25,8 @@ const CHIP_PAD = 5;
 const CHIP_GAP = 4;
 /** Advance width of one chip character at the 10px monospace label size. */
 const CHAR_WIDTH = 6;
+
+type JumpTarget = { kind: string; name: string; jump: number };
 
 /**
  * @param deps - `setTimeout`/`clearTimeout` are injected so tests control the
@@ -44,8 +51,8 @@ function createJumpIcons({
   clearTimeout: typeof globalThis.clearTimeout;
   grace: number;
 }) {
-  let group = null;
-  let hideTimer = null;
+  let group: SVGElement | null = null;
+  let hideTimer: number | undefined;
 
   JumpSymbol.defineJumpSymbol(defsHost);
 
@@ -58,13 +65,13 @@ function createJumpIcons({
 
   function cancelHide() {
     clearTimeout(hideTimer);
-    hideTimer = null;
+    hideTimer = undefined;
   }
 
   function scheduleHide() {
     clearTimeout(hideTimer);
     hideTimer = setTimeout(() => {
-      hideTimer = null;
+      hideTimer = undefined;
       removeGroup();
     }, grace);
   }
@@ -74,38 +81,34 @@ function createJumpIcons({
     removeGroup();
   }
 
-  function chipLabel(target: { kind: string; name: string; jump: number }) {
+  function chipLabel(target: JumpTarget) {
     return CHIP_LABELS[target.kind] ?? target.kind;
   }
 
-  function chipWidth(target: { kind: string; name: string; jump: number }) {
+  function chipWidth(target: JumpTarget) {
     return chipLabel(target).length * CHAR_WIDTH + 2 * CHIP_PAD;
   }
 
   /**
    * One clickable chip: rounded box, kind label, target path as tooltip.
    */
-  function buildChip(
-    target: { kind: string; name: string; jump: number },
-    x: number,
-    y: number,
-  ) {
+  function buildChip(target: JumpTarget, x: number, y: number) {
     const chip = DomAdapter.createSvgElement('g');
     chip.setAttribute('class', 'jump-chip');
     const width = chipWidth(target);
 
     const box = DomAdapter.createSvgElement('rect');
     box.setAttribute('class', 'jump-popover jump-chip-bg');
-    box.setAttribute('x', x);
-    box.setAttribute('y', y);
-    box.setAttribute('width', width);
-    box.setAttribute('height', CHIP_HEIGHT);
+    box.setAttribute('x', String(x));
+    box.setAttribute('y', String(y));
+    box.setAttribute('width', String(width));
+    box.setAttribute('height', String(CHIP_HEIGHT));
     chip.appendChild(box);
 
     const label = DomAdapter.createSvgElement('text');
     label.setAttribute('class', 'jump-chip-label');
-    label.setAttribute('x', x + width / 2);
-    label.setAttribute('y', y + CHIP_HEIGHT / 2);
+    label.setAttribute('x', String(x + width / 2));
+    label.setAttribute('y', String(y + CHIP_HEIGHT / 2));
     label.textContent = chipLabel(target);
     chip.appendChild(label);
 
@@ -125,14 +128,14 @@ function createJumpIcons({
   // The layer sits above every arc and hit-area layer, so the pointer reaches
   // the popover and its mouseenter cancels the hide the node's mouseleave
   // scheduled.
-  function show(nodeId, rect, targets) {
+  function show(nodeId: string, rect: Element, targets: JumpTarget[]) {
     cancelHide();
     removeGroup();
 
-    const x = parseFloat(rect.getAttribute('x'));
-    const y = parseFloat(rect.getAttribute('y'));
-    const width = parseFloat(rect.getAttribute('width'));
-    const height = parseFloat(rect.getAttribute('height'));
+    const x = parseFloat(rect.getAttribute('x') ?? '');
+    const y = parseFloat(rect.getAttribute('y') ?? '');
+    const width = parseFloat(rect.getAttribute('width') ?? '');
+    const height = parseFloat(rect.getAttribute('height') ?? '');
     const chipsWidth =
       targets.reduce((sum, t) => sum + chipWidth(t), 0) +
       (targets.length - 1) * CHIP_GAP;
@@ -144,18 +147,18 @@ function createJumpIcons({
 
     const bridge = DomAdapter.createSvgElement('rect');
     bridge.setAttribute('class', 'jump-popover jump-popover-bridge');
-    bridge.setAttribute('x', x + width);
-    bridge.setAttribute('y', y);
-    bridge.setAttribute('width', BRIDGE_WIDTH);
-    bridge.setAttribute('height', height);
+    bridge.setAttribute('x', String(x + width));
+    bridge.setAttribute('y', String(y));
+    bridge.setAttribute('width', String(BRIDGE_WIDTH));
+    bridge.setAttribute('height', String(height));
     g.appendChild(bridge);
 
     const bg = DomAdapter.createSvgElement('rect');
     bg.setAttribute('class', 'jump-popover jump-popover-bg');
-    bg.setAttribute('x', bgX);
-    bg.setAttribute('y', y);
-    bg.setAttribute('width', bgWidth);
-    bg.setAttribute('height', height);
+    bg.setAttribute('x', String(bgX));
+    bg.setAttribute('y', String(y));
+    bg.setAttribute('width', String(bgWidth));
+    bg.setAttribute('height', String(height));
     g.appendChild(bg);
 
     const chipY = y + (height - CHIP_HEIGHT) / 2;
