@@ -1,0 +1,10 @@
+{
+  "extends": "./jsconfig.base.json",
+  "include": [
+    "js/hotspot_*.js",
+    "js/jump_icons.js",
+    "js/globals.d.ts",
+    "js/hotspot_page.d.ts"
+  ],
+  "exclude": ["js/*.test.js"]
+}

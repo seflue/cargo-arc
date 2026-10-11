@@ -11,7 +11,7 @@ const StaticData = {
   /**
    * Get node data by ID
    * @param {string} id - Node ID
-   * @returns {StaticNodeData|undefined}
+   * @returns {NodeData|undefined}
    */
   getNode(id) {
     return STATIC_DATA.nodes[id];
@@ -20,7 +20,7 @@ const StaticData = {
   /**
    * Get arc data by ID
    * @param {string} id - Arc ID (format: "from-to")
-   * @returns {StaticArcData|undefined}
+   * @returns {ArcData|undefined}
    */
   getArc(id) {
     return STATIC_DATA.arcs[id];
@@ -51,7 +51,7 @@ const StaticData = {
   /**
    * Get arc usages (source locations array)
    * @param {string} arcId
-   * @returns {StaticArcData["usages"]}
+   * @returns {ArcData["usages"]}
    */
   getArcUsages(arcId) {
     return STATIC_DATA.arcs[arcId]?.usages ?? [];

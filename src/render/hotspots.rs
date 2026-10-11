@@ -29,6 +29,7 @@ const SIDEBAR_MARGIN_RIGHT: f64 = 16.0;
 // === Serialization structs ===
 
 #[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "camelCase")]
 struct HotspotStaticData {
     nodes: BTreeMap<String, HotspotCircleData>,
@@ -39,6 +40,7 @@ struct HotspotStaticData {
     /// The sidebar's explanation line while the map is grey for lack of
     /// volatility data; absent once volatility is drawn.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     volatility: Option<String>,
     theme: ThemeData,
     /// The hotspot CSS class names JS also builds markup with, one place
@@ -50,6 +52,7 @@ struct HotspotStaticData {
 }
 
 #[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 struct HotspotLayoutData {
     sidebar_width: f64,
@@ -72,6 +75,7 @@ impl HotspotLayoutData {
 }
 
 #[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 struct HotspotCircleData {
     kind: HotspotKind,
@@ -80,6 +84,7 @@ struct HotspotCircleData {
     /// or `Crate`, empty for the synthetic workspace root.
     file: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     parent: Option<String>,
     cx: f64,
     cy: f64,
@@ -87,6 +92,7 @@ struct HotspotCircleData {
     lines: usize,
     commits: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     rank: Option<usize>,
     /// The percent `circle_style` fills this circle with; the sidebar bars
     /// read it instead of recomputing the scale.
@@ -94,6 +100,7 @@ struct HotspotCircleData {
     /// The leaf's jump target, under `config.with_jump_ids` and only when
     /// `targets` has an id for `file`; JS draws the jump icon from it.
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(test, ts(as = "Option<Vec<TargetData>>", optional))]
     targets: Vec<TargetData>,
 }
 
