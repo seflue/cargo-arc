@@ -57,7 +57,7 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
         // scroll listener has to move them. They match nothing in a bare SVG.
         // The toolbar stacks above the sidebar so an open View dropdown
         // covers it. The sidebar's top and right are written by
-        // js/sidebar.js, which owns the measured toolbar height and the margin.
+        // js/sidebar.ts, which owns the measured toolbar height and the margin.
         CssRule::class(
             c.toolbar.page_host,
             &[
@@ -258,7 +258,7 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
             &[("fill", r.dimmed)],
         ),
         // CSS-only dimming via has-highlight on SVG root (leaf elements only).
-        // jump-popover is a JS-owned class (js/jump_icons.js), hence the literal.
+        // jump-popover is a JS-owned class (js/jump_icons.ts), hence the literal.
         CssRule::new(
             &format!(
                 "svg.{} rect:not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.{}):not(.jump-popover)",
@@ -688,7 +688,7 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
             &[("display", "none")],
         ),
         // The follow and switch toggles carry their state in aria-pressed,
-        // written by js/svg_script.js; pressed reads as switched on.
+        // written by js/svg_script.ts; pressed reads as switched on.
         CssRule::new(
             &format!(
                 ".{}[aria-pressed=\"true\"], .{}[aria-pressed=\"true\"]",
@@ -907,7 +907,7 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
                 ("align-items", "center"),
             ],
         ),
-        // Rows with data-jump (see js/sidebar.js _locationRow) are click
+        // Rows with data-jump (see js/sidebar.ts _locationRow) are click
         // targets only while a selection is pinned, so the cursor and the icon
         // follow the root's has-pinned class.
         CssRule::new(
@@ -915,7 +915,7 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
             &[("cursor", "pointer")],
         ),
         // Inline <svg class="sidebar-jump"> at the end of a jump-capable row,
-        // reusing the #jump-icon symbol; built by js/sidebar.js. Hidden, not
+        // reusing the #jump-icon symbol; built by js/sidebar.ts. Hidden, not
         // removed, until the row is hovered, so the row keeps its width.
         CssRule::class(
             c.sidebar.jump,
@@ -935,7 +935,7 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
             )),
             &[("visibility", "visible")],
         ),
-        // The definition chip on a symbol row (js/sidebar.js _definitionChip)
+        // The definition chip on a symbol row (js/sidebar.ts _definitionChip)
         // follows the location rows: a click target only while pinned, its
         // icon shown only while the row is hovered.
         CssRule::new(
@@ -943,7 +943,7 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
             &[("cursor", "pointer")],
         ),
         // A tangle sidebar row's whole symbol line is the jump target (see
-        // js/sidebar.js _buildEdgeRow), not only its definition chip.
+        // js/sidebar.ts _buildEdgeRow), not only its definition chip.
         CssRule::new(
             &pinned_rows(&format!(".{}[data-jump]", c.sidebar.edge_symbol)),
             &[("cursor", "pointer")],
@@ -959,7 +959,7 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
             ),
             &[("visibility", "visible")],
         ),
-        // Jump popover: js/jump_icons.js builds it next to a hovered node; no
+        // Jump popover: js/jump_icons.ts builds it next to a hovered node; no
         // Rust markup emits these classes. The bridge is the transparent strip
         // between node and popover that keeps the pointer inside the group.
         CssRule::class("jump-popover-bridge", &[("fill", "transparent")]),
@@ -1041,7 +1041,7 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
             &format!(".{}.{}", c.sidebar.symbol, c.sidebar.symbol_stacked),
             &[("align-items", "flex-start")],
         ),
-        // Path spans are the only row children that shrink; js/sidebar.js
+        // Path spans are the only row children that shrink; js/sidebar.ts
         // fitPaths cuts their text on segment boundaries once they overflow,
         // the ellipsis covers whatever that pass leaves over.
         CssRule::class(
@@ -1150,7 +1150,7 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
         ),
         // Cycle blocks: one collapsible <details> per cycle in a
         // cluster's sidebar section. Literal class strings from
-        // sidebar.js, no constants.rs entries.
+        // sidebar.ts, no constants.rs entries.
         CssRule::class("cycle-block", &[("margin-bottom", "8px")]),
         CssRule::class(
             "block-head",
@@ -1502,8 +1502,8 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
                 ("stroke-linejoin", "round"),
             ],
         ),
-        // The map's own jump icon (js/hotspot_jump_icon.js): no Rust markup
-        // emits this class onto an element, only `js/hotspot_jump_icon.js`
+        // The map's own jump icon (js/hotspot_jump_icon.ts): no Rust markup
+        // emits this class onto an element, only `js/hotspot_jump_icon.ts`
         // reads it off the registry. The glyph sits on leaf circles whose
         // fill can be the hottest colour in the ramp, so its halo shares
         // `c.hotspots.label`'s colour, width and join. `stroke-width: .22em`
@@ -1680,7 +1680,7 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
                 ("overflow", "hidden"),
             ],
         ),
-        // The hover tooltip (`js/hotspot_hover.js`): a plain `<rect>`/`<text>`
+        // The hover tooltip (`js/hotspot_hover.ts`): a plain `<rect>`/`<text>`
         // pair inside the group, styled by descendant selector the way the
         // jump popover above styles its own unclassed children.
         CssRule::new(
@@ -2193,7 +2193,7 @@ mod tests {
         );
         assert!(
             !sidebar.contains("top:") && !sidebar.contains("right:"),
-            "the sidebar's top and right come from js/sidebar.js, got: {sidebar}"
+            "the sidebar's top and right come from js/sidebar.ts, got: {sidebar}"
         );
     }
 
@@ -2271,7 +2271,7 @@ mod tests {
         );
     }
 
-    /// The definition chip on a symbol row (js/sidebar.js _definitionChip)
+    /// The definition chip on a symbol row (js/sidebar.ts _definitionChip)
     /// follows the location rows: pointer and icon only while pinned, the
     /// icon only while its row is hovered.
     #[test]

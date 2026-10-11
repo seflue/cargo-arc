@@ -1,0 +1,1671 @@
+import { CanvasSize } from './canvas_size.js';
+import { DomAdapter } from './dom_adapter.js';
+import { PathFit } from './path_fit.js';
+import { Selectors } from './selectors.js';
+import { StaticData } from './static_data.js';
+
+// sidebar.ts - Relation sidebar for arc usage details
+// Shows usage locations when an arc is selected (pinned)
+// HTML sidebar placed through one of two hosts: a foreignObject in the SVG
+// (follows the scroll, grows the canvas) or a fixed element in the page
+// (docked to the viewport's right edge below the toolbar)
+
+const TOOLBAR_HEIGHT =
+  typeof __TOOLBAR_HEIGHT__ !== 'undefined' ? __TOOLBAR_HEIGHT__ : 0;
+const SIDEBAR_GAP_X = 24;
+const SIDEBAR_MARGIN_RIGHT = 16;
+const SIDEBAR_GAP_TOP = 20;
+// foreignObject must be taller than the visible sidebar so box-shadow
+// (which renders outside the div) is not clipped by the foreignObject boundary.
+// Value derived from box-shadow offset+blur in render.rs layout constants.
+const SIDEBAR_SHADOW_PAD =
+  typeof __SIDEBAR_SHADOW_PAD__ !== 'undefined' ? __SIDEBAR_SHADOW_PAD__ : 12;
+const SIDEBAR_MIN_WIDTH = 280;
+// Generous character budget for a cycle-block header path. The panel auto-widens
+// to the content up to half the viewport, so a header only fails to fit for very
+// long labels; below this budget the second node stays, above it the header drops
+// to head + closing edge so the CSS net never has to cut the closing edge itself.
+const CYCLE_HEADER_MAX_CHARS = 48;
+// The rows the collapse-all button drives: the relation rows of a node
+// sidebar and the symbol rows of an arc sidebar, both direct children of
+// the content's usage groups. A node sidebar nests a second level of
+// collapsible symbol rows inside each relation row; those start expanded and
+// must not count, or the first click would collapse instead of expand.
+const collapsibleSymbolSelector = (S) =>
+  `:scope > .${S.usageGroup} > .${S.symbol}[data-collapsible]`;
+
+const SidebarLogic = {
+  _isTransient: false,
+  _debounceTimer: null as number | null,
+  _onBadgeClick: null as ((nodeId: string | undefined) => void) | null,
+  _onCollapseToggle: null as ((target: string | undefined) => void) | null,
+  _isNodeCollapsed: null as ((id: string) => boolean) | null,
+  _isClusterMode: null as (() => boolean) | null,
+  _resolvedFocusArc: null as (() => string | null) | null,
+  _onEdgeHover: null as ((arcId: string | undefined) => void) | null,
+  _onEdgeHoverEnd: null as (() => void) | null,
+  _isRowExpanded: null as ((arcId: string) => boolean) | null,
+  _onRowToggle: null as ((arcId: string) => void) | null,
+  _onRowPinClick: null as ((arcId: string) => void) | null,
+  _onRowFollow: null as ((arcId: string) => void) | null,
+  _onRowsExpandAll: null as (() => void) | null,
+  _onRowsCollapseAll: null as (() => void) | null,
+  /**
+   * Merge symbol groups: combine groups with same symbol, deduplicate locations by file+line.
+   */
+  mergeSymbolGroups(
+    groups: Array<{
+      symbol: string;
+      modulePath: string | null;
+      locations: Array<{ file: string; line: number }>;
+      definition?: { file: string; line: number; jump: number };
+    }>,
+  ): Array<{
+    symbol: string;
+    modulePath: string | null;
+    locations: Array<{ file: string; line: number }>;
+    definition?: { file: string; line: number; jump: number };
+  }> {
+    const bySymbol = new Map();
+    for (const g of groups) {
+      const key = g.symbol || '';
+      const existing = bySymbol.get(key);
+      if (existing) {
+        for (const loc of g.locations) {
+          const isDup = existing.locations.some(
+            (e) => e.file === loc.file && e.line === loc.line,
+          );
+          if (!isDup) existing.locations.push(loc);
+        }
+      } else {
+        bySymbol.set(key, {
+          symbol: g.symbol,
+          modulePath: g.modulePath,
+          locations: [...g.locations],
+          ...(g.definition ? { definition: g.definition } : {}),
+        });
+      }
+    }
+    return [...bySymbol.values()];
+  },
+
+  /**
+   * Build HTML content string for the sidebar.
+   * Uses overrideData if provided, otherwise STATIC_DATA.arcs[arcId].
+   * Expects structured usages: [{ symbol, modulePath, locations: [{ file, line }] }]
+   */
+  buildContent(
+    arcId: string,
+    overrideData?: {
+      from: string;
+      to: string;
+      usages: ArcData['usages'];
+      originalArcs?: string[];
+      cycleIds?: number[];
+    },
+  ): string {
+    const S = STATIC_DATA.classes.sidebar;
+    const arc = overrideData || STATIC_DATA.arcs[arcId];
+    if (!arc) return '';
+
+    // Cluster view: when cluster mode is on and the arc lies in an SCC with
+    // known cycles, describe the whole cluster instead of the single edge.
+    const sccId = STATIC_DATA.arcs[arcId]?.sccId;
+    if (
+      !overrideData &&
+      this._isClusterMode?.() &&
+      sccId != null &&
+      STATIC_DATA.clusters &&
+      STATIC_DATA.clusters[sccId]
+    ) {
+      return this._buildClusterContent(
+        String(sccId),
+        this._resolvedFocusArc?.() ?? undefined,
+      );
+    }
+    const groups = arc.usages || [];
+
+    const fromNode = StaticData.getNode(arc.from);
+    const toNode = StaticData.getNode(arc.to);
+    const fromName = this._formatNodeName(fromNode, arc.from);
+    const toName = this._formatNodeName(toNode, arc.to);
+    const fromClass = `${fromNode ? `sidebar-node-${fromNode.type} ` : ''}${S.nodeFrom}`;
+    const toClass = `${toNode ? `sidebar-node-${toNode.type} ` : ''}${S.nodeTo}`;
+
+    let html = `<div class="${S.header}">`;
+    html += `<span class="${S.title}"><span class="${fromClass}" data-node-id="${arc.from}">${fromName}${this._renderCollapseIndicator(arc.from)}</span><span class="${S.arrow}">&#x2192;</span><span class="${toClass}" data-node-id="${arc.to}">${toName}${this._renderCollapseIndicator(arc.to)}</span></span>`;
+    const hasSymbols = groups.some((g) => g.symbol);
+    if (hasSymbols) {
+      html += `<div class="${S.headerActions}">`;
+      html += `<button class="${S.collapseAll}" title="Collapse all">&#x2212;</button>`;
+      html += `<button class="${S.close}">&#x2715;</button>`;
+      html += `</div>`;
+    } else {
+      html += `<button class="${S.close}">&#x2715;</button>`;
+    }
+    html += `</div>`;
+
+    html += `<div class="${S.content}">`;
+    if (groups.length === 0) {
+      html += `<div class="${S.usageGroup}">Cargo.toml dependency</div>`;
+    } else {
+      const sorted = [...groups].sort(
+        (a, b) => b.locations.length - a.locations.length,
+      );
+      for (const group of sorted) {
+        html += `<div class="${S.usageGroup}">`;
+        if (group.symbol) {
+          html += `<div class="${S.symbol}" data-collapsible="" title="${this._symbolTitle(group)}">`;
+          html += `<span class="${S.toggle}">&#x25BE;</span>`;
+          html += this._symbolLabel(group);
+          html += this._definitionChip(group);
+          html += this._renderLocalityTag(arc.to, group.symbol);
+          html += `<span class="${S.refCount}">${group.locations.length}</span>`;
+          html += `</div>`;
+        }
+        html += `<div class="${S.locations}">`;
+        for (const loc of group.locations) {
+          html += this._locationRow(loc);
+        }
+        html += `</div>`;
+        html += `</div>`;
+      }
+    }
+    html += `</div>`;
+
+    // Footer
+    const totalLocs = groups.reduce((sum, g) => sum + g.locations.length, 0);
+    const symbolCount = groups.filter((g) => g.symbol).length;
+    let footerText =
+      groups.length === 0
+        ? 'Cargo.toml dependency'
+        : `${totalLocs} References \u00b7 ${symbolCount} Symbols`;
+    if (overrideData?.originalArcs?.length) {
+      footerText += ` \u00b7 ${overrideData.originalArcs.length} hidden Dependencies`;
+    }
+    html += `<div class="${S.footer}">${footerText}</div>`;
+
+    return html;
+  },
+
+  /**
+   * Build HTML content string for node-mode sidebar.
+   * Shows all incoming (dependents) and outgoing (dependencies) relations.
+   * @param nodeId - The selected node ID
+   * @param relations - From collectNodeRelations() (filtered + virtual arcs)
+   */
+  buildNodeContent(
+    nodeId: string,
+    relations: { incoming: Array<any>; outgoing: Array<any> },
+  ): string {
+    const S = STATIC_DATA.classes.sidebar;
+    const node = StaticData.getNode(nodeId);
+    const nodeName = this._formatNodeName(node, nodeId);
+    const nodeType = node ? node.type : '';
+    const hasRelations =
+      relations.incoming.length > 0 || relations.outgoing.length > 0;
+    const hasCollapsible = [...relations.incoming, ...relations.outgoing].some(
+      (rel) => (rel.usages || []).length > 0,
+    );
+
+    // Header: Node name + Collapse-All ("+", since all L1 start collapsed) + Close
+    let html = `<div class="${S.header}">`;
+    html += `<span class="${S.title}"><span class="sidebar-node-${nodeType} ${S.nodeSelected}" data-node-id="${nodeId}">${nodeName}${this._renderCollapseIndicator(nodeId)}</span></span>`;
+    if (hasCollapsible) {
+      html += `<div class="${S.headerActions}">`;
+      html += `<button class="${S.collapseAll}">+</button>`;
+      html += `<button class="${S.close}">&#x2715;</button>`;
+      html += `</div>`;
+    } else {
+      html += `<button class="${S.close}">&#x2715;</button>`;
+    }
+    html += `</div>`;
+
+    html += `<div class="${S.content}">`;
+
+    if (!hasRelations) {
+      html += `<div class="${S.usageGroup}">No relations</div>`;
+    } else {
+      const badgeLens = this._computeMaxBadgeLengths(
+        relations,
+        nodeId,
+        nodeName,
+      );
+
+      // Incoming (Dependents) first — selected node on the right
+      for (const rel of relations.incoming) {
+        html += this._buildRelationSection(
+          rel,
+          nodeId,
+          nodeName,
+          nodeType,
+          'incoming',
+          badgeLens.incoming.maxFrom,
+          badgeLens.incoming.maxTo,
+        );
+      }
+
+      // Divider only if both directions non-empty
+      if (relations.incoming.length > 0 && relations.outgoing.length > 0) {
+        html += `<hr class="${S.divider}"/>`;
+      }
+
+      // Outgoing (Dependencies) — selected node on the left
+      for (const rel of relations.outgoing) {
+        html += this._buildRelationSection(
+          rel,
+          nodeId,
+          nodeName,
+          nodeType,
+          'outgoing',
+          badgeLens.outgoing.maxFrom,
+          badgeLens.outgoing.maxTo,
+        );
+      }
+    }
+
+    html += `</div>`;
+
+    // Footer
+    html += `<div class="${S.footer}">${relations.incoming.length} Dependents \u00b7 ${relations.outgoing.length} Dependencies</div>`;
+
+    return html;
+  },
+
+  /**
+   * Build a single Level-1 relation section (collapsed) with nested Level-2 usages.
+   * @param rel - Relation entry {targetId, weight, usages, arcId}
+   * @param nodeId - Selected node ID
+   * @param nodeName - Selected node display name
+   * @param nodeType - Selected node type (package/module)
+   * @param [maxFromLen=0] - Minimum badge width (ch) for from-badge
+   * @param [maxToLen=0] - Minimum badge width (ch) for to-badge
+   */
+  _buildRelationSection(
+    rel: any,
+    nodeId: string,
+    nodeName: string,
+    nodeType: string,
+    direction: 'incoming' | 'outgoing',
+    maxFromLen: number = 0,
+    maxToLen: number = 0,
+  ): string {
+    const S = STATIC_DATA.classes.sidebar;
+    const target = StaticData.getNode(rel.targetId);
+    const targetName = this._formatNodeName(target, rel.targetId);
+    const targetType = target ? target.type : '';
+
+    // Build From→To pair: direction determines which side the selected node is on
+    let fromName: string,
+      fromType: string,
+      fromSelected: boolean,
+      fromId: string,
+      toName: string,
+      toType: string,
+      toSelected: boolean,
+      toId: string;
+    if (direction === 'incoming') {
+      // source → [selected]: selected is on the right
+      fromName = targetName;
+      fromType = targetType;
+      fromSelected = false;
+      fromId = rel.targetId;
+      toName = nodeName;
+      toType = nodeType;
+      toSelected = true;
+      toId = nodeId;
+    } else {
+      // [selected] → target: selected is on the left
+      fromName = nodeName;
+      fromType = nodeType;
+      fromSelected = true;
+      fromId = nodeId;
+      toName = targetName;
+      toType = targetType;
+      toSelected = false;
+      toId = rel.targetId;
+    }
+
+    const fromClass = `sidebar-node-${fromType}${fromSelected ? ` ${S.nodeSelected}` : ` ${S.nodeFrom}`}`;
+    const toClass = `sidebar-node-${toType}${toSelected ? ` ${S.nodeSelected}` : ` ${S.nodeTo}`}`;
+    const fromStyle =
+      maxFromLen > 0 ? ` style="min-width: ${maxFromLen}ch"` : '';
+    const toStyle = maxToLen > 0 ? ` style="min-width: ${maxToLen}ch"` : '';
+
+    const groups = rel.usages || [];
+    let html = `<div class="${S.usageGroup}">`;
+
+    // External dependency without source references: flat row, no expand
+    if (groups.length === 0) {
+      html += `<div class="${S.symbol}" style="cursor:default">`;
+      html += `<span class="${S.toggle}"></span>`;
+      html += `<span class="${fromClass} ${S.symbolName}"${fromStyle} data-node-id="${fromId}">${fromName}${this._renderCollapseIndicator(fromId)}</span>`;
+      html += `<span class="${S.arrow}">&#x2192;</span>`;
+      html += `<span class="${toClass} ${S.symbolName}"${toStyle} data-node-id="${toId}">${toName}${this._renderCollapseIndicator(toId)}</span>`;
+      html += `<span class="${S.extInfo}" title="Cargo.toml dependency &#8212; source references are not tracked for external crates">i</span>`;
+      html += `</div>`;
+      html += `</div>`;
+      return html;
+    }
+
+    // Level 1 header (collapsed)
+    html += `<div class="${S.symbol}" data-collapsible="" data-collapsed="true">`;
+    html += `<span class="${S.toggle}">&#x25B8;</span>`;
+    html += `<span class="${fromClass} ${S.symbolName}"${fromStyle} data-node-id="${fromId}">${fromName}${this._renderCollapseIndicator(fromId)}</span>`;
+    html += `<span class="${S.arrow}">&#x2192;</span>`;
+    html += `<span class="${toClass} ${S.symbolName}"${toStyle} data-node-id="${toId}">${toName}${this._renderCollapseIndicator(toId)}</span>`;
+    html += `<span class="${S.refCount}">${rel.weight}</span>`;
+    html += `</div>`;
+
+    // Level 2 content (hidden because L1 is collapsed)
+    html += `<div class="${S.locations}" style="display:none">`;
+    const sorted = [...groups].sort(
+      (a, b) => b.locations.length - a.locations.length,
+    );
+    for (const group of sorted) {
+      html += `<div class="${S.usageGroup}">`;
+      if (group.symbol) {
+        html += `<div class="${S.symbol}" data-collapsible="" title="${this._symbolTitle(group)}">`;
+        html += `<span class="${S.toggle}">&#x25BE;</span>`;
+        html += this._symbolLabel(group);
+        html += this._definitionChip(group);
+        html += `<span class="${S.refCount}">${group.locations.length}</span>`;
+        html += `</div>`;
+      }
+      html += `<div class="${S.locations}">`;
+      for (const loc of group.locations) {
+        html += this._locationRow(loc);
+      }
+      html += `</div>`;
+      html += `</div>`;
+    }
+    html += `</div>`;
+
+    html += `</div>`;
+    return html;
+  },
+
+  /**
+   * Compute maximum badge text lengths per section for width normalization.
+   * Accounts for the +/- collapse indicator (1ch extra) when present.
+   * @param nodeId - ID of the selected node
+   * @param nodeName - Display name of the selected node
+   */
+  _computeMaxBadgeLengths(
+    relations: { incoming: Array<any>; outgoing: Array<any> },
+    nodeId: string,
+    nodeName: string,
+  ): {
+    incoming: { maxFrom: number; maxTo: number };
+    outgoing: { maxFrom: number; maxTo: number };
+  } {
+    const effectiveLen = (id, name) => {
+      let len = name.length;
+      if (StaticData.hasChildren(id)) {
+        const collapsed = this._isNodeCollapsed?.(id);
+        if (collapsed !== undefined && collapsed !== null) len += 1;
+      }
+      return len;
+    };
+    const selectedLen = effectiveLen(nodeId, nodeName);
+    let inMaxFrom = 0;
+    for (const rel of relations.incoming) {
+      const target = StaticData.getNode(rel.targetId);
+      const targetName = this._formatNodeName(target, rel.targetId);
+      inMaxFrom = Math.max(inMaxFrom, effectiveLen(rel.targetId, targetName));
+    }
+    let outMaxTo = 0;
+    for (const rel of relations.outgoing) {
+      const target = StaticData.getNode(rel.targetId);
+      const targetName = this._formatNodeName(target, rel.targetId);
+      outMaxTo = Math.max(outMaxTo, effectiveLen(rel.targetId, targetName));
+    }
+    return {
+      incoming: {
+        maxFrom: inMaxFrom,
+        maxTo: relations.incoming.length > 0 ? selectedLen : 0,
+      },
+      outgoing: {
+        maxFrom: relations.outgoing.length > 0 ? selectedLen : 0,
+        maxTo: outMaxTo,
+      },
+    };
+  },
+
+  /**
+   * Format node display name, appending version for external packages.
+   * @param node - Node data from StaticData
+   * @param fallback - Fallback ID if node is null
+   */
+  _formatNodeName(node: any, fallback: string): string {
+    if (!node) return fallback;
+    if (node.version) return `${node.name} v${node.version}`;
+    return node.name;
+  },
+
+  /**
+   * Render a +/- collapse indicator span for a node badge.
+   * Returns empty string for leaf nodes or when state callback is not set.
+   */
+  _renderCollapseIndicator(nodeId: string): string {
+    const S = STATIC_DATA.classes.sidebar;
+    if (!StaticData.hasChildren(nodeId)) return '';
+    const collapsed = this._isNodeCollapsed?.(nodeId);
+    if (collapsed === undefined || collapsed === null) return '';
+    const symbol = collapsed ? '+' : '\u2212';
+    return `<span class="${S.collapseIndicator}" data-collapse-target="${nodeId}">${symbol}</span>`;
+  },
+
+  /**
+   * Consumer-locality tag for one symbol of a provider. Empty unless
+   * STATIC_DATA.symbolLocalities carries a locality for (providerId, symbol).
+   * The tag states a descriptive fact about where the symbol is consumed, not a
+   * verdict on whether to move it.
+   * @param providerId - The provider node id (the arc's `to`).
+   */
+  _renderLocalityTag(providerId: string, symbol: string): string {
+    const S = STATIC_DATA.classes.sidebar;
+    const sl =
+      typeof STATIC_DATA !== 'undefined' &&
+      STATIC_DATA.symbolLocalities?.[providerId]?.[symbol];
+    if (!sl) return '';
+    const nameOf = (id) => StaticData.getNode(id)?.name ?? id;
+    let label: string;
+    if (sl.locality === 'singleConsumer') {
+      label = `only used by ${nameOf(sl.module)}`;
+    } else if (sl.locality === 'commonAncestor') {
+      label = `used under ${nameOf(sl.module)}`;
+    } else if (sl.locality === 'packageWide') {
+      label = `widely used (${sl.consumers?.length ?? 0} modules)`;
+    } else {
+      return '';
+    }
+    return `<span class="${S.locality} sidebar-locality-${sl.locality}">${label}</span>`;
+  },
+
+  /**
+   * The jump chip on a symbol row, opening the symbol's definition. Empty
+   * unless the group carries a definition (RenderConfig::with_jump_ids and a
+   * definer the analysis could see). Hidden until the row is hovered, like
+   * the location rows' icon; the click is a jump handled on the document.
+   */
+  _definitionChip(group: {
+    definition?: { file: string; line: number; jump: number };
+  }): string {
+    const S = STATIC_DATA.classes.sidebar;
+    const definition = group.definition;
+    if (!definition) return '';
+    return (
+      `<span class="${S.definition}" data-jump="${definition.jump}" title="${definition.file}:${definition.line}">` +
+      `<svg class="${S.jump}" xmlns="http://www.w3.org/2000/svg"><use href="#jump-icon"></use></svg></span>`
+    );
+  },
+
+  /**
+   * Full `modulePath::symbol` for the row's `title`.
+   */
+  _symbolTitle(group: { symbol: string; modulePath?: string | null }): string {
+    return group.modulePath
+      ? `${group.modulePath}::${group.symbol}`
+      : group.symbol;
+  },
+
+  /**
+   * Module path and symbol name spans. The path span carries its full text
+   * in `data-full` because `fitPaths` rewrites the visible text.
+   */
+  _symbolLabel(group: { symbol: string; modulePath?: string | null }): string {
+    const S = STATIC_DATA.classes.sidebar;
+    let html = '';
+    if (group.modulePath) {
+      const ns = `${group.modulePath}::`;
+      html += `<span class="${S.ns}" data-full="${ns}">${ns}</span>`;
+    }
+    html += `<span class="${S.symbolName}">${group.symbol}</span>`;
+    return html;
+  },
+
+  /**
+   * One usage-location row. Carries `data-jump` only when the location has a
+   * jump id (RenderConfig::with_jump_ids, i.e. `arc ui`); an image from
+   * `cargo arc -o` never sets it, so the row stays inert there.
+   */
+  _locationRow(loc: { file: string; line: number; jump?: number }): string {
+    const S = STATIC_DATA.classes.sidebar;
+    const hasJump = typeof loc.jump === 'number';
+    const jumpAttr = hasJump ? ` data-jump="${loc.jump}"` : '';
+    // Same symbol the node icons use; JumpIcons defines it in the SVG root
+    // at page load, so the <use> resolves whenever a jump id exists. The
+    // xmlns is required: this HTML lands in an XML document via innerHTML,
+    // where an unprefixed <svg> would stay in the XHTML namespace.
+    const jumpIcon = hasJump
+      ? `<svg class="${S.jump}" xmlns="http://www.w3.org/2000/svg"><use href="#jump-icon"></use></svg>`
+      : '';
+    return (
+      `<div class="${S.location}"${jumpAttr} title="${loc.file}:${loc.line}">` +
+      `<span class="${S.file}" data-full="${loc.file}">${loc.file}</span>` +
+      `<span class="${S.lineBadge}">:${loc.line}</span>${jumpIcon}</div>`
+    );
+  },
+
+  /**
+   * Get the foreignObject element for the sidebar.
+   */
+  _getElement(): HTMLElement | null {
+    return DomAdapter.getElementById('relation-sidebar');
+  },
+
+  /**
+   * Find the rightmost X coordinate among all visible arc paths.
+   * Uses cached value when available — cache is invalidated by
+   * invalidateLayout() (collapse/relayout) and hide().
+   */
+  _getMaxArcRightX(): number {
+    if (this._cachedMaxArcRightX != null) return this._cachedMaxArcRightX;
+    const arcs = DomAdapter.querySelectorAll(Selectors.allArcPaths());
+    let maxX = 0;
+    for (const arc of arcs) {
+      if (arc.style.display === 'none') continue;
+      const bbox = arc.getBBox();
+      maxX = Math.max(maxX, bbox.x + bbox.width);
+    }
+    this._cachedMaxArcRightX = maxX;
+    return maxX;
+  },
+
+  /**
+   * Invalidate cached layout values. Call after collapse/expand or relayout
+   * so the next sidebar positioning recomputes arc extents.
+   */
+  invalidateLayout() {
+    this._cachedMaxArcRightX = null;
+    this._cachedX = null;
+  },
+
+  /**
+   * Reset stored original viewBox dimensions. Call when the base SVG size
+   * changes (e.g. after relayout resizes the viewport) so the sidebar
+   * recaptures correct dimensions on next updatePosition().
+   */
+  resetStoredViewBox() {
+    this._originalViewBoxHeight = null;
+    this._originalViewBoxWidth = null;
+  },
+
+  /** The toolbar's measured height; more than TOOLBAR_HEIGHT once it wraps. */
+  _toolbarHeight: TOOLBAR_HEIGHT,
+
+  /**
+   * Record the toolbar's measured height; the sidebar starts below it.
+   */
+  setToolbarHeight(height: number) {
+    this._toolbarHeight = height;
+  },
+
+  /** Which element hosts the sidebar; see useHost(). */
+  _host: 'svg' as 'svg' | 'page',
+  /** Cached X position — set once in show(), reused by updatePosition(). */
+  _cachedX: null as number | null,
+  /** Cached max arc right X — only changes on collapse/relayout, not on hover. */
+  _cachedMaxArcRightX: null as number | null,
+  /** Original SVG viewBox height — stored to restore after sidebar close. */
+  _originalViewBoxHeight: null as number | null,
+  /** Original SVG viewBox width — stored to restore after sidebar close. */
+  _originalViewBoxWidth: null as number | null,
+  /** Sidebar height from the last updatePosition(), reused by followScroll(). */
+  _effectiveHeight: null as number | null,
+
+  /**
+   * Choose where the sidebar element lives: 'svg' (a foreignObject, placed in
+   * SVG coordinates) or 'page' (a fixed element, placed in viewport pixels).
+   */
+  useHost(host: 'svg' | 'page') {
+    this._host = host;
+  },
+
+  /**
+   * The x the sidebar element is anchored at. Only the SVG host has one: it
+   * sits right of the widest arc. `_placeOnPage` docks the page host at the
+   * right edge, so it never measures arcs.
+   */
+  _calcHostX(): number {
+    return this._host === 'page' ? 0 : this._calcX();
+  },
+
+  /**
+   * Calculate sidebar x in SVG coordinates (right of widest visible arc).
+   */
+  _calcX(): number {
+    const svg = DomAdapter.getSvgRoot();
+    if (!svg) return 0;
+    const rect = svg.getBoundingClientRect();
+    const viewBox = svg.viewBox.baseVal;
+    const scaleX = viewBox.width / rect.width;
+
+    const maxArcRight = this._getMaxArcRightX();
+    let x = maxArcRight + SIDEBAR_GAP_X;
+
+    const viewportRight = (CanvasSize.visibleArea().width - rect.left) * scaleX;
+    if (x + SIDEBAR_MIN_WIDTH > viewportRight) {
+      x = viewportRight - SIDEBAR_MIN_WIDTH - SIDEBAR_MARGIN_RIGHT;
+    }
+    return Math.max(0, Math.round(x));
+  },
+
+  /**
+   * Calculate sidebar y + height: in SVG coordinates following the scroll on
+   * the SVG host, in viewport pixels below the toolbar on the page host.
+   */
+  _calcPosition(): { y: number; height: number } | null {
+    if (this._host === 'page') {
+      return {
+        y: this._toolbarHeight + SIDEBAR_GAP_TOP,
+        height: Math.round(
+          CanvasSize.visibleArea().height -
+            this._toolbarHeight -
+            SIDEBAR_GAP_TOP,
+        ),
+      };
+    }
+    const svg = DomAdapter.getSvgRoot();
+    if (!svg) return null;
+    const rect = svg.getBoundingClientRect();
+    const viewBox = svg.viewBox.baseVal;
+    const scaleY = viewBox.height / rect.height;
+
+    const scrollTop = Math.max(0, -rect.top) * scaleY;
+    const y = scrollTop + this._toolbarHeight + SIDEBAR_GAP_TOP;
+    const vpHeight = CanvasSize.visibleArea().height * scaleY;
+
+    return {
+      y: Math.round(y),
+      height: Math.round(vpHeight - this._toolbarHeight - SIDEBAR_GAP_TOP),
+    };
+  },
+
+  /**
+   * Show sidebar transiently (hover preview). Debounced to prevent flicker.
+   * No collapse handlers, adds sidebar-transient CSS class.
+   */
+  showTransient(
+    arcId: string,
+    overrideData?: {
+      from: string;
+      to: string;
+      usages: ArcData['usages'];
+      originalArcs?: string[];
+      cycleIds?: number[];
+    },
+  ) {
+    const S = STATIC_DATA.classes.sidebar;
+    clearTimeout(this._debounceTimer ?? undefined);
+    this._debounceTimer = setTimeout(() => {
+      const el = this._getElement();
+      if (!el) return;
+      const innerDiv: HTMLElement | null = el.querySelector(`.${S.root}`);
+      if (innerDiv) {
+        innerDiv.innerHTML = this.buildContent(arcId, overrideData);
+        innerDiv.classList.add(S.transient);
+      }
+      el.style.display = 'block';
+      this._isTransient = true;
+      this._cachedX = this._calcHostX();
+      this.updatePosition();
+    }, 30);
+  },
+
+  /**
+   * Hide a transient sidebar. Does nothing if sidebar is pinned.
+   */
+  hideTransient() {
+    clearTimeout(this._debounceTimer ?? undefined);
+    if (!this._isTransient) return;
+    this.hide();
+    this._isTransient = false;
+  },
+
+  /**
+   * Re-mark the focused cluster row in place (no rebuild). Used while an SCC is
+   * selected: the cluster sidebar stays open and hover only moves the focus.
+   */
+  refreshClusterFocus() {
+    const S = STATIC_DATA.classes.sidebar;
+    const el = this._getElement();
+    const content = el?.querySelector(`.${S.content}`);
+    if (content) this._refreshEdgeRowFocus(content as HTMLElement);
+  },
+
+  /**
+   * Shared pinned-show logic: inject HTML, remove transient state, wire handlers, position.
+   * @param html - Pre-built sidebar HTML content
+   */
+  _showWithContent(html: string) {
+    const S = STATIC_DATA.classes.sidebar;
+    const el = this._getElement();
+    if (!el) return;
+    const innerDiv: HTMLElement | null = el.querySelector(`.${S.root}`);
+    if (innerDiv) {
+      innerDiv.innerHTML = html;
+      innerDiv.classList.remove(S.transient);
+      this._setupCollapseHandlers(innerDiv);
+    }
+    el.style.display = 'block';
+    this._isTransient = false;
+    clearTimeout(this._debounceTimer ?? undefined);
+    this._cachedMaxArcRightX = null;
+    this._cachedX = this._calcHostX();
+    this.updatePosition();
+  },
+
+  /**
+   * Show sidebar with content for given arc.
+   */
+  show(
+    arcId: string,
+    overrideData?: {
+      from: string;
+      to: string;
+      usages: ArcData['usages'];
+      originalArcs?: string[];
+      cycleIds?: number[];
+    },
+  ) {
+    this._showWithContent(this.buildContent(arcId, overrideData));
+  },
+
+  /**
+   * Build cluster (SCC) sidebar: header + one collapsible block per
+   * cycle, edges in path order.
+   * @param sccId - Key into STATIC_DATA.clusters
+   * @param [focusArcId] - Arc whose row should render as focused
+   *   (the edge that triggered this view \u2014 the resolved click/hover focus).
+   */
+  _buildClusterContent(sccId: string, focusArcId?: string): string {
+    const S = STATIC_DATA.classes.sidebar;
+    const cl = STATIC_DATA.clusters?.[sccId];
+    if (!cl) return '';
+
+    // Cache each edge's crossing symbols once; the hasCollapsible scan and
+    // the row builder would otherwise both call _edgeSymbols per edge.
+    const symbolsByArcId = new Map();
+    for (const cycle of cl.cycles) {
+      for (const edge of cycle) {
+        const arcId = `${edge.fromId}-${edge.toId}`;
+        if (!symbolsByArcId.has(arcId)) {
+          symbolsByArcId.set(arcId, this._edgeSymbols(edge));
+        }
+      }
+    }
+    const hasCollapsible = [...symbolsByArcId.values()].some(
+      (symbols) => symbols.length > 0,
+    );
+
+    let html = `<div class="${S.header}">`;
+    html += `<span class="${S.title}">Cluster \u00b7 ${cl.package}</span>`;
+    if (hasCollapsible) {
+      html += `<div class="${S.headerActions}">`;
+      html += `<button class="${S.collapseAll}">+</button>`;
+      html += `<button class="${S.close}">&#x2715;</button>`;
+      html += `</div>`;
+    } else {
+      html += `<button class="${S.close}">&#x2715;</button>`;
+    }
+    html += `</div>`;
+
+    html += `<div class="${S.subheader}">${cl.moduleCount} modules \u00b7 ${cl.cycleCount} cycles</div>`;
+
+    html += `<div class="${S.content}">`;
+    const sccNodeIds = new Set<string>();
+    cl.cycles.forEach((cycle) => {
+      cycle.forEach((edge) => {
+        sccNodeIds.add(edge.fromId);
+        sccNodeIds.add(edge.toId);
+      });
+    });
+    // Path segments and shortLabel results are the same for a node no
+    // matter which cycle-block it appears in; compute each once and reuse
+    // across blocks instead of re-splitting/re-resolving per occurrence.
+    const segmentsById = new Map(
+      [...sccNodeIds].map((id) => [
+        id,
+        StaticData.qualifiedParts(id).path.split('::'),
+      ]),
+    );
+    const labelCache = new Map();
+    const seenArcIds = new Set();
+    cl.cycles.forEach((cycle, index) => {
+      html += this._buildCycleBlock(
+        cycle,
+        index,
+        focusArcId,
+        seenArcIds,
+        sccNodeIds,
+        symbolsByArcId,
+        segmentsById,
+        labelCache,
+      );
+    });
+    html += `</div>`;
+
+    return html;
+  },
+
+  /**
+   * One cycle block: collapsible header (ordinal, leaf-name path,
+   * module count) plus one `_buildEdgeRow` per edge in path order. The last
+   * edge closes the cycle and gets the closing class; an edge whose arc
+   * id already appeared in an earlier block gets the repeat class \u2014 except
+   * the closing edge, which always renders full.
+   * @param cycle - Edges in path order, closing edge last.
+   * @param index - 0-based cycle index (rendered as 1-based ordinal).
+   * @param seenArcIds - Arc ids rendered in earlier blocks
+   *   (mutated in place as this block's edges are rendered).
+   * @param sccNodeIds - All node ids in the SCC, for shortLabel.
+   * @param symbolsByArcId - Precomputed _edgeSymbols per arc id.
+   * @param [segmentsById] - Precomputed shortLabel path
+   *   segments per node id.
+   * @param [labelCache] - Memoized shortLabel results per
+   *   node id, shared across cycle blocks.
+   */
+  _buildCycleBlock(
+    cycle: CycleArcData[],
+    index: number,
+    focusArcId: string | undefined,
+    seenArcIds: Set<string>,
+    sccNodeIds: Set<string>,
+    symbolsByArcId: Map<string, Array<any>>,
+    segmentsById?: Map<string, string[]>,
+    labelCache?: Map<string, string>,
+  ): string {
+    let html = `<details class="cycle-block">`;
+    html += `<summary class="block-head">`;
+    html += `<span class="block-chevron">\u25b8</span>`;
+    html += `<span class="block-ordinal">${index + 1}</span>`;
+    html += `<span class="block-path">${this._cyclePathLabel(cycle, sccNodeIds, segmentsById, labelCache)}</span>`;
+    html += `<span class="block-module-count">${cycle.length} Module</span>`;
+    html += `</summary>`;
+    html += `<div class="cycle-block-body">`;
+    cycle.forEach((edge, i) => {
+      const arcId = `${edge.fromId}-${edge.toId}`;
+      const isClosing = i === cycle.length - 1;
+      const extraClasses = [];
+      if (isClosing) {
+        extraClasses.push('edge-closing');
+      } else if (seenArcIds.has(arcId)) {
+        extraClasses.push('edge-repeat');
+      }
+      html += this._buildEdgeRow(
+        edge,
+        symbolsByArcId.get(arcId) ?? [],
+        focusArcId,
+        extraClasses,
+      );
+      seenArcIds.add(arcId);
+    });
+    html += `</div>`;
+    html += `</details>`;
+    return html;
+  },
+
+  /**
+   * Path label for a cycle block header: each node's shortest unique suffix
+   * within the SCC (D6), in path order, elided via `elideCyclePath`.
+   * @param [labelCache] - Memoized per node id (mutated
+   *   in place); a node repeated across cycle blocks resolves its label once.
+   */
+  _cyclePathLabel(
+    cycle: CycleArcData[],
+    sccNodeIds: Set<string>,
+    segmentsById?: Map<string, string[]>,
+    labelCache?: Map<string, string>,
+  ): string {
+    const labels = cycle.map((edge) => {
+      const cached = labelCache?.get(edge.fromId);
+      if (cached !== undefined) return cached;
+      const label = this.shortLabel(edge.fromId, sccNodeIds, segmentsById);
+      labelCache?.set(edge.fromId, label);
+      return label;
+    });
+    return this.elideCyclePath(labels);
+  },
+
+  /**
+   * Shortest unique suffix of a node's package-relative module path, computed
+   * against every other node in the same SCC. Starts at the leaf and grows
+   * left segment by segment until no other node in `sccNodeIds` shares the
+   * same suffix. Never includes the package prefix.
+   * @param sccNodeIds - All node ids in the SCC.
+   * @param [segmentsById] - Precomputed path segments
+   *   per node id, to skip re-splitting on repeated calls.
+   */
+  shortLabel(
+    nodeId: string,
+    sccNodeIds: Iterable<string>,
+    segmentsById?: Map<string, string[]>,
+  ): string {
+    const pathSegments = (id) =>
+      segmentsById?.get(id) ?? StaticData.qualifiedParts(id).path.split('::');
+    const segments = pathSegments(nodeId);
+    const otherSegments = [...sccNodeIds]
+      .filter((id) => id !== nodeId)
+      .map((id) => pathSegments(id));
+    for (let len = 1; len <= segments.length; len++) {
+      const suffix = segments.slice(-len).join('::');
+      const collides = otherSegments.some(
+        (other) => other.slice(-len).join('::') === suffix,
+      );
+      if (!collides) return suffix;
+    }
+    return segments.join('::');
+  },
+
+  /**
+   * Header path label for a cycle: `labels` are the k distinct node labels
+   * in path order (labels[0] is the start/sort anchor), closed back to
+   * labels[0]. Shows the full closed path when k <= n; otherwise elides the
+   * middle. The head, the second node, and the closing edge are kept, so the
+   * shape follows the sequence and the loop-closer both stay visible; the
+   * second node is dropped only when the label would exceed `maxChars`, a
+   * degenerate width where keeping it would push the closing edge under the
+   * CSS clip.
+   */
+  elideCyclePath(
+    labels: string[],
+    n: number = 4,
+    maxChars: number = CYCLE_HEADER_MAX_CHARS,
+  ): string {
+    const head = labels[0];
+    if (labels.length <= n) {
+      return `${labels.join(' \u2192 ')} \u2192 ${head}`;
+    }
+    const arrow = ' \u2192 ';
+    const tail = labels[labels.length - 1];
+    const withSecond = `${head}${arrow}${labels[1]}${arrow}\u2026${arrow}${tail}${arrow}${head}`;
+    if (withSecond.length <= maxChars) return withSecond;
+    return `${head}${arrow}\u2026${arrow}${tail}${arrow}${head}`;
+  },
+
+  /**
+   * Path spans under `root`, each with the separator its kind is cut on.
+   */
+  _pathSpans(root: Element): Array<{ span: HTMLElement; separator: string }> {
+    const S = STATIC_DATA.classes.sidebar;
+    if (!root || !root.querySelectorAll) return [];
+    const kinds = [
+      { selector: `.${S.ns}[data-full]`, separator: '::' },
+      { selector: `.${S.file}[data-full]`, separator: '/' },
+    ];
+    return kinds.flatMap(({ selector, separator }) =>
+      [...root.querySelectorAll(selector)].map((span) => ({
+        span: span as HTMLElement,
+        separator,
+      })),
+    );
+  },
+
+  /**
+   * Puts the full text back into every path span. Must run before the
+   * sidebar measures its natural width, or the measurement sees the cut
+   * text, the sidebar narrows, and the next pass cuts more.
+   */
+  resetPaths(root: Element) {
+    for (const { span } of this._pathSpans(root)) PathFit.resetPath(span);
+  },
+
+  /**
+   * Fits every path span under `root` to its box (`PathFit.fitPath`). Runs
+   * after the sidebar width is final; the reset happens again on every call,
+   * so a span that has more room than last time gets its segments back.
+   * @param [overflows] - defaults to the DOM
+   *   overflow test; tests pass a text-length predicate instead.
+   */
+  fitPaths(
+    root: Element,
+    overflows: (span: HTMLElement) => boolean = (span) =>
+      span.scrollWidth > span.clientWidth,
+  ) {
+    for (const { span, separator } of this._pathSpans(root)) {
+      PathFit.fitPath(span, separator, overflows);
+    }
+  },
+
+  /**
+   * Crossing symbols for a cluster edge, real imports only. `pub use`
+   * re-exports ride the same edge but are not part of the cycle (ADR-022).
+   */
+  _edgeSymbols(edge: CycleArcData): Array<any> {
+    const arcId = `${edge.fromId}-${edge.toId}`;
+    return (
+      (typeof STATIC_DATA !== 'undefined' &&
+        STATIC_DATA.arcs?.[arcId]?.usages) ||
+      []
+    ).filter((u) => u.symbol && !u.viaReexport);
+  },
+
+  /**
+   * One cluster-edge row: the edge (dependent \u2192 dependency, colour-framed
+   * like the node view) plus its cycle/symbol meta. When the edge's crossing
+   * symbols are known, the row expands to list them with their locality
+   * tags.
+   * @param symbols - Pre-computed crossing symbols for this edge.
+   * @param focusArcId - Arc whose row should render as focused.
+   * @param [extraClasses] - Extra row classes (e.g. edge-closing, edge-repeat).
+   */
+  _buildEdgeRow(
+    edge: CycleArcData,
+    symbols: Array<any>,
+    focusArcId: string | undefined,
+    extraClasses: string[] = [],
+  ): string {
+    const S = STATIC_DATA.classes.sidebar;
+    const arcId = `${edge.fromId}-${edge.toId}`;
+    const fromName = StaticData.qualifiedParts(edge.fromId).path;
+    const toName = StaticData.qualifiedParts(edge.toId).path;
+    const fromType = StaticData.getNode(edge.fromId)?.type;
+    const toType = StaticData.getNode(edge.toId)?.type;
+    const fromClass = `${S.cycleNode} ${fromType ? `sidebar-node-${fromType} ` : ''}${S.nodeFrom}`;
+    const toClass = `${S.cycleNode} ${toType ? `sidebar-node-${toType} ` : ''}${S.nodeTo}`;
+    const expandable = symbols.length > 0;
+    const expanded = expandable && (this._isRowExpanded?.(arcId) ?? false);
+    const focusClass = arcId === focusArcId ? ` ${S.edgeRowFocus}` : '';
+    const extraClass = extraClasses.length ? ` ${extraClasses.join(' ')}` : '';
+    const isClosing = extraClasses.includes('edge-closing');
+
+    let html = `<div class="${S.usageGroup} ${S.edgeRow}${extraClass}${focusClass}" data-arc-id="${arcId}">`;
+    const headAttrs = expandable
+      ? ` data-collapsible=""${expanded ? '' : ' data-collapsed="true"'}`
+      : ' style="cursor:default"';
+    html += `<div class="${S.symbol} ${S.edgeHead}"${headAttrs}>`;
+    html += `<span class="${S.toggle}">${expandable ? (expanded ? '\u25be' : '\u25b8') : ''}</span>`;
+    html += `<div class="${S.cycleEdge}">`;
+    if (isClosing) {
+      html += `<span class="${S.edgeClosingMarker}" title="closes the cycle">&#x21ba;</span>`;
+    }
+    html += `<span class="${fromClass}" data-node-id="${edge.fromId}" title="${fromName}">${fromName}</span>`;
+    html += `<span class="${S.arrow}">&#x2192;</span>`;
+    html += `<span class="${toClass}" data-node-id="${edge.toId}" title="${toName}">${toName}</span>`;
+    html += `</div>`;
+    html += `<span class="${S.edgeMeta}">${symbols.length} symbols</span>`;
+    html += `</div>`;
+
+    if (expandable) {
+      html += `<div class="${S.locations}" style="display:${expanded ? '' : 'none'}">`;
+      for (const u of symbols) {
+        // The whole row is the jump target (data-jump on this div, read by
+        // svg_script.ts's jumpIdFromClick), not only the definition chip;
+        // a symbol without a definition carries no data-jump and stays inert.
+        const jumpAttr = u.definition
+          ? ` data-jump="${u.definition.jump}"`
+          : '';
+        html += `<div class="${S.edgeSymbol}"${jumpAttr} title="${this._symbolTitle(u)}">`;
+        html += this._symbolLabel(u);
+        html += this._definitionChip(u);
+        html += this._renderLocalityTag(edge.toId, u.symbol);
+        html += `</div>`;
+        for (const loc of u.locations || []) {
+          html += this._locationRow(loc);
+        }
+      }
+      html += `</div>`;
+    }
+    html += `</div>`;
+    return html;
+  },
+
+  /**
+   * A cluster row's triangle was clicked: ask the state machine to flip the
+   * row's expand bit (AppState.rowToggle via _onRowToggle), then sync every
+   * row's DOM, the focus marker and the collapse-all button in place (no
+   * sidebar rebuild). A no-op on a row without symbols to show.
+   */
+  _handleRowToggle(row: HTMLElement, root: HTMLElement, content: HTMLElement) {
+    const S = STATIC_DATA.classes.sidebar;
+    const arcId = row.dataset.arcId;
+    const head = row.querySelector(`.${S.edgeHead}`);
+    if (!arcId || !head || !head.hasAttribute('data-collapsible')) return;
+    this._onRowToggle?.(arcId);
+    this._syncEdgeRowsFromState(content);
+    this._refreshEdgeRowFocus(content);
+    this._syncCollapseAllButton(root, content);
+    this.updatePosition();
+  },
+
+  /**
+   * A cluster row's head (outside the triangle) was clicked: let the state
+   * machine pin/unpin it (AppState.rowPinClick via _onRowPinClick), which may
+   * also move the pin off another row, then sync every row's DOM, the focus
+   * marker and the collapse-all button in place (no sidebar rebuild).
+   */
+  _handleRowPinClick(
+    row: HTMLElement,
+    root: HTMLElement,
+    content: HTMLElement,
+  ) {
+    const arcId = row.dataset.arcId;
+    if (!arcId) return;
+    this._onRowPinClick?.(arcId);
+    this._syncEdgeRowsFromState(content);
+    this._refreshEdgeRowFocus(content);
+    this._syncCollapseAllButton(root, content);
+    this.updatePosition();
+  },
+
+  /**
+   * Re-sync every cluster row's expand DOM (data-collapsed, triangle, symbol
+   * list) from AppState via _isRowExpanded. The direction is always state to
+   * DOM; no handler computes a row's next look from the click itself.
+   */
+  _syncEdgeRowsFromState(content: HTMLElement) {
+    const S = STATIC_DATA.classes.sidebar;
+    if (!content.querySelectorAll) return;
+    for (const el of content.querySelectorAll(`.${S.edgeRow}`)) {
+      const row = el as HTMLElement;
+      const arcId = row.dataset?.arcId;
+      const head = row.querySelector?.(`.${S.edgeHead}`);
+      if (!arcId || !head || !head.hasAttribute('data-collapsible')) continue;
+      this._setEdgeRowExpanded(head, this._isRowExpanded?.(arcId) ?? false);
+    }
+  },
+
+  /**
+   * Show or hide a cluster row's crossing-symbol list in place.
+   * @param head - The row's `.sidebar-edge-head`
+   */
+  _setEdgeRowExpanded(head: Element, expanded: boolean) {
+    const S = STATIC_DATA.classes.sidebar;
+    const locsEl = head.nextElementSibling as HTMLElement | null;
+    const toggle = head.querySelector(`.${S.toggle}`);
+    if (expanded) {
+      head.removeAttribute('data-collapsed');
+      if (locsEl) locsEl.style.display = '';
+      if (toggle) toggle.innerHTML = '▾';
+    } else {
+      head.setAttribute('data-collapsed', 'true');
+      if (locsEl) locsEl.style.display = 'none';
+      if (toggle) toggle.innerHTML = '▸';
+    }
+  },
+
+  /**
+   * Collect the edge-row heads of a cluster sidebar that have symbols to show.
+   */
+  _expandableEdgeHeads(content: HTMLElement): Element[] {
+    const S = STATIC_DATA.classes.sidebar;
+    return [...content.querySelectorAll(`.${S.edgeHead}[data-collapsible]`)];
+  },
+
+  /**
+   * Tell whether any cycle block or expandable edge row is still closed.
+   */
+  _anyClusterSectionClosed(blocks: Element[], heads: Element[]): boolean {
+    return (
+      blocks.some((b) => !b.hasAttribute('open')) ||
+      heads.some((h) => h.getAttribute('data-collapsed') === 'true')
+    );
+  },
+
+  /**
+   * Open every collapsed section above the rows carrying the given jump ids,
+   * so the editor's cursor line is in view in the pinned sidebar. Ids without
+   * a row, and rows whose sections are already open, change nothing.
+   */
+  expandLocations(jumpIds: number[]) {
+    const S = STATIC_DATA.classes.sidebar;
+    const root = this._getElement();
+    const content = root?.querySelector(`.${S.content}`) as HTMLElement | null;
+    if (!root || !content) return;
+    const wanted = new Set(jumpIds.map(String));
+    const rows = [...content.querySelectorAll('[data-jump]')].filter((row) =>
+      wanted.has(row.getAttribute('data-jump') ?? ''),
+    );
+    let opened = false;
+    for (const row of rows) {
+      // A row sits in a `.sidebar-locations` list whose head is the element
+      // before it; lists nest, so walk up through every enclosing one.
+      let list = row.closest(`.${S.locations}`);
+      while (list) {
+        const head = list.previousElementSibling;
+        if (
+          head?.hasAttribute('data-collapsible') &&
+          head.getAttribute('data-collapsed') === 'true'
+        ) {
+          this._setEdgeRowExpanded(head, true);
+          opened = true;
+          // Cluster rows also keep AppState.expandedRows in step, so a later
+          // rebuild (a graph click) renders this row open too.
+          if (head.classList?.contains(S.edgeHead)) {
+            const edgeRow = head.closest(`.${S.edgeRow}`) as HTMLElement | null;
+            const arcId = edgeRow?.dataset?.arcId;
+            if (arcId) this._onRowFollow?.(arcId);
+          }
+        }
+        const parent = list.parentNode as Element | null;
+        list = parent?.closest(`.${S.locations}`) ?? null;
+      }
+    }
+    if (!opened) return;
+    this._syncCollapseAllButton(root, content);
+    this.updatePosition();
+  },
+
+  /**
+   * Mark the row of the resolved focus edge, clearing the others. Keeps the
+   * sidebar in sync with the graph without a rebuild.
+   */
+  _refreshEdgeRowFocus(content: HTMLElement) {
+    const S = STATIC_DATA.classes.sidebar;
+    if (!content.querySelectorAll) return;
+    const focusArc = this._resolvedFocusArc ? this._resolvedFocusArc() : null;
+    for (const el of content.querySelectorAll(`.${S.edgeRow}`)) {
+      const row = el as HTMLElement;
+      row.classList?.toggle(S.edgeRowFocus, row.dataset.arcId === focusArc);
+    }
+  },
+
+  /**
+   * Refresh the collapse-all button glyph from the rows' collapsed state.
+   */
+  _syncCollapseAllButton(root: HTMLElement, content: HTMLElement) {
+    const S = STATIC_DATA.classes.sidebar;
+    const allBtn = root.querySelector?.(`.${S.collapseAll}`);
+    if (!allBtn || !content.querySelectorAll) return;
+    // Cycle blocks exist only in cluster view.
+    const blocks = [...content.querySelectorAll('.cycle-block')];
+    if (blocks.length) {
+      const anyClosed = this._anyClusterSectionClosed(
+        blocks,
+        this._expandableEdgeHeads(content),
+      );
+      allBtn.innerHTML = anyClosed ? '+' : '−';
+      return;
+    }
+    const heads = [...content.querySelectorAll(collapsibleSymbolSelector(S))];
+    const allCollapsed = heads.every(
+      (s) => s.getAttribute('data-collapsed') === 'true',
+    );
+    allBtn.innerHTML = allCollapsed ? '+' : '−';
+  },
+
+  _setupCollapseHandlers(root) {
+    const S = STATIC_DATA.classes.sidebar;
+    if (!root || !root.querySelector) return;
+    const content = root.querySelector(`.${S.content}`);
+    if (!content) return;
+    content.addEventListener('click', (e) => {
+      // A location row's, definition chip's or symbol row's click is a jump,
+      // handled on the document; the row around it keeps its pin and
+      // expansion state.
+      if (e.target.closest?.(`.${S.location}[data-jump]`)) return;
+      if (e.target.closest?.(`.${S.definition}[data-jump]`)) return;
+      if (e.target.closest?.(`.${S.edgeSymbol}[data-jump]`)) return;
+      // Cluster rows: the triangle toggles expansion, the rest of the head
+      // pins/unpins. The two never share a click. A non-expandable row's
+      // triangle is an empty placeholder, not a toggle, so it pins too.
+      const edgeRow = e.target.closest?.(`.${S.edgeRow}`);
+      if (edgeRow) {
+        const head = edgeRow.querySelector?.(`.${S.edgeHead}`);
+        if (
+          e.target.closest?.(`.${S.toggle}`) &&
+          head?.hasAttribute('data-collapsible')
+        ) {
+          SidebarLogic._handleRowToggle(edgeRow, root, content);
+        } else if (e.target.closest?.(`.${S.edgeHead}`)) {
+          SidebarLogic._handleRowPinClick(edgeRow, root, content);
+        }
+        return;
+      }
+      const symbolEl = e.target.closest(`.${S.symbol}`);
+      if (!symbolEl) return;
+      if (!symbolEl.hasAttribute('data-collapsible')) return;
+      const locsEl = symbolEl.nextElementSibling;
+      const isCollapsed = symbolEl.getAttribute('data-collapsed') === 'true';
+      if (isCollapsed) {
+        symbolEl.removeAttribute('data-collapsed');
+        locsEl.style.display = '';
+        const toggle = symbolEl.querySelector(`.${S.toggle}`);
+        if (toggle) toggle.innerHTML = '\u25BE';
+      } else {
+        symbolEl.setAttribute('data-collapsed', 'true');
+        locsEl.style.display = 'none';
+        const toggle = symbolEl.querySelector(`.${S.toggle}`);
+        if (toggle) toggle.innerHTML = '\u25B8';
+      }
+      SidebarLogic._syncCollapseAllButton(root, content);
+      SidebarLogic.updatePosition();
+    });
+    if (root.querySelectorAll) {
+      const indicators = root.querySelectorAll(`.${S.collapseIndicator}`);
+      for (const indicator of indicators) {
+        indicator.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (SidebarLogic._onCollapseToggle) {
+            SidebarLogic._onCollapseToggle(indicator.dataset.collapseTarget);
+          }
+        });
+      }
+      const badges = root.querySelectorAll('[data-node-id]');
+      for (const badge of badges) {
+        badge.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (SidebarLogic._onBadgeClick) {
+            SidebarLogic._onBadgeClick(badge.dataset.nodeId);
+          }
+        });
+      }
+      // Row hover transiently focuses the graph edge; the row click (wired
+      // above) pins it and drives expansion. Hover changes neither, but the
+      // focus mark tracks _resolvedFocusArc (pin-or-hover), so it has to be
+      // refreshed on both ends of a hover too, not only on click.
+      const edgeRows = root.querySelectorAll(`.${S.edgeRow}`);
+      for (const row of edgeRows) {
+        row.addEventListener('mouseenter', () => {
+          if (SidebarLogic._onEdgeHover) {
+            SidebarLogic._onEdgeHover(row.dataset.arcId);
+          }
+          SidebarLogic._refreshEdgeRowFocus(content);
+        });
+        row.addEventListener('mouseleave', () => {
+          if (SidebarLogic._onEdgeHoverEnd) {
+            SidebarLogic._onEdgeHoverEnd();
+          }
+          SidebarLogic._refreshEdgeRowFocus(content);
+        });
+      }
+      // A cycle block's native toggle changes how many blocks are open, so keep
+      // the collapse-all glyph in sync with a manual open/close.
+      for (const block of root.querySelectorAll('.cycle-block')) {
+        block.addEventListener('toggle', () => {
+          SidebarLogic._syncCollapseAllButton(root, content);
+          SidebarLogic.updatePosition();
+        });
+      }
+    }
+    const collapseAllBtn = root.querySelector(`.${S.collapseAll}`);
+    if (!collapseAllBtn) return;
+    collapseAllBtn.addEventListener('click', () => {
+      const blocks = [...content.querySelectorAll('.cycle-block')];
+      if (blocks.length) {
+        const heads = SidebarLogic._expandableEdgeHeads(content);
+        const anyClosed = SidebarLogic._anyClusterSectionClosed(blocks, heads);
+        for (const b of blocks) {
+          if (anyClosed) b.setAttribute('open', '');
+          else b.removeAttribute('open');
+        }
+        // Tell AppState so a later rebuild (e.g. a graph click) renders the
+        // same expand state, then drive the DOM directly as before — the
+        // pin is untouched either way.
+        if (anyClosed) SidebarLogic._onRowsExpandAll?.();
+        else SidebarLogic._onRowsCollapseAll?.();
+        for (const head of heads) {
+          SidebarLogic._setEdgeRowExpanded(head, anyClosed);
+        }
+        SidebarLogic._syncCollapseAllButton(root, content);
+        SidebarLogic.updatePosition();
+        return;
+      }
+      const symbols = [
+        ...content.querySelectorAll(collapsibleSymbolSelector(S)),
+      ];
+      if (!symbols.length) return;
+      const anyExpanded = symbols.some(
+        (s) => s.getAttribute('data-collapsed') !== 'true',
+      );
+      for (const symbolEl of symbols) {
+        const locsEl = symbolEl.nextElementSibling;
+        const toggle = symbolEl.querySelector(`.${S.toggle}`);
+        if (anyExpanded) {
+          symbolEl.setAttribute('data-collapsed', 'true');
+          locsEl.style.display = 'none';
+          if (toggle) toggle.innerHTML = '\u25B8';
+        } else {
+          symbolEl.removeAttribute('data-collapsed');
+          locsEl.style.display = '';
+          if (toggle) toggle.innerHTML = '\u25BE';
+        }
+      }
+      collapseAllBtn.innerHTML = anyExpanded ? '+' : '\u2212';
+      SidebarLogic.updatePosition();
+    });
+  },
+
+  /**
+   * Show sidebar with content for given node (pinned click).
+   */
+  showNode(
+    nodeId: string,
+    relations: { incoming: Array<any>; outgoing: Array<any> },
+  ) {
+    this._showWithContent(this.buildNodeContent(nodeId, relations));
+  },
+
+  /**
+   * Show sidebar transiently for node hover. Debounced.
+   */
+  showTransientNode(
+    nodeId: string,
+    relations: { incoming: Array<any>; outgoing: Array<any> },
+  ) {
+    const S = STATIC_DATA.classes.sidebar;
+    clearTimeout(this._debounceTimer ?? undefined);
+    this._debounceTimer = setTimeout(() => {
+      const el = this._getElement();
+      if (!el) return;
+      const innerDiv: HTMLElement | null = el.querySelector(`.${S.root}`);
+      if (innerDiv) {
+        innerDiv.innerHTML = this.buildNodeContent(nodeId, relations);
+        innerDiv.classList.add(S.transient);
+      }
+      el.style.display = 'block';
+      this._isTransient = true;
+      this._cachedX = this._calcHostX();
+      this.updatePosition();
+    }, 30);
+  },
+
+  /**
+   * Hide the sidebar.
+   */
+  hide() {
+    const el = this._getElement();
+    if (!el) return;
+    el.style.display = 'none';
+    this._cachedX = null;
+    this._cachedMaxArcRightX = null;
+    this._effectiveHeight = null;
+    this._isTransient = false;
+    clearTimeout(this._debounceTimer ?? undefined);
+
+    // Restore original SVG canvas dimensions
+    if (
+      this._originalViewBoxHeight !== null ||
+      this._originalViewBoxWidth !== null
+    ) {
+      const svg = DomAdapter.getSvgRoot();
+      if (svg) {
+        if (this._originalViewBoxHeight !== null) {
+          svg.viewBox.baseVal.height = this._originalViewBoxHeight;
+          svg.setAttribute('height', String(this._originalViewBoxHeight));
+        }
+        if (this._originalViewBoxWidth !== null) {
+          svg.viewBox.baseVal.width = this._originalViewBoxWidth;
+          svg.setAttribute('width', String(this._originalViewBoxWidth));
+        }
+      }
+      this._originalViewBoxHeight = null;
+      this._originalViewBoxWidth = null;
+    }
+  },
+
+  /**
+   * Check if sidebar is currently visible.
+   */
+  isVisible(): boolean {
+    const el = this._getElement();
+    if (!el) return false;
+    return el.style.display === 'block';
+  },
+
+  /**
+   * Update sidebar position and size based on current scroll and viewport.
+   */
+  updatePosition() {
+    const S = STATIC_DATA.classes.sidebar;
+    const el = this._getElement();
+    if (!el) return;
+    const pos = this._calcPosition();
+    if (!pos) return;
+
+    // Dynamic width: on the SVG host expand the foreignObject first, shrink-wrap
+    // .sidebar-root with max-content to measure the natural content width, then
+    // clamp to bounds. Previous approach (shrink → measure scrollWidth) failed
+    // because nested overflow containers (sidebar-content has implicit
+    // overflow-x:auto) don't propagate scrollWidth reliably in foreignObject
+    // context.
+    const innerDiv: HTMLElement | null = el.querySelector(`.${S.root}`);
+    if (innerDiv) this.resetPaths(innerDiv);
+    if (this._host === 'svg') el.setAttribute('width', '9999');
+    if (innerDiv) innerDiv.style.width = 'max-content';
+    const naturalW = innerDiv ? innerDiv.offsetWidth : 0;
+    if (innerDiv) innerDiv.style.width = '';
+
+    // Measure natural content height (analogous to width measurement above).
+    // Must happen after width is finalized — width affects text wrap → height.
+    if (innerDiv) innerDiv.style.height = 'auto';
+    const naturalH = innerDiv ? innerDiv.offsetHeight : 0;
+    const effectiveH =
+      naturalH > 0 ? Math.min(naturalH, pos.height) : pos.height;
+
+    const vpWidth = CanvasSize.visibleArea().width;
+    const width = Math.max(
+      SIDEBAR_MIN_WIDTH,
+      Math.min(naturalW, vpWidth * 0.5),
+    );
+
+    if (this._host === 'page') {
+      this._placeOnPage(el, innerDiv, pos.y, width, effectiveH);
+    } else {
+      this._placeInSvg(el, innerDiv, pos.y, width, effectiveH, vpWidth);
+    }
+    this._effectiveHeight = effectiveH;
+  },
+
+  /**
+   * Apply the measured size to a fixed page element docked at the right edge.
+   * @param top - Distance from the viewport top, in px
+   */
+  _placeOnPage(
+    el: HTMLElement,
+    innerDiv: HTMLElement | null,
+    top: number,
+    width: number,
+    height: number,
+  ) {
+    el.style.top = `${top}px`;
+    el.style.right = `${SIDEBAR_MARGIN_RIGHT}px`;
+    el.style.width = `${Math.round(width)}px`;
+    if (innerDiv) {
+      innerDiv.style.height = `${height}px`;
+      this.fitPaths(innerDiv);
+    }
+  },
+
+  /**
+   * Apply the measured size to the foreignObject in SVG coordinates and grow
+   * the canvas when the sidebar extends beyond it.
+   */
+  _placeInSvg(
+    el: HTMLElement,
+    innerDiv: HTMLElement | null,
+    y: number,
+    width: number,
+    effectiveH: number,
+    vpWidth: number,
+  ) {
+    // Re-clamp X with actual width — _calcX() clamps with SIDEBAR_MIN_WIDTH
+    // but actual width can be larger, pushing the sidebar beyond viewport
+    let x = this._cachedX != null ? this._cachedX : this._calcX();
+    const svg = DomAdapter.getSvgRoot();
+    if (svg) {
+      const svgRect = svg.getBoundingClientRect();
+      const vb = svg.viewBox.baseVal;
+      const scaleX = vb.width / svgRect.width;
+      const viewportRight = (vpWidth - svgRect.left) * scaleX;
+      if (x + width + SIDEBAR_MARGIN_RIGHT > viewportRight) {
+        x = Math.max(
+          0,
+          Math.round(viewportRight - width - SIDEBAR_MARGIN_RIGHT),
+        );
+      }
+    }
+    x = Math.round(x);
+
+    el.setAttribute('width', String(Math.round(width) + SIDEBAR_SHADOW_PAD));
+    el.setAttribute('x', String(x));
+    el.setAttribute('y', String(y));
+    el.setAttribute('height', String(effectiveH + SIDEBAR_SHADOW_PAD));
+    if (innerDiv) {
+      innerDiv.style.height = `${effectiveH}px`;
+      this.fitPaths(innerDiv);
+    }
+
+    if (svg) {
+      const vb = svg.viewBox.baseVal;
+      this._growCanvasHeight(svg, y + effectiveH + SIDEBAR_SHADOW_PAD);
+
+      // Also expand width when sidebar extends beyond viewBox
+      const originalW = this._originalViewBoxWidth ?? vb.width;
+      if (this._originalViewBoxWidth === null) {
+        this._originalViewBoxWidth = vb.width;
+      }
+      const sidebarRight = x + Math.round(width) + SIDEBAR_SHADOW_PAD;
+      const neededW = Math.max(originalW, sidebarRight);
+      if (vb.width !== neededW) {
+        vb.width = neededW;
+        svg.setAttribute('width', String(neededW));
+      }
+    }
+  },
+
+  /**
+   * Move the sidebar to the current scroll position. Width, height and x
+   * depend only on content and viewport, so they keep the values of the last
+   * updatePosition(). The page host is fixed and has nothing to follow.
+   */
+  followScroll() {
+    if (this._host === 'page') return;
+    if (this._effectiveHeight === null) {
+      this.updatePosition();
+      return;
+    }
+    const el = this._getElement();
+    if (!el) return;
+    const pos = this._calcPosition();
+    if (!pos) return;
+    el.setAttribute('y', String(pos.y));
+    const svg = DomAdapter.getSvgRoot();
+    if (svg) {
+      this._growCanvasHeight(
+        svg,
+        pos.y + this._effectiveHeight + SIDEBAR_SHADOW_PAD,
+      );
+    }
+  },
+
+  /**
+   * Expand the SVG canvas if the sidebar extends beyond the viewBox.
+   */
+  _growCanvasHeight(svg: SVGSVGElement, sidebarBottom: number) {
+    const vb = svg.viewBox.baseVal;
+    const originalH = this._originalViewBoxHeight ?? vb.height;
+    if (this._originalViewBoxHeight === null) {
+      this._originalViewBoxHeight = vb.height;
+    }
+    const neededH = Math.max(originalH, sidebarBottom);
+    if (vb.height !== neededH) {
+      vb.height = neededH;
+      svg.setAttribute('height', String(neededH));
+    }
+  },
+};
+
+export { SidebarLogic };

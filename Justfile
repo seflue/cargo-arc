@@ -36,8 +36,8 @@ lint:
     cargo fmt --check
     bunx biome check js/
     cargo test --lib export_bindings -q
-    bunx --no-install tsc --project jsconfig.arc.json
-    bunx --no-install tsc --project jsconfig.hotspot.json
+    bunx --no-install tsc --project tsconfig.arc.json
+    bunx --no-install tsc --project tsconfig.hotspot.json
     cargo run -- arc check
 
 # format Rust + JS
@@ -61,7 +61,7 @@ release-dry version:
     #!/usr/bin/env bash
     set -euo pipefail
     trap 'rm -rf js/dist' EXIT
-    bun build js/svg_script.js js/hotspot_script.js --format=iife --outdir js/dist
+    bun build js/svg_script.ts js/hotspot_script.ts --format=iife --outdir js/dist
     cargo package --allow-dirty
     cargo release {{version}}
 
