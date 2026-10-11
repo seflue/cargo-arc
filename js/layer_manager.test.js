@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { createFakeElement, createMockDomAdapter } from './dom_adapter.js';
+import { createFakeElement, createMockDomAdapter } from './dom_mock.js';
 
 // Provide STATIC_DATA.classes for layer_manager (normally injected by render.rs)
 globalThis.STATIC_DATA = globalThis.STATIC_DATA || { classes: {} };

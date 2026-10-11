@@ -50,10 +50,15 @@ const ArcLogic = {
    * @param edgeId - Arc identifier
    * @param strokeWidth - Stroke width to scale to
    */
-  scaleArrow(dom: any, edgeId: string, strokeWidth: number) {
+  scaleArrow(
+    dom: { getVisibleArrows(arcId: string): Element[] },
+    edgeId: string,
+    strokeWidth: number,
+  ) {
     const scale = this.scaleFromStrokeWidth(strokeWidth);
     dom.getVisibleArrows(edgeId).forEach((arrow) => {
       const points = arrow.getAttribute('points');
+      if (points === null) return;
       const tip = this.parseTipFromPoints(points);
       if (tip) {
         arrow.setAttribute('points', this.getArrowPoints(tip, scale));

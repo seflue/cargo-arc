@@ -87,7 +87,7 @@ function createHotspotJumpIcon({
   iconClass: string;
 }) {
   JumpSymbol.defineJumpSymbol(defsHost);
-  let icon = null;
+  let icon: SVGElement | null = null;
 
   function hide() {
     if (icon) {

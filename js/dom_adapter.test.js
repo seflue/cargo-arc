@@ -24,7 +24,7 @@ Object.assign(globalThis.STATIC_DATA.classes, {
   },
 });
 
-import { createFakeElement, createMockDomAdapter } from './dom_adapter.js';
+import { createFakeElement, createMockDomAdapter } from './dom_mock.js';
 import { Selectors } from './selectors.js';
 
 describe('createFakeElement', () => {

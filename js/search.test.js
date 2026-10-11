@@ -70,6 +70,9 @@ substitute(AppState, {
 
 const { SearchLogic } = require('./search.js');
 
+// init() is not called here; the AppState stub above ignores the state it gets.
+SearchLogic._appState = {};
+
 describe('SearchLogic', () => {
   beforeEach(() => {
     // Reset internal state between tests

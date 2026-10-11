@@ -20,22 +20,25 @@ interface FollowHooks {
 function createFollow({ connect, apply, showState }: FollowHooks) {
   let enabled = true;
 
-  function setEnabled(on) {
+  function setEnabled(on: boolean) {
     enabled = on;
     showState(enabled);
   }
 
   function handleFocus(data: string) {
     if (!enabled) return;
-    let event: any;
+    let event: unknown;
     try {
       event = JSON.parse(data);
     } catch {
       return;
     }
     if (
-      !event ||
+      typeof event !== 'object' ||
+      event === null ||
+      !('node' in event) ||
       typeof event.node !== 'string' ||
+      !('jumps' in event) ||
       !Array.isArray(event.jumps)
     ) {
       return;
@@ -43,7 +46,9 @@ function createFollow({ connect, apply, showState }: FollowHooks) {
     apply(
       event.node,
       event.jumps,
-      typeof event.file === 'string' ? event.file : undefined,
+      'file' in event && typeof event.file === 'string'
+        ? event.file
+        : undefined,
     );
   }
 
