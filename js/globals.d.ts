@@ -97,7 +97,7 @@ declare const STATIC_DATA: {
   nodes: Record<string, StaticNodeData>;
   arcs: Record<string, StaticArcData>;
   classes: Record<string, string>;
-  cycles?: Record<string, StaticCycleData>;
+  cycles?: StaticCycleData[];
   clusters?: Record<string, StaticClusterData>;
   symbolLocalities?: Record<string, Record<string, StaticSymbolLocality>>;
   expandLevel?: number | null;
