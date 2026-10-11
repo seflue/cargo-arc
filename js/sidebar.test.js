@@ -153,6 +153,7 @@ globalThis.STATIC_DATA = {
       edgeSymbol: 'sidebar-edge-symbol',
     },
   },
+  wording: { package: 'crate', packages: 'crates', manifest: 'Cargo.toml' },
 };
 
 // Mock StaticData module (sidebar.ts uses StaticData.getNode for name resolution)
@@ -465,6 +466,20 @@ describe('SidebarLogic', () => {
       const html = SidebarLogic.buildContent('empty_arc');
       expect(html).toContain('sidebar-header');
       expect(html).toContain('Cargo.toml dependency');
+    });
+
+    test('a manifest edge names the language manifest', () => {
+      const origWording = globalThis.STATIC_DATA.wording;
+      globalThis.STATIC_DATA.wording = {
+        package: 'widget',
+        packages: 'widgets',
+        manifest: 'widgets.cfg',
+      };
+      const html = SidebarLogic.buildContent('empty_arc');
+      globalThis.STATIC_DATA.wording = origWording;
+
+      expect(html).toContain('widgets.cfg dependency');
+      expect(html).not.toContain('Cargo.toml');
     });
 
     test('uses overrideData with structured objects', () => {

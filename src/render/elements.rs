@@ -90,6 +90,8 @@ fn toolbar_content(
     config: &RenderConfig,
 ) -> (super::toolbar::Content, super::toolbar::CrossLink) {
     let ct = &CSS.toolbar;
+    let words = config.wording;
+    let package_title = capitalized(words.package);
 
     // Only a page served by `cargo arc ui` has a service to switch; a file
     // written by `cargo arc -o` has none (Follow editor is the shared
@@ -97,12 +99,13 @@ fn toolbar_content(
     let after_follow = if config.with_jump_ids {
         format!(
             concat!(
-                "      <button id=\"externals-toggle\" class=\"{} {}\" aria-pressed=\"{}\">External crates</button>\n",
+                "      <button id=\"externals-toggle\" class=\"{} {}\" aria-pressed=\"{}\">External {}</button>\n",
                 "      <button id=\"tests-toggle\" class=\"{} {}\" aria-pressed=\"{}\">Test code</button>\n",
             ),
             ct.html_btn,
             ct.switch_toggle,
             config.switches.externals,
+            words.packages,
             ct.html_btn,
             ct.switch_toggle,
             config.switches.tests,
@@ -158,7 +161,7 @@ fn toolbar_content(
         concat!(
             "          <label class=\"{}\">\n",
             "            <span class=\"{} {}\" id=\"package-dep-checkbox\"></span>\n",
-            "            Show Crate Dependencies\n",
+            "            Show {} Dependencies\n",
             "          </label>\n",
             "          <label class=\"{}\">\n",
             "            <span class=\"{} {}\" id=\"module-dep-checkbox\"></span>\n",
@@ -177,7 +180,8 @@ fn toolbar_content(
         ct.toggle,
         ct.checkbox,
         ct.checked, // checkbox span (checked)
-        ct.toggle,  // label.toolbar-toggle (module dep)
+        package_title,
+        ct.toggle, // label.toolbar-toggle (module dep)
         ct.checkbox,
         ct.checked,  // checkbox span (checked)
         ct.toggle,   // label.toolbar-toggle (re-export dep)
@@ -199,7 +203,7 @@ fn toolbar_content(
             "        </div>\n",
             "        <div id=\"scope-selector\" class=\"{}\">\n",
             "          <button class=\"{} {}\" data-scope=\"all\">All</button>\n",
-            "          <button class=\"{}\" data-scope=\"package\">Crate</button>\n",
+            "          <button class=\"{}\" data-scope=\"package\">{}</button>\n",
             "          <button class=\"{}\" data-scope=\"module\">Module</button>\n",
             "          <button class=\"{}\" data-scope=\"symbol\">Symbol</button>\n",
             "        </div>\n",
@@ -213,9 +217,10 @@ fn toolbar_content(
         ct.scope,
         ct.scope_btn,
         ct.scope_active, // first scope btn (active)
-        ct.scope_btn,    // crate scope btn
-        ct.scope_btn,    // module scope btn
-        ct.scope_btn,    // symbol scope btn
+        ct.scope_btn,    // package scope btn
+        package_title,
+        ct.scope_btn, // module scope btn
+        ct.scope_btn, // symbol scope btn
         ct.result_count,
     );
 
@@ -234,6 +239,15 @@ fn toolbar_content(
         label: "Hotspot map",
     };
     (content, cross_link)
+}
+
+/// `word` with its first letter in upper case.
+fn capitalized(word: &str) -> String {
+    let mut chars = word.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
 }
 
 pub(super) fn render_toolbar(width: f32, facts: ToolbarFacts, config: &RenderConfig) -> String {
@@ -1449,6 +1463,29 @@ mod tests {
 
         let written = render_toolbar(800.0, ToolbarFacts::default(), &RenderConfig::default());
         assert!(!written.contains("follow-toggle"), "{written}");
+    }
+
+    #[test]
+    fn the_toolbar_names_packages_in_the_language_word() {
+        use crate::test_support::WIDGETS;
+
+        let toolbar = render_toolbar(
+            800.0,
+            ToolbarFacts::default(),
+            &RenderConfig {
+                with_jump_ids: true,
+                wording: &WIDGETS.wording,
+                ..RenderConfig::default()
+            },
+        );
+
+        assert!(toolbar.contains(">External widgets</button>"), "{toolbar}");
+        assert!(toolbar.contains("Show Widget Dependencies"), "{toolbar}");
+        assert!(
+            toolbar.contains(r#"data-scope="package">Widget</button>"#),
+            "{toolbar}"
+        );
+        assert!(!toolbar.to_lowercase().contains("crate"), "{toolbar}");
     }
 
     /// The two switch buttons carry the switches the page was computed

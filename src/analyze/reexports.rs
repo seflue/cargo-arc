@@ -8,10 +8,8 @@ use std::path::Path;
 use std::sync::LazyLock;
 use syn::spanned::Spanned;
 
-use crate::model::{
-    DefKind, Definition, EdgeContext, ModulePathMap, PackageExportMap, PackageInfo,
-    WorkspacePackages, normalize_crate_name,
-};
+use super::packages::{ModulePathMap, PackageExportMap, WorkspacePackages, normalize_crate_name};
+use crate::model::{DefKind, Definition, EdgeContext, PackageInfo};
 
 use super::mod_resolver::{child_resolve_dir, extract_mod_declarations, resolve_mod_path};
 use super::use_parser::{
@@ -46,7 +44,11 @@ pub(crate) fn collect_crate_reexports(
     let mut result = HashMap::new();
     let mut out_of_module_impls = Vec::new();
 
-    for root_file in crate_info.target_roots.files() {
+    for root_file in crate_info
+        .entry_files
+        .iter()
+        .map(|entry| entry.file.as_path())
+    {
         walk_collect_reexports(&ctx, root_file, "", &mut result, &mut out_of_module_impls);
     }
 

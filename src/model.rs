@@ -2,9 +2,8 @@
 //!
 //! Types used across analyze and graph modules, extracted to break circular dependencies.
 
-use cargo_metadata::DependencyKind;
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::ops::Deref;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -102,7 +101,7 @@ impl EdgeSymbols {
 /// The item kind at a symbol's definition site.
 ///
 /// Named apart from `layout::ItemKind`, which classifies graph nodes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DefKind {
     Fn,
     Struct,
@@ -115,105 +114,13 @@ pub enum DefKind {
 
 /// A symbol's definition site: the item kind and the line the item starts on
 /// (attributes included), in the file of the module that defines it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Definition {
     pub kind: DefKind,
     pub line: usize,
 }
 
-/// Workspace crate names, stored in normalized form (hyphens → underscores).
-///
-/// All insertion paths normalize names, and `contains()` normalizes its input,
-/// so lookups are O(1) and callers never need to think about normalization.
-#[derive(Debug, Default, Clone)]
-pub struct WorkspacePackages(HashSet<String>);
-
-impl FromIterator<String> for WorkspacePackages {
-    fn from_iter<I: IntoIterator<Item = String>>(iter: I) -> Self {
-        Self(iter.into_iter().map(|s| normalize_crate_name(&s)).collect())
-    }
-}
-
-impl<'a> FromIterator<&'a str> for WorkspacePackages {
-    fn from_iter<I: IntoIterator<Item = &'a str>>(iter: I) -> Self {
-        Self(iter.into_iter().map(normalize_crate_name).collect())
-    }
-}
-
-impl WorkspacePackages {
-    pub fn insert(&mut self, name: &str) -> bool {
-        self.0.insert(normalize_crate_name(name))
-    }
-
-    /// Check membership, normalizing the input name.
-    #[must_use]
-    pub fn contains(&self, name: &str) -> bool {
-        self.0.contains(&normalize_crate_name(name))
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = &String> {
-        self.0.iter()
-    }
-
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-}
-
-pub(crate) fn normalize_crate_name(name: &str) -> String {
-    name.replace('-', "_")
-}
-
-/// Package name → set of module paths (e.g. `{"analyze", "analyze::hir"}`).
-#[derive(Debug, Default, Clone)]
-pub struct ModulePathMap(HashMap<String, HashSet<String>>);
-
-impl ModulePathMap {
-    /// Return the module paths for a package, or an empty set if unknown.
-    #[must_use]
-    pub fn get_or_empty(&self, key: &str) -> &HashSet<String> {
-        static EMPTY: std::sync::LazyLock<HashSet<String>> = std::sync::LazyLock::new(HashSet::new);
-        self.0.get(key).unwrap_or(&EMPTY)
-    }
-}
-
-impl Deref for ModulePathMap {
-    type Target = HashMap<String, HashSet<String>>;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl FromIterator<(String, HashSet<String>)> for ModulePathMap {
-    fn from_iter<I: IntoIterator<Item = (String, HashSet<String>)>>(iter: I) -> Self {
-        Self(iter.into_iter().collect())
-    }
-}
-
-/// Package name → set of exported symbol names.
-#[derive(Debug, Default, Clone)]
-pub struct PackageExportMap(HashMap<String, HashSet<String>>);
-
-impl Deref for PackageExportMap {
-    type Target = HashMap<String, HashSet<String>>;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl FromIterator<(String, HashSet<String>)> for PackageExportMap {
-    fn from_iter<I: IntoIterator<Item = (String, HashSet<String>)>>(iter: I) -> Self {
-        Self(iter.into_iter().collect())
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum UsageKind {
     Production,
     Test(TestKind),
@@ -238,7 +145,7 @@ impl UsageKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EdgeContext {
     pub kind: UsageKind,
 }
@@ -258,49 +165,69 @@ impl EdgeContext {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TestKind {
     Unit,
     Integration,
 }
 
-#[derive(Debug, Clone)]
+/// A package as a language adapter delivers it.
+///
+/// Every other reference to the package uses `key`: entries of
+/// `dependencies` and `dev_dependencies`, `ModuleTree.root.name`, the first
+/// segment of `ModuleInfo.full_path`, and `DependencyRef.target_package`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackageInfo {
+    /// As the manifest declares it; the diagram shows it.
     pub name: String,
+    /// The name as the source code spells it. For Rust that is `name` with
+    /// `-` replaced by `_`.
+    pub key: String,
     pub path: PathBuf,
     pub workspace_root: PathBuf,
-    pub target_roots: TargetRoots,
-    pub manifest: PathBuf,
+    pub entry_files: Vec<EntryFile>,
+    pub manifest: Option<PathBuf>,
     pub dependencies: Vec<String>,
     /// Populated regardless of `--include-tests`. Reachability needs to know
     /// who is pulled in by tests even when the view does not show it.
     pub dev_dependencies: Vec<String>,
 }
 
-/// Source files of a package's lib and bin targets, absolute, as Cargo
-/// resolved them. Workspace packages and external packages share the shape.
-#[derive(Debug, Clone, Default)]
-pub struct TargetRoots {
-    /// `None` for binary-only packages. Cargo lets `[lib] path` point anywhere,
-    /// so this is not always `src/lib.rs`.
-    pub lib_root: Option<PathBuf>,
-    /// Likewise not always `src/main.rs`.
-    pub bin_roots: Vec<PathBuf>,
+/// A source file the analysis of a package starts from. An adapter lists a
+/// package's entry files library first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntryFile {
+    pub kind: EntryKind,
+    /// Absolute. Cargo lets `[lib] path` and `[[bin]] path` point anywhere,
+    /// so a Rust entry file is not always `src/lib.rs` or `src/main.rs`.
+    pub file: PathBuf,
 }
 
-impl TargetRoots {
-    /// Iterate the entry points for module walking, library target first.
-    pub fn files(&self) -> impl Iterator<Item = &Path> {
-        self.lib_root
-            .iter()
-            .chain(&self.bin_roots)
-            .map(PathBuf::as_path)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EntryKind {
+    Lib,
+    Bin,
+}
+
+impl EntryFile {
+    pub fn lib(file: impl Into<PathBuf>) -> Self {
+        Self {
+            kind: EntryKind::Lib,
+            file: file.into(),
+        }
+    }
+
+    pub fn bin(file: impl Into<PathBuf>) -> Self {
+        Self {
+            kind: EntryKind::Bin,
+            file: file.into(),
+        }
     }
 }
 
 /// What one use takes from a symbol: a name to write types with, a value to
 /// read, or behaviour to call.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UseCategory {
     /// A name in a type position, or a value built from a struct or an enum
     /// variant.
@@ -323,7 +250,7 @@ impl std::fmt::Display for UseCategory {
 }
 
 /// One occurrence of a symbol in the importing file.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SymbolUse {
     pub line: usize,
     pub category: UseCategory,
@@ -333,7 +260,7 @@ pub struct SymbolUse {
     pub imported_for_methods: bool,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DependencyRef {
     pub target_package: String,
     pub target_module: String,
@@ -404,9 +331,11 @@ impl DependencyRef {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModuleInfo {
     pub name: String,
+    /// The package's key followed by the module names from the root down,
+    /// joined by `::`. The root module's is the key alone.
     pub full_path: String,
     /// Absolute path of the file that declares this module. `None` for the
     /// root of a package without a lib or bin target, which has no file, and
@@ -418,7 +347,7 @@ pub struct ModuleInfo {
     pub definitions: HashMap<String, Definition>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModuleTree {
     pub root: ModuleInfo,
     /// Module files that did not parse. Their modules stand in the tree
@@ -427,42 +356,87 @@ pub struct ModuleTree {
 }
 
 /// Metadata for a single external package (one entry per version).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct ExternalPackageInfo {
     pub(crate) name: String,
     pub(crate) version: String,
     pub(crate) package_id: String,
-    /// Inside the registry or vendor directory.
-    pub(crate) target_roots: TargetRoots,
-    pub(crate) manifest: PathBuf,
+    /// Inside the registry or vendor directory, as is the manifest.
+    pub(crate) entry_files: Vec<EntryFile>,
+    pub(crate) manifest: Option<PathBuf>,
 }
 
 /// Dependency edge between two external packages.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct ExternalDep {
     pub(crate) from_pkg_id: String,
     pub(crate) to_pkg_id: String,
-    pub(crate) dep_kinds: Vec<DependencyKind>,
+    pub(crate) context: EdgeContext,
 }
 
 /// Dependency edge from a workspace package to an external package.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct WorkspaceExternalDep {
+    /// The workspace package's `PackageInfo::key`.
     pub(crate) workspace_package: String,
     pub(crate) external_pkg_id: String,
-    pub(crate) dep_kinds: Vec<DependencyKind>,
+    pub(crate) context: EdgeContext,
 }
 
-/// Result of external dependency analysis from cargo metadata.
-#[derive(Debug)]
+/// The packages outside the workspace and the edges to and between them.
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct ExternalsResult {
     pub(crate) packages: Vec<ExternalPackageInfo>,
     pub(crate) external_deps: Vec<ExternalDep>,
     pub(crate) workspace_deps: Vec<WorkspaceExternalDep>,
-    /// `workspace_crate_name` -> (`code_name` -> `package_id`).
-    /// Per-workspace-package map because different workspace packages can depend on
-    /// different versions of the same external package.
-    pub(crate) crate_name_map: HashMap<String, HashMap<String, String>>,
+}
+
+/// What a language brings besides its analysis: the words the page shows and
+/// the files that count as its source.
+#[derive(Debug)]
+pub struct LanguageProfile {
+    pub wording: Wording,
+    /// Source file extensions, without the dot.
+    pub extensions: &'static [&'static str],
+    /// File names of the manifests that declare package dependencies.
+    pub manifest_files: &'static [&'static str],
+    /// The language tokei counts code lines as.
+    pub tokei_language: tokei::LanguageType,
+}
+
+impl LanguageProfile {
+    #[must_use]
+    pub fn is_source(&self, path: &Path) -> bool {
+        path.extension()
+            .is_some_and(|ext| self.extensions.iter().any(|wanted| ext == *wanted))
+    }
+
+    #[must_use]
+    pub fn is_manifest(&self, path: &Path) -> bool {
+        path.file_name()
+            .is_some_and(|name| self.manifest_files.iter().any(|wanted| name == *wanted))
+    }
+}
+
+/// The language's own words for what the diagram shows.
+#[derive(Debug)]
+pub struct Wording {
+    /// A package, singular and lowercase.
+    pub package: &'static str,
+    pub packages: &'static str,
+    /// What the page calls the manifest that declares package dependencies.
+    pub manifest: &'static str,
+}
+
+/// What a language adapter delivers about a project.
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct Analysis {
+    pub(crate) packages: Vec<PackageInfo>,
+    /// One tree per package that analyzed; a package whose analysis failed
+    /// has none.
+    pub(crate) modules: Vec<ModuleTree>,
+    /// `None` unless externals were asked for.
+    pub(crate) externals: Option<ExternalsResult>,
 }
 
 #[cfg(test)]
@@ -718,44 +692,6 @@ mod tests {
             uses: Vec::new(),
         };
         assert_eq!(dep.full_target(), "crate_b");
-    }
-
-    #[test]
-    fn test_workspace_packages_normalizes_on_insert() {
-        let mut ws = WorkspacePackages::default();
-        ws.insert("my-lib");
-        assert!(ws.contains("my_lib"), "should find normalized name");
-        assert!(
-            ws.contains("my-lib"),
-            "should find hyphenated name via normalization"
-        );
-    }
-
-    #[test]
-    fn test_workspace_packages_from_iter_normalizes() {
-        let ws: WorkspacePackages = ["core-utils", "my-lib"].into_iter().collect();
-        assert!(ws.contains("core_utils"));
-        assert!(ws.contains("core-utils"));
-        assert!(ws.contains("my_lib"));
-        assert!(ws.contains("my-lib"));
-    }
-
-    #[test]
-    fn test_workspace_packages_iter_returns_normalized() {
-        let ws: WorkspacePackages = ["core-utils"].into_iter().collect();
-        let names: Vec<&str> = ws.iter().map(std::string::String::as_str).collect();
-        assert_eq!(names, vec!["core_utils"]);
-    }
-
-    #[test]
-    fn test_workspace_packages_len_and_is_empty() {
-        let empty = WorkspacePackages::default();
-        assert!(empty.is_empty());
-        assert_eq!(empty.len(), 0);
-
-        let ws: WorkspacePackages = ["a", "b"].into_iter().collect();
-        assert!(!ws.is_empty());
-        assert_eq!(ws.len(), 2);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use super::theme::Theme;
 use crate::hotspots::MapVolatility;
+use crate::model::Wording;
 use serde::Serialize;
 
 /// All layout constants consolidated in one place.
@@ -645,6 +646,8 @@ pub struct RenderConfig {
     /// What the diagram is embedded in; the script reads it to place the
     /// toolbar and the sidebar.
     pub document: Document,
+    /// The analyzed language's words for packages and their manifest.
+    pub wording: &'static Wording,
 }
 
 impl Default for RenderConfig {
@@ -659,6 +662,7 @@ impl Default for RenderConfig {
             switches: AnalysisSwitches::default(),
             volatility: MapVolatility::default(),
             document: Document::default(),
+            wording: &crate::analyze::rust::PROFILE.wording,
         }
     }
 }

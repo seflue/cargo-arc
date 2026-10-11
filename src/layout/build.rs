@@ -6,7 +6,7 @@ use crate::diagnose::{
     Cluster, ConsumerLocality, Cycle, CycleAnalysis, CyclicEdge, order_cycle_blocks,
 };
 use crate::graph::{ArcGraph, EdgeWeight, Node, Reexports};
-use crate::model::{EdgeContext, SourceLocation, TargetRoots};
+use crate::model::{EdgeContext, EntryFile, EntryKind, SourceLocation};
 use crate::volatility::Volatility;
 use petgraph::algo::has_path_connecting;
 use petgraph::graph::{DiGraph, NodeIndex};
@@ -271,35 +271,30 @@ fn target_name(path: &Path, workspace_root: Option<&Path>) -> String {
         .to_string()
 }
 
-/// Insert a package's (or external package's) jump targets: its lib root, then
-/// each bin root, then its manifest, all at line 1.
+/// Insert a package's (or external package's) jump targets: its entry files
+/// in order, then its manifest if it has one, all at line 1.
 fn package_targets(
     table: &mut JumpTable,
-    target_roots: &TargetRoots,
-    manifest: &Path,
+    entry_files: &[EntryFile],
+    manifest: Option<&Path>,
     workspace_root: Option<&Path>,
 ) -> Vec<JumpTarget> {
-    let mut targets = Vec::new();
-    if let Some(lib_root) = &target_roots.lib_root {
-        targets.push(JumpTarget {
-            kind: TargetKind::Lib,
-            name: target_name(lib_root, workspace_root),
-            id: table.insert(lib_root.clone(), 1),
-        });
-    }
-    for bin_root in &target_roots.bin_roots {
-        targets.push(JumpTarget {
-            kind: TargetKind::Bin,
-            name: target_name(bin_root, workspace_root),
-            id: table.insert(bin_root.clone(), 1),
-        });
-    }
-    targets.push(JumpTarget {
-        kind: TargetKind::Manifest,
-        name: target_name(manifest, workspace_root),
-        id: table.insert(manifest.to_path_buf(), 1),
+    let entries = entry_files.iter().map(|entry| {
+        let kind = match entry.kind {
+            EntryKind::Lib => TargetKind::Lib,
+            EntryKind::Bin => TargetKind::Bin,
+        };
+        (kind, entry.file.as_path())
     });
-    targets
+    let manifest = manifest.map(|file| (TargetKind::Manifest, file));
+    entries
+        .chain(manifest)
+        .map(|(kind, file)| JumpTarget {
+            kind,
+            name: target_name(file, workspace_root),
+            id: table.insert(file.to_path_buf(), 1),
+        })
+        .collect()
 }
 
 /// Insert a module's declaring file as its jump target, when known.
@@ -504,14 +499,14 @@ fn populate_items(
         let (kind, label, source_path, targets) = match &graph[idx] {
             Node::Package {
                 name,
-                target_roots,
+                entry_files,
                 manifest,
                 ..
             } => (
                 ItemKind::Package,
                 name.clone(),
                 None,
-                package_targets(table, target_roots, manifest, workspace_root),
+                package_targets(table, entry_files, manifest.as_deref(), workspace_root),
             ),
             Node::Module { name, file, .. } => {
                 let nesting = nesting_depth(idx, parent_map);
@@ -609,7 +604,7 @@ fn populate_external_items(
             name,
             version,
             is_direct_dependency,
-            target_roots,
+            entry_files,
             manifest,
             ..
         } = &graph[idx]
@@ -623,7 +618,7 @@ fn populate_external_items(
             );
             ir.items[layout_id].version = Some(version.clone());
             ir.items[layout_id].targets =
-                package_targets(table, target_roots, manifest, workspace_root);
+                package_targets(table, entry_files, manifest.as_deref(), workspace_root);
             node_map.insert(idx, layout_id);
         }
     }
@@ -971,7 +966,7 @@ mod tests {
     use crate::diagnose::RepresentativeCycles;
     use crate::graph::{ArcGraph, EdgeWeight, Node};
     use crate::model::{
-        DefKind, Definition, EdgeContext, SourceLocation, TargetRoots, TestKind, UsageKind,
+        DefKind, Definition, EdgeContext, EntryFile, SourceLocation, TestKind, UsageKind,
     };
     use crate::test_support::{
         module_node, module_node_with_file, package_node, package_node_with_targets,
@@ -1039,16 +1034,16 @@ mod tests {
             self
         }
 
-        /// Add a package with target roots and a manifest, no child modules.
+        /// Add a package with entry files and a manifest, no child modules.
         fn package_with_targets(
             &mut self,
             name: &str,
-            target_roots: TargetRoots,
-            manifest: &str,
+            entry_files: Vec<EntryFile>,
+            manifest: Option<&str>,
         ) -> &mut Self {
             let idx = self
                 .graph
-                .add_node(package_node_with_targets(name, target_roots, manifest));
+                .add_node(package_node_with_targets(name, entry_files, manifest));
             self.names.insert(name.to_string(), idx);
             self
         }
@@ -1169,8 +1164,8 @@ mod tests {
                 version: version.to_string(),
                 package_id: format!("{name}-pkg"),
                 is_direct_dependency: true,
-                target_roots: TargetRoots::default(),
-                manifest: format!("/reg/{name}/Cargo.toml").into(),
+                entry_files: vec![],
+                manifest: Some(format!("/reg/{name}/Cargo.toml").into()),
             });
             self.names.insert(name.to_string(), idx);
             self
@@ -1539,12 +1534,12 @@ mod tests {
 
     #[test]
     fn build_layout_assigns_jump_targets_and_resolves_them() {
-        let target_roots = TargetRoots {
-            lib_root: Some(PathBuf::from("/ws/app/src/lib.rs")),
-            bin_roots: vec![PathBuf::from("/ws/app/src/main.rs")],
-        };
+        let entry_files = vec![
+            EntryFile::lib("/ws/app/src/lib.rs"),
+            EntryFile::bin("/ws/app/src/main.rs"),
+        ];
         let mut b = TestGraphBuilder::new();
-        b.package_with_targets("app", target_roots, "/ws/app/Cargo.toml")
+        b.package_with_targets("app", entry_files, Some("/ws/app/Cargo.toml"))
             .module_with_file("app", "mod_a", "/ws/app/src/mod_a.rs");
         let (graph, _) = b.build();
         let (ir, table) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
@@ -1600,16 +1595,32 @@ mod tests {
         assert_eq!(ids.len(), 4, "all four ids should be distinct");
     }
 
+    #[test]
+    fn a_package_without_manifest_gets_no_manifest_target() {
+        let mut b = TestGraphBuilder::new();
+        b.package_with_targets("app", vec![EntryFile::lib("/ws/app/src/lib.rs")], None);
+        let (graph, _) = b.build();
+        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
+
+        let la = LayoutAssert::new(ir);
+        let kinds: Vec<TargetKind> = la.ir.items[la.pos("app")]
+            .targets
+            .iter()
+            .map(|t| t.kind)
+            .collect();
+        assert_eq!(kinds, vec![TargetKind::Lib]);
+    }
+
     /// Every file a node's jump targets point at maps back to that node,
     /// under the key `STATIC_DATA` uses for it.
     #[test]
     fn build_layout_maps_target_files_back_to_their_node() {
-        let target_roots = TargetRoots {
-            lib_root: Some(PathBuf::from("/ws/app/src/lib.rs")),
-            bin_roots: vec![PathBuf::from("/ws/app/src/main.rs")],
-        };
+        let entry_files = vec![
+            EntryFile::lib("/ws/app/src/lib.rs"),
+            EntryFile::bin("/ws/app/src/main.rs"),
+        ];
         let mut b = TestGraphBuilder::new();
-        b.package_with_targets("app", target_roots, "/ws/app/Cargo.toml")
+        b.package_with_targets("app", entry_files, Some("/ws/app/Cargo.toml"))
             .module_with_file("app", "mod_a", "/ws/app/src/mod_a.rs");
         let (graph, _) = b.build();
         let (ir, table) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
@@ -1679,12 +1690,12 @@ mod tests {
 
     #[test]
     fn target_names_are_relative_to_the_workspace_root() {
-        let target_roots = TargetRoots {
-            lib_root: Some(PathBuf::from("/ws/app/src/lib.rs")),
-            bin_roots: vec![PathBuf::from("/ws/app/src/bin/tool.rs")],
-        };
+        let entry_files = vec![
+            EntryFile::lib("/ws/app/src/lib.rs"),
+            EntryFile::bin("/ws/app/src/bin/tool.rs"),
+        ];
         let mut b = TestGraphBuilder::new();
-        b.package_with_targets("app", target_roots, "/ws/app/Cargo.toml")
+        b.package_with_targets("app", entry_files, Some("/ws/app/Cargo.toml"))
             .module_with_file("app", "mod_a", "/ws/app/src/foo/mod.rs");
         let (graph, _) = b.build();
         let (ir, _) = build_layout(
@@ -1704,12 +1715,9 @@ mod tests {
 
     #[test]
     fn target_names_stay_absolute_outside_the_workspace_or_without_a_root() {
-        let target_roots = TargetRoots {
-            lib_root: Some(PathBuf::from("/registry/dep-1.0/src/lib.rs")),
-            bin_roots: vec![],
-        };
+        let entry_files = vec![EntryFile::lib("/registry/dep-1.0/src/lib.rs")];
         let mut b = TestGraphBuilder::new();
-        b.package_with_targets("dep", target_roots, "/registry/dep-1.0/Cargo.toml");
+        b.package_with_targets("dep", entry_files, Some("/registry/dep-1.0/Cargo.toml"));
         let (graph, _) = b.build();
 
         let (ir, _) = build_layout(
@@ -1738,12 +1746,9 @@ mod tests {
 
     #[test]
     fn build_layout_assigns_ids_to_edge_source_locations_without_orphans() {
-        let target_roots = TargetRoots {
-            lib_root: Some(PathBuf::from("/ws/app/src/lib.rs")),
-            bin_roots: vec![],
-        };
+        let entry_files = vec![EntryFile::lib("/ws/app/src/lib.rs")];
         let mut b = TestGraphBuilder::new();
-        b.package_with_targets("app", target_roots, "/ws/app/Cargo.toml")
+        b.package_with_targets("app", entry_files, Some("/ws/app/Cargo.toml"))
             .module_with_file("app", "mod_a", "/ws/app/src/mod_a.rs")
             .module_with_file("app", "mod_b", "/ws/app/src/mod_b.rs")
             .prod_dep_with_locations(

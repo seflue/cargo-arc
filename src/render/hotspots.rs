@@ -551,7 +551,7 @@ mod tests {
     use super::*;
     use crate::graph::{ArcGraph, EdgeWeight};
     use crate::hotspots::pack;
-    use crate::model::TargetRoots;
+    use crate::model::EntryFile;
     use crate::test_support::{module_node_with_file, package_node_with_targets};
     use std::collections::BTreeSet;
     use std::path::{Path, PathBuf};
@@ -571,11 +571,8 @@ mod tests {
         let mut graph = ArcGraph::new();
         let package_idx = graph.add_node(package_node_with_targets(
             "app",
-            TargetRoots {
-                lib_root: Some(PathBuf::from("/ws/app/src/lib.rs")),
-                bin_roots: vec![],
-            },
-            "/ws/app/Cargo.toml",
+            vec![EntryFile::lib("/ws/app/src/lib.rs")],
+            Some("/ws/app/Cargo.toml"),
         ));
         let hot_idx = graph.add_node(module_node_with_file(
             "hot",
@@ -737,8 +734,8 @@ mod tests {
         let mut graph = ArcGraph::new();
         let package_idx = graph.add_node(package_node_with_targets(
             "app",
-            TargetRoots::default(),
-            "/ws/app/Cargo.toml",
+            vec![],
+            Some("/ws/app/Cargo.toml"),
         ));
         let outer_idx = graph.add_node(module_node_with_file(
             "outer",

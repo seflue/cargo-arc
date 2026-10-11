@@ -259,9 +259,9 @@ where
 {
     let Node::Package {
         name,
-        target_roots,
+        path,
+        entry_files,
         manifest,
-        ..
     } = &graph[idx]
     else {
         unreachable!("filtered to crate nodes")
@@ -270,7 +270,7 @@ where
     let mut children = Vec::new();
     let mut subtree_commits = BTreeSet::new();
 
-    for root_file in target_roots.files() {
+    for root_file in entry_files.iter().map(|entry| entry.file.as_path()) {
         let commits = commits_of(root_file);
         subtree_commits.extend(commits.iter().cloned());
         children.push(leaf(
@@ -296,7 +296,8 @@ where
     let node = HotspotNode {
         name: name.clone(),
         kind: HotspotKind::Package,
-        file: relative(workspace_root, manifest),
+        // A package without a manifest is identified by its directory.
+        file: relative(workspace_root, manifest.as_deref().unwrap_or(path)),
         lines: lines_sum,
         commits: subtree_commits.len(),
         children,
@@ -371,7 +372,7 @@ where
 mod tests {
     use super::*;
     use crate::graph::ArcGraph;
-    use crate::model::TargetRoots;
+    use crate::model::EntryFile;
     use crate::test_support::{module_node, module_node_with_file, package_node_with_targets};
     use std::path::{Path, PathBuf};
 
@@ -380,11 +381,8 @@ mod tests {
         let mut graph = ArcGraph::new();
         graph.add_node(package_node_with_targets(
             "app",
-            TargetRoots {
-                lib_root: Some(PathBuf::from("/ws/app/src/lib.rs")),
-                bin_roots: vec![],
-            },
-            "/ws/app/Cargo.toml",
+            vec![EntryFile::lib("/ws/app/src/lib.rs")],
+            Some("/ws/app/Cargo.toml"),
         ));
 
         let tree = build(&graph, Path::new("/ws"), |_| 10, no_commits, 10);
@@ -410,12 +408,26 @@ mod tests {
     }
 
     #[test]
+    fn a_package_without_manifest_is_identified_by_its_directory() {
+        let mut graph = ArcGraph::new();
+        graph.add_node(package_node_with_targets(
+            "app",
+            vec![EntryFile::lib("/app/src/lib.rs")],
+            None,
+        ));
+
+        let tree = build(&graph, Path::new("/"), |_| 10, no_commits, 10);
+
+        assert_eq!(tree.root.file, PathBuf::from("app"));
+    }
+
+    #[test]
     fn a_module_without_children_is_a_leaf() {
         let mut graph = ArcGraph::new();
         let package_idx = graph.add_node(package_node_with_targets(
             "app",
-            TargetRoots::default(),
-            "/ws/app/Cargo.toml",
+            vec![],
+            Some("/ws/app/Cargo.toml"),
         ));
         let cli_idx = graph.add_node(module_node_with_file(
             "cli",
@@ -441,8 +453,8 @@ mod tests {
         let mut graph = ArcGraph::new();
         let package_idx = graph.add_node(package_node_with_targets(
             "app",
-            TargetRoots::default(),
-            "/ws/app/Cargo.toml",
+            vec![],
+            Some("/ws/app/Cargo.toml"),
         ));
         let analyze_idx = graph.add_node(module_node_with_file(
             "analyze",
@@ -491,19 +503,13 @@ mod tests {
         let mut graph = ArcGraph::new();
         graph.add_node(package_node_with_targets(
             "app",
-            TargetRoots {
-                lib_root: Some(PathBuf::from("/ws/app/src/lib.rs")),
-                bin_roots: vec![],
-            },
-            "/ws/app/Cargo.toml",
+            vec![EntryFile::lib("/ws/app/src/lib.rs")],
+            Some("/ws/app/Cargo.toml"),
         ));
         graph.add_node(package_node_with_targets(
             "core",
-            TargetRoots {
-                lib_root: Some(PathBuf::from("/ws/core/src/lib.rs")),
-                bin_roots: vec![],
-            },
-            "/ws/core/Cargo.toml",
+            vec![EntryFile::lib("/ws/core/src/lib.rs")],
+            Some("/ws/core/Cargo.toml"),
         ));
 
         let tree = build(&graph, Path::new("/ws"), |_| 5, no_commits, 10);
@@ -538,8 +544,8 @@ mod tests {
         let mut graph = ArcGraph::new();
         let package_idx = graph.add_node(package_node_with_targets(
             "app",
-            TargetRoots::default(),
-            "/ws/app/Cargo.toml",
+            vec![],
+            Some("/ws/app/Cargo.toml"),
         ));
         let hot_idx = graph.add_node(module_node_with_file(
             "hot",
@@ -598,8 +604,8 @@ mod tests {
         let mut graph = ArcGraph::new();
         let package_idx = graph.add_node(package_node_with_targets(
             "app",
-            TargetRoots::default(),
-            "/ws/app/Cargo.toml",
+            vec![],
+            Some("/ws/app/Cargo.toml"),
         ));
         let outer_idx = graph.add_node(module_node_with_file(
             "outer",
@@ -635,8 +641,8 @@ mod tests {
         let mut graph = ArcGraph::new();
         let package_idx = graph.add_node(package_node_with_targets(
             "app",
-            TargetRoots::default(),
-            "/ws/app/Cargo.toml",
+            vec![],
+            Some("/ws/app/Cargo.toml"),
         ));
         let outer_idx = graph.add_node(module_node_with_file(
             "outer",
@@ -682,11 +688,8 @@ mod tests {
         let mut graph = ArcGraph::new();
         graph.add_node(package_node_with_targets(
             "app",
-            TargetRoots {
-                lib_root: Some(PathBuf::from("/repo/sub/workspace/app/src/lib.rs")),
-                bin_roots: vec![],
-            },
-            "/repo/sub/workspace/app/Cargo.toml",
+            vec![EntryFile::lib("/repo/sub/workspace/app/src/lib.rs")],
+            Some("/repo/sub/workspace/app/Cargo.toml"),
         ));
 
         let tree = build(
@@ -706,8 +709,8 @@ mod tests {
         let mut graph = ArcGraph::new();
         let package_idx = graph.add_node(package_node_with_targets(
             "app",
-            TargetRoots::default(),
-            "/ws/app/Cargo.toml",
+            vec![],
+            Some("/ws/app/Cargo.toml"),
         ));
         let fileless_idx = graph.add_node(module_node("ghost", package_idx));
         graph.add_edge(

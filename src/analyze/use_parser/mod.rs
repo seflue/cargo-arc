@@ -1,8 +1,8 @@
 //! Syn-based use statement parsing for workspace dependency extraction.
 
+use super::packages::{ModulePathMap, PackageExportMap, WorkspacePackages, normalize_crate_name};
 use crate::model::{
-    DefKind, Definition, DependencyRef, EdgeContext, ModulePathMap, PackageExportMap, SymbolUse,
-    TestKind, UsageKind, UseCategory, WorkspacePackages, normalize_crate_name,
+    DefKind, Definition, DependencyRef, EdgeContext, SymbolUse, TestKind, UsageKind, UseCategory,
 };
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};

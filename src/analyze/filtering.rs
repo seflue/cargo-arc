@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use tracing::{debug, instrument};
 
 use super::hir::FeatureConfig;
-use crate::model::{WorkspacePackages, normalize_crate_name};
+use super::packages::{WorkspacePackages, normalize_crate_name};
 
 // --- Dependency filtering types ---
 

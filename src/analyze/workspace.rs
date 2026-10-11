@@ -2,7 +2,8 @@
 
 use super::filtering::{DependencyInfo, collect_reachable_crates, find_seed_crates};
 use super::hir::FeatureConfig;
-use crate::model::{PackageInfo, TargetRoots, WorkspacePackages, normalize_crate_name};
+use super::packages::{WorkspacePackages, normalize_crate_name};
+use crate::model::{EntryFile, PackageInfo};
 use anyhow::{Context, Result};
 use cargo_metadata::MetadataCommand;
 use std::collections::HashSet;
@@ -164,32 +165,31 @@ fn build_crate_info(
 
     PackageInfo {
         name: pkg.name.to_string(),
+        key: normalized_name,
         path: pkg.manifest_path.parent().unwrap().into(),
         workspace_root: workspace_root.to_path_buf(),
-        target_roots: target_roots(pkg),
-        manifest: pkg.manifest_path.clone().into(),
+        entry_files: entry_files(pkg),
+        manifest: Some(pkg.manifest_path.clone().into()),
         dependencies,
         dev_dependencies,
     }
 }
 
-/// Pick the lib and bin targets out of a package's target list. Cargo has
-/// already resolved `[lib] path` / `[[bin]] path`; test, bench, example and
-/// build-script targets are not module tree roots and are skipped.
-pub(crate) fn target_roots(pkg: &cargo_metadata::Package) -> TargetRoots {
-    TargetRoots {
-        lib_root: pkg
-            .targets
-            .iter()
-            .find(|t| is_lib_target(t))
-            .map(|t| t.src_path.clone().into()),
-        bin_roots: pkg
-            .targets
-            .iter()
-            .filter(|t| t.is_bin())
-            .map(|t| t.src_path.clone().into())
-            .collect(),
-    }
+/// Pick the lib and bin targets out of a package's target list, lib first.
+/// Cargo has already resolved `[lib] path` / `[[bin]] path`; test, bench,
+/// example and build-script targets are not module tree roots and are skipped.
+pub(crate) fn entry_files(pkg: &cargo_metadata::Package) -> Vec<EntryFile> {
+    let lib = pkg
+        .targets
+        .iter()
+        .find(|t| is_lib_target(t))
+        .map(|t| EntryFile::lib(t.src_path.clone()));
+    let bins = pkg
+        .targets
+        .iter()
+        .filter(|t| t.is_bin())
+        .map(|t| EntryFile::bin(t.src_path.clone()));
+    lib.into_iter().chain(bins).collect()
 }
 
 /// Filters and builds `PackageInfo` list from workspace packages.
@@ -326,12 +326,13 @@ mod tests {
 
             let cargo_arc = crates.iter().find(|c| c.name == "cargo-arc").unwrap();
             assert!(cargo_arc.path.exists(), "path should exist");
-            assert_eq!(cargo_arc.manifest, manifest);
+            assert_eq!(cargo_arc.manifest, Some(manifest));
         }
     }
 
     mod custom_target_paths {
         use super::*;
+        use crate::model::EntryKind;
 
         fn crates() -> Vec<PackageInfo> {
             let manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -341,9 +342,16 @@ mod tests {
 
         fn root_names(krate: &PackageInfo) -> Vec<String> {
             krate
-                .target_roots
-                .files()
-                .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+                .entry_files
+                .iter()
+                .map(|entry| {
+                    entry
+                        .file
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned()
+                })
                 .collect()
         }
 
@@ -358,11 +366,9 @@ mod tests {
         fn test_lib_root_outside_src_directory() {
             let crates = crates();
             let krate = crates.iter().find(|c| c.name == "outside-src").unwrap();
-            let lib_root = krate
-                .target_roots
-                .lib_root
-                .as_ref()
-                .expect("should have a lib target");
+            let lib_root = &krate.entry_files[0];
+            assert_eq!(lib_root.kind, EntryKind::Lib);
+            let lib_root = &lib_root.file;
             assert!(
                 lib_root.ends_with("bindings/lib.rs"),
                 "got: {}",
@@ -382,7 +388,10 @@ mod tests {
             let crates = crates();
             let krate = crates.iter().find(|c| c.name == "custom-bin").unwrap();
             assert!(
-                krate.target_roots.lib_root.is_none(),
+                krate
+                    .entry_files
+                    .iter()
+                    .all(|entry| entry.kind == EntryKind::Bin),
                 "binary-only crate has no lib"
             );
             assert_eq!(root_names(krate), vec!["tool.rs"]);

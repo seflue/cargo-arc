@@ -1,6 +1,6 @@
 //! Git history analysis for code volatility measurement.
 //!
-//! Analyzes git log to determine how frequently Rust source files change.
+//! Analyzes git log to determine how frequently source files change.
 //! Supports configurable thresholds and time periods.
 //! Optimized for large repositories using streaming and git-level path filtering.
 
@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use thiserror::Error;
+
+use crate::model::LanguageProfile;
 
 /// Errors that can occur during volatility analysis.
 #[derive(Error, Debug)]
@@ -127,11 +129,16 @@ impl VolatilityAnalyzer {
     /// Analyze git history for a repository.
     ///
     /// Streams `git log` output once, combining commit hash, commit time and
-    /// changed `.rs` files, and resolves `repo_path` to the repository's
-    /// top-level directory via `git rev-parse --show-toplevel`. Uses
-    /// `--diff-filter=AMRC` to skip deleted files and a 64KB buffered reader.
+    /// changed source files of `profile`'s language, and resolves `repo_path`
+    /// to the repository's top-level directory via
+    /// `git rev-parse --show-toplevel`. Uses `--diff-filter=AMRC` to skip
+    /// deleted files and a 64KB buffered reader.
     #[allow(clippy::missing_errors_doc)]
-    pub fn analyze(&mut self, repo_path: &Path) -> Result<(), VolatilityError> {
+    pub fn analyze(
+        &mut self,
+        repo_path: &Path,
+        profile: &LanguageProfile,
+    ) -> Result<(), VolatilityError> {
         let toplevel = Command::new("git")
             .args(["rev-parse", "--show-toplevel"])
             .current_dir(repo_path)
@@ -146,6 +153,7 @@ impl VolatilityAnalyzer {
 
         // Stream git log output; a null-prefixed header line starts each commit,
         // carrying its hash and commit time ahead of --name-only's file list.
+        let pathspecs = profile.extensions.iter().map(|ext| format!("*.{ext}"));
         let mut child = Command::new("git")
             .args([
                 "log",
@@ -154,8 +162,8 @@ impl VolatilityAnalyzer {
                 "--diff-filter=AMRC",
                 &format!("--since={} months ago", self.config.months),
                 "--",
-                "*.rs",
             ])
+            .args(pathspecs)
             .current_dir(repo_path)
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -183,10 +191,7 @@ impl VolatilityAnalyzer {
                 }
 
                 let Some(commit) = &current else { continue };
-                if Path::new(trimmed)
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("rs"))
-                {
+                if profile.is_source(Path::new(trimmed)) {
                     let path = self.repo_root.join(trimmed);
                     self.commits.entry(path).or_default().insert(commit.clone());
                 }
@@ -355,6 +360,7 @@ pub struct VolatilityStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analyze::rust::PROFILE as RUST_PROFILE;
 
     /// Runs a git subcommand in `dir`, failing the test on a non-zero exit.
     fn git(dir: &Path, args: &[&str]) {
@@ -412,7 +418,7 @@ mod tests {
         let hash = commit_file(repo.path(), "src/lib.rs", "fn main() {}");
 
         let mut analyzer = VolatilityAnalyzer::new(VolatilityConfig::default());
-        analyzer.analyze(repo.path()).unwrap();
+        analyzer.analyze(repo.path(), &RUST_PROFILE).unwrap();
 
         let file = repo.path().canonicalize().unwrap().join("src/lib.rs");
         let commits: Vec<&Commit> = analyzer.commits(&file).iter().collect();
@@ -421,13 +427,38 @@ mod tests {
         assert!(commits[0].timestamp > 0);
     }
 
+    static LUA: LanguageProfile = LanguageProfile {
+        wording: crate::model::Wording {
+            package: "plugin",
+            packages: "plugins",
+            manifest: "rockspec",
+        },
+        extensions: &["lua"],
+        manifest_files: &[],
+        tokei_language: tokei::LanguageType::Lua,
+    };
+
+    #[test]
+    fn only_source_files_of_the_language_count() {
+        let repo = init_repo();
+        commit_file(repo.path(), "lua/a.lua", "return {}");
+        commit_file(repo.path(), "src/lib.rs", "fn main() {}");
+
+        let mut analyzer = VolatilityAnalyzer::new(VolatilityConfig::default());
+        analyzer.analyze(repo.path(), &LUA).unwrap();
+
+        let root = repo.path().canonicalize().unwrap();
+        assert_eq!(analyzer.commits(&root.join("lua/a.lua")).len(), 1);
+        assert!(analyzer.commits(&root.join("src/lib.rs")).is_empty());
+    }
+
     #[test]
     fn test_commits_unknown_file_is_empty() {
         let repo = init_repo();
         commit_file(repo.path(), "src/lib.rs", "fn main() {}");
 
         let mut analyzer = VolatilityAnalyzer::new(VolatilityConfig::default());
-        analyzer.analyze(repo.path()).unwrap();
+        analyzer.analyze(repo.path(), &RUST_PROFILE).unwrap();
 
         let file = repo
             .path()
@@ -444,7 +475,7 @@ mod tests {
 
         let workspace_root = repo.path().join("workspace");
         let mut analyzer = VolatilityAnalyzer::new(VolatilityConfig::default());
-        analyzer.analyze(&workspace_root).unwrap();
+        analyzer.analyze(&workspace_root, &RUST_PROFILE).unwrap();
 
         let file = repo
             .path()
@@ -516,7 +547,7 @@ mod tests {
     fn test_analyze_real_repo() {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut analyzer = VolatilityAnalyzer::new(VolatilityConfig::default());
-        let result = analyzer.analyze(repo);
+        let result = analyzer.analyze(repo, &RUST_PROFILE);
         assert!(result.is_ok());
         assert!(!analyzer.commits.is_empty());
     }
@@ -525,7 +556,7 @@ mod tests {
     fn test_analyze_not_git_repo() {
         let tmp = tempfile::tempdir().unwrap();
         let mut analyzer = VolatilityAnalyzer::new(VolatilityConfig::default());
-        let result = analyzer.analyze(tmp.path());
+        let result = analyzer.analyze(tmp.path(), &RUST_PROFILE);
         assert!(matches!(result, Err(VolatilityError::NotGitRepo)));
     }
 
@@ -537,7 +568,7 @@ mod tests {
             ..VolatilityConfig::default()
         };
         let mut analyzer = VolatilityAnalyzer::new(config);
-        let result = analyzer.analyze(repo);
+        let result = analyzer.analyze(repo, &RUST_PROFILE);
         assert!(result.is_ok());
     }
 
@@ -693,8 +724,8 @@ mod tests {
         commit_file(repo_b.path(), "b.rs", "fn b() {}");
 
         let mut analyzer = VolatilityAnalyzer::new(VolatilityConfig::default());
-        analyzer.analyze(repo_a.path()).unwrap();
-        analyzer.analyze(repo_b.path()).unwrap();
+        analyzer.analyze(repo_a.path(), &RUST_PROFILE).unwrap();
+        analyzer.analyze(repo_b.path(), &RUST_PROFILE).unwrap();
 
         assert_eq!(analyzer.statistics().total_files, 1);
     }
