@@ -32,29 +32,30 @@ const HOVER_CLASS = STATIC_DATA.classes.hotspots.hover;
 const SELECTED_CLASS = STATIC_DATA.classes.hotspots.selected;
 
 /** The `data-file` key a circle (or its click target) belongs to, or `null` outside any circle. */
-function circleKeyAt(event) {
-  const circle = event.target.closest?.(`.${CIRCLE_CLASS}`);
+function circleKeyAt(event: Event) {
+  const target = event.target as Element | null;
+  const circle = target?.closest?.(`.${CIRCLE_CLASS}`);
   return circle ? circle.getAttribute('data-file') : null;
 }
 
 /** The `data-file` key a hotspot list row (or its click target) belongs to, or `null` outside any row. */
-function rowKeyAt(event) {
+function rowKeyAt(event: Event) {
   const target = event.target as Element | null;
   const row = target?.closest?.('[data-file]');
   return row ? row.getAttribute('data-file') : null;
 }
 
 /** The `data-crumb` key a breadcrumb entry (or its click target) zooms to, or `null` outside any entry. */
-function crumbKeyAt(event) {
+function crumbKeyAt(event: Event) {
   const target = event.target as Element | null;
   const crumb = target?.closest?.('[data-crumb]');
   return crumb ? crumb.getAttribute('data-crumb') : null;
 }
 
 /** The path spans in the sidebar: rows and bar labels carrying `data-full`. */
-function sidebarPaths(sidebarFo) {
+function sidebarPaths(sidebarFo: Element | null) {
   const inner = sidebarFo?.firstElementChild;
-  return inner ? [...inner.querySelectorAll('[data-full]')] : [];
+  return inner ? [...inner.querySelectorAll<HTMLElement>('[data-full]')] : [];
 }
 
 /**
@@ -62,9 +63,9 @@ function sidebarPaths(sidebarFo) {
  * measured the way `SidebarLogic.updatePosition` measures the arc page's;
  * `undefined` when there is nothing to measure.
  */
-function measureSidebarWidth(sidebarFo) {
-  const inner = sidebarFo?.firstElementChild;
-  if (!inner) return undefined;
+function measureSidebarWidth(sidebarFo: Element | null) {
+  const inner = sidebarFo?.firstElementChild as HTMLElement | null | undefined;
+  if (!sidebarFo || !inner) return undefined;
   for (const span of sidebarPaths(sidebarFo)) PathFit.resetPath(span);
   sidebarFo.setAttribute('width', '9999');
   inner.style.width = 'max-content';
@@ -74,7 +75,7 @@ function measureSidebarWidth(sidebarFo) {
 }
 
 /** Shorten every sidebar path that overflows its cell, keeping the file name. */
-function fitSidebarPaths(sidebarFo) {
+function fitSidebarPaths(sidebarFo: Element | null) {
   for (const span of sidebarPaths(sidebarFo)) {
     PathFit.fitPath(span, '/', (s) => s.scrollWidth > s.clientWidth);
   }
@@ -86,9 +87,9 @@ function fitSidebarPaths(sidebarFo) {
  * the arc page's. A frame taller than its panel would catch the pointer
  * over the map below it.
  */
-function fitSidebarHeight(sidebarFo, freeHeight) {
-  const inner = sidebarFo?.firstElementChild;
-  if (!inner) return;
+function fitSidebarHeight(sidebarFo: Element | null, freeHeight: number) {
+  const inner = sidebarFo?.firstElementChild as HTMLElement | null | undefined;
+  if (!sidebarFo || !inner) return;
   inner.style.height = 'auto';
   const height = HotspotLayout.sidebarHeightFor(inner.offsetHeight, freeHeight);
   sidebarFo.setAttribute('height', String(height));
@@ -97,7 +98,7 @@ function fitSidebarHeight(sidebarFo, freeHeight) {
 
 /** Escapes text before it is interpolated into `innerHTML`, matching the
  * Rust side's own `escape_xml`. */
-function escapeHtml(text) {
+function escapeHtml(text: string | number) {
   return String(text)
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
@@ -141,7 +142,10 @@ function buildHotspotMap(
   // page, so it must be shown before it is measured.
   const sidebarEl = DomAdapter.getElementById('hotspot-sidebar');
   if (sidebarEl) sidebarEl.style.display = 'block';
-  function layoutFor(box) {
+  // `layoutFor`, `applyView` and `pointerToSvg` are arrow functions: a
+  // hoisted function declaration does not see the null check on `svg` and
+  // `mapContent` above.
+  const layoutFor = (box: { width: number; height: number }) => {
     const sidebarWidth = HotspotLayout.sidebarWidthFor(
       measureSidebarWidth(sidebarEl),
       box.width,
@@ -163,7 +167,7 @@ function buildHotspotMap(
     fitSidebarPaths(sidebarEl);
     fitSidebarHeight(sidebarEl, next.sidebar.height);
     return next;
-  }
+  };
   let layout = layoutFor(svg.getBoundingClientRect());
   const canvasWidth = layout.viewBox.width;
   let canvasHeight = layout.viewBox.height;
@@ -179,7 +183,7 @@ function buildHotspotMap(
     tooltipClass: STATIC_DATA.classes.hotspots.tooltip,
   });
 
-  function showJumpStatus(text) {
+  function showJumpStatus(text: string) {
     const statusEl = DomAdapter.getElementById('jump-status');
     if (statusEl) statusEl.textContent = text;
   }
@@ -198,16 +202,18 @@ function buildHotspotMap(
     iconClass: STATIC_DATA.classes.hotspots.jumpIcon,
   });
 
-  const circles = new Map();
+  const circles = new Map<string, SVGElement>();
   for (const circle of DomAdapter.querySelectorAll(`.${CIRCLE_CLASS}`)) {
-    circles.set(circle.getAttribute('data-file'), circle);
+    const key = circle.getAttribute('data-file');
+    if (key !== null) circles.set(key, circle);
   }
   // Found by `data-label`, not `circle.nextElementSibling`: sibling order is
   // an implicit contract with `render::hotspots::circle_svg` that a future
   // change there could silently break.
-  const labelEls = new Map();
+  const labelEls = new Map<string, SVGElement>();
   for (const label of DomAdapter.querySelectorAll('[data-label]')) {
-    labelEls.set(label.getAttribute('data-label'), label);
+    const key = label.getAttribute('data-label');
+    if (key !== null) labelEls.set(key, label);
   }
 
   const detailsEl = DomAdapter.getElementById('hotspot-details');
@@ -223,14 +229,14 @@ function buildHotspotMap(
   const originalListHtml = listEl ? listEl.innerHTML : '';
 
   let targetKey = rootKey;
-  let hoveredKey = null;
-  let selectedKey = null;
+  let hoveredKey: string | null = null;
+  let selectedKey: string | null = null;
   // Which of a selection or a zoom the cross-page link should carry, per
   // whichever happened last (`updatePageLink`'s own doc comment); `null`
   // before either has happened, carrying nothing.
-  let lastLinkSource = null;
+  let lastLinkSource: 'select' | 'zoom' | null = null;
   let view = HotspotZoom.viewFor(nodes[targetKey]);
-  let animationHandle = null;
+  let animationHandle: number | null = null;
   let scale = 1;
   let tx = 0;
   let ty = 0;
@@ -259,11 +265,11 @@ function buildHotspotMap(
       // fixpoint `HotspotLabels` computed it for. A bare number is not a
       // valid CSS length and the declaration is dropped silently.
       label.style.fontSize = `${placement.fontSize}px`;
-      label.setAttribute('y', placement.y);
+      label.setAttribute('y', String(placement.y));
     }
   }
 
-  function applyView() {
+  const applyView = () => {
     scale = mapArea.size / (2 * view.radius);
     tx = mapArea.x + mapArea.size / 2 - view.x * scale;
     ty = mapArea.y + mapArea.size / 2 - view.y * scale;
@@ -273,7 +279,7 @@ function buildHotspotMap(
     );
     render();
     updateJumpIcon();
-  }
+  };
 
   /**
    * The jump icon at the selected leaf: shown only while it carries a jump
@@ -283,18 +289,16 @@ function buildHotspotMap(
    * fallback), and kept there across a zoom.
    */
   function updateJumpIcon() {
-    const targets = selectedKey === null ? null : nodes[selectedKey]?.targets;
-    if (!targets || targets.length === 0) {
+    const key = selectedKey;
+    const targets = key === null ? null : nodes[key]?.targets;
+    if (key === null || !targets || targets.length === 0) {
       jumpIcon.hide();
       return;
     }
-    const node = nodes[selectedKey];
-    const placement = HotspotLabels.placeLabels(
-      nodes,
-      targetKey,
-      hoveredKey,
-      scale,
-    ).get(selectedKey);
+    const node = nodes[key];
+    const placement =
+      HotspotLabels.placeLabels(nodes, targetKey, hoveredKey, scale).get(key) ??
+      null;
     const at = HotspotJumpIcon.glyphPosition(node, placement, scale, tx, ty);
     jumpIcon.show(at, targets[0]);
   }
@@ -315,7 +319,7 @@ function buildHotspotMap(
       `<span aria-current="location">${escapeHtml(nodes[targetKey].name)}</span>`;
   }
 
-  function zoomTo(key) {
+  function zoomTo(key: string) {
     targetKey = key;
     lastLinkSource = 'zoom';
     updatePageLink();
@@ -324,7 +328,7 @@ function buildHotspotMap(
     const to = HotspotZoom.viewFor(nodes[key]);
     const startedAt = performance.now();
     if (animationHandle !== null) cancelAnimationFrame(animationHandle);
-    const step = (now) => {
+    const step = (now: number) => {
       const at = HotspotZoom.viewBoxAt(from, to, now - startedAt);
       view = at.view;
       applyView();
@@ -334,13 +338,13 @@ function buildHotspotMap(
   }
 
   /** Hover always wins over a plain selection; neither wins over the other's absence. */
-  function classFor(key) {
+  function classFor(key: string) {
     if (key === hoveredKey) return HOVER_CLASS;
     if (key === selectedKey) return SELECTED_CLASS;
     return null;
   }
 
-  function paintCircle(key) {
+  function paintCircle(key: string | null) {
     if (key == null) return;
     const circle = circles.get(key);
     if (!circle) return;
@@ -356,7 +360,7 @@ function buildHotspotMap(
    * tooltip beside the pointer; a hover with no point (the hotspot list's
    * own rows) anchors it at the node's own drawn centre instead.
    */
-  function setHover(key, point?) {
+  function setHover(key: string | null, point?: { x: number; y: number }) {
     const previous = hoveredKey;
     hoveredKey = key;
     paintCircle(previous);
@@ -373,11 +377,12 @@ function buildHotspotMap(
 
   function renderDetails() {
     if (!detailsEl) return;
-    if (selectedKey === null) {
+    const key = selectedKey;
+    if (key === null) {
       detailsEl.innerHTML = '';
       return;
     }
-    const { title, rows } = HotspotHover.tooltipRows(nodes, selectedKey);
+    const { title, rows } = HotspotHover.tooltipRows(nodes, key);
     detailsEl.innerHTML =
       `<div class="${STATIC_DATA.classes.hotspots.detailsTitle}">${escapeHtml(title)}</div><table>` +
       rows
@@ -410,7 +415,7 @@ function buildHotspotMap(
   }
 
   /** Selects `key`; driving the sidebar is this function's whole job, no jump on click. */
-  function select(key) {
+  function select(key: string | null) {
     const previous = selectedKey;
     selectedKey = key;
     lastLinkSource = 'select';
@@ -427,7 +432,7 @@ function buildHotspotMap(
    * siblings. Zooms first, so the leaf's own selection - not the parent
    * it's framed against - is what the cross-page link ends up carrying.
    */
-  function focus(key) {
+  function focus(key: string) {
     zoomTo(nodes[key]?.parent ?? HotspotTree.rootKey(nodes));
     select(key);
   }
@@ -435,14 +440,14 @@ function buildHotspotMap(
   /** An editor follow event naming a workspace-relative file: it arrives
    * with no idea where the map is already looking, so a leaf keeps zooming
    * to its parent, same as always. */
-  function focusFile(file) {
+  function focusFile(file: string) {
     const key = HotspotSelection.leafKeyForFile(nodes, file);
     if (key === null) return;
     focus(key);
   }
 
   /** Show the file `?select=` names: zoom into a container, focus a leaf. */
-  function applyIncomingSelect(file) {
+  function applyIncomingSelect(file: string) {
     const place = HotspotSelection.placeForFile(nodes, file);
     if (!place) return;
     if (place.type === 'zoom') zoomTo(place.key);
@@ -468,7 +473,8 @@ function buildHotspotMap(
 
   let showingBars = false;
 
-  function showView(bars) {
+  function showView(bars: boolean) {
+    if (!showListEl || !showBarsEl || !listEl) return;
     showingBars = bars;
     showListEl.setAttribute('aria-pressed', String(!bars));
     showBarsEl.setAttribute('aria-pressed', String(bars));
@@ -510,14 +516,14 @@ function buildHotspotMap(
 
   /** A pointer event's client position, converted into the outer `<svg>`'s
    * own coordinate space (the one `node.cx`/`cy` and `canvasWidth` share). */
-  function pointerToSvg(event) {
+  const pointerToSvg = (event: PointerEvent) => {
     const rect = svg.getBoundingClientRect();
     const vb = svg.viewBox.baseVal;
     return {
       x: ((event.clientX - rect.left) * vb.width) / rect.width,
       y: ((event.clientY - rect.top) * vb.height) / rect.height,
     };
-  }
+  };
 
   svg.addEventListener('click', (event) => {
     const clickedKey = circleKeyAt(event);
@@ -570,7 +576,11 @@ function buildHotspotMap(
   }
 
   /** A key the new run no longer has is dropped. */
-  function applyStoredView(stored) {
+  function applyStoredView(stored: {
+    target?: unknown;
+    selected?: unknown;
+    bars?: unknown;
+  }) {
     if (typeof stored.target === 'string' && nodes[stored.target]) {
       targetKey = stored.target;
       view = HotspotZoom.viewFor(nodes[targetKey]);
@@ -644,7 +654,7 @@ function buildHotspotMap(
    * the map's own zoom scale. `view` (the current target's pan and zoom) is
    * left untouched, so a resize does not snap the map back to the root.
    */
-  function resize(width, height) {
+  function resize(width: number, height: number) {
     layout = layoutFor({ width, height });
     canvasHeight = layout.viewBox.height;
     mapArea = layout.mapArea;

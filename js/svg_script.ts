@@ -28,8 +28,8 @@ import { VirtualEdgeLogic } from './virtual_edge_logic.js';
 // (`'svg'`: toolbar and sidebar are foreignObjects that follow the scroll;
 // `'page'`: they are fixed HTML elements outside the SVG)
 
-function createHighlightDebouncer(renderFn, delay) {
-  let timer = null;
+function createHighlightDebouncer(renderFn: () => void, delay: number) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   return {
     debounced() {
       clearTimeout(timer);
@@ -42,7 +42,11 @@ function createHighlightDebouncer(renderFn, delay) {
   };
 }
 
-function createPinnedSidebarRefresher(getPinned, collectRelations, showNode) {
+function createPinnedSidebarRefresher<Relations>(
+  getPinned: () => { type: string; id: string } | null,
+  collectRelations: (nodeId: string) => Relations,
+  showNode: (nodeId: string, relations: Relations) => void,
+) {
   return function refreshPinnedSidebar() {
     const pinned = getPinned();
     if (!pinned || pinned.type !== 'node') return;
@@ -51,16 +55,21 @@ function createPinnedSidebarRefresher(getPinned, collectRelations, showNode) {
   };
 }
 
-function deriveHoverKey(type, id, clusterMode, sccId) {
+function deriveHoverKey(
+  type: string,
+  id: string,
+  clusterMode: boolean,
+  sccId: number | null | undefined,
+) {
   if (type === 'arc' && clusterMode && sccId != null) return `scc:${sccId}`;
   return `${type}:${id}`;
 }
 
 function createHoverKeyTracker() {
-  let hoverKey = null;
+  let hoverKey: string | null = null;
   return {
     // true = new hover identity (caller should render); false = same as current (no-op).
-    enter(key) {
+    enter(key: string) {
       if (key === hoverKey) return false;
       hoverKey = key;
       return true;
@@ -73,8 +82,8 @@ function createHoverKeyTracker() {
 
 // Resolve a jump id from a sidebar click: the closest location row or
 // definition chip carrying data-jump, or null when the click landed elsewhere.
-function jumpIdFromClick(target) {
-  const el = target.closest(
+function jumpIdFromClick(target: Element) {
+  const el = target.closest<HTMLElement>(
     '.sidebar-location[data-jump], .sidebar-definition[data-jump], .sidebar-edge-symbol[data-jump]',
   );
   return el ? Number(el.dataset.jump) : null;
@@ -146,8 +155,8 @@ if (typeof document !== 'undefined') {
     }
 
     // Runtime map for virtual arc usages (structured objects, no DOM serialization)
-    const virtualArcUsages = new Map();
-    const virtualArcOriginals = new Map();
+    const virtualArcUsages = new Map<string, ArcData['usages']>();
+    const virtualArcOriginals = new Map<string, string[]>();
 
     // === Highlight functionality ===
     // Use AppState module for unified state management
@@ -161,7 +170,7 @@ if (typeof document !== 'undefined') {
       if (!hotspotLinkEl) return;
       const selection = appState.clickSelection;
       const file =
-        selection?.type === 'node'
+        selection?.type === 'node' && selection.id !== null
           ? (StaticData.getNode(selection.id)?.file ?? null)
           : null;
       hotspotLinkEl.setAttribute('href', PageLink.buildLink('/hotspots', file));
@@ -204,11 +213,14 @@ if (typeof document !== 'undefined') {
      * Single entry point for all highlight updates (click, hover, collapse, filter toggle).
      */
     function rerenderHighlights() {
-      const widthOverrides = new Map();
+      const widthOverrides = new Map<string, number>();
       for (const nodeId of appState.collapsed) {
         const rect = DomAdapter.getNode(nodeId);
         if (rect) {
-          widthOverrides.set(nodeId, parseFloat(rect.getAttribute('width')));
+          widthOverrides.set(
+            nodeId,
+            parseFloat(rect.getAttribute('width') ?? ''),
+          );
         }
       }
       const hiddenByFilter = getFilterHiddenNodeIds();
@@ -236,12 +248,16 @@ if (typeof document !== 'undefined') {
     const highlightTiming = createHighlightDebouncer(rerenderHighlights, 30);
 
     const hoverTracker = createHoverKeyTracker();
-    let hideGraceTimer = null;
+    let hideGraceTimer: ReturnType<typeof setTimeout> | undefined;
     const HOVER_HIDE_GRACE = 90; // ms; small fixed value, browser-verified
 
     // Shared toggle core for all clickable elements (edge, node, virtual edge).
     // The showSidebar callback provides the type-specific sidebar display logic.
-    function toggleHighlight(type, id, showSidebar) {
+    function toggleHighlight(
+      type: 'node' | 'arc',
+      id: string,
+      showSidebar: () => void,
+    ) {
       const isPinned = AppState.toggleSelection(appState, type, id);
       highlightTiming.immediate();
       if (!isPinned) {
@@ -256,7 +272,7 @@ if (typeof document !== 'undefined') {
     // old pin-shows/unpin-hides contract; cycle edges are governed by
     // selectedScc + inner-edge pin, so we just re-render and show whichever
     // edge/cluster the state now resolves to.
-    function handleEdgeClick(edgeId, showPinnedSidebar) {
+    function handleEdgeClick(edgeId: string, showPinnedSidebar: () => void) {
       const sccId = StaticData.getArc(edgeId)?.sccId;
       AppState.clickEdge(appState, edgeId, sccId);
       highlightTiming.immediate();
@@ -271,12 +287,12 @@ if (typeof document !== 'undefined') {
       SidebarLogic.show(edgeId);
     }
 
-    function highlightEdge(from, to) {
+    function highlightEdge(from: string, to: string) {
       const edgeId = `${from}-${to}`;
       handleEdgeClick(edgeId, () => SidebarLogic.show(edgeId));
     }
 
-    function highlightNode(nodeId) {
+    function highlightNode(nodeId: string) {
       toggleHighlight('node', nodeId, () => {
         const relations = collectNodeRelations(nodeId);
         SidebarLogic.showNode(nodeId, relations);
@@ -285,7 +301,7 @@ if (typeof document !== 'undefined') {
 
     // Expands every collapsed ancestor of the node, so the node itself is
     // on screen.
-    function expandTo(nodeId) {
+    function expandTo(nodeId: string) {
       for (
         let ancestor = parentMap.get(nodeId);
         ancestor !== undefined;
@@ -299,7 +315,7 @@ if (typeof document !== 'undefined') {
     // without the click's toggle, and bring it and its relations into view.
     // A node already selected keeps the view where the user left it; only
     // the sidebar rows of the cursor line open.
-    function focusNode(nodeId, jumps) {
+    function focusNode(nodeId: string, jumps: number[]) {
       if (!DomAdapter.getNode(nodeId)) return;
       if (!AppState.isSelected(appState, 'node', nodeId)) {
         expandTo(nodeId);
@@ -315,7 +331,7 @@ if (typeof document !== 'undefined') {
       SidebarLogic.expandLocations(jumps);
     }
 
-    function collectNodeRelations(nodeId) {
+    function collectNodeRelations(nodeId: string) {
       const base = StaticData.getNodeRelations(nodeId);
       // Filter base arcs to hidden nodes — virtual arcs already represent them
       base.outgoing = base.outgoing.filter(
@@ -339,7 +355,10 @@ if (typeof document !== 'undefined') {
         if (fromId === nodeId) base.outgoing.push(entry);
         else if (toId === nodeId) base.incoming.push(entry);
       }
-      const byTreeOrder = (a, b) => {
+      const byTreeOrder = (
+        a: { targetId: string },
+        b: { targetId: string },
+      ) => {
         const yA = StaticData.getOriginalPosition(a.targetId)?.y ?? Infinity;
         const yB = StaticData.getOriginalPosition(b.targetId)?.y ?? Infinity;
         return yA - yB;
@@ -357,19 +376,19 @@ if (typeof document !== 'undefined') {
 
     let _isNavigating = false;
 
-    function scrollToNode(nodeId) {
+    function scrollToNode(nodeId: string) {
       scrollToSpan(nodeId, []);
     }
 
     // Scrolls the window to the node and as many of the related nodes as
     // fit (see scrollTarget), as far as the page allows.
-    function scrollToSpan(nodeId, relatedIds) {
-      const rectOf = (id) => {
+    function scrollToSpan(nodeId: string, relatedIds: string[]) {
+      const rectOf = (id: string) => {
         const rect = DomAdapter.getNode(id);
         return rect
           ? {
-              y: parseFloat(rect.getAttribute('y')),
-              height: parseFloat(rect.getAttribute('height')),
+              y: parseFloat(rect.getAttribute('y') ?? ''),
+              height: parseFloat(rect.getAttribute('height') ?? ''),
             }
           : null;
       };
@@ -417,27 +436,21 @@ if (typeof document !== 'undefined') {
       window.scrollTo({ top: clampedTarget, behavior: 'smooth' });
     }
 
-    (
-      SidebarLogic as { _onBadgeClick: ((nodeId: any) => void) | null }
-    )._onBadgeClick = (nodeId) => scrollToNode(nodeId);
-    (
-      SidebarLogic as { _onCollapseToggle: ((nodeId: any) => void) | null }
-    )._onCollapseToggle = (nodeId) => {
+    SidebarLogic._onBadgeClick = (nodeId) => {
+      if (nodeId !== undefined) scrollToNode(nodeId);
+    };
+    SidebarLogic._onCollapseToggle = (nodeId) => {
+      if (nodeId === undefined) return;
       toggleCollapse(nodeId);
       updateToolbarPosition();
     };
-    (
-      SidebarLogic as { _isNodeCollapsed: ((nodeId: any) => boolean) | null }
-    )._isNodeCollapsed = (nodeId) => AppState.isCollapsed(appState, nodeId);
-    (
-      SidebarLogic as { _isClusterMode: (() => boolean) | null }
-    )._isClusterMode = () => AppState.isClusterMode(appState);
+    SidebarLogic._isNodeCollapsed = (nodeId) =>
+      AppState.isCollapsed(appState, nodeId);
+    SidebarLogic._isClusterMode = () => AppState.isClusterMode(appState);
     // Resolved inner-edge focus (pin-or-hover, restricted to the selected SCC),
     // matching derived_state's isFocusArc. The sidebar marks a row focused from
     // this, not from whichever edge opened the cluster view.
-    (
-      SidebarLogic as { _resolvedFocusArc: (() => string | null) | null }
-    )._resolvedFocusArc = () => {
+    SidebarLogic._resolvedFocusArc = () => {
       const sel = AppState.getSelection(appState);
       const scc = AppState.getSelectedScc(appState);
       if (
@@ -452,34 +465,27 @@ if (typeof document !== 'undefined') {
     };
     // Sidebar cluster row hover focuses the corresponding graph edge (mirror
     // of handleMouseEnter/handleMouseLeave's pin-beats-hover gate).
-    (
-      SidebarLogic as { _onEdgeHover: ((arcId: any) => void) | null }
-    )._onEdgeHover = (arcId) => {
+    SidebarLogic._onEdgeHover = (arcId) => {
+      if (arcId === undefined) return;
       if (AppState.hasPinnedSelection(appState)) return;
       AppState.setHover(appState, 'arc', arcId);
       highlightTiming.debounced();
     };
-    (SidebarLogic as { _onEdgeHoverEnd: (() => void) | null })._onEdgeHoverEnd =
-      () => {
-        if (AppState.hasPinnedSelection(appState)) return;
-        AppState.clearHover(appState);
-        highlightTiming.debounced();
-      };
+    SidebarLogic._onEdgeHoverEnd = () => {
+      if (AppState.hasPinnedSelection(appState)) return;
+      AppState.clearHover(appState);
+      highlightTiming.debounced();
+    };
     // Row expand state, read by the sidebar on every rebuild so a graph
     // click never collapses a row the user had opened.
-    (
-      SidebarLogic as { _isRowExpanded: ((arcId: string) => boolean) | null }
-    )._isRowExpanded = (arcId) => AppState.isRowExpanded(appState, arcId);
+    SidebarLogic._isRowExpanded = (arcId) =>
+      AppState.isRowExpanded(appState, arcId);
     // Cluster row triangle: expand bit only, never the pin, so it never
     // touches the graph.
-    (
-      SidebarLogic as { _onRowToggle: ((arcId: string) => void) | null }
-    )._onRowToggle = (arcId) => AppState.rowToggle(appState, arcId);
+    SidebarLogic._onRowToggle = (arcId) => AppState.rowToggle(appState, arcId);
     // Cluster row head (outside the triangle): pin/unpin, which may move the
     // pin off another row (AppState.rowPinClick decides both).
-    (
-      SidebarLogic as { _onRowPinClick: ((arcId: string) => void) | null }
-    )._onRowPinClick = (arcId) => {
+    SidebarLogic._onRowPinClick = (arcId) => {
       const before = AppState.isSelected(appState, 'arc', arcId);
       const sccId = StaticData.getArc(arcId)?.sccId;
       AppState.rowPinClick(appState, arcId, sccId);
@@ -490,7 +496,7 @@ if (typeof document !== 'undefined') {
       }
     };
     // Every arc id in an SCC's cycles, for the collapse-all control below.
-    function clusterArcIds(sccId) {
+    function clusterArcIds(sccId: number) {
       const cluster = StaticData.getCluster(sccId);
       if (!cluster) return [];
       const ids = new Set<string>();
@@ -499,31 +505,29 @@ if (typeof document !== 'undefined') {
       }
       return ids;
     }
-    (
-      SidebarLogic as { _onRowsExpandAll: (() => void) | null }
-    )._onRowsExpandAll = () => {
+    SidebarLogic._onRowsExpandAll = () => {
       const sccId = AppState.getSelectedScc(appState);
       if (sccId != null) {
         AppState.rowsExpandAll(appState, clusterArcIds(sccId));
       }
     };
-    (
-      SidebarLogic as { _onRowsCollapseAll: (() => void) | null }
-    )._onRowsCollapseAll = () => {
+    SidebarLogic._onRowsCollapseAll = () => {
       const sccId = AppState.getSelectedScc(appState);
       if (sccId != null) {
         AppState.rowsCollapseAll(appState, clusterArcIds(sccId));
       }
     };
     // The editor's cursor landed on a cluster row's jump target.
-    (
-      SidebarLogic as { _onRowFollow: ((arcId: string) => void) | null }
-    )._onRowFollow = (arcId) => AppState.rowFollow(appState, arcId);
+    SidebarLogic._onRowFollow = (arcId) => AppState.rowFollow(appState, arcId);
 
     // Cancels a pending hide and updates hoverKey if the derived identity
     // changed. Returns false when the hover is a same-cluster/element no-op
     // (caller should bail without touching AppState/sidebar).
-    function enterHover(type, id, sccId) {
+    function enterHover(
+      type: 'node' | 'arc',
+      id: string,
+      sccId: number | null | undefined,
+    ) {
       clearTimeout(hideGraceTimer);
       const key = deriveHoverKey(
         type,
@@ -544,7 +548,7 @@ if (typeof document !== 'undefined') {
       );
     }
 
-    function handleMouseEnter(type, id) {
+    function handleMouseEnter(type: 'node' | 'arc', id: string) {
       if (AppState.hasPinnedSelection(appState)) {
         return;
       }
@@ -579,7 +583,11 @@ if (typeof document !== 'undefined') {
       }, HOVER_HIDE_GRACE);
     }
 
-    function handleVirtualMouseEnter(arcId, fromId, toId) {
+    function handleVirtualMouseEnter(
+      arcId: string,
+      fromId: string,
+      toId: string,
+    ) {
       if (AppState.hasPinnedSelection(appState)) return;
       if (!enterHover('arc', arcId, null)) return;
       AppState.setHover(appState, 'arc', arcId);
@@ -606,11 +614,11 @@ if (typeof document !== 'undefined') {
     // Note: Original positions now come from STATIC_DATA, no need to store them
 
     // Wrapper functions for TreeLogic (use parentMap from closure)
-    function getDescendants(nodeId) {
+    function getDescendants(nodeId: string) {
       return TreeLogic.getDescendants(nodeId, parentMap);
     }
 
-    function getVisibleAncestor(nodeId) {
+    function getVisibleAncestor(nodeId: string) {
       return TreeLogic.getVisibleAncestor(
         nodeId,
         appState.collapsed,
@@ -618,22 +626,22 @@ if (typeof document !== 'undefined') {
       );
     }
 
-    function countDescendants(nodeId) {
+    function countDescendants(nodeId: string) {
       return TreeLogic.countDescendants(nodeId, parentMap);
     }
 
     // Update tree lines for a node at new Y position
-    function updateTreeLines(nodeId, newY, nodeHeight) {
+    function updateTreeLines(nodeId: string, newY: number, nodeHeight: number) {
       // Update lines where this node is the child
       DomAdapter.getTreeLines(nodeId, 'child').forEach((line) => {
         const midY = newY + nodeHeight / 2;
         if (line.getAttribute('x1') === line.getAttribute('x2')) {
           // Vertical line - update y2
-          line.setAttribute('y2', midY);
+          line.setAttribute('y2', String(midY));
         } else {
           // Horizontal line - update both y1 and y2
-          line.setAttribute('y1', midY);
-          line.setAttribute('y2', midY);
+          line.setAttribute('y1', String(midY));
+          line.setAttribute('y2', String(midY));
         }
       });
 
@@ -641,7 +649,7 @@ if (typeof document !== 'undefined') {
       DomAdapter.getTreeLines(nodeId, 'parent').forEach((line) => {
         if (line.getAttribute('x1') === line.getAttribute('x2')) {
           // Vertical line - update y1 (parent bottom)
-          line.setAttribute('y1', newY + nodeHeight);
+          line.setAttribute('y1', String(newY + nodeHeight));
         }
       });
     }
@@ -649,7 +657,10 @@ if (typeof document !== 'undefined') {
     // Update SVG viewport dimensions to fit visible content.
     // Mirrors the Rust calculate_canvas_size formula so expand/collapse
     // keeps the SVG large enough for all visible nodes and arcs.
-    function updateSvgViewport(currentY, visiblePositionY) {
+    function updateSvgViewport(
+      currentY: number,
+      visiblePositionY: Map<string, number>,
+    ) {
       const svg = DomAdapter.getSvgRoot();
       if (!svg) return;
 
@@ -722,7 +733,7 @@ if (typeof document !== 'undefined') {
     // Relayout visible nodes
     function relayout() {
       let currentY = MARGIN + TOOLBAR_HEIGHT;
-      const visiblePositionY = new Map();
+      const visiblePositionY = new Map<string, number>();
 
       // Get all node IDs sorted by original Y position (no DOM query for list)
       const sortedIds = StaticData.getAllNodeIds().sort((a, b) => {
@@ -762,8 +773,8 @@ if (typeof document !== 'undefined') {
         const toggle = DomAdapter.getCollapseToggle(nodeId);
         if (toggle) {
           toggle.setAttribute('y', String(currentY + height / 2 + 4));
-          const nodeX = parseFloat(node.getAttribute('x'));
-          const nodeW = parseFloat(node.getAttribute('width'));
+          const nodeX = parseFloat(node.getAttribute('x') ?? '');
+          const nodeW = parseFloat(node.getAttribute('width') ?? '');
           toggle.setAttribute('x', String(nodeX + nodeW - TOGGLE_OFFSET));
         }
 
@@ -792,7 +803,7 @@ if (typeof document !== 'undefined') {
 
     // Helper: Extract edge data from STATIC_DATA to pure objects
     // Single code path for all scenarios (with/without expand-level, interactive collapse)
-    function extractEdgeData(visibleNodes) {
+    function extractEdgeData(visibleNodes: Set<string>) {
       const edges = [];
       for (const arcId of StaticData.getAllArcIds()) {
         const arc = StaticData.getArc(arcId);
@@ -841,7 +852,11 @@ if (typeof document !== 'undefined') {
     }
 
     // Hide original elements when from/to hidden, update visible arc paths
-    function updateOriginalEdges(edgeData, currentPositions, maxRight) {
+    function updateOriginalEdges(
+      edgeData: ReturnType<typeof extractEdgeData>,
+      currentPositions: ReturnType<typeof DerivedState.computeCurrentPositions>,
+      maxRight: number,
+    ) {
       edgeData.forEach((edge) => {
         const {
           hitarea,
@@ -868,7 +883,7 @@ if (typeof document !== 'undefined') {
           // solely by a node filter keeps just the hidden-by-filter class
           // that filter toggling already set on it.
           const collapsed = fromCollapsed || toCollapsed;
-          const setCollapsedClass = (el) => {
+          const setCollapsedClass = (el: Element) => {
             if (collapsed) el.classList.add(C.nodes.collapsed);
             else el.classList.remove(C.nodes.collapsed);
           };
@@ -924,11 +939,11 @@ if (typeof document !== 'undefined') {
 
     // Collect node IDs hidden by active filters (external-dep toggle etc.)
     // Cached: recomputed only after filter toggles invalidate via invalidateFilterHiddenNodeIds().
-    let _filterHiddenNodeIds = null;
+    let _filterHiddenNodeIds: Set<string> | null = null;
 
     function getFilterHiddenNodeIds() {
       if (_filterHiddenNodeIds !== null) return _filterHiddenNodeIds;
-      const hidden = new Set();
+      const hidden = new Set<string>();
       for (const nodeId of StaticData.getAllNodeIds()) {
         const node = DomAdapter.getNode(nodeId);
         if (node?.classList.contains(C.labels.hiddenByFilter)) {
@@ -954,11 +969,14 @@ if (typeof document !== 'undefined') {
         hiddenByFilter,
       );
       // Read current DOM widths for collapsed nodes whose boxes were expanded
-      const widthOverrides = new Map();
+      const widthOverrides = new Map<string, number>();
       for (const nodeId of appState.collapsed) {
         const rect = DomAdapter.getNode(nodeId);
         if (rect) {
-          widthOverrides.set(nodeId, parseFloat(rect.getAttribute('width')));
+          widthOverrides.set(
+            nodeId,
+            parseFloat(rect.getAttribute('width') ?? ''),
+          );
         }
       }
       const currentPositions = DerivedState.computeCurrentPositions(
@@ -997,10 +1015,13 @@ if (typeof document !== 'undefined') {
     }
 
     // Create virtual arc elements (arcs, arrows, labels, hitareas)
-    function renderVirtualElements(mergedEdges, layers) {
-      const arcElements = [];
-      const labelElements = [];
-      const hitareaElements = [];
+    function renderVirtualElements(
+      mergedEdges: ReturnType<typeof VirtualEdgeLogic.prepareVirtualEdgeData>,
+      layers: Record<'baseArcs' | 'baseLabels' | 'hitareas', Element | null>,
+    ) {
+      const arcElements: SVGElement[] = [];
+      const labelElements: SVGElement[] = [];
+      const hitareaElements: SVGElement[] = [];
 
       mergedEdges.forEach((data, _key) => {
         const {
@@ -1067,8 +1088,8 @@ if (typeof document !== 'undefined') {
           const countLabel = DomAdapter.createSvgElement('text');
           countLabel.setAttribute('class', C.labels.arcCount);
           countLabel.setAttribute('data-vedge', arcId);
-          countLabel.setAttribute('x', x);
-          countLabel.setAttribute('y', y);
+          countLabel.setAttribute('x', String(x));
+          countLabel.setAttribute('y', String(y));
           countLabel.textContent = text;
 
           labelGroup.appendChild(bg);
@@ -1118,12 +1139,12 @@ if (typeof document !== 'undefined') {
         DomAdapter.cacheArcElements(arcId, path, [arrow], labelGroup);
       });
 
-      for (const el of arcElements) layers.baseArcs.appendChild(el);
-      for (const el of labelElements) layers.baseLabels.appendChild(el);
-      for (const el of hitareaElements) layers.hitareas.appendChild(el);
+      for (const el of arcElements) layers.baseArcs?.appendChild(el);
+      for (const el of labelElements) layers.baseLabels?.appendChild(el);
+      for (const el of hitareaElements) layers.hitareas?.appendChild(el);
     }
 
-    function highlightVirtualEdge(fromId, toId) {
+    function highlightVirtualEdge(fromId: string, toId: string) {
       const edgeId = `${fromId}-${toId}`;
       handleEdgeClick(edgeId, () => {
         const usages = virtualArcUsages.get(edgeId) || [];
@@ -1140,7 +1161,7 @@ if (typeof document !== 'undefined') {
 
     // --- Collapse helpers ---
 
-    function updateDescendantVisibility(descId, collapsed) {
+    function updateDescendantVisibility(descId: string, collapsed: boolean) {
       const node = DomAdapter.getNode(descId);
       const label = node?.nextElementSibling;
       const toggle = DomAdapter.getCollapseToggle(descId);
@@ -1156,7 +1177,7 @@ if (typeof document !== 'undefined') {
       });
     }
 
-    function hasCollapsedAncestor(descId, excludeNodeId) {
+    function hasCollapsedAncestor(descId: string, excludeNodeId: string) {
       let checkId = descId;
       while (true) {
         const parentId = parentMap.get(checkId);
@@ -1171,7 +1192,7 @@ if (typeof document !== 'undefined') {
       }
     }
 
-    function updateParentNodeUI(nodeId, collapsed) {
+    function updateParentNodeUI(nodeId: string, collapsed: boolean) {
       const toggleIcon = DomAdapter.getCollapseToggle(nodeId);
       if (toggleIcon) {
         toggleIcon.textContent = collapsed ? '+' : '−';
@@ -1183,7 +1204,7 @@ if (typeof document !== 'undefined') {
       if (!nodeRect.hasAttribute('data-original-width')) {
         nodeRect.setAttribute(
           'data-original-width',
-          nodeRect.getAttribute('width'),
+          nodeRect.getAttribute('width') ?? '',
         );
       }
       // A collapsed parent hiding a cycle node shows the marker glyph (same
@@ -1213,13 +1234,13 @@ if (typeof document !== 'undefined') {
           const padding = 20;
           const neededWidth = textWidth + padding;
           const originalWidth = parseFloat(
-            nodeRect.getAttribute('data-original-width'),
+            nodeRect.getAttribute('data-original-width') ?? '',
           );
           const newWidth = Math.max(originalWidth, neededWidth);
           nodeRect.setAttribute('width', String(newWidth));
           // Reposition toggle icon to right edge of expanded box
           if (toggleIcon) {
-            const nodeX = parseFloat(nodeRect.getAttribute('x'));
+            const nodeX = parseFloat(nodeRect.getAttribute('x') ?? '');
             toggleIcon.setAttribute(
               'x',
               String(nodeX + newWidth - TOGGLE_OFFSET),
@@ -1233,7 +1254,7 @@ if (typeof document !== 'undefined') {
           nodeRect.setAttribute('width', originalWidth);
           // Restore toggle icon to original position
           if (toggleIcon) {
-            const nodeX = parseFloat(nodeRect.getAttribute('x'));
+            const nodeX = parseFloat(nodeRect.getAttribute('x') ?? '');
             toggleIcon.setAttribute(
               'x',
               String(nodeX + parseFloat(originalWidth) - TOGGLE_OFFSET),
@@ -1245,7 +1266,7 @@ if (typeof document !== 'undefined') {
 
     // Collapses or expands one node in state and DOM, without a relayout.
     // A descendant under another collapsed ancestor stays hidden.
-    function setCollapsed(nodeId, collapsed) {
+    function setCollapsed(nodeId: string, collapsed: boolean) {
       AppState.setCollapsed(appState, nodeId, collapsed);
       getDescendants(nodeId).forEach((descId) => {
         if (collapsed || !hasCollapsedAncestor(descId, nodeId)) {
@@ -1256,7 +1277,7 @@ if (typeof document !== 'undefined') {
     }
 
     // Toggle collapse state
-    function toggleCollapse(nodeId) {
+    function toggleCollapse(nodeId: string) {
       setCollapsed(nodeId, !AppState.isCollapsed(appState, nodeId));
       relayout();
       SearchLogic.refresh();
@@ -1293,7 +1314,7 @@ if (typeof document !== 'undefined') {
 
     // Read which arc filters are currently active from their checkboxes.
     function readActiveArcFilters() {
-      const isOn = (selector) =>
+      const isOn = (selector: string) =>
         !!DomAdapter.querySelector(selector)?.classList.contains(
           C.toolbar.checked,
         );
@@ -1306,7 +1327,7 @@ if (typeof document !== 'undefined') {
     }
 
     // Derive from an arc's classes which filters cover it.
-    function arcFilters(arc) {
+    function arcFilters(arc: Element) {
       return {
         isPackageDep: arc.classList.contains(C.direction.packageDepArc),
         isModuleDep: arc.classList.contains(C.direction.moduleDepArc),
@@ -1330,6 +1351,7 @@ if (typeof document !== 'undefined') {
         `.${C.direction.arcHitarea}:not(.${C.direction.virtualHitarea})`,
       ).forEach((hitarea) => {
         const arcId = hitarea.dataset.arcId;
+        if (arcId === undefined) return;
         const arc = DomAdapter.getArc(arcId);
         if (!arc) return;
 
@@ -1368,7 +1390,7 @@ if (typeof document !== 'undefined') {
     }
 
     // Flip one arc filter's checkbox, then recompute arc visibility.
-    function toggleFilterCheckbox(checkboxSelector) {
+    function toggleFilterCheckbox(checkboxSelector: string) {
       DomAdapter.querySelector(checkboxSelector)?.classList.toggle(
         C.toolbar.checked,
       );
@@ -1392,7 +1414,11 @@ if (typeof document !== 'undefined') {
       recomputeArcVisibility();
     }
 
-    function toggleFilteredNodes(isChecked, isTargetNode, isTargetArc) {
+    function toggleFilteredNodes(
+      isChecked: boolean,
+      isTargetNode: (nodeId: string) => boolean,
+      isTargetArc: (arcId: string) => boolean,
+    ) {
       StaticData.getAllNodeIds().forEach((nodeId) => {
         if (!isTargetNode(nodeId)) return;
         const rect = DomAdapter.getNode(nodeId);
@@ -1414,7 +1440,7 @@ if (typeof document !== 'undefined') {
         `.${C.direction.arcHitarea}:not(.${C.direction.virtualHitarea})`,
       ).forEach((hitarea) => {
         const arcId = hitarea.dataset.arcId;
-        if (!isTargetArc(arcId)) return;
+        if (arcId === undefined || !isTargetArc(arcId)) return;
 
         if (isChecked) {
           hitarea.classList.remove(C.labels.hiddenByFilter);
@@ -1478,7 +1504,7 @@ if (typeof document !== 'undefined') {
       const root = DomAdapter.querySelector<HTMLElement>(`.${C.toolbar.root}`);
       const graph = DomAdapter.getElementById('graph-content');
       if (!root || (!PAGE_HOST && !fo)) return;
-      if (!PAGE_HOST) fo.style.display = '';
+      if (!PAGE_HOST && fo) fo.style.display = '';
       const baseH = root.offsetHeight;
       if (baseH > 0) {
         // Include dropdown panel height when visible (absolutely positioned, outside normal flow)
@@ -1487,7 +1513,9 @@ if (typeof document !== 'undefined') {
         );
         const panelH =
           panel && panel.style.display !== 'none' ? panel.offsetHeight : 0;
-        if (!PAGE_HOST) fo.setAttribute('height', String(baseH + panelH));
+        if (!PAGE_HOST && fo) {
+          fo.setAttribute('height', String(baseH + panelH));
+        }
         // Shift graph content down by the delta between actual and default toolbar height
         const delta = baseH - TOOLBAR_HEIGHT;
         if (graph) {
@@ -1564,7 +1592,7 @@ if (typeof document !== 'undefined') {
       }).observe(toolbarRoot);
     }
 
-    function showJumpStatus(text) {
+    function showJumpStatus(text: string) {
       const statusEl = DomAdapter.getElementById('jump-status');
       if (statusEl) statusEl.textContent = text;
     }
@@ -1596,7 +1624,7 @@ if (typeof document !== 'undefined') {
 
     // Flips a checkbox through the same handler a click would use, so the
     // arcs and nodes it governs follow.
-    function applyCheck(id, on) {
+    function applyCheck(id: string, on: boolean) {
       const box = DomAdapter.getElementById(id);
       if (!box || box.classList.contains(C.toolbar.checked) === on) return;
       if (id === 'cycles-checkbox') toggleClusterMode();
@@ -1634,7 +1662,7 @@ if (typeof document !== 'undefined') {
     // Applies a restored view on top of the freshly rendered page: the
     // collapse state, one relayout, then the checkboxes, the pinned
     // selection, the search and the scroll.
-    function applyRestoredView(view) {
+    function applyRestoredView(view: NonNullable<typeof restoredView>) {
       const wanted = new Set(view.collapsed);
       for (const nodeId of StaticData.getAllNodeIds()) {
         if (!StaticData.hasChildren(nodeId)) continue;
@@ -1786,7 +1814,9 @@ if (typeof document !== 'undefined') {
       (toggle) => {
         toggle.addEventListener('click', (e) => {
           e.stopPropagation();
-          toggleCollapse(toggle.dataset.target);
+          const target = toggle.dataset.target;
+          if (target === undefined) return;
+          toggleCollapse(target);
           updateToolbarPosition();
         });
       },
@@ -1865,11 +1895,13 @@ if (typeof document !== 'undefined') {
     DomAdapter.querySelectorAll(
       `.${C.direction.arcHitarea}:not(.${C.direction.virtualHitarea})`,
     ).forEach((hitarea) => {
-      const edgeId = `${hitarea.dataset.from}-${hitarea.dataset.to}`;
+      const { from, to } = hitarea.dataset;
+      if (from === undefined || to === undefined) return;
+      const edgeId = `${from}-${to}`;
 
       hitarea.addEventListener('click', (e) => {
         e.stopPropagation();
-        highlightEdge(hitarea.dataset.from, hitarea.dataset.to);
+        highlightEdge(from, to);
       });
 
       hitarea.addEventListener('mouseenter', () =>
@@ -1879,7 +1911,7 @@ if (typeof document !== 'undefined') {
       hitarea.addEventListener('mouseleave', handleMouseLeave);
     });
 
-    DomAdapter.getSvgRoot().addEventListener('click', () => {
+    DomAdapter.getSvgRoot()?.addEventListener('click', () => {
       AppState.clickEmpty(appState);
       highlightTiming.immediate();
       SidebarLogic.hide();
@@ -1915,9 +1947,11 @@ if (typeof document !== 'undefined') {
 
     // Populate arc element cache for O(1) lookups during highlight
     for (const arcId of StaticData.getAllArcIds()) {
+      const arc = DomAdapter.querySelector(Selectors.baseArc(arcId));
+      if (!arc) continue;
       DomAdapter.cacheArcElements(
         arcId,
-        DomAdapter.querySelector(Selectors.baseArc(arcId)),
+        arc,
         Array.from(DomAdapter.querySelectorAll(Selectors.arrows(arcId))),
         DomAdapter.querySelector(Selectors.labelGroup(arcId)),
       );

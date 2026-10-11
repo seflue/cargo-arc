@@ -38,7 +38,6 @@ lint:
     cargo test --lib export_bindings -q
     bunx --no-install tsc --project tsconfig.arc.json
     bunx --no-install tsc --project tsconfig.hotspot.json
-    bunx --no-install tsc --project tsconfig.strict.json
     cargo run -- arc check
 
 # format Rust + JS

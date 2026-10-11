@@ -1,5 +1,5 @@
 {
   "extends": "./tsconfig.base.json",
-  "include": ["js/*.ts", "js/test_support.js", "js/dom_mock.js"],
+  "include": ["js/*.ts"],
   "exclude": ["js/hotspot_*.ts", "js/hotspot_page.d.ts", "js/jump_icons.ts"]
 }

@@ -120,7 +120,7 @@ const VirtualEdgeLogic = {
       toId: string;
       count: number;
       hiddenEdgeData: ArcData['usages'][];
-      arc: object;
+      arc: ReturnType<typeof ArcLogic.calculateArcPathFromPositions>;
       strokeWidth: number;
       direction: string;
       originalArcs: string[];
