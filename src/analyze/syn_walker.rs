@@ -9,8 +9,8 @@ use super::use_parser::ReExportMap;
 use super::use_parser::{ResolutionContext, parse_file_dependencies};
 use crate::model::normalize_crate_name;
 use crate::model::{
-    EdgeContext, ModuleInfo, ModulePathMap, ModuleTree, PackageExportMap, PackageInfo, TestKind,
-    UsageKind, WorkspacePackages,
+    EdgeContext, EntryKind, ModuleInfo, ModulePathMap, ModuleTree, PackageExportMap, PackageInfo,
+    TestKind, UsageKind, WorkspacePackages,
 };
 
 /// Find integration test files in `tests/*.rs`.
@@ -95,7 +95,11 @@ pub(crate) fn collect_syn_module_paths(
     include_tests: bool,
 ) -> HashSet<String> {
     let mut paths = HashSet::new();
-    for root_file in crate_info.target_roots.files() {
+    for root_file in crate_info
+        .entry_files
+        .iter()
+        .map(|entry| entry.file.as_path())
+    {
         walk_modules_for_paths(root_file, "", &mut paths, include_tests);
     }
     paths
@@ -140,7 +144,12 @@ fn is_pub(vis: &syn::Visibility) -> bool {
 /// Returns an empty set on any error (no library target, parse failure).
 pub(crate) fn collect_crate_exports(crate_info: &PackageInfo) -> HashSet<String> {
     // Binary targets export nothing.
-    let Some(root_file) = crate_info.target_roots.lib_root.as_ref() else {
+    let Some(root_file) = crate_info
+        .entry_files
+        .iter()
+        .find(|entry| entry.kind == EntryKind::Lib)
+        .map(|entry| &entry.file)
+    else {
         return HashSet::new();
     };
 
@@ -341,7 +350,11 @@ pub(crate) fn analyze_modules_syn(
 
     let mut unparsed = Vec::new();
     let mut root: Option<ModuleInfo> = None;
-    for root_file in crate_info.target_roots.files() {
+    for root_file in crate_info
+        .entry_files
+        .iter()
+        .map(|entry| entry.file.as_path())
+    {
         let tree = walk_module_syn(
             &ctx,
             root_file,

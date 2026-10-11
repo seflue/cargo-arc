@@ -1,8 +1,8 @@
 //! Graph Types & Builder
 
 use crate::model::{
-    Definition, DependencyRef, EdgeContext, ExternalsResult, ModuleInfo, ModuleTree, PackageInfo,
-    SourceLocation, TargetRoots, TestKind, UsageKind, normalize_crate_name,
+    Definition, DependencyRef, EdgeContext, EntryFile, ExternalsResult, ModuleInfo, ModuleTree,
+    PackageInfo, SourceLocation, TestKind, UsageKind,
 };
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
@@ -14,8 +14,8 @@ pub enum Node {
     Package {
         name: String,
         path: PathBuf,
-        target_roots: TargetRoots,
-        manifest: PathBuf,
+        entry_files: Vec<EntryFile>,
+        manifest: Option<PathBuf>,
     },
     Module {
         name: String,
@@ -30,8 +30,8 @@ pub enum Node {
         version: String,
         package_id: String,
         is_direct_dependency: bool,
-        target_roots: TargetRoots,
-        manifest: PathBuf,
+        entry_files: Vec<EntryFile>,
+        manifest: Option<PathBuf>,
     },
 }
 
@@ -429,7 +429,7 @@ impl ArcGraph {
 
 struct GraphBuilder {
     graph: ArcGraph,
-    /// Keyed by `normalize_crate_name`; dependency names arrive underscored.
+    /// Keyed by `PackageInfo::key`.
     package_map: HashMap<String, NodeIndex>,
     module_map: HashMap<String, NodeIndex>,
     external_map: HashMap<String, NodeIndex>,
@@ -454,10 +454,10 @@ impl GraphBuilder {
                 let idx = self.graph.add_node(Node::Package {
                     name: package.name.clone(),
                     path: package.path.clone(),
-                    target_roots: package.target_roots.clone(),
+                    entry_files: package.entry_files.clone(),
                     manifest: package.manifest.clone(),
                 });
-                (normalize_crate_name(&package.name), idx)
+                (package.key.clone(), idx)
             })
             .collect();
     }
@@ -507,10 +507,7 @@ impl GraphBuilder {
 
     fn add_package_deps(&mut self, packages: &[PackageInfo], include_tests: bool) {
         for package_info in packages {
-            let Some(&from_idx) = self
-                .package_map
-                .get(&normalize_crate_name(&package_info.name))
-            else {
+            let Some(&from_idx) = self.package_map.get(&package_info.key) else {
                 continue;
             };
             let prod = package_info.dependencies.iter().map(|dep| {
@@ -532,9 +529,7 @@ impl GraphBuilder {
                 (dep, edge)
             });
             prod.chain(dev)
-                .filter_map(|(name, edge)| {
-                    Some((self.package_map.get(&normalize_crate_name(name))?, edge))
-                })
+                .filter_map(|(name, edge)| Some((self.package_map.get(name)?, edge)))
                 .for_each(|(&to_idx, edge)| {
                     self.graph.add_edge(from_idx, to_idx, edge);
                 });
@@ -584,19 +579,6 @@ impl GraphBuilder {
     }
 
     fn add_externals(&mut self, ext: &ExternalsResult) {
-        /// Map `cargo_metadata` `DependencyKind`s to our `EdgeContext`.
-        /// Dev-only deps get `test()`, everything else `production()`.
-        fn edge_context_from_dep_kinds(kinds: &[cargo_metadata::DependencyKind]) -> EdgeContext {
-            let has_normal = kinds
-                .iter()
-                .any(|k| matches!(k, cargo_metadata::DependencyKind::Normal));
-            if has_normal {
-                EdgeContext::production()
-            } else {
-                EdgeContext::test(TestKind::Unit)
-            }
-        }
-
         // Collect package IDs that are direct workspace dependencies for O(1) lookup.
         let direct_pkg_ids: HashSet<&str> = ext
             .workspace_deps
@@ -612,7 +594,7 @@ impl GraphBuilder {
                 version: info.version.clone(),
                 package_id: info.package_id.clone(),
                 is_direct_dependency: direct_pkg_ids.contains(info.package_id.as_str()),
-                target_roots: info.target_roots.clone(),
+                entry_files: info.entry_files.clone(),
                 manifest: info.manifest.clone(),
             });
             pkg_index.insert(&info.package_id, idx);
@@ -624,11 +606,8 @@ impl GraphBuilder {
             let Some(&ext_idx) = pkg_index.get(dep.external_pkg_id.as_str()) else {
                 continue;
             };
-            let context = edge_context_from_dep_kinds(&dep.dep_kinds);
-            let Some(&ws_idx) = self
-                .package_map
-                .get(&normalize_crate_name(&dep.workspace_package))
-            else {
+            let context = dep.context.clone();
+            let Some(&ws_idx) = self.package_map.get(&dep.workspace_package) else {
                 continue;
             };
             self.graph
@@ -640,7 +619,7 @@ impl GraphBuilder {
             let from = pkg_index.get(dep.from_pkg_id.as_str());
             let to = pkg_index.get(dep.to_pkg_id.as_str());
             if let (Some(&from_idx), Some(&to_idx)) = (from, to) {
-                let context = edge_context_from_dep_kinds(&dep.dep_kinds);
+                let context = dep.context.clone();
                 self.graph
                     .add_edge(from_idx, to_idx, EdgeWeight::PackageDep { context });
             }
@@ -650,9 +629,8 @@ impl GraphBuilder {
     fn resolve_node(&self, name: &str) -> Option<NodeIndex> {
         self.module_map
             .get(name)
-            .or_else(|| self.package_map.get(&normalize_crate_name(name)))
+            .or_else(|| self.package_map.get(name))
             .or_else(|| self.external_map.get(name))
-            .or_else(|| self.external_map.get(&name.replace('_', "-")))
             .copied()
     }
 }
@@ -914,6 +892,33 @@ mod tests {
         assert_eq!(cd, 1);
     }
 
+    /// The adapter decides how a name becomes a key; the graph only compares
+    /// keys. `Shown` would never normalize to `shown_key`.
+    #[test]
+    fn packages_resolve_by_the_key_the_adapter_delivers() {
+        let packages = vec![
+            PackageInfo {
+                key: "shown_key".into(),
+                ..package("Shown")
+            },
+            package_with_deps("user", &["shown_key"]),
+        ];
+        let modules = vec![
+            tree(ModuleInfo {
+                children: vec![module("inner", "shown_key::inner")],
+                ..module("shown_key", "shown_key")
+            }),
+            tree(ModuleInfo {
+                dependencies: vec![dep("shown_key", "inner", "src/lib.rs", 1)],
+                ..module("user", "user")
+            }),
+        ];
+        let graph = ArcGraph::build(&packages, &modules, None, false);
+
+        assert!(graph.node_weights().any(|node| node.name() == "Shown"));
+        assert_eq!(count_edges(&graph), (1, 1, 1));
+    }
+
     #[test]
     fn test_build_graph_module_deps() {
         let packages = vec![package("my_crate")];
@@ -1144,8 +1149,8 @@ mod tests {
             version: "1.0.0".into(),
             package_id: "serde 1.0.0 (registry+...)".into(),
             is_direct_dependency: true,
-            target_roots: TargetRoots::default(),
-            manifest: "/reg/serde/Cargo.toml".into(),
+            entry_files: vec![],
+            manifest: Some("/reg/serde/Cargo.toml".into()),
         };
         assert!(!node.is_package());
         assert!(node.is_external());
@@ -1163,8 +1168,8 @@ mod tests {
             version: "1.0.0".into(),
             package_id: "serde-pkg".into(),
             is_direct_dependency: true,
-            target_roots: TargetRoots::default(),
-            manifest: "/reg/serde/Cargo.toml".into(),
+            entry_files: vec![],
+            manifest: Some("/reg/serde/Cargo.toml".into()),
         });
         graph.add_edge(
             package_idx,
@@ -1249,8 +1254,8 @@ mod tests {
             version: "1.0.0".into(),
             package_id: "serde-pkg".into(),
             is_direct_dependency: true,
-            target_roots: TargetRoots::default(),
-            manifest: "/reg/serde/Cargo.toml".into(),
+            entry_files: vec![],
+            manifest: Some("/reg/serde/Cargo.toml".into()),
         });
         assert_eq!(graph.owning_package(ext_idx), ext_idx);
     }
@@ -1287,7 +1292,6 @@ mod tests {
     #[test]
     fn test_build_graph_with_externals() {
         use crate::model::{ExternalDep, ExternalPackageInfo, WorkspaceExternalDep};
-        use cargo_metadata::DependencyKind as DK;
 
         let packages = vec![package("my_crate")];
         let externals = ExternalsResult {
@@ -1296,28 +1300,27 @@ mod tests {
                     name: "serde".into(),
                     version: "1.0.0".into(),
                     package_id: "serde-pkg".into(),
-                    target_roots: TargetRoots::default(),
-                    manifest: "/reg/serde/Cargo.toml".into(),
+                    entry_files: vec![],
+                    manifest: Some("/reg/serde/Cargo.toml".into()),
                 },
                 ExternalPackageInfo {
                     name: "tokio".into(),
                     version: "1.0.0".into(),
                     package_id: "tokio-pkg".into(),
-                    target_roots: TargetRoots::default(),
-                    manifest: "/reg/tokio/Cargo.toml".into(),
+                    entry_files: vec![],
+                    manifest: Some("/reg/tokio/Cargo.toml".into()),
                 },
             ],
             workspace_deps: vec![WorkspaceExternalDep {
                 workspace_package: "my_crate".into(),
                 external_pkg_id: "serde-pkg".into(),
-                dep_kinds: vec![DK::Normal],
+                context: EdgeContext::production(),
             }],
             external_deps: vec![ExternalDep {
                 from_pkg_id: "serde-pkg".into(),
                 to_pkg_id: "tokio-pkg".into(),
-                dep_kinds: vec![DK::Normal],
+                context: EdgeContext::production(),
             }],
-            crate_name_map: std::collections::HashMap::new(),
         };
         let graph = ArcGraph::build(&packages, &[], Some(&externals), false);
         // 1 workspace + 2 external = 3 nodes
@@ -1328,15 +1331,17 @@ mod tests {
     }
 
     #[test]
-    fn test_package_nodes_carry_their_target_roots() {
+    fn test_package_nodes_carry_their_entry_files() {
         use crate::model::ExternalPackageInfo;
 
+        let app_entries = vec![
+            EntryFile::lib("/ws/app/src/lib.rs"),
+            EntryFile::bin("/ws/app/src/main.rs"),
+        ];
+        let serde_entries = vec![EntryFile::lib("/reg/serde-1.0.0/src/lib.rs")];
         let packages = vec![PackageInfo {
-            target_roots: TargetRoots {
-                lib_root: Some("/ws/app/src/lib.rs".into()),
-                bin_roots: vec!["/ws/app/src/main.rs".into()],
-            },
-            manifest: "/ws/app/Cargo.toml".into(),
+            entry_files: app_entries.clone(),
+            manifest: Some("/ws/app/Cargo.toml".into()),
             ..package("app")
         }];
         let externals = ExternalsResult {
@@ -1344,15 +1349,11 @@ mod tests {
                 name: "serde".into(),
                 version: "1.0.0".into(),
                 package_id: "serde-pkg".into(),
-                target_roots: TargetRoots {
-                    lib_root: Some("/reg/serde-1.0.0/src/lib.rs".into()),
-                    bin_roots: vec![],
-                },
-                manifest: "/reg/serde-1.0.0/Cargo.toml".into(),
+                entry_files: serde_entries.clone(),
+                manifest: Some("/reg/serde-1.0.0/Cargo.toml".into()),
             }],
             workspace_deps: vec![],
             external_deps: vec![],
-            crate_name_map: std::collections::HashMap::new(),
         };
         let graph = ArcGraph::build(&packages, &[], Some(&externals), false);
 
@@ -1365,24 +1366,21 @@ mod tests {
         };
         assert!(matches!(
             node("app"),
-            Node::Package { target_roots, manifest, .. }
-                if target_roots.lib_root.as_deref() == Some(Path::new("/ws/app/src/lib.rs"))
-                    && target_roots.bin_roots == [PathBuf::from("/ws/app/src/main.rs")]
-                    && manifest == Path::new("/ws/app/Cargo.toml")
+            Node::Package { entry_files, manifest, .. }
+                if *entry_files == app_entries
+                    && manifest.as_deref() == Some(Path::new("/ws/app/Cargo.toml"))
         ));
         assert!(matches!(
             node("serde"),
-            Node::ExternalPackage { target_roots, manifest, .. }
-                if target_roots.lib_root.as_deref() == Some(Path::new("/reg/serde-1.0.0/src/lib.rs"))
-                    && target_roots.bin_roots.is_empty()
-                    && manifest == Path::new("/reg/serde-1.0.0/Cargo.toml")
+            Node::ExternalPackage { entry_files, manifest, .. }
+                if *entry_files == serde_entries
+                    && manifest.as_deref() == Some(Path::new("/reg/serde-1.0.0/Cargo.toml"))
         ));
     }
 
     #[test]
     fn test_external_is_direct_dependency_flag() {
         use crate::model::{ExternalDep, ExternalPackageInfo, WorkspaceExternalDep};
-        use cargo_metadata::DependencyKind as DK;
 
         let packages = vec![package("my_crate")];
         let externals = ExternalsResult {
@@ -1391,28 +1389,27 @@ mod tests {
                     name: "serde".into(),
                     version: "1.0.0".into(),
                     package_id: "serde-pkg".into(),
-                    target_roots: TargetRoots::default(),
-                    manifest: "/reg/serde/Cargo.toml".into(),
+                    entry_files: vec![],
+                    manifest: Some("/reg/serde/Cargo.toml".into()),
                 },
                 ExternalPackageInfo {
                     name: "tokio".into(),
                     version: "1.0.0".into(),
                     package_id: "tokio-pkg".into(),
-                    target_roots: TargetRoots::default(),
-                    manifest: "/reg/tokio/Cargo.toml".into(),
+                    entry_files: vec![],
+                    manifest: Some("/reg/tokio/Cargo.toml".into()),
                 },
             ],
             workspace_deps: vec![WorkspaceExternalDep {
                 workspace_package: "my_crate".into(),
                 external_pkg_id: "serde-pkg".into(),
-                dep_kinds: vec![DK::Normal],
+                context: EdgeContext::production(),
             }],
             external_deps: vec![ExternalDep {
                 from_pkg_id: "serde-pkg".into(),
                 to_pkg_id: "tokio-pkg".into(),
-                dep_kinds: vec![DK::Normal],
+                context: EdgeContext::production(),
             }],
-            crate_name_map: std::collections::HashMap::new(),
         };
         let graph = ArcGraph::build(&packages, &[], Some(&externals), false);
 
@@ -1468,12 +1465,11 @@ mod tests {
                 name: "serde".into(),
                 version: "1.0.0".into(),
                 package_id: "serde-pkg".into(),
-                target_roots: TargetRoots::default(),
-                manifest: "/reg/serde/Cargo.toml".into(),
+                entry_files: vec![],
+                manifest: Some("/reg/serde/Cargo.toml".into()),
             }],
             workspace_deps: vec![],
             external_deps: vec![],
-            crate_name_map: std::collections::HashMap::new(),
         };
         let graph = ArcGraph::build(&packages, &[], Some(&externals), false);
         // Verify the external node exists

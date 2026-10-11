@@ -1,19 +1,19 @@
 //! Test-only constructors for model and graph types.
 
 use crate::graph::Node;
-use crate::model::{PackageInfo, TargetRoots};
+use crate::model::{EntryFile, PackageInfo};
 use petgraph::graph::NodeIndex;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// A package node at `/<name>` with no target roots, for tests that only need
+/// A package node at `/<name>` with no entry files, for tests that only need
 /// the graph shape.
 pub(crate) fn package_node(name: &str) -> Node {
     Node::Package {
         name: name.to_string(),
         path: PathBuf::from(format!("/{name}")),
-        target_roots: TargetRoots::default(),
-        manifest: PathBuf::from(format!("/{name}/Cargo.toml")),
+        entry_files: Vec::new(),
+        manifest: Some(PathBuf::from(format!("/{name}/Cargo.toml"))),
     }
 }
 
@@ -27,17 +27,17 @@ pub(crate) fn module_node(name: &str, package_idx: NodeIndex) -> Node {
     }
 }
 
-/// A package node at `/<name>` with the given target roots and manifest.
+/// A package node at `/<name>` with the given entry files and manifest.
 pub(crate) fn package_node_with_targets(
     name: &str,
-    target_roots: TargetRoots,
-    manifest: impl Into<PathBuf>,
+    entry_files: Vec<EntryFile>,
+    manifest: Option<&str>,
 ) -> Node {
     Node::Package {
         name: name.to_string(),
         path: PathBuf::from(format!("/{name}")),
-        target_roots,
-        manifest: manifest.into(),
+        entry_files,
+        manifest: manifest.map(PathBuf::from),
     }
 }
 
@@ -63,11 +63,13 @@ pub(crate) fn conventional_package(name: &str, path: impl Into<PathBuf>) -> Pack
     let existing = |p: PathBuf| p.exists().then_some(p);
     PackageInfo {
         name: name.to_string(),
-        target_roots: TargetRoots {
-            lib_root: existing(path.join("src/lib.rs")),
-            bin_roots: existing(path.join("src/main.rs")).into_iter().collect(),
-        },
-        manifest: path.join("Cargo.toml"),
+        key: name.replace('-', "_"),
+        entry_files: existing(path.join("src/lib.rs"))
+            .map(EntryFile::lib)
+            .into_iter()
+            .chain(existing(path.join("src/main.rs")).map(EntryFile::bin))
+            .collect(),
+        manifest: Some(path.join("Cargo.toml")),
         workspace_root: path.clone(),
         path,
         dependencies: Vec::new(),

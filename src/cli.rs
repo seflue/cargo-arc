@@ -8,15 +8,12 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use tracing_subscriber::EnvFilter;
 
-use crate::analyze::{
-    AnalysisBackend, FeatureConfig, ReExportMap, analyze_workspace, collect_crate_exports,
-    collect_crate_reexports, externals::analyze_externals, normalize_crate_name,
-};
+use crate::analyze::{FeatureConfig, LanguageAdapter, Rust};
 use crate::diagnose::RepresentativeCycles;
 use crate::graph::{ArcGraph, Reexports};
 use crate::hotspots;
 use crate::layout::{JumpTable, LayoutIR, LocationId, build_layout};
-use crate::model::{ModulePathMap, PackageExportMap, PackageInfo, WorkspacePackages};
+use crate::model::PackageInfo;
 use crate::render::{
     AnalysisSwitches, Appearance, Document, RenderConfig, THEMES, Theme, html_page, project_name,
     render, render_hotspots,
@@ -315,13 +312,15 @@ fn analyze_for_diagram(
     #[cfg(not(feature = "hir"))]
     let use_hir = false;
 
-    let (graph, workspace_root, unparsed) = build_dependency_graph(
-        &args.common.manifest_path,
-        &feature_config,
+    let adapter = Rust {
+        manifest_path: args.common.manifest_path.clone(),
+        feature_config,
         use_hir,
-        switches.externals,
-        args.transitive_deps,
-    )?;
+        externals: switches.externals,
+        transitive_deps: args.transitive_deps,
+    };
+    let (graph, workspace_root, unparsed) =
+        build_dependency_graph(&adapter, adapter.feature_config.include_tests)?;
     let reexports = Reexports::from(args.common.include_reexports);
     tracing::debug!("phase: cycle detection start");
     let analysis = graph.production_subgraph(reexports).representative_cycles();
@@ -562,20 +561,16 @@ fn run_hotspots(args: &ArcCommand, hotspots_args: &HotspotsArgs) -> Result<Judgm
 
 /// Run the `check` subcommand: load rules, evaluate against graph, report violations.
 fn run_check(check_args: &CheckArgs, common: &CommonArgs) -> Result<Judgment> {
-    let feature_config = build_feature_config(common);
-
-    #[cfg(feature = "hir")]
-    let use_hir = false; // check mode doesn't support HIR
-    #[cfg(not(feature = "hir"))]
-    let use_hir = false;
-
-    let (graph, _workspace_root, _unparsed) = build_dependency_graph(
-        &common.manifest_path,
-        &feature_config,
-        use_hir,
-        false,
-        false,
-    )?;
+    // Check mode runs neither HIR nor externals.
+    let adapter = Rust {
+        manifest_path: common.manifest_path.clone(),
+        feature_config: build_feature_config(common),
+        use_hir: false,
+        externals: false,
+        transitive_deps: false,
+    };
+    let (graph, _workspace_root, _unparsed) =
+        build_dependency_graph(&adapter, adapter.feature_config.include_tests)?;
 
     let manifest_dir = resolve_repo_path(&common.manifest_path);
     let default_rules_path = manifest_dir.join("arc-rules.toml");
@@ -755,102 +750,26 @@ fn workspace_root_of(packages: &[PackageInfo]) -> Option<PathBuf> {
     packages.first().map(|krate| krate.workspace_root.clone())
 }
 
+/// Run `adapter` and build the dependency graph from what it delivers, along
+/// with the workspace root and the module files that did not parse.
+/// `include_tests` decides whether dev-dependencies become shown test edges.
 fn build_dependency_graph(
-    manifest_path: &Path,
-    feature_config: &FeatureConfig,
-    use_hir: bool,
-    externals: bool,
-    transitive_deps: bool,
+    adapter: &dyn LanguageAdapter,
+    include_tests: bool,
 ) -> Result<(ArcGraph, Option<PathBuf>, Vec<PathBuf>)> {
-    let packages = analyze_workspace(manifest_path, feature_config)?;
-    tracing::debug!("phase: workspace analyzed ({} crates)", packages.len());
-    let workspace_root = workspace_root_of(&packages);
-    let workspace_packages: WorkspacePackages =
-        packages.iter().map(|krate| krate.name.clone()).collect();
-    let backend = AnalysisBackend::new(manifest_path, feature_config, use_hir)?;
-
-    let all_module_paths: ModulePathMap = packages
-        .iter()
-        .map(|krate| {
-            let name = normalize_crate_name(&krate.name);
-            let paths = backend.collect_module_paths(krate);
-            (name, paths)
-        })
-        .collect();
-    tracing::debug!("phase: module paths collected");
-
-    let package_exports: PackageExportMap = packages
-        .iter()
-        .map(|krate| {
-            let name = normalize_crate_name(&krate.name);
-            let exports = collect_crate_exports(krate);
-            (name, exports)
-        })
-        .collect();
-    tracing::debug!("phase: crate exports collected");
-
-    let reexport_map: ReExportMap = packages
-        .iter()
-        .map(|krate| {
-            let name = normalize_crate_name(&krate.name);
-            let exports = collect_crate_reexports(
-                krate,
-                &all_module_paths,
-                &workspace_packages,
-                &package_exports,
-            );
-            (name, exports)
-        })
-        .collect();
-    tracing::debug!("phase: reexport map collected");
-
-    // Run externals analysis before module analysis so crate_name_map
-    // is available for use-parser resolution of external package imports.
-    let ext_result = if externals {
-        use cargo_metadata::MetadataCommand;
-        let metadata = MetadataCommand::new().manifest_path(manifest_path).exec()?;
-        Some(analyze_externals(&metadata, transitive_deps))
-    } else {
-        None
-    };
-
-    let empty_name_map = std::collections::HashMap::new();
-    let modules: Vec<_> = packages
-        .iter()
-        .filter_map(|krate| {
-            let name = normalize_crate_name(&krate.name);
-            tracing::debug!("analyzing crate: {name}");
-            let ext_names = ext_result
-                .as_ref()
-                .and_then(|r| r.crate_name_map.get(&name))
-                .unwrap_or(&empty_name_map);
-            match backend.analyze_modules(
-                krate,
-                &workspace_packages,
-                &all_module_paths,
-                &package_exports,
-                &reexport_map,
-                ext_names,
-            ) {
-                Ok(tree) => Some(tree),
-                Err(err) => {
-                    tracing::warn!("Skipping crate {}: {err}", krate.name);
-                    None
-                }
-            }
-        })
-        .collect();
-    tracing::debug!("phase: all crates analyzed");
-    let unparsed = modules
+    let analysis = adapter.analyze()?;
+    let workspace_root = workspace_root_of(&analysis.packages);
+    let unparsed = analysis
+        .modules
         .iter()
         .flat_map(|tree| tree.unparsed.iter().cloned())
         .collect();
 
     let graph = ArcGraph::build(
-        &packages,
-        &modules,
-        ext_result.as_ref(),
-        feature_config.include_tests,
+        &analysis.packages,
+        &analysis.modules,
+        analysis.externals.as_ref(),
+        include_tests,
     );
     tracing::debug!(
         "phase: graph built ({} nodes, {} edges)",
@@ -1195,17 +1114,83 @@ mod tests {
 
     // ===== workspace root beside the graph =====
 
+    fn rust_adapter(manifest_path: PathBuf) -> Rust {
+        Rust {
+            manifest_path,
+            feature_config: FeatureConfig::default(),
+            use_hir: false,
+            externals: false,
+            transitive_deps: false,
+        }
+    }
+
     #[test]
     fn build_dependency_graph_returns_the_workspace_root() {
         let manifest =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multi_crate/Cargo.toml");
         let (_graph, workspace_root, _unparsed) =
-            build_dependency_graph(&manifest, &FeatureConfig::default(), false, false, false)
-                .unwrap();
+            build_dependency_graph(&rust_adapter(manifest), false).unwrap();
         assert_eq!(
             workspace_root,
             Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multi_crate"))
         );
+    }
+
+    /// An adapter for another language only has to deliver the model; the
+    /// graph, root and unparsed files come from it alone.
+    #[test]
+    fn any_adapter_feeds_the_graph() {
+        use crate::model::{Analysis, ModuleInfo, ModuleTree};
+
+        struct Fake;
+        impl LanguageAdapter for Fake {
+            fn analyze(&self) -> Result<Analysis> {
+                let package = PackageInfo {
+                    name: "plugin".into(),
+                    key: "plugin".into(),
+                    path: PathBuf::from("/repo/lua/plugin"),
+                    workspace_root: PathBuf::from("/repo"),
+                    entry_files: vec![],
+                    manifest: None,
+                    dependencies: vec![],
+                    dev_dependencies: vec![],
+                };
+                let child = ModuleInfo {
+                    name: "util".into(),
+                    full_path: "plugin::util".into(),
+                    file: Some(PathBuf::from("/repo/lua/plugin/util.lua")),
+                    children: vec![],
+                    dependencies: vec![],
+                    definitions: HashMap::new(),
+                };
+                let root = ModuleInfo {
+                    name: "plugin".into(),
+                    full_path: "plugin".into(),
+                    file: None,
+                    children: vec![child],
+                    dependencies: vec![],
+                    definitions: HashMap::new(),
+                };
+                Ok(Analysis {
+                    packages: vec![package],
+                    modules: vec![ModuleTree {
+                        root,
+                        unparsed: vec![PathBuf::from("/repo/lua/plugin/broken.lua")],
+                    }],
+                    externals: None,
+                })
+            }
+        }
+
+        let (graph, workspace_root, unparsed) = build_dependency_graph(&Fake, false).unwrap();
+
+        let names: Vec<String> = graph
+            .node_indices()
+            .map(|idx| graph.qualified_name(idx))
+            .collect();
+        assert_eq!(names, vec!["plugin", "plugin::util"]);
+        assert_eq!(workspace_root, Some(PathBuf::from("/repo")));
+        assert_eq!(unparsed, vec![PathBuf::from("/repo/lua/plugin/broken.lua")]);
     }
 
     #[test]
@@ -1215,14 +1200,15 @@ mod tests {
 
     #[test]
     fn workspace_root_of_reads_the_first_packages_root() {
-        use crate::model::{PackageInfo, TargetRoots};
+        use crate::model::PackageInfo;
 
         let krate = PackageInfo {
             name: "a".into(),
+            key: "a".into(),
             path: PathBuf::from("/ws/a"),
             workspace_root: PathBuf::from("/ws"),
-            target_roots: TargetRoots::default(),
-            manifest: PathBuf::from("/ws/a/Cargo.toml"),
+            entry_files: vec![],
+            manifest: Some(PathBuf::from("/ws/a/Cargo.toml")),
             dependencies: vec![],
             dev_dependencies: vec![],
         };
@@ -1362,8 +1348,7 @@ mod tests {
         let manifest =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multi_crate/Cargo.toml");
         let (graph, workspace_root, _unparsed) =
-            build_dependency_graph(&manifest, &FeatureConfig::default(), false, false, false)
-                .unwrap();
+            build_dependency_graph(&rust_adapter(manifest), false).unwrap();
         (graph, workspace_root.unwrap())
     }
 

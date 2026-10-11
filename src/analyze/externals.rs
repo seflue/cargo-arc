@@ -1,6 +1,8 @@
 //! External crate dependency analysis using cargo metadata.
 
-use crate::model::{ExternalDep, ExternalPackageInfo, ExternalsResult, WorkspaceExternalDep};
+use crate::model::{
+    EdgeContext, ExternalDep, ExternalPackageInfo, ExternalsResult, TestKind, WorkspaceExternalDep,
+};
 use cargo_metadata::{DependencyKind, Metadata};
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -18,27 +20,32 @@ fn build_external_crate_info(pkg: &cargo_metadata::Package) -> ExternalPackageIn
         name: pkg.name.to_string(),
         version: pkg.version.to_string(),
         package_id: pkg.id.repr.clone(),
-        target_roots: super::workspace::target_roots(pkg),
-        manifest: pkg.manifest_path.clone().into(),
+        entry_files: super::workspace::entry_files(pkg),
+        manifest: Some(pkg.manifest_path.clone().into()),
     }
 }
 
-fn collect_dep_kinds(dep: &cargo_metadata::NodeDep) -> Vec<DependencyKind> {
-    dep.dep_kinds
-        .iter()
-        .filter(|dk| {
-            matches!(
-                dk.kind,
-                DependencyKind::Normal | DependencyKind::Development
-            )
-        })
-        .map(|dk| dk.kind)
-        .collect()
+/// Production when any kind is normal, a test edge when only dev kinds
+/// remain, `None` for a build-only dependency.
+fn edge_context(dep: &cargo_metadata::NodeDep) -> Option<EdgeContext> {
+    let kinds = || dep.dep_kinds.iter().map(|dk| dk.kind);
+    if kinds().any(|kind| kind == DependencyKind::Normal) {
+        Some(EdgeContext::production())
+    } else if kinds().any(|kind| kind == DependencyKind::Development) {
+        Some(EdgeContext::test(TestKind::Unit))
+    } else {
+        None
+    }
 }
+
+/// `workspace_crate_name` -> (`code_name` -> `package_id`).
+/// Per-workspace-package map because different workspace packages can depend on
+/// different versions of the same external package.
+pub(crate) type CrateNameMap = HashMap<String, HashMap<String, String>>;
 
 struct ReachableExternals {
     seen: HashMap<String, ExternalPackageInfo>,
-    crate_name_map: HashMap<String, HashMap<String, String>>,
+    crate_name_map: CrateNameMap,
 }
 
 /// BFS from workspace direct dependencies to collect all transitively reachable
@@ -56,7 +63,7 @@ fn collect_reachable_externals(
         .collect();
 
     let mut seen: HashMap<String, ExternalPackageInfo> = HashMap::new();
-    let mut crate_name_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+    let mut crate_name_map = CrateNameMap::new();
     let mut bfs_queue: VecDeque<String> = VecDeque::new();
 
     // Seed: workspace nodes' direct external dependencies
@@ -120,18 +127,22 @@ fn collect_reachable_externals(
     }
 }
 
-/// Analyze external crate dependencies from cargo metadata.
+/// Analyze external crate dependencies from cargo metadata, and map each
+/// workspace package's code-side names of them to their package ids.
 ///
 /// When `transitive` is false, only direct workspace→external edges are collected.
 /// When true, also collects transitive extern→extern edges via full BFS.
-pub(crate) fn analyze_externals(metadata: &Metadata, transitive: bool) -> ExternalsResult {
+pub(crate) fn analyze_externals(
+    metadata: &Metadata,
+    transitive: bool,
+) -> (ExternalsResult, CrateNameMap) {
     let Some(resolve) = metadata.resolve.as_ref() else {
-        return ExternalsResult {
+        let empty = ExternalsResult {
             packages: Vec::new(),
             external_deps: Vec::new(),
             workspace_deps: Vec::new(),
-            crate_name_map: HashMap::new(),
         };
+        return (empty, CrateNameMap::new());
     };
 
     let workspace_member_ids: HashSet<&str> = metadata
@@ -164,10 +175,9 @@ pub(crate) fn analyze_externals(metadata: &Metadata, transitive: bool) -> Extern
                 continue;
             }
 
-            let dep_kinds = collect_dep_kinds(dep);
-            if dep_kinds.is_empty() {
+            let Some(context) = edge_context(dep) else {
                 continue;
-            }
+            };
 
             if is_workspace {
                 let ws_name = pkg_by_id.get(node_id).map_or("?", |p| p.name.as_str());
@@ -175,30 +185,30 @@ pub(crate) fn analyze_externals(metadata: &Metadata, transitive: bool) -> Extern
                 workspace_deps.push(WorkspaceExternalDep {
                     workspace_package: crate::model::normalize_crate_name(ws_name),
                     external_pkg_id: dep_id.to_string(),
-                    dep_kinds,
+                    context,
                 });
             } else if transitive && reachable.seen.contains_key(node_id) {
                 external_deps.push(ExternalDep {
                     from_pkg_id: node_id.to_string(),
                     to_pkg_id: dep_id.to_string(),
-                    dep_kinds,
+                    context,
                 });
             }
         }
     }
 
-    ExternalsResult {
+    let result = ExternalsResult {
         packages: reachable.seen.into_values().collect(),
         external_deps,
         workspace_deps,
-        crate_name_map: reachable.crate_name_map,
-    }
+    };
+    (result, reachable.crate_name_map)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::TargetRoots;
+    use crate::model::{EdgeContext, EntryKind, TestKind};
     use cargo_metadata::MetadataCommand;
     use std::path::Path;
 
@@ -210,45 +220,9 @@ mod tests {
     }
 
     #[test]
-    fn test_externals_result_construction() {
-        let result = ExternalsResult {
-            packages: vec![ExternalPackageInfo {
-                name: "serde".to_string(),
-                version: "1.0.0".to_string(),
-                package_id: "serde 1.0.0 (registry+...)".to_string(),
-                target_roots: TargetRoots::default(),
-                manifest: "/reg/serde-1.0.0/Cargo.toml".into(),
-            }],
-            external_deps: vec![ExternalDep {
-                from_pkg_id: "serde 1.0.0".to_string(),
-                to_pkg_id: "serde_derive 1.0.0".to_string(),
-                dep_kinds: vec![DependencyKind::Normal],
-            }],
-            workspace_deps: vec![WorkspaceExternalDep {
-                workspace_package: "my_crate".to_string(),
-                external_pkg_id: "serde 1.0.0".to_string(),
-                dep_kinds: vec![DependencyKind::Normal],
-            }],
-            crate_name_map: {
-                let mut outer = HashMap::new();
-                let mut inner = HashMap::new();
-                inner.insert("serde".to_string(), "serde 1.0.0".to_string());
-                outer.insert("my_crate".to_string(), inner);
-                outer
-            },
-        };
-
-        assert_eq!(result.packages.len(), 1);
-        assert_eq!(result.packages[0].name, "serde");
-        assert_eq!(result.external_deps.len(), 1);
-        assert_eq!(result.workspace_deps.len(), 1);
-        assert_eq!(result.crate_name_map["my_crate"]["serde"], "serde 1.0.0");
-    }
-
-    #[test]
     fn test_analyze_externals_self() {
         let metadata = own_metadata();
-        let result = analyze_externals(&metadata, false);
+        let (result, crate_name_map) = analyze_externals(&metadata, false);
 
         // cargo-arc has external deps like petgraph, syn, clap
         assert!(!result.packages.is_empty(), "should find external crates");
@@ -260,11 +234,11 @@ mod tests {
         // cargo_metadata itself should be in the crate_name_map
         let ws_name = crate::model::normalize_crate_name("cargo-arc");
         assert!(
-            result.crate_name_map.contains_key(&ws_name),
+            crate_name_map.contains_key(&ws_name),
             "crate_name_map should contain cargo_arc, got keys: {:?}",
-            result.crate_name_map.keys().collect::<Vec<_>>()
+            crate_name_map.keys().collect::<Vec<_>>()
         );
-        let inner = &result.crate_name_map[&ws_name];
+        let inner = &crate_name_map[&ws_name];
         assert!(
             inner.contains_key("cargo_metadata"),
             "inner map should contain cargo_metadata, got keys: {:?}",
@@ -275,7 +249,7 @@ mod tests {
     #[test]
     fn test_analyze_externals_known_crates() {
         let metadata = own_metadata();
-        let result = analyze_externals(&metadata, false);
+        let (result, _) = analyze_externals(&metadata, false);
 
         let crate_names: Vec<&str> = result.packages.iter().map(|c| c.name.as_str()).collect();
         assert!(
@@ -295,41 +269,43 @@ mod tests {
     #[test]
     fn test_external_crate_keeps_its_targets() {
         let metadata = own_metadata();
-        let result = analyze_externals(&metadata, false);
+        let (result, _) = analyze_externals(&metadata, false);
 
         let petgraph = result
             .packages
             .iter()
             .find(|c| c.name == "petgraph")
             .expect("petgraph is a dependency");
-        let lib_root = petgraph
-            .target_roots
-            .lib_root
-            .as_ref()
-            .expect("petgraph has a lib target");
-        assert!(lib_root.is_absolute(), "got {}", lib_root.display());
+        let [lib_root] = petgraph.entry_files.as_slice() else {
+            panic!(
+                "petgraph has one entry file, got {:?}",
+                petgraph.entry_files
+            );
+        };
+        assert_eq!(lib_root.kind, EntryKind::Lib);
         assert!(
-            lib_root.ends_with("src/lib.rs"),
+            lib_root.file.is_absolute(),
             "got {}",
-            lib_root.display()
-        );
-        assert!(petgraph.target_roots.bin_roots.is_empty());
-        assert!(
-            petgraph.manifest.is_absolute(),
-            "got {}",
-            petgraph.manifest.display()
+            lib_root.file.display()
         );
         assert!(
-            petgraph.manifest.ends_with("Cargo.toml"),
+            lib_root.file.ends_with("src/lib.rs"),
             "got {}",
-            petgraph.manifest.display()
+            lib_root.file.display()
+        );
+        let manifest = petgraph.manifest.as_ref().expect("a manifest");
+        assert!(manifest.is_absolute(), "got {}", manifest.display());
+        assert!(
+            manifest.ends_with("Cargo.toml"),
+            "got {}",
+            manifest.display()
         );
     }
 
     #[test]
     fn test_analyze_externals_no_workspace_crates_in_externals() {
         let metadata = own_metadata();
-        let result = analyze_externals(&metadata, false);
+        let (result, _) = analyze_externals(&metadata, false);
 
         // cargo-arc itself should NOT appear as an external crate
         let external_names: Vec<&str> = result.packages.iter().map(|c| c.name.as_str()).collect();
@@ -340,27 +316,33 @@ mod tests {
     }
 
     #[test]
-    fn test_analyze_externals_filters_build_only_deps() {
+    fn dev_only_externals_arrive_as_test_edges() {
         let metadata = own_metadata();
-        let result = analyze_externals(&metadata, false);
+        let (result, _) = analyze_externals(&metadata, false);
+        let context_to = |name: &str| {
+            let id = &result
+                .packages
+                .iter()
+                .find(|p| p.name == name)
+                .expect("a dependency of cargo-arc")
+                .package_id;
+            result
+                .workspace_deps
+                .iter()
+                .find(|dep| &dep.external_pkg_id == id)
+                .expect("a direct dependency")
+                .context
+                .clone()
+        };
 
-        // All workspace_deps should have Normal or Development kinds, not Build-only
-        for dep in &result.workspace_deps {
-            assert!(
-                dep.dep_kinds
-                    .iter()
-                    .any(|k| matches!(k, DependencyKind::Normal | DependencyKind::Development)),
-                "workspace dep to {} should have Normal or Dev kind, got: {:?}",
-                dep.external_pkg_id,
-                dep.dep_kinds
-            );
-        }
+        assert_eq!(context_to("petgraph"), EdgeContext::production());
+        assert_eq!(context_to("tempfile"), EdgeContext::test(TestKind::Unit));
     }
 
     #[test]
     fn test_transitive_no_orphan_nodes() {
         let metadata = own_metadata();
-        let result = analyze_externals(&metadata, true);
+        let (result, _) = analyze_externals(&metadata, true);
 
         assert!(
             !result.external_deps.is_empty(),

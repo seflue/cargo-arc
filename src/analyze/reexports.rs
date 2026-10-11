@@ -46,7 +46,11 @@ pub(crate) fn collect_crate_reexports(
     let mut result = HashMap::new();
     let mut out_of_module_impls = Vec::new();
 
-    for root_file in crate_info.target_roots.files() {
+    for root_file in crate_info
+        .entry_files
+        .iter()
+        .map(|entry| entry.file.as_path())
+    {
         walk_collect_reexports(&ctx, root_file, "", &mut result, &mut out_of_module_impls);
     }
 
