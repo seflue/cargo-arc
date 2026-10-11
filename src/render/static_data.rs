@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 // === Serialization structs ===
 
 #[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "camelCase")]
 struct StaticData {
     nodes: BTreeMap<String, NodeData>,
@@ -21,6 +22,7 @@ struct StaticData {
     clusters: BTreeMap<String, ClusterData>,
     symbol_localities: BTreeMap<String, BTreeMap<String, SymbolLocalityData>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     expand_level: Option<usize>,
     theme: ThemeData,
 }
@@ -30,6 +32,7 @@ struct StaticData {
 /// Shared with `render::hotspots`, which carries the same block in its own
 /// `STATIC_DATA.theme`.
 #[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub(super) struct ThemeData {
     shadow_opacity: &'static str,
@@ -38,6 +41,7 @@ pub(super) struct ThemeData {
 }
 
 #[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub(super) struct ThemeName {
     name: &'static str,
     label: &'static str,
@@ -62,6 +66,7 @@ impl ThemeData {
 }
 
 #[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 struct NodeData {
     #[serde(rename = "type")]
@@ -71,6 +76,7 @@ struct NodeData {
     /// hotspot map keys its own data by the same path); absent for a node
     /// with no module or manifest target (an external package or section).
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     file: Option<String>,
     parent: Option<String>,
     x: f32,
@@ -80,10 +86,13 @@ struct NodeData {
     has_children: bool,
     nesting: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     scc_id: Option<usize>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(test, ts(as = "Option<Vec<TargetData>>", optional))]
     targets: Vec<TargetData>,
 }
 
@@ -92,6 +101,7 @@ struct NodeData {
 /// id it resolves through, in the `JumpTable` `build_layout` returns.
 /// Shared with `render::hotspots`, whose own leaf targets use the same shape.
 #[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub(super) struct TargetData {
     pub(super) kind: TargetKind,
@@ -100,6 +110,7 @@ pub(super) struct TargetData {
 }
 
 #[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 struct ArcData {
     from: String,
@@ -107,12 +118,15 @@ struct ArcData {
     context: ArcContext,
     usages: Vec<SymbolUsageGroup>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(test, ts(as = "Option<Vec<usize>>", optional))]
     cycle_ids: Vec<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     scc_id: Option<usize>,
 }
 
 #[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 struct ArcContext {
     kind: String,
@@ -132,6 +146,7 @@ impl From<&crate::model::EdgeContext> for ArcContext {
 
 /// A group of usage locations for a single symbol
 #[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 struct SymbolUsageGroup {
     symbol: String,
@@ -140,17 +155,20 @@ struct SymbolUsageGroup {
     /// The cycle view drops these: a re-exported name is not logic coupling,
     /// so it is not part of the cycle (ADR-022).
     #[serde(skip_serializing_if = "is_false")]
+    #[cfg_attr(test, ts(as = "Option<bool>", optional))]
     via_reexport: bool,
     locations: Vec<UsageLocation>,
     /// Where the provider defines the symbol. Present only with jump ids
     /// (`RenderConfig::with_jump_ids`) and only when the definition is known.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     definition: Option<DefinitionData>,
 }
 
 /// A symbol's definition site: the provider's module target name, the line,
 /// and the id it resolves through.
 #[derive(Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 struct DefinitionData {
     file: String,
     line: usize,
@@ -164,14 +182,17 @@ fn is_false(b: &bool) -> bool {
 
 /// A single usage location (file + line number)
 #[derive(Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 struct UsageLocation {
     file: String,
     line: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     jump: Option<LocationId>,
 }
 
 #[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 struct CycleData {
     nodes: Vec<String>,
@@ -180,6 +201,7 @@ struct CycleData {
 }
 
 #[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 struct ClusterData {
     #[serde(rename = "package")]
@@ -190,6 +212,7 @@ struct ClusterData {
 }
 
 #[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 struct CycleArcData {
     from_id: String,
@@ -208,10 +231,12 @@ fn cycle_arc_data(edge: &CyclicEdgeInfo) -> CycleArcData {
 /// Consumer locality of one symbol of a provider. `module` names the common
 /// home for `singleConsumer`/`commonAncestor`; absent for `packageWide`.
 #[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 struct SymbolLocalityData {
     locality: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     module: Option<String>,
     consumers: Vec<String>,
 }

@@ -1,13 +1,7 @@
 {
-  "compilerOptions": {
-    "module": "esnext",
-    "target": "esnext",
-    "lib": ["esnext", "dom", "dom.iterable"],
-    "checkJs": true,
-    "noEmit": true,
-    "noImplicitAny": false,
-    "typeRoots": []
-  },
-  "include": ["js/**/*.js", "js/globals.d.ts"],
-  "exclude": ["js/**/*.test.js", "js/dist"]
+  "files": [],
+  "references": [
+    { "path": "./jsconfig.arc.json" },
+    { "path": "./jsconfig.hotspot.json" }
+  ]
 }

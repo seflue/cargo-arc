@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 /// Identifies one entry in a [`JumpTable`]. Serialized as a plain number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub(crate) struct LocationId(usize);
 
 impl From<usize> for LocationId {
@@ -19,6 +20,7 @@ impl From<usize> for LocationId {
 
 /// Which file a jump target resolves to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum TargetKind {
     Lib,

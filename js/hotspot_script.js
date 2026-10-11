@@ -125,11 +125,7 @@ function buildHotspotMap(themeControl) {
   const mapContent = DomAdapter.getElementById('map-content');
   if (!svg || !mapContent) return null;
 
-  // STATIC_DATA's ambient type is shared with the arc page; this page's own
-  // nodes are `render::hotspots::HotspotCircleData`, not `StaticNodeData`.
-  const nodes = /** @type {Record<string, HotspotCircleData>} */ (
-    /** @type {unknown} */ (STATIC_DATA.nodes)
-  );
+  const nodes = STATIC_DATA.nodes;
   const rootKey = HotspotTree.rootKey(nodes);
   // The window-sized layout: the viewBox, the toolbar and sidebar rects,
   // and the square area left over for the packed circles. Measured off the
