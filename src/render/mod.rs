@@ -107,7 +107,7 @@ pub fn render(ir: &LayoutIR, config: &RenderConfig) -> String {
         config.row_height,
         visible_nodes.as_ref(),
     ));
-    // Above every arc and hit-area layer so the hover popover js/jump_icons.js
+    // Above every arc and hit-area layer so the hover popover js/jump_icons.ts
     // builds there stays under the pointer; empty unless `arc ui` serves the page.
     svg.push_str("  <g id=\"jump-popover-layer\"></g>\n");
     svg.push_str("  </g>\n");

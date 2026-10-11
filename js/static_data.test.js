@@ -665,7 +665,7 @@ describe('StaticData', () => {
   });
 
   describe('expand-level init logic (collapsed set population)', () => {
-    // Replicate the init-block logic from svg_script.js:
+    // Replicate the init-block logic from svg_script.ts:
     // for each node, if hasChildren && nesting >= expandLevel → collapse it
     function populateCollapsed(expandLvl) {
       const collapsed = new Set();

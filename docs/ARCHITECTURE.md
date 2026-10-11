@@ -26,7 +26,7 @@ src/
 ## Filter visibility
 
 Filtering hides elements instead of removing them from the DOM.
-Node filters and arc filters write the same class for that, `hidden-by-filter` (`src/render/constants.rs`, `js/svg_script.js`).
+Node filters and arc filters write the same class for that, `hidden-by-filter` (`src/render/constants.rs`, `js/svg_script.ts`).
 
 Arc visibility is recomputed from the whole set of active filters rather than toggled per filter, so the result does not depend on the order the checkboxes were clicked.
 The recompute reads the node filters as well and leaves an arc hidden while either endpoint is hidden.

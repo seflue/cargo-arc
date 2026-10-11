@@ -8,6 +8,6 @@ export type RelationClasses = { highlightedArc: string, highlightedArrow: string
  */
 clusterModeOn: string, 
 /**
- * Root state class while the page scrolls, set by `js/scroll_state.js`.
+ * Root state class while the page scrolls, set by `js/scroll_state.ts`.
  */
 scrolling: string, };

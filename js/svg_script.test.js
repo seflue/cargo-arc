@@ -10,7 +10,7 @@ import { restoreAll, substitute } from './test_support.js';
 
 afterAll(restoreAll);
 
-// svg_script.js's browser-only init only runs once `document` exists
+// svg_script.ts's browser-only init only runs once `document` exists
 // (below); a `document` another test file's own fixture left on `global`
 // would make this one-time load of its pure exports run that init here,
 // against whatever placeholders happen to be set - so `document` is cleared
@@ -25,8 +25,8 @@ if (hadDocument) global.document = savedDocument;
 // have a real default to compare against instead of a hardcoded guess.
 const DEFAULT_TOOLBAR_HEIGHT = SidebarLogic._toolbarHeight;
 
-// svg_script.js's own init wires these hooks on the real, shared SidebarLogic
-// module object to this run's AppState, so sidebar.js's own defaults have to
+// svg_script.ts's own init wires these hooks on the real, shared SidebarLogic
+// module object to this run's AppState, so sidebar.ts's own defaults have to
 // be put back for whichever test file runs next.
 function resetSidebarHooks() {
   for (const hook of [
@@ -226,7 +226,7 @@ describe('ArcLogic', () => {
 // === The page's own init: `?select=` on arrival, and its precedence over a
 // restored view ===
 //
-// The rest of svg_script.js lives inside a browser-only IIFE
+// The rest of svg_script.ts lives inside a browser-only IIFE
 // (`if (typeof document !== 'undefined')`), never exported, so exercising it
 // means building the same kind of DOM/global fixture
 // hotspot_script.test.js's `buildHotspotMap` tests already use for the
@@ -247,7 +247,7 @@ function makeSvgPageStaticData() {
       light: [{ name: 'latte', label: 'Latte' }],
       dark: [{ name: 'mocha', label: 'Mocha' }],
     },
-    // The class names svg_script.js and the sidebar read; values are arbitrary
+    // The class names svg_script.ts and the sidebar read; values are arbitrary
     // but must be present; several are dereferenced unconditionally at
     // module scope regardless of what the fixture below wires up.
     classes: {
@@ -395,7 +395,7 @@ function makeSvgPageStaticData() {
 }
 
 /**
- * Builds a fresh DOM/global fixture and requires svg_script.js against it
+ * Builds a fresh DOM/global fixture and requires svg_script.ts against it
  * (a cache-cleared, fresh module evaluation, so each test gets its own
  * closures and its own AppState). Returns the pieces a test asserts on:
  * the node rects, the sidebar's own content div, and every `window.scrollTo`
@@ -494,7 +494,7 @@ function loadSvgPage({
   global.STATIC_DATA = makeSvgPageStaticData();
   if (expandLevel !== undefined) global.STATIC_DATA.expandLevel = expandLevel;
 
-  // svg_script.js's own runtime placeholders, normally substituted by
+  // svg_script.ts's own runtime placeholders, normally substituted by
   // render.rs before the page ships.
   global.__ROW_HEIGHT__ = 24;
   global.__MARGIN__ = 20;
@@ -514,7 +514,7 @@ function loadSvgPage({
   };
 }
 
-describe("`?select=` on arrival (svg_script.js's init)", () => {
+describe("`?select=` on arrival (svg_script.ts's init)", () => {
   afterEach(resetSidebarHooks);
 
   test('selects a module node that has children, not only a leaf, and scrolls to it', () => {
@@ -535,7 +535,7 @@ describe("`?select=` on arrival (svg_script.js's init)", () => {
   test('applies on top of a restored view left over from an abandoned recompute, not only without one', () => {
     // A view stored before a recompute's reload, selecting `mod_a` - still
     // in sessionStorage because the user left for the hotspot map instead
-    // of waiting for the reload (svg_script.js's own comment on this).
+    // of waiting for the reload (svg_script.ts's own comment on this).
     const storedView = {
       collapsed: [],
       selection: { type: 'node', key: 'root/mod_a' },
@@ -571,7 +571,7 @@ describe("`?select=` on arrival (svg_script.js's init)", () => {
   });
 });
 
-describe("`?select=` on the page host (svg_script.js's init)", () => {
+describe("`?select=` on the page host (svg_script.ts's init)", () => {
   afterEach(resetSidebarHooks);
 
   test('places the sidebar by style.top, not by a y attribute', () => {
@@ -585,7 +585,7 @@ describe("`?select=` on the page host (svg_script.js's init)", () => {
   });
 });
 
-describe("the scroll listener on each overlay host (svg_script.js's init)", () => {
+describe("the scroll listener on each overlay host (svg_script.ts's init)", () => {
   afterEach(resetSidebarHooks);
 
   /** Calls every scroll listener the init registered. */
@@ -629,7 +629,7 @@ describe("the scroll listener on each overlay host (svg_script.js's init)", () =
 describe.each([
   ['svg'],
   ['page'],
-])("the SVG's size around a wrapped toolbar on the %s host (svg_script.js's init)", (overlays) => {
+])("the SVG's size around a wrapped toolbar on the %s host (svg_script.ts's init)", (overlays) => {
   afterEach(() => {
     resetSidebarHooks();
     // syncToolbarHeight() assigns this on the real, shared SidebarLogic
@@ -667,7 +667,7 @@ describe.each([
   });
 });
 
-// === Arc visibility across a relayout (svg_script.js's init) ===
+// === Arc visibility across a relayout (svg_script.ts's init) ===
 //
 // A relayout no longer needs to recover an arc Rust skipped rendering
 // (ca-0451: Rust now renders every arc, hidden ones included, by class), so

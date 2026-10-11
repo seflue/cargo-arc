@@ -75,7 +75,7 @@ detailsTitle: string,
  */
 tooltip: string, 
 /**
- * The single jump glyph at the selected leaf's edge (`js/hotspot_jump_icon.js`).
+ * The single jump glyph at the selected leaf's edge (`js/hotspot_jump_icon.ts`).
  */
 jumpIcon: string, 
 /**

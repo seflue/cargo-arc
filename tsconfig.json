@@ -1,0 +1,7 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./tsconfig.arc.json" },
+    { "path": "./tsconfig.hotspot.json" }
+  ]
+}

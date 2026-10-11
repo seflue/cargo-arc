@@ -225,7 +225,7 @@ pub(super) struct RelationClasses {
     /// render in the cycle color. Absent, they fall back to dependency styling.
     /// Sits with the other root state classes ([`has_highlight`], [`has_pinned`]).
     pub cluster_mode_on: &'static str,
-    /// Root state class while the page scrolls, set by `js/scroll_state.js`.
+    /// Root state class while the page scrolls, set by `js/scroll_state.ts`.
     pub scrolling: &'static str,
 }
 
@@ -395,7 +395,7 @@ pub(super) struct HotspotClasses {
     pub details_title: &'static str,
     /// The hover tooltip's group.
     pub tooltip: &'static str,
-    /// The single jump glyph at the selected leaf's edge (`js/hotspot_jump_icon.js`).
+    /// The single jump glyph at the selected leaf's edge (`js/hotspot_jump_icon.ts`).
     pub jump_icon: &'static str,
     /// The toolbar's second line: the path from the root to the zoom target.
     pub breadcrumb: &'static str,
