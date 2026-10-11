@@ -2,7 +2,7 @@ import { AppState } from './app_state.js';
 import { ArcLogic } from './arc_logic.js';
 import { CanvasSize } from './canvas_size.js';
 import { DerivedState } from './derived_state.js';
-import { DomAdapter } from './dom_adapter.js';
+import { DomAdapter, numberAttribute } from './dom_adapter.js';
 import { Follow } from './follow.js';
 import { HighlightRenderer } from './highlight_renderer.js';
 import { Jump } from './jump.js';
@@ -217,10 +217,7 @@ if (typeof document !== 'undefined') {
       for (const nodeId of appState.collapsed) {
         const rect = DomAdapter.getNode(nodeId);
         if (rect) {
-          widthOverrides.set(
-            nodeId,
-            parseFloat(rect.getAttribute('width') ?? ''),
-          );
+          widthOverrides.set(nodeId, numberAttribute(rect, 'width'));
         }
       }
       const hiddenByFilter = getFilterHiddenNodeIds();
@@ -387,8 +384,8 @@ if (typeof document !== 'undefined') {
         const rect = DomAdapter.getNode(id);
         return rect
           ? {
-              y: parseFloat(rect.getAttribute('y') ?? ''),
-              height: parseFloat(rect.getAttribute('height') ?? ''),
+              y: numberAttribute(rect, 'y'),
+              height: numberAttribute(rect, 'height'),
             }
           : null;
       };
@@ -773,8 +770,8 @@ if (typeof document !== 'undefined') {
         const toggle = DomAdapter.getCollapseToggle(nodeId);
         if (toggle) {
           toggle.setAttribute('y', String(currentY + height / 2 + 4));
-          const nodeX = parseFloat(node.getAttribute('x') ?? '');
-          const nodeW = parseFloat(node.getAttribute('width') ?? '');
+          const nodeX = numberAttribute(node, 'x');
+          const nodeW = numberAttribute(node, 'width');
           toggle.setAttribute('x', String(nodeX + nodeW - TOGGLE_OFFSET));
         }
 
@@ -973,10 +970,7 @@ if (typeof document !== 'undefined') {
       for (const nodeId of appState.collapsed) {
         const rect = DomAdapter.getNode(nodeId);
         if (rect) {
-          widthOverrides.set(
-            nodeId,
-            parseFloat(rect.getAttribute('width') ?? ''),
-          );
+          widthOverrides.set(nodeId, numberAttribute(rect, 'width'));
         }
       }
       const currentPositions = DerivedState.computeCurrentPositions(
@@ -1233,14 +1227,15 @@ if (typeof document !== 'undefined') {
           );
           const padding = 20;
           const neededWidth = textWidth + padding;
-          const originalWidth = parseFloat(
-            nodeRect.getAttribute('data-original-width') ?? '',
+          const originalWidth = numberAttribute(
+            nodeRect,
+            'data-original-width',
           );
           const newWidth = Math.max(originalWidth, neededWidth);
           nodeRect.setAttribute('width', String(newWidth));
           // Reposition toggle icon to right edge of expanded box
           if (toggleIcon) {
-            const nodeX = parseFloat(nodeRect.getAttribute('x') ?? '');
+            const nodeX = numberAttribute(nodeRect, 'x');
             toggleIcon.setAttribute(
               'x',
               String(nodeX + newWidth - TOGGLE_OFFSET),
@@ -1254,7 +1249,7 @@ if (typeof document !== 'undefined') {
           nodeRect.setAttribute('width', originalWidth);
           // Restore toggle icon to original position
           if (toggleIcon) {
-            const nodeX = parseFloat(nodeRect.getAttribute('x') ?? '');
+            const nodeX = numberAttribute(nodeRect, 'x');
             toggleIcon.setAttribute(
               'x',
               String(nodeX + parseFloat(originalWidth) - TOGGLE_OFFSET),

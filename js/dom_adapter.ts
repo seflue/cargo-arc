@@ -104,6 +104,11 @@ function createConvenienceMethods() {
   };
 }
 
+// NaN when the attribute is missing.
+function numberAttribute(el: Element, name: string) {
+  return parseFloat(el.getAttribute(name) ?? '');
+}
+
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
 const DomAdapter = {
@@ -122,4 +127,4 @@ const DomAdapter = {
   ...createConvenienceMethods(),
 };
 
-export { DomAdapter, createConvenienceMethods };
+export { DomAdapter, createConvenienceMethods, numberAttribute };

@@ -24,8 +24,22 @@ Object.assign(globalThis.STATIC_DATA.classes, {
   },
 });
 
+import { numberAttribute } from './dom_adapter.js';
 import { createFakeElement, createMockDomAdapter } from './dom_mock.js';
 import { Selectors } from './selectors.js';
+
+describe('numberAttribute', () => {
+  test('reads an attribute as a number', () => {
+    const el = createFakeElement('rect');
+    el.setAttribute('width', '42.5');
+    expect(numberAttribute(el, 'width')).toBe(42.5);
+  });
+
+  test('is NaN for a missing attribute', () => {
+    const el = createFakeElement('rect');
+    expect(numberAttribute(el, 'width')).toBeNaN();
+  });
+});
 
 describe('createFakeElement', () => {
   test('setAttribute/getAttribute roundtrip', () => {
