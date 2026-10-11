@@ -10,27 +10,37 @@ afterAll(restoreAll);
 if (!globalThis.STATIC_DATA) globalThis.STATIC_DATA = {};
 if (!globalThis.STATIC_DATA.classes) globalThis.STATIC_DATA.classes = {};
 Object.assign(globalThis.STATIC_DATA.classes, {
-  packageNode: 'crate',
-  module: 'module',
-  searchMatch: 'search-match',
-  searchMatchParent: 'search-match-parent',
-  searchContext: 'search-context',
-  label: 'label',
-  toolbarScopeActive: 'scope-active',
-  depArc: 'dep-arc',
-  cycleArc: 'cycle-arc',
-  virtualArc: 'virtual-arc',
-  depArrow: 'dep-arrow',
-  upwardArrow: 'upward-arrow',
-  cycleArrow: 'cycle-arrow',
-  virtualArrow: 'virtual-arrow',
-  arcCount: 'arc-count',
-  arcCountBg: 'arc-count-bg',
-  externalSection: 'external-section',
-  externalPackage: 'external',
-  externalTransitive: 'external-transitive',
-  searchActive: 'search-active',
-  treeLine: 'tree-line',
+  nodes: {
+    packageNode: 'crate',
+    module: 'module',
+    label: 'label',
+    externalSection: 'external-section',
+    externalPackage: 'external',
+    externalTransitive: 'external-transitive',
+    treeLine: 'tree-line',
+  },
+  direction: {
+    depArc: 'dep-arc',
+    cycleArc: 'cycle-arc',
+    virtualArc: 'virtual-arc',
+    depArrow: 'dep-arrow',
+    upwardArrow: 'upward-arrow',
+    cycleArrow: 'cycle-arrow',
+    virtualArrow: 'virtual-arrow',
+  },
+  search: {
+    searchMatch: 'search-match',
+    searchMatchParent: 'search-match-parent',
+    searchContext: 'search-context',
+    searchActive: 'search-active',
+  },
+  labels: {
+    arcCount: 'arc-count',
+    arcCountBg: 'arc-count-bg',
+  },
+  toolbar: {
+    scopeActive: 'scope-active',
+  },
 });
 
 // Minimal DomAdapter mock

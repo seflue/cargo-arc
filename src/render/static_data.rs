@@ -1,4 +1,4 @@
-use super::constants::{CSS, DRAWING, Document, LAYOUT, RenderConfig};
+use super::constants::{CSS, CssClassNames, DRAWING, Document, LAYOUT, RenderConfig};
 use super::positioning::PositionedItem;
 use super::theme::{Mode, Theme};
 use crate::diagnose::ConsumerLocality;
@@ -18,7 +18,7 @@ struct StaticData {
     nodes: BTreeMap<String, NodeData>,
     arcs: BTreeMap<String, ArcData>,
     cycles: Vec<CycleData>,
-    classes: BTreeMap<String, String>,
+    classes: &'static CssClassNames,
     clusters: BTreeMap<String, ClusterData>,
     symbol_localities: BTreeMap<String, BTreeMap<String, SymbolLocalityData>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -485,82 +485,6 @@ fn generate_static_data(
         })
         .collect();
 
-    let classes: BTreeMap<String, String> = [
-        ("packageNode", CSS.nodes.package_node),
-        ("module", CSS.nodes.module),
-        ("externalSection", CSS.nodes.external_section),
-        ("externalPackage", CSS.nodes.external_package),
-        ("externalTransitive", CSS.nodes.external_transitive),
-        ("label", CSS.nodes.label),
-        ("cycleNode", CSS.nodes.cycle_node),
-        ("hidesCycle", CSS.nodes.hides_cycle),
-        ("cycleMarker", CSS.nodes.cycle_marker),
-        ("treeLine", CSS.nodes.tree_line),
-        ("collapseToggle", CSS.nodes.collapse_toggle),
-        ("collapsed", CSS.nodes.collapsed),
-        ("depArc", CSS.direction.dep_arc),
-        ("downward", CSS.direction.downward),
-        ("upward", CSS.direction.upward),
-        ("depArrow", CSS.direction.dep_arrow),
-        ("upwardArrow", CSS.direction.upward_arrow),
-        ("cycleArc", CSS.direction.cycle_arc),
-        ("cycleArrow", CSS.direction.cycle_arrow),
-        ("clusterModeOn", CSS.relation.cluster_mode_on),
-        ("arcHitarea", CSS.direction.arc_hitarea),
-        ("packageDepArc", CSS.direction.package_dep_arc),
-        ("moduleDepArc", CSS.direction.module_dep_arc),
-        ("reexportArc", CSS.direction.reexport_arc),
-        ("virtualArc", CSS.direction.virtual_arc),
-        ("virtualArrow", CSS.direction.virtual_arrow),
-        ("virtualHitarea", CSS.direction.virtual_hitarea),
-        ("selectedPackage", CSS.node_selection.selected_package),
-        ("selectedModule", CSS.node_selection.selected_module),
-        ("selectedExternal", CSS.node_selection.selected_external),
-        (
-            "selectedExternalTransitive",
-            CSS.node_selection.selected_external_transitive,
-        ),
-        ("groupMember", CSS.node_selection.group_member),
-        ("cycleMember", CSS.node_selection.cycle_member),
-        ("highlightedArc", CSS.relation.highlighted_arc),
-        ("highlightedArrow", CSS.relation.highlighted_arrow),
-        ("highlightedLabel", CSS.relation.highlighted_label),
-        ("depNode", CSS.relation.dep_node),
-        ("dependentNode", CSS.relation.dependent_node),
-        ("dimmed", CSS.relation.dimmed),
-        ("hasHighlight", CSS.relation.has_highlight),
-        ("hasPinned", CSS.relation.has_pinned),
-        ("scrolling", CSS.relation.scrolling),
-        ("shadowPath", CSS.relation.shadow_path),
-        ("glowIncoming", CSS.relation.glow_incoming),
-        ("glowOutgoing", CSS.relation.glow_outgoing),
-        ("glowCycle", CSS.relation.glow_cycle),
-        ("viewOptions", CSS.toolbar.view_options),
-        ("toolbarBtn", CSS.toolbar.btn),
-        ("toolbarCheckbox", CSS.toolbar.checkbox),
-        ("checked", CSS.toolbar.checked),
-        ("toolbarRoot", CSS.toolbar.root),
-        ("toolbarHtmlBtn", CSS.toolbar.html_btn),
-        ("toolbarToggle", CSS.toolbar.toggle),
-        ("toolbarScopeBtn", CSS.toolbar.scope_btn),
-        ("toolbarScopeActive", CSS.toolbar.scope_active),
-        ("toolbarResultCount", CSS.toolbar.result_count),
-        ("toolbarDropdown", CSS.toolbar.dropdown),
-        ("toolbarDropdownBtn", CSS.toolbar.dropdown_btn),
-        ("toolbarDropdownPanel", CSS.toolbar.dropdown_panel),
-        ("searchActive", CSS.search.search_active),
-        ("searchMatch", CSS.search.search_match),
-        ("searchMatchParent", CSS.search.search_match_parent),
-        ("searchContext", CSS.search.search_context),
-        ("arcCount", CSS.labels.arc_count),
-        ("arcCountBg", CSS.labels.arc_count_bg),
-        ("arcCountGroup", CSS.labels.arc_count_group),
-        ("hiddenByFilter", CSS.labels.hidden_by_filter),
-    ]
-    .into_iter()
-    .map(|(k, v)| (k.to_string(), v.to_string()))
-    .collect();
-
     let clusters: BTreeMap<String, ClusterData> = ir
         .clusters
         .iter()
@@ -615,7 +539,7 @@ fn generate_static_data(
         nodes,
         arcs,
         cycles,
-        classes,
+        classes: &CSS,
         clusters,
         symbol_localities,
         expand_level: config.expand_level,
@@ -1179,11 +1103,15 @@ mod tests {
         let config = RenderConfig::default();
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::from([c]);
-        let script = render_script(&config, &ir, &positioned, &parents);
+        let data = generate_static_data(&config, &ir, &positioned, &parents);
+        let mut data = serde_json::to_value(&data).unwrap();
+        // The class map has `jump` and `definition` keys of its own.
+        data.as_object_mut().unwrap().remove("classes");
+        let json = data.to_string();
 
-        assert!(!script.contains("\"targets\""));
-        assert!(!script.contains("\"jump\""));
-        assert!(!script.contains("\"definition\""));
+        assert!(!json.contains("\"targets\""));
+        assert!(!json.contains("\"jump\""));
+        assert!(!json.contains("\"definition\""));
     }
 
     // === Bundle Tests ===
@@ -1607,43 +1535,30 @@ mod tests {
         let positioned: Vec<PositionedItem> = vec![];
         let parents: HashSet<NodeId> = HashSet::new();
 
-        let classes = generate_static_data(&config, &ir, &positioned, &parents).classes;
-        assert!(
-            classes.contains_key("depArc"),
-            "classes should contain depArc"
+        let data = generate_static_data(&config, &ir, &positioned, &parents);
+        let classes = &serde_json::to_value(&data).unwrap()["classes"];
+        assert_eq!(classes["direction"]["depArc"], "dep-arc");
+        assert_eq!(classes["relation"]["highlightedArc"], "highlighted-arc");
+        assert_eq!(
+            classes["nodeSelection"]["selectedPackage"],
+            "selected-package"
         );
-        assert!(
-            classes.contains_key("highlightedArc"),
-            "classes should contain highlightedArc"
+        assert_eq!(
+            classes["nodeSelection"]["selectedExternal"],
+            "selected-external"
         );
-        assert!(
-            classes.contains_key("selectedPackage"),
-            "classes should contain selectedPackage"
+        assert_eq!(classes["labels"]["hiddenByFilter"], "hidden-by-filter");
+        assert_eq!(classes["nodes"]["collapseToggle"], "collapse-toggle");
+        assert_eq!(classes["nodes"]["externalSection"], "external-section");
+        assert_eq!(classes["nodes"]["externalPackage"], "external");
+        assert_eq!(
+            classes["nodes"]["externalTransitive"],
+            "external-transitive"
         );
-        assert!(
-            classes.contains_key("selectedExternal"),
-            "classes should contain selectedExternal"
-        );
-        assert!(
-            classes.contains_key("hiddenByFilter"),
-            "classes should contain hiddenByFilter"
-        );
-        assert!(
-            classes.contains_key("collapseToggle"),
-            "classes should contain collapseToggle"
-        );
-        assert!(
-            classes.contains_key("externalSection"),
-            "classes should contain externalSection"
-        );
-        assert!(
-            classes.contains_key("externalPackage"),
-            "classes should contain externalPackage"
-        );
-        assert!(
-            classes.contains_key("externalTransitive"),
-            "classes should contain externalTransitive"
-        );
+        assert_eq!(classes["toolbar"]["btn"], "toolbar-btn");
+        assert_eq!(classes["search"]["searchMatch"], "search-match");
+        assert_eq!(classes["sidebar"]["header"], "sidebar-header");
+        assert_eq!(classes["hotspots"]["header"], "hotspot-header");
     }
 
     #[test]
@@ -1654,44 +1569,12 @@ mod tests {
         let parents: HashSet<NodeId> = HashSet::new();
 
         let data = generate_static_data(&config, &ir, &positioned, &parents);
+        let classes = &serde_json::to_value(&data).unwrap()["classes"];
 
         assert_eq!(
-            data.classes["groupMember"], CSS.node_selection.group_member,
+            classes["nodeSelection"]["groupMember"], CSS.node_selection.group_member,
             "classes should contain groupMember with value from CSS.node_selection.group_member"
         );
-    }
-
-    #[test]
-    fn test_static_data_classes_match_css() {
-        let ir = LayoutIR::new();
-        let config = RenderConfig::default();
-        let positioned: Vec<PositionedItem> = vec![];
-        let parents: HashSet<NodeId> = HashSet::new();
-
-        let data = generate_static_data(&config, &ir, &positioned, &parents);
-
-        assert_eq!(data.classes["depArc"], CSS.direction.dep_arc);
-        assert_eq!(data.classes["highlightedArc"], CSS.relation.highlighted_arc);
-        assert_eq!(
-            data.classes["selectedPackage"],
-            CSS.node_selection.selected_package
-        );
-        assert_eq!(
-            data.classes["selectedExternal"],
-            CSS.node_selection.selected_external
-        );
-        assert_eq!(data.classes["collapsed"], CSS.nodes.collapsed);
-        assert_eq!(data.classes["cycleNode"], CSS.nodes.cycle_node);
-        assert_eq!(data.classes["hidesCycle"], CSS.nodes.hides_cycle);
-        assert_eq!(data.classes["cycleMarker"], CSS.nodes.cycle_marker);
-        assert_eq!(data.classes["virtualArc"], CSS.direction.virtual_arc);
-        assert_eq!(data.classes["externalSection"], CSS.nodes.external_section);
-        assert_eq!(data.classes["externalPackage"], CSS.nodes.external_package);
-        assert_eq!(
-            data.classes["externalTransitive"],
-            CSS.nodes.external_transitive
-        );
-        assert_eq!(data.classes["searchContext"], CSS.search.search_context);
     }
 
     // === Struct / Helper Tests ===

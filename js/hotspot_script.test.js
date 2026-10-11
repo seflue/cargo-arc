@@ -191,18 +191,20 @@ global.STATIC_DATA = {
   },
   // The same names `render::hotspots::render` builds from `CSS.hotspots`.
   classes: {
-    circle: 'hotspot-circle',
-    listItem: 'hotspot-list-item',
-    hover: 'hotspot-hover',
-    selected: 'hotspot-selected',
-    barLabel: 'hotspot-bar-label',
-    barTrack: 'hotspot-bar-track',
-    barFill: 'hotspot-bar-fill',
-    detailsTitle: 'hotspot-details-title',
-    tooltip: 'hotspot-tooltip',
-    // A value only this fixture would produce, so the test below only
-    // passes if `hotspot_script.js` actually forwards it into the icon.
-    jumpIcon: 'fixture-jump-icon',
+    hotspots: {
+      circle: 'hotspot-circle',
+      listItem: 'hotspot-list-item',
+      hover: 'hotspot-hover',
+      selected: 'hotspot-selected',
+      barLabel: 'hotspot-bar-label',
+      barTrack: 'hotspot-bar-track',
+      barFill: 'hotspot-bar-fill',
+      detailsTitle: 'hotspot-details-title',
+      tooltip: 'hotspot-tooltip',
+      // A value only this fixture would produce, so the test below only
+      // passes if `hotspot_script.js` actually forwards it into the icon.
+      jumpIcon: 'fixture-jump-icon',
+    },
   },
   hotspots: ['hot'],
   maxFileCommits: 4,
@@ -660,7 +662,7 @@ describe('hotspot_script entry', () => {
     const [icon] = jumpLayer.children;
     expect(icon.tagName).toBe('use');
     expect(icon.getAttribute('href')).toBe('#jump-icon');
-    // STATIC_DATA.classes.jumpIcon forwarded through (see the fixture's
+    // STATIC_DATA.classes.hotspots.jumpIcon forwarded through (see the fixture's
     // comment on that value).
     expect(icon.getAttribute('class')).toBe('fixture-jump-icon');
     expect(icon.children.find((c) => c.tagName === 'title').textContent).toBe(

@@ -31,8 +31,8 @@ const CYCLE_HEADER_MAX_CHARS = 48;
 // the content's usage groups. A node sidebar nests a second level of
 // collapsible symbol rows inside each relation row; those start expanded and
 // must not count, or the first click would collapse instead of expand.
-const COLLAPSIBLE_SYMBOL_SELECTOR =
-  ':scope > .sidebar-usage-group > .sidebar-symbol[data-collapsible]';
+const collapsibleSymbolSelector = (S) =>
+  `:scope > .${S.usageGroup} > .${S.symbol}[data-collapsible]`;
 
 const SidebarLogic = {
   _isTransient: false,
@@ -102,6 +102,7 @@ const SidebarLogic = {
    * @returns {string}
    */
   buildContent(arcId, overrideData) {
+    const S = STATIC_DATA.classes.sidebar;
     const arc = overrideData || STATIC_DATA.arcs[arcId];
     if (!arc) return '';
 
@@ -126,41 +127,41 @@ const SidebarLogic = {
     const toNode = StaticData.getNode(arc.to);
     const fromName = this._formatNodeName(fromNode, arc.from);
     const toName = this._formatNodeName(toNode, arc.to);
-    const fromClass = `${fromNode ? `sidebar-node-${fromNode.type} ` : ''}sidebar-node-from`;
-    const toClass = `${toNode ? `sidebar-node-${toNode.type} ` : ''}sidebar-node-to`;
+    const fromClass = `${fromNode ? `sidebar-node-${fromNode.type} ` : ''}${S.nodeFrom}`;
+    const toClass = `${toNode ? `sidebar-node-${toNode.type} ` : ''}${S.nodeTo}`;
 
-    let html = `<div class="sidebar-header">`;
-    html += `<span class="sidebar-title"><span class="${fromClass}" data-node-id="${arc.from}">${fromName}${this._renderCollapseIndicator(arc.from)}</span><span class="sidebar-arrow">&#x2192;</span><span class="${toClass}" data-node-id="${arc.to}">${toName}${this._renderCollapseIndicator(arc.to)}</span></span>`;
+    let html = `<div class="${S.header}">`;
+    html += `<span class="${S.title}"><span class="${fromClass}" data-node-id="${arc.from}">${fromName}${this._renderCollapseIndicator(arc.from)}</span><span class="${S.arrow}">&#x2192;</span><span class="${toClass}" data-node-id="${arc.to}">${toName}${this._renderCollapseIndicator(arc.to)}</span></span>`;
     const hasSymbols = groups.some((g) => g.symbol);
     if (hasSymbols) {
-      html += `<div class="sidebar-header-actions">`;
-      html += `<button class="sidebar-collapse-all" title="Collapse all">&#x2212;</button>`;
-      html += `<button class="sidebar-close">&#x2715;</button>`;
+      html += `<div class="${S.headerActions}">`;
+      html += `<button class="${S.collapseAll}" title="Collapse all">&#x2212;</button>`;
+      html += `<button class="${S.close}">&#x2715;</button>`;
       html += `</div>`;
     } else {
-      html += `<button class="sidebar-close">&#x2715;</button>`;
+      html += `<button class="${S.close}">&#x2715;</button>`;
     }
     html += `</div>`;
 
-    html += `<div class="sidebar-content">`;
+    html += `<div class="${S.content}">`;
     if (groups.length === 0) {
-      html += `<div class="sidebar-usage-group">Cargo.toml dependency</div>`;
+      html += `<div class="${S.usageGroup}">Cargo.toml dependency</div>`;
     } else {
       const sorted = [...groups].sort(
         (a, b) => b.locations.length - a.locations.length,
       );
       for (const group of sorted) {
-        html += `<div class="sidebar-usage-group">`;
+        html += `<div class="${S.usageGroup}">`;
         if (group.symbol) {
-          html += `<div class="sidebar-symbol" data-collapsible="" title="${this._symbolTitle(group)}">`;
-          html += `<span class="sidebar-toggle">&#x25BE;</span>`;
+          html += `<div class="${S.symbol}" data-collapsible="" title="${this._symbolTitle(group)}">`;
+          html += `<span class="${S.toggle}">&#x25BE;</span>`;
           html += this._symbolLabel(group);
           html += this._definitionChip(group);
           html += this._renderLocalityTag(arc.to, group.symbol);
-          html += `<span class="sidebar-ref-count">${group.locations.length}</span>`;
+          html += `<span class="${S.refCount}">${group.locations.length}</span>`;
           html += `</div>`;
         }
-        html += `<div class="sidebar-locations">`;
+        html += `<div class="${S.locations}">`;
         for (const loc of group.locations) {
           html += this._locationRow(loc);
         }
@@ -180,7 +181,7 @@ const SidebarLogic = {
     if (overrideData?.originalArcs?.length) {
       footerText += ` \u00b7 ${overrideData.originalArcs.length} hidden Dependencies`;
     }
-    html += `<div class="sidebar-footer">${footerText}</div>`;
+    html += `<div class="${S.footer}">${footerText}</div>`;
 
     return html;
   },
@@ -193,6 +194,7 @@ const SidebarLogic = {
    * @returns {string}
    */
   buildNodeContent(nodeId, relations) {
+    const S = STATIC_DATA.classes.sidebar;
     const node = StaticData.getNode(nodeId);
     const nodeName = this._formatNodeName(node, nodeId);
     const nodeType = node ? node.type : '';
@@ -203,22 +205,22 @@ const SidebarLogic = {
     );
 
     // Header: Node name + Collapse-All ("+", since all L1 start collapsed) + Close
-    let html = `<div class="sidebar-header">`;
-    html += `<span class="sidebar-title"><span class="sidebar-node-${nodeType} sidebar-node-selected" data-node-id="${nodeId}">${nodeName}${this._renderCollapseIndicator(nodeId)}</span></span>`;
+    let html = `<div class="${S.header}">`;
+    html += `<span class="${S.title}"><span class="sidebar-node-${nodeType} ${S.nodeSelected}" data-node-id="${nodeId}">${nodeName}${this._renderCollapseIndicator(nodeId)}</span></span>`;
     if (hasCollapsible) {
-      html += `<div class="sidebar-header-actions">`;
-      html += `<button class="sidebar-collapse-all">+</button>`;
-      html += `<button class="sidebar-close">&#x2715;</button>`;
+      html += `<div class="${S.headerActions}">`;
+      html += `<button class="${S.collapseAll}">+</button>`;
+      html += `<button class="${S.close}">&#x2715;</button>`;
       html += `</div>`;
     } else {
-      html += `<button class="sidebar-close">&#x2715;</button>`;
+      html += `<button class="${S.close}">&#x2715;</button>`;
     }
     html += `</div>`;
 
-    html += `<div class="sidebar-content">`;
+    html += `<div class="${S.content}">`;
 
     if (!hasRelations) {
-      html += `<div class="sidebar-usage-group">No relations</div>`;
+      html += `<div class="${S.usageGroup}">No relations</div>`;
     } else {
       const badgeLens = this._computeMaxBadgeLengths(
         relations,
@@ -241,7 +243,7 @@ const SidebarLogic = {
 
       // Divider only if both directions non-empty
       if (relations.incoming.length > 0 && relations.outgoing.length > 0) {
-        html += `<hr class="sidebar-divider"/>`;
+        html += `<hr class="${S.divider}"/>`;
       }
 
       // Outgoing (Dependencies) — selected node on the left
@@ -261,7 +263,7 @@ const SidebarLogic = {
     html += `</div>`;
 
     // Footer
-    html += `<div class="sidebar-footer">${relations.incoming.length} Dependents \u00b7 ${relations.outgoing.length} Dependencies</div>`;
+    html += `<div class="${S.footer}">${relations.incoming.length} Dependents \u00b7 ${relations.outgoing.length} Dependencies</div>`;
 
     return html;
   },
@@ -286,6 +288,7 @@ const SidebarLogic = {
     maxFromLen = 0,
     maxToLen = 0,
   ) {
+    const S = STATIC_DATA.classes.sidebar;
     const target = StaticData.getNode(rel.targetId);
     const targetName = this._formatNodeName(target, rel.targetId);
     const targetType = target ? target.type : '';
@@ -321,53 +324,53 @@ const SidebarLogic = {
       toId = rel.targetId;
     }
 
-    const fromClass = `sidebar-node-${fromType}${fromSelected ? ' sidebar-node-selected' : ' sidebar-node-from'}`;
-    const toClass = `sidebar-node-${toType}${toSelected ? ' sidebar-node-selected' : ' sidebar-node-to'}`;
+    const fromClass = `sidebar-node-${fromType}${fromSelected ? ` ${S.nodeSelected}` : ` ${S.nodeFrom}`}`;
+    const toClass = `sidebar-node-${toType}${toSelected ? ` ${S.nodeSelected}` : ` ${S.nodeTo}`}`;
     const fromStyle =
       maxFromLen > 0 ? ` style="min-width: ${maxFromLen}ch"` : '';
     const toStyle = maxToLen > 0 ? ` style="min-width: ${maxToLen}ch"` : '';
 
     const groups = rel.usages || [];
-    let html = `<div class="sidebar-usage-group">`;
+    let html = `<div class="${S.usageGroup}">`;
 
     // External dependency without source references: flat row, no expand
     if (groups.length === 0) {
-      html += `<div class="sidebar-symbol" style="cursor:default">`;
-      html += `<span class="sidebar-toggle"></span>`;
-      html += `<span class="${fromClass} sidebar-symbol-name"${fromStyle} data-node-id="${fromId}">${fromName}${this._renderCollapseIndicator(fromId)}</span>`;
-      html += `<span class="sidebar-arrow">&#x2192;</span>`;
-      html += `<span class="${toClass} sidebar-symbol-name"${toStyle} data-node-id="${toId}">${toName}${this._renderCollapseIndicator(toId)}</span>`;
-      html += `<span class="sidebar-ext-info" title="Cargo.toml dependency &#8212; source references are not tracked for external crates">i</span>`;
+      html += `<div class="${S.symbol}" style="cursor:default">`;
+      html += `<span class="${S.toggle}"></span>`;
+      html += `<span class="${fromClass} ${S.symbolName}"${fromStyle} data-node-id="${fromId}">${fromName}${this._renderCollapseIndicator(fromId)}</span>`;
+      html += `<span class="${S.arrow}">&#x2192;</span>`;
+      html += `<span class="${toClass} ${S.symbolName}"${toStyle} data-node-id="${toId}">${toName}${this._renderCollapseIndicator(toId)}</span>`;
+      html += `<span class="${S.extInfo}" title="Cargo.toml dependency &#8212; source references are not tracked for external crates">i</span>`;
       html += `</div>`;
       html += `</div>`;
       return html;
     }
 
     // Level 1 header (collapsed)
-    html += `<div class="sidebar-symbol" data-collapsible="" data-collapsed="true">`;
-    html += `<span class="sidebar-toggle">&#x25B8;</span>`;
-    html += `<span class="${fromClass} sidebar-symbol-name"${fromStyle} data-node-id="${fromId}">${fromName}${this._renderCollapseIndicator(fromId)}</span>`;
-    html += `<span class="sidebar-arrow">&#x2192;</span>`;
-    html += `<span class="${toClass} sidebar-symbol-name"${toStyle} data-node-id="${toId}">${toName}${this._renderCollapseIndicator(toId)}</span>`;
-    html += `<span class="sidebar-ref-count">${rel.weight}</span>`;
+    html += `<div class="${S.symbol}" data-collapsible="" data-collapsed="true">`;
+    html += `<span class="${S.toggle}">&#x25B8;</span>`;
+    html += `<span class="${fromClass} ${S.symbolName}"${fromStyle} data-node-id="${fromId}">${fromName}${this._renderCollapseIndicator(fromId)}</span>`;
+    html += `<span class="${S.arrow}">&#x2192;</span>`;
+    html += `<span class="${toClass} ${S.symbolName}"${toStyle} data-node-id="${toId}">${toName}${this._renderCollapseIndicator(toId)}</span>`;
+    html += `<span class="${S.refCount}">${rel.weight}</span>`;
     html += `</div>`;
 
     // Level 2 content (hidden because L1 is collapsed)
-    html += `<div class="sidebar-locations" style="display:none">`;
+    html += `<div class="${S.locations}" style="display:none">`;
     const sorted = [...groups].sort(
       (a, b) => b.locations.length - a.locations.length,
     );
     for (const group of sorted) {
-      html += `<div class="sidebar-usage-group">`;
+      html += `<div class="${S.usageGroup}">`;
       if (group.symbol) {
-        html += `<div class="sidebar-symbol" data-collapsible="" title="${this._symbolTitle(group)}">`;
-        html += `<span class="sidebar-toggle">&#x25BE;</span>`;
+        html += `<div class="${S.symbol}" data-collapsible="" title="${this._symbolTitle(group)}">`;
+        html += `<span class="${S.toggle}">&#x25BE;</span>`;
         html += this._symbolLabel(group);
         html += this._definitionChip(group);
-        html += `<span class="sidebar-ref-count">${group.locations.length}</span>`;
+        html += `<span class="${S.refCount}">${group.locations.length}</span>`;
         html += `</div>`;
       }
-      html += `<div class="sidebar-locations">`;
+      html += `<div class="${S.locations}">`;
       for (const loc of group.locations) {
         html += this._locationRow(loc);
       }
@@ -441,11 +444,12 @@ const SidebarLogic = {
    * @returns {string}
    */
   _renderCollapseIndicator(nodeId) {
+    const S = STATIC_DATA.classes.sidebar;
     if (!StaticData.hasChildren(nodeId)) return '';
     const collapsed = this._isNodeCollapsed?.(nodeId);
     if (collapsed === undefined || collapsed === null) return '';
     const symbol = collapsed ? '+' : '\u2212';
-    return `<span class="sidebar-collapse-indicator" data-collapse-target="${nodeId}">${symbol}</span>`;
+    return `<span class="${S.collapseIndicator}" data-collapse-target="${nodeId}">${symbol}</span>`;
   },
 
   /**
@@ -458,6 +462,7 @@ const SidebarLogic = {
    * @returns {string}
    */
   _renderLocalityTag(providerId, symbol) {
+    const S = STATIC_DATA.classes.sidebar;
     const sl =
       typeof STATIC_DATA !== 'undefined' &&
       STATIC_DATA.symbolLocalities?.[providerId]?.[symbol];
@@ -473,7 +478,7 @@ const SidebarLogic = {
     } else {
       return '';
     }
-    return `<span class="sidebar-locality sidebar-locality-${sl.locality}">${label}</span>`;
+    return `<span class="${S.locality} sidebar-locality-${sl.locality}">${label}</span>`;
   },
 
   /**
@@ -485,11 +490,12 @@ const SidebarLogic = {
    * @returns {string}
    */
   _definitionChip(group) {
+    const S = STATIC_DATA.classes.sidebar;
     const definition = group.definition;
     if (!definition) return '';
     return (
-      `<span class="sidebar-definition" data-jump="${definition.jump}" title="${definition.file}:${definition.line}">` +
-      '<svg class="sidebar-jump" xmlns="http://www.w3.org/2000/svg"><use href="#jump-icon"></use></svg></span>'
+      `<span class="${S.definition}" data-jump="${definition.jump}" title="${definition.file}:${definition.line}">` +
+      `<svg class="${S.jump}" xmlns="http://www.w3.org/2000/svg"><use href="#jump-icon"></use></svg></span>`
     );
   },
 
@@ -511,12 +517,13 @@ const SidebarLogic = {
    * @returns {string}
    */
   _symbolLabel(group) {
+    const S = STATIC_DATA.classes.sidebar;
     let html = '';
     if (group.modulePath) {
       const ns = `${group.modulePath}::`;
-      html += `<span class="sidebar-ns" data-full="${ns}">${ns}</span>`;
+      html += `<span class="${S.ns}" data-full="${ns}">${ns}</span>`;
     }
-    html += `<span class="sidebar-symbol-name">${group.symbol}</span>`;
+    html += `<span class="${S.symbolName}">${group.symbol}</span>`;
     return html;
   },
 
@@ -528,6 +535,7 @@ const SidebarLogic = {
    * @returns {string}
    */
   _locationRow(loc) {
+    const S = STATIC_DATA.classes.sidebar;
     const hasJump = typeof loc.jump === 'number';
     const jumpAttr = hasJump ? ` data-jump="${loc.jump}"` : '';
     // Same symbol the node icons use; JumpIcons defines it in the SVG root
@@ -535,12 +543,12 @@ const SidebarLogic = {
     // xmlns is required: this HTML lands in an XML document via innerHTML,
     // where an unprefixed <svg> would stay in the XHTML namespace.
     const jumpIcon = hasJump
-      ? '<svg class="sidebar-jump" xmlns="http://www.w3.org/2000/svg"><use href="#jump-icon"></use></svg>'
+      ? `<svg class="${S.jump}" xmlns="http://www.w3.org/2000/svg"><use href="#jump-icon"></use></svg>`
       : '';
     return (
-      `<div class="sidebar-location"${jumpAttr} title="${loc.file}:${loc.line}">` +
-      `<span class="sidebar-file" data-full="${loc.file}">${loc.file}</span>` +
-      `<span class="sidebar-line-badge">:${loc.line}</span>${jumpIcon}</div>`
+      `<div class="${S.location}"${jumpAttr} title="${loc.file}:${loc.line}">` +
+      `<span class="${S.file}" data-full="${loc.file}">${loc.file}</span>` +
+      `<span class="${S.lineBadge}">:${loc.line}</span>${jumpIcon}</div>`
     );
   },
 
@@ -693,15 +701,16 @@ const SidebarLogic = {
    * @param {{ from: string, to: string, usages: ArcData["usages"], originalArcs?: string[], cycleIds?: number[] }} [overrideData]
    */
   showTransient(arcId, overrideData) {
+    const S = STATIC_DATA.classes.sidebar;
     clearTimeout(this._debounceTimer ?? undefined);
     this._debounceTimer = setTimeout(() => {
       const el = this._getElement();
       if (!el) return;
       /** @type {HTMLElement|null} */
-      const innerDiv = el.querySelector('.sidebar-root');
+      const innerDiv = el.querySelector(`.${S.root}`);
       if (innerDiv) {
         innerDiv.innerHTML = this.buildContent(arcId, overrideData);
-        innerDiv.classList.add('sidebar-transient');
+        innerDiv.classList.add(S.transient);
       }
       el.style.display = 'block';
       this._isTransient = true;
@@ -725,8 +734,9 @@ const SidebarLogic = {
    * selected: the cluster sidebar stays open and hover only moves the focus.
    */
   refreshClusterFocus() {
+    const S = STATIC_DATA.classes.sidebar;
     const el = this._getElement();
-    const content = el?.querySelector('.sidebar-content');
+    const content = el?.querySelector(`.${S.content}`);
     if (content)
       this._refreshEdgeRowFocus(/** @type {HTMLElement} */ (content));
   },
@@ -736,13 +746,14 @@ const SidebarLogic = {
    * @param {string} html - Pre-built sidebar HTML content
    */
   _showWithContent(html) {
+    const S = STATIC_DATA.classes.sidebar;
     const el = this._getElement();
     if (!el) return;
     /** @type {HTMLElement|null} */
-    const innerDiv = el.querySelector('.sidebar-root');
+    const innerDiv = el.querySelector(`.${S.root}`);
     if (innerDiv) {
       innerDiv.innerHTML = html;
-      innerDiv.classList.remove('sidebar-transient');
+      innerDiv.classList.remove(S.transient);
       this._setupCollapseHandlers(innerDiv);
     }
     el.style.display = 'block';
@@ -771,6 +782,7 @@ const SidebarLogic = {
    * @returns {string}
    */
   _buildClusterContent(sccId, focusArcId) {
+    const S = STATIC_DATA.classes.sidebar;
     const cl = STATIC_DATA.clusters?.[sccId];
     if (!cl) return '';
 
@@ -789,21 +801,21 @@ const SidebarLogic = {
       (symbols) => symbols.length > 0,
     );
 
-    let html = `<div class="sidebar-header">`;
-    html += `<span class="sidebar-title">Cluster \u00b7 ${cl.package}</span>`;
+    let html = `<div class="${S.header}">`;
+    html += `<span class="${S.title}">Cluster \u00b7 ${cl.package}</span>`;
     if (hasCollapsible) {
-      html += `<div class="sidebar-header-actions">`;
-      html += `<button class="sidebar-collapse-all">+</button>`;
-      html += `<button class="sidebar-close">&#x2715;</button>`;
+      html += `<div class="${S.headerActions}">`;
+      html += `<button class="${S.collapseAll}">+</button>`;
+      html += `<button class="${S.close}">&#x2715;</button>`;
       html += `</div>`;
     } else {
-      html += `<button class="sidebar-close">&#x2715;</button>`;
+      html += `<button class="${S.close}">&#x2715;</button>`;
     }
     html += `</div>`;
 
-    html += `<div class="sidebar-subheader">${cl.moduleCount} modules \u00b7 ${cl.cycleCount} cycles</div>`;
+    html += `<div class="${S.subheader}">${cl.moduleCount} modules \u00b7 ${cl.cycleCount} cycles</div>`;
 
-    html += `<div class="sidebar-content">`;
+    html += `<div class="${S.content}">`;
     const sccNodeIds = new Set();
     cl.cycles.forEach((cycle) => {
       cycle.forEach((edge) => {
@@ -979,10 +991,11 @@ const SidebarLogic = {
    * @returns {Array<{ span: HTMLElement, separator: string }>}
    */
   _pathSpans(root) {
+    const S = STATIC_DATA.classes.sidebar;
     if (!root || !root.querySelectorAll) return [];
     const kinds = [
-      { selector: '.sidebar-ns[data-full]', separator: '::' },
-      { selector: '.sidebar-file[data-full]', separator: '/' },
+      { selector: `.${S.ns}[data-full]`, separator: '::' },
+      { selector: `.${S.file}[data-full]`, separator: '/' },
     ];
     return kinds.flatMap(({ selector, separator }) =>
       [...root.querySelectorAll(selector)].map((span) => ({
@@ -1043,38 +1056,39 @@ const SidebarLogic = {
    * @returns {string}
    */
   _buildEdgeRow(edge, symbols, focusArcId, extraClasses = []) {
+    const S = STATIC_DATA.classes.sidebar;
     const arcId = `${edge.fromId}-${edge.toId}`;
     const fromName = StaticData.qualifiedParts(edge.fromId).path;
     const toName = StaticData.qualifiedParts(edge.toId).path;
     const fromType = StaticData.getNode(edge.fromId)?.type;
     const toType = StaticData.getNode(edge.toId)?.type;
-    const fromClass = `sidebar-cycle-node ${fromType ? `sidebar-node-${fromType} ` : ''}sidebar-node-from`;
-    const toClass = `sidebar-cycle-node ${toType ? `sidebar-node-${toType} ` : ''}sidebar-node-to`;
+    const fromClass = `${S.cycleNode} ${fromType ? `sidebar-node-${fromType} ` : ''}${S.nodeFrom}`;
+    const toClass = `${S.cycleNode} ${toType ? `sidebar-node-${toType} ` : ''}${S.nodeTo}`;
     const expandable = symbols.length > 0;
     const expanded = expandable && (this._isRowExpanded?.(arcId) ?? false);
-    const focusClass = arcId === focusArcId ? ' sidebar-edge-row-focus' : '';
+    const focusClass = arcId === focusArcId ? ` ${S.edgeRowFocus}` : '';
     const extraClass = extraClasses.length ? ` ${extraClasses.join(' ')}` : '';
     const isClosing = extraClasses.includes('edge-closing');
 
-    let html = `<div class="sidebar-usage-group sidebar-edge-row${extraClass}${focusClass}" data-arc-id="${arcId}">`;
+    let html = `<div class="${S.usageGroup} ${S.edgeRow}${extraClass}${focusClass}" data-arc-id="${arcId}">`;
     const headAttrs = expandable
       ? ` data-collapsible=""${expanded ? '' : ' data-collapsed="true"'}`
       : ' style="cursor:default"';
-    html += `<div class="sidebar-symbol sidebar-edge-head"${headAttrs}>`;
-    html += `<span class="sidebar-toggle">${expandable ? (expanded ? '\u25be' : '\u25b8') : ''}</span>`;
-    html += `<div class="sidebar-cycle-edge">`;
+    html += `<div class="${S.symbol} ${S.edgeHead}"${headAttrs}>`;
+    html += `<span class="${S.toggle}">${expandable ? (expanded ? '\u25be' : '\u25b8') : ''}</span>`;
+    html += `<div class="${S.cycleEdge}">`;
     if (isClosing) {
-      html += `<span class="sidebar-edge-closing-marker" title="closes the cycle">&#x21ba;</span>`;
+      html += `<span class="${S.edgeClosingMarker}" title="closes the cycle">&#x21ba;</span>`;
     }
     html += `<span class="${fromClass}" data-node-id="${edge.fromId}" title="${fromName}">${fromName}</span>`;
-    html += `<span class="sidebar-arrow">&#x2192;</span>`;
+    html += `<span class="${S.arrow}">&#x2192;</span>`;
     html += `<span class="${toClass}" data-node-id="${edge.toId}" title="${toName}">${toName}</span>`;
     html += `</div>`;
-    html += `<span class="sidebar-edge-meta">${symbols.length} symbols</span>`;
+    html += `<span class="${S.edgeMeta}">${symbols.length} symbols</span>`;
     html += `</div>`;
 
     if (expandable) {
-      html += `<div class="sidebar-locations" style="display:${expanded ? '' : 'none'}">`;
+      html += `<div class="${S.locations}" style="display:${expanded ? '' : 'none'}">`;
       for (const u of symbols) {
         // The whole row is the jump target (data-jump on this div, read by
         // svg_script.js's jumpIdFromClick), not only the definition chip;
@@ -1082,7 +1096,7 @@ const SidebarLogic = {
         const jumpAttr = u.definition
           ? ` data-jump="${u.definition.jump}"`
           : '';
-        html += `<div class="sidebar-edge-symbol"${jumpAttr} title="${this._symbolTitle(u)}">`;
+        html += `<div class="${S.edgeSymbol}"${jumpAttr} title="${this._symbolTitle(u)}">`;
         html += this._symbolLabel(u);
         html += this._definitionChip(u);
         html += this._renderLocalityTag(edge.toId, u.symbol);
@@ -1107,8 +1121,9 @@ const SidebarLogic = {
    * @param {HTMLElement} content
    */
   _handleRowToggle(row, root, content) {
+    const S = STATIC_DATA.classes.sidebar;
     const arcId = row.dataset.arcId;
-    const head = row.querySelector('.sidebar-edge-head');
+    const head = row.querySelector(`.${S.edgeHead}`);
     if (!arcId || !head || !head.hasAttribute('data-collapsible')) return;
     this._onRowToggle?.(arcId);
     this._syncEdgeRowsFromState(content);
@@ -1143,11 +1158,12 @@ const SidebarLogic = {
    * @param {HTMLElement} content
    */
   _syncEdgeRowsFromState(content) {
+    const S = STATIC_DATA.classes.sidebar;
     if (!content.querySelectorAll) return;
-    for (const el of content.querySelectorAll('.sidebar-edge-row')) {
+    for (const el of content.querySelectorAll(`.${S.edgeRow}`)) {
       const row = /** @type {HTMLElement} */ (el);
       const arcId = row.dataset?.arcId;
-      const head = row.querySelector?.('.sidebar-edge-head');
+      const head = row.querySelector?.(`.${S.edgeHead}`);
       if (!arcId || !head || !head.hasAttribute('data-collapsible')) continue;
       this._setEdgeRowExpanded(head, this._isRowExpanded?.(arcId) ?? false);
     }
@@ -1159,8 +1175,9 @@ const SidebarLogic = {
    * @param {boolean} expanded
    */
   _setEdgeRowExpanded(head, expanded) {
+    const S = STATIC_DATA.classes.sidebar;
     const locsEl = /** @type {HTMLElement|null} */ (head.nextElementSibling);
-    const toggle = head.querySelector('.sidebar-toggle');
+    const toggle = head.querySelector(`.${S.toggle}`);
     if (expanded) {
       head.removeAttribute('data-collapsed');
       if (locsEl) locsEl.style.display = '';
@@ -1178,9 +1195,8 @@ const SidebarLogic = {
    * @returns {Element[]}
    */
   _expandableEdgeHeads(content) {
-    return [
-      ...content.querySelectorAll('.sidebar-edge-head[data-collapsible]'),
-    ];
+    const S = STATIC_DATA.classes.sidebar;
+    return [...content.querySelectorAll(`.${S.edgeHead}[data-collapsible]`)];
   },
 
   /**
@@ -1203,9 +1219,10 @@ const SidebarLogic = {
    * @param {number[]} jumpIds
    */
   expandLocations(jumpIds) {
+    const S = STATIC_DATA.classes.sidebar;
     const root = this._getElement();
     const content = /** @type {HTMLElement|null} */ (
-      root?.querySelector('.sidebar-content')
+      root?.querySelector(`.${S.content}`)
     );
     if (!root || !content) return;
     const wanted = new Set(jumpIds.map(String));
@@ -1216,7 +1233,7 @@ const SidebarLogic = {
     for (const row of rows) {
       // A row sits in a `.sidebar-locations` list whose head is the element
       // before it; lists nest, so walk up through every enclosing one.
-      let list = row.closest('.sidebar-locations');
+      let list = row.closest(`.${S.locations}`);
       while (list) {
         const head = list.previousElementSibling;
         if (
@@ -1227,16 +1244,16 @@ const SidebarLogic = {
           opened = true;
           // Cluster rows also keep AppState.expandedRows in step, so a later
           // rebuild (a graph click) renders this row open too.
-          if (head.classList?.contains('sidebar-edge-head')) {
+          if (head.classList?.contains(S.edgeHead)) {
             const edgeRow = /** @type {HTMLElement|null} */ (
-              head.closest('.sidebar-edge-row')
+              head.closest(`.${S.edgeRow}`)
             );
             const arcId = edgeRow?.dataset?.arcId;
             if (arcId) this._onRowFollow?.(arcId);
           }
         }
         const parent = /** @type {Element|null} */ (list.parentNode);
-        list = parent?.closest('.sidebar-locations') ?? null;
+        list = parent?.closest(`.${S.locations}`) ?? null;
       }
     }
     if (!opened) return;
@@ -1250,14 +1267,12 @@ const SidebarLogic = {
    * @param {HTMLElement} content
    */
   _refreshEdgeRowFocus(content) {
+    const S = STATIC_DATA.classes.sidebar;
     if (!content.querySelectorAll) return;
     const focusArc = this._resolvedFocusArc ? this._resolvedFocusArc() : null;
-    for (const el of content.querySelectorAll('.sidebar-edge-row')) {
+    for (const el of content.querySelectorAll(`.${S.edgeRow}`)) {
       const row = /** @type {HTMLElement} */ (el);
-      row.classList?.toggle(
-        'sidebar-edge-row-focus',
-        row.dataset.arcId === focusArc,
-      );
+      row.classList?.toggle(S.edgeRowFocus, row.dataset.arcId === focusArc);
     }
   },
 
@@ -1267,7 +1282,8 @@ const SidebarLogic = {
    * @param {HTMLElement} content
    */
   _syncCollapseAllButton(root, content) {
-    const allBtn = root.querySelector?.('.sidebar-collapse-all');
+    const S = STATIC_DATA.classes.sidebar;
+    const allBtn = root.querySelector?.(`.${S.collapseAll}`);
     if (!allBtn || !content.querySelectorAll) return;
     // Cycle blocks exist only in cluster view.
     const blocks = [...content.querySelectorAll('.cycle-block')];
@@ -1279,7 +1295,7 @@ const SidebarLogic = {
       allBtn.innerHTML = anyClosed ? '+' : '−';
       return;
     }
-    const heads = [...content.querySelectorAll(COLLAPSIBLE_SYMBOL_SELECTOR)];
+    const heads = [...content.querySelectorAll(collapsibleSymbolSelector(S))];
     const allCollapsed = heads.every(
       (s) => s.getAttribute('data-collapsed') === 'true',
     );
@@ -1287,33 +1303,34 @@ const SidebarLogic = {
   },
 
   _setupCollapseHandlers(root) {
+    const S = STATIC_DATA.classes.sidebar;
     if (!root || !root.querySelector) return;
-    const content = root.querySelector('.sidebar-content');
+    const content = root.querySelector(`.${S.content}`);
     if (!content) return;
     content.addEventListener('click', (e) => {
       // A location row's, definition chip's or symbol row's click is a jump,
       // handled on the document; the row around it keeps its pin and
       // expansion state.
-      if (e.target.closest?.('.sidebar-location[data-jump]')) return;
-      if (e.target.closest?.('.sidebar-definition[data-jump]')) return;
-      if (e.target.closest?.('.sidebar-edge-symbol[data-jump]')) return;
+      if (e.target.closest?.(`.${S.location}[data-jump]`)) return;
+      if (e.target.closest?.(`.${S.definition}[data-jump]`)) return;
+      if (e.target.closest?.(`.${S.edgeSymbol}[data-jump]`)) return;
       // Cluster rows: the triangle toggles expansion, the rest of the head
       // pins/unpins. The two never share a click. A non-expandable row's
       // triangle is an empty placeholder, not a toggle, so it pins too.
-      const edgeRow = e.target.closest?.('.sidebar-edge-row');
+      const edgeRow = e.target.closest?.(`.${S.edgeRow}`);
       if (edgeRow) {
-        const head = edgeRow.querySelector?.('.sidebar-edge-head');
+        const head = edgeRow.querySelector?.(`.${S.edgeHead}`);
         if (
-          e.target.closest?.('.sidebar-toggle') &&
+          e.target.closest?.(`.${S.toggle}`) &&
           head?.hasAttribute('data-collapsible')
         ) {
           SidebarLogic._handleRowToggle(edgeRow, root, content);
-        } else if (e.target.closest?.('.sidebar-edge-head')) {
+        } else if (e.target.closest?.(`.${S.edgeHead}`)) {
           SidebarLogic._handleRowPinClick(edgeRow, root, content);
         }
         return;
       }
-      const symbolEl = e.target.closest('.sidebar-symbol');
+      const symbolEl = e.target.closest(`.${S.symbol}`);
       if (!symbolEl) return;
       if (!symbolEl.hasAttribute('data-collapsible')) return;
       const locsEl = symbolEl.nextElementSibling;
@@ -1321,19 +1338,19 @@ const SidebarLogic = {
       if (isCollapsed) {
         symbolEl.removeAttribute('data-collapsed');
         locsEl.style.display = '';
-        const toggle = symbolEl.querySelector('.sidebar-toggle');
+        const toggle = symbolEl.querySelector(`.${S.toggle}`);
         if (toggle) toggle.innerHTML = '\u25BE';
       } else {
         symbolEl.setAttribute('data-collapsed', 'true');
         locsEl.style.display = 'none';
-        const toggle = symbolEl.querySelector('.sidebar-toggle');
+        const toggle = symbolEl.querySelector(`.${S.toggle}`);
         if (toggle) toggle.innerHTML = '\u25B8';
       }
       SidebarLogic._syncCollapseAllButton(root, content);
       SidebarLogic.updatePosition();
     });
     if (root.querySelectorAll) {
-      const indicators = root.querySelectorAll('.sidebar-collapse-indicator');
+      const indicators = root.querySelectorAll(`.${S.collapseIndicator}`);
       for (const indicator of indicators) {
         indicator.addEventListener('click', (e) => {
           e.stopPropagation();
@@ -1355,7 +1372,7 @@ const SidebarLogic = {
       // above) pins it and drives expansion. Hover changes neither, but the
       // focus mark tracks _resolvedFocusArc (pin-or-hover), so it has to be
       // refreshed on both ends of a hover too, not only on click.
-      const edgeRows = root.querySelectorAll('.sidebar-edge-row');
+      const edgeRows = root.querySelectorAll(`.${S.edgeRow}`);
       for (const row of edgeRows) {
         row.addEventListener('mouseenter', () => {
           if (SidebarLogic._onEdgeHover) {
@@ -1379,7 +1396,7 @@ const SidebarLogic = {
         });
       }
     }
-    const collapseAllBtn = root.querySelector('.sidebar-collapse-all');
+    const collapseAllBtn = root.querySelector(`.${S.collapseAll}`);
     if (!collapseAllBtn) return;
     collapseAllBtn.addEventListener('click', () => {
       const blocks = [...content.querySelectorAll('.cycle-block')];
@@ -1403,7 +1420,7 @@ const SidebarLogic = {
         return;
       }
       const symbols = [
-        ...content.querySelectorAll(COLLAPSIBLE_SYMBOL_SELECTOR),
+        ...content.querySelectorAll(collapsibleSymbolSelector(S)),
       ];
       if (!symbols.length) return;
       const anyExpanded = symbols.some(
@@ -1411,7 +1428,7 @@ const SidebarLogic = {
       );
       for (const symbolEl of symbols) {
         const locsEl = symbolEl.nextElementSibling;
-        const toggle = symbolEl.querySelector('.sidebar-toggle');
+        const toggle = symbolEl.querySelector(`.${S.toggle}`);
         if (anyExpanded) {
           symbolEl.setAttribute('data-collapsed', 'true');
           locsEl.style.display = 'none';
@@ -1442,15 +1459,16 @@ const SidebarLogic = {
    * @param {{ incoming: Array, outgoing: Array }} relations
    */
   showTransientNode(nodeId, relations) {
+    const S = STATIC_DATA.classes.sidebar;
     clearTimeout(this._debounceTimer ?? undefined);
     this._debounceTimer = setTimeout(() => {
       const el = this._getElement();
       if (!el) return;
       /** @type {HTMLElement|null} */
-      const innerDiv = el.querySelector('.sidebar-root');
+      const innerDiv = el.querySelector(`.${S.root}`);
       if (innerDiv) {
         innerDiv.innerHTML = this.buildNodeContent(nodeId, relations);
-        innerDiv.classList.add('sidebar-transient');
+        innerDiv.classList.add(S.transient);
       }
       el.style.display = 'block';
       this._isTransient = true;
@@ -1507,6 +1525,7 @@ const SidebarLogic = {
    * Update sidebar position and size based on current scroll and viewport.
    */
   updatePosition() {
+    const S = STATIC_DATA.classes.sidebar;
     const el = this._getElement();
     if (!el) return;
     const pos = this._calcPosition();
@@ -1519,7 +1538,7 @@ const SidebarLogic = {
     // overflow-x:auto) don't propagate scrollWidth reliably in foreignObject
     // context.
     /** @type {HTMLElement|null} */
-    const innerDiv = el.querySelector('.sidebar-root');
+    const innerDiv = el.querySelector(`.${S.root}`);
     if (innerDiv) this.resetPaths(innerDiv);
     if (this._host === 'svg') el.setAttribute('width', '9999');
     if (innerDiv) innerDiv.style.width = 'max-content';

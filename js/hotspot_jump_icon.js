@@ -68,7 +68,7 @@ function glyphPosition(node, placement, scale, tx, ty) {
 
 /**
  * @param {{ layer: Element, defsHost: Element, onJump: (id: number) => void, iconClass: string }} deps -
- *   `iconClass` is `STATIC_DATA.classes.jumpIcon` (same idiom as
+ *   `iconClass` is `STATIC_DATA.classes.hotspots.jumpIcon` (same idiom as
  *   `HotspotHover.createHoverTooltip`'s `tooltipClass`).
  */
 function createHotspotJumpIcon({ layer, defsHost, onJump, iconClass }) {

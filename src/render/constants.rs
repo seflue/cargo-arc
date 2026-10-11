@@ -1,5 +1,6 @@
 use super::theme::Theme;
 use crate::hotspots::MapVolatility;
+use serde::Serialize;
 
 /// All layout constants consolidated in one place.
 /// Use `static` (not `const`) so references like `let tb = &LAYOUT.toolbar` work.
@@ -144,6 +145,9 @@ pub(super) static DRAWING: DrawingStyles = DrawingStyles {
 
 // --- CSS Class Names (Single Source of Truth) ---
 
+#[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 pub(super) struct NodeClasses {
     pub package_node: &'static str,
@@ -166,6 +170,9 @@ pub(super) struct NodeClasses {
     pub collapsed: &'static str,
 }
 
+#[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 pub(super) struct DirectionClasses {
     pub dep_arc: &'static str,
@@ -184,6 +191,9 @@ pub(super) struct DirectionClasses {
     pub virtual_hitarea: &'static str,
 }
 
+#[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 pub(super) struct NodeSelectionClasses {
     pub selected_package: &'static str,
@@ -194,6 +204,9 @@ pub(super) struct NodeSelectionClasses {
     pub cycle_member: &'static str,
 }
 
+#[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 pub(super) struct RelationClasses {
     pub highlighted_arc: &'static str,
@@ -216,6 +229,9 @@ pub(super) struct RelationClasses {
     pub scrolling: &'static str,
 }
 
+#[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 pub(super) struct ToolbarClasses {
     pub view_options: &'static str,
@@ -252,6 +268,9 @@ pub(super) struct ToolbarClasses {
     pub page_host: &'static str,
 }
 
+#[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
 #[allow(dead_code, clippy::struct_field_names)] // "search_" prefix groups related CSS classes
 pub(super) struct SearchClasses {
     pub search_active: &'static str,
@@ -260,6 +279,9 @@ pub(super) struct SearchClasses {
     pub search_context: &'static str,
 }
 
+#[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 pub(super) struct LabelClasses {
     pub arc_count: &'static str,
@@ -268,6 +290,9 @@ pub(super) struct LabelClasses {
     pub hidden_by_filter: &'static str,
 }
 
+#[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 pub(super) struct SidebarClasses {
     pub root: &'static str,
@@ -308,8 +333,29 @@ pub(super) struct SidebarClasses {
     pub collapse_indicator: &'static str,
     /// The page-mode host that fixes the sidebar to the viewport.
     pub page_host: &'static str,
+    /// The cluster sidebar's counts line ("N modules · M cycles").
+    pub subheader: &'static str,
+    /// The consumer-locality tag after a symbol name.
+    pub locality: &'static str,
+    /// The definition chip on a symbol row.
+    pub definition: &'static str,
+    /// The inline jump icon at the end of a jump-capable row.
+    pub jump: &'static str,
+    /// A cycle-edge row of a cluster sidebar: its head over its symbol list.
+    pub edge_row: &'static str,
+    /// Additional class on the edge row that is the current focus.
+    pub edge_row_focus: &'static str,
+    pub edge_head: &'static str,
+    pub edge_meta: &'static str,
+    /// The loop glyph that leads the edge row closing a cycle.
+    pub edge_closing_marker: &'static str,
+    /// One crossing symbol under an expanded edge row.
+    pub edge_symbol: &'static str,
 }
 
+#[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 pub(super) struct HotspotClasses {
     /// A packed circle of the hotspot map.
@@ -363,6 +409,9 @@ pub(super) struct HotspotClasses {
     pub list_head: &'static str,
 }
 
+#[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 pub(super) struct CssClassNames {
     pub nodes: NodeClasses,
@@ -506,6 +555,16 @@ pub(super) static CSS: CssClassNames = CssClassNames {
         ext_info: "sidebar-ext-info",
         collapse_indicator: "sidebar-collapse-indicator",
         page_host: "sidebar-page-host",
+        subheader: "sidebar-subheader",
+        locality: "sidebar-locality",
+        definition: "sidebar-definition",
+        jump: "sidebar-jump",
+        edge_row: "sidebar-edge-row",
+        edge_row_focus: "sidebar-edge-row-focus",
+        edge_head: "sidebar-edge-head",
+        edge_meta: "sidebar-edge-meta",
+        edge_closing_marker: "sidebar-edge-closing-marker",
+        edge_symbol: "sidebar-edge-symbol",
     },
     search: SearchClasses {
         search_active: "search-active",

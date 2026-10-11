@@ -55,7 +55,7 @@ const TOOLTIP_GAP = 8;
  * @param {{ layer: Element, canvasWidth: number, tooltipClass?: string }} deps -
  *   the SVG layer the tooltip is appended to, the initial canvas width to
  *   clamp within (`setCanvasWidth` on the returned object updates it after
- *   a resize), and the group's own class (`STATIC_DATA.classes.tooltip` on
+ *   a resize), and the group's own class (`STATIC_DATA.classes.hotspots.tooltip` on
  *   a real page; a literal default keeps this module usable stand-alone).
  */
 function createHoverTooltip({
