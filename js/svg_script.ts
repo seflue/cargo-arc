@@ -43,7 +43,7 @@ function createHighlightDebouncer(renderFn: () => void, delay: number) {
 }
 
 function createPinnedSidebarRefresher<Relations>(
-  getPinned: () => { type: string; id: string } | null,
+  getPinned: () => { type: 'node' | 'arc'; id: string } | null,
   collectRelations: (nodeId: string) => Relations,
   showNode: (nodeId: string, relations: Relations) => void,
 ) {
@@ -56,7 +56,7 @@ function createPinnedSidebarRefresher<Relations>(
 }
 
 function deriveHoverKey(
-  type: string,
+  type: 'node' | 'arc',
   id: string,
   clusterMode: boolean,
   sccId: number | null | undefined,

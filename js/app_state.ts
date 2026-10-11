@@ -347,7 +347,7 @@ const AppState = {
   /**
    * Get pinned (click) selection.
    */
-  getPinned(state: AppState): null | { type: string; id: string } {
+  getPinned(state: AppState): null | { type: 'node' | 'arc'; id: string } {
     const { type, id } = state.clickSelection;
     if (type === null || id === null) return null;
     return { type, id };
