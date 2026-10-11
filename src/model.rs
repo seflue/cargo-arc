@@ -217,7 +217,6 @@ impl FromIterator<(String, HashSet<String>)> for PackageExportMap {
 pub enum UsageKind {
     Production,
     Test(TestKind),
-    Build,
 }
 
 impl UsageKind {
@@ -226,7 +225,6 @@ impl UsageKind {
         match self {
             Self::Production => "production",
             Self::Test(_) => "test",
-            Self::Build => "build",
         }
     }
 
@@ -235,7 +233,7 @@ impl UsageKind {
         match self {
             Self::Test(TestKind::Unit) => Some("unit"),
             Self::Test(TestKind::Integration) => Some("integration"),
-            _ => None,
+            Self::Production => None,
         }
     }
 }
@@ -243,7 +241,6 @@ impl UsageKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EdgeContext {
     pub kind: UsageKind,
-    pub features: Vec<String>,
 }
 
 impl EdgeContext {
@@ -251,21 +248,12 @@ impl EdgeContext {
     pub fn production() -> Self {
         Self {
             kind: UsageKind::Production,
-            features: vec![],
         }
     }
     #[must_use]
     pub fn test(kind: TestKind) -> Self {
         Self {
             kind: UsageKind::Test(kind),
-            features: vec![],
-        }
-    }
-    #[must_use]
-    pub fn build() -> Self {
-        Self {
-            kind: UsageKind::Build,
-            features: vec![],
         }
     }
 }
@@ -398,7 +386,7 @@ impl DependencyRef {
     }
 
     /// Insert a dependency, deduplicating by `(full_target, kind)`.
-    /// If a duplicate exists, merges features into the existing entry.
+    /// If a duplicate exists, merges its uses into the existing entry.
     pub(crate) fn dedup_push(
         deps: &mut Vec<DependencyRef>,
         seen: &mut HashMap<(String, UsageKind), usize>,
@@ -406,7 +394,6 @@ impl DependencyRef {
     ) {
         let key = (dep.full_target(), dep.context.kind);
         if let Some(&idx) = seen.get(&key) {
-            deps[idx].context.features.extend(dep.context.features);
             // Re-export only if every merged reference is a re-export.
             deps[idx].via_reexport &= dep.via_reexport;
             deps[idx].uses.extend(dep.uses);
@@ -560,7 +547,6 @@ mod tests {
     fn test_edgecontext_struct_basics() {
         let ctx = EdgeContext::production();
         assert_eq!(ctx.kind, UsageKind::Production);
-        assert!(ctx.features.is_empty());
         let test_ctx = EdgeContext::test(TestKind::Unit);
         assert_eq!(test_ctx.kind, UsageKind::Test(TestKind::Unit));
         assert_ne!(ctx, test_ctx);
@@ -581,9 +567,6 @@ mod tests {
             UsageKind::Test(TestKind::Integration).sub_kind_js(),
             Some("integration")
         );
-
-        assert_eq!(UsageKind::Build.kind_js(), "build");
-        assert_eq!(UsageKind::Build.sub_kind_js(), None);
     }
 
     #[test]
@@ -594,7 +577,7 @@ mod tests {
         assert_eq!(a, b);
         let mut set = HashSet::new();
         set.insert(UsageKind::Test(TestKind::Unit));
-        set.insert(UsageKind::Build);
+        set.insert(UsageKind::Production);
         assert_eq!(set.len(), 2);
     }
 

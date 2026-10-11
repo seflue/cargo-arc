@@ -342,9 +342,8 @@ fn promote_to_test(base: &EdgeContext) -> EdgeContext {
     EdgeContext {
         kind: match base.kind {
             UsageKind::Production => UsageKind::Test(TestKind::Unit),
-            already_test => already_test,
+            already_test @ UsageKind::Test(_) => already_test,
         },
-        features: base.features.clone(),
     }
 }
 
