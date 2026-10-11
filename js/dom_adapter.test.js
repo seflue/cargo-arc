@@ -4,18 +4,24 @@ import { describe, expect, test } from 'bun:test';
 globalThis.STATIC_DATA = globalThis.STATIC_DATA || {};
 globalThis.STATIC_DATA.classes = globalThis.STATIC_DATA.classes || {};
 Object.assign(globalThis.STATIC_DATA.classes, {
-  depArc: 'dep-arc',
-  cycleArc: 'cycle-arc',
-  virtualArc: 'virtual-arc',
-  arcHitarea: 'arc-hitarea',
-  arcCount: 'arc-count',
-  arcCountGroup: 'arc-count-group',
-  arcCountBg: 'arc-count-bg',
-  collapseToggle: 'collapse-toggle',
-  virtualHitarea: 'virtual-hitarea',
-  virtualArrow: 'virtual-arrow',
-  depArrow: 'dep-arrow',
-  cycleArrow: 'cycle-arrow',
+  nodes: {
+    collapseToggle: 'collapse-toggle',
+  },
+  direction: {
+    depArc: 'dep-arc',
+    cycleArc: 'cycle-arc',
+    virtualArc: 'virtual-arc',
+    arcHitarea: 'arc-hitarea',
+    virtualHitarea: 'virtual-hitarea',
+    virtualArrow: 'virtual-arrow',
+    depArrow: 'dep-arrow',
+    cycleArrow: 'cycle-arrow',
+  },
+  labels: {
+    arcCount: 'arc-count',
+    arcCountGroup: 'arc-count-group',
+    arcCountBg: 'arc-count-bg',
+  },
 });
 
 import { createFakeElement, createMockDomAdapter } from './dom_adapter.js';

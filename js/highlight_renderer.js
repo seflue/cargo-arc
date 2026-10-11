@@ -79,8 +79,8 @@ const HighlightRenderer = {
   _resetDimming(dom, C) {
     const svg = dom.getSvgRoot();
     if (svg) {
-      svg.classList.remove(C.hasHighlight);
-      svg.classList.remove(C.hasPinned);
+      svg.classList.remove(C.relation.hasHighlight);
+      svg.classList.remove(C.relation.hasPinned);
     }
   },
 
@@ -90,8 +90,8 @@ const HighlightRenderer = {
   _activateDimming(dom, C, isPinned) {
     const svg = dom.getSvgRoot();
     if (svg) {
-      svg.classList.add(C.hasHighlight);
-      if (isPinned) svg.classList.add(C.hasPinned);
+      svg.classList.add(C.relation.hasHighlight);
+      if (isPinned) svg.classList.add(C.relation.hasPinned);
     }
   },
 
@@ -129,14 +129,14 @@ const HighlightRenderer = {
    */
   _resetNodeClasses(dom, C) {
     const nodeClasses = [
-      C.selectedPackage,
-      C.selectedModule,
-      C.selectedExternal,
-      C.selectedExternalTransitive,
-      C.groupMember,
-      C.cycleMember,
-      C.depNode,
-      C.dependentNode,
+      C.nodeSelection.selectedPackage,
+      C.nodeSelection.selectedModule,
+      C.nodeSelection.selectedExternal,
+      C.nodeSelection.selectedExternalTransitive,
+      C.nodeSelection.groupMember,
+      C.nodeSelection.cycleMember,
+      C.relation.depNode,
+      C.relation.dependentNode,
     ];
     for (const nodeId of this._prevNodeIds) {
       const node = dom.getNode(nodeId);
@@ -154,14 +154,14 @@ const HighlightRenderer = {
       const originalWidth = staticData.getArcStrokeWidth(arcId);
       const arc = dom.getArc(arcId);
       if (arc) {
-        arc.classList.remove(C.highlightedArc);
+        arc.classList.remove(C.relation.highlightedArc);
         arc.style.strokeWidth = `${originalWidth}px`;
       }
 
       // Reset arrows (including hidden — prevents stale state after collapse/expand)
       const scale = ArcLogic.scaleFromStrokeWidth(originalWidth);
       dom.getArrows(arcId).forEach((arrow) => {
-        arrow.classList.remove(C.highlightedArrow);
+        arrow.classList.remove(C.relation.highlightedArrow);
         const tip = ArcLogic.parseTipFromPoints(arrow.getAttribute('points'));
         if (tip) {
           arrow.setAttribute('points', ArcLogic.getArrowPoints(tip, scale));
@@ -171,9 +171,9 @@ const HighlightRenderer = {
       // Reset labels
       const labelGroup = dom.getLabelGroup(arcId);
       if (labelGroup) {
-        const labels = labelGroup.querySelectorAll(`.${C.arcCount}`);
+        const labels = labelGroup.querySelectorAll(`.${C.labels.arcCount}`);
         labels.forEach((el) => {
-          el.classList.remove(C.highlightedLabel);
+          el.classList.remove(C.relation.highlightedLabel);
         });
       }
     }
@@ -185,7 +185,10 @@ const HighlightRenderer = {
   _applyNodeClasses(dom, C, nodeHighlights) {
     for (const [nodeId, { cssClass }] of nodeHighlights) {
       const node = dom.getNode(nodeId);
-      if (node) node.classList.add(C[cssClass]);
+      // A selection role (selected*, groupMember, cycleMember) or a relation
+      // role (depNode, dependentNode).
+      const cls = C.nodeSelection[cssClass] ?? C.relation[cssClass];
+      if (node) node.classList.add(cls);
     }
   },
 
@@ -199,26 +202,28 @@ const HighlightRenderer = {
 
       if (isVirtual) {
         dom
-          .querySelectorAll(`.${C.virtualArc}[data-arc-id="${arcId}"]`)
+          .querySelectorAll(
+            `.${C.direction.virtualArc}[data-arc-id="${arcId}"]`,
+          )
           .forEach((arc) => {
-            arc.classList.add(C.highlightedArc);
+            arc.classList.add(C.relation.highlightedArc);
             arc.style.strokeWidth = `${highlightWidth}px`;
           });
         dom
-          .querySelectorAll(`.${C.arcCount}[data-vedge="${arcId}"]`)
+          .querySelectorAll(`.${C.labels.arcCount}[data-vedge="${arcId}"]`)
           .forEach((el) => {
-            el.classList.add(C.highlightedLabel);
+            el.classList.add(C.relation.highlightedLabel);
           });
       } else {
         const arc = dom.getVisibleArc(arcId);
         if (arc) {
-          arc.classList.add(C.highlightedArc);
+          arc.classList.add(C.relation.highlightedArc);
           arc.style.strokeWidth = `${highlightWidth}px`;
         }
         const labelGroup = dom.getLabelGroup(arcId);
         if (labelGroup) {
-          labelGroup.querySelectorAll(`.${C.arcCount}`).forEach((el) => {
-            el.classList.add(C.highlightedLabel);
+          labelGroup.querySelectorAll(`.${C.labels.arcCount}`).forEach((el) => {
+            el.classList.add(C.relation.highlightedLabel);
           });
         }
       }
@@ -232,11 +237,13 @@ const HighlightRenderer = {
     for (const [key, { arrowScale, isVirtual }] of arcHighlights) {
       const arcId = isVirtual ? key.slice(2) : key;
       const arrows = isVirtual
-        ? dom.querySelectorAll(`.${C.virtualArrow}[data-vedge="${arcId}"]`)
+        ? dom.querySelectorAll(
+            `.${C.direction.virtualArrow}[data-vedge="${arcId}"]`,
+          )
         : dom.getVisibleArrows(arcId);
 
       arrows.forEach((arrow) => {
-        arrow.classList.add(C.highlightedArrow);
+        arrow.classList.add(C.relation.highlightedArrow);
         const tip = ArcLogic.parseTipFromPoints(arrow.getAttribute('points'));
         if (tip) {
           arrow.setAttribute(
@@ -263,15 +270,17 @@ const HighlightRenderer = {
       const isVirtual = key.startsWith('v:');
       const arcId = isVirtual ? key.slice(2) : key;
       const arcs = isVirtual
-        ? dom.querySelectorAll(`.${C.virtualArc}[data-arc-id="${arcId}"]`)
+        ? dom.querySelectorAll(
+            `.${C.direction.virtualArc}[data-arc-id="${arcId}"]`,
+          )
         : [dom.getVisibleArc(arcId)];
 
       for (const arc of arcs) {
         if (!arc) continue;
         const shadow = arc.cloneNode(false);
-        shadow.classList.remove(C.downward, C.upward);
-        shadow.classList.add(C.shadowPath);
-        shadow.classList.add(C[glowClass]);
+        shadow.classList.remove(C.direction.downward, C.direction.upward);
+        shadow.classList.add(C.relation.shadowPath);
+        shadow.classList.add(C.relation[glowClass]);
         shadow.removeAttribute('id');
         shadow.removeAttribute('data-arc-id');
 
@@ -296,7 +305,9 @@ const HighlightRenderer = {
 
       if (isVirtual) {
         dom
-          .querySelectorAll(`.${C.virtualArc}[data-arc-id="${arcId}"]`)
+          .querySelectorAll(
+            `.${C.direction.virtualArc}[data-arc-id="${arcId}"]`,
+          )
           .forEach((el) => {
             LayerManager.moveToHighlightLayer(el, dom);
           });
@@ -336,13 +347,13 @@ const HighlightRenderer = {
       // Virtual arc path (from cache)
       const arc = dom.getArc(arcId);
       if (arc) {
-        arc.classList.remove(C.highlightedArc);
+        arc.classList.remove(C.relation.highlightedArc);
         arc.style.strokeWidth = `${strokeWidth}px`;
       }
 
       // Virtual arrows (from cache)
       dom.getArrows(arcId).forEach((arrow) => {
-        arrow.classList.remove(C.highlightedArrow);
+        arrow.classList.remove(C.relation.highlightedArrow);
         const tip = ArcLogic.parseTipFromPoints(arrow.getAttribute('points'));
         if (tip) {
           arrow.setAttribute('points', ArcLogic.getArrowPoints(tip, scale));
@@ -353,8 +364,8 @@ const HighlightRenderer = {
       const labelGroup = dom.getLabelGroup(arcId);
       if (labelGroup) {
         for (const child of labelGroup.children) {
-          if (child.classList?.contains(C.arcCount)) {
-            child.classList.remove(C.highlightedLabel);
+          if (child.classList?.contains(C.labels.arcCount)) {
+            child.classList.remove(C.relation.highlightedLabel);
           }
         }
       }

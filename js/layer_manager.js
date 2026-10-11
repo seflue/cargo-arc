@@ -1,20 +1,20 @@
 const LAYER_TABLE = [
   {
     check: (el, cls) =>
-      el.classList?.contains(cls.depArc) ||
-      el.classList?.contains(cls.cycleArc) ||
-      el.classList?.contains(cls.virtualArc) ||
+      el.classList?.contains(cls.direction.depArc) ||
+      el.classList?.contains(cls.direction.cycleArc) ||
+      el.classList?.contains(cls.direction.virtualArc) ||
       el.tagName === 'polygon',
     base: 'BASE_ARCS',
     highlight: 'HIGHLIGHT_ARCS',
   },
   {
-    check: (el, cls) => el.classList?.contains(cls.arcCountGroup),
+    check: (el, cls) => el.classList?.contains(cls.labels.arcCountGroup),
     base: 'BASE_LABELS',
     highlight: 'HIGHLIGHT_LABELS',
   },
   {
-    check: (el, cls) => el.classList?.contains(cls.arcHitarea),
+    check: (el, cls) => el.classList?.contains(cls.direction.arcHitarea),
     base: 'HITAREAS',
     highlight: 'HIGHLIGHT_HITAREAS',
   },

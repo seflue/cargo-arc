@@ -2,7 +2,7 @@
 //! come from the same `Vec<PackedCircle>` `hotspots::pack::pack` produced, the
 //! way `render::render` feeds both paths from one `Vec<PositionedItem>`.
 
-use super::constants::{CSS, RenderConfig};
+use super::constants::{CSS, CssClassNames, RenderConfig};
 use super::css::render_styles;
 use super::elements::escape_xml;
 use super::static_data::{TargetData, ThemeData, script_element};
@@ -43,9 +43,9 @@ struct HotspotStaticData {
     #[cfg_attr(test, ts(optional))]
     volatility: Option<String>,
     theme: ThemeData,
-    /// The hotspot CSS class names JS also builds markup with, one place
-    /// instead of a literal string repeated in Rust and JS.
-    classes: BTreeMap<String, String>,
+    /// The CSS class names JS also builds markup with, one place instead of a
+    /// literal string repeated in Rust and JS.
+    classes: &'static CssClassNames,
     /// The sizes the JS layout resizes the map with, read here instead of
     /// repeated as literals in JS.
     layout: HotspotLayoutData,
@@ -335,26 +335,6 @@ fn sidebar_header(workspace: &str, volatility: MapVolatility) -> String {
     }
 }
 
-/// Return the hotspot class names JS builds markup with, keyed as JS reads them.
-fn class_names() -> BTreeMap<String, String> {
-    let hs = &CSS.hotspots;
-    [
-        ("circle", hs.circle),
-        ("listItem", hs.list_item),
-        ("hover", hs.hover),
-        ("selected", hs.selected),
-        ("barLabel", hs.bar_label),
-        ("barTrack", hs.bar_track),
-        ("barFill", hs.bar_fill),
-        ("detailsTitle", hs.details_title),
-        ("tooltip", hs.tooltip),
-        ("jumpIcon", hs.jump_icon),
-    ]
-    .into_iter()
-    .map(|(k, v)| (k.to_string(), v.to_string()))
-    .collect()
-}
-
 /// Render the sidebar below the toolbar at `top`: header, details panel,
 /// ranked list, list/bars toggle and grey note. `hotspot_script.js` fills in
 /// the details and drives the toggle.
@@ -537,7 +517,6 @@ pub(crate) fn render(
         &hotspots,
         volatility.as_deref(),
     );
-    let classes = class_names();
     let static_data = HotspotStaticData {
         nodes,
         hotspots,
@@ -545,7 +524,7 @@ pub(crate) fn render(
         total_commits: tree.total_commits,
         volatility,
         theme: ThemeData::current(),
-        classes,
+        classes: &CSS,
         layout: HotspotLayoutData::current(),
     };
 
@@ -1250,23 +1229,17 @@ mod tests {
         assert!(crumbs > last_button, "got: {toolbar}");
     }
 
-    /// `STATIC_DATA`'s own `classes` map names every hotspot class JS builds
-    /// markup with, sourced from `CSS.hotspots` instead of a literal string
-    /// repeated in Rust and JS.
+    /// `STATIC_DATA.classes` is the whole nested class map, the same one the
+    /// arc page carries.
     #[test]
     fn static_data_carries_the_hotspot_class_names() {
         let (_, _, svg) = rendered_default();
-        let data = static_data_of(&svg);
+        let classes = &static_data_of(&svg)["classes"];
 
-        assert_eq!(data["classes"]["circle"], CSS.hotspots.circle);
-        assert_eq!(data["classes"]["listItem"], CSS.hotspots.list_item);
-        assert_eq!(data["classes"]["hover"], CSS.hotspots.hover);
-        assert_eq!(data["classes"]["selected"], CSS.hotspots.selected);
-        assert_eq!(data["classes"]["barLabel"], CSS.hotspots.bar_label);
-        assert_eq!(data["classes"]["barTrack"], CSS.hotspots.bar_track);
-        assert_eq!(data["classes"]["barFill"], CSS.hotspots.bar_fill);
-        assert_eq!(data["classes"]["detailsTitle"], CSS.hotspots.details_title);
-        assert_eq!(data["classes"]["tooltip"], CSS.hotspots.tooltip);
-        assert_eq!(data["classes"]["jumpIcon"], CSS.hotspots.jump_icon);
+        assert_eq!(classes["hotspots"]["circle"], "hotspot-circle");
+        assert_eq!(classes["hotspots"]["listItem"], "hotspot-list-item");
+        assert_eq!(classes["hotspots"]["jumpIcon"], "hotspot-jump-icon");
+        assert_eq!(classes["sidebar"]["header"], "sidebar-header");
+        assert_eq!(classes["direction"]["depArc"], "dep-arc");
     }
 }

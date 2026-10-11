@@ -6,35 +6,45 @@ if (!globalThis.STATIC_DATA) globalThis.STATIC_DATA = {};
 if (!globalThis.STATIC_DATA.classes) globalThis.STATIC_DATA.classes = {};
 globalThis.STATIC_DATA.theme = { shadowOpacity: '0.42', light: [], dark: [] };
 Object.assign(globalThis.STATIC_DATA.classes, {
-  depArc: 'dep-arc',
-  cycleArc: 'cycle-arc',
-  virtualArc: 'virtual-arc',
-  arcHitarea: 'arc-hitarea',
-  arcCount: 'arc-count',
-  arcCountGroup: 'arc-count-group',
-  arcCountBg: 'arc-count-bg',
-  collapseToggle: 'collapse-toggle',
-  virtualHitarea: 'virtual-hitarea',
-  virtualArrow: 'virtual-arrow',
-  depArrow: 'dep-arrow',
-  cycleArrow: 'cycle-arrow',
-  hasHighlight: 'has-highlight',
-  hasPinned: 'has-pinned',
-  selectedPackage: 'selectedPackage',
-  selectedModule: 'selectedModule',
-  selectedExternal: 'selectedExternal',
-  depNode: 'depNode',
-  dependentNode: 'dependentNode',
-  highlightedArc: 'highlightedArc',
-  highlightedArrow: 'highlightedArrow',
-  highlightedLabel: 'highlightedLabel',
-  shadowPath: 'shadow-path',
-  glowIncoming: 'glowIncoming',
-  glowOutgoing: 'glowOutgoing',
-  downward: 'downward',
-  upward: 'upward',
-  groupMember: 'group-member',
-  cycleMember: 'cycle-member',
+  nodes: {
+    collapseToggle: 'collapse-toggle',
+  },
+  direction: {
+    depArc: 'dep-arc',
+    cycleArc: 'cycle-arc',
+    virtualArc: 'virtual-arc',
+    arcHitarea: 'arc-hitarea',
+    virtualHitarea: 'virtual-hitarea',
+    virtualArrow: 'virtual-arrow',
+    depArrow: 'dep-arrow',
+    cycleArrow: 'cycle-arrow',
+    downward: 'downward',
+    upward: 'upward',
+  },
+  relation: {
+    hasHighlight: 'has-highlight',
+    hasPinned: 'has-pinned',
+    depNode: 'depNode',
+    dependentNode: 'dependentNode',
+    highlightedArc: 'highlightedArc',
+    highlightedArrow: 'highlightedArrow',
+    highlightedLabel: 'highlightedLabel',
+    shadowPath: 'shadow-path',
+    glowIncoming: 'glowIncoming',
+    glowOutgoing: 'glowOutgoing',
+  },
+  nodeSelection: {
+    selectedPackage: 'selectedPackage',
+    selectedModule: 'selectedModule',
+    selectedExternal: 'selectedExternal',
+    groupMember: 'group-member',
+    cycleMember: 'cycle-member',
+  },
+  labels: {
+    arcCount: 'arc-count',
+    arcCountGroup: 'arc-count-group',
+    arcCountBg: 'arc-count-bg',
+  },
 });
 
 import { ArcLogic } from './arc_logic.js';
@@ -88,12 +98,12 @@ describe('HighlightRenderer', () => {
 
   describe('apply(null) — reset', () => {
     test('removes has-highlight class from SVG root', () => {
-      svg.classList.add(C.hasHighlight);
+      svg.classList.add(C.relation.hasHighlight);
 
       const staticData = createRendererStaticData([], {});
       HighlightRenderer.apply(dom, staticData, new Map(), null);
 
-      expect(svg.classList.contains(C.hasHighlight)).toBe(false);
+      expect(svg.classList.contains(C.relation.hasHighlight)).toBe(false);
     });
 
     test('resets node classes via dirty-set', () => {
@@ -110,11 +120,15 @@ describe('HighlightRenderer', () => {
         shadowData: new Map(),
         promotedHitareas: new Set(),
       });
-      expect(nodeEl.classList.contains(C.selectedPackage)).toBe(true);
+      expect(nodeEl.classList.contains(C.nodeSelection.selectedPackage)).toBe(
+        true,
+      );
 
       // Reset clears only dirty-set nodes
       HighlightRenderer.apply(dom, staticData, new Map(), null);
-      expect(nodeEl.classList.contains(C.selectedPackage)).toBe(false);
+      expect(nodeEl.classList.contains(C.nodeSelection.selectedPackage)).toBe(
+        false,
+      );
     });
 
     test('resets regular arc strokeWidth to base from staticData', () => {
@@ -148,28 +162,30 @@ describe('HighlightRenderer', () => {
         shadowData: new Map(),
         promotedHitareas: new Set(),
       });
-      expect(arcEl.classList.contains(C.highlightedArc)).toBe(true);
+      expect(arcEl.classList.contains(C.relation.highlightedArc)).toBe(true);
 
       // Reset
       HighlightRenderer.apply(dom, staticData, new Map(), null);
-      expect(arcEl.classList.contains(C.highlightedArc)).toBe(false);
+      expect(arcEl.classList.contains(C.relation.highlightedArc)).toBe(false);
       expect(parseFloat(arcEl.style.strokeWidth)).toBeCloseTo(0.5, 2);
-      expect(arrowEl.classList.contains(C.highlightedArrow)).toBe(false);
+      expect(arrowEl.classList.contains(C.relation.highlightedArrow)).toBe(
+        false,
+      );
     });
 
     test('resets virtual arc styles via dirty-set and cache', () => {
       const vArcEl = createFakeElement('path');
-      vArcEl.classList.add(C.virtualArc);
+      vArcEl.classList.add(C.direction.virtualArc);
 
       const vArrowEl = createFakeElement('polygon');
-      vArrowEl.classList.add(C.virtualArrow);
+      vArrowEl.classList.add(C.direction.virtualArrow);
       vArrowEl.setAttribute(
         'points',
         ArcLogic.getArrowPoints({ x: 50, y: 100 }, 1.0),
       );
 
       const vLabelEl = createFakeElement('text');
-      vLabelEl.classList.add(C.arcCount);
+      vLabelEl.classList.add(C.labels.arcCount);
       const labelGroup = createFakeElement('g');
       labelGroup.appendChild(vLabelEl);
 
@@ -177,9 +193,15 @@ describe('HighlightRenderer', () => {
       dom.cacheArcElements('x-y', vArcEl, [vArrowEl], labelGroup);
 
       // Register querySelectorAll results (used by apply phase for virtual arcs)
-      dom._registerSelector(`.${C.virtualArc}[data-arc-id="x-y"]`, [vArcEl]);
-      dom._registerSelector(`.${C.virtualArrow}[data-vedge="x-y"]`, [vArrowEl]);
-      dom._registerSelector(`.${C.arcCount}[data-vedge="x-y"]`, [vLabelEl]);
+      dom._registerSelector(`.${C.direction.virtualArc}[data-arc-id="x-y"]`, [
+        vArcEl,
+      ]);
+      dom._registerSelector(`.${C.direction.virtualArrow}[data-vedge="x-y"]`, [
+        vArrowEl,
+      ]);
+      dom._registerSelector(`.${C.labels.arcCount}[data-vedge="x-y"]`, [
+        vLabelEl,
+      ]);
 
       const virtualArcUsages = new Map([
         [
@@ -212,13 +234,17 @@ describe('HighlightRenderer', () => {
         shadowData: new Map(),
         promotedHitareas: new Set(),
       });
-      expect(vArcEl.classList.contains(C.highlightedArc)).toBe(true);
+      expect(vArcEl.classList.contains(C.relation.highlightedArc)).toBe(true);
 
       // Reset
       HighlightRenderer.apply(dom, staticData, virtualArcUsages, null);
-      expect(vArcEl.classList.contains(C.highlightedArc)).toBe(false);
-      expect(vArrowEl.classList.contains(C.highlightedArrow)).toBe(false);
-      expect(vLabelEl.classList.contains(C.highlightedLabel)).toBe(false);
+      expect(vArcEl.classList.contains(C.relation.highlightedArc)).toBe(false);
+      expect(vArrowEl.classList.contains(C.relation.highlightedArrow)).toBe(
+        false,
+      );
+      expect(vLabelEl.classList.contains(C.relation.highlightedLabel)).toBe(
+        false,
+      );
     });
   });
 
@@ -234,7 +260,7 @@ describe('HighlightRenderer', () => {
 
       HighlightRenderer.apply(dom, staticData, new Map(), state);
 
-      expect(svg.classList.contains(C.hasHighlight)).toBe(true);
+      expect(svg.classList.contains(C.relation.hasHighlight)).toBe(true);
     });
 
     test('sets CSS class on highlighted node', () => {
@@ -253,7 +279,9 @@ describe('HighlightRenderer', () => {
 
       HighlightRenderer.apply(dom, staticData, new Map(), state);
 
-      expect(nodeEl.classList.contains(C.selectedModule)).toBe(true);
+      expect(nodeEl.classList.contains(C.nodeSelection.selectedModule)).toBe(
+        true,
+      );
     });
 
     test('sets highlightedArc class and strokeWidth on arc', () => {
@@ -262,7 +290,9 @@ describe('HighlightRenderer', () => {
       dom._registerSelector(Selectors.baseArc('a-b'), arcEl);
       dom._registerSelector(Selectors.arrows('a-b'), []);
       dom._registerSelector(
-        Selectors.labelGroup ? `.${C.arcCountGroup}[data-vedge="a-b"]` : '',
+        Selectors.labelGroup
+          ? `.${C.labels.arcCountGroup}[data-vedge="a-b"]`
+          : '',
         null,
       );
 
@@ -288,7 +318,7 @@ describe('HighlightRenderer', () => {
 
       HighlightRenderer.apply(dom, staticData, new Map(), state);
 
-      expect(arcEl.classList.contains(C.highlightedArc)).toBe(true);
+      expect(arcEl.classList.contains(C.relation.highlightedArc)).toBe(true);
       expect(parseFloat(arcEl.style.strokeWidth)).toBeCloseTo(0.65, 2);
     });
 
@@ -328,7 +358,9 @@ describe('HighlightRenderer', () => {
 
       HighlightRenderer.apply(dom, staticData, new Map(), state);
 
-      expect(arrowEl.classList.contains(C.highlightedArrow)).toBe(true);
+      expect(arrowEl.classList.contains(C.relation.highlightedArrow)).toBe(
+        true,
+      );
       // Arrow tip should be preserved
       const tip = ArcLogic.parseTipFromPoints(arrowEl.getAttribute('points'));
       expect(tip.x).toBe(originalTip.x);
@@ -342,11 +374,13 @@ describe('HighlightRenderer', () => {
       // On next reset, _resetLayers moves them to BASE_ARCS (never cleaned).
       // _createShadows then clones the zombies → exponential DOM growth.
       const arcEl = createFakeElement('path');
-      arcEl.classList.add(C.virtualArc);
+      arcEl.classList.add(C.direction.virtualArc);
       arcEl.setAttribute('data-arc-id', 'x-y');
       arcEl.setAttribute('d', 'M 0 0 C 50 0 50 100 0 100');
 
-      dom._registerSelector(`.${C.virtualArc}[data-arc-id="x-y"]`, [arcEl]);
+      dom._registerSelector(`.${C.direction.virtualArc}[data-arc-id="x-y"]`, [
+        arcEl,
+      ]);
 
       const shadowLayer = layers[LayerManager.LAYERS.SHADOWS];
 
@@ -388,7 +422,7 @@ describe('HighlightRenderer', () => {
       expect(shadow.getAttribute('data-arc-id')).toBeNull();
 
       // Shadow should have shadowPath class
-      expect(shadow.classList.contains(C.shadowPath)).toBe(true);
+      expect(shadow.classList.contains(C.relation.shadowPath)).toBe(true);
 
       // The glow opacity is the renderer's, handed over in STATIC_DATA.theme
       expect(shadow.getAttribute('opacity')).toBe('0.42');
@@ -397,7 +431,7 @@ describe('HighlightRenderer', () => {
     test('dimming order: resetDimming before classes, activateDimming after', () => {
       // Verify that svg starts without has-highlight after reset,
       // and ends with has-highlight after apply
-      svg.classList.add(C.hasHighlight); // pre-existing
+      svg.classList.add(C.relation.hasHighlight); // pre-existing
 
       const staticData = createRendererStaticData([], {});
       const state = {
@@ -410,7 +444,7 @@ describe('HighlightRenderer', () => {
       HighlightRenderer.apply(dom, staticData, new Map(), state);
 
       // After full apply: has-highlight should be present (activateDimming ran last)
-      expect(svg.classList.contains(C.hasHighlight)).toBe(true);
+      expect(svg.classList.contains(C.relation.hasHighlight)).toBe(true);
     });
 
     test('cycle-member: node gets cycle-member CSS class', () => {
@@ -429,7 +463,7 @@ describe('HighlightRenderer', () => {
 
       HighlightRenderer.apply(dom, staticData, new Map(), state);
 
-      expect(nodeEl.classList.contains(C.cycleMember)).toBe(true);
+      expect(nodeEl.classList.contains(C.nodeSelection.cycleMember)).toBe(true);
     });
 
     test('cycle-member: resetToBase removes cycle-member class', () => {
@@ -446,11 +480,13 @@ describe('HighlightRenderer', () => {
         shadowData: new Map(),
         promotedHitareas: new Set(),
       });
-      expect(nodeEl.classList.contains(C.cycleMember)).toBe(true);
+      expect(nodeEl.classList.contains(C.nodeSelection.cycleMember)).toBe(true);
 
       // Reset
       HighlightRenderer.apply(dom, staticData, new Map(), null);
-      expect(nodeEl.classList.contains(C.cycleMember)).toBe(false);
+      expect(nodeEl.classList.contains(C.nodeSelection.cycleMember)).toBe(
+        false,
+      );
     });
 
     test('cycle-member: multiple nodes get cycle-member simultaneously', () => {
@@ -472,8 +508,8 @@ describe('HighlightRenderer', () => {
 
       HighlightRenderer.apply(dom, staticData, new Map(), state);
 
-      expect(nodeA.classList.contains(C.cycleMember)).toBe(true);
-      expect(nodeB.classList.contains(C.cycleMember)).toBe(true);
+      expect(nodeA.classList.contains(C.nodeSelection.cycleMember)).toBe(true);
+      expect(nodeB.classList.contains(C.nodeSelection.cycleMember)).toBe(true);
     });
 
     test('isPinned true: adds has-pinned class to SVG root', () => {
@@ -488,8 +524,8 @@ describe('HighlightRenderer', () => {
 
       HighlightRenderer.apply(dom, staticData, new Map(), state);
 
-      expect(svg.classList.contains(C.hasPinned)).toBe(true);
-      expect(svg.classList.contains(C.hasHighlight)).toBe(true);
+      expect(svg.classList.contains(C.relation.hasPinned)).toBe(true);
+      expect(svg.classList.contains(C.relation.hasHighlight)).toBe(true);
     });
 
     test('isPinned false: does not add has-pinned class to SVG root', () => {
@@ -504,17 +540,17 @@ describe('HighlightRenderer', () => {
 
       HighlightRenderer.apply(dom, staticData, new Map(), state);
 
-      expect(svg.classList.contains(C.hasPinned)).toBe(false);
-      expect(svg.classList.contains(C.hasHighlight)).toBe(true);
+      expect(svg.classList.contains(C.relation.hasPinned)).toBe(false);
+      expect(svg.classList.contains(C.relation.hasHighlight)).toBe(true);
     });
 
     test('apply(null) removes has-pinned class from SVG root', () => {
-      svg.classList.add(C.hasPinned);
+      svg.classList.add(C.relation.hasPinned);
 
       const staticData = createRendererStaticData([], {});
       HighlightRenderer.apply(dom, staticData, new Map(), null);
 
-      expect(svg.classList.contains(C.hasPinned)).toBe(false);
+      expect(svg.classList.contains(C.relation.hasPinned)).toBe(false);
     });
   });
 });

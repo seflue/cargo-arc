@@ -736,8 +736,8 @@ if (typeof document !== 'undefined') {
       sortedIds.forEach((nodeId) => {
         const node = DomAdapter.getNode(nodeId);
         if (!node) return;
-        if (node.classList.contains(C.collapsed)) return;
-        if (node.classList.contains(C.hiddenByFilter)) return;
+        if (node.classList.contains(C.nodes.collapsed)) return;
+        if (node.classList.contains(C.labels.hiddenByFilter)) return;
 
         // Get height from StaticData (no DOM read)
         const origPos = StaticData.getOriginalPosition(nodeId);
@@ -755,7 +755,7 @@ if (typeof document !== 'undefined') {
         if (
           label &&
           label.tagName === 'text' &&
-          label.classList.contains(C.label)
+          label.classList.contains(C.nodes.label)
         ) {
           label.setAttribute('y', currentY + height / 2 + 4);
         }
@@ -871,8 +871,8 @@ if (typeof document !== 'undefined') {
           // that filter toggling already set on it.
           const collapsed = fromCollapsed || toCollapsed;
           const setCollapsedClass = (el) => {
-            if (collapsed) el.classList.add(C.collapsed);
-            else el.classList.remove(C.collapsed);
+            if (collapsed) el.classList.add(C.nodes.collapsed);
+            else el.classList.remove(C.nodes.collapsed);
           };
           if (hitarea) {
             hitarea.style.display = 'none';
@@ -901,12 +901,12 @@ if (typeof document !== 'undefined') {
             );
             if (hitarea) {
               hitarea.setAttribute('d', arc.path);
-              hitarea.classList.remove(C.collapsed);
+              hitarea.classList.remove(C.nodes.collapsed);
             }
             const visibleArc = DomAdapter.getVisibleArc(arcId);
             if (visibleArc) {
               visibleArc.setAttribute('d', arc.path);
-              visibleArc.classList.remove(C.collapsed);
+              visibleArc.classList.remove(C.nodes.collapsed);
             }
 
             const strokeWidth = StaticData.getArcStrokeWidth(arcId);
@@ -917,7 +917,7 @@ if (typeof document !== 'undefined') {
                 'points',
                 ArcLogic.getArrowPoints({ x: arc.toX, y: arc.toY }, scale),
               );
-              arrow.classList.remove(C.collapsed);
+              arrow.classList.remove(C.nodes.collapsed);
             });
           }
         }
@@ -933,7 +933,7 @@ if (typeof document !== 'undefined') {
       const hidden = new Set();
       for (const nodeId of StaticData.getAllNodeIds()) {
         const node = DomAdapter.getNode(nodeId);
-        if (node?.classList.contains(C.hiddenByFilter)) {
+        if (node?.classList.contains(C.labels.hiddenByFilter)) {
           hidden.add(nodeId);
         }
       }
@@ -1019,7 +1019,7 @@ if (typeof document !== 'undefined') {
 
         // Arc path
         const path = DomAdapter.createSvgElement('path');
-        path.setAttribute('class', `${C.virtualArc} ${direction}`);
+        path.setAttribute('class', `${C.direction.virtualArc} ${direction}`);
         path.setAttribute('d', arc.path);
         path.setAttribute('data-arc-id', arcId);
         path.setAttribute('data-from', fromId);
@@ -1030,7 +1030,7 @@ if (typeof document !== 'undefined') {
         // Arrow (scaled to match stroke width)
         const scale = strokeWidth / 1.5;
         const arrow = DomAdapter.createSvgElement('polygon');
-        arrow.setAttribute('class', `${C.virtualArrow} ${direction}`);
+        arrow.setAttribute('class', `${C.direction.virtualArrow} ${direction}`);
         arrow.setAttribute('data-vedge', arcId);
         arrow.setAttribute('data-from', fromId);
         arrow.setAttribute('data-to', toId);
@@ -1048,7 +1048,7 @@ if (typeof document !== 'undefined') {
         let labelGroup = null;
         if (count > 1) {
           labelGroup = DomAdapter.createSvgElement('g');
-          labelGroup.setAttribute('class', C.arcCountGroup);
+          labelGroup.setAttribute('class', C.labels.arcCountGroup);
           labelGroup.setAttribute('data-vedge', arcId);
           labelGroup.setAttribute('data-from', fromId);
           labelGroup.setAttribute('data-to', toId);
@@ -1059,7 +1059,7 @@ if (typeof document !== 'undefined') {
           const padding = 2;
           const textWidth = text.length * 6; // ~6px per char at 10px font
           const bg = DomAdapter.createSvgElement('rect');
-          bg.setAttribute('class', C.arcCountBg);
+          bg.setAttribute('class', C.labels.arcCountBg);
           bg.setAttribute('x', x - textWidth / 2 - padding);
           bg.setAttribute('y', y - 8 - padding);
           bg.setAttribute('width', textWidth + padding * 2);
@@ -1067,7 +1067,7 @@ if (typeof document !== 'undefined') {
           bg.setAttribute('rx', '2');
 
           const countLabel = DomAdapter.createSvgElement('text');
-          countLabel.setAttribute('class', C.arcCount);
+          countLabel.setAttribute('class', C.labels.arcCount);
           countLabel.setAttribute('data-vedge', arcId);
           countLabel.setAttribute('x', x);
           countLabel.setAttribute('y', y);
@@ -1090,7 +1090,10 @@ if (typeof document !== 'undefined') {
 
         // Hitarea
         const hitarea = DomAdapter.createSvgElement('path');
-        hitarea.setAttribute('class', `${C.virtualHitarea} ${C.arcHitarea}`);
+        hitarea.setAttribute(
+          'class',
+          `${C.direction.virtualHitarea} ${C.direction.arcHitarea}`,
+        );
         hitarea.setAttribute('d', arc.path);
         hitarea.setAttribute('data-arc-id', arcId);
         hitarea.setAttribute('data-from', fromId);
@@ -1143,14 +1146,14 @@ if (typeof document !== 'undefined') {
       const node = DomAdapter.getNode(descId);
       const label = node?.nextElementSibling;
       const toggle = DomAdapter.getCollapseToggle(descId);
-      node?.classList.toggle(C.collapsed, collapsed);
-      label?.classList.toggle(C.collapsed, collapsed);
-      toggle?.classList.toggle(C.collapsed, collapsed);
+      node?.classList.toggle(C.nodes.collapsed, collapsed);
+      label?.classList.toggle(C.nodes.collapsed, collapsed);
+      toggle?.classList.toggle(C.nodes.collapsed, collapsed);
       DomAdapter.getTreeLines(descId, 'child').forEach((line) => {
         if (collapsed) {
-          line.classList.add(C.collapsed);
-        } else if (!node?.classList.contains(C.collapsed)) {
-          line.classList.remove(C.collapsed);
+          line.classList.add(C.nodes.collapsed);
+        } else if (!node?.classList.contains(C.nodes.collapsed)) {
+          line.classList.remove(C.nodes.collapsed);
         }
       });
     }
@@ -1197,7 +1200,10 @@ if (typeof document !== 'undefined') {
         );
       const cycleMarker = DomAdapter.getCycleMarker(nodeId);
       if (cycleMarker) cycleMarker.textContent = hidesCycle ? ' ↺' : '';
-      countLabel.parentElement?.classList.toggle(C.hidesCycle, hidesCycle);
+      countLabel.parentElement?.classList.toggle(
+        C.nodes.hidesCycle,
+        hidesCycle,
+      );
       if (collapsed) {
         countLabel.textContent = ` (+${countDescendants(nodeId)})`;
         const labelText = countLabel.parentElement;
@@ -1287,7 +1293,9 @@ if (typeof document !== 'undefined') {
     // Read which arc filters are currently active from their checkboxes.
     function readActiveArcFilters() {
       const isOn = (selector) =>
-        !!DomAdapter.querySelector(selector)?.classList.contains(C.checked);
+        !!DomAdapter.querySelector(selector)?.classList.contains(
+          C.toolbar.checked,
+        );
       return {
         packageDep: isOn('#package-dep-checkbox'),
         moduleDep: isOn('#module-dep-checkbox'),
@@ -1299,10 +1307,10 @@ if (typeof document !== 'undefined') {
     // Derive from an arc's classes which filters cover it.
     function arcFilters(arc) {
       return {
-        isPackageDep: arc.classList.contains(C.packageDepArc),
-        isModuleDep: arc.classList.contains(C.moduleDepArc),
-        isReexport: arc.classList.contains(C.reexportArc),
-        isCycle: arc.classList.contains(C.cycleArc),
+        isPackageDep: arc.classList.contains(C.direction.packageDepArc),
+        isModuleDep: arc.classList.contains(C.direction.moduleDepArc),
+        isReexport: arc.classList.contains(C.direction.reexportArc),
+        isCycle: arc.classList.contains(C.direction.cycleArc),
       };
     }
 
@@ -1318,7 +1326,7 @@ if (typeof document !== 'undefined') {
       const filterHiddenNodes = getFilterHiddenNodeIds();
 
       DomAdapter.querySelectorAll(
-        `.${C.arcHitarea}:not(.${C.virtualHitarea})`,
+        `.${C.direction.arcHitarea}:not(.${C.direction.virtualHitarea})`,
       ).forEach((hitarea) => {
         const arcId = hitarea.dataset.arcId;
         const arc = DomAdapter.getArc(arcId);
@@ -1332,10 +1340,10 @@ if (typeof document !== 'undefined') {
         const visible =
           !nodeFilteredOut &&
           ArcLogic.matchesActiveFilters(arcFilters(arc), activeFilters);
-        arc.classList.toggle(C.hiddenByFilter, !visible);
-        hitarea.classList.toggle(C.hiddenByFilter, !visible);
+        arc.classList.toggle(C.labels.hiddenByFilter, !visible);
+        hitarea.classList.toggle(C.labels.hiddenByFilter, !visible);
         DomAdapter.getArrows(arcId).forEach((arrow) => {
-          arrow.classList.toggle(C.hiddenByFilter, !visible);
+          arrow.classList.toggle(C.labels.hiddenByFilter, !visible);
         });
         if (visible) {
           AppState.showArc(appState, arcId);
@@ -1347,7 +1355,10 @@ if (typeof document !== 'undefined') {
       // Virtual arcs are aggregated module-deps — they follow module-dep.
       DomAdapter.querySelectorAll(Selectors.allVirtualElements()).forEach(
         (el) => {
-          el.classList.toggle(C.hiddenByFilter, !activeFilters.moduleDep);
+          el.classList.toggle(
+            C.labels.hiddenByFilter,
+            !activeFilters.moduleDep,
+          );
         },
       );
 
@@ -1357,7 +1368,9 @@ if (typeof document !== 'undefined') {
 
     // Flip one arc filter's checkbox, then recompute arc visibility.
     function toggleFilterCheckbox(checkboxSelector) {
-      DomAdapter.querySelector(checkboxSelector)?.classList.toggle(C.checked);
+      DomAdapter.querySelector(checkboxSelector)?.classList.toggle(
+        C.toolbar.checked,
+      );
       recomputeArcVisibility();
     }
 
@@ -1367,8 +1380,13 @@ if (typeof document !== 'undefined') {
     // cycles filter, so arc visibility is recomputed like the other filters.
     function toggleClusterMode() {
       const checkbox = DomAdapter.querySelector('#cycles-checkbox');
-      const isChecked = checkbox ? checkbox.classList.toggle(C.checked) : false;
-      DomAdapter.getSvgRoot()?.classList.toggle(C.clusterModeOn, isChecked);
+      const isChecked = checkbox
+        ? checkbox.classList.toggle(C.toolbar.checked)
+        : false;
+      DomAdapter.getSvgRoot()?.classList.toggle(
+        C.relation.clusterModeOn,
+        isChecked,
+      );
       AppState.setClusterMode(appState, isChecked);
       recomputeArcVisibility();
     }
@@ -1380,34 +1398,34 @@ if (typeof document !== 'undefined') {
         if (!rect) return;
         const label = rect.nextElementSibling;
         const toggle = DomAdapter.getCollapseToggle(nodeId);
-        rect.classList.toggle(C.hiddenByFilter, !isChecked);
-        label?.classList.toggle(C.hiddenByFilter, !isChecked);
-        toggle?.classList.toggle(C.hiddenByFilter, !isChecked);
+        rect.classList.toggle(C.labels.hiddenByFilter, !isChecked);
+        label?.classList.toggle(C.labels.hiddenByFilter, !isChecked);
+        toggle?.classList.toggle(C.labels.hiddenByFilter, !isChecked);
         DomAdapter.getTreeLines(nodeId, 'child').forEach((line) => {
-          line.classList.toggle(C.hiddenByFilter, !isChecked);
+          line.classList.toggle(C.labels.hiddenByFilter, !isChecked);
         });
         DomAdapter.getTreeLines(nodeId, 'parent').forEach((line) => {
-          line.classList.toggle(C.hiddenByFilter, !isChecked);
+          line.classList.toggle(C.labels.hiddenByFilter, !isChecked);
         });
       });
 
       DomAdapter.querySelectorAll(
-        `.${C.arcHitarea}:not(.${C.virtualHitarea})`,
+        `.${C.direction.arcHitarea}:not(.${C.direction.virtualHitarea})`,
       ).forEach((hitarea) => {
         const arcId = hitarea.dataset.arcId;
         if (!isTargetArc(arcId)) return;
 
         if (isChecked) {
-          hitarea.classList.remove(C.hiddenByFilter);
+          hitarea.classList.remove(C.labels.hiddenByFilter);
           AppState.showArc(appState, arcId);
         } else {
-          hitarea.classList.add(C.hiddenByFilter);
+          hitarea.classList.add(C.labels.hiddenByFilter);
           AppState.hideArc(appState, arcId);
         }
         const visibleArc = DomAdapter.getArc(arcId);
-        visibleArc?.classList.toggle(C.hiddenByFilter, !isChecked);
+        visibleArc?.classList.toggle(C.labels.hiddenByFilter, !isChecked);
         DomAdapter.getArrows(arcId).forEach((arrow) => {
-          arrow.classList.toggle(C.hiddenByFilter, !isChecked);
+          arrow.classList.toggle(C.labels.hiddenByFilter, !isChecked);
         });
       });
 
@@ -1419,7 +1437,7 @@ if (typeof document !== 'undefined') {
       const checkbox = DomAdapter.querySelector('#external-dep-checkbox');
       if (!checkbox) return;
 
-      const isChecked = checkbox.classList.toggle(C.checked);
+      const isChecked = checkbox.classList.toggle(C.toolbar.checked);
 
       toggleFilteredNodes(
         isChecked,
@@ -1430,7 +1448,7 @@ if (typeof document !== 'undefined') {
       const transitiveCheckbox = DomAdapter.querySelector(
         '#transitive-dep-checkbox',
       );
-      transitiveCheckbox?.classList.toggle(C.checked, isChecked);
+      transitiveCheckbox?.classList.toggle(C.toolbar.checked, isChecked);
     }
 
     function toggleTransitiveDepVisibility() {
@@ -1438,9 +1456,10 @@ if (typeof document !== 'undefined') {
       if (!checkbox) return;
 
       const extCheckbox = DomAdapter.querySelector('#external-dep-checkbox');
-      if (extCheckbox && !extCheckbox.classList.contains(C.checked)) return;
+      if (extCheckbox && !extCheckbox.classList.contains(C.toolbar.checked))
+        return;
 
-      const isChecked = checkbox.classList.toggle(C.checked);
+      const isChecked = checkbox.classList.toggle(C.toolbar.checked);
 
       toggleFilteredNodes(
         isChecked,
@@ -1455,14 +1474,14 @@ if (typeof document !== 'undefined') {
     // doesn't appear when viewing the file outside a browser.
     function syncToolbarHeight() {
       const fo = DomAdapter.getElementById('toolbar-fo');
-      const root = DomAdapter.querySelector(`.${C.toolbarRoot}`);
+      const root = DomAdapter.querySelector(`.${C.toolbar.root}`);
       const graph = DomAdapter.getElementById('graph-content');
       if (!root || (!PAGE_HOST && !fo)) return;
       if (!PAGE_HOST) fo.style.display = '';
       const baseH = root.offsetHeight;
       if (baseH > 0) {
         // Include dropdown panel height when visible (absolutely positioned, outside normal flow)
-        const panel = DomAdapter.querySelector(`.${C.toolbarDropdownPanel}`);
+        const panel = DomAdapter.querySelector(`.${C.toolbar.dropdownPanel}`);
         const panelH =
           panel && panel.style.display !== 'none' ? panel.offsetHeight : 0;
         if (!PAGE_HOST) fo.setAttribute('height', baseH + panelH);
@@ -1521,8 +1540,8 @@ if (typeof document !== 'undefined') {
     const scrollState = ScrollState.createScrollState({
       setScrolling: (scrolling) => {
         const classes = DomAdapter.getSvgRoot()?.classList;
-        if (scrolling) classes?.add(C.scrolling);
-        else classes?.remove(C.scrolling);
+        if (scrolling) classes?.add(C.relation.scrolling);
+        else classes?.remove(C.relation.scrolling);
       },
       schedule: (fn, ms) => setTimeout(fn, ms),
       cancel: (handle) =>
@@ -1535,7 +1554,7 @@ if (typeof document !== 'undefined') {
     });
 
     // Observe toolbar content height changes (flex-wrap grows/shrinks)
-    const toolbarRoot = DomAdapter.querySelector(`.${C.toolbarRoot}`);
+    const toolbarRoot = DomAdapter.querySelector(`.${C.toolbar.root}`);
     if (toolbarRoot && typeof ResizeObserver !== 'undefined') {
       new ResizeObserver(() => {
         syncToolbarHeight();
@@ -1569,7 +1588,7 @@ if (typeof document !== 'undefined') {
       const checks = {};
       for (const id of CHECKBOXES) {
         const box = DomAdapter.getElementById(id);
-        if (box) checks[id] = box.classList.contains(C.checked);
+        if (box) checks[id] = box.classList.contains(C.toolbar.checked);
       }
       return checks;
     }
@@ -1578,7 +1597,7 @@ if (typeof document !== 'undefined') {
     // arcs and nodes it governs follow.
     function applyCheck(id, on) {
       const box = DomAdapter.getElementById(id);
-      if (!box || box.classList.contains(C.checked) === on) return;
+      if (!box || box.classList.contains(C.toolbar.checked) === on) return;
       if (id === 'cycles-checkbox') toggleClusterMode();
       else if (id === 'external-dep-checkbox') toggleExternalDepVisibility();
       else if (id === 'transitive-dep-checkbox')
@@ -1594,7 +1613,7 @@ if (typeof document !== 'undefined') {
         DomAdapter.getElementById('search-input')
       );
       const scope = /** @type {HTMLElement | null} */ (
-        DomAdapter.querySelector(`#scope-selector .${C.toolbarScopeActive}`)
+        DomAdapter.querySelector(`#scope-selector .${C.toolbar.scopeActive}`)
       );
       return ViewSnapshot.capture(
         {
@@ -1766,13 +1785,15 @@ if (typeof document !== 'undefined') {
       }
     });
 
-    DomAdapter.querySelectorAll(`.${C.collapseToggle}`).forEach((toggle) => {
-      toggle.addEventListener('click', (e) => {
-        e.stopPropagation();
-        toggleCollapse(toggle.dataset.target);
-        updateToolbarPosition();
-      });
-    });
+    DomAdapter.querySelectorAll(`.${C.nodes.collapseToggle}`).forEach(
+      (toggle) => {
+        toggle.addEventListener('click', (e) => {
+          e.stopPropagation();
+          toggleCollapse(toggle.dataset.target);
+          updateToolbarPosition();
+        });
+      },
+    );
 
     // Toolbar button event handlers
     DomAdapter.querySelector('#collapse-toggle-btn')?.addEventListener(
@@ -1829,7 +1850,7 @@ if (typeof document !== 'undefined') {
     // Dropdown toggle for "View" button
     const viewDropdownBtn = DomAdapter.getElementById('view-dropdown-btn');
     const dropdownPanel = DomAdapter.querySelector(
-      `.${C.toolbarDropdownPanel}`,
+      `.${C.toolbar.dropdownPanel}`,
     );
     if (viewDropdownBtn && dropdownPanel) {
       viewDropdownBtn.addEventListener('click', (e) => {
@@ -1845,7 +1866,7 @@ if (typeof document !== 'undefined') {
 
     // Event handlers on hit-area paths (invisible, 12px wide) — regular arcs only
     DomAdapter.querySelectorAll(
-      `.${C.arcHitarea}:not(.${C.virtualHitarea})`,
+      `.${C.direction.arcHitarea}:not(.${C.direction.virtualHitarea})`,
     ).forEach((hitarea) => {
       const edgeId = `${hitarea.dataset.from}-${hitarea.dataset.to}`;
 

@@ -824,10 +824,8 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
                 ("gap", "6px"),
             ],
         ),
-        // Cluster sidebar counts line ("N modules · M cycles"):
-        // literal class string from sidebar.js, no constants.rs entry (Phase 2).
         CssRule::class(
-            "sidebar-subheader",
+            c.sidebar.subheader,
             &[("color", sb.text_muted), ("font-size", "11px")],
         ),
         CssRule::class(
@@ -920,7 +918,7 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
         // reusing the #jump-icon symbol; built by js/sidebar.js. Hidden, not
         // removed, until the row is hovered, so the row keeps its width.
         CssRule::class(
-            "sidebar-jump",
+            c.sidebar.jump,
             &[
                 ("width", "12px"),
                 ("height", "12px"),
@@ -931,27 +929,33 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
             ],
         ),
         CssRule::new(
-            &pinned_rows(&format!(".{}:hover .sidebar-jump", c.sidebar.location)),
+            &pinned_rows(&format!(
+                ".{}:hover .{}",
+                c.sidebar.location, c.sidebar.jump
+            )),
             &[("visibility", "visible")],
         ),
         // The definition chip on a symbol row (js/sidebar.js _definitionChip)
         // follows the location rows: a click target only while pinned, its
         // icon shown only while the row is hovered.
         CssRule::new(
-            &pinned_rows(".sidebar-definition[data-jump]"),
+            &pinned_rows(&format!(".{}[data-jump]", c.sidebar.definition)),
             &[("cursor", "pointer")],
         ),
         // A tangle sidebar row's whole symbol line is the jump target (see
         // js/sidebar.js _buildEdgeRow), not only its definition chip.
         CssRule::new(
-            &pinned_rows(".sidebar-edge-symbol[data-jump]"),
+            &pinned_rows(&format!(".{}[data-jump]", c.sidebar.edge_symbol)),
             &[("cursor", "pointer")],
         ),
         CssRule::new(
             &format!(
                 "{}, {}",
-                pinned_rows(&format!(".{}:hover .sidebar-jump", c.sidebar.symbol)),
-                pinned_rows(".sidebar-edge-symbol:hover .sidebar-jump")
+                pinned_rows(&format!(".{}:hover .{}", c.sidebar.symbol, c.sidebar.jump)),
+                pinned_rows(&format!(
+                    ".{}:hover .{}",
+                    c.sidebar.edge_symbol, c.sidebar.jump
+                ))
             ),
             &[("visibility", "visible")],
         ),
@@ -1071,11 +1075,10 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
             ],
         ),
         // Consumer-locality tag (single-consumer / common-home / package-wide
-        // fact): literal class string from sidebar.js, no constants.rs entry.
-        // Neutral pill; the words carry the meaning, a locality-specific colour
-        // is deferred.
+        // fact). Neutral pill; the words carry the meaning, a locality-specific
+        // colour is deferred.
         CssRule::class(
-            "sidebar-locality",
+            c.sidebar.locality,
             &[
                 ("color", sb.text_muted),
                 ("font-size", "9px"),
@@ -1108,17 +1111,16 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
         ),
         CssRule::class(c.sidebar.locations, &[("padding-left", "16px")]),
         // Cycle-edge row: stacks a one-line edge header over its (hidden until
-        // expanded) crossing-symbol list. Literal class strings from
-        // sidebar.js, no constants.rs entry.
+        // expanded) crossing-symbol list.
         CssRule::class(
-            "sidebar-edge-row",
+            c.sidebar.edge_row,
             &[("display", "flex"), ("flex-direction", "column")],
         ),
         // Focus row inside an SCC cluster view: marks the edge the graph
         // interaction state machine currently resolves as focus (pin or
-        // hover). Literal class string from sidebar.js, no constants.rs entry.
+        // hover).
         CssRule::class(
-            "sidebar-edge-row-focus",
+            c.sidebar.edge_row_focus,
             &[
                 ("background", sb.row_focus_bg),
                 ("border-left", &format!("2px solid {}", d.cycle)),
@@ -1130,15 +1132,15 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
         // not need to land pixel-perfect; the negative margin keeps the row's
         // other content from shifting. Grows slightly on hover, pure CSS.
         CssRule::new(
-            ".sidebar-edge-head .sidebar-toggle",
+            &format!(".{} .{}", c.sidebar.edge_head, c.sidebar.toggle),
             &[("padding", "4px"), ("margin", "-4px")],
         ),
         CssRule::new(
-            ".sidebar-edge-head .sidebar-toggle:hover",
+            &format!(".{} .{}:hover", c.sidebar.edge_head, c.sidebar.toggle),
             &[("transform", "scale(1.3)")],
         ),
         CssRule::class(
-            "sidebar-edge-meta",
+            c.sidebar.edge_meta,
             &[
                 ("color", sb.text_muted),
                 ("font-size", "10px"),
@@ -1148,8 +1150,7 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
         ),
         // Cycle blocks: one collapsible <details> per cycle in a
         // cluster's sidebar section. Literal class strings from
-        // sidebar.js, no constants.rs entries (same precedent as the
-        // sidebar-edge-row family above).
+        // sidebar.js, no constants.rs entries.
         CssRule::class("cycle-block", &[("margin-bottom", "8px")]),
         CssRule::class(
             "block-head",
@@ -1219,17 +1220,23 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
         // occurrence. Closing rule below re-asserts full opacity so a row
         // that were ever both classes at once (JS keeps this from happening)
         // still renders as closing, not repeat.
-        CssRule::new(".sidebar-edge-row.edge-repeat", &[("opacity", "0.55")]),
-        CssRule::new(".sidebar-edge-row.edge-closing", &[("opacity", "1")]),
+        CssRule::new(
+            &format!(".{}.edge-repeat", c.sidebar.edge_row),
+            &[("opacity", "0.55")],
+        ),
+        CssRule::new(
+            &format!(".{}.edge-closing", c.sidebar.edge_row),
+            &[("opacity", "1")],
+        ),
         // Closing edge: reuses the existing cycle color (d.cycle, same red as
         // the focus border and glow-cycle) for the arrow plus a leading
         // loop-closer marker, no new color introduced.
         CssRule::new(
-            ".sidebar-edge-row.edge-closing .sidebar-arrow",
+            &format!(".{}.edge-closing .{}", c.sidebar.edge_row, c.sidebar.arrow),
             &[("color", d.cycle), ("font-weight", "bold")],
         ),
-        CssRule::new(
-            ".sidebar-edge-closing-marker",
+        CssRule::class(
+            c.sidebar.edge_closing_marker,
             &[
                 ("color", d.cycle),
                 ("font-weight", "bold"),
@@ -1239,7 +1246,7 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
         // One crossing symbol under an expanded edge row: name + scope tag,
         // indented by the enclosing .sidebar-locations.
         CssRule::class(
-            "sidebar-edge-symbol",
+            c.sidebar.edge_symbol,
             &[
                 ("display", "flex"),
                 ("align-items", "center"),

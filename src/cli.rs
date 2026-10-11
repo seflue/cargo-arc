@@ -1255,15 +1255,20 @@ mod tests {
             Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multi_crate"))
         );
 
+        // A jump id is a number; the class map's `jump` key holds a string.
+        let has_jump_id = |svg: &str| {
+            svg.match_indices("\"jump\":")
+                .any(|(i, key)| svg[i + key.len()..].starts_with(|c: char| c.is_ascii_digit()))
+        };
         let default_svg = render(&analysis.layout, &RenderConfig::default());
-        assert!(!default_svg.contains("\"jump\""));
+        assert!(!has_jump_id(&default_svg));
 
         let jump_config = RenderConfig {
             with_jump_ids: true,
             ..RenderConfig::default()
         };
         let jump_svg = render(&analysis.layout, &jump_config);
-        assert!(jump_svg.contains("\"jump\""));
+        assert!(has_jump_id(&jump_svg));
     }
 
     #[test]

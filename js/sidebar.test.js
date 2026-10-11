@@ -110,6 +110,48 @@ globalThis.STATIC_DATA = {
     },
   },
   clusters: {},
+  classes: {
+    sidebar: {
+      root: 'sidebar-root',
+      header: 'sidebar-header',
+      title: 'sidebar-title',
+      close: 'sidebar-close',
+      collapseAll: 'sidebar-collapse-all',
+      headerActions: 'sidebar-header-actions',
+      content: 'sidebar-content',
+      usageGroup: 'sidebar-usage-group',
+      symbol: 'sidebar-symbol',
+      location: 'sidebar-location',
+      toggle: 'sidebar-toggle',
+      symbolName: 'sidebar-symbol-name',
+      ns: 'sidebar-ns',
+      file: 'sidebar-file',
+      refCount: 'sidebar-ref-count',
+      locations: 'sidebar-locations',
+      lineBadge: 'sidebar-line-badge',
+      divider: 'sidebar-divider',
+      footer: 'sidebar-footer',
+      arrow: 'sidebar-arrow',
+      nodeFrom: 'sidebar-node-from',
+      nodeTo: 'sidebar-node-to',
+      nodeSelected: 'sidebar-node-selected',
+      transient: 'sidebar-transient',
+      cycleEdge: 'sidebar-cycle-edge',
+      cycleNode: 'sidebar-cycle-node',
+      extInfo: 'sidebar-ext-info',
+      collapseIndicator: 'sidebar-collapse-indicator',
+      subheader: 'sidebar-subheader',
+      locality: 'sidebar-locality',
+      definition: 'sidebar-definition',
+      jump: 'sidebar-jump',
+      edgeRow: 'sidebar-edge-row',
+      edgeRowFocus: 'sidebar-edge-row-focus',
+      edgeHead: 'sidebar-edge-head',
+      edgeMeta: 'sidebar-edge-meta',
+      edgeClosingMarker: 'sidebar-edge-closing-marker',
+      edgeSymbol: 'sidebar-edge-symbol',
+    },
+  },
 };
 
 // Mock StaticData module (sidebar.js uses StaticData.getNode for name resolution)
@@ -282,6 +324,18 @@ describe('SidebarLogic', () => {
       expect(html).toContain('crate_a');
       expect(html).toContain('crate_b');
       expect(html).toContain('sidebar-header');
+    });
+
+    test('takes its class names from STATIC_DATA.classes', () => {
+      const sidebar = globalThis.STATIC_DATA.classes.sidebar;
+      const saved = sidebar.header;
+      sidebar.header = 'renamed-header';
+      try {
+        const html = SidebarLogic.buildContent('crate_a-crate_b');
+        expect(html).toContain('class="renamed-header"');
+      } finally {
+        sidebar.header = saved;
+      }
     });
 
     test('contains close button', () => {
