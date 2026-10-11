@@ -516,13 +516,13 @@ pub(super) fn render_edges(
         .map(|p| p.x + p.width)
         .fold(0.0_f32, f32::max);
 
-    // Sort edges by type for z-order: Test/Build (back) → Downward Production →
+    // Sort edges by type for z-order: Test (back) → Downward Production →
     // Upward Production → Cycle (front). In SVG, later elements render on top.
     let mut edge_order: Vec<usize> = (0..ir.edges.len()).collect();
     edge_order.sort_by_key(|&i| {
         let edge = &ir.edges[i];
         match (edge.cycle, edge.direction, &edge.context.kind) {
-            (_, _, UsageKind::Test(_) | UsageKind::Build) => 0,
+            (_, _, UsageKind::Test(_)) => 0,
             (None, EdgeDirection::Downward, UsageKind::Production) => 1,
             (None, EdgeDirection::Upward, UsageKind::Production) => 2,
             (Some(_), _, _) => 3,

@@ -131,7 +131,6 @@ struct ArcData {
 struct ArcContext {
     kind: String,
     sub_kind: Option<String>,
-    features: Vec<String>,
 }
 
 impl From<&crate::model::EdgeContext> for ArcContext {
@@ -139,7 +138,6 @@ impl From<&crate::model::EdgeContext> for ArcContext {
         Self {
             kind: ctx.kind.kind_js().to_string(),
             sub_kind: ctx.kind.sub_kind_js().map(String::from),
-            features: ctx.features.clone(),
         }
     }
 }
@@ -1294,7 +1292,10 @@ mod tests {
         assert_eq!(arc.to, "2");
         assert_eq!(arc.context.kind, "production");
         assert!(arc.context.sub_kind.is_none());
-        assert!(arc.context.features.is_empty());
+        assert_eq!(
+            serde_json::to_value(&arc.context).unwrap(),
+            serde_json::json!({"kind": "production", "subKind": null})
+        );
         assert_eq!(arc.usages[0].symbol, "MyStruct");
         assert_eq!(arc.usages[0].locations[0].file, "src/a.rs");
         assert_eq!(arc.usages[0].locations[0].line, 5);
