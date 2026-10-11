@@ -98,7 +98,7 @@ const SidebarLogic = {
    * Uses overrideData if provided, otherwise STATIC_DATA.arcs[arcId].
    * Expects structured usages: [{ symbol, modulePath, locations: [{ file, line }] }]
    * @param {string} arcId
-   * @param {{ from: string, to: string, usages: StaticArcData["usages"], originalArcs?: string[], cycleIds?: number[] }} [overrideData]
+   * @param {{ from: string, to: string, usages: ArcData["usages"], originalArcs?: string[], cycleIds?: number[] }} [overrideData]
    * @returns {string}
    */
   buildContent(arcId, overrideData) {
@@ -690,7 +690,7 @@ const SidebarLogic = {
    * Show sidebar transiently (hover preview). Debounced to prevent flicker.
    * No collapse handlers, adds sidebar-transient CSS class.
    * @param {string} arcId
-   * @param {{ from: string, to: string, usages: StaticArcData["usages"], originalArcs?: string[], cycleIds?: number[] }} [overrideData]
+   * @param {{ from: string, to: string, usages: ArcData["usages"], originalArcs?: string[], cycleIds?: number[] }} [overrideData]
    */
   showTransient(arcId, overrideData) {
     clearTimeout(this._debounceTimer ?? undefined);
@@ -756,7 +756,7 @@ const SidebarLogic = {
   /**
    * Show sidebar with content for given arc.
    * @param {string} arcId
-   * @param {{ from: string, to: string, usages: StaticArcData["usages"], originalArcs?: string[], cycleIds?: number[] }} [overrideData]
+   * @param {{ from: string, to: string, usages: ArcData["usages"], originalArcs?: string[], cycleIds?: number[] }} [overrideData]
    */
   show(arcId, overrideData) {
     this._showWithContent(this.buildContent(arcId, overrideData));
@@ -845,7 +845,7 @@ const SidebarLogic = {
    * edge closes the cycle and gets the closing class; an edge whose arc
    * id already appeared in an earlier block gets the repeat class \u2014 except
    * the closing edge, which always renders full.
-   * @param {StaticCycleArcData[]} cycle - Edges in path order, closing edge last.
+   * @param {CycleArcData[]} cycle - Edges in path order, closing edge last.
    * @param {number} index - 0-based cycle index (rendered as 1-based ordinal).
    * @param {string|undefined} focusArcId
    * @param {Set<string>} seenArcIds - Arc ids rendered in earlier blocks
@@ -901,7 +901,7 @@ const SidebarLogic = {
   /**
    * Path label for a cycle block header: each node's shortest unique suffix
    * within the SCC (D6), in path order, elided via `elideCyclePath`.
-   * @param {StaticCycleArcData[]} cycle
+   * @param {CycleArcData[]} cycle
    * @param {Set<string>} sccNodeIds
    * @param {Map<string, string[]>} [segmentsById]
    * @param {Map<string, string>} [labelCache] - Memoized per node id (mutated
@@ -1019,7 +1019,7 @@ const SidebarLogic = {
   /**
    * Crossing symbols for a cluster edge, real imports only. `pub use`
    * re-exports ride the same edge but are not part of the cycle (ADR-022).
-   * @param {StaticCycleArcData} edge
+   * @param {CycleArcData} edge
    * @returns {Array}
    */
   _edgeSymbols(edge) {
@@ -1036,7 +1036,7 @@ const SidebarLogic = {
    * like the node view) plus its cycle/symbol meta. When the edge's crossing
    * symbols are known, the row expands to list them with their locality
    * tags.
-   * @param {StaticCycleArcData} edge
+   * @param {CycleArcData} edge
    * @param {Array} symbols - Pre-computed crossing symbols for this edge.
    * @param {string|undefined} focusArcId - Arc whose row should render as focused.
    * @param {string[]} [extraClasses] - Extra row classes (e.g. edge-closing, edge-repeat).

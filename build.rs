@@ -11,7 +11,6 @@ const ENTRIES: [&str; 2] = ["svg_script", "hotspot_script"];
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=js");
 
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR");
     let out_dir = Path::new(&out_dir);
@@ -20,10 +19,24 @@ fn main() {
     if packaged.is_dir() {
         for entry in ENTRIES {
             let file = format!("{entry}.js");
+            println!("cargo:rerun-if-changed=js/dist/{file}");
             std::fs::copy(packaged.join(&file), out_dir.join(&file))
                 .unwrap_or_else(|e| panic!("cannot copy js/dist/{file}: {e}"));
         }
         return;
+    }
+
+    // Watching all of js/ would rerun on every `cargo test`: the ts-rs
+    // exports rewrite js/generated/ each time.
+    let modules = std::fs::read_dir("js").unwrap_or_else(|e| panic!("cannot list js/: {e}"));
+    for module in modules {
+        let path = module
+            .unwrap_or_else(|e| panic!("cannot list js/: {e}"))
+            .path();
+        let name = path.to_string_lossy();
+        if name.ends_with(".js") && !name.ends_with(".test.js") {
+            println!("cargo:rerun-if-changed={name}");
+        }
     }
 
     let output = Command::new("bun")

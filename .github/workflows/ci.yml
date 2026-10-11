@@ -31,6 +31,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - uses: taiki-e/install-action@just
       - run: just test
+      - name: Generated STATIC_DATA types match the Rust structs
+        run: git diff --exit-code js/generated
 
   msrv:
     runs-on: ubuntu-latest

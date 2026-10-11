@@ -30,12 +30,14 @@ rustrover_dir := "editors/rustrover"
 test-rustrover:
     cd {{rustrover_dir}} && ./gradlew test
 
-# clippy + biome + tsc typecheck + format check + cycle detection
+# clippy + biome + type regeneration + tsc typecheck + format check + cycle detection
 lint:
     cargo clippy --all-targets -- -D warnings
     cargo fmt --check
     bunx biome check js/
-    bunx --no-install tsc --project jsconfig.json
+    cargo test --lib export_bindings -q
+    bunx --no-install tsc --project jsconfig.arc.json
+    bunx --no-install tsc --project jsconfig.hotspot.json
     cargo run -- arc check
 
 # format Rust + JS

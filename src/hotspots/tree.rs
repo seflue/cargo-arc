@@ -23,6 +23,7 @@ pub struct HotspotNode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "lowercase")]
 pub enum HotspotKind {
     Workspace,
