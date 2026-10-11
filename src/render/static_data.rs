@@ -377,14 +377,14 @@ fn attach_definitions(
     }
 }
 
-/// Generate `STATIC_DATA` JavaScript constant from layout data
-#[allow(clippy::too_many_lines)] // single cohesive serialization function
+/// Generate the arc diagram's `STATIC_DATA` from layout data
+#[allow(clippy::too_many_lines)] // single cohesive data-building function
 fn generate_static_data(
     config: &RenderConfig,
     ir: &LayoutIR,
     positioned: &[PositionedItem],
     parents: &HashSet<NodeId>,
-) -> String {
+) -> StaticData {
     let mut nodes = BTreeMap::new();
     for pos in positioned {
         let item = &ir.items[pos.id];
@@ -611,7 +611,7 @@ fn generate_static_data(
         })
         .collect();
 
-    let data = StaticData {
+    StaticData {
         nodes,
         arcs,
         cycles,
@@ -620,11 +620,7 @@ fn generate_static_data(
         symbol_localities,
         expand_level: config.expand_level,
         theme: ThemeData::current(),
-    };
-    format!(
-        "const STATIC_DATA = {};",
-        serde_json::to_string(&data).expect("StaticData serialization cannot fail")
-    )
+    }
 }
 
 pub(super) fn render_script(
@@ -638,9 +634,18 @@ pub(super) fn render_script(
     script_element(&static_data, "svg_script", config)
 }
 
-/// A `<script>` holding `static_data` followed by the `entry` page's
-/// bundle, with its config placeholders filled from `config`.
-pub(super) fn script_element(static_data: &str, entry: &str, config: &RenderConfig) -> String {
+/// A `<script>` declaring `static_data` as the `STATIC_DATA` constant,
+/// followed by the `entry` page's bundle, with its config placeholders
+/// filled from `config`.
+pub(super) fn script_element(
+    static_data: &impl Serialize,
+    entry: &str,
+    config: &RenderConfig,
+) -> String {
+    let static_data = format!(
+        "const STATIC_DATA = {};",
+        serde_json::to_string(static_data).expect("STATIC_DATA serialization cannot fail")
+    );
     let overlays = match config.document {
         Document::Svg => "\"svg\"",
         Document::Page => "\"page\"",
@@ -678,23 +683,13 @@ mod tests {
     fn test_static_data_carries_the_theme_block() {
         let ir = LayoutIR::new();
         let config = RenderConfig::default();
-        let script = render_script(&config, &ir, &[], &HashSet::new());
-        let json_str = script
-            .split("const STATIC_DATA = ")
-            .nth(1)
-            .unwrap()
-            .split(";\n")
-            .next()
-            .unwrap();
-        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
-        assert_eq!(
-            data["theme"],
-            serde_json::json!({
-                "shadowOpacity": "0.25",
-                "light": [{ "name": "latte", "label": "Catppuccin Latte" }],
-                "dark": [{ "name": "mocha", "label": "Catppuccin Mocha" }],
-            })
-        );
+        let theme = generate_static_data(&config, &ir, &[], &HashSet::new()).theme;
+        let names = |themes: &[ThemeName]| -> Vec<(&str, &str)> {
+            themes.iter().map(|t| (t.name, t.label)).collect()
+        };
+        assert_eq!(theme.shadow_opacity, "0.25");
+        assert_eq!(names(&theme.light), [("latte", "Catppuccin Latte")]);
+        assert_eq!(names(&theme.dark), [("mocha", "Catppuccin Mocha")]);
     }
 
     // === format_source_locations_by_symbol Tests ===
@@ -901,27 +896,20 @@ mod tests {
         let config = RenderConfig::default();
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::from([0]);
-        let script = render_script(&config, &ir, &positioned, &parents);
+        let data = generate_static_data(&config, &ir, &positioned, &parents);
 
-        let json_str = script
-            .split("const STATIC_DATA = ")
-            .nth(1)
-            .unwrap()
-            .split(";\n")
-            .next()
-            .unwrap();
-        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
-
-        let usages = data["arcs"]["1-2"]["usages"].as_array().unwrap();
+        let usages = &data.arcs["1-2"].usages;
         let find = |name: &str| {
             usages
                 .iter()
-                .find(|u| u["symbol"] == name)
+                .find(|u| u.symbol == name)
                 .unwrap_or_else(|| panic!("symbol {name} missing"))
         };
-        // true is serialized; false is skipped (absent), so JS reads it as falsy.
-        assert_eq!(find("Reexported")["viaReexport"], true);
-        assert!(find("Coupled")["viaReexport"].is_null());
+        assert!(find("Reexported").via_reexport);
+        assert!(!find("Coupled").via_reexport);
+        // false is skipped (absent), so JS reads it as falsy.
+        let coupled = serde_json::to_value(find("Coupled")).unwrap();
+        assert!(coupled.get("viaReexport").is_none(), "{coupled}");
     }
 
     #[test]
@@ -1070,25 +1058,15 @@ mod tests {
         };
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::from([c]);
-        let script = render_script(&config, &ir, &positioned, &parents);
-        let json_str = script
-            .split("const STATIC_DATA = ")
-            .nth(1)
-            .unwrap()
-            .split(";\n")
-            .next()
-            .unwrap();
-        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
+        let data = generate_static_data(&config, &ir, &positioned, &parents);
 
-        let definition = &data["arcs"][format!("{c}-{m}")]["usages"][0]["definition"];
-        assert_eq!(
-            definition["file"], "m.rs",
-            "the provider's module target name"
-        );
-        assert_eq!(definition["line"], 7);
-        let jump: LocationId =
-            serde_json::from_value(definition["jump"].clone()).expect("definition has a jump id");
-        assert_eq!(jump, layout_definition_id);
+        let definition = data.arcs[&format!("{c}-{m}")].usages[0]
+            .definition
+            .clone()
+            .expect("the symbol has a definition");
+        assert_eq!(definition.file, "m.rs", "the provider's module target name");
+        assert_eq!(definition.line, 7);
+        assert_eq!(definition.jump, layout_definition_id);
     }
 
     #[test]
@@ -1102,18 +1080,10 @@ mod tests {
         };
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::from([c]);
-        let script = render_script(&config, &ir, &positioned, &parents);
-        let json_str = script
-            .split("const STATIC_DATA = ")
-            .nth(1)
-            .unwrap()
-            .split(";\n")
-            .next()
-            .unwrap();
-        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
+        let data = generate_static_data(&config, &ir, &positioned, &parents);
 
-        let usage = &data["arcs"][format!("{c}-{m}")]["usages"][0];
-        assert!(usage.get("definition").is_none(), "{usage}");
+        let usage = &data.arcs[&format!("{c}-{m}")].usages[0];
+        assert!(usage.definition.is_none());
     }
 
     #[test]
@@ -1133,50 +1103,36 @@ mod tests {
         };
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::from([c]);
-        let script = render_script(&config, &ir, &positioned, &parents);
-        let json_str = script
-            .split("const STATIC_DATA = ")
-            .nth(1)
-            .unwrap()
-            .split(";\n")
-            .next()
-            .unwrap();
-        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
+        let data = generate_static_data(&config, &ir, &positioned, &parents);
 
-        let package_targets = data["nodes"][c.to_string()]["targets"].as_array().unwrap();
-        let kinds: Vec<&str> = package_targets
-            .iter()
-            .map(|t| t["kind"].as_str().unwrap())
-            .collect();
-        assert_eq!(kinds, vec!["lib", "bin", "manifest"]);
-        let names: Vec<&str> = package_targets
-            .iter()
-            .map(|t| t["name"].as_str().unwrap())
-            .collect();
+        let package_targets = &data.nodes[&c.to_string()].targets;
+        let kinds: Vec<TargetKind> = package_targets.iter().map(|t| t.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![TargetKind::Lib, TargetKind::Bin, TargetKind::Manifest]
+        );
+        let names: Vec<&str> = package_targets.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, vec!["lib.rs", "main.rs", "Cargo.toml"]);
 
-        let module_targets = data["nodes"][m.to_string()]["targets"].as_array().unwrap();
+        let module_targets = &data.nodes[&m.to_string()].targets;
         assert_eq!(module_targets.len(), 1);
-        assert_eq!(module_targets[0]["kind"], "module");
-        assert_eq!(module_targets[0]["name"], "m.rs");
+        assert_eq!(module_targets[0].kind, TargetKind::Module);
+        assert_eq!(module_targets[0].name, "m.rs");
 
-        let jump_id_of = |v: &serde_json::Value| -> LocationId {
-            serde_json::from_value(v["jump"].clone()).expect("value has a jump id")
-        };
-        let json_target_ids: Vec<LocationId> = package_targets
+        let data_target_ids: Vec<LocationId> = package_targets
             .iter()
             .chain(module_targets.iter())
-            .map(jump_id_of)
+            .map(|t| t.jump)
             .collect();
         assert_eq!(
-            json_target_ids, layout_target_ids,
+            data_target_ids, layout_target_ids,
             "targets carry the ids already on the layout"
         );
 
-        let arc = &data["arcs"][format!("{c}-{m}")];
-        let usage_id = jump_id_of(&arc["usages"][0]["locations"][0]);
+        let arc = &data.arcs[&format!("{c}-{m}")];
         assert_eq!(
-            usage_id, layout_location_id,
+            arc.usages[0].locations[0].jump,
+            Some(layout_location_id),
             "usage location carries the id already on the layout"
         );
     }
@@ -1192,24 +1148,16 @@ mod tests {
         let config = RenderConfig::default();
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::from([c]);
-        let script = render_script(&config, &ir, &positioned, &parents);
-        let json_str = script
-            .split("const STATIC_DATA = ")
-            .nth(1)
-            .unwrap()
-            .split(";\n")
-            .next()
-            .unwrap();
-        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
+        let data = generate_static_data(&config, &ir, &positioned, &parents);
 
         assert_eq!(
-            data["nodes"][c.to_string()]["file"],
-            "Cargo.toml",
+            data.nodes[&c.to_string()].file.as_deref(),
+            Some("Cargo.toml"),
             "the crate node's file is its manifest target"
         );
         assert_eq!(
-            data["nodes"][m.to_string()]["file"],
-            "m.rs",
+            data.nodes[&m.to_string()].file.as_deref(),
+            Some("m.rs"),
             "the module node's file is its module target"
         );
     }
@@ -1220,16 +1168,8 @@ mod tests {
         ir.add_item(ItemKind::ExternalSection, "External".into());
         let config = RenderConfig::default();
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
-        let script = render_script(&config, &ir, &positioned, &HashSet::new());
-        let json_str = script
-            .split("const STATIC_DATA = ")
-            .nth(1)
-            .unwrap()
-            .split(";\n")
-            .next()
-            .unwrap();
-        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
-        assert!(data["nodes"]["0"]["file"].is_null());
+        let data = generate_static_data(&config, &ir, &positioned, &HashSet::new());
+        assert!(data.nodes["0"].file.is_none());
     }
 
     #[test]
@@ -1283,7 +1223,7 @@ mod tests {
             document,
             ..RenderConfig::default()
         };
-        let script = script_element("", "svg_script", &config);
+        let script = script_element(&(), "svg_script", &config);
         assert_eq!(first_placeholder(&script), None);
     }
 
@@ -1348,31 +1288,21 @@ mod tests {
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::from([0]);
 
-        let script = render_script(&config, &ir, &positioned, &parents);
-
-        // Parse STATIC_DATA as JSON to verify structure
-        let json_str = script
-            .split("const STATIC_DATA = ")
-            .nth(1)
-            .unwrap()
-            .split(";\n")
-            .next()
-            .unwrap();
-        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
+        let data = generate_static_data(&config, &ir, &positioned, &parents);
 
         // Node 0 (package)
-        let node0 = &data["nodes"]["0"];
-        assert_eq!(node0["type"], "package");
-        assert_eq!(node0["name"], "test_crate");
-        assert!(node0["parent"].is_null());
-        assert_eq!(node0["hasChildren"], true);
+        let node0 = &data.nodes["0"];
+        assert_eq!(node0.node_type, "package");
+        assert_eq!(node0.name, "test_crate");
+        assert!(node0.parent.is_none());
+        assert!(node0.has_children);
 
         // Node 1 (module)
-        let node1 = &data["nodes"]["1"];
-        assert_eq!(node1["type"], "module");
-        assert_eq!(node1["name"], "test_mod");
-        assert_eq!(node1["parent"], "0");
-        assert_eq!(node1["hasChildren"], false);
+        let node1 = &data.nodes["1"];
+        assert_eq!(node1.node_type, "module");
+        assert_eq!(node1.name, "test_mod");
+        assert_eq!(node1.parent.as_deref(), Some("0"));
+        assert!(!node1.has_children);
     }
 
     #[test]
@@ -1429,26 +1359,17 @@ mod tests {
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::from([0]);
 
-        let script = render_script(&config, &ir, &positioned, &parents);
+        let data = generate_static_data(&config, &ir, &positioned, &parents);
 
-        let json_str = script
-            .split("const STATIC_DATA = ")
-            .nth(1)
-            .unwrap()
-            .split(";\n")
-            .next()
-            .unwrap();
-        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
-
-        let arc = &data["arcs"]["1-2"];
-        assert_eq!(arc["from"], "1");
-        assert_eq!(arc["to"], "2");
-        assert_eq!(arc["context"]["kind"], "production");
-        assert!(arc["context"]["subKind"].is_null());
-        assert_eq!(arc["context"]["features"], serde_json::json!([]));
-        assert_eq!(arc["usages"][0]["symbol"], "MyStruct");
-        assert_eq!(arc["usages"][0]["locations"][0]["file"], "src/a.rs");
-        assert_eq!(arc["usages"][0]["locations"][0]["line"], 5);
+        let arc = &data.arcs["1-2"];
+        assert_eq!(arc.from, "1");
+        assert_eq!(arc.to, "2");
+        assert_eq!(arc.context.kind, "production");
+        assert!(arc.context.sub_kind.is_none());
+        assert!(arc.context.features.is_empty());
+        assert_eq!(arc.usages[0].symbol, "MyStruct");
+        assert_eq!(arc.usages[0].locations[0].file, "src/a.rs");
+        assert_eq!(arc.usages[0].locations[0].line, 5);
     }
 
     #[test]
@@ -1479,20 +1400,11 @@ mod tests {
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::from([0]);
 
-        let script = render_script(&config, &ir, &positioned, &parents);
+        let data = generate_static_data(&config, &ir, &positioned, &parents);
 
-        let json_str = script
-            .split("const STATIC_DATA = ")
-            .nth(1)
-            .unwrap()
-            .split(";\n")
-            .next()
-            .unwrap();
-        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
-
-        let arc = &data["arcs"]["1-2"];
-        assert_eq!(arc["context"]["kind"], "test");
-        assert_eq!(arc["context"]["subKind"], "unit");
+        let arc = &data.arcs["1-2"];
+        assert_eq!(arc.context.kind, "test");
+        assert_eq!(arc.context.sub_kind.as_deref(), Some("unit"));
     }
 
     #[test]
@@ -1520,19 +1432,9 @@ mod tests {
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::from([0]);
 
-        let script = render_script(&config, &ir, &positioned, &parents);
+        let data = generate_static_data(&config, &ir, &positioned, &parents);
 
-        let json_str = script
-            .split("const STATIC_DATA = ")
-            .nth(1)
-            .unwrap()
-            .split(";\n")
-            .next()
-            .unwrap();
-        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
-
-        let arc = &data["arcs"]["1-2"];
-        assert_eq!(arc["usages"], serde_json::json!([]));
+        assert!(data.arcs["1-2"].usages.is_empty());
     }
 
     #[test]
@@ -1582,28 +1484,16 @@ mod tests {
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::from([0]);
 
-        let script = render_script(&config, &ir, &positioned, &parents);
+        let data = generate_static_data(&config, &ir, &positioned, &parents);
 
-        let json_str = script
-            .split("const STATIC_DATA = ")
-            .nth(1)
-            .unwrap()
-            .split(";\n")
-            .next()
-            .unwrap();
-        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
-
-        let arc = &data["arcs"]["1-2"];
-        let usages = arc["usages"].as_array().expect("usages is array");
+        let usages = &data.arcs["1-2"].usages;
         assert_eq!(usages.len(), 1);
-        assert_eq!(usages[0]["symbol"], "Symbol1");
-        assert!(usages[0]["modulePath"].is_null());
-        let locations = usages[0]["locations"]
-            .as_array()
-            .expect("locations is array");
+        assert_eq!(usages[0].symbol, "Symbol1");
+        assert!(usages[0].module_path.is_none());
+        let locations = &usages[0].locations;
         assert_eq!(locations.len(), 2);
-        assert_eq!(locations[0]["file"], "src/a.rs");
-        assert_eq!(locations[0]["line"], 5);
+        assert_eq!(locations[0].file, "src/a.rs");
+        assert_eq!(locations[0].line, 5);
     }
 
     #[test]
@@ -1641,12 +1531,10 @@ mod tests {
 
         // The JSON portion must be valid JSON
         let json_str = script
-            .split("const STATIC_DATA = ")
-            .nth(1)
-            .unwrap()
-            .split(";\n")
-            .next()
-            .unwrap();
+            .lines()
+            .find_map(|line| line.strip_prefix("const STATIC_DATA = "))
+            .and_then(|rest| rest.strip_suffix(';'))
+            .expect("STATIC_DATA declared on one line");
         serde_json::from_str::<serde_json::Value>(json_str)
             .expect("STATIC_DATA must be valid JSON");
     }
@@ -1658,20 +1546,11 @@ mod tests {
         let positioned: Vec<PositionedItem> = vec![];
         let parents: HashSet<NodeId> = HashSet::new();
 
-        let script = render_script(&config, &ir, &positioned, &parents);
-
-        let json_str = script
-            .split("const STATIC_DATA = ")
-            .nth(1)
-            .unwrap()
-            .split(";\n")
-            .next()
-            .unwrap();
-        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
+        let data = generate_static_data(&config, &ir, &positioned, &parents);
 
         // Empty IR should produce empty nodes and arcs
-        assert_eq!(data["nodes"], serde_json::json!({}));
-        assert_eq!(data["arcs"], serde_json::json!({}));
+        assert!(data.nodes.is_empty());
+        assert!(data.arcs.is_empty());
     }
 
     #[test]
@@ -1728,18 +1607,7 @@ mod tests {
         let positioned: Vec<PositionedItem> = vec![];
         let parents: HashSet<NodeId> = HashSet::new();
 
-        let script = render_script(&config, &ir, &positioned, &parents);
-
-        let json_str = script
-            .split("const STATIC_DATA = ")
-            .nth(1)
-            .unwrap()
-            .split(";\n")
-            .next()
-            .unwrap();
-        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
-
-        let classes = data["classes"].as_object().expect("classes is object");
+        let classes = generate_static_data(&config, &ir, &positioned, &parents).classes;
         assert!(
             classes.contains_key("depArc"),
             "classes should contain depArc"
@@ -1785,19 +1653,10 @@ mod tests {
         let positioned: Vec<PositionedItem> = vec![];
         let parents: HashSet<NodeId> = HashSet::new();
 
-        let script = render_script(&config, &ir, &positioned, &parents);
-
-        let json_str = script
-            .split("const STATIC_DATA = ")
-            .nth(1)
-            .unwrap()
-            .split(";\n")
-            .next()
-            .unwrap();
-        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
+        let data = generate_static_data(&config, &ir, &positioned, &parents);
 
         assert_eq!(
-            data["classes"]["groupMember"], CSS.node_selection.group_member,
+            data.classes["groupMember"], CSS.node_selection.group_member,
             "classes should contain groupMember with value from CSS.node_selection.group_member"
         );
     }
@@ -1809,48 +1668,30 @@ mod tests {
         let positioned: Vec<PositionedItem> = vec![];
         let parents: HashSet<NodeId> = HashSet::new();
 
-        let script = render_script(&config, &ir, &positioned, &parents);
+        let data = generate_static_data(&config, &ir, &positioned, &parents);
 
-        let json_str = script
-            .split("const STATIC_DATA = ")
-            .nth(1)
-            .unwrap()
-            .split(";\n")
-            .next()
-            .unwrap();
-        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
-
-        assert_eq!(data["classes"]["depArc"], CSS.direction.dep_arc);
+        assert_eq!(data.classes["depArc"], CSS.direction.dep_arc);
+        assert_eq!(data.classes["highlightedArc"], CSS.relation.highlighted_arc);
         assert_eq!(
-            data["classes"]["highlightedArc"],
-            CSS.relation.highlighted_arc
-        );
-        assert_eq!(
-            data["classes"]["selectedPackage"],
+            data.classes["selectedPackage"],
             CSS.node_selection.selected_package
         );
         assert_eq!(
-            data["classes"]["selectedExternal"],
+            data.classes["selectedExternal"],
             CSS.node_selection.selected_external
         );
-        assert_eq!(data["classes"]["collapsed"], CSS.nodes.collapsed);
-        assert_eq!(data["classes"]["cycleNode"], CSS.nodes.cycle_node);
-        assert_eq!(data["classes"]["hidesCycle"], CSS.nodes.hides_cycle);
-        assert_eq!(data["classes"]["cycleMarker"], CSS.nodes.cycle_marker);
-        assert_eq!(data["classes"]["virtualArc"], CSS.direction.virtual_arc);
+        assert_eq!(data.classes["collapsed"], CSS.nodes.collapsed);
+        assert_eq!(data.classes["cycleNode"], CSS.nodes.cycle_node);
+        assert_eq!(data.classes["hidesCycle"], CSS.nodes.hides_cycle);
+        assert_eq!(data.classes["cycleMarker"], CSS.nodes.cycle_marker);
+        assert_eq!(data.classes["virtualArc"], CSS.direction.virtual_arc);
+        assert_eq!(data.classes["externalSection"], CSS.nodes.external_section);
+        assert_eq!(data.classes["externalPackage"], CSS.nodes.external_package);
         assert_eq!(
-            data["classes"]["externalSection"],
-            CSS.nodes.external_section
-        );
-        assert_eq!(
-            data["classes"]["externalPackage"],
-            CSS.nodes.external_package
-        );
-        assert_eq!(
-            data["classes"]["externalTransitive"],
+            data.classes["externalTransitive"],
             CSS.nodes.external_transitive
         );
-        assert_eq!(data["classes"]["searchContext"], CSS.search.search_context);
+        assert_eq!(data.classes["searchContext"], CSS.search.search_context);
     }
 
     // === Struct / Helper Tests ===
@@ -2051,21 +1892,11 @@ mod tests {
         let config = RenderConfig::default();
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::from([0]);
-        let script = render_script(&config, &ir, &positioned, &parents);
+        let data = generate_static_data(&config, &ir, &positioned, &parents);
 
-        let json_str = script
-            .split("const STATIC_DATA = ")
-            .nth(1)
-            .unwrap()
-            .split(";\n")
-            .next()
-            .unwrap();
-        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
-
-        let arc = &data["arcs"]["1-2"];
-        let usages = arc["usages"].as_array().expect("usages is array");
-        assert_eq!(usages[0]["locations"][0]["file"], "src/a.rs");
-        assert_eq!(usages[0]["locations"][0]["line"], 5);
+        let usages = &data.arcs["1-2"].usages;
+        assert_eq!(usages[0].locations[0].file, "src/a.rs");
+        assert_eq!(usages[0].locations[0].line, 5);
     }
 
     #[test]
@@ -2146,52 +1977,40 @@ mod tests {
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::from([0]);
 
-        let script = render_script(&config, &ir, &positioned, &parents);
-
-        let json_str = script
-            .split("const STATIC_DATA = ")
-            .nth(1)
-            .unwrap()
-            .split(";\n")
-            .next()
-            .unwrap();
-        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
+        let data = generate_static_data(&config, &ir, &positioned, &parents);
 
         // Cycles array should exist with one cycle
-        let cycles = data["cycles"].as_array().expect("cycles is array");
+        let cycles = &data.cycles;
         assert_eq!(cycles.len(), 1);
 
         // Cycle 0 should list the 3 nodes involved
-        let cycle_nodes = cycles[0]["nodes"].as_array().unwrap();
-        assert!(cycle_nodes.contains(&serde_json::json!("1")));
-        assert!(cycle_nodes.contains(&serde_json::json!("2")));
-        assert!(cycle_nodes.contains(&serde_json::json!("3")));
+        assert_eq!(cycles[0].nodes, ["1", "2", "3"]);
 
         // Cycle 0 should list the arc IDs
-        let cycle_arcs = cycles[0]["arcs"].as_array().unwrap();
-        assert!(cycle_arcs.contains(&serde_json::json!("1-2")));
-        assert!(cycle_arcs.contains(&serde_json::json!("2-3")));
-        assert!(cycle_arcs.contains(&serde_json::json!("3-1")));
+        let cycle_arcs = &cycles[0].arcs;
+        assert!(cycle_arcs.contains(&"1-2".to_string()));
+        assert!(cycle_arcs.contains(&"2-3".to_string()));
+        assert!(cycle_arcs.contains(&"3-1".to_string()));
 
         // Cycle arc "1-2" should have cycleIds: [0]
-        assert_eq!(data["arcs"]["1-2"]["cycleIds"], serde_json::json!([0]));
+        assert_eq!(data.arcs["1-2"].cycle_ids, [0]);
 
         // Non-cycle arc "1-3" should NOT have cycleIds
         assert!(
-            data["arcs"]["1-3"].get("cycleIds").is_none(),
+            data.arcs["1-3"].cycle_ids.is_empty(),
             "Non-cycle arc 1-3 should NOT have cycleIds"
         );
 
         // Cycle carries its SCC id.
-        assert_eq!(cycles[0]["sccId"], serde_json::json!(0));
+        assert_eq!(cycles[0].scc_id, 0);
 
         // Cycle arc "1-2" and cycle node "1" carry sccId 0.
-        assert_eq!(data["arcs"]["1-2"]["sccId"], serde_json::json!(0));
-        assert_eq!(data["nodes"]["1"]["sccId"], serde_json::json!(0));
+        assert_eq!(data.arcs["1-2"].scc_id, Some(0));
+        assert_eq!(data.nodes["1"].scc_id, Some(0));
 
         // Non-cycle arc "1-3" and the package node "0" have no sccId.
-        assert!(data["arcs"]["1-3"].get("sccId").is_none());
-        assert!(data["nodes"]["0"].get("sccId").is_none());
+        assert!(data.arcs["1-3"].scc_id.is_none());
+        assert!(data.nodes["0"].scc_id.is_none());
     }
 
     #[test]
@@ -2254,32 +2073,23 @@ mod tests {
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::from([0]);
 
-        let script = render_script(&config, &ir, &positioned, &parents);
-
-        let json_str = script
-            .split("const STATIC_DATA = ")
-            .nth(1)
-            .unwrap()
-            .split(";\n")
-            .next()
-            .unwrap();
-        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
+        let data = generate_static_data(&config, &ir, &positioned, &parents);
 
         // Arc B->C should have cycleIds: [0]
-        assert_eq!(data["arcs"]["1-2"]["cycleIds"], serde_json::json!([0]));
+        assert_eq!(data.arcs["1-2"].cycle_ids, [0]);
 
         // Arc B->D should have cycleIds: [1]
-        assert_eq!(data["arcs"]["1-3"]["cycleIds"], serde_json::json!([1]));
+        assert_eq!(data.arcs["1-3"].cycle_ids, [1]);
 
         // Cycles array should have 2 entries
-        let cycles = data["cycles"].as_array().expect("cycles is array");
+        let cycles = &data.cycles;
         assert_eq!(cycles.len(), 2);
 
         // Two cycles, one SCC: both carry sccId 0, as do both arcs.
-        assert_eq!(cycles[0]["sccId"], serde_json::json!(0));
-        assert_eq!(cycles[1]["sccId"], serde_json::json!(0));
-        assert_eq!(data["arcs"]["1-2"]["sccId"], serde_json::json!(0));
-        assert_eq!(data["arcs"]["1-3"]["sccId"], serde_json::json!(0));
+        assert_eq!(cycles[0].scc_id, 0);
+        assert_eq!(cycles[1].scc_id, 0);
+        assert_eq!(data.arcs["1-2"].scc_id, Some(0));
+        assert_eq!(data.arcs["1-3"].scc_id, Some(0));
     }
 
     #[test]
@@ -2313,18 +2123,9 @@ mod tests {
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::from([0]);
 
-        let script = render_script(&config, &ir, &positioned, &parents);
+        let data = generate_static_data(&config, &ir, &positioned, &parents);
 
-        let json_str = script
-            .split("const STATIC_DATA = ")
-            .nth(1)
-            .unwrap()
-            .split(";\n")
-            .next()
-            .unwrap();
-        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
-
-        assert_eq!(data["arcs"]["1-2"]["cycleIds"], serde_json::json!([0, 2]));
+        assert_eq!(data.arcs["1-2"].cycle_ids, [0, 2]);
     }
 
     #[test]
@@ -2381,34 +2182,23 @@ mod tests {
         let config = RenderConfig::default();
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::from([0]);
-        let script = render_script(&config, &ir, &positioned, &parents);
-        let json_str = script
-            .split("const STATIC_DATA = ")
-            .nth(1)
-            .unwrap()
-            .split(";\n")
-            .next()
-            .unwrap();
-        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
+        let data = generate_static_data(&config, &ir, &positioned, &parents);
 
-        let cl = &data["clusters"]["0"];
-        assert_eq!(cl["package"], "app");
-        assert_eq!(cl["moduleCount"], 2);
-        assert_eq!(cl["cycleCount"], 1);
-        let cycles = cl["cycles"].as_array().unwrap();
-        assert_eq!(cycles.len(), 1, "one block for the one cycle");
-        let block = cycles[0].as_array().unwrap();
+        let cl = &data.clusters["0"];
+        assert_eq!(cl.package_name, "app");
+        assert_eq!(cl.module_count, 2);
+        assert_eq!(cl.cycle_count, 1);
+        assert_eq!(cl.cycles.len(), 1, "one block for the one cycle");
+        let block = &cl.cycles[0];
         assert_eq!(block.len(), 2, "closing edge included");
-        assert_eq!(block[0]["fromId"], a.to_string());
-        assert_eq!(block[0]["toId"], b.to_string());
-        assert_eq!(block[0]["symbols"], 2);
-        assert_eq!(block[1]["fromId"], b.to_string());
-        assert_eq!(block[1]["toId"], a.to_string());
-        assert_eq!(block[1]["symbols"], 1);
-        assert!(cl.get("edges").is_none());
-        assert!(cl.get("toBreak").is_none());
+        assert_eq!(block[0].from_id, a.to_string());
+        assert_eq!(block[0].to_id, b.to_string());
+        assert_eq!(block[0].symbols, 2);
+        assert_eq!(block[1].from_id, b.to_string());
+        assert_eq!(block[1].to_id, a.to_string());
+        assert_eq!(block[1].symbols, 1);
         // The edge's arc-id addresses a serialized arc.
-        assert!(data["arcs"][format!("{a}-{b}")].is_object());
+        assert!(data.arcs.contains_key(&format!("{a}-{b}")));
     }
 
     #[test]
@@ -2474,58 +2264,43 @@ mod tests {
                 ItemKind::Package | ItemKind::ExternalSection => None,
             })
             .collect();
-        let script = render_script(&config, &ir, &positioned, &parents);
-        let json_str = script
-            .split("const STATIC_DATA = ")
-            .nth(1)
-            .unwrap()
-            .split(";\n")
-            .next()
-            .unwrap();
-        let data: serde_json::Value = serde_json::from_str(json_str).expect("valid JSON");
+        let data = generate_static_data(&config, &ir, &positioned, &parents);
 
-        let clusters = data["clusters"].as_object().unwrap();
-        assert_eq!(clusters.len(), 1);
+        assert_eq!(data.clusters.len(), 1);
 
-        let cluster = clusters.values().next().unwrap();
-        assert!(cluster.get("edges").is_none());
-        assert!(cluster.get("toBreak").is_none());
-        let cycles = cluster["cycles"].as_array().unwrap();
+        let cluster = data.clusters.values().next().unwrap();
+        let cycles = &cluster.cycles;
         assert_eq!(cycles.len(), 2, "one block per cycle");
 
         // Both cycles start at "a" (shared node); tie-break by rest-sequence
         // rank puts a<->b before a<->c since b's layout rank precedes c's.
-        let block0 = cycles[0].as_array().unwrap();
+        let block0 = &cycles[0];
         assert_eq!(block0.len(), 2, "closing edge included");
-        assert_eq!(block0[0]["fromId"], a_id.to_string());
-        assert_eq!(block0[0]["toId"], b_id.to_string());
-        assert_eq!(block0[0]["symbols"], 5);
-        assert_eq!(block0[1]["fromId"], b_id.to_string());
-        assert_eq!(block0[1]["toId"], a_id.to_string());
-        assert_eq!(block0[1]["symbols"], 1);
+        assert_eq!(block0[0].from_id, a_id.to_string());
+        assert_eq!(block0[0].to_id, b_id.to_string());
+        assert_eq!(block0[0].symbols, 5);
+        assert_eq!(block0[1].from_id, b_id.to_string());
+        assert_eq!(block0[1].to_id, a_id.to_string());
+        assert_eq!(block0[1].symbols, 1);
 
-        let block1 = cycles[1].as_array().unwrap();
+        let block1 = &cycles[1];
         assert_eq!(block1.len(), 2, "closing edge included");
-        assert_eq!(block1[0]["fromId"], a_id.to_string());
-        assert_eq!(block1[0]["toId"], c_id.to_string());
-        assert_eq!(block1[0]["symbols"], 3);
-        assert_eq!(block1[1]["fromId"], c_id.to_string());
-        assert_eq!(block1[1]["toId"], a_id.to_string());
-        assert_eq!(block1[1]["symbols"], 2);
+        assert_eq!(block1[0].from_id, a_id.to_string());
+        assert_eq!(block1[0].to_id, c_id.to_string());
+        assert_eq!(block1[0].symbols, 3);
+        assert_eq!(block1[1].from_id, c_id.to_string());
+        assert_eq!(block1[1].to_id, a_id.to_string());
+        assert_eq!(block1[1].symbols, 2);
 
         // Every block edge's fromId-toId addresses a serialized arc.
         for edge in block0.iter().chain(block1.iter()) {
-            let arc_id = format!(
-                "{}-{}",
-                edge["fromId"].as_str().unwrap(),
-                edge["toId"].as_str().unwrap()
-            );
-            assert!(data["arcs"][&arc_id].is_object(), "arc {arc_id} missing");
+            let arc_id = format!("{}-{}", edge.from_id, edge.to_id);
+            assert!(data.arcs.contains_key(&arc_id), "arc {arc_id} missing");
         }
     }
 
-    /// Render `ir` and parse the embedded `STATIC_DATA` JSON.
-    fn static_data_json(ir: &LayoutIR) -> serde_json::Value {
+    /// The `STATIC_DATA` of `ir` under the default config.
+    fn static_data_of(ir: &LayoutIR) -> StaticData {
         let config = RenderConfig::default();
         let positioned = calculate_positions(ir, &config, calculate_box_width(ir));
         let parents: HashSet<NodeId> = ir
@@ -2538,15 +2313,7 @@ mod tests {
                 ItemKind::Package | ItemKind::ExternalSection => None,
             })
             .collect();
-        let script = render_script(&config, ir, &positioned, &parents);
-        let json_str = script
-            .split("const STATIC_DATA = ")
-            .nth(1)
-            .unwrap()
-            .split(";\n")
-            .next()
-            .unwrap();
-        serde_json::from_str(json_str).expect("valid JSON")
+        generate_static_data(&config, ir, &positioned, &parents)
     }
 
     /// Build a flat `app` package with the given child modules; returns the graph.
@@ -2600,11 +2367,11 @@ mod tests {
         let id_of = |name: &str| ir.items.iter().find(|it| it.label == name).unwrap().id;
         let (model_id, user_id) = (id_of("model"), id_of("user"));
 
-        let data = static_data_json(&ir);
-        let sl = &data["symbolLocalities"][model_id.to_string()]["Foo"];
-        assert_eq!(sl["locality"], "singleConsumer");
-        assert_eq!(sl["module"], user_id.to_string());
-        assert_eq!(sl["consumers"], serde_json::json!([user_id.to_string()]));
+        let data = static_data_of(&ir);
+        let sl = &data.symbol_localities[&model_id.to_string()]["Foo"];
+        assert_eq!(sl.locality, "singleConsumer");
+        assert_eq!(sl.module, Some(user_id.to_string()));
+        assert_eq!(sl.consumers, [user_id.to_string()]);
     }
 
     /// Add a child module `child` under existing module/package `parent`.
@@ -2618,13 +2385,8 @@ mod tests {
         graph.add_edge(parent_idx, child_idx, EdgeWeight::Contains);
     }
 
-    fn symbol_ids(value: &serde_json::Value) -> BTreeSet<String> {
-        value
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_str().unwrap().to_owned())
-            .collect()
+    fn symbol_ids(ids: &[String]) -> BTreeSet<String> {
+        ids.iter().cloned().collect()
     }
 
     #[test]
@@ -2644,12 +2406,12 @@ mod tests {
         let id_of = |name: &str| ir.items.iter().find(|it| it.label == name).unwrap().id;
         let model_id = id_of("model");
 
-        let data = static_data_json(&ir);
-        let sl = &data["symbolLocalities"][model_id.to_string()]["Foo"];
-        assert_eq!(sl["locality"], "commonAncestor");
-        assert_eq!(sl["module"], id_of("analyze").to_string());
+        let data = static_data_of(&ir);
+        let sl = &data.symbol_localities[&model_id.to_string()]["Foo"];
+        assert_eq!(sl.locality, "commonAncestor");
+        assert_eq!(sl.module, Some(id_of("analyze").to_string()));
         assert_eq!(
-            symbol_ids(&sl["consumers"]),
+            symbol_ids(&sl.consumers),
             [id_of("parser").to_string(), id_of("reexport").to_string()]
                 .into_iter()
                 .collect()
@@ -2669,12 +2431,12 @@ mod tests {
         let (ir, _) = build_layout(&graph, &analysis, Reexports::Excluded, None);
         let id_of = |name: &str| ir.items.iter().find(|it| it.label == name).unwrap().id;
 
-        let data = static_data_json(&ir);
-        let sl = &data["symbolLocalities"][id_of("model").to_string()]["Foo"];
-        assert_eq!(sl["locality"], "packageWide");
-        assert!(sl.get("module").is_none(), "crate-wide has no home");
+        let data = static_data_of(&ir);
+        let sl = &data.symbol_localities[&id_of("model").to_string()]["Foo"];
+        assert_eq!(sl.locality, "packageWide");
+        assert!(sl.module.is_none(), "crate-wide has no home");
         assert_eq!(
-            symbol_ids(&sl["consumers"]),
+            symbol_ids(&sl.consumers),
             [id_of("user").to_string(), id_of("admin").to_string()]
                 .into_iter()
                 .collect()
@@ -2705,8 +2467,8 @@ mod tests {
             .production_subgraph(Reexports::Excluded)
             .representative_cycles();
         let (ir, _) = build_layout(&graph, &analysis, Reexports::Excluded, None);
-        let data = static_data_json(&ir);
-        assert!(data["symbolLocalities"].as_object().unwrap().is_empty());
+        let data = static_data_of(&ir);
+        assert!(data.symbol_localities.is_empty());
     }
 
     /// The script learns the overlay host from the config, so a page
@@ -2719,7 +2481,7 @@ mod tests {
             document,
             ..RenderConfig::default()
         };
-        let script = script_element("", "svg_script", &config);
+        let script = script_element(&(), "svg_script", &config);
         assert!(script.contains(expected), "{expected}");
     }
 
@@ -2728,7 +2490,7 @@ mod tests {
     /// XML, where the markers are still CDATA.
     #[test]
     fn script_element_guards_its_cdata_markers_for_html() {
-        let script = script_element("", "svg_script", &RenderConfig::default());
+        let script = script_element(&(), "svg_script", &RenderConfig::default());
         assert!(script.starts_with("  <script>//<![CDATA[\n"), "{script}");
         assert!(script.ends_with("\n//]]></script>\n"), "{script}");
     }

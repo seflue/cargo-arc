@@ -548,10 +548,6 @@ pub(crate) fn render(
         classes,
         layout: HotspotLayoutData::current(),
     };
-    let static_data_js = format!(
-        "const STATIC_DATA = {};",
-        serde_json::to_string(&static_data).expect("HotspotStaticData serialization cannot fail")
-    );
 
     let mut svg = String::new();
     svg.push_str(&render_hotspot_header(width, height, config.theme));
@@ -566,7 +562,7 @@ pub(crate) fn render(
     svg.push_str("  </g>\n");
     svg.push_str(&render_toolbar(width, config));
     svg.push_str(&sidebar);
-    svg.push_str(&script_element(&static_data_js, "hotspot_script", config));
+    svg.push_str(&script_element(&static_data, "hotspot_script", config));
     svg.push_str("</svg>\n");
     svg
 }
