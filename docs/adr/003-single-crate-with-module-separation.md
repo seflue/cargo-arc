@@ -2,6 +2,7 @@
 
 - **Status:** Active
 - **Decided:** 2026-01-20
+- Corrected 2026-10-13: the module list. `layout` and `render` are directories, and `model`, `diagnose`, `rules`, `hotspots`, `ui`, `volatility` and `js_bundle` exist.
 
 ## Context
 
@@ -9,13 +10,13 @@ Module boundaries vs. crate boundaries: A multi-crate workspace (e.g., analyze/r
 
 ## Decision
 
-We develop cargo-arc as a single crate with internal module structure (`analyze/`, `graph.rs`, `layout.rs`, `render.rs`, `cli.rs`) and forgo a multi-crate workspace for now.
+We develop cargo-arc as a single crate with internal module structure (`analyze/`, `cli.rs`, `diagnose/`, `graph.rs`, `hotspots/`, `js_bundle.rs`, `layout/`, `model.rs`, `render/`, `rules/`, `ui/`, `volatility.rs`) and forgo a multi-crate workspace for now.
 
 ## Rationale
 
 - Exploration phase: Features and abstractions need to settle before being cemented into crate boundaries
 - Modules are easier to refactor than crates (no API contract between crates)
-- Crate split remains an option (`analyze/` has no imports from `render.rs`)
+- Crate split remains an option (`analyze/` has no imports from `render/`)
 
 ## Consequences
 

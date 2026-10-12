@@ -3,6 +3,7 @@
 - **Status:** Active
 - **Decided:** 2026-07-10
 - **Supersedes:** ADR-019
+- Corrected 2026-10-13: the Decision named a legacy `--check` flag that no longer exists; `cargo arc check` runs an implicit `no-cycles` rule instead when no rules file states one.
 
 ## Context
 
@@ -10,7 +11,7 @@ Johnson's algorithm (ADR-019) enumerates *all* elementary cycles. It is output-s
 
 ## Decision
 
-For each edge in a non-trivial strongly connected component, we compute the **minimal cycle** through that edge (shortest path back from the edge's target to its source, plus the edge) and deduplicate by arc set. This bounded set replaces Johnson's enumeration everywhere: diagram highlighting, the legacy `--check`, and the `no-cycles` rule.
+For each edge in a non-trivial strongly connected component, we compute the **minimal cycle** through that edge (shortest path back from the edge's target to its source, plus the edge) and deduplicate by arc set. This bounded set replaces Johnson's enumeration everywhere: diagram highlighting and the `no-cycles` rule, which `cargo arc check` also runs implicitly when no rules file states one.
 
 Cycle *breaking* for layout is unaffected — `stable_toposort` still uses SCC condensation (ADR-017), which remains in use.
 
