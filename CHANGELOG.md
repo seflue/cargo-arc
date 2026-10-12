@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Neovim Lua plugins: the arc diagram and the hotspot map for a plugin's `lua/` namespaces (see [docs/LUA_PLUGINS.md](docs/LUA_PLUGINS.md)).
+
 ## [0.6.2] - 2026-10-08
 
 ### Fixed

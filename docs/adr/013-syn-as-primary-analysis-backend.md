@@ -2,6 +2,7 @@
 
 - **Status:** Active
 - **Decided:** 2026-01-30
+- **Related:** ADR-030 (the Lua adapter parses with full_moon)
 - Corrected 2026-10-13: the decision applies to the Rust language adapter, not to the analysis as a whole (ADR-029).
 
 ## Context

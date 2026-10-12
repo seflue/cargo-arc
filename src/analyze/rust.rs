@@ -24,6 +24,8 @@ pub(crate) static PROFILE: LanguageProfile = LanguageProfile {
     extensions: &["rs"],
     manifest_files: &["Cargo.toml"],
     tokei_language: tokei::LanguageType::Rust,
+    analyzes_tests: true,
+    analyzes_externals: true,
 };
 
 /// A Cargo workspace, read through `cargo metadata` and parsed with syn, or

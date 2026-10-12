@@ -549,6 +549,7 @@ pub(crate) fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analyze::rust::PROFILE as RUST_PROFILE;
     use crate::graph::{ArcGraph, EdgeWeight};
     use crate::hotspots::pack;
     use crate::model::EntryFile;
@@ -584,13 +585,18 @@ mod tests {
     }
 
     /// `single_crate_tree()`, packed and rendered with `HashMap::new()`
-    /// targets and `RenderConfig::default()`: the setup most tests in this
-    /// module need before inspecting the tree, the packed circles or the
-    /// SVG.
+    /// targets and the Rust profile's default `RenderConfig`: the setup most
+    /// tests in this module need before inspecting the tree, the packed
+    /// circles or the SVG.
     fn rendered_default() -> (HotspotTree, Vec<PackedCircle>, String) {
         let tree = single_package_tree();
         let packed = pack(&tree);
-        let svg = render(&tree, &packed, &HashMap::new(), &RenderConfig::default());
+        let svg = render(
+            &tree,
+            &packed,
+            &HashMap::new(),
+            &RenderConfig::new(&RUST_PROFILE.wording),
+        );
         (tree, packed, svg)
     }
 
@@ -599,7 +605,7 @@ mod tests {
         let tree = single_package_tree();
         let config = RenderConfig {
             volatility: MapVolatility::Grey(GreyCause::Flag),
-            ..RenderConfig::default()
+            ..RenderConfig::new(&RUST_PROFILE.wording)
         };
         render(&tree, &pack(&tree), &HashMap::new(), &config)
     }
@@ -751,7 +757,12 @@ mod tests {
         graph.add_edge(outer_idx, inner_idx, EdgeWeight::Contains);
         let tree = crate::hotspots::build(&graph, Path::new("/ws"), |_| 5, |_| BTreeSet::new(), 10);
         let packed = pack(&tree);
-        let svg = render(&tree, &packed, &HashMap::new(), &RenderConfig::default());
+        let svg = render(
+            &tree,
+            &packed,
+            &HashMap::new(),
+            &RenderConfig::new(&RUST_PROFILE.wording),
+        );
         let data = static_data_of(&svg);
 
         let container = &data["nodes"]["app/src/outer/mod.rs"];
@@ -790,7 +801,7 @@ mod tests {
         let packed = pack(&tree);
         let config = RenderConfig {
             volatility: MapVolatility::Grey(GreyCause::Flag),
-            ..RenderConfig::default()
+            ..RenderConfig::new(&RUST_PROFILE.wording)
         };
         let svg = render(&tree, &packed, &HashMap::new(), &config);
         let data = static_data_of(&svg);
@@ -807,7 +818,7 @@ mod tests {
         let packed = pack(&tree);
         let config = RenderConfig {
             volatility: MapVolatility::Grey(GreyCause::GitUnavailable),
-            ..RenderConfig::default()
+            ..RenderConfig::new(&RUST_PROFILE.wording)
         };
         let svg = render(&tree, &packed, &HashMap::new(), &config);
         let data = static_data_of(&svg);
@@ -824,7 +835,7 @@ mod tests {
         let packed = pack(&tree);
         let config = RenderConfig {
             volatility: MapVolatility::Grey(GreyCause::NoCommitsInWindow { months: 6 }),
-            ..RenderConfig::default()
+            ..RenderConfig::new(&RUST_PROFILE.wording)
         };
         let svg = render(&tree, &packed, &HashMap::new(), &config);
         let data = static_data_of(&svg);
@@ -839,7 +850,7 @@ mod tests {
     fn rendering_twice_is_deterministic() {
         let tree = single_package_tree();
         let packed = pack(&tree);
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let targets = HashMap::new();
         assert_eq!(
             render(&tree, &packed, &targets, &config),
@@ -891,7 +902,7 @@ mod tests {
             &tree,
             &pack(&tree),
             &HashMap::new(),
-            &RenderConfig::default(),
+            &RenderConfig::new(&RUST_PROFILE.wording),
         )
     }
 
@@ -950,7 +961,7 @@ mod tests {
         let tree = single_package_tree();
         let config = RenderConfig {
             volatility: MapVolatility::Window { months: 3 },
-            ..RenderConfig::default()
+            ..RenderConfig::new(&RUST_PROFILE.wording)
         };
         let svg = render(&tree, &pack(&tree), &HashMap::new(), &config);
 
@@ -1011,7 +1022,12 @@ mod tests {
             hotspots: vec![leaf],
         };
         let packed = pack(&tree);
-        let svg = render(&tree, &packed, &HashMap::new(), &RenderConfig::default());
+        let svg = render(
+            &tree,
+            &packed,
+            &HashMap::new(),
+            &RenderConfig::new(&RUST_PROFILE.wording),
+        );
         let data = static_data_of(&svg);
 
         // round(100 * sqrt(5) / sqrt(8)) = 79: the leaf against the busiest file.
@@ -1089,7 +1105,7 @@ mod tests {
 
         let config = RenderConfig {
             with_jump_ids: true,
-            ..RenderConfig::default()
+            ..RenderConfig::new(&RUST_PROFILE.wording)
         };
         let svg = render(&tree, &packed, &targets, &config);
         let data = static_data_of(&svg);
@@ -1114,12 +1130,17 @@ mod tests {
         let packed = pack(&tree);
         let served = RenderConfig {
             with_jump_ids: true,
-            ..RenderConfig::default()
+            ..RenderConfig::new(&RUST_PROFILE.wording)
         };
         let svg = render(&tree, &packed, &HashMap::new(), &served);
         assert!(svg.contains("id=\"on-save-toggle\""), "{svg}");
 
-        let written = render(&tree, &packed, &HashMap::new(), &RenderConfig::default());
+        let written = render(
+            &tree,
+            &packed,
+            &HashMap::new(),
+            &RenderConfig::new(&RUST_PROFILE.wording),
+        );
         assert!(!written.contains("id=\"on-save-toggle\""), "{written}");
     }
 
@@ -1133,7 +1154,12 @@ mod tests {
         let mut targets = HashMap::new();
         targets.insert(PathBuf::from("app/src/hot.rs"), LocationId::from(7));
 
-        let svg = render(&tree, &packed, &targets, &RenderConfig::default());
+        let svg = render(
+            &tree,
+            &packed,
+            &targets,
+            &RenderConfig::new(&RUST_PROFILE.wording),
+        );
         let data = static_data_of(&svg);
         assert!(data["nodes"]["app/src/hot.rs"].get("targets").is_none());
     }

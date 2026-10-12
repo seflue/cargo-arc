@@ -60,6 +60,7 @@ syn = { version = "3", features = ["full", "visit"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
 tiny_http = "0.12"
 tokei = { version = "15.0.0", default-features = false }
+full_moon = { version = "3.0.0", default-features = false }
 
 [features]
 hir = [

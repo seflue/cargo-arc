@@ -4,6 +4,7 @@ mod backend;
 pub(crate) mod externals;
 mod filtering;
 mod hir;
+pub(crate) mod lua;
 mod mod_resolver;
 pub(crate) mod packages;
 mod reexports;
@@ -16,6 +17,7 @@ pub use backend::AnalysisBackend;
 pub use hir::FeatureConfig;
 #[cfg(feature = "hir")]
 pub use hir::{analyze_modules, cargo_config_with_features, load_workspace_hir};
+pub(crate) use lua::Lua;
 pub(crate) use rust::Rust;
 pub use workspace::analyze_workspace;
 

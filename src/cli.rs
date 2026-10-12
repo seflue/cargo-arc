@@ -150,8 +150,9 @@ const DEFAULT_HOTSPOTS: usize = 10;
 #[allow(clippy::struct_excessive_bools)] // CLI flags map 1:1 to fields
 #[derive(Parser)]
 pub struct CommonArgs {
-    /// Path to Cargo.toml (default: ./Cargo.toml)
-    #[arg(short, long, default_value = "Cargo.toml")]
+    /// Path to Cargo.toml, or to a directory holding a Cargo.toml or a `lua/`
+    /// plugin (default: ./Cargo.toml, else the working directory)
+    #[arg(short, long, default_value = DEFAULT_MANIFEST)]
     pub manifest_path: PathBuf,
 
     /// Comma-separated list of features to activate
@@ -178,6 +179,31 @@ pub struct CommonArgs {
     /// Enable debug output to stderr (shows filtering decisions)
     #[arg(long)]
     pub debug: bool,
+
+    /// Language of the project to analyze (default: rust where a Cargo.toml
+    /// is found, lua where only a `lua/` directory is)
+    #[arg(long, value_enum)]
+    pub language: Option<Language>,
+}
+
+/// The `--manifest-path` a run without the flag gets.
+const DEFAULT_MANIFEST: &str = "Cargo.toml";
+
+/// The languages cargo-arc analyzes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum Language {
+    Rust,
+    Lua,
+}
+
+impl Language {
+    /// The profile of the language's adapter.
+    fn profile(self) -> &'static LanguageProfile {
+        match self {
+            Self::Rust => &RUST_PROFILE,
+            Self::Lua => &analyze::lua::PROFILE,
+        }
+    }
 }
 
 /// The `--theme` value parser: a theme name or a mode alias, or an error
@@ -243,7 +269,7 @@ pub fn run(args: ArcCommand) -> Result<Judgment> {
     if args.volatility {
         run_volatility_report(
             &args.common.manifest_path,
-            &RUST_PROFILE,
+            language_of(&args.common)?.profile(),
             vol_config,
             args.output.as_ref(),
         )?;
@@ -257,8 +283,7 @@ pub fn run(args: ArcCommand) -> Result<Judgment> {
         expand_level: args.expand_level,
         theme: args.theme,
         document,
-        wording: &analysis.profile.wording,
-        ..RenderConfig::default()
+        ..RenderConfig::new(&analysis.profile.wording)
     };
     let body = render(&analysis.layout, &config);
     tracing::debug!("phase: render done ({} bytes)", body.len());
@@ -298,23 +323,23 @@ impl ArcCommand {
     }
 }
 
-/// Analyze the workspace behind `args` with `switches` in place of the
-/// flags they stand for: build the dependency graph, lay it out, and, when
-/// `with_volatility` is set, enrich it with volatility. `run_hotspots`
-/// passes `false`: it builds its own separate [`VolatilityAnalyzer`] for the
-/// map, so the arc layout's own enrichment would only be discarded work.
-/// Rendering is the caller's job: the callers (`run`, `run_ui`) build their
-/// own [`RenderConfig`] and render `analysis.layout` with it.
 /// The language adapter `args` ask for, with `switches` in place of the
 /// flags they stand for.
-fn adapter_for(args: &ArcCommand, switches: AnalysisSwitches) -> analyze::Rust {
+fn adapter_for(args: &ArcCommand, switches: AnalysisSwitches) -> Result<Box<dyn LanguageAdapter>> {
+    if language_of(&args.common)? == Language::Lua {
+        refuse_rust_only_flags(args)?;
+        return Ok(Box::new(analyze::Lua {
+            plugin_dir: resolve_repo_path(&args.common.manifest_path).to_path_buf(),
+        }));
+    }
+
     #[cfg(feature = "hir")]
     let use_hir = args.hir;
     #[cfg(not(feature = "hir"))]
     let use_hir = false;
 
-    analyze::Rust {
-        manifest_path: args.common.manifest_path.clone(),
+    Ok(Box::new(analyze::Rust {
+        manifest_path: cargo_manifest(&args.common.manifest_path),
         feature_config: FeatureConfig {
             include_tests: switches.tests,
             ..build_feature_config(&args.common)
@@ -322,17 +347,54 @@ fn adapter_for(args: &ArcCommand, switches: AnalysisSwitches) -> analyze::Rust {
         use_hir,
         externals: switches.externals,
         transitive_deps: args.transitive_deps,
+    }))
+}
+
+/// Refuse a Lua run that `args` give a flag only Rust has a meaning for, so
+/// nobody takes the diagram for one the flag shaped. Reads the flags
+/// themselves, never the `ui` server's switches.
+fn refuse_rust_only_flags(args: &ArcCommand) -> Result<()> {
+    let common = &args.common;
+    let rust_only = [
+        ("--features", !common.features.is_empty()),
+        ("--all-features", common.all_features),
+        ("--no-default-features", common.no_default_features),
+        ("--include-tests", common.include_tests),
+        ("--externals", args.externals),
+        ("--transitive-deps", args.transitive_deps),
+        #[cfg(feature = "hir")]
+        ("--hir", args.hir),
+    ];
+    let given: Vec<&str> = rust_only
+        .iter()
+        .filter(|(_, set)| *set)
+        .map(|(flag, _)| *flag)
+        .collect();
+    match given.as_slice() {
+        [] => Ok(()),
+        [flag] => anyhow::bail!("{flag} applies to Rust only, and this run analyzes Lua"),
+        flags => anyhow::bail!(
+            "{} apply to Rust only, and this run analyzes Lua",
+            flags.join(", ")
+        ),
     }
 }
 
+/// Analyze the workspace behind `args` with `switches` in place of the
+/// flags they stand for: build the dependency graph, lay it out, and, when
+/// `with_volatility` is set, enrich it with volatility. `run_hotspots`
+/// passes `false`: it builds its own separate [`VolatilityAnalyzer`] for the
+/// map, so the arc layout's own enrichment would only be discarded work.
+/// Rendering is the caller's job: the callers (`run`, `run_ui`) build their
+/// own [`RenderConfig`] and render `analysis.layout` with it.
 fn analyze_for_diagram(
     args: &ArcCommand,
     switches: AnalysisSwitches,
     with_volatility: bool,
 ) -> Result<DiagramAnalysis> {
-    let adapter = adapter_for(args, switches);
+    let adapter = adapter_for(args, switches)?;
     let (graph, workspace_root, unparsed) =
-        build_dependency_graph(&adapter, adapter.feature_config.include_tests)?;
+        build_dependency_graph(adapter.as_ref(), switches.tests)?;
     let reexports = Reexports::from(args.common.include_reexports);
     tracing::debug!("phase: cycle detection start");
     let analysis = graph.production_subgraph(reexports).representative_cycles();
@@ -412,9 +474,10 @@ fn run_ui(args: &ArcCommand, ui_args: &UiArgs) -> Result<Judgment> {
             with_jump_ids: true,
             theme: args.theme,
             switches,
+            tests_switch: analysis.profile.analyzes_tests,
+            externals_switch: analysis.profile.analyzes_externals,
             document: Document::Page,
-            wording: &analysis.profile.wording,
-            ..RenderConfig::default()
+            ..RenderConfig::new(&analysis.profile.wording)
         };
         let arc_svg = render(&analysis.layout, &arc_config);
 
@@ -434,7 +497,7 @@ fn run_ui(args: &ArcCommand, ui_args: &UiArgs) -> Result<Judgment> {
             with_jump_ids: true,
             theme: args.theme,
             volatility,
-            ..RenderConfig::default()
+            ..RenderConfig::new(&analysis.profile.wording)
         };
         let hotspots_svg = render_hotspots(&tree, &packed, &jump_targets, &hotspots_config);
 
@@ -454,7 +517,7 @@ fn run_ui(args: &ArcCommand, ui_args: &UiArgs) -> Result<Judgment> {
         initial,
         switches,
         workspace_root,
-        adapter_for(args, switches).profile(),
+        adapter_for(args, switches)?.profile(),
         args.theme,
         Box::new(move |switches| {
             let (root, pages, unparsed) = pages(switches)?;
@@ -571,7 +634,7 @@ fn run_hotspots(args: &ArcCommand, hotspots_args: &HotspotsArgs) -> Result<Judgm
     let config = RenderConfig {
         theme: args.theme,
         volatility,
-        ..RenderConfig::default()
+        ..RenderConfig::new(&analysis.profile.wording)
     };
     // The standalone file carries no jump service to resolve an id against
     // (`with_jump_ids` stays false in `config`, as for the plain arc
@@ -589,6 +652,9 @@ fn run_hotspots(args: &ArcCommand, hotspots_args: &HotspotsArgs) -> Result<Judgm
 
 /// Run the `check` subcommand: load rules, evaluate against graph, report violations.
 fn run_check(check_args: &CheckArgs, common: &CommonArgs) -> Result<Judgment> {
+    if language_of(common)? == Language::Lua {
+        anyhow::bail!("check: rules apply to Rust only, and this run analyzes Lua");
+    }
     // Check mode runs neither HIR nor externals.
     let adapter = analyze::Rust {
         manifest_path: common.manifest_path.clone(),
@@ -713,7 +779,54 @@ fn build_feature_config(common: &CommonArgs) -> FeatureConfig {
     }
 }
 
+/// Decide the language of the run: `--language` when set, otherwise Lua for a
+/// candidate directory that holds `lua/` and no `Cargo.toml`, otherwise Rust.
+/// The candidate is `--manifest-path` when it names a directory, and the
+/// working directory when the flag keeps its default and no `Cargo.toml`
+/// exists there. A path that does not exist is a candidate too, unless it
+/// ends on `Cargo.toml`: that one stays Rust and ends with cargo's error.
+/// A candidate with neither is an error.
+fn language_of(common: &CommonArgs) -> Result<Language> {
+    if let Some(language) = common.language {
+        return Ok(language);
+    }
+    let path = common.manifest_path.as_path();
+    let candidate = if path.is_dir() {
+        path
+    } else if path == Path::new(DEFAULT_MANIFEST) && !path.exists() {
+        Path::new(".")
+    } else if !path.exists() && path.file_name() != Some("Cargo.toml".as_ref()) {
+        path
+    } else {
+        return Ok(Language::Rust);
+    };
+    if candidate.join("Cargo.toml").exists() {
+        return Ok(Language::Rust);
+    }
+    if candidate.join("lua").is_dir() {
+        return Ok(Language::Lua);
+    }
+    anyhow::bail!(
+        "neither Cargo.toml nor lua/ in {}: point --manifest-path at a Rust workspace or a Neovim plugin",
+        candidate.display()
+    )
+}
+
+/// Name the `Cargo.toml` that `--manifest-path` points to: the path itself,
+/// or the `Cargo.toml` inside it when it is a directory.
+fn cargo_manifest(manifest_path: &Path) -> PathBuf {
+    if manifest_path.is_dir() {
+        return manifest_path.join("Cargo.toml");
+    }
+    manifest_path.to_path_buf()
+}
+
+/// Return the directory `--manifest-path` names: the path itself when it is
+/// a directory, otherwise the directory holding the manifest.
 fn resolve_repo_path(manifest_path: &Path) -> &Path {
+    if manifest_path.is_dir() {
+        return manifest_path;
+    }
     manifest_path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -1027,6 +1140,21 @@ mod tests {
     }
 
     #[test]
+    fn language_flag_takes_rust_or_lua_and_defaults_to_none() {
+        let language = |args: &[&str]| parse_args(args).common.language;
+        assert_eq!(language(&["cargo", "arc"]), None);
+        assert_eq!(
+            language(&["cargo", "arc", "--language", "rust"]),
+            Some(Language::Rust)
+        );
+        assert_eq!(
+            language(&["cargo", "arc", "--language", "lua"]),
+            Some(Language::Lua)
+        );
+        assert!(Cargo::try_parse_from(["cargo", "arc", "--language", "go"]).is_err());
+    }
+
+    #[test]
     fn test_parse_externals_flag() {
         let cmd = parse_args(&["cargo", "arc", "--externals"]);
         assert!(cmd.externals);
@@ -1126,6 +1254,7 @@ mod tests {
                 include_tests: false,
                 include_reexports: false,
                 debug: false,
+                language: None,
             },
             output: Some(temp.path().to_path_buf()),
             volatility: false,
@@ -1284,12 +1413,12 @@ mod tests {
             svg.match_indices("\"jump\":")
                 .any(|(i, key)| svg[i + key.len()..].starts_with(|c: char| c.is_ascii_digit()))
         };
-        let default_svg = render(&analysis.layout, &RenderConfig::default());
+        let default_svg = render(&analysis.layout, &RenderConfig::new(&RUST_PROFILE.wording));
         assert!(!has_jump_id(&default_svg));
 
         let jump_config = RenderConfig {
             with_jump_ids: true,
-            ..RenderConfig::default()
+            ..RenderConfig::new(&RUST_PROFILE.wording)
         };
         let jump_svg = render(&analysis.layout, &jump_config);
         assert!(has_jump_id(&jump_svg));
@@ -1518,5 +1647,77 @@ mod tests {
                 )
             });
         assert_eq!(helper.line, 3);
+    }
+
+    /// A git repository with `files` written and committed in one commit.
+    fn committed_repo(files: &[&str]) -> tempfile::TempDir {
+        let repo = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .current_dir(repo.path())
+                .status()
+                .expect("git should be on PATH");
+            assert!(status.success(), "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        for file in files {
+            let path = repo.path().join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, "-- x\n").unwrap();
+        }
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "files"]);
+        repo
+    }
+
+    /// The text `--volatility` writes for the project in `dir`, found
+    /// without `--language`.
+    fn volatility_report_of(dir: &Path) -> String {
+        let out = dir.join("report.txt");
+        let cmd = parse_args(&[
+            "cargo",
+            "arc",
+            "--manifest-path",
+            dir.to_str().unwrap(),
+            "--volatility",
+            "-o",
+            out.to_str().unwrap(),
+        ]);
+        run(cmd).unwrap();
+        fs::read_to_string(out).unwrap()
+    }
+
+    #[test]
+    fn volatility_on_a_plugin_counts_the_changes_to_lua_files() {
+        let repo = committed_repo(&["lua/alpha/init.lua", "build.rs"]);
+
+        let report = volatility_report_of(repo.path());
+
+        assert!(report.contains("lua/alpha/init.lua"), "{report}");
+        assert!(!report.contains("build.rs"), "{report}");
+    }
+
+    #[test]
+    fn volatility_on_a_workspace_with_lua_files_counts_rust_changes() {
+        let repo = committed_repo(&["Cargo.toml", "src/lib.rs", "lua/alpha/init.lua"]);
+
+        let report = volatility_report_of(repo.path());
+
+        assert!(report.contains("src/lib.rs"), "{report}");
+        assert!(!report.contains("init.lua"), "{report}");
+    }
+
+    #[test]
+    fn volatility_on_a_plugin_without_lua_changes_says_so_for_lua() {
+        let repo = committed_repo(&["build.rs"]);
+        let plugin_file = repo.path().join("lua/alpha/init.lua");
+        fs::create_dir_all(plugin_file.parent().unwrap()).unwrap();
+        fs::write(plugin_file, "-- x\n").unwrap();
+
+        let report = volatility_report_of(repo.path());
+
+        assert_eq!(report, "No .lua file changes in the last 6 months.\n");
     }
 }
