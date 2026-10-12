@@ -730,6 +730,7 @@ mod tests {
     use super::super::constants::{AnalysisSwitches, RenderConfig};
     use super::super::positioning::{calculate_box_width, calculate_positions};
     use super::*;
+    use crate::analyze::rust::PROFILE as RUST_PROFILE;
     use crate::layout::LayoutEdge;
     use crate::model::EdgeContext;
     use rstest::rstest;
@@ -778,10 +779,10 @@ mod tests {
     /// Both hosts carry the same `toolbar-root` block, so the page never
     /// drifts from the SVG's toolbar.
     #[rstest]
-    #[case::bare(ToolbarFacts::default(), RenderConfig::default())]
+    #[case::bare(ToolbarFacts::default(), RenderConfig::new(&RUST_PROFILE.wording))]
     #[case::served(
         ToolbarFacts::default(),
-        RenderConfig { with_jump_ids: true, ..RenderConfig::default() }
+        RenderConfig { with_jump_ids: true, ..RenderConfig::new(&RUST_PROFILE.wording) }
     )]
     #[case::externals(
         ToolbarFacts {
@@ -789,7 +790,7 @@ mod tests {
             has_transitive_externals: true,
             initial_collapsed: true,
         },
-        RenderConfig { with_jump_ids: true, ..RenderConfig::default() }
+        RenderConfig { with_jump_ids: true, ..RenderConfig::new(&RUST_PROFILE.wording) }
     )]
     fn page_toolbar_carries_the_same_root_block_as_the_foreign_object(
         #[case] facts: ToolbarFacts,
@@ -830,7 +831,11 @@ mod tests {
 
     #[test]
     fn test_toolbar_has_cycles_checkbox_checked_by_default() {
-        let toolbar = render_toolbar(800.0, ToolbarFacts::default(), &RenderConfig::default());
+        let toolbar = render_toolbar(
+            800.0,
+            ToolbarFacts::default(),
+            &RenderConfig::new(&RUST_PROFILE.wording),
+        );
         let idx = toolbar
             .find("id=\"cycles-checkbox\"")
             .expect("Toolbar should render the cycles checkbox");
@@ -860,7 +865,7 @@ mod tests {
             },
             "child".into(),
         );
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let box_width = calculate_box_width(&ir);
         let positioned = calculate_positions(&ir, &config, box_width);
         let positioned_index: HashMap<_, _> = positioned.iter().map(|p| (p.id, p)).collect();
@@ -879,7 +884,7 @@ mod tests {
             },
             "child".into(),
         );
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let box_width = calculate_box_width(&ir);
         let positioned = calculate_positions(&ir, &config, box_width);
         let positioned_index: HashMap<_, _> = positioned.iter().map(|p| (p.id, p)).collect();
@@ -905,7 +910,7 @@ mod tests {
             },
             "m".into(),
         );
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let box_width = calculate_box_width(&ir);
         let positioned = calculate_positions(&ir, &config, box_width);
         let parents: HashSet<NodeId> = [c].into();
@@ -934,7 +939,7 @@ mod tests {
             },
             "child_module".into(),
         );
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let box_width = calculate_box_width(&ir);
         let positioned = calculate_positions(&ir, &config, box_width);
         let parents: HashSet<NodeId> = [c].into();
@@ -965,7 +970,7 @@ mod tests {
             },
             "child_module".into(),
         );
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let box_width = calculate_box_width(&ir);
         let positioned = calculate_positions(&ir, &config, box_width);
         let parents: HashSet<NodeId> = [c].into();
@@ -996,7 +1001,7 @@ mod tests {
             },
             "child".into(),
         );
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let box_width = calculate_box_width(&ir);
         let positioned = calculate_positions(&ir, &config, box_width);
         let parents: HashSet<NodeId> = [c].into();
@@ -1031,7 +1036,7 @@ mod tests {
             },
             "child".into(),
         );
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let box_width = calculate_box_width(&ir);
         let positioned = calculate_positions(&ir, &config, box_width);
         let parents: HashSet<NodeId> = [c].into();
@@ -1068,7 +1073,7 @@ mod tests {
                 child.into(),
             );
         }
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let box_width = calculate_box_width(&ir);
         let positioned = calculate_positions(&ir, &config, box_width);
         let parents: HashSet<NodeId> = [c].into();
@@ -1164,7 +1169,7 @@ mod tests {
     #[test]
     fn test_render_marks_cycle_node_labels() {
         let fx = cycle_fixture();
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let box_width = calculate_box_width(&fx.ir);
         let positioned = calculate_positions(&fx.ir, &config, box_width);
         let parents: HashSet<NodeId> = [fx.root, fx.outer].into();
@@ -1196,7 +1201,7 @@ mod tests {
     #[test]
     fn test_render_collapsed_parent_marks_hidden_cycle() {
         let fx = cycle_fixture();
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let box_width = calculate_box_width(&fx.ir);
         let positioned = calculate_positions(&fx.ir, &config, box_width);
         let parents: HashSet<NodeId> = [fx.root, fx.outer].into();
@@ -1254,7 +1259,7 @@ mod tests {
                 externals: true,
                 tests: false,
             },
-            ..RenderConfig::default()
+            ..RenderConfig::new(&RUST_PROFILE.wording)
         };
         let output = render_toolbar(800.0, facts, &config);
         assert_eq!(
@@ -1333,7 +1338,11 @@ mod tests {
 
     #[test]
     fn test_render_toolbar_contains_elements() {
-        let output = render_toolbar(800.0, ToolbarFacts::default(), &RenderConfig::default());
+        let output = render_toolbar(
+            800.0,
+            ToolbarFacts::default(),
+            &RenderConfig::new(&RUST_PROFILE.wording),
+        );
         assert!(
             output.contains(r#"id="toolbar-fo""#),
             "Should have foreignObject with toolbar-fo id"
@@ -1418,7 +1427,7 @@ mod tests {
             has_transitive_externals,
             ..ToolbarFacts::default()
         };
-        let output = render_toolbar(800.0, facts, &RenderConfig::default());
+        let output = render_toolbar(800.0, facts, &RenderConfig::new(&RUST_PROFILE.wording));
         assert_eq!(
             output.contains(r#"id="external-dep-checkbox""#),
             external_checkbox,
@@ -1445,7 +1454,7 @@ mod tests {
     fn test_render_toolbar_follow_toggle_only_with_jump_ids() {
         let with_jump_ids = RenderConfig {
             with_jump_ids: true,
-            ..RenderConfig::default()
+            ..RenderConfig::new(&RUST_PROFILE.wording)
         };
         let served = render_toolbar(800.0, ToolbarFacts::default(), &with_jump_ids);
         assert!(
@@ -1456,7 +1465,11 @@ mod tests {
             "{served}"
         );
 
-        let written = render_toolbar(800.0, ToolbarFacts::default(), &RenderConfig::default());
+        let written = render_toolbar(
+            800.0,
+            ToolbarFacts::default(),
+            &RenderConfig::new(&RUST_PROFILE.wording),
+        );
         assert!(!written.contains("follow-toggle"), "{written}");
     }
 
@@ -1469,8 +1482,7 @@ mod tests {
             ToolbarFacts::default(),
             &RenderConfig {
                 with_jump_ids: true,
-                wording: &WIDGETS.wording,
-                ..RenderConfig::default()
+                ..RenderConfig::new(&WIDGETS.wording)
             },
         );
 
@@ -1496,7 +1508,7 @@ mod tests {
                     externals: true,
                     tests: false,
                 },
-                ..RenderConfig::default()
+                ..RenderConfig::new(&RUST_PROFILE.wording)
             },
         );
         let ct = &CSS.toolbar;
@@ -1525,7 +1537,11 @@ mod tests {
             "{served}"
         );
 
-        let written = render_toolbar(800.0, ToolbarFacts::default(), &RenderConfig::default());
+        let written = render_toolbar(
+            800.0,
+            ToolbarFacts::default(),
+            &RenderConfig::new(&RUST_PROFILE.wording),
+        );
         assert!(!written.contains("externals-toggle"), "{written}");
         assert!(!written.contains("tests-toggle"), "{written}");
         assert!(!written.contains("on-save-toggle"), "{written}");
@@ -1551,7 +1567,7 @@ mod tests {
         );
         ir.edges
             .push(LayoutEdge::new(a, b, EdgeContext::production()));
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let box_width = calculate_box_width(&ir);
         let positioned = calculate_positions(&ir, &config, box_width);
         let positioned_index: HashMap<_, _> = positioned.iter().map(|p| (p.id, p)).collect();
@@ -1592,7 +1608,7 @@ mod tests {
         );
         ir.edges
             .push(LayoutEdge::new(a, b, EdgeContext::production()));
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let box_width = calculate_box_width(&ir);
         let positioned = calculate_positions(&ir, &config, box_width);
         let positioned_index: HashMap<_, _> = positioned.iter().map(|p| (p.id, p)).collect();
@@ -1633,7 +1649,7 @@ mod tests {
         let c2 = ir.add_item(ItemKind::Package, "crate_b".into());
         ir.edges
             .push(LayoutEdge::new(c1, c2, EdgeContext::production()));
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let box_width = calculate_box_width(&ir);
         let positioned = calculate_positions(&ir, &config, box_width);
         let positioned_index: HashMap<_, _> = positioned.iter().map(|p| (p.id, p)).collect();
@@ -1666,7 +1682,7 @@ mod tests {
         let mut edge = LayoutEdge::new(a, b, EdgeContext::production());
         edge.reexport = true;
         ir.edges.push(edge);
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let box_width = calculate_box_width(&ir);
         let positioned = calculate_positions(&ir, &config, box_width);
         let positioned_index: HashMap<_, _> = positioned.iter().map(|p| (p.id, p)).collect();
@@ -1727,7 +1743,7 @@ mod tests {
                 vec![0],
                 0,
             ));
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let box_width = calculate_box_width(&ir);
         let positioned = calculate_positions(&ir, &config, box_width);
         let positioned_index: HashMap<_, _> = positioned.iter().map(|p| (p.id, p)).collect();
@@ -1772,7 +1788,7 @@ mod tests {
         let mut edge = LayoutEdge::new(a, b, EdgeContext::production());
         edge.reexport = true;
         ir.edges.push(edge);
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let box_width = calculate_box_width(&ir);
         let positioned = calculate_positions(&ir, &config, box_width);
         let positioned_index: HashMap<_, _> = positioned.iter().map(|p| (p.id, p)).collect();
@@ -1794,7 +1810,11 @@ mod tests {
 
     #[test]
     fn test_render_toolbar_has_reexport_checkbox_unchecked() {
-        let output = render_toolbar(800.0, ToolbarFacts::default(), &RenderConfig::default());
+        let output = render_toolbar(
+            800.0,
+            ToolbarFacts::default(),
+            &RenderConfig::new(&RUST_PROFILE.wording),
+        );
         assert!(
             output.contains(r#"id="reexport-dep-checkbox""#),
             "Should have reexport-dep checkbox"
@@ -1850,7 +1870,7 @@ mod tests {
         ir.edges
             .push(LayoutEdge::new(a, m, EdgeContext::production()));
 
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let box_width = calculate_box_width(&ir);
         let positioned = calculate_positions(&ir, &config, box_width);
         let positioned_index: HashMap<_, _> = positioned.iter().map(|p| (p.id, p)).collect();
@@ -1926,7 +1946,7 @@ mod tests {
                 0,
             ));
 
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let box_width = calculate_box_width(&ir);
         let positioned = calculate_positions(&ir, &config, box_width);
         let positioned_index: HashMap<_, _> = positioned.iter().map(|p| (p.id, p)).collect();
@@ -1970,7 +1990,7 @@ mod tests {
                 0,
             ));
 
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let box_width = calculate_box_width(&ir);
         let positioned = calculate_positions(&ir, &config, box_width);
         let positioned_index: HashMap<_, _> = positioned.iter().map(|p| (p.id, p)).collect();

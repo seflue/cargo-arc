@@ -150,8 +150,9 @@ const DEFAULT_HOTSPOTS: usize = 10;
 #[allow(clippy::struct_excessive_bools)] // CLI flags map 1:1 to fields
 #[derive(Parser)]
 pub struct CommonArgs {
-    /// Path to Cargo.toml (default: ./Cargo.toml)
-    #[arg(short, long, default_value = "Cargo.toml")]
+    /// Path to Cargo.toml, or to a directory holding a Cargo.toml or a `lua/`
+    /// plugin (default: ./Cargo.toml, else the working directory)
+    #[arg(short, long, default_value = DEFAULT_MANIFEST)]
     pub manifest_path: PathBuf,
 
     /// Comma-separated list of features to activate
@@ -178,6 +179,21 @@ pub struct CommonArgs {
     /// Enable debug output to stderr (shows filtering decisions)
     #[arg(long)]
     pub debug: bool,
+
+    /// Language of the project to analyze (default: rust where a Cargo.toml
+    /// is found, lua where only a `lua/` directory is)
+    #[arg(long, value_enum)]
+    pub language: Option<Language>,
+}
+
+/// The `--manifest-path` a run without the flag gets.
+const DEFAULT_MANIFEST: &str = "Cargo.toml";
+
+/// The languages cargo-arc analyzes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum Language {
+    Rust,
+    Lua,
 }
 
 /// The `--theme` value parser: a theme name or a mode alias, or an error
@@ -257,8 +273,7 @@ pub fn run(args: ArcCommand) -> Result<Judgment> {
         expand_level: args.expand_level,
         theme: args.theme,
         document,
-        wording: &analysis.profile.wording,
-        ..RenderConfig::default()
+        ..RenderConfig::new(&analysis.profile.wording)
     };
     let body = render(&analysis.layout, &config);
     tracing::debug!("phase: render done ({} bytes)", body.len());
@@ -307,14 +322,20 @@ impl ArcCommand {
 /// own [`RenderConfig`] and render `analysis.layout` with it.
 /// The language adapter `args` ask for, with `switches` in place of the
 /// flags they stand for.
-fn adapter_for(args: &ArcCommand, switches: AnalysisSwitches) -> analyze::Rust {
+fn adapter_for(args: &ArcCommand, switches: AnalysisSwitches) -> Result<Box<dyn LanguageAdapter>> {
+    if language_of(&args.common)? == Language::Lua {
+        return Ok(Box::new(analyze::Lua {
+            plugin_dir: resolve_repo_path(&args.common.manifest_path).to_path_buf(),
+        }));
+    }
+
     #[cfg(feature = "hir")]
     let use_hir = args.hir;
     #[cfg(not(feature = "hir"))]
     let use_hir = false;
 
-    analyze::Rust {
-        manifest_path: args.common.manifest_path.clone(),
+    Ok(Box::new(analyze::Rust {
+        manifest_path: cargo_manifest(&args.common.manifest_path),
         feature_config: FeatureConfig {
             include_tests: switches.tests,
             ..build_feature_config(&args.common)
@@ -322,7 +343,7 @@ fn adapter_for(args: &ArcCommand, switches: AnalysisSwitches) -> analyze::Rust {
         use_hir,
         externals: switches.externals,
         transitive_deps: args.transitive_deps,
-    }
+    }))
 }
 
 fn analyze_for_diagram(
@@ -330,9 +351,9 @@ fn analyze_for_diagram(
     switches: AnalysisSwitches,
     with_volatility: bool,
 ) -> Result<DiagramAnalysis> {
-    let adapter = adapter_for(args, switches);
+    let adapter = adapter_for(args, switches)?;
     let (graph, workspace_root, unparsed) =
-        build_dependency_graph(&adapter, adapter.feature_config.include_tests)?;
+        build_dependency_graph(adapter.as_ref(), switches.tests)?;
     let reexports = Reexports::from(args.common.include_reexports);
     tracing::debug!("phase: cycle detection start");
     let analysis = graph.production_subgraph(reexports).representative_cycles();
@@ -413,8 +434,7 @@ fn run_ui(args: &ArcCommand, ui_args: &UiArgs) -> Result<Judgment> {
             theme: args.theme,
             switches,
             document: Document::Page,
-            wording: &analysis.profile.wording,
-            ..RenderConfig::default()
+            ..RenderConfig::new(&analysis.profile.wording)
         };
         let arc_svg = render(&analysis.layout, &arc_config);
 
@@ -434,7 +454,7 @@ fn run_ui(args: &ArcCommand, ui_args: &UiArgs) -> Result<Judgment> {
             with_jump_ids: true,
             theme: args.theme,
             volatility,
-            ..RenderConfig::default()
+            ..RenderConfig::new(&analysis.profile.wording)
         };
         let hotspots_svg = render_hotspots(&tree, &packed, &jump_targets, &hotspots_config);
 
@@ -454,7 +474,7 @@ fn run_ui(args: &ArcCommand, ui_args: &UiArgs) -> Result<Judgment> {
         initial,
         switches,
         workspace_root,
-        adapter_for(args, switches).profile(),
+        adapter_for(args, switches)?.profile(),
         args.theme,
         Box::new(move |switches| {
             let (root, pages, unparsed) = pages(switches)?;
@@ -571,7 +591,7 @@ fn run_hotspots(args: &ArcCommand, hotspots_args: &HotspotsArgs) -> Result<Judgm
     let config = RenderConfig {
         theme: args.theme,
         volatility,
-        ..RenderConfig::default()
+        ..RenderConfig::new(&analysis.profile.wording)
     };
     // The standalone file carries no jump service to resolve an id against
     // (`with_jump_ids` stays false in `config`, as for the plain arc
@@ -713,7 +733,51 @@ fn build_feature_config(common: &CommonArgs) -> FeatureConfig {
     }
 }
 
+/// Decide the language of the run: `--language` when set, otherwise Lua for a
+/// candidate directory that holds `lua/` and no `Cargo.toml`, otherwise Rust.
+/// The candidate is `--manifest-path` when it names a directory, and the
+/// working directory when the flag keeps its default and no `Cargo.toml`
+/// exists there.
+/// A candidate with neither is an error.
+fn language_of(common: &CommonArgs) -> Result<Language> {
+    if let Some(language) = common.language {
+        return Ok(language);
+    }
+    let path = common.manifest_path.as_path();
+    let candidate = if path.is_dir() {
+        path
+    } else if path == Path::new(DEFAULT_MANIFEST) && !path.exists() {
+        Path::new(".")
+    } else {
+        return Ok(Language::Rust);
+    };
+    if candidate.join("Cargo.toml").exists() {
+        return Ok(Language::Rust);
+    }
+    if candidate.join("lua").is_dir() {
+        return Ok(Language::Lua);
+    }
+    anyhow::bail!(
+        "neither Cargo.toml nor lua/ in {}: point --manifest-path at a Rust workspace or a Neovim plugin",
+        candidate.display()
+    )
+}
+
+/// Name the `Cargo.toml` that `--manifest-path` points to: the path itself,
+/// or the `Cargo.toml` inside it when it is a directory.
+fn cargo_manifest(manifest_path: &Path) -> PathBuf {
+    if manifest_path.is_dir() {
+        return manifest_path.join("Cargo.toml");
+    }
+    manifest_path.to_path_buf()
+}
+
+/// Return the directory `--manifest-path` names: the path itself when it is
+/// a directory, otherwise the directory holding the manifest.
 fn resolve_repo_path(manifest_path: &Path) -> &Path {
+    if manifest_path.is_dir() {
+        return manifest_path;
+    }
     manifest_path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -1027,6 +1091,21 @@ mod tests {
     }
 
     #[test]
+    fn language_flag_takes_rust_or_lua_and_defaults_to_none() {
+        let language = |args: &[&str]| parse_args(args).common.language;
+        assert_eq!(language(&["cargo", "arc"]), None);
+        assert_eq!(
+            language(&["cargo", "arc", "--language", "rust"]),
+            Some(Language::Rust)
+        );
+        assert_eq!(
+            language(&["cargo", "arc", "--language", "lua"]),
+            Some(Language::Lua)
+        );
+        assert!(Cargo::try_parse_from(["cargo", "arc", "--language", "go"]).is_err());
+    }
+
+    #[test]
     fn test_parse_externals_flag() {
         let cmd = parse_args(&["cargo", "arc", "--externals"]);
         assert!(cmd.externals);
@@ -1126,6 +1205,7 @@ mod tests {
                 include_tests: false,
                 include_reexports: false,
                 debug: false,
+                language: None,
             },
             output: Some(temp.path().to_path_buf()),
             volatility: false,
@@ -1284,12 +1364,12 @@ mod tests {
             svg.match_indices("\"jump\":")
                 .any(|(i, key)| svg[i + key.len()..].starts_with(|c: char| c.is_ascii_digit()))
         };
-        let default_svg = render(&analysis.layout, &RenderConfig::default());
+        let default_svg = render(&analysis.layout, &RenderConfig::new(&RUST_PROFILE.wording));
         assert!(!has_jump_id(&default_svg));
 
         let jump_config = RenderConfig {
             with_jump_ids: true,
-            ..RenderConfig::default()
+            ..RenderConfig::new(&RUST_PROFILE.wording)
         };
         let jump_svg = render(&analysis.layout, &jump_config);
         assert!(has_jump_id(&jump_svg));

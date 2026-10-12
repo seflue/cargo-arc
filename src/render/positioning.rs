@@ -148,6 +148,7 @@ pub(super) fn calculate_canvas_size(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analyze::rust::PROFILE as RUST_PROFILE;
     use crate::layout::{ItemKind, LayoutEdge, LayoutIR};
     use crate::model::EdgeContext;
     use std::collections::HashMap;
@@ -210,7 +211,7 @@ mod tests {
         ir.edges
             .push(LayoutEdge::new(1, 10, EdgeContext::production()));
 
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let box_width = calculate_box_width(&ir);
         let positioned = calculate_positions(&ir, &config, box_width);
         let positioned_index: HashMap<_, _> = positioned.iter().map(|p| (p.id, p)).collect();
@@ -239,7 +240,7 @@ mod tests {
             "very_long_module_name".into(),
         );
 
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let box_width = calculate_box_width(&ir);
         let positioned = calculate_positions(&ir, &config, box_width);
 
@@ -253,7 +254,7 @@ mod tests {
 
     #[test]
     fn test_collapse_positions_hides_one_of_three() {
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let items = vec![
             PositionedItem {
                 id: 0,
@@ -319,7 +320,7 @@ mod tests {
 
     #[test]
     fn test_collapse_positions_empty_visible_set() {
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let items = vec![PositionedItem {
             id: 0,
             x: 20.0,
@@ -367,7 +368,7 @@ mod tests {
     fn test_canvas_includes_toolbar_height() {
         let mut ir = LayoutIR::new();
         ir.add_item(ItemKind::Package, "test".into());
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let box_width = calculate_box_width(&ir);
         let positioned = calculate_positions(&ir, &config, box_width);
         let positioned_index: HashMap<_, _> = positioned.iter().map(|p| (p.id, p)).collect();

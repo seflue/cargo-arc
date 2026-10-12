@@ -220,6 +220,7 @@ pub fn project_name(workspace_root: &Path) -> Option<&str> {
 mod tests {
     use super::constants::CSS;
     use super::*;
+    use crate::analyze::rust::PROFILE as RUST_PROFILE;
     use crate::layout::{CycleKind, LayoutEdge};
     use crate::model::EdgeContext;
 
@@ -299,7 +300,7 @@ mod tests {
     /// page fills from `STATIC_DATA.theme`.
     #[test]
     fn toolbar_offers_a_mode_switch_and_a_theme_select_per_mode() {
-        let svg = render(&LayoutIR::new(), &RenderConfig::default());
+        let svg = render(&LayoutIR::new(), &RenderConfig::new(&RUST_PROFILE.wording));
         let panel_start = svg.find("class=\"toolbar-dropdown-panel\"").unwrap();
         let panel_end = panel_start + svg[panel_start..].find("</div>\n      </div>").unwrap();
         let panel = &svg[panel_start..panel_end];
@@ -335,7 +336,7 @@ mod tests {
             &ir,
             &RenderConfig {
                 theme: Some(&theme::MOCHA),
-                ..RenderConfig::default()
+                ..RenderConfig::new(&RUST_PROFILE.wording)
             },
         );
         assert!(
@@ -343,7 +344,7 @@ mod tests {
                 .contains("<svg xmlns=\"http://www.w3.org/2000/svg\" data-theme=\"mocha\" class="),
             "{pinned}"
         );
-        let free = render(&ir, &RenderConfig::default());
+        let free = render(&ir, &RenderConfig::new(&RUST_PROFILE.wording));
         let root = free
             .lines()
             .nth(1)
@@ -360,7 +361,7 @@ mod tests {
             &LayoutIR::new(),
             &RenderConfig {
                 document: Document::Page,
-                ..RenderConfig::default()
+                ..RenderConfig::new(&RUST_PROFILE.wording)
             },
         );
         let svg_end = page.find("</svg>").expect("the root svg closes");
@@ -422,7 +423,7 @@ mod tests {
 
         let config = RenderConfig {
             expand_level: Some(0),
-            ..RenderConfig::default()
+            ..RenderConfig::new(&RUST_PROFILE.wording)
         };
         let svg = render(&ir, &config);
 
@@ -473,7 +474,7 @@ mod tests {
             },
             "m".into(),
         );
-        let svg = render(&ir, &RenderConfig::default());
+        let svg = render(&ir, &RenderConfig::new(&RUST_PROFILE.wording));
         // No collapsed class without expand_level
         assert!(
             !svg.contains(r#"class="module collapsed""#),
@@ -488,7 +489,7 @@ mod tests {
     #[test]
     fn test_render_empty() {
         let ir = LayoutIR::new();
-        let svg = render(&ir, &RenderConfig::default());
+        let svg = render(&ir, &RenderConfig::new(&RUST_PROFILE.wording));
         assert!(svg.contains("<svg"));
         assert!(svg.contains("</svg>"));
     }
@@ -496,7 +497,7 @@ mod tests {
     #[test]
     fn test_svg_root_has_cluster_mode_on_by_default() {
         let ir = LayoutIR::new();
-        let svg = render(&ir, &RenderConfig::default());
+        let svg = render(&ir, &RenderConfig::new(&RUST_PROFILE.wording));
         assert!(
             svg.contains(&format!(
                 "<svg xmlns=\"http://www.w3.org/2000/svg\" class=\"{}\"",
@@ -510,7 +511,7 @@ mod tests {
     fn test_render_single_package() {
         let mut ir = LayoutIR::new();
         ir.add_item(ItemKind::Package, "my_crate".into());
-        let svg = render(&ir, &RenderConfig::default());
+        let svg = render(&ir, &RenderConfig::new(&RUST_PROFILE.wording));
         assert!(svg.contains(r#"class="package""#));
         assert!(svg.contains("my_crate"));
     }
@@ -535,7 +536,7 @@ mod tests {
         );
         ir.edges
             .push(LayoutEdge::new(a, b, EdgeContext::production()));
-        let svg = render(&ir, &RenderConfig::default());
+        let svg = render(&ir, &RenderConfig::new(&RUST_PROFILE.wording));
         assert!(svg.contains(" Q ")); // Bezier
         assert!(svg.contains("<polygon")); // Arrow
     }
@@ -566,7 +567,7 @@ mod tests {
                 vec![0],
                 0,
             ));
-        let svg = render(&ir, &RenderConfig::default());
+        let svg = render(&ir, &RenderConfig::new(&RUST_PROFILE.wording));
         assert!(svg.contains("cycle-arc"));
         // DirectCycle should have two arrows (bidirectional). cycle-arrow is an
         // additive marker on top of the directional arrow class.
@@ -596,7 +597,7 @@ mod tests {
                 0,
             ),
         );
-        let svg2 = render(&ir2, &RenderConfig::default());
+        let svg2 = render(&ir2, &RenderConfig::new(&RUST_PROFILE.wording));
         assert!(svg2.contains("cycle-arc"));
         // Transitive cycle arcs use solid lines (no dasharray) for uniform style
         // Check only the cycle arc element, not the entire SVG (CSS may contain dasharray for other rules)
@@ -611,7 +612,7 @@ mod tests {
     #[test]
     fn test_svg_has_script() {
         let ir = LayoutIR::new();
-        let svg = render(&ir, &RenderConfig::default());
+        let svg = render(&ir, &RenderConfig::new(&RUST_PROFILE.wording));
         assert!(svg.contains("<script>"), "SVG should contain script tag");
         assert!(
             svg.contains("highlightNode"),
@@ -643,7 +644,7 @@ mod tests {
         );
         ir.edges
             .push(LayoutEdge::new(a, b, EdgeContext::production()));
-        let svg = render(&ir, &RenderConfig::default());
+        let svg = render(&ir, &RenderConfig::new(&RUST_PROFILE.wording));
 
         // Verify all 6 layers exist
         assert!(
@@ -676,7 +677,7 @@ mod tests {
     fn test_jump_popover_layer_is_the_last_layer_in_graph_content() {
         let mut ir = LayoutIR::new();
         ir.add_item(ItemKind::Package, "c".into());
-        let svg = render(&ir, &RenderConfig::default());
+        let svg = render(&ir, &RenderConfig::new(&RUST_PROFILE.wording));
 
         let popover = svg
             .find(r#"<g id="jump-popover-layer"></g>"#)
@@ -714,7 +715,7 @@ mod tests {
         );
         ir.edges
             .push(LayoutEdge::new(a, b, EdgeContext::production()));
-        let svg = render(&ir, &RenderConfig::default());
+        let svg = render(&ir, &RenderConfig::new(&RUST_PROFILE.wording));
 
         // Find base-arcs-layer content
         let base_arcs_start = svg.find(r#"<g id="base-arcs-layer">"#).unwrap();
@@ -787,7 +788,7 @@ mod tests {
             EdgeContext::test(TestKind::Unit),
         ));
 
-        let svg = render(&ir, &RenderConfig::default());
+        let svg = render(&ir, &RenderConfig::new(&RUST_PROFILE.wording));
 
         // In SVG, elements rendered later appear on top (higher z-order).
         // Expected order: Test arcs first (back), then Production, then Cycle (front).
@@ -829,7 +830,7 @@ mod tests {
         );
         ir.edges
             .push(LayoutEdge::new(a, b, EdgeContext::production()));
-        let svg = render(&ir, &RenderConfig::default());
+        let svg = render(&ir, &RenderConfig::new(&RUST_PROFILE.wording));
 
         // Find hitareas-layer content
         let hitareas_start = svg.find(r#"<g id="hitareas-layer">"#).unwrap();

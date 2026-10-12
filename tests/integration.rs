@@ -1,6 +1,7 @@
-use cargo_arc::cli::CommonArgs;
+use cargo_arc::cli::{CommonArgs, Language};
 use cargo_arc::{ArcCommand, run};
 use serde_json::Value;
+use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
@@ -21,6 +22,7 @@ fn fixture_args(fixture: &str, include_tests: bool) -> (tempfile::NamedTempFile,
             include_tests,
             include_reexports: false,
             debug: false,
+            language: None,
         },
         output: Some(temp.path().to_path_buf()),
         volatility: false,
@@ -51,6 +53,7 @@ fn self_args() -> (tempfile::NamedTempFile, ArcCommand) {
             include_tests: false,
             include_reexports: false,
             debug: false,
+            language: None,
         },
         output: Some(temp.path().to_path_buf()),
         volatility: false,
@@ -147,6 +150,515 @@ fn extract_arc_symbols(svg: &str) -> std::collections::HashMap<(String, String),
             Some(((from, to), symbols))
         })
         .collect()
+}
+
+/// Helper: build `ArcCommand` for a Lua plugin fixture under `--language lua`,
+/// with `--manifest-path` naming the plugin directory.
+fn lua_fixture_args(fixture: &str) -> (tempfile::NamedTempFile, ArcCommand) {
+    let (temp, mut cmd) = fixture_args(fixture, false);
+    cmd.common.manifest_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/{fixture}"));
+    cmd.common.language = Some(Language::Lua);
+    (temp, cmd)
+}
+
+/// Run `cmd` and return what it wrote.
+fn run_to_string(temp: &tempfile::NamedTempFile, cmd: ArcCommand) -> String {
+    let result = run(cmd);
+    assert!(result.is_ok(), "run() should succeed: {result:?}");
+    std::fs::read_to_string(temp.path()).unwrap()
+}
+
+#[test]
+fn lua_namespaces_under_lua_dir_are_the_packages() {
+    let (temp, cmd) = lua_fixture_args("lua_plugin");
+    let svg = run_to_string(&temp, cmd);
+
+    let mut packages = extract_package_names(&svg);
+    packages.sort();
+    assert_eq!(packages, vec!["alpha", "beta"]);
+}
+
+/// The module nodes in `STATIC_DATA`, each named by its ancestors' names and
+/// its own, joined by `::`, sorted.
+fn qualified_module_names(svg: &str) -> Vec<String> {
+    let data = parse_static_data(svg);
+    let nodes = data["nodes"].as_object().expect("nodes is object");
+    let qualified = |id: &str| {
+        let mut parts = Vec::new();
+        let mut current = Some(id.to_string());
+        while let Some(id) = current {
+            let node = &nodes[&id];
+            parts.push(node["name"].as_str().unwrap().to_string());
+            current = node["parent"].as_str().map(str::to_string);
+        }
+        parts.reverse();
+        parts.join("::")
+    };
+    let mut names: Vec<String> = nodes
+        .iter()
+        .filter(|(_, node)| node["type"] == "module")
+        .map(|(id, _)| qualified(id))
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn lua_files_of_a_namespace_are_its_modules() {
+    let (temp, cmd) = lua_fixture_args("lua_plugin");
+    let svg = run_to_string(&temp, cmd);
+
+    assert_eq!(
+        qualified_module_names(&svg),
+        vec!["alpha::util", "beta::core"]
+    );
+}
+
+#[test]
+fn lua_init_files_stand_for_their_directory_in_the_module_tree() {
+    let (temp, cmd) = lua_fixture_args("lua_tree");
+    let svg = run_to_string(&temp, cmd);
+
+    let modules = qualified_module_names(&svg);
+    assert_eq!(
+        modules,
+        vec![
+            "bare::thing",
+            "outer::both",
+            "outer::inner",
+            "outer::leaf",
+            "outer::nested",
+            "outer::nested::deep",
+        ]
+    );
+    let arcs = resolve_arc_names(&extract_arcs(&svg), &extract_node_names(&svg));
+    assert!(
+        arcs.contains(&("both".into(), "leaf".into(), false)),
+        "outer.both loads both.lua before both/init.lua: {arcs:?}"
+    );
+    assert!(
+        !arcs.contains(&("both".into(), "inner".into(), false)),
+        "both/init.lua is shadowed by both.lua: {arcs:?}"
+    );
+}
+
+#[test]
+fn a_single_file_plugin_is_a_package_of_one_module() {
+    let (temp, cmd) = lua_fixture_args("lua_single_file");
+    let svg = run_to_string(&temp, cmd);
+
+    assert_eq!(extract_package_names(&svg), vec!["solo"]);
+    assert!(
+        qualified_module_names(&svg).is_empty(),
+        "lua/solo.lua is the package's root module, as lib.rs is a crate's"
+    );
+}
+
+/// The arcs in `STATIC_DATA` as (`from_name`, `to_name`, file, line), one
+/// per location, sorted.
+fn arc_locations(svg: &str) -> Vec<(String, String, String, u64)> {
+    let nodes = extract_node_names(svg);
+    let data = parse_static_data(svg);
+    let mut located: Vec<_> = data["arcs"]
+        .as_object()
+        .expect("arcs is object")
+        .values()
+        .flat_map(|arc| {
+            let from = nodes[arc["from"].as_str().unwrap()].clone();
+            let to = nodes[arc["to"].as_str().unwrap()].clone();
+            arc["usages"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .flat_map(|usage| usage["locations"].as_array().into_iter().flatten())
+                .map(move |location| {
+                    (
+                        from.clone(),
+                        to.clone(),
+                        location["file"].as_str().unwrap().to_string(),
+                        location["line"].as_u64().unwrap(),
+                    )
+                })
+        })
+        .collect();
+    located.sort();
+    located
+}
+
+#[test]
+fn every_spelling_of_require_is_an_arc_at_its_line() {
+    let (temp, cmd) = lua_fixture_args("lua_tree");
+    let svg = run_to_string(&temp, cmd);
+
+    let located = arc_locations(&svg);
+    let at = |from: &str, to: &str, file: &str, line: u64| {
+        (from.to_string(), to.to_string(), file.to_string(), line)
+    };
+    for expected in [
+        at("outer", "inner", "lua/outer/init.lua", 1), // require "x"
+        at("outer", "leaf", "lua/outer/init.lua", 2),  // require 'x'
+        at("inner", "leaf", "lua/outer/inner/init.lua", 4), // require [[x]], in a function
+        at("inner", "deep", "lua/outer/inner/init.lua", 7), // require("x")
+        at("solo", "leaf", "lua/solo.lua", 1),         // into another namespace
+    ] {
+        assert!(located.contains(&expected), "{expected:?} in {located:?}");
+    }
+}
+
+#[test]
+fn require_on_a_name_without_a_file_makes_no_arc() {
+    let (temp, cmd) = lua_fixture_args("lua_tree");
+    let svg = run_to_string(&temp, cmd);
+
+    let from_outside_or_bare: Vec<_> = arc_locations(&svg)
+        .into_iter()
+        .filter(|(_, to, _, _)| to == "bare" || to == "nested")
+        .collect();
+    assert!(
+        from_outside_or_bare.is_empty(),
+        "lua/bare/ has no init.lua, so require(\"bare\") loads nothing: {from_outside_or_bare:?}"
+    );
+    let from_deep = arc_locations(&svg)
+        .into_iter()
+        .filter(|(from, _, _, _)| from == "deep")
+        .count();
+    assert_eq!(
+        from_deep, 0,
+        "vim.api and other_plugin are outside the plugin"
+    );
+}
+
+#[test]
+fn debug_counts_the_discarded_require_calls() {
+    let plugin = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lua_tree");
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.svg");
+    let (code, stderr) = cargo_arc_in(
+        &plugin,
+        &["--no-volatility", "--debug", "-o", out.to_str().unwrap()],
+    );
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stderr.contains("discarded 3 of 12 require calls"),
+        "vim.api, other_plugin and bare name no module of the plugin: {stderr}"
+    );
+}
+
+/// Within `outer`, `inner` and `leaf` require each other; across namespaces,
+/// `solo` requires `bare.thing`, which requires `solo`.
+#[test]
+fn require_cycles_between_lua_modules_and_namespaces_are_marked() {
+    let (temp, cmd) = lua_fixture_args("lua_tree");
+    let svg = run_to_string(&temp, cmd);
+    let data = parse_static_data(&svg);
+    let id_of = |name: &str| {
+        extract_node_names(&svg)
+            .into_iter()
+            .find_map(|(id, n)| (n == name).then_some(id))
+            .unwrap_or_else(|| panic!("node {name} should exist"))
+    };
+    let (inner, leaf, both) = (id_of("inner"), id_of("leaf"), id_of("both"));
+    let (solo, thing) = (id_of("solo"), id_of("thing"));
+
+    let cycle_ids = |from: &str, to: &str| data["arcs"][format!("{from}-{to}")]["cycleIds"].clone();
+    let within = cycle_ids(&inner, &leaf);
+    let across = cycle_ids(&solo, &thing);
+    assert!(within.is_array(), "inner -> leaf is in a cycle: {within}");
+    assert!(across.is_array(), "solo -> thing is in a cycle: {across}");
+    assert_eq!(cycle_ids(&leaf, &inner), within);
+    assert_eq!(cycle_ids(&thing, &solo), across);
+    assert_ne!(within, across, "two separate cycles");
+    assert_eq!(cycle_ids(&both, &leaf), Value::Null);
+}
+
+/// `plugin/alpha.lua` is the entry file of namespace `alpha`, as `main.rs` is
+/// a crate's: no module, and its `require` calls leave the namespace itself.
+#[test]
+fn lua_plugin_scripts_are_entry_imports_of_their_namespace() {
+    let (temp, cmd) = lua_fixture_args("lua_scripts");
+    let svg = run_to_string(&temp, cmd);
+
+    let modules = qualified_module_names(&svg);
+    assert!(
+        !modules.iter().any(|name| name.contains("plugin")),
+        "{modules:?}"
+    );
+    let located = arc_locations(&svg);
+    let at = |from: &str, to: &str, line: u64| {
+        (
+            from.to_string(),
+            to.to_string(),
+            "plugin/alpha.lua".to_string(),
+            line,
+        )
+    };
+    for expected in [at("alpha", "util", 1), at("alpha", "beta", 2)] {
+        assert!(located.contains(&expected), "{expected:?} in {located:?}");
+    }
+}
+
+/// `plugin/gamma.lua` names no namespace, and both `alpha` and `beta` have a
+/// root file, so nothing owns its `require`.
+#[test]
+fn debug_counts_the_require_calls_of_a_plugin_script_without_its_namespace() {
+    let plugin = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lua_scripts");
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.svg");
+    let (code, stderr) = cargo_arc_in(
+        &plugin,
+        &["--no-volatility", "--debug", "-o", out.to_str().unwrap()],
+    );
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stderr.contains("discarded 1 of 3 require calls"),
+        "plugin/gamma.lua has no namespace gamma: {stderr}"
+    );
+}
+
+/// `plugin/start.lua` names no namespace, and `core` is the plugin's only
+/// namespace with a root file, so the script is `core`'s entry file.
+#[test]
+fn a_plugin_script_without_its_namespace_belongs_to_the_only_rooted_namespace() {
+    let (temp, cmd) = lua_fixture_args("lua_lone_root");
+    let svg = run_to_string(&temp, cmd);
+
+    let located = arc_locations(&svg);
+    let at = |to: &str, line: u64| {
+        (
+            "core".to_string(),
+            to.to_string(),
+            "plugin/start.lua".to_string(),
+            line,
+        )
+    };
+    for expected in [at("util", 1), at("view", 2)] {
+        assert!(located.contains(&expected), "{expected:?} in {located:?}");
+    }
+}
+
+/// `lua/host/_extensions/` hooks into another plugin: `host` has no root
+/// file, stays a namespace, and takes no part in owning `plugin/start.lua`.
+#[test]
+fn a_namespace_without_a_root_file_does_not_own_a_plugin_script() {
+    let (temp, cmd) = lua_fixture_args("lua_lone_root");
+    let svg = run_to_string(&temp, cmd);
+
+    let mut packages = extract_package_names(&svg);
+    packages.sort();
+    assert_eq!(packages, vec!["core", "host"]);
+    let from_script: Vec<_> = arc_locations(&svg)
+        .into_iter()
+        .filter(|(_, _, file, _)| file == "plugin/start.lua")
+        .map(|(from, to, _, _)| (from, to))
+        .collect();
+    assert_eq!(
+        from_script,
+        vec![
+            ("core".to_string(), "util".to_string()),
+            ("core".to_string(), "view".to_string()),
+        ]
+    );
+}
+
+/// `plugin/start.lua` names no namespace, and `core`, the only namespace, has
+/// no root file, so nothing owns its `require`.
+#[test]
+fn debug_counts_the_require_calls_of_a_plugin_script_when_no_namespace_has_a_root_file() {
+    let plugin = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lua_no_root");
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.svg");
+    let (code, stderr) = cargo_arc_in(
+        &plugin,
+        &["--no-volatility", "--debug", "-o", out.to_str().unwrap()],
+    );
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stderr.contains("discarded 1 of 1 require calls"),
+        "plugin/start.lua has no owner: {stderr}"
+    );
+}
+
+/// `spec/` and `tests/` at the root, `lua/alpha/tests/` and
+/// `lua/alpha/util_spec.lua` each `require` a module; none of them shows.
+/// `lua/alpha/tests.lua` is a module, but `lua/alpha/tests/` holds no
+/// children of it.
+#[test]
+fn lua_test_files_stay_out_of_the_diagram() {
+    let (temp, cmd) = lua_fixture_args("lua_scripts");
+    let svg = run_to_string(&temp, cmd);
+
+    assert_eq!(
+        qualified_module_names(&svg),
+        vec!["alpha::tests", "alpha::util"]
+    );
+    let sources: BTreeSet<String> = arc_locations(&svg)
+        .into_iter()
+        .map(|(_, _, file, _)| file)
+        .collect();
+    assert_eq!(sources, BTreeSet::from(["plugin/alpha.lua".to_string()]));
+}
+
+#[test]
+fn lua_require_with_a_string_literal_is_an_arc() {
+    let (temp, cmd) = lua_fixture_args("lua_plugin");
+    let svg = run_to_string(&temp, cmd);
+
+    let arcs = resolve_arc_names(&extract_arcs(&svg), &extract_node_names(&svg));
+    assert!(
+        arcs.contains(&("alpha".into(), "util".into(), false)),
+        "{arcs:?}"
+    );
+    assert!(
+        arcs.contains(&("util".into(), "core".into(), false)),
+        "{arcs:?}"
+    );
+    assert_eq!(arcs.len(), 2, "require(\"vim.api\") makes no arc: {arcs:?}");
+}
+
+#[test]
+fn a_lua_page_says_namespace_and_never_crate() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("plugin.html");
+    let (temp, mut cmd) = lua_fixture_args("lua_plugin");
+    cmd.output = Some(page.clone());
+    assert!(run(cmd).is_ok());
+    drop(temp);
+    let html = std::fs::read_to_string(&page).unwrap();
+
+    let data = parse_static_data(&html);
+    assert_eq!(data["wording"]["package"], "namespace");
+    assert_eq!(data["wording"]["packages"], "namespaces");
+    assert!(
+        !html.to_lowercase().contains("crate"),
+        "toolbar, search and sidebar take their words from the Lua profile"
+    );
+}
+
+#[test]
+fn language_lua_analyzes_the_plugin_beside_a_cargo_manifest() {
+    let repo = tempfile::tempdir().unwrap();
+    std::fs::write(
+        repo.path().join("Cargo.toml"),
+        "[package]\nname = \"native\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(repo.path().join("lua/gamma")).unwrap();
+    std::fs::write(repo.path().join("lua/gamma/init.lua"), "return {}\n").unwrap();
+
+    let (temp, mut cmd) = lua_fixture_args("lua_plugin");
+    cmd.common.manifest_path = repo.path().join("Cargo.toml");
+    let svg = run_to_string(&temp, cmd);
+
+    assert_eq!(extract_package_names(&svg), vec!["gamma"]);
+}
+
+#[test]
+fn a_plugin_directory_is_analyzed_as_lua_without_the_flag() {
+    let (temp, mut cmd) = lua_fixture_args("lua_plugin");
+    cmd.common.language = None;
+    let svg = run_to_string(&temp, cmd);
+
+    let mut packages = extract_package_names(&svg);
+    packages.sort();
+    assert_eq!(packages, vec!["alpha", "beta"]);
+}
+
+#[test]
+fn a_directory_with_cargo_toml_and_lua_is_analyzed_as_rust() {
+    let repo = tempfile::tempdir().unwrap();
+    std::fs::write(
+        repo.path().join("Cargo.toml"),
+        "[package]\nname = \"native\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(repo.path().join("src")).unwrap();
+    std::fs::write(repo.path().join("src/lib.rs"), "").unwrap();
+    std::fs::create_dir_all(repo.path().join("lua/gamma")).unwrap();
+    std::fs::write(repo.path().join("lua/gamma/init.lua"), "return {}\n").unwrap();
+
+    let (temp, mut cmd) = fixture_args("multi_crate", false);
+    cmd.common.manifest_path = repo.path().to_path_buf();
+    let svg = run_to_string(&temp, cmd);
+
+    assert_eq!(extract_package_names(&svg), vec!["native"]);
+}
+
+/// Run `cargo-arc arc <args...>` as a subprocess in `dir`, without
+/// `--manifest-path`. Returns (`exit_code`, stderr).
+fn cargo_arc_in(dir: &std::path::Path, args: &[&str]) -> (i32, String) {
+    let output = Command::new(env!("CARGO_BIN_EXE_cargo-arc"))
+        .current_dir(dir)
+        .arg("arc")
+        .args(args)
+        .output()
+        .expect("failed to execute cargo-arc");
+    (
+        output.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&output.stderr).to_string(),
+    )
+}
+
+#[test]
+fn without_a_manifest_path_the_working_directory_is_analyzed_as_lua() {
+    let plugin = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lua_plugin");
+    let out = tempfile::Builder::new().suffix(".svg").tempfile().unwrap();
+    let (code, stderr) = cargo_arc_in(
+        &plugin,
+        &["--no-volatility", "-o", out.path().to_str().unwrap()],
+    );
+    assert_eq!(code, 0, "stderr: {stderr}");
+
+    let svg = std::fs::read_to_string(out.path()).unwrap();
+    let mut packages = extract_package_names(&svg);
+    packages.sort();
+    assert_eq!(packages, vec!["alpha", "beta"]);
+}
+
+#[test]
+fn without_a_manifest_path_a_rust_workspace_gives_the_same_diagram() {
+    let (temp, cmd) = fixture_args("multi_crate", false);
+    let with_path = run_to_string(&temp, cmd);
+
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multi_crate");
+    let out = tempfile::Builder::new().suffix(".svg").tempfile().unwrap();
+    let (code, stderr) = cargo_arc_in(
+        &workspace,
+        &["--no-volatility", "-o", out.path().to_str().unwrap()],
+    );
+    assert_eq!(code, 0, "stderr: {stderr}");
+
+    assert_eq!(std::fs::read_to_string(out.path()).unwrap(), with_path);
+}
+
+#[test]
+fn a_directory_without_cargo_toml_or_lua_is_an_error() {
+    let empty = tempfile::tempdir().unwrap();
+    let out = empty.path().join("out.svg");
+    let out = out.to_str().unwrap();
+    let dir = empty.path().to_str().unwrap();
+
+    for args in [vec!["-o", out], vec!["--manifest-path", dir, "-o", out]] {
+        let (code, stderr) = cargo_arc_in(empty.path(), &args);
+        assert_eq!(code, 2, "no analysis was possible, stderr: {stderr}");
+        assert!(
+            stderr.contains("neither Cargo.toml nor lua/"),
+            "stderr: {stderr}"
+        );
+        assert!(!std::path::Path::new(out).exists(), "no diagram is written");
+    }
+}
+
+#[test]
+fn language_rust_gives_the_same_diagram_as_no_flag() {
+    let (plain_temp, plain_cmd) = fixture_args("multi_crate", false);
+    let plain = run_to_string(&plain_temp, plain_cmd);
+
+    let (rust_temp, mut rust_cmd) = fixture_args("multi_crate", false);
+    rust_cmd.common.language = Some(Language::Rust);
+    let rust = run_to_string(&rust_temp, rust_cmd);
+
+    assert_eq!(rust, plain);
 }
 
 #[test]
@@ -319,6 +831,7 @@ fn test_cfg_test_included_with_flag() {
             include_tests: true,
             include_reexports: false,
             debug: false,
+            language: None,
         },
         output: Some(temp.path().to_path_buf()),
         volatility: false,
@@ -362,6 +875,7 @@ fn test_entry_point_imports() {
             include_tests: false,
             include_reexports: false,
             debug: false,
+            language: None,
         },
         output: Some(temp.path().to_path_buf()),
         volatility: false,

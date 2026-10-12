@@ -650,8 +650,13 @@ pub struct RenderConfig {
     pub wording: &'static Wording,
 }
 
-impl Default for RenderConfig {
-    fn default() -> Self {
+impl RenderConfig {
+    /// Build the default configuration showing `wording`, the analyzed
+    /// language's words. It takes the wording instead of implementing
+    /// `Default`, so a render path that forgets it does not compile; a
+    /// `Default` would show Rust's words in every other language.
+    #[must_use]
+    pub fn new(wording: &'static Wording) -> Self {
         Self {
             row_height: 30.0,
             indent_size: 20.0,
@@ -662,7 +667,7 @@ impl Default for RenderConfig {
             switches: AnalysisSwitches::default(),
             volatility: MapVolatility::default(),
             document: Document::default(),
-            wording: &crate::analyze::rust::PROFILE.wording,
+            wording,
         }
     }
 }

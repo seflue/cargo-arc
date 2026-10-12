@@ -429,7 +429,7 @@ mod tests {
         let mut ir = LayoutIR::new();
         ir.add_item(ItemKind::Package, "a".into());
         ir.add_item(ItemKind::Package, "b".into());
-        let svg = render(&ir, &RenderConfig::default());
+        let svg = render(&ir, &RenderConfig::new(&RUST_PROFILE.wording));
 
         let mut table = JumpTable::new();
         let a = table.insert(PathBuf::from("/ws/a/Cargo.toml"), 1);

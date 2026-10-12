@@ -9,7 +9,7 @@ See also [RULES.md](RULES.md), [ARC_DIAGRAM.md](ARC_DIAGRAM.md), [HOTSPOT_MAP.md
 
 | Term | Definition |
 |------|------------|
-| **<a id="package">Package</a>** | The unit at the top of a module tree, which other packages depend on as a whole. In Rust a package is what a `Cargo.toml` describes, and in a Neovim plugin it is a top-level namespace `lua/<name>/`, with the plugin's repository as the workspace. |
+| **<a id="package">Package</a>** | The unit at the top of a module tree, which other packages depend on as a whole. In Rust a package is what a `Cargo.toml` describes, and in a Neovim plugin it is a top-level namespace, a directory `lua/<name>/` or a single file `lua/<name>.lua`, with the plugin's repository as the workspace. |
 | **<a id="node">Node</a>** | The [packages](#package) of the workspace and the modules within them are the nodes of the dependency graph. Modules can be nested at any depth. `--externals` adds the external packages the workspace depends on to the graph. [Patterns](#module-path-pattern) match only nodes inside the workspace. |
 | **<a id="edge">Edge</a>** | The directed connection from one [node](#node) to another that the first depends on directly. A transitive dependency runs through other nodes and is not an edge. |
 | **<a id="qualified-node-name">Qualified node name</a>** | A [node](#node)'s path starting at its package: `storage` is the package, `storage::pool` a module in it. `check` writes both ends of a `layers` or `forbidden-dependency` [violation](#violation) as qualified node names. |
