@@ -2,6 +2,7 @@
 
 - **Status:** Active
 - **Decided:** 2026-01-31
+- Corrected 2026-10-13: the sidebar is a `foreignObject` only in the bare SVG; on a page it is an HTML element beside the SVG (ADR-025). The decision covers the arc diagram; the hotspot map uses a hover tooltip.
 
 ## Context
 
@@ -9,7 +10,7 @@ Dependency details were shown as a tooltip. Tooltips disappear when the mouse mo
 
 ## Decision
 
-We show dependency details in a foreignObject-based sidebar.
+We show dependency details in the arc diagram in a sidebar.
 
 ## Rationale
 

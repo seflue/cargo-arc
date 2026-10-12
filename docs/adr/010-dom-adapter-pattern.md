@@ -2,14 +2,16 @@
 
 - **Status:** Active
 - **Decided:** 2026-01-27
+- Corrected 2026-10-13: the frontend is TypeScript, and the adapter covers element access, not all DOM access. Viewport size, scroll position and the theme are accessed directly.
 
 ## Context
 
-`svg_script.js` was hard to test: DOM manipulation and business logic were intertwined. Pure function extraction alone would have made only a small portion of the code testable, since the majority contains DOM accesses.
+`svg_script.js` (now `svg_script.ts`) was hard to test: DOM manipulation and business logic were intertwined. Pure function extraction alone would have made only a small portion of the code testable, since the majority contains DOM accesses.
 
 ## Decision
 
-We encapsulate all DOM accesses behind a `DomAdapter` interface. `createMockDomAdapter()` for tests (call tracking), `DomAdapter` for the browser (delegates to `document.*`).
+We encapsulate access to the diagram's elements behind a `DomAdapter` interface. `createMockDomAdapter()` for tests (call tracking), `DomAdapter` for the browser (delegates to `document.*`).
+Viewport size and scroll position, the theme on the document root and the stored theme choice are accessed directly.
 
 ## Rationale
 

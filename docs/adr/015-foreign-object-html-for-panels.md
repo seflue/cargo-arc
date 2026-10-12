@@ -1,6 +1,6 @@
 # ADR-015: Use foreignObject HTML for SVG Panels
 
-- **Status:** Active
+- **Status:** Superseded by ADR-025 for the page; still holds for the bare SVG
 - **Decided:** 2026-01-31
 
 ## Context

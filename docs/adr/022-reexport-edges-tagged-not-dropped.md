@@ -3,6 +3,7 @@
 - **Status:** Active
 - **Decided:** 2026-07-14
 - **Related:** ADR-018 (edges carry context), ADR-020 (consumer-side re-export resolution)
+- Corrected 2026-10-13: the context of ADR-018 has the kinds Production and Test. Build no longer exists.
 
 ## Context
 
@@ -27,7 +28,7 @@ Analyses derive the view they need (for example a logic subgraph without pure re
 - Dropping is lossy and buys nothing for cycle detection. A pure re-export edge only ever lies on cycles that are idiomatic by definition, meaning they vanish once re-export edges are removed. Removing the edge from the graph would therefore hide no cycle that the default view reports. Cycle correctness is **not** a reason to keep the edge.
 - What actually needs the edge is elsewhere: the diagram can only render structure that exists, and layering rules can only special-case a forwarding `pub use` if the edge carries its kind.
 - One tagged graph with derived views is simpler than maintaining several pre-filtered edge stores.
-- This extends the provenance-on-edges idea of ADR-018 (Production/Test/Build) with an orthogonal dimension. It is distinct from ADR-020, which resolves the *target* of a consumer-side import rather than classifying a producer-side edge.
+- This extends the provenance-on-edges idea of ADR-018 (Production/Test) with an orthogonal dimension. It is distinct from ADR-020, which resolves the *target* of a consumer-side import rather than classifying a producer-side edge.
 
 ## Consequences
 
