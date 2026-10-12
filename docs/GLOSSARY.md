@@ -18,7 +18,7 @@ See also [RULES.md](RULES.md), [ARC_DIAGRAM.md](ARC_DIAGRAM.md), [HOTSPOT_MAP.md
 
 Rust calls the library or binary that a [package](#package) builds a *crate*, and in everyday use often the package itself.
 Lakos uses *package* for a smaller unit (see [Module roles](#module-roles)).
-The UI and the CLI output use the analyzed language's own word for a package, which is *crate* for Rust.
+The UI and the CLI output use the analyzed language's own word for a package, which is *crate* for Rust and *namespace* for a Lua plugin.
 
 Graph theory calls a [node](#node) a *vertex*.
 The literature on directed graphs calls an [edge](#edge) an *arc*.
