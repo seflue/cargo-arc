@@ -2,16 +2,18 @@
 
 - **Status:** Active
 - **Decided:** 2026-01-20
+- Corrected 2026-10-13: the output is not only an SVG opened over file://. The same content is also written as an HTML page with the SVG inline, and `cargo arc ui` serves that page (ADR-027). The served page loads no code, styles or data from the service; it only sends jump and command requests to it and receives its events.
+- Corrected 2026-10-13: the rule that the DOM is never read as a data source was wider than meant. ADR-011 states it narrower: interaction state and derived data are never read from the DOM; rendering code may read back geometry that it wrote itself.
 
 ## Context
 
-cargo-arc produces SVGs that are opened directly in the browser (file:// URL). There is no surrounding HTML document and no web server. All data, styles, and interaction logic must live inside the SVG itself.
+cargo-arc writes the diagram as a bare SVG or as an HTML page with the SVG inline. Either file is opened directly in the browser (file:// URL), without a web server. All data, styles, and interaction logic must live inside the output itself.
 
 ## Decision
 
-We embed CSS, JavaScript, and structured metadata (`STATIC_DATA` as a JS constant) directly into the SVG file. No external files.
+We embed CSS, JavaScript, and structured metadata (`STATIC_DATA` as a JS constant) directly into the output, the SVG or the page around it. No external files.
 
-Rust is the single source of truth for all metadata. The DOM is never read as a data source — `STATIC_DATA` contains everything JS needs at runtime (see ADR-011).
+Rust is the single source of truth for all metadata. `STATIC_DATA` contains everything JS needs at runtime; interaction state and derived data are never read from the DOM (see ADR-011).
 
 ## Rationale
 
