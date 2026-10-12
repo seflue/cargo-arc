@@ -296,7 +296,8 @@ where
     let node = HotspotNode {
         name: name.clone(),
         kind: HotspotKind::Package,
-        // A package without a manifest is identified by its directory.
+        // A package without a manifest is identified by its path: its
+        // directory, or the file of a one-file namespace.
         file: relative(workspace_root, manifest.as_deref().unwrap_or(path)),
         lines: lines_sum,
         commits: subtree_commits.len(),

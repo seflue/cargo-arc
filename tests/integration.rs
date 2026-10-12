@@ -1465,6 +1465,104 @@ fn hotspots_with_volatility_ranks_at_most_n_leaves() {
     );
 }
 
+/// A Lua plugin's hotspot map counts the code lines of each `.lua` file as
+/// a leaf, and identifies each namespace by its directory, having no
+/// manifest.
+#[test]
+fn hotspots_on_a_lua_plugin_lists_its_files_with_their_code_lines() {
+    let plugin = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lua_plugin");
+    let temp = tempfile::Builder::new().suffix(".html").tempfile().unwrap();
+    let (code, _stdout, stderr) = cargo_arc_hotspots(
+        &plugin,
+        &["--no-volatility"],
+        &["-o", temp.path().to_str().unwrap()],
+    );
+    assert_eq!(code, 0, "hotspots run should succeed, stderr: {stderr}");
+
+    let data = parse_static_data(&std::fs::read_to_string(temp.path()).unwrap());
+    let nodes = data["nodes"].as_object().expect("nodes is object");
+    let mut leaves: Vec<(&str, u64)> = nodes
+        .iter()
+        .filter(|(_, node)| node["kind"] == "file")
+        .map(|(key, node)| (key.as_str(), node["lines"].as_u64().unwrap()))
+        .collect();
+    leaves.sort_unstable();
+    assert_eq!(
+        leaves,
+        vec![
+            ("lua/alpha/init.lua", 6),
+            ("lua/alpha/util.lua", 7),
+            ("lua/beta/core.lua", 5),
+            ("lua/beta/init.lua", 1),
+        ]
+    );
+
+    for (key, name) in [("lua/alpha", "alpha"), ("lua/beta", "beta")] {
+        assert_eq!(nodes[key]["kind"], "package", "{key}: {data}");
+        assert_eq!(nodes[key]["name"], name, "{key}: {data}");
+    }
+}
+
+/// Copy the `lua_plugin` fixture into a fresh git repository and commit it
+/// once, so every `.lua` file carries one commit inside any window.
+fn committed_lua_plugin() -> tempfile::TempDir {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lua_plugin");
+    let repo = tempfile::tempdir().unwrap();
+    for file in [
+        "alpha/init.lua",
+        "alpha/util.lua",
+        "beta/core.lua",
+        "beta/init.lua",
+    ] {
+        let target = repo.path().join("lua").join(file);
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::copy(fixture.join("lua").join(file), target).unwrap();
+    }
+    let git = |args: &[&str]| {
+        let status = Command::new("git")
+            .args(["-c", "user.name=test", "-c", "user.email=test@example.com"])
+            .args(args)
+            .current_dir(repo.path())
+            .status()
+            .expect("git should be on PATH");
+        assert!(status.success(), "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "plugin"]);
+    repo
+}
+
+/// The commits on `.lua` files reach the map: each leaf counts its commit,
+/// and the leaves rank as hotspots instead of the map going grey.
+#[test]
+fn hotspots_on_a_lua_plugin_count_the_commits_on_its_lua_files() {
+    let repo = committed_lua_plugin();
+    let temp = tempfile::Builder::new().suffix(".html").tempfile().unwrap();
+    let (code, _stdout, stderr) = cargo_arc_hotspots(
+        &repo.path().to_path_buf(),
+        &[],
+        &["-o", temp.path().to_str().unwrap()],
+    );
+    assert_eq!(code, 0, "hotspots run should succeed, stderr: {stderr}");
+
+    let data = parse_static_data(&std::fs::read_to_string(temp.path()).unwrap());
+    assert!(
+        data["volatility"].is_null(),
+        "a plugin with commits carries no grey note, got: {data}"
+    );
+    let nodes = data["nodes"].as_object().expect("nodes is object");
+    for key in [
+        "lua/alpha/init.lua",
+        "lua/alpha/util.lua",
+        "lua/beta/core.lua",
+        "lua/beta/init.lua",
+    ] {
+        assert_eq!(nodes[key]["commits"], 1, "{key}: {data}");
+    }
+    assert_eq!(data["hotspots"][0], "lua/alpha/util.lua", "{data}");
+}
+
 /// Reads the `stderr` layout of `format::rule_block`: one block per rule,
 /// separated by a blank line, each violation carrying its edge on a `  = ` line.
 fn layers_violation_edges(stderr: &str) -> Vec<String> {
@@ -2959,6 +3057,61 @@ fn ui_recomputes_on_a_posted_switch_command() {
 
     let (status, _) = http_send(port, "POST", "/command", "arc tests maybe\n");
     assert_eq!(status, 400);
+
+    drop(guard);
+}
+
+/// A leaf of a Lua plugin's hotspot map jumps to its `.lua` file: the
+/// service writes the file's absolute path for the leaf's jump id.
+#[test]
+fn ui_jumps_from_a_lua_hotspot_leaf_to_its_file() {
+    let plugin = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lua_plugin");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cargo-arc"))
+        .arg("arc")
+        .arg("--manifest-path")
+        .arg(&plugin)
+        .arg("--no-volatility")
+        .arg("ui")
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn cargo-arc ui");
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let guard = ChildGuard(child);
+
+    let mut ready_line = String::new();
+    stdout.read_line(&mut ready_line).unwrap();
+    let port: u16 = ready_line
+        .trim_end()
+        .split(' ')
+        .nth(3)
+        .expect("ready line carries a port")
+        .parse()
+        .expect("ready line carries a numeric port");
+    let mut analysis_line = String::new();
+    stdout.read_line(&mut analysis_line).unwrap();
+
+    let (status, body) = http_get(port, "/hotspots");
+    assert_eq!(status, 200);
+    let data = parse_static_data(&body);
+    let id = data["nodes"]["lua/alpha/util.lua"]["targets"][0]["jump"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("the util.lua leaf carries a jump id: {data}"));
+
+    let (status, _) = http_get(port, &format!("/jump?id={id}"));
+    assert_eq!(status, 200);
+    let mut jump_line = String::new();
+    stdout.read_line(&mut jump_line).unwrap();
+    let jump: Vec<&str> = jump_line.trim_end().splitn(4, ' ').collect();
+    assert_eq!(
+        jump[..3],
+        ["arc", "jump", "1"],
+        "unexpected jump line: {jump_line:?}"
+    );
+    assert_eq!(
+        PathBuf::from(jump[3]),
+        plugin.canonicalize().unwrap().join("lua/alpha/util.lua")
+    );
 
     drop(guard);
 }

@@ -112,6 +112,8 @@ impl Ord for Commit {
 pub struct VolatilityAnalyzer {
     config: VolatilityConfig,
     repo_root: PathBuf,
+    /// Source file extensions of the language the last `analyze` read.
+    extensions: &'static [&'static str],
     commits: HashMap<PathBuf, BTreeSet<Commit>>,
 }
 
@@ -122,6 +124,7 @@ impl VolatilityAnalyzer {
         Self {
             config,
             repo_root: PathBuf::new(),
+            extensions: &[],
             commits: HashMap::new(),
         }
     }
@@ -149,6 +152,7 @@ impl VolatilityAnalyzer {
             return Err(VolatilityError::NotGitRepo);
         }
         self.repo_root = PathBuf::from(String::from_utf8_lossy(&toplevel.stdout).trim());
+        self.extensions = profile.extensions;
         self.commits.clear();
 
         // Stream git log output; a null-prefixed header line starts each commit,
@@ -269,8 +273,14 @@ impl VolatilityAnalyzer {
     #[must_use]
     pub fn format_report(&self) -> String {
         if self.commits.is_empty() {
+            let extensions: Vec<String> = self
+                .extensions
+                .iter()
+                .map(|ext| format!(".{ext}"))
+                .collect();
             return format!(
-                "No .rs file changes in the last {} months.\n",
+                "No {} file changes in the last {} months.\n",
+                extensions.join("/"),
                 self.config.months
             );
         }
@@ -711,7 +721,9 @@ mod tests {
 
     #[test]
     fn test_format_report_empty() {
-        let analyzer = VolatilityAnalyzer::new(VolatilityConfig::default());
+        let repo = init_repo();
+        let mut analyzer = VolatilityAnalyzer::new(VolatilityConfig::default());
+        analyzer.analyze(repo.path(), &RUST_PROFILE).unwrap();
         let report = analyzer.format_report();
         assert_eq!(report, "No .rs file changes in the last 6 months.\n");
     }

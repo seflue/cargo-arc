@@ -5,3 +5,4 @@ function M.value(x)
 end
 
 return M
+-- A comment is no code line.

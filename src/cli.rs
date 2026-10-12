@@ -196,6 +196,16 @@ pub enum Language {
     Lua,
 }
 
+impl Language {
+    /// The profile of the language's adapter.
+    fn profile(self) -> &'static LanguageProfile {
+        match self {
+            Self::Rust => &RUST_PROFILE,
+            Self::Lua => &analyze::lua::PROFILE,
+        }
+    }
+}
+
 /// The `--theme` value parser: a theme name or a mode alias, or an error
 /// that lists what would have been accepted.
 fn parse_theme(name: &str) -> Result<&'static Theme, String> {
@@ -259,7 +269,7 @@ pub fn run(args: ArcCommand) -> Result<Judgment> {
     if args.volatility {
         run_volatility_report(
             &args.common.manifest_path,
-            &RUST_PROFILE,
+            language_of(&args.common)?.profile(),
             vol_config,
             args.output.as_ref(),
         )?;
@@ -1598,5 +1608,77 @@ mod tests {
                 )
             });
         assert_eq!(helper.line, 3);
+    }
+
+    /// A git repository with `files` written and committed in one commit.
+    fn committed_repo(files: &[&str]) -> tempfile::TempDir {
+        let repo = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .current_dir(repo.path())
+                .status()
+                .expect("git should be on PATH");
+            assert!(status.success(), "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        for file in files {
+            let path = repo.path().join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, "-- x\n").unwrap();
+        }
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "files"]);
+        repo
+    }
+
+    /// The text `--volatility` writes for the project in `dir`, found
+    /// without `--language`.
+    fn volatility_report_of(dir: &Path) -> String {
+        let out = dir.join("report.txt");
+        let cmd = parse_args(&[
+            "cargo",
+            "arc",
+            "--manifest-path",
+            dir.to_str().unwrap(),
+            "--volatility",
+            "-o",
+            out.to_str().unwrap(),
+        ]);
+        run(cmd).unwrap();
+        fs::read_to_string(out).unwrap()
+    }
+
+    #[test]
+    fn volatility_on_a_plugin_counts_the_changes_to_lua_files() {
+        let repo = committed_repo(&["lua/alpha/init.lua", "build.rs"]);
+
+        let report = volatility_report_of(repo.path());
+
+        assert!(report.contains("lua/alpha/init.lua"), "{report}");
+        assert!(!report.contains("build.rs"), "{report}");
+    }
+
+    #[test]
+    fn volatility_on_a_workspace_with_lua_files_counts_rust_changes() {
+        let repo = committed_repo(&["Cargo.toml", "src/lib.rs", "lua/alpha/init.lua"]);
+
+        let report = volatility_report_of(repo.path());
+
+        assert!(report.contains("src/lib.rs"), "{report}");
+        assert!(!report.contains("init.lua"), "{report}");
+    }
+
+    #[test]
+    fn volatility_on_a_plugin_without_lua_changes_says_so_for_lua() {
+        let repo = committed_repo(&["build.rs"]);
+        let plugin_file = repo.path().join("lua/alpha/init.lua");
+        fs::create_dir_all(plugin_file.parent().unwrap()).unwrap();
+        fs::write(plugin_file, "-- x\n").unwrap();
+
+        let report = volatility_report_of(repo.path());
+
+        assert_eq!(report, "No .lua file changes in the last 6 months.\n");
     }
 }
