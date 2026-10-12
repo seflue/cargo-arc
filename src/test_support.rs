@@ -17,6 +17,8 @@ pub(crate) static WIDGETS: LanguageProfile = LanguageProfile {
     extensions: &["lua"],
     manifest_files: &["widgets.cfg"],
     tokei_language: tokei::LanguageType::Lua,
+    analyzes_tests: false,
+    analyzes_externals: false,
 };
 
 /// A package node at `/<name>` with no entry files, for tests that only need

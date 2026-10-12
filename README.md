@@ -48,6 +48,13 @@ The arc diagram can live beside the code.
 In the other direction, the arc diagram selects the node of the file the editor shows.
 Plugins exist for [Neovim](editors/nvim/README.md), [VS Code](editors/vscode/README.md) and [RustRover](editors/rustrover/README.md).
 
+## Neovim Lua Plugins
+
+`cargo arc` also draws a Neovim plugin written in Lua, with each namespace under `lua/` as a package and each `require` of a module in the plugin as a dependency.
+A directory with `lua/` and no `Cargo.toml` is analyzed as Lua, and `--language lua` analyzes the plugin beside a `Cargo.toml`.
+The hotspot map works for a plugin too, while `check` and the Cargo options refuse it.
+[docs/LUA_PLUGINS.md](docs/LUA_PLUGINS.md) lists every difference to a Rust run.
+
 ## Architecture Rules
 
 Circular dependencies are forbidden by default, and a workspace without a rules file is checked against that one rule.
@@ -77,6 +84,7 @@ A green run says the rules held over the modules the run walked, and a module a 
 - [docs/ARC_DIAGRAM.md](docs/ARC_DIAGRAM.md) — the arc diagram: what it draws, interaction, filters, flags
 - [docs/HOTSPOT_MAP.md](docs/HOTSPOT_MAP.md) — the hotspot map: what it measures, the hotspots, use beside the arc diagram
 - [docs/RULES.md](docs/RULES.md) — the rules: how to start, the baseline, the file format
+- [docs/LUA_PLUGINS.md](docs/LUA_PLUGINS.md) — Neovim Lua plugins: what differs from a Rust run
 - [docs/GLOSSARY.md](docs/GLOSSARY.md) — the terms of the domain
 
 ## Similar Projects

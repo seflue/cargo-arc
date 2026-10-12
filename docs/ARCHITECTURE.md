@@ -61,3 +61,4 @@ What that means for a reader of the diagram is in [ARC_DIAGRAM.md](ARC_DIAGRAM.m
 | 027 | [Editor Plugins Own a Service Process and Read Its stdout](adr/027-editor-plugins-own-a-service-and-read-its-stdout.md) | Active | 2026-08-28 |
 | 028 | [Generate the STATIC_DATA Types from the Rust Structs](adr/028-static-data-types-generated-from-rust.md) | Active | 2026-10-10 |
 | 029 | [Analyze Through a Language Adapter](adr/029-analysis-through-a-language-adapter.md) | Active | 2026-10-11 |
+| 030 | [One Language per Run, and a Lua Adapter](adr/030-one-language-per-run-and-a-lua-adapter.md) | Active | 2026-10-12 |

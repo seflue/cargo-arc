@@ -47,7 +47,8 @@ The editor plugin can release and press the button too; the Neovim plugin does s
 ### Recomputing on save
 
 A page served by `cargo arc ui` carries a **Recompute on save** button in the toolbar, pressed by default.
-While it is pressed, writing a `.rs` file or a `Cargo.toml` under the workspace root makes the service run the analysis again, and the page reloads with its view kept.
+While it is pressed, writing a source file or a manifest of the analyzed language under the workspace root makes the service run the analysis again, and the page reloads with its view kept.
+For Rust these are `.rs` files and `Cargo.toml`, for a [Lua plugin](LUA_PLUGINS.md) `.lua` files.
 The hotspot map served beside it carries the same button and reloads the same way, keeping its zoom, its selection and the choice between list and bars.
 The editor plugin reports each written file.
 The service holds the button's state, so every open page shows the same state, and a restarted service starts pressed again.

@@ -640,6 +640,12 @@ pub struct RenderConfig {
     pub theme: Option<&'static Theme>,
     /// The switches the analysis ran with; only a served page shows them.
     pub switches: AnalysisSwitches,
+    /// The analyzed language has test code to switch. Off unless the caller
+    /// says so, so a page never offers a switch its language lacks.
+    pub tests_switch: bool,
+    /// The analyzed language has external packages to switch. Off unless the
+    /// caller says so, like `tests_switch`.
+    pub externals_switch: bool,
     /// The hotspot map's commit window, or why it is grey. The arc diagram
     /// ignores it.
     pub volatility: MapVolatility,
@@ -650,8 +656,13 @@ pub struct RenderConfig {
     pub wording: &'static Wording,
 }
 
-impl Default for RenderConfig {
-    fn default() -> Self {
+impl RenderConfig {
+    /// Build the default configuration showing `wording`, the analyzed
+    /// language's words. It takes the wording instead of implementing
+    /// `Default`, so a render path that forgets it does not compile; a
+    /// `Default` would show Rust's words in every other language.
+    #[must_use]
+    pub fn new(wording: &'static Wording) -> Self {
         Self {
             row_height: 30.0,
             indent_size: 20.0,
@@ -660,9 +671,11 @@ impl Default for RenderConfig {
             with_jump_ids: false,
             theme: None,
             switches: AnalysisSwitches::default(),
+            tests_switch: false,
+            externals_switch: false,
             volatility: MapVolatility::default(),
             document: Document::default(),
-            wording: &crate::analyze::rust::PROFILE.wording,
+            wording,
         }
     }
 }
