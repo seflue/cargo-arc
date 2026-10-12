@@ -650,6 +650,46 @@ fn a_directory_without_cargo_toml_or_lua_is_an_error() {
 }
 
 #[test]
+fn a_missing_cargo_toml_ends_with_cargos_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("no_such_workspace/Cargo.toml");
+    let out = dir.path().join("out.svg");
+    let args = [
+        "--manifest-path",
+        missing.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ];
+    let (code, stderr) = cargo_arc_in(dir.path(), &args);
+    assert_eq!(code, 2, "stderr: {stderr}");
+    assert!(stderr.contains("manifest path"), "stderr: {stderr}");
+    assert!(
+        !stderr.contains("neither Cargo.toml nor lua/"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn a_missing_path_not_on_cargo_toml_ends_with_the_detection_message() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("no_such_plugin");
+    let out = dir.path().join("out.svg");
+    let args = [
+        "--manifest-path",
+        missing.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ];
+    let (code, stderr) = cargo_arc_in(dir.path(), &args);
+    assert_eq!(code, 2, "stderr: {stderr}");
+    assert!(
+        stderr.contains("neither Cargo.toml nor lua/"),
+        "stderr: {stderr}"
+    );
+    assert!(!out.exists(), "no diagram is written");
+}
+
+#[test]
 fn language_rust_gives_the_same_diagram_as_no_flag() {
     let (plain_temp, plain_cmd) = fixture_args("multi_crate", false);
     let plain = run_to_string(&plain_temp, plain_cmd);
@@ -659,6 +699,85 @@ fn language_rust_gives_the_same_diagram_as_no_flag() {
     let rust = run_to_string(&rust_temp, rust_cmd);
 
     assert_eq!(rust, plain);
+}
+
+/// Run `cargo-arc arc <args...>` as a subprocess in the `lua_plugin`
+/// fixture, with `-o` to a fresh file in a temporary directory. Returns
+/// (`exit_code`, stderr, whether the output file was written).
+fn cargo_arc_on_lua_plugin(args: &[&str]) -> (i32, String, bool) {
+    let plugin = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lua_plugin");
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.svg");
+    let mut full = vec!["--no-volatility", "-o", out.to_str().unwrap()];
+    full.extend_from_slice(args);
+    let (code, stderr) = cargo_arc_in(&plugin, &full);
+    (code, stderr, out.exists())
+}
+
+/// Assert that `args` end a Lua run with exit 2, a message naming `flag`
+/// as Rust-only, and no output.
+fn assert_lua_run_refuses(args: &[&str], flag: &str) {
+    let (code, stderr, written) = cargo_arc_on_lua_plugin(args);
+    assert_eq!(code, 2, "{args:?} must end the run, stderr: {stderr}");
+    assert!(
+        stderr.contains(&format!("{flag} applies to Rust only")),
+        "{args:?}, stderr: {stderr}"
+    );
+    assert!(!written, "{args:?}: no diagram is written");
+}
+
+#[test]
+fn feature_flags_refuse_a_lua_run() {
+    assert_lua_run_refuses(&["--features", "extra"], "--features");
+    assert_lua_run_refuses(&["--all-features"], "--all-features");
+    assert_lua_run_refuses(&["--no-default-features"], "--no-default-features");
+}
+
+#[test]
+fn include_tests_refuses_a_lua_run() {
+    assert_lua_run_refuses(&["--include-tests"], "--include-tests");
+}
+
+#[test]
+fn two_rust_flags_in_a_lua_run_are_both_named() {
+    let (code, stderr, written) = cargo_arc_on_lua_plugin(&["--all-features", "--externals"]);
+    assert_eq!(code, 2, "stderr: {stderr}");
+    assert!(
+        stderr.contains("--all-features, --externals apply to Rust only"),
+        "stderr: {stderr}"
+    );
+    assert!(!written, "no diagram is written");
+}
+
+#[test]
+fn externals_flags_refuse_a_lua_run() {
+    assert_lua_run_refuses(&["--externals"], "--externals");
+    assert_lua_run_refuses(&["--transitive-deps"], "--transitive-deps");
+}
+
+#[test]
+fn include_reexports_gives_a_lua_run_the_same_diagram() {
+    let (plain_temp, plain_cmd) = lua_fixture_args("lua_plugin");
+    let plain = run_to_string(&plain_temp, plain_cmd);
+
+    let (temp, mut cmd) = lua_fixture_args("lua_plugin");
+    cmd.common.include_reexports = true;
+    let with_flag = run_to_string(&temp, cmd);
+
+    assert_eq!(with_flag, plain);
+}
+
+#[test]
+fn check_refuses_a_lua_plugin() {
+    let plugin = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lua_plugin");
+    for args in [vec!["check"], vec!["--language", "lua", "check"]] {
+        let (code, stderr) = cargo_arc_in(&plugin, &args);
+        assert_eq!(code, 2, "{args:?} must end the run, stderr: {stderr}");
+        assert!(
+            stderr.contains("rules apply to Rust only"),
+            "{args:?}, stderr: {stderr}"
+        );
+    }
 }
 
 #[test]
@@ -2099,21 +2218,27 @@ fn test_check_exits_2_when_the_graph_cannot_be_built() {
         .join("tests/fixtures/no_such_workspace/Cargo.toml");
     let (code, stderr) = cargo_arc_check_at(&missing, &[]);
     assert_eq!(code, 2, "no judgment was possible, stderr: {stderr}");
-}
-
-#[test]
-fn test_check_on_a_manifest_path_without_a_cargo_toml_names_the_path_and_forwards_cargos_error() {
-    let dir = tempfile::tempdir().unwrap();
-    let (code, stderr) = cargo_arc_check_at(dir.path(), &[]);
-    assert_eq!(code, 2, "no judgment was possible, stderr: {stderr}");
-    assert!(
-        stderr.contains(&dir.path().display().to_string()),
-        "the targeted manifest path should be named, stderr: {stderr}"
-    );
     assert!(
         stderr.contains("manifest path"),
         "cargo's own message should be forwarded, stderr: {stderr}"
     );
+}
+
+#[test]
+fn test_check_without_cargo_toml_or_lua_names_the_path_in_the_detection_message() {
+    let dir = tempfile::tempdir().unwrap();
+    for target in [dir.path().to_path_buf(), dir.path().join("no_such_plugin")] {
+        let (code, stderr) = cargo_arc_check_at(&target, &[]);
+        assert_eq!(code, 2, "no judgment was possible, stderr: {stderr}");
+        assert!(
+            stderr.contains(&target.display().to_string()),
+            "the targeted path should be named, stderr: {stderr}"
+        );
+        assert!(
+            stderr.contains("neither Cargo.toml nor lua/"),
+            "stderr: {stderr}"
+        );
+    }
 }
 
 #[test]
@@ -3028,6 +3153,7 @@ fn ui_recomputes_on_a_posted_switch_command() {
     stdout.read_line(&mut analysis_line).unwrap();
     assert_eq!(analysis_line, "arc analysis externals=off tests=on\n");
     let (_, body) = http_get(port, "/");
+    assert!(body.contains("id=\"externals-toggle\""), "a Rust page");
     let tests_toggle = |body: &str| {
         body.lines()
             .find(|line| line.contains("id=\"tests-toggle\""))
@@ -3057,6 +3183,87 @@ fn ui_recomputes_on_a_posted_switch_command() {
 
     let (status, _) = http_send(port, "POST", "/command", "arc tests maybe\n");
     assert_eq!(status, 400);
+
+    drop(guard);
+}
+
+/// The refusal reads `--include-tests` itself: switching tests on in the
+/// served page of a Lua run reruns the analysis instead of ending it.
+#[test]
+fn ui_tests_switch_does_not_refuse_a_lua_run() {
+    let plugin = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lua_plugin");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cargo-arc"))
+        .arg("arc")
+        .arg("--manifest-path")
+        .arg(&plugin)
+        .arg("--no-volatility")
+        .arg("ui")
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn cargo-arc ui");
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let guard = ChildGuard(child);
+
+    let mut ready_line = String::new();
+    stdout.read_line(&mut ready_line).unwrap();
+    let port: u16 = ready_line
+        .trim_end()
+        .split(' ')
+        .nth(3)
+        .expect("ready line carries a port")
+        .parse()
+        .expect("ready line carries a numeric port");
+    let mut analysis_line = String::new();
+    stdout.read_line(&mut analysis_line).unwrap();
+    assert_eq!(analysis_line, "arc analysis externals=off tests=off\n");
+
+    let (status, _) = http_send(port, "POST", "/command", "arc tests on\n");
+    assert_eq!(status, 202);
+    let mut analysis_line = String::new();
+    stdout.read_line(&mut analysis_line).unwrap();
+    assert_eq!(analysis_line, "arc analysis externals=off tests=on\n");
+
+    let (status, body) = http_get(port, "/");
+    assert_eq!(status, 200);
+    assert_eq!(parse_static_data(&body)["wording"]["package"], "namespace");
+
+    drop(guard);
+}
+
+/// A Lua run reads no test code and refuses `--externals`, so its served page
+/// offers a switch for neither.
+#[test]
+fn ui_page_of_a_lua_run_has_no_tests_or_externals_switch() {
+    let plugin = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lua_plugin");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cargo-arc"))
+        .arg("arc")
+        .arg("--manifest-path")
+        .arg(&plugin)
+        .arg("--no-volatility")
+        .arg("ui")
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn cargo-arc ui");
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let guard = ChildGuard(child);
+
+    let mut ready_line = String::new();
+    stdout.read_line(&mut ready_line).unwrap();
+    let port: u16 = ready_line
+        .trim_end()
+        .split(' ')
+        .nth(3)
+        .expect("ready line carries a port")
+        .parse()
+        .expect("ready line carries a numeric port");
+
+    let (status, body) = http_get(port, "/");
+    assert_eq!(status, 200);
+    assert!(body.contains("id=\"follow-toggle\""), "a served page");
+    assert!(!body.contains("id=\"tests-toggle\""));
+    assert!(!body.contains("id=\"externals-toggle\""));
 
     drop(guard);
 }

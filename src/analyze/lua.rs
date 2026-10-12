@@ -25,6 +25,8 @@ pub(crate) static PROFILE: LanguageProfile = LanguageProfile {
     extensions: &["lua"],
     manifest_files: &[],
     tokei_language: tokei::LanguageType::Lua,
+    analyzes_tests: false,
+    analyzes_externals: false,
 };
 
 /// A Neovim plugin: every top-level namespace `lua/<name>/` of the plugin

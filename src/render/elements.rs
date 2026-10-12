@@ -97,19 +97,23 @@ fn toolbar_content(
     // written by `cargo arc -o` has none (Follow editor is the shared
     // frame's own concern, gated on the same `with_jump_ids`).
     let after_follow = if config.with_jump_ids {
-        format!(
-            concat!(
-                "      <button id=\"externals-toggle\" class=\"{} {}\" aria-pressed=\"{}\">External {}</button>\n",
+        let tests_toggle = if config.tests_switch {
+            format!(
                 "      <button id=\"tests-toggle\" class=\"{} {}\" aria-pressed=\"{}\">Test code</button>\n",
-            ),
-            ct.html_btn,
-            ct.switch_toggle,
-            config.switches.externals,
-            words.packages,
-            ct.html_btn,
-            ct.switch_toggle,
-            config.switches.tests,
-        )
+                ct.html_btn, ct.switch_toggle, config.switches.tests,
+            )
+        } else {
+            String::new()
+        };
+        let externals_toggle = if config.externals_switch {
+            format!(
+                "      <button id=\"externals-toggle\" class=\"{} {}\" aria-pressed=\"{}\">External {}</button>\n",
+                ct.html_btn, ct.switch_toggle, config.switches.externals, words.packages,
+            )
+        } else {
+            String::new()
+        };
+        format!("{externals_toggle}{tests_toggle}")
     } else {
         String::new()
     };
@@ -1259,6 +1263,8 @@ mod tests {
                 externals: true,
                 tests: false,
             },
+            tests_switch: true,
+            externals_switch: true,
             ..RenderConfig::new(&RUST_PROFILE.wording)
         };
         let output = render_toolbar(800.0, facts, &config);
@@ -1482,6 +1488,7 @@ mod tests {
             ToolbarFacts::default(),
             &RenderConfig {
                 with_jump_ids: true,
+                externals_switch: true,
                 ..RenderConfig::new(&WIDGETS.wording)
             },
         );
@@ -1508,6 +1515,8 @@ mod tests {
                     externals: true,
                     tests: false,
                 },
+                tests_switch: true,
+                externals_switch: true,
                 ..RenderConfig::new(&RUST_PROFILE.wording)
             },
         );

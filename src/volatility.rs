@@ -446,6 +446,8 @@ mod tests {
         extensions: &["lua"],
         manifest_files: &[],
         tokei_language: tokei::LanguageType::Lua,
+        analyzes_tests: false,
+        analyzes_externals: false,
     };
 
     #[test]

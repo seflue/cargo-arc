@@ -323,17 +323,11 @@ impl ArcCommand {
     }
 }
 
-/// Analyze the workspace behind `args` with `switches` in place of the
-/// flags they stand for: build the dependency graph, lay it out, and, when
-/// `with_volatility` is set, enrich it with volatility. `run_hotspots`
-/// passes `false`: it builds its own separate [`VolatilityAnalyzer`] for the
-/// map, so the arc layout's own enrichment would only be discarded work.
-/// Rendering is the caller's job: the callers (`run`, `run_ui`) build their
-/// own [`RenderConfig`] and render `analysis.layout` with it.
 /// The language adapter `args` ask for, with `switches` in place of the
 /// flags they stand for.
 fn adapter_for(args: &ArcCommand, switches: AnalysisSwitches) -> Result<Box<dyn LanguageAdapter>> {
     if language_of(&args.common)? == Language::Lua {
+        refuse_rust_only_flags(args)?;
         return Ok(Box::new(analyze::Lua {
             plugin_dir: resolve_repo_path(&args.common.manifest_path).to_path_buf(),
         }));
@@ -356,6 +350,43 @@ fn adapter_for(args: &ArcCommand, switches: AnalysisSwitches) -> Result<Box<dyn 
     }))
 }
 
+/// Refuse a Lua run that `args` give a flag only Rust has a meaning for, so
+/// nobody takes the diagram for one the flag shaped. Reads the flags
+/// themselves, never the `ui` server's switches.
+fn refuse_rust_only_flags(args: &ArcCommand) -> Result<()> {
+    let common = &args.common;
+    let rust_only = [
+        ("--features", !common.features.is_empty()),
+        ("--all-features", common.all_features),
+        ("--no-default-features", common.no_default_features),
+        ("--include-tests", common.include_tests),
+        ("--externals", args.externals),
+        ("--transitive-deps", args.transitive_deps),
+        #[cfg(feature = "hir")]
+        ("--hir", args.hir),
+    ];
+    let given: Vec<&str> = rust_only
+        .iter()
+        .filter(|(_, set)| *set)
+        .map(|(flag, _)| *flag)
+        .collect();
+    match given.as_slice() {
+        [] => Ok(()),
+        [flag] => anyhow::bail!("{flag} applies to Rust only, and this run analyzes Lua"),
+        flags => anyhow::bail!(
+            "{} apply to Rust only, and this run analyzes Lua",
+            flags.join(", ")
+        ),
+    }
+}
+
+/// Analyze the workspace behind `args` with `switches` in place of the
+/// flags they stand for: build the dependency graph, lay it out, and, when
+/// `with_volatility` is set, enrich it with volatility. `run_hotspots`
+/// passes `false`: it builds its own separate [`VolatilityAnalyzer`] for the
+/// map, so the arc layout's own enrichment would only be discarded work.
+/// Rendering is the caller's job: the callers (`run`, `run_ui`) build their
+/// own [`RenderConfig`] and render `analysis.layout` with it.
 fn analyze_for_diagram(
     args: &ArcCommand,
     switches: AnalysisSwitches,
@@ -443,6 +474,8 @@ fn run_ui(args: &ArcCommand, ui_args: &UiArgs) -> Result<Judgment> {
             with_jump_ids: true,
             theme: args.theme,
             switches,
+            tests_switch: analysis.profile.analyzes_tests,
+            externals_switch: analysis.profile.analyzes_externals,
             document: Document::Page,
             ..RenderConfig::new(&analysis.profile.wording)
         };
@@ -619,6 +652,9 @@ fn run_hotspots(args: &ArcCommand, hotspots_args: &HotspotsArgs) -> Result<Judgm
 
 /// Run the `check` subcommand: load rules, evaluate against graph, report violations.
 fn run_check(check_args: &CheckArgs, common: &CommonArgs) -> Result<Judgment> {
+    if language_of(common)? == Language::Lua {
+        anyhow::bail!("check: rules apply to Rust only, and this run analyzes Lua");
+    }
     // Check mode runs neither HIR nor externals.
     let adapter = analyze::Rust {
         manifest_path: common.manifest_path.clone(),
@@ -747,7 +783,8 @@ fn build_feature_config(common: &CommonArgs) -> FeatureConfig {
 /// candidate directory that holds `lua/` and no `Cargo.toml`, otherwise Rust.
 /// The candidate is `--manifest-path` when it names a directory, and the
 /// working directory when the flag keeps its default and no `Cargo.toml`
-/// exists there.
+/// exists there. A path that does not exist is a candidate too, unless it
+/// ends on `Cargo.toml`: that one stays Rust and ends with cargo's error.
 /// A candidate with neither is an error.
 fn language_of(common: &CommonArgs) -> Result<Language> {
     if let Some(language) = common.language {
@@ -758,6 +795,8 @@ fn language_of(common: &CommonArgs) -> Result<Language> {
         path
     } else if path == Path::new(DEFAULT_MANIFEST) && !path.exists() {
         Path::new(".")
+    } else if !path.exists() && path.file_name() != Some("Cargo.toml".as_ref()) {
+        path
     } else {
         return Ok(Language::Rust);
     };
