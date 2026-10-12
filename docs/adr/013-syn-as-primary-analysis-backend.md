@@ -2,6 +2,7 @@
 
 - **Status:** Active
 - **Decided:** 2026-01-30
+- Corrected 2026-10-13: the decision applies to the Rust language adapter, not to the analysis as a whole (ADR-029).
 
 ## Context
 
@@ -9,7 +10,7 @@ cargo-arc used rust-analyzer HIR (inherited from cargo-modules) for module enume
 
 ## Decision
 
-- We analyze module structure and use statements via `syn` (AST parsing)
+- The Rust adapter (ADR-029) analyzes module structure and use statements via `syn` (AST parsing)
 - rust-analyzer HIR remains optional via Cargo feature `hir` and `--hir` flag
 - We extract use statements via `resolve_use_tree` instead of the earlier text parser
 

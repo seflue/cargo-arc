@@ -4,23 +4,18 @@
 
 ```
 src/
-├── analyze/
-│   ├── mod.rs         # Coordination + public API
-│   ├── use_parser.rs  # Use statement extraction (syn)
-│   ├── hir.rs         # HIR module analysis (ra_ap_hir)
-│   ├── filtering.rs   # Dependency classification + filtering
-│   ├── syn_walker.rs  # Module discovery (syn + filesystem)
-│   ├── backend.rs     # Analysis backend abstraction
-│   └── workspace.rs   # Workspace analysis (cargo_metadata)
+├── analyze/     # Language adapters behind the `LanguageAdapter` trait
 ├── model.rs     # Shared data structures
 ├── graph.rs     # Dependency graph building (petgraph)
-├── layout.rs    # Tree layout algorithm
-├── render.rs     # SVG generation
+├── diagnose/    # Cycles, clusters and feedback arc sets
+├── rules/       # Rule checks against arc-rules.toml and the baseline
+├── layout/      # Tree layout algorithm
+├── render/      # SVG generation
+├── hotspots/    # Hotspot map of code lines and commits per file
 ├── volatility.rs  # Git history volatility analysis
 ├── js_bundle.rs   # Page scripts bundled from js/ (build.rs)
-├── cli.rs         # CLI interface (clap)
-├── lib.rs       # Public API exports
-└── main.rs      # Entry point
+├── ui/            # Jump service for editor plugins, served over HTTP
+└── test_support.rs  # Test-only constructors for model and graph types
 ```
 
 ## Filter visibility
@@ -51,7 +46,7 @@ What that means for a reader of the diagram is in [ARC_DIAGRAM.md](ARC_DIAGRAM.m
 | 012 | [Rebuild DOM on Collapse Instead of Hide/Show](adr/012-dom-rebuild-on-collapse-expand.md) | Active | 2026-01-29 |
 | 013 | [Use syn as Primary Analysis Backend](adr/013-syn-as-primary-analysis-backend.md) | Active | 2026-01-30 |
 | 014 | [Discover JS Modules at Build Time](adr/014-build-time-js-module-registry.md) | Superseded | 2026-01-30 |
-| 015 | [Use foreignObject HTML for SVG Panels](adr/015-foreign-object-html-for-panels.md) | Active | 2026-01-31 |
+| 015 | [Use foreignObject HTML for SVG Panels](adr/015-foreign-object-html-for-panels.md) | Superseded by 025 for the page | 2026-01-31 |
 | 016 | [Replace Tooltip with Persistent Sidebar](adr/016-sidebar-replaces-tooltip.md) | Active | 2026-01-31 |
 | 017 | [SCC Condensation for Deterministic Cycle Resolution](adr/017-scc-condensation-for-cycle-resolution.md) | Active | 2026-02-11 |
 | 018 | [EdgeContext Enum for Production and Test Context on Edges](adr/018-edge-context-enum.md) | Active | 2026-02-11 |
@@ -59,4 +54,10 @@ What that means for a reader of the diagram is in [ARC_DIAGRAM.md](ARC_DIAGRAM.m
 | 020 | [Resolve Re-Exports to Determine True Dependencies](adr/020-resolve-reexports-for-true-dependencies.md) | Active | 2026-02-23 |
 | 021 | [Detect Cycles via the Minimal Cycle per Edge](adr/021-minimal-cycle-per-edge.md) | Active | 2026-07-10 |
 | 022 | [Tag Re-Export Edges, Don't Drop Them](adr/022-reexport-edges-tagged-not-dropped.md) | Active | 2026-07-14 |
+| 023 | [Build the Feedback Arc Set Greedily and Rank It by Traffic](adr/023-greedy-feedback-arc-set-ranked-by-traffic.md) | Active | 2026-07-14 |
+| 024 | [Key a Baseline Entry on an Edge and Its Symbols](adr/024-baseline-entry-keyed-on-edge-and-symbols.md) | Active | 2026-08-07 |
+| 025 | [Place Toolbar and Sidebar beside the SVG on a Page](adr/025-panels-beside-the-svg-on-a-page.md) | Active | 2026-09-29 |
+| 026 | [Editor Plugins Build Their cargo-arc CLI](adr/026-editor-plugins-build-their-cli.md) | Active | 2026-10-08 |
 | 027 | [Editor Plugins Own a Service Process and Read Its stdout](adr/027-editor-plugins-own-a-service-and-read-its-stdout.md) | Active | 2026-08-28 |
+| 028 | [Generate the STATIC_DATA Types from the Rust Structs](adr/028-static-data-types-generated-from-rust.md) | Active | 2026-10-10 |
+| 029 | [Analyze Through a Language Adapter](adr/029-analysis-through-a-language-adapter.md) | Active | 2026-10-11 |

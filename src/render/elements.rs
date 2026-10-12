@@ -627,13 +627,8 @@ pub(super) fn render_edges(
         }
     }
 
-    // 6-layer architecture for Z-order guarantees:
-    // 1. base-arcs: Non-highlighted arcs + arrows (bottom)
-    // 2. base-labels: Non-highlighted labels (JS fills via virtual arcs)
-    // 3. highlight-shadows: Shadow/glow paths behind highlighted arcs (JS fills)
-    // 4. highlight-arcs: Highlighted arcs + arrows
-    // 5. highlight-labels: Highlighted labels
-    // 6. hitareas: Transparent hit areas (always on top)
+    // The group order below is the z-order (ADR-008). The empty groups are
+    // filled by the JS when it draws labels and highlights.
     format!(
         r#"  <g id="base-arcs-layer">
 {base_arcs}  </g>

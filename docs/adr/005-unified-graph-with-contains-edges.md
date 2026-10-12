@@ -2,6 +2,7 @@
 
 - **Status:** Active
 - **Decided:** 2026-01-20
+- Corrected 2026-10-13: the node variants are `Package|Module|ExternalPackage` and the edge variants `Contains|PackageDep|ModuleDep|DevDep`. A package is what the language adapter delivers (ADR-029).
 
 ## Context
 
@@ -9,7 +10,9 @@ The dependency graph must model two relationship types: hierarchy (crate contain
 
 ## Decision
 
-We model both in a unified petgraph graph with a typed Node enum (`Crate|Module`) and Edge enum (`Contains|CrateDep|ModuleDep`). Contains edges connect parent to child nodes.
+We model both in a unified petgraph graph with a typed Node enum (`Package|Module|ExternalPackage`) and Edge enum (`Contains|PackageDep|ModuleDep|DevDep`). Contains edges connect parent to child nodes.
+A package is what the language adapter delivers as one (ADR-029); for Rust it is a crate.
+`DevDep` edges are not drawn; reachability uses them.
 
 ## Rationale
 

@@ -2,6 +2,7 @@
 
 - **Status:** Active
 - **Decided:** 2026-01-24
+- Corrected 2026-10-13: `highlight-shadows` is the third layer, below the highlighted arcs, not the fifth; and `jump-popover-layer` lies above all of them.
 
 ## Context
 
@@ -15,11 +16,12 @@ Layer order (bottom to top):
 
 1. `base-arcs-layer` — all dependency arcs
 2. `base-labels-layer` — arc-count labels
-3. `highlight-arcs-layer` — highlighted arcs
-4. `highlight-labels-layer` — labels of highlighted arcs
-5. `highlight-shadows` — shadow paths for depth effect
+3. `highlight-shadows` — shadow paths for depth effect, behind the highlighted arcs
+4. `highlight-arcs-layer` — highlighted arcs
+5. `highlight-labels-layer` — labels of highlighted arcs
 6. `hitareas-layer` — invisible pointer-event areas
 7. `highlight-hitareas-layer` — hitareas for highlighted elements
+8. `jump-popover-layer` — the jump popover, which stays under the pointer above every arc and hit area
 
 ## Rationale
 
