@@ -615,6 +615,7 @@ pub(super) fn script_element(
 mod tests {
     use super::super::positioning::{calculate_box_width, calculate_positions};
     use super::*;
+    use crate::analyze::rust::PROFILE as RUST_PROFILE;
     use crate::diagnose::RepresentativeCycles;
     use crate::graph::{ArcGraph, EdgeWeight, Node, Reexports};
     use crate::layout::{JumpTable, JumpTarget, LayoutEdge, LocatedDefinition, build_layout};
@@ -626,7 +627,7 @@ mod tests {
     #[test]
     fn test_static_data_carries_the_theme_block() {
         let ir = LayoutIR::new();
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let theme = generate_static_data(&config, &ir, &[], &HashSet::new()).theme;
         let names = |themes: &[ThemeName]| -> Vec<(&str, &str)> {
             themes.iter().map(|t| (t.name, t.label)).collect()
@@ -654,7 +655,10 @@ mod tests {
     #[test]
     fn test_format_source_locations_by_symbol_empty() {
         let locs: Vec<SourceLocation> = vec![];
-        let groups = format_source_locations_by_symbol(&located(locs), &RenderConfig::default());
+        let groups = format_source_locations_by_symbol(
+            &located(locs),
+            &RenderConfig::new(&RUST_PROFILE.wording),
+        );
         assert_eq!(groups.len(), 0);
     }
 
@@ -669,7 +673,10 @@ mod tests {
             module_path: String::new(),
             via_reexport: false,
         }];
-        let groups = format_source_locations_by_symbol(&located(locs), &RenderConfig::default());
+        let groups = format_source_locations_by_symbol(
+            &located(locs),
+            &RenderConfig::new(&RUST_PROFILE.wording),
+        );
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].symbol, "");
         assert_eq!(groups[0].locations.len(), 1);
@@ -688,7 +695,10 @@ mod tests {
             module_path: String::new(),
             via_reexport: false,
         }];
-        let groups = format_source_locations_by_symbol(&located(locs), &RenderConfig::default());
+        let groups = format_source_locations_by_symbol(
+            &located(locs),
+            &RenderConfig::new(&RUST_PROFILE.wording),
+        );
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].symbol, "ModuleInfo");
         assert_eq!(groups[0].locations.len(), 1);
@@ -717,7 +727,10 @@ mod tests {
                 via_reexport: false,
             },
         ];
-        let groups = format_source_locations_by_symbol(&located(locs), &RenderConfig::default());
+        let groups = format_source_locations_by_symbol(
+            &located(locs),
+            &RenderConfig::new(&RUST_PROFILE.wording),
+        );
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].symbol, "ModuleInfo");
         assert_eq!(groups[0].locations.len(), 2);
@@ -740,7 +753,10 @@ mod tests {
             module_path: String::new(),
             via_reexport: false,
         }];
-        let groups = format_source_locations_by_symbol(&located(locs), &RenderConfig::default());
+        let groups = format_source_locations_by_symbol(
+            &located(locs),
+            &RenderConfig::new(&RUST_PROFILE.wording),
+        );
         assert_eq!(groups.len(), 2);
         // Symbols in alphabetical order
         assert_eq!(groups[0].symbol, "ModuleInfo");
@@ -785,7 +801,10 @@ mod tests {
                 via_reexport: false,
             },
         ];
-        let groups = format_source_locations_by_symbol(&located(locs), &RenderConfig::default());
+        let groups = format_source_locations_by_symbol(
+            &located(locs),
+            &RenderConfig::new(&RUST_PROFILE.wording),
+        );
         let group = |name: &str| groups.iter().find(|g| g.symbol == name).unwrap();
         assert!(group("Foo").via_reexport, "all-reexport symbol is flagged");
         assert!(
@@ -837,7 +856,7 @@ mod tests {
             ),
         );
 
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::from([0]);
         let data = generate_static_data(&config, &ir, &positioned, &parents);
@@ -877,7 +896,10 @@ mod tests {
                 via_reexport: false,
             },
         ];
-        let groups = format_source_locations_by_symbol(&located(locs), &RenderConfig::default());
+        let groups = format_source_locations_by_symbol(
+            &located(locs),
+            &RenderConfig::new(&RUST_PROFILE.wording),
+        );
         assert_eq!(groups.len(), 2);
         // ModuleInfo: 2 locations
         assert_eq!(groups[0].symbol, "ModuleInfo");
@@ -903,7 +925,7 @@ mod tests {
         }];
         let config = RenderConfig {
             with_jump_ids: true,
-            ..RenderConfig::default()
+            ..RenderConfig::new(&RUST_PROFILE.wording)
         };
         let groups = format_source_locations_by_symbol(&located(locs), &config);
 
@@ -998,7 +1020,7 @@ mod tests {
 
         let config = RenderConfig {
             with_jump_ids: true,
-            ..RenderConfig::default()
+            ..RenderConfig::new(&RUST_PROFILE.wording)
         };
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::from([c]);
@@ -1020,7 +1042,7 @@ mod tests {
 
         let config = RenderConfig {
             with_jump_ids: true,
-            ..RenderConfig::default()
+            ..RenderConfig::new(&RUST_PROFILE.wording)
         };
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::from([c]);
@@ -1043,7 +1065,7 @@ mod tests {
 
         let config = RenderConfig {
             with_jump_ids: true,
-            ..RenderConfig::default()
+            ..RenderConfig::new(&RUST_PROFILE.wording)
         };
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::from([c]);
@@ -1089,7 +1111,7 @@ mod tests {
     fn test_static_data_node_file_is_present_without_the_jump_switch() {
         let (ir, c, m) = ir_with_jump_targets();
 
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::from([c]);
         let data = generate_static_data(&config, &ir, &positioned, &parents);
@@ -1110,7 +1132,7 @@ mod tests {
     fn test_static_data_node_omits_file_without_a_module_or_manifest_target() {
         let mut ir = LayoutIR::new();
         ir.add_item(ItemKind::ExternalSection, "External".into());
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let data = generate_static_data(&config, &ir, &positioned, &HashSet::new());
         assert!(data.nodes["0"].file.is_none());
@@ -1120,7 +1142,7 @@ mod tests {
     fn test_static_data_omits_targets_and_jump_when_switch_is_off() {
         let (ir, c, _m) = ir_with_jump_targets();
 
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::from([c]);
         let data = generate_static_data(&config, &ir, &positioned, &parents);
@@ -1140,7 +1162,7 @@ mod tests {
     /// first.
     #[test]
     fn static_data_precedes_the_bundle() {
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let ir = LayoutIR::new();
         let script = render_script(&config, &ir, &[], &HashSet::new());
 
@@ -1169,7 +1191,7 @@ mod tests {
     fn script_fills_every_placeholder(#[case] document: Document) {
         let config = RenderConfig {
             document,
-            ..RenderConfig::default()
+            ..RenderConfig::new(&RUST_PROFILE.wording)
         };
         let script = script_element(&(), "svg_script", &config);
         assert_eq!(first_placeholder(&script), None);
@@ -1198,7 +1220,7 @@ mod tests {
             "test_mod".into(),
         );
 
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::from([0]);
 
@@ -1232,7 +1254,7 @@ mod tests {
             "test_mod".into(),
         );
 
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::from([0]);
 
@@ -1258,7 +1280,7 @@ mod tests {
         let mut ir = LayoutIR::new();
         ir.add_item(ItemKind::Package, "test_crate".into());
 
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::new();
 
@@ -1303,7 +1325,7 @@ mod tests {
             ),
         );
 
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::from([0]);
 
@@ -1328,10 +1350,7 @@ mod tests {
         use crate::test_support::WIDGETS;
 
         let ir = LayoutIR::new();
-        let config = RenderConfig {
-            wording: &WIDGETS.wording,
-            ..RenderConfig::default()
-        };
+        let config = RenderConfig::new(&WIDGETS.wording);
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
 
         let data = generate_static_data(&config, &ir, &positioned, &HashSet::new());
@@ -1370,7 +1389,7 @@ mod tests {
             EdgeContext::test(crate::model::TestKind::Unit),
         ));
 
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::from([0]);
 
@@ -1402,7 +1421,7 @@ mod tests {
         ir.edges
             .push(LayoutEdge::new(a, b, EdgeContext::production()));
 
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::from([0]);
 
@@ -1454,7 +1473,7 @@ mod tests {
             ),
         );
 
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::from([0]);
 
@@ -1482,7 +1501,7 @@ mod tests {
             "mod".into(),
         );
 
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::from([0]);
 
@@ -1516,7 +1535,7 @@ mod tests {
     #[test]
     fn test_static_data_empty_ir() {
         let ir = LayoutIR::new();
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let positioned: Vec<PositionedItem> = vec![];
         let parents: HashSet<NodeId> = HashSet::new();
 
@@ -1561,7 +1580,7 @@ mod tests {
             ),
         );
 
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::from([0]);
 
@@ -1577,7 +1596,7 @@ mod tests {
     #[test]
     fn test_static_data_contains_classes() {
         let ir = LayoutIR::new();
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let positioned: Vec<PositionedItem> = vec![];
         let parents: HashSet<NodeId> = HashSet::new();
 
@@ -1610,7 +1629,7 @@ mod tests {
     #[test]
     fn test_static_data_contains_group_member_class() {
         let ir = LayoutIR::new();
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let positioned: Vec<PositionedItem> = vec![];
         let parents: HashSet<NodeId> = HashSet::new();
 
@@ -1698,7 +1717,10 @@ mod tests {
             },
         ];
 
-        let groups = format_source_locations_by_symbol(&located(locs), &RenderConfig::default());
+        let groups = format_source_locations_by_symbol(
+            &located(locs),
+            &RenderConfig::new(&RUST_PROFILE.wording),
+        );
 
         // Should have 3 groups: 1 bare (symbol=""), 2 named symbols
         assert_eq!(groups.len(), 3);
@@ -1727,7 +1749,7 @@ mod tests {
     #[test]
     fn test_render_script_has_collapse_functions() {
         let ir = LayoutIR::new();
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let script = render_script(&config, &ir, &[], &HashSet::new());
         assert!(
             script.contains("toggleCollapse"),
@@ -1750,7 +1772,7 @@ mod tests {
     #[test]
     fn test_render_script_has_hover_functions() {
         let ir = LayoutIR::new();
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let script = render_script(&config, &ir, &[], &HashSet::new());
         assert!(
             script.contains("AppState.create()"),
@@ -1777,7 +1799,7 @@ mod tests {
     #[test]
     fn test_render_script_has_toggle_deselect() {
         let ir = LayoutIR::new();
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let script = render_script(&config, &ir, &[], &HashSet::new());
         assert!(
             script.contains("AppState.toggleSelection(appState, type, id)"),
@@ -1818,7 +1840,7 @@ mod tests {
                 }],
             ),
         );
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::from([0]);
         let data = generate_static_data(&config, &ir, &positioned, &parents);
@@ -1831,7 +1853,7 @@ mod tests {
     #[test]
     fn test_render_script_arc_hover_shows_sidebar() {
         let ir = LayoutIR::new();
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let script = render_script(&config, &ir, &[], &HashSet::new());
         assert!(script.contains("showTransient"));
     }
@@ -1839,7 +1861,7 @@ mod tests {
     #[test]
     fn test_render_script_virtual_arc_aggregates_locations() {
         let ir = LayoutIR::new();
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let script = render_script(&config, &ir, &[], &HashSet::new());
         assert!(
             script.contains("aggregatedLocations") || script.contains("hiddenEdgeData"),
@@ -1902,7 +1924,7 @@ mod tests {
         ir.edges
             .push(LayoutEdge::new(a, m_c, EdgeContext::production()));
 
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::from([0]);
 
@@ -1998,7 +2020,7 @@ mod tests {
                 0,
             ));
 
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::from([0]);
 
@@ -2048,7 +2070,7 @@ mod tests {
                 0,
             ));
 
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::from([0]);
 
@@ -2108,7 +2130,7 @@ mod tests {
             },
         );
 
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = HashSet::from([0]);
         let data = generate_static_data(&config, &ir, &positioned, &parents);
@@ -2181,7 +2203,7 @@ mod tests {
         let id_of = |name: &str| ir.items.iter().find(|item| item.label == name).unwrap().id;
         let (a_id, b_id, c_id) = (id_of("a"), id_of("b"), id_of("c"));
 
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
         let parents: HashSet<NodeId> = ir
             .items
@@ -2230,7 +2252,7 @@ mod tests {
 
     /// The `STATIC_DATA` of `ir` under the default config.
     fn static_data_of(ir: &LayoutIR) -> StaticData {
-        let config = RenderConfig::default();
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
         let positioned = calculate_positions(ir, &config, calculate_box_width(ir));
         let parents: HashSet<NodeId> = ir
             .items
@@ -2408,7 +2430,7 @@ mod tests {
     fn script_carries_the_overlay_host(#[case] document: Document, #[case] expected: &str) {
         let config = RenderConfig {
             document,
-            ..RenderConfig::default()
+            ..RenderConfig::new(&RUST_PROFILE.wording)
         };
         let script = script_element(&(), "svg_script", &config);
         assert!(script.contains(expected), "{expected}");
@@ -2419,7 +2441,7 @@ mod tests {
     /// XML, where the markers are still CDATA.
     #[test]
     fn script_element_guards_its_cdata_markers_for_html() {
-        let script = script_element(&(), "svg_script", &RenderConfig::default());
+        let script = script_element(&(), "svg_script", &RenderConfig::new(&RUST_PROFILE.wording));
         assert!(script.starts_with("  <script>//<![CDATA[\n"), "{script}");
         assert!(script.ends_with("\n//]]></script>\n"), "{script}");
     }

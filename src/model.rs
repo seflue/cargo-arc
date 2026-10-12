@@ -402,6 +402,12 @@ pub struct LanguageProfile {
     pub manifest_files: &'static [&'static str],
     /// The language tokei counts code lines as.
     pub tokei_language: tokei::LanguageType,
+    /// The analysis can include test code, so a served page offers to
+    /// switch it.
+    pub analyzes_tests: bool,
+    /// The analysis can include external packages, so a served page offers
+    /// to switch them.
+    pub analyzes_externals: bool,
 }
 
 impl LanguageProfile {

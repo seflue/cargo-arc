@@ -57,9 +57,11 @@ build:
   `:Arc stop` and `:Arc open` start from the options again.
 - `:Arc on-save off` stops a written file from recomputing the diagram;
   `:Arc on-save on` resumes it. The page's "Recompute on save" button does the
-  same. The plugin reports every write; the service recomputes for `.rs` files
-  and `Cargo.toml` under the workspace root. A file that does not parse keeps
-  the diagram as it was, and a notice names the file.
+  same. The plugin reports every write; the service recomputes for the
+  source files and manifests of the analyzed language under the workspace
+  root, `.rs` files and `Cargo.toml` for Rust and `.lua` files for a Lua
+  plugin. A file that does not parse keeps the diagram as it was, and a
+  notice names the file.
 - `:Arc recompute` runs the analysis once with the current state.
 
 ## Options
@@ -77,6 +79,11 @@ build:
 `include_tests` and `externals` set the state a service starts with; `:Arc
 externals` and `:Arc tests` change it while the service runs, and `:Arc
 restart` carries it over.
+
+In a Lua plugin, the service does not start when `features`, `include_tests`
+or `externals` is set, because these options apply to Rust only. See
+[docs/LUA_PLUGINS.md](../../docs/LUA_PLUGINS.md) for what else differs in a
+Lua plugin.
 
 ## Tests
 
