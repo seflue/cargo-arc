@@ -4,23 +4,18 @@
 
 ```
 src/
-├── analyze/
-│   ├── mod.rs         # Coordination + public API
-│   ├── use_parser.rs  # Use statement extraction (syn)
-│   ├── hir.rs         # HIR module analysis (ra_ap_hir)
-│   ├── filtering.rs   # Dependency classification + filtering
-│   ├── syn_walker.rs  # Module discovery (syn + filesystem)
-│   ├── backend.rs     # Analysis backend abstraction
-│   └── workspace.rs   # Workspace analysis (cargo_metadata)
+├── analyze/     # Language adapters behind the `LanguageAdapter` trait
 ├── model.rs     # Shared data structures
 ├── graph.rs     # Dependency graph building (petgraph)
-├── layout.rs    # Tree layout algorithm
-├── render.rs     # SVG generation
+├── diagnose/    # Cycles, clusters and feedback arc sets
+├── rules/       # Rule checks against arc-rules.toml and the baseline
+├── layout/      # Tree layout algorithm
+├── render/      # SVG generation
+├── hotspots/    # Hotspot map of code lines and commits per file
 ├── volatility.rs  # Git history volatility analysis
 ├── js_bundle.rs   # Page scripts bundled from js/ (build.rs)
-├── cli.rs         # CLI interface (clap)
-├── lib.rs       # Public API exports
-└── main.rs      # Entry point
+├── ui/            # Jump service for editor plugins, served over HTTP
+└── test_support.rs  # Test-only constructors for model and graph types
 ```
 
 ## Filter visibility
