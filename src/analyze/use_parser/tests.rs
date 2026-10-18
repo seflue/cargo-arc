@@ -697,6 +697,70 @@ mod submodule_tests {
     }
 
     #[test]
+    fn test_crate_local_import_of_item_defined_in_root() {
+        // The crate's own root: `mod user; pub struct Server;`. A module of the
+        // same crate imports `crate::Server`, defined in the root itself.
+        let mp: ModulePathMap = [("my_crate".to_string(), HashSet::from(["user".into()]))]
+            .into_iter()
+            .collect();
+        let mut root_info = ModuleExportInfo::default();
+        root_info.definitions.insert(
+            "Server".to_string(),
+            Definition {
+                kind: DefKind::Struct,
+                line: 2,
+            },
+        );
+        let map: ReExportMap = [(
+            "my_crate".to_string(),
+            HashMap::from([(String::new(), root_info)]),
+        )]
+        .into_iter()
+        .collect();
+        let uses = parse_test_uses("use crate::Server;");
+        let ctx = ResolutionContextBuilder::new(Path::new("src/user.rs"))
+            .module_paths(&mp)
+            .current_module_path("user")
+            .reexport_map(&map)
+            .build();
+        let deps = parse_workspace_dependencies(&uses, &ctx);
+        assert_eq!(deps.len(), 1, "{deps:?}");
+        let dep = &deps[0];
+        assert_eq!(dep.target_package, "my_crate");
+        assert_eq!(dep.target_module, "");
+        assert_eq!(dep.target_item, Some("Server".to_string()));
+    }
+
+    #[test]
+    fn test_crate_local_import_of_private_item_in_root() {
+        // The crate's own root: `mod user; fn helper() {}`. A private item in
+        // the root is visible to every module of the crate.
+        let mp: ModulePathMap = [("my_crate".to_string(), HashSet::from(["user".into()]))]
+            .into_iter()
+            .collect();
+        let mut root_info = ModuleExportInfo::default();
+        root_info.private_definitions.insert("helper".to_string());
+        let map: ReExportMap = [(
+            "my_crate".to_string(),
+            HashMap::from([(String::new(), root_info)]),
+        )]
+        .into_iter()
+        .collect();
+        let uses = parse_test_uses("use crate::helper;");
+        let ctx = ResolutionContextBuilder::new(Path::new("src/user.rs"))
+            .module_paths(&mp)
+            .current_module_path("user")
+            .reexport_map(&map)
+            .build();
+        let deps = parse_workspace_dependencies(&uses, &ctx);
+        assert_eq!(deps.len(), 1, "{deps:?}");
+        let dep = &deps[0];
+        assert_eq!(dep.target_package, "my_crate");
+        assert_eq!(dep.target_module, "");
+        assert_eq!(dep.target_item, Some("helper".to_string()));
+    }
+
+    #[test]
     fn test_cross_crate_no_paths_fallback() {
         let ws: WorkspacePackages = ["other_crate".to_string()].into_iter().collect();
         let uses = parse_test_uses("use other_crate::foo::bar::Baz;");
