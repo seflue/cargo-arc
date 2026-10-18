@@ -1290,6 +1290,7 @@ fn parse_external_crate_import(
 pub(crate) fn parse_workspace_dependencies(
     use_items: &CollectedUses,
     ctx: &ResolutionContext,
+    bindings: &FileBindings,
 ) -> Vec<DependencyRef> {
     let mut deps: Vec<DependencyRef> = Vec::new();
     let mut seen_targets: HashMap<(String, UsageKind), usize> = HashMap::new();
@@ -1297,7 +1298,9 @@ pub(crate) fn parse_workspace_dependencies(
     for collected in use_items.iter() {
         let item = &collected.item;
         let line_num = item.use_token.span.start().line;
-        let paths = resolve_use_tree(&item.tree, "", false);
+        let paths = resolve_use_tree(&item.tree, "", false)
+            .into_iter()
+            .map(|path| bindings.rebased(&path, collected.region));
         // A `use` that republishes a name under a visibility reachable from
         // outside the module is a re-export. Path references (non-use) are never
         // re-exports.
@@ -1457,48 +1460,61 @@ impl FileBindings {
             ..FileBindings::default()
         };
 
-        for collected in use_items.iter() {
-            let alias_paths = resolve_use_tree(&collected.item.tree, "", true);
-            let original_paths = resolve_use_tree(&collected.item.tree, "", false);
+        // A `use` path may start with a module another `use` binds, written
+        // before or after it. Those bindings come first; a chain through two
+        // such bindings is followed one step only.
+        for (collected, binding, original_path) in use_bindings(use_items) {
+            if binding == "*" {
+                continue;
+            }
+            let dep = resolve_single_path(
+                ctx,
+                &original_path,
+                collected.item.use_token.span.start().line,
+                &collected.context,
+                collected.inline_depth,
+            );
+            if let Binding::Module(module_path) = classify_binding(ctx, dep.as_ref(), &binding) {
+                bindings.bind_module(collected.region, &binding, module_path);
+            }
+        }
 
-            for (alias_path, original_path) in alias_paths.iter().zip(original_paths.iter()) {
-                let Some(binding) = alias_path.rsplit("::").next() else {
-                    continue;
-                };
-                let dep = resolve_single_path(
-                    ctx,
-                    original_path,
-                    collected.item.use_token.span.start().line,
-                    &collected.context,
-                    collected.inline_depth,
-                );
-                // A glob binds every name its module exports and none of them is
-                // written here; the names are found where the file uses them.
-                if binding == "*" {
-                    if let Some(mut dep) = dep
-                        && glob_payload_known(&dep, ctx.reexport_map)
-                    {
-                        dep.via_reexport = is_reexport_visibility(&collected.item.vis);
-                        bindings.bind_glob(collected.region, dep);
-                    }
-                    continue;
-                }
-                match classify_binding(ctx, dep.as_ref(), binding) {
-                    Binding::Module(module_path) => {
-                        bindings.bind_module(collected.region, binding, module_path);
-                    }
-                    Binding::Elsewhere => bindings.bind_elsewhere(collected.region, binding),
-                    Binding::OwnItem => {}
-                }
-                // A name bound to an item of any crate the parser placed carries the
-                // item's occurrences. A name bound elsewhere may also be one: the
-                // parser has no module for it, but it knows the crate.
+        for (collected, binding, original_path) in use_bindings(use_items) {
+            let binding = binding.as_str();
+            let path = bindings.rebased(&original_path, collected.region);
+            let dep = resolve_single_path(
+                ctx,
+                &path,
+                collected.item.use_token.span.start().line,
+                &collected.context,
+                collected.inline_depth,
+            );
+            // A glob binds every name its module exports and none of them is
+            // written here; the names are found where the file uses them.
+            if binding == "*" {
                 if let Some(mut dep) = dep
-                    && dep.target_item.is_some()
+                    && glob_payload_known(&dep, ctx.reexport_map)
                 {
                     dep.via_reexport = is_reexport_visibility(&collected.item.vis);
-                    bindings.bind_item(collected.region, binding, dep);
+                    bindings.bind_glob(collected.region, dep);
                 }
+                continue;
+            }
+            match classify_binding(ctx, dep.as_ref(), binding) {
+                Binding::Module(module_path) => {
+                    bindings.bind_module(collected.region, binding, module_path);
+                }
+                Binding::Elsewhere => bindings.bind_elsewhere(collected.region, binding),
+                Binding::OwnItem => {}
+            }
+            // A name bound to an item of any crate the parser placed carries the
+            // item's occurrences. A name bound elsewhere may also be one: the
+            // parser has no module for it, but it knows the crate.
+            if let Some(mut dep) = dep
+                && dep.target_item.is_some()
+            {
+                dep.via_reexport = is_reexport_visibility(&collected.item.vis);
+                bindings.bind_item(collected.region, binding, dep);
             }
         }
 
@@ -1553,6 +1569,15 @@ impl FileBindings {
             }
         }
         PathBinding::Unbound(first, last)
+    }
+
+    /// `path` with a first segment bound to a module replaced by the module's
+    /// absolute path, as seen from `region`.
+    fn rebased(&self, path: &str, region: RegionId) -> String {
+        match self.binding_of(path, region) {
+            PathBinding::Path(rebased) => rebased.into_owned(),
+            _ => path.to_string(),
+        }
     }
 
     /// List the glob imports a name standing in `region` may come from,
@@ -1619,6 +1644,23 @@ impl FileBindings {
             .or_default()
             .insert(name.to_string());
     }
+}
+
+/// Each name the `use` items bind, with the `use` and the path it imports. A
+/// glob binds the name `*`.
+fn use_bindings(
+    use_items: &CollectedUses,
+) -> impl Iterator<Item = (&CollectedUse, String, String)> {
+    use_items.iter().flat_map(|collected| {
+        let alias_paths = resolve_use_tree(&collected.item.tree, "", true);
+        let original_paths = resolve_use_tree(&collected.item.tree, "", false);
+        alias_paths.into_iter().zip(original_paths).filter_map(
+            move |(alias_path, original_path)| {
+                let binding = alias_path.rsplit("::").next()?.to_string();
+                Some((collected, binding, original_path))
+            },
+        )
+    })
 }
 
 /// What one `use` binding means for later references to its name.
@@ -1916,10 +1958,10 @@ pub(crate) fn parse_file_dependencies(
     base_context: EdgeContext,
 ) -> Vec<DependencyRef> {
     let use_items = collect_all_use_items(syntax, base_context.clone());
-    let use_deps = parse_workspace_dependencies(&use_items, ctx);
+    let bindings = FileBindings::of(syntax, &use_items, ctx);
+    let use_deps = parse_workspace_dependencies(&use_items, ctx, &bindings);
 
     let path_refs = collect_all_path_refs(syntax, base_context);
-    let bindings = FileBindings::of(syntax, &use_items, ctx);
     let path_deps = parse_path_ref_dependencies(&path_refs, ctx, &bindings);
 
     let mut seen = DependencyRef::build_seen_index(&use_deps);
