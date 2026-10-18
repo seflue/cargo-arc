@@ -205,7 +205,7 @@ mod normalize_tests {
     fn test_process_use_statement_crate_local() {
         let uses = parse_test_uses("use crate::graph::build;");
         let ctx = ResolutionContextBuilder::new(Path::new("src/cli.rs")).build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 1);
         let dep = &deps[0];
         assert_eq!(dep.target_package, "my_crate");
@@ -217,7 +217,7 @@ mod normalize_tests {
     fn test_process_use_statement_crate_local_module_only() {
         let uses = parse_test_uses("use crate::graph;");
         let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs")).build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 1);
         let dep = &deps[0];
         assert_eq!(dep.target_package, "my_crate");
@@ -233,7 +233,7 @@ mod normalize_tests {
         let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs"))
             .workspace_crates(&ws)
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 1);
         let dep = &deps[0];
         assert_eq!(dep.target_package, "other_crate");
@@ -248,7 +248,7 @@ mod normalize_tests {
             .current_crate("app")
             .workspace_crates(&ws)
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 1);
         let dep = &deps[0];
         assert_eq!(dep.target_package, "my_lib");
@@ -268,7 +268,7 @@ mod normalize_tests {
             .module_paths(&mp)
             .current_module_path("render")
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 1, "self:: should resolve: {deps:?}");
         assert_eq!(deps[0].target_package, "my_crate");
         assert_eq!(deps[0].target_module, "render::helper");
@@ -287,7 +287,7 @@ mod normalize_tests {
             .module_paths(&mp)
             .current_module_path("sub")
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 1, "super:: should resolve: {deps:?}");
         assert_eq!(deps[0].target_package, "my_crate");
         assert_eq!(deps[0].target_module, "parent");
@@ -300,7 +300,7 @@ mod normalize_tests {
         let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs"))
             .workspace_crates(&ws)
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert!(deps.is_empty(), "external crate imports should be filtered");
     }
 
@@ -308,7 +308,7 @@ mod normalize_tests {
     fn test_process_use_statement_std_filtered() {
         let uses = parse_test_uses("use std::collections::HashMap;");
         let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs")).build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert!(deps.is_empty(), "std imports should be filtered");
     }
 }
@@ -374,7 +374,7 @@ mod submodule_tests {
         let ctx = ResolutionContextBuilder::new(Path::new("src/cli.rs"))
             .module_paths(&mp)
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 1);
         let dep = &deps[0];
         assert_eq!(dep.target_module, "analyze::use_parser");
@@ -395,7 +395,7 @@ mod submodule_tests {
             .workspace_crates(&ws)
             .module_paths(&mp)
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 1);
         let dep = &deps[0];
         assert_eq!(dep.target_module, "foo::bar");
@@ -416,7 +416,7 @@ mod submodule_tests {
             .workspace_crates(&ws)
             .module_paths(&mp)
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 1);
         let dep = &deps[0];
         assert_eq!(dep.target_module, "sub::deep");
@@ -453,7 +453,7 @@ mod submodule_tests {
             .module_paths(&mp)
             .reexport_map(&map)
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 1, "{deps:?}");
         let dep = &deps[0];
         assert_eq!(dep.target_package, "other_crate");
@@ -499,7 +499,7 @@ mod submodule_tests {
             .module_paths(&mp)
             .reexport_map(&map)
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 1, "{deps:?}");
         let dep = &deps[0];
         assert_eq!(dep.target_package, "other_crate");
@@ -564,7 +564,7 @@ mod submodule_tests {
             .module_paths(&mp)
             .reexport_map(&map)
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 1, "{deps:?}");
         let dep = &deps[0];
         assert_eq!(dep.target_package, "other_crate");
@@ -591,7 +591,7 @@ mod submodule_tests {
             .current_module_path("user")
             .extern_crates(&aliases)
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 1, "{deps:?}");
         let dep = &deps[0];
         assert_eq!(dep.target_package, "other_crate");
@@ -636,7 +636,7 @@ mod submodule_tests {
             .current_module_path("user")
             .reexport_map(&map)
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 1, "{deps:?}");
         let dep = &deps[0];
         assert_eq!(dep.target_package, "my_crate");
@@ -676,7 +676,7 @@ mod submodule_tests {
             .current_module_path("user")
             .reexport_map(&map)
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 1, "{deps:?}");
         let dep = &deps[0];
         assert_eq!(dep.target_package, "my_crate");
@@ -723,7 +723,7 @@ mod submodule_tests {
             .current_module_path("user")
             .reexport_map(&map)
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 1, "{deps:?}");
         let dep = &deps[0];
         assert_eq!(dep.target_package, "my_crate");
@@ -758,7 +758,7 @@ mod submodule_tests {
             .current_module_path("user")
             .reexport_map(&map)
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 1, "{deps:?}");
         let dep = &deps[0];
         assert_eq!(dep.target_package, "my_crate");
@@ -787,7 +787,7 @@ mod submodule_tests {
             .current_module_path("user")
             .reexport_map(&map)
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 1, "{deps:?}");
         let dep = &deps[0];
         assert_eq!(dep.target_package, "my_crate");
@@ -802,7 +802,7 @@ mod submodule_tests {
         let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs"))
             .workspace_crates(&ws)
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 1);
         let dep = &deps[0];
         assert_eq!(dep.target_module, "foo");
@@ -822,7 +822,7 @@ mod submodule_tests {
         let ctx = ResolutionContextBuilder::new(Path::new("src/cli.rs"))
             .module_paths(&mp)
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 2, "should return 2 deps: {deps:?}");
         assert_eq!(deps[0].target_module, "analyze::use_parser");
         assert!(
@@ -854,7 +854,7 @@ use std::collections::HashMap;
         let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs"))
             .workspace_crates(&ws)
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
 
         assert_eq!(deps.len(), 2, "found: {deps:?}");
         assert!(
@@ -876,7 +876,7 @@ use crate::graph;
 ";
         let uses = parse_test_uses(source);
         let ctx = ResolutionContextBuilder::new(Path::new("src/cli.rs")).build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
 
         assert_eq!(deps.len(), 3, "should keep distinct symbols: {deps:?}");
         assert!(
@@ -894,7 +894,7 @@ use crate::graph;
     fn test_process_use_multi_symbol() {
         let uses = parse_test_uses("use crate::graph::{Node, Edge};");
         let ctx = ResolutionContextBuilder::new(Path::new("src/cli.rs")).build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 2, "should return 2 deps: {deps:?}");
         assert!(
             deps.iter()
@@ -910,7 +910,7 @@ use crate::graph;
     fn test_process_use_glob() {
         let uses = parse_test_uses("use crate::analyze::*;");
         let ctx = ResolutionContextBuilder::new(Path::new("src/cli.rs")).build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 1, "glob should return 1 dep: {deps:?}");
         assert_eq!(deps[0].target_item, Some("*".to_string()));
         assert_eq!(deps[0].target_module, "analyze");
@@ -1130,7 +1130,7 @@ use serde::Serialize;
             .workspace_crates(&ws)
             .module_paths(&mp)
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
 
         // Expected: 6 DependencyRefs
         // - cli::Args, cli::Cargo, cli::run (bare module, pub use multi)
@@ -1261,7 +1261,7 @@ mod bare_module_tests {
         let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs"))
             .module_paths(&mp)
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 1);
         let dep = &deps[0];
         assert_eq!(dep.target_package, "my_crate");
@@ -1279,7 +1279,7 @@ mod bare_module_tests {
         let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs"))
             .module_paths(&mp)
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 1);
         let dep = &deps[0];
         assert_eq!(dep.target_package, "my_crate");
@@ -1297,7 +1297,7 @@ mod bare_module_tests {
         let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs"))
             .module_paths(&mp)
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 3, "should return 3 deps: {deps:?}");
         assert!(deps.iter().all(|d| d.target_package == "my_crate"));
         assert!(deps.iter().all(|d| d.target_module == "cli"));
@@ -1324,7 +1324,7 @@ mod bare_module_tests {
         let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs"))
             .module_paths(&mp)
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 1, "glob should return 1 dep: {deps:?}");
         assert_eq!(deps[0].target_package, "my_crate");
         assert_eq!(deps[0].target_module, "cli");
@@ -1366,7 +1366,7 @@ mod bare_module_tests {
             .module_paths(&mp)
             .current_module_path("render")
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 2, "should return 2 deps: {deps:?}");
         assert!(deps.iter().all(|d| d.target_module == "render::elements"));
         assert!(
@@ -1554,7 +1554,7 @@ mod entry_point_tests {
             .module_paths(&mp)
             .crate_exports(&exports)
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 1);
         let dep = &deps[0];
         assert_eq!(dep.target_package, "other_crate");
@@ -1577,7 +1577,7 @@ mod entry_point_tests {
             .module_paths(&mp)
             .crate_exports(&exports)
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 1);
         let dep = &deps[0];
         assert_eq!(dep.target_module, "Unknown");
@@ -1600,7 +1600,7 @@ mod entry_point_tests {
             .module_paths(&mp)
             .crate_exports(&exports)
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 1);
         let dep = &deps[0];
         assert_eq!(dep.target_module, "sub_mod");
@@ -1617,7 +1617,7 @@ mod entry_point_tests {
         let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs"))
             .workspace_crates(&ws)
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 2, "should return 2 deps: {deps:?}");
         assert!(deps.iter().all(|d| d.target_package == "other_crate"));
         assert!(deps.iter().any(|d| d.target_module == "Foo"));
@@ -1631,7 +1631,7 @@ mod entry_point_tests {
         let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs"))
             .workspace_crates(&ws)
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 1, "glob should return 1 dep: {deps:?}");
         assert_eq!(deps[0].target_module, "");
         assert_eq!(deps[0].target_item, Some("*".to_string()));
@@ -2282,7 +2282,7 @@ mod relative_import_e2e_tests {
             .module_paths(&mp)
             .current_module_path("analyze::workspace")
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 1, "super::filtering should resolve: {deps:?}");
         let dep = &deps[0];
         assert_eq!(dep.target_package, "my_crate");
@@ -2310,7 +2310,7 @@ mod relative_import_e2e_tests {
             .module_paths(&mp)
             .current_module_path("analyze::syn_walker")
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(
             deps.len(),
             2,
@@ -2341,7 +2341,7 @@ mod relative_import_e2e_tests {
         let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs"))
             .module_paths(&mp)
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert!(
             deps.is_empty(),
             "super:: from root should produce no deps: {deps:?}"
@@ -2362,7 +2362,7 @@ mod relative_import_e2e_tests {
             .module_paths(&mp)
             .current_module_path("render")
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 1, "self::child should resolve: {deps:?}");
         assert_eq!(deps[0].target_package, "my_crate");
         assert_eq!(deps[0].target_module, "render::child");
@@ -2396,7 +2396,7 @@ mod tests {
             .module_paths(&mp)
             .current_module_path("analyze::filtering")
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert!(
             deps.is_empty(),
             "super::* in mod tests should not create upward edge: {deps:?}"
@@ -2428,7 +2428,7 @@ mod tests {
             .module_paths(&mp)
             .current_module_path("analyze::filtering")
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(
             deps.len(),
             1,
@@ -2489,7 +2489,7 @@ mod context_aware_dedup_tests {
             (item, EdgeContext::test(TestKind::Unit), 0),
         ];
         let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs")).build();
-        let deps = parse_workspace_dependencies(&root_uses(uses), &ctx);
+        let deps = parse_workspace_dependencies(&root_uses(uses), &ctx, &FileBindings::default());
         assert_eq!(
             deps.len(),
             2,
@@ -2590,7 +2590,7 @@ mod reexport_resolution_tests {
         let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs"))
             .module_paths(&mp)
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].target_module, "parent");
         assert_eq!(deps[0].target_item, Some("Item".to_string()));
@@ -2635,7 +2635,7 @@ mod reexport_resolution_tests {
             .current_module_path("consumer")
             .reexport_map(&map)
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 1);
         assert_eq!(
             deps[0].target_module, "parent::sibling",
@@ -2681,7 +2681,7 @@ mod reexport_resolution_tests {
             .module_paths(&mp)
             .reexport_map(&map)
             .build();
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 1);
         assert_eq!(
             deps[0].target_module, "parent::child",
@@ -3555,6 +3555,34 @@ mod file_binding_tests {
              and the module beside the file is not what it names: {deps:?}"
         );
     }
+
+    /// A `use` path may start with a name another `use` of the file binds.
+    #[rstest]
+    #[case::at_file_level("use crate::api;\nuse api::schema::Reason;")]
+    #[case::in_a_function_body("use crate::api;\nfn f() { use api::schema::Reason; }")]
+    fn test_use_path_through_a_bound_module_resolves(#[case] source: &str) {
+        let mp: ModulePathMap = [(
+            "my_crate".to_string(),
+            HashSet::from(["api".into(), "api::schema".into(), "server".into()]),
+        )]
+        .into_iter()
+        .collect();
+        let ctx = ResolutionContextBuilder::new(Path::new("src/server.rs"))
+            .module_paths(&mp)
+            .current_module_path("server")
+            .build();
+        let deps = parse_file_dependencies(
+            &syn::parse_file(source).unwrap(),
+            &ctx,
+            EdgeContext::production(),
+        );
+        assert!(
+            deps.iter().any(|d| d.target_module == "api::schema"
+                && d.target_item.as_deref() == Some("Reason")
+                && d.line == 2),
+            "the import names `Reason` in `api::schema`: {deps:?}"
+        );
+    }
 }
 
 /// `use path::{self, ...}` imports the module itself — the `self` segment is
@@ -3574,7 +3602,7 @@ mod use_self_tests {
             .module_paths(&mp)
             .build();
         let uses = parse_test_uses("use crate::auxil::{self, dxgi::Factory};");
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
 
         let auxil = deps
             .iter()
@@ -3601,7 +3629,7 @@ mod use_self_tests {
             .module_paths(&mp)
             .build();
         let uses = parse_test_uses("use crate::auxil::self;");
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 1, "should resolve to the module: {deps:?}");
         assert_eq!(deps[0].target_module, "auxil");
         assert_eq!(deps[0].target_item, None);
@@ -3616,7 +3644,7 @@ mod use_self_tests {
             .module_paths(&mp)
             .build();
         let uses = parse_test_uses("use crate::auxil::{self as aux};");
-        let deps = parse_workspace_dependencies(&uses, &ctx);
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
         assert_eq!(deps.len(), 1, "should resolve to the module: {deps:?}");
         assert_eq!(deps[0].target_module, "auxil");
         assert_eq!(deps[0].target_item, None);
