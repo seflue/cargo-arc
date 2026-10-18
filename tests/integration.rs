@@ -841,6 +841,26 @@ fn test_custom_target_paths_fixture() {
     );
 }
 
+/// A lib and a bin root in one package each bring their own modules into the
+/// root by glob. `crate::` resolves against the root whose tree holds the
+/// file, and another package sees the lib root only.
+#[test]
+fn test_each_crate_root_keeps_its_own_reexports() {
+    let (temp, cmd) = fixture_args("lib_bin_roots", false);
+
+    let result = run(cmd);
+    assert!(result.is_ok(), "run() should succeed: {result:?}");
+
+    let svg = std::fs::read_to_string(temp.path()).unwrap();
+    let arcs = resolve_arc_names(&extract_arcs(&svg), &extract_node_names(&svg));
+    for (from, to) in [("user", "values"), ("cmd", "opts"), ("consumer", "values")] {
+        assert!(
+            arcs.iter().any(|(f, t, _)| f == from && t == to),
+            "{from} should depend on {to}, found: {arcs:?}"
+        );
+    }
+}
+
 /// Packages whose root file declares no submodules carry no `Contains` edge and
 /// therefore reach the layout only through a production package dependency.
 #[test]

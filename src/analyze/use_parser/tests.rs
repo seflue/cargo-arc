@@ -835,9 +835,7 @@ use crate::graph;
         );
         [(
             "my_crate".to_string(),
-            [("analyze".to_string(), analyze_info)]
-                .into_iter()
-                .collect(),
+            HashMap::from([("analyze".to_string(), analyze_info)]),
         )]
         .into_iter()
         .collect()
@@ -979,12 +977,10 @@ use crate::graph;
         );
         let map: ReExportMap = [(
             "my_crate".to_string(),
-            [
+            HashMap::from([
                 ("facade".to_string(), facade_info),
                 ("origin".to_string(), origin_info),
-            ]
-            .into_iter()
-            .collect(),
+            ]),
         )]
         .into_iter()
         .collect();
@@ -3021,6 +3017,19 @@ mod resolve_reexport_tests {
     // --- resolve_reexport: private glob, descendant visibility ---
 
     fn private_glob_map(holder: &str, source: &str, item: &str) -> ReExportMap {
+        [(
+            "my_crate".to_string(),
+            private_glob_modules(holder, source, item),
+        )]
+        .into_iter()
+        .collect()
+    }
+
+    fn private_glob_modules(
+        holder: &str,
+        source: &str,
+        item: &str,
+    ) -> HashMap<String, ModuleExportInfo> {
         let mut holder_info = ModuleExportInfo::default();
         holder_info.private_glob_sources.push(source.to_string());
         let mut source_info = ModuleExportInfo::default();
@@ -3034,9 +3043,7 @@ mod resolve_reexport_tests {
         let mut crate_exports = HashMap::new();
         crate_exports.insert(holder.to_string(), holder_info);
         crate_exports.insert(source.to_string(), source_info);
-        [("my_crate".to_string(), crate_exports)]
-            .into_iter()
-            .collect()
+        crate_exports
     }
 
     #[test]
@@ -3067,13 +3074,11 @@ mod resolve_reexport_tests {
         // api::buffer forwards api's scope with `use super::*`, api forwards
         // actions with `use actions::*`; a module below api::buffer reaches
         // the definer through both.
-        let mut map = private_glob_map("api", "api::actions", "Mapping");
+        let mut modules = private_glob_modules("api", "api::actions", "Mapping");
         let mut buffer_info = ModuleExportInfo::default();
         buffer_info.private_glob_sources.push("api".to_string());
-        map.0
-            .get_mut("my_crate")
-            .unwrap()
-            .insert("api::buffer".to_string(), buffer_info);
+        modules.insert("api::buffer".to_string(), buffer_info);
+        let map: ReExportMap = [("my_crate".to_string(), modules)].into_iter().collect();
 
         let mut dep = test_dep("my_crate", "api::buffer", Some("Mapping"));
         resolve_reexport(&mut dep, &map, "api::buffer::view");
@@ -3086,16 +3091,16 @@ mod resolve_reexport_tests {
         // dispatch with `pub use dispatch::*`. That carries dispatch's public
         // items only, so Mapping (defined in core) is not custom's to give,
         // even to dispatch itself.
-        let mut map = private_glob_map("dispatch", "core", "Mapping");
+        let mut modules = private_glob_modules("dispatch", "core", "Mapping");
         let mut custom_info = ModuleExportInfo::default();
         custom_info.glob_sources.push("dispatch".to_string());
-        let crate_exports = map.0.get_mut("my_crate").unwrap();
-        crate_exports.insert("custom".to_string(), custom_info);
-        crate_exports
+        modules.insert("custom".to_string(), custom_info);
+        modules
             .get_mut("dispatch")
             .unwrap()
             .private_glob_sources
             .push("custom".to_string());
+        let map: ReExportMap = [("my_crate".to_string(), modules)].into_iter().collect();
 
         let mut dep = test_dep("my_crate", "custom", Some("Mapping"));
         resolve_reexport(&mut dep, &map, "dispatch");
@@ -3110,15 +3115,14 @@ mod resolve_reexport_tests {
         assert!(info.is_empty());
     }
 
-    // --- ReExportMap from_iter + deref ---
+    // --- ReExportMap from_iter ---
 
     #[test]
-    fn from_iterator_and_deref() {
+    fn from_iterator_of_modules_makes_a_lib_root() {
         let mut inner = HashMap::new();
         inner.insert("render".to_string(), ModuleExportInfo::default());
         let map: ReExportMap = [("my_crate".to_string(), inner)].into_iter().collect();
-        assert!(map.contains_key("my_crate"));
-        assert!(map["my_crate"].contains_key("render"));
+        assert!(map.get("my_crate").unwrap().contains_key("render"));
     }
 }
 
@@ -3595,7 +3599,7 @@ mod use_category_tests {
         );
         [(
             "my_crate".to_string(),
-            [("vocab".to_string(), vocab)].into_iter().collect(),
+            HashMap::from([("vocab".to_string(), vocab)]),
         )]
         .into_iter()
         .collect()

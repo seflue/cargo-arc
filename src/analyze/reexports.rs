@@ -14,7 +14,7 @@ use crate::model::{DefKind, Definition, EdgeContext, PackageInfo};
 use super::mod_resolver::{child_resolve_dir, extract_mod_declarations, resolve_mod_path};
 use super::use_parser::{
     AssociatedItems, ModuleExportInfo, ReExportMap, ReExportTarget, ResolutionContext,
-    is_reexport_visibility, resolve_single_path, resolve_use_tree,
+    RootReExports, is_reexport_visibility, resolve_single_path, resolve_use_tree,
 };
 
 /// Invariant parameters shared across the recursive re-export walk.
@@ -26,13 +26,14 @@ struct CollectContext<'a> {
     crate_exports: &'a PackageExportMap,
 }
 
-/// Collect re-exports and public definitions for all modules in a crate.
+/// Collect re-exports and public definitions for all modules of a package,
+/// one map per entry file, in `entry_files` order.
 pub(crate) fn collect_crate_reexports(
     crate_info: &PackageInfo,
     all_module_paths: &ModulePathMap,
     workspace_crates: &WorkspacePackages,
     crate_exports: &PackageExportMap,
-) -> HashMap<String, ModuleExportInfo> {
+) -> Vec<RootReExports> {
     let crate_name = normalize_crate_name(&crate_info.name);
     let ctx = CollectContext {
         crate_name: &crate_name,
@@ -41,16 +42,24 @@ pub(crate) fn collect_crate_reexports(
         workspace_crates,
         crate_exports,
     };
-    let mut result = HashMap::new();
-    let mut out_of_module_impls = Vec::new();
 
-    for root_file in crate_info
+    crate_info
         .entry_files
         .iter()
-        .map(|entry| entry.file.as_path())
-    {
-        walk_collect_reexports(&ctx, root_file, "", &mut result, &mut out_of_module_impls);
-    }
+        .map(|entry| RootReExports {
+            kind: entry.kind,
+            modules: collect_root_reexports(&ctx, &entry.file),
+        })
+        .collect()
+}
+
+fn collect_root_reexports(
+    ctx: &CollectContext,
+    root_file: &Path,
+) -> HashMap<String, ModuleExportInfo> {
+    let mut result = HashMap::new();
+    let mut out_of_module_impls = Vec::new();
+    walk_collect_reexports(ctx, root_file, "", &mut result, &mut out_of_module_impls);
 
     for block in out_of_module_impls {
         result
@@ -381,6 +390,23 @@ mod tests {
     use std::collections::HashSet;
     use tempfile::TempDir;
 
+    /// The re-exports of a package with a single crate root.
+    fn collect_single_root_reexports(
+        crate_info: &PackageInfo,
+        all_module_paths: &ModulePathMap,
+        workspace_crates: &WorkspacePackages,
+        crate_exports: &PackageExportMap,
+    ) -> HashMap<String, ModuleExportInfo> {
+        let mut roots = collect_crate_reexports(
+            crate_info,
+            all_module_paths,
+            workspace_crates,
+            crate_exports,
+        );
+        assert_eq!(roots.len(), 1, "expected one crate root");
+        roots.remove(0).modules
+    }
+
     fn test_crate(files: &[(&str, &str)]) -> TempDir {
         let tmp = TempDir::new().unwrap();
         for (path, content) in files {
@@ -418,7 +444,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        let result = collect_crate_reexports(
+        let result = collect_single_root_reexports(
             &crate_info,
             &mp,
             &WorkspacePackages::default(),
@@ -449,7 +475,7 @@ mod tests {
             .into_iter()
             .collect();
 
-        let result = collect_crate_reexports(
+        let result = collect_single_root_reexports(
             &crate_info,
             &mp,
             &WorkspacePackages::default(),
@@ -486,7 +512,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        let result = collect_crate_reexports(
+        let result = collect_single_root_reexports(
             &crate_info,
             &mp,
             &WorkspacePackages::default(),
@@ -523,7 +549,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        let result = collect_crate_reexports(
+        let result = collect_single_root_reexports(
             &crate_info,
             &mp,
             &WorkspacePackages::default(),
@@ -562,7 +588,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        let result = collect_crate_reexports(
+        let result = collect_single_root_reexports(
             &crate_info,
             &mp,
             &WorkspacePackages::default(),
@@ -610,7 +636,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        let result = collect_crate_reexports(
+        let result = collect_single_root_reexports(
             &crate_info,
             &mp,
             &WorkspacePackages::default(),
@@ -647,7 +673,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        let result = collect_crate_reexports(
+        let result = collect_single_root_reexports(
             &crate_info,
             &mp,
             &WorkspacePackages::default(),
@@ -684,7 +710,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        let result = collect_crate_reexports(
+        let result = collect_single_root_reexports(
             &crate_info,
             &mp,
             &WorkspacePackages::default(),
@@ -714,7 +740,7 @@ mod tests {
             .into_iter()
             .collect();
 
-        let result = collect_crate_reexports(
+        let result = collect_single_root_reexports(
             &crate_info,
             &mp,
             &WorkspacePackages::default(),
@@ -763,7 +789,7 @@ impl AStruct { pub fn method(&self) {} }
             .into_iter()
             .collect();
 
-        let result = collect_crate_reexports(
+        let result = collect_single_root_reexports(
             &crate_info,
             &mp,
             &WorkspacePackages::default(),
@@ -816,7 +842,7 @@ impl AStruct { pub fn method(&self) {} }
             .into_iter()
             .collect();
 
-        let result = collect_crate_reexports(
+        let result = collect_single_root_reexports(
             &crate_info,
             &mp,
             &WorkspacePackages::default(),
@@ -847,7 +873,7 @@ impl AStruct { pub fn method(&self) {} }
         .into_iter()
         .collect();
 
-        let result = collect_crate_reexports(
+        let result = collect_single_root_reexports(
             &crate_info,
             &mp,
             &WorkspacePackages::default(),
@@ -883,7 +909,7 @@ impl AStruct { pub fn method(&self) {} }
         .into_iter()
         .collect();
 
-        let result = collect_crate_reexports(
+        let result = collect_single_root_reexports(
             &crate_info,
             &mp,
             &WorkspacePackages::default(),
@@ -935,7 +961,7 @@ impl AStruct { pub fn method(&self) {} }
         .into_iter()
         .collect();
 
-        let result = collect_crate_reexports(
+        let result = collect_single_root_reexports(
             &crate_info,
             &mp,
             &WorkspacePackages::default(),
