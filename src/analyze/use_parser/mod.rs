@@ -2,12 +2,14 @@
 
 use super::packages::{ModulePathMap, PackageExportMap, WorkspacePackages, normalize_crate_name};
 use crate::model::{
-    DefKind, Definition, DependencyRef, EdgeContext, SymbolUse, TestKind, UsageKind, UseCategory,
+    DefKind, Definition, DependencyRef, EdgeContext, EntryKind, SymbolUse, TestKind, UsageKind,
+    UseCategory,
 };
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::path::Path;
+use std::sync::Arc;
 use syn::UseTree;
 use syn::visit::Visit;
 
@@ -112,32 +114,76 @@ impl ModuleExportInfo {
     }
 }
 
-/// Crate name → (module path → export info).
-/// Module paths are crate-relative (e.g. `"render"`, `"analyze::use_parser"`).
-/// Empty string "" = crate root (lib.rs/main.rs).
+/// What one crate root's module tree exports: module path → export info.
+/// Module paths are crate-relative (e.g. `"render"`, `"analyze::use_parser"`),
+/// and `""` is the root file itself.
+#[derive(Debug, Clone)]
+pub(crate) struct RootReExports {
+    pub(crate) kind: EntryKind,
+    pub(crate) modules: HashMap<String, ModuleExportInfo>,
+}
+
+/// Crate name → one [`RootReExports`] per entry file, in `entry_files` order.
+///
+/// A lib and a bin root of one package share the module tree but not their
+/// root's exports. Another package sees only the lib root, the only one it can
+/// depend on. The package of the file being resolved sees the root whose tree
+/// holds the file, set with [`ReExportMap::for_root`].
 #[derive(Debug, Default, Clone)]
-pub(crate) struct ReExportMap(HashMap<String, HashMap<String, ModuleExportInfo>>);
+pub(crate) struct ReExportMap {
+    packages: Arc<HashMap<String, Vec<RootReExports>>>,
+    own_root: Option<(String, usize)>,
+}
 
 impl ReExportMap {
+    /// The same map, seen from the `root`-th entry file of `crate_name`.
+    pub(crate) fn for_root(&self, crate_name: &str, root: usize) -> Self {
+        Self {
+            packages: Arc::clone(&self.packages),
+            own_root: Some((crate_name.to_string(), root)),
+        }
+    }
+
+    /// The export info of `crate_name`'s modules, as this map sees them.
+    pub(crate) fn get(&self, crate_name: &str) -> Option<&HashMap<String, ModuleExportInfo>> {
+        let roots = self.packages.get(crate_name)?;
+        let root = match &self.own_root {
+            Some((own, index)) if own == crate_name => roots.get(*index)?,
+            _ => roots.iter().find(|root| root.kind == EntryKind::Lib)?,
+        };
+        Some(&root.modules)
+    }
+
     /// Look up the export info of the module a dependency points at, where
     /// the map has it.
     pub(crate) fn module_info(&self, dep: &DependencyRef) -> Option<&ModuleExportInfo> {
-        self.0.get(&dep.target_package)?.get(&dep.target_module)
+        self.get(&dep.target_package)?.get(&dep.target_module)
     }
 }
 
-impl Deref for ReExportMap {
-    type Target = HashMap<String, HashMap<String, ModuleExportInfo>>;
-    fn deref(&self) -> &Self::Target {
-        &self.0
+impl FromIterator<(String, Vec<RootReExports>)> for ReExportMap {
+    fn from_iter<I: IntoIterator<Item = (String, Vec<RootReExports>)>>(iter: I) -> Self {
+        Self {
+            packages: Arc::new(iter.into_iter().collect()),
+            own_root: None,
+        }
     }
 }
 
+/// Packages with a lib root only.
 impl FromIterator<(String, HashMap<String, ModuleExportInfo>)> for ReExportMap {
     fn from_iter<I: IntoIterator<Item = (String, HashMap<String, ModuleExportInfo>)>>(
         iter: I,
     ) -> Self {
-        Self(iter.into_iter().collect())
+        iter.into_iter()
+            .map(|(crate_name, modules)| {
+                let lib = RootReExports {
+                    kind: EntryKind::Lib,
+                    modules,
+                };
+                (crate_name, vec![lib])
+            })
+            .collect()
     }
 }
 

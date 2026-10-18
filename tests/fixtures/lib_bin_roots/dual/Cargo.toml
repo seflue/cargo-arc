@@ -1,0 +1,12 @@
+[package]
+name = "dual"
+version = "0.1.0"
+edition = "2021"
+
+# Two crate roots in one package, each with its own root glob.
+[lib]
+path = "src/core.rs"
+
+[[bin]]
+name = "dual"
+path = "src/app.rs"

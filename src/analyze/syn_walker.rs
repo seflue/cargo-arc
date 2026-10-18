@@ -349,14 +349,15 @@ pub(crate) fn analyze_modules_syn(
 
     let mut unparsed = Vec::new();
     let mut root: Option<ModuleInfo> = None;
-    for root_file in crate_info
-        .entry_files
-        .iter()
-        .map(|entry| entry.file.as_path())
-    {
+    for (index, entry) in crate_info.entry_files.iter().enumerate() {
+        let root_reexports = reexport_map.for_root(&normalized, index);
+        let root_ctx = WalkContext {
+            reexport_map: &root_reexports,
+            ..ctx.clone()
+        };
         let tree = walk_module_syn(
-            &ctx,
-            root_file,
+            &root_ctx,
+            &entry.file,
             &normalized,
             &normalized, // parent_path == name for root → triggers identity check
             true,
