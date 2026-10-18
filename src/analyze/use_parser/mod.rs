@@ -462,6 +462,10 @@ pub(crate) struct ResolutionContext<'a> {
     /// Code-side crate name -> `package_id` for external crates visible to
     /// the current workspace crate. Populated from `crate_name_map[current_crate]`.
     pub(crate) external_crate_names: &'a HashMap<String, String>,
+    /// Alias -> workspace crate name, from `extern crate X as Y;` in the root
+    /// the current file belongs to. The root puts `Y` in the extern prelude,
+    /// so it names `X` in every module of the crate.
+    pub(crate) extern_crates: &'a HashMap<String, String>,
 }
 
 /// Promote any context to a test context. Production becomes Unit test;
@@ -1209,6 +1213,10 @@ pub(crate) fn resolve_single_path(
         .or_else(|| parse_bare_module_import(ctx, path, line_num, context))
         .or_else(|| parse_workspace_import(ctx, path, line_num, context))
         .or_else(|| {
+            let dealiased = dealias_extern_crate(ctx, path)?;
+            parse_workspace_import(ctx, &dealiased, line_num, context)
+        })
+        .or_else(|| {
             // Bare workspace crate name (e.g. from `use other_crate::{Foo}` → path = "other_crate")
             if !path.contains("::") && ctx.workspace_crates.contains(path) {
                 Some(DependencyRef {
@@ -1226,6 +1234,13 @@ pub(crate) fn resolve_single_path(
             }
         })
         .or_else(|| parse_external_crate_import(ctx, path, line_num, context))
+}
+
+/// `path` with a leading `extern crate` alias replaced by the crate it names.
+fn dealias_extern_crate(ctx: &ResolutionContext, path: &str) -> Option<String> {
+    let (first, rest) = path.split_once("::")?;
+    let crate_name = ctx.extern_crates.get(first)?;
+    Some(format!("{crate_name}::{rest}"))
 }
 
 /// Parse external crate imports: `use serde::Deserialize` where `serde` is a known external crate.
