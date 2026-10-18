@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use super::mod_resolver::{ModDecl, child_resolve_dir, extract_mod_declarations, resolve_mod_path};
 use super::packages::{ModulePathMap, PackageExportMap, WorkspacePackages, normalize_crate_name};
+use super::reexports::root_extern_crates;
 use super::use_parser::ReExportMap;
 use super::use_parser::{ResolutionContext, parse_file_dependencies};
 use crate::model::{
@@ -209,6 +210,7 @@ struct WalkContext<'a> {
     crate_exports: &'a PackageExportMap,
     reexport_map: &'a ReExportMap,
     external_crate_names: &'a std::collections::HashMap<String, String>,
+    extern_crates: &'a std::collections::HashMap<String, String>,
     include_tests: bool,
     base_context: EdgeContext,
 }
@@ -279,6 +281,7 @@ fn walk_module_syn(
         current_module_path,
         reexport_map: ctx.reexport_map,
         external_crate_names: ctx.external_crate_names,
+        extern_crates: ctx.extern_crates,
     };
     let mut dependencies = parse_file_dependencies(&syntax, &res_ctx, ctx.base_context.clone());
 
@@ -334,6 +337,7 @@ pub(crate) fn analyze_modules_syn(
     include_tests: bool,
 ) -> ModuleTree {
     let normalized = normalize_crate_name(&crate_info.name);
+    let no_extern_crates = std::collections::HashMap::new();
 
     let ctx = WalkContext {
         crate_name: &normalized,
@@ -343,6 +347,7 @@ pub(crate) fn analyze_modules_syn(
         crate_exports,
         reexport_map,
         external_crate_names,
+        extern_crates: &no_extern_crates,
         include_tests,
         base_context: EdgeContext::production(),
     };
@@ -351,8 +356,10 @@ pub(crate) fn analyze_modules_syn(
     let mut root: Option<ModuleInfo> = None;
     for (index, entry) in crate_info.entry_files.iter().enumerate() {
         let root_reexports = reexport_map.for_root(&normalized, index);
+        let extern_crates = root_extern_crates(&entry.file, workspace_crates);
         let root_ctx = WalkContext {
             reexport_map: &root_reexports,
+            extern_crates: &extern_crates,
             ..ctx.clone()
         };
         let tree = walk_module_syn(
@@ -1038,6 +1045,49 @@ fn main() {
                     .any(|d| d.target_package == "other_crate" && d.target_module == "module"),
                 "should detect path-ref dependency on other_crate::module, found: {:?}",
                 tree.root.dependencies
+            );
+        }
+
+        #[test]
+        fn test_extern_crate_alias_in_root_reaches_child_modules() {
+            let tmp = TestProject::new()
+                .file(
+                    "src/lib.rs",
+                    "extern crate other_crate as oc;\npub mod user;\n",
+                )
+                .file("src/user.rs", "use oc::module::Item;\n")
+                .build();
+
+            let ws: WorkspacePackages = ["app", "other_crate"].into_iter().collect();
+            let mp: ModulePathMap = [
+                ("app".to_string(), HashSet::from(["user".into()])),
+                ("other_crate".to_string(), HashSet::from(["module".into()])),
+            ]
+            .into_iter()
+            .collect();
+            let crate_info = conventional_package("app", tmp.path());
+            let tree = analyze_modules_syn(
+                &crate_info,
+                &ws,
+                &mp,
+                &PackageExportMap::default(),
+                &ReExportMap::default(),
+                &std::collections::HashMap::new(),
+                false,
+            );
+
+            let user = tree
+                .root
+                .children
+                .iter()
+                .find(|c| c.name == "user")
+                .expect("user module");
+            assert!(
+                user.dependencies
+                    .iter()
+                    .any(|d| d.target_package == "other_crate" && d.target_module == "module"),
+                "found: {:?}",
+                user.dependencies
             );
         }
 

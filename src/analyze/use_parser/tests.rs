@@ -19,6 +19,7 @@ struct ResolutionContextBuilder<'a> {
     current_module_path: &'a str,
     reexport_map: &'a ReExportMap,
     external_crate_names: &'a HashMap<String, String>,
+    extern_crates: &'a HashMap<String, String>,
 }
 
 impl<'a> ResolutionContextBuilder<'a> {
@@ -32,6 +33,7 @@ impl<'a> ResolutionContextBuilder<'a> {
             current_module_path: "",
             reexport_map: &DEFAULT_REEXPORT_MAP,
             external_crate_names: &DEFAULT_EXT_NAMES,
+            extern_crates: &DEFAULT_EXT_NAMES,
         }
     }
 
@@ -70,6 +72,11 @@ impl<'a> ResolutionContextBuilder<'a> {
         self
     }
 
+    fn extern_crates(mut self, aliases: &'a HashMap<String, String>) -> Self {
+        self.extern_crates = aliases;
+        self
+    }
+
     fn build(self) -> ResolutionContext<'a> {
         ResolutionContext {
             current_crate: self.current_crate,
@@ -80,6 +87,7 @@ impl<'a> ResolutionContextBuilder<'a> {
             current_module_path: self.current_module_path,
             reexport_map: self.reexport_map,
             external_crate_names: self.external_crate_names,
+            extern_crates: self.extern_crates,
         }
     }
 }
@@ -555,6 +563,33 @@ mod submodule_tests {
             .workspace_crates(&ws)
             .module_paths(&mp)
             .reexport_map(&map)
+            .build();
+        let deps = parse_workspace_dependencies(&uses, &ctx);
+        assert_eq!(deps.len(), 1, "{deps:?}");
+        let dep = &deps[0];
+        assert_eq!(dep.target_package, "other_crate");
+        assert_eq!(dep.target_module, "dispatch");
+        assert_eq!(dep.target_item, Some("Interface".to_string()));
+    }
+
+    #[test]
+    fn test_workspace_import_through_extern_crate_alias() {
+        // The importer's root: `extern crate other_crate as oc;`, so `oc` names
+        // other_crate in every module of the crate.
+        let ws: WorkspacePackages = ["other_crate".to_string()].into_iter().collect();
+        let mp: ModulePathMap = [(
+            "other_crate".to_string(),
+            HashSet::from(["dispatch".into()]),
+        )]
+        .into_iter()
+        .collect();
+        let aliases = HashMap::from([("oc".to_string(), "other_crate".to_string())]);
+        let uses = parse_test_uses("use oc::dispatch::Interface;");
+        let ctx = ResolutionContextBuilder::new(Path::new("src/user.rs"))
+            .workspace_crates(&ws)
+            .module_paths(&mp)
+            .current_module_path("user")
+            .extern_crates(&aliases)
             .build();
         let deps = parse_workspace_dependencies(&uses, &ctx);
         assert_eq!(deps.len(), 1, "{deps:?}");

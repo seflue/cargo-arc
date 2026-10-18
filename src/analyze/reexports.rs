@@ -24,6 +24,7 @@ struct CollectContext<'a> {
     all_module_paths: &'a ModulePathMap,
     workspace_crates: &'a WorkspacePackages,
     crate_exports: &'a PackageExportMap,
+    extern_crates: &'a HashMap<String, String>,
 }
 
 /// Collect re-exports and public definitions for all modules of a package,
@@ -35,20 +36,52 @@ pub(crate) fn collect_crate_reexports(
     crate_exports: &PackageExportMap,
 ) -> Vec<RootReExports> {
     let crate_name = normalize_crate_name(&crate_info.name);
-    let ctx = CollectContext {
-        crate_name: &crate_name,
-        workspace_root: &crate_info.workspace_root,
-        all_module_paths,
-        workspace_crates,
-        crate_exports,
-    };
 
     crate_info
         .entry_files
         .iter()
-        .map(|entry| RootReExports {
-            kind: entry.kind,
-            modules: collect_root_reexports(&ctx, &entry.file),
+        .map(|entry| {
+            let extern_crates = root_extern_crates(&entry.file, workspace_crates);
+            let ctx = CollectContext {
+                crate_name: &crate_name,
+                workspace_root: &crate_info.workspace_root,
+                all_module_paths,
+                workspace_crates,
+                crate_exports,
+                extern_crates: &extern_crates,
+            };
+            RootReExports {
+                kind: entry.kind,
+                modules: collect_root_reexports(&ctx, &entry.file),
+            }
+        })
+        .collect()
+}
+
+/// Alias -> workspace crate name for each `extern crate X as Y;` in a crate
+/// root, where `X` is a workspace crate. Empty when the file does not parse.
+pub(crate) fn root_extern_crates(
+    root_file: &Path,
+    workspace_crates: &WorkspacePackages,
+) -> HashMap<String, String> {
+    let Ok(source) = std::fs::read_to_string(root_file) else {
+        return HashMap::new();
+    };
+    let Ok(syntax) = syn::parse_file(&source) else {
+        return HashMap::new();
+    };
+    syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::ExternCrate(extern_crate) => {
+                let (_, alias) = extern_crate.rename.as_ref()?;
+                let name = extern_crate.ident.to_string();
+                workspace_crates
+                    .contains(&name)
+                    .then(|| (alias.to_string(), normalize_crate_name(&name)))
+            }
+            _ => None,
         })
         .collect()
 }
@@ -260,6 +293,7 @@ fn resolution_context<'a>(
         current_module_path: module_path,
         reexport_map: &EMPTY_REEXPORT_MAP,
         external_crate_names: &EMPTY_EXT_NAMES,
+        extern_crates: ctx.extern_crates,
     }
 }
 
@@ -854,6 +888,37 @@ impl AStruct { pub fn method(&self) {} }
         );
         assert!(!root.definitions.contains_key("Hidden"));
         assert!(root.definitions.contains_key("Shown"));
+    }
+
+    /// `extern crate other_crate as oc;` in the root lets the root re-export
+    /// from `oc`, which names `other_crate`.
+    #[test]
+    fn root_reexport_through_extern_crate_alias() {
+        let tmp = test_crate(&[(
+            "src/lib.rs",
+            "extern crate other_crate as oc;\npub use oc::thing::Thing;\n",
+        )]);
+        let crate_info = make_crate_info(&tmp, "test_crate");
+        let ws: WorkspacePackages = ["test_crate", "other_crate"].into_iter().collect();
+        let mp: ModulePathMap = [("other_crate".to_string(), HashSet::from(["thing".into()]))]
+            .into_iter()
+            .collect();
+
+        let result =
+            collect_single_root_reexports(&crate_info, &mp, &ws, &PackageExportMap::default());
+
+        let target = result
+            .get("")
+            .and_then(|root| root.explicit_reexports.get("Thing"));
+        assert_eq!(
+            target.map(|t| (
+                t.crate_name.as_str(),
+                t.module.as_str(),
+                t.original_name.as_str()
+            )),
+            Some(("other_crate", "thing", "Thing")),
+            "{result:?}"
+        );
     }
 
     /// `pub(self)` and `pub(in …)` in the root reach no further than the
