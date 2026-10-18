@@ -63,6 +63,7 @@ Circular dependencies are forbidden by default, and a workspace without a rules 
 
 A workspace that has grown for years rarely comes out clean on the first run.
 `cargo arc check --generate-baseline` freezes what exists today, so the run turns green and reports everything added after it.
+After updating cargo-arc, frozen edges can be reported again; [the baseline](docs/RULES.md#the-baseline) says why and what to do.
 
 ## What the Run Does Not See
 
