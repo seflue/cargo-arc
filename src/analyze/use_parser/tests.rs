@@ -416,6 +416,287 @@ mod submodule_tests {
     }
 
     #[test]
+    fn test_workspace_import_through_root_glob_reexport() {
+        // other_crate's root: `mod ty; pub use ty::*;`, ty.rs defines `Type`.
+        // The root file names `Type` nowhere, only the glob brings it in.
+        let ws: WorkspacePackages = ["other_crate".to_string()].into_iter().collect();
+        let mp: ModulePathMap = [("other_crate".to_string(), HashSet::from(["ty".into()]))]
+            .into_iter()
+            .collect();
+        let mut root_info = ModuleExportInfo::default();
+        root_info.glob_sources.push("ty".to_string());
+        let mut ty_info = ModuleExportInfo::default();
+        ty_info.definitions.insert(
+            "Type".to_string(),
+            Definition {
+                kind: DefKind::Enum,
+                line: 1,
+            },
+        );
+        let map: ReExportMap = [(
+            "other_crate".to_string(),
+            HashMap::from([(String::new(), root_info), ("ty".to_string(), ty_info)]),
+        )]
+        .into_iter()
+        .collect();
+        let uses = parse_test_uses("use other_crate::Type;");
+        let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs"))
+            .workspace_crates(&ws)
+            .module_paths(&mp)
+            .reexport_map(&map)
+            .build();
+        let deps = parse_workspace_dependencies(&uses, &ctx);
+        assert_eq!(deps.len(), 1, "{deps:?}");
+        let dep = &deps[0];
+        assert_eq!(dep.target_package, "other_crate");
+        assert_eq!(dep.target_module, "ty");
+        assert_eq!(dep.target_item, Some("Type".to_string()));
+    }
+
+    #[test]
+    fn test_workspace_import_through_module_from_root_glob() {
+        // other_crate's root: `mod errors; pub use errors::*;`, and errors.rs
+        // holds `pub mod shell_error;`. The glob brings the module `shell_error`
+        // into the root, and the path continues through it.
+        let ws: WorkspacePackages = ["other_crate".to_string()].into_iter().collect();
+        let mp: ModulePathMap = [(
+            "other_crate".to_string(),
+            HashSet::from(["errors".into(), "errors::shell_error".into()]),
+        )]
+        .into_iter()
+        .collect();
+        let mut root_info = ModuleExportInfo::default();
+        root_info.glob_sources.push("errors".to_string());
+        let mut shell_error_info = ModuleExportInfo::default();
+        shell_error_info.definitions.insert(
+            "ShellError".to_string(),
+            Definition {
+                kind: DefKind::Enum,
+                line: 1,
+            },
+        );
+        let map: ReExportMap = [(
+            "other_crate".to_string(),
+            HashMap::from([
+                (String::new(), root_info),
+                ("errors".to_string(), ModuleExportInfo::default()),
+                ("errors::shell_error".to_string(), shell_error_info),
+            ]),
+        )]
+        .into_iter()
+        .collect();
+        let uses = parse_test_uses("use other_crate::shell_error::ShellError;");
+        let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs"))
+            .workspace_crates(&ws)
+            .module_paths(&mp)
+            .reexport_map(&map)
+            .build();
+        let deps = parse_workspace_dependencies(&uses, &ctx);
+        assert_eq!(deps.len(), 1, "{deps:?}");
+        let dep = &deps[0];
+        assert_eq!(dep.target_package, "other_crate");
+        assert_eq!(dep.target_module, "errors::shell_error");
+        assert_eq!(dep.target_item, Some("ShellError".to_string()));
+    }
+
+    #[test]
+    fn test_workspace_import_through_module_from_named_root_reexport() {
+        // other_crate's root: `mod backend; mod dispatch; pub use backend::custom;`,
+        // and backend/custom.rs re-exports `pub use crate::dispatch::Interface;`.
+        let ws: WorkspacePackages = ["other_crate".to_string()].into_iter().collect();
+        let mp: ModulePathMap = [(
+            "other_crate".to_string(),
+            HashSet::from([
+                "backend".into(),
+                "backend::custom".into(),
+                "dispatch".into(),
+            ]),
+        )]
+        .into_iter()
+        .collect();
+        let mut root_info = ModuleExportInfo::default();
+        root_info.explicit_reexports.insert(
+            "custom".to_string(),
+            ReExportTarget {
+                crate_name: "other_crate".to_string(),
+                module: "backend".to_string(),
+                original_name: "custom".to_string(),
+            },
+        );
+        let mut custom_info = ModuleExportInfo::default();
+        custom_info.explicit_reexports.insert(
+            "Interface".to_string(),
+            ReExportTarget {
+                crate_name: "other_crate".to_string(),
+                module: "dispatch".to_string(),
+                original_name: "Interface".to_string(),
+            },
+        );
+        let mut dispatch_info = ModuleExportInfo::default();
+        dispatch_info.definitions.insert(
+            "Interface".to_string(),
+            Definition {
+                kind: DefKind::Trait,
+                line: 1,
+            },
+        );
+        let map: ReExportMap = [(
+            "other_crate".to_string(),
+            HashMap::from([
+                (String::new(), root_info),
+                ("backend::custom".to_string(), custom_info),
+                ("dispatch".to_string(), dispatch_info),
+            ]),
+        )]
+        .into_iter()
+        .collect();
+        let uses = parse_test_uses("use other_crate::custom::Interface;");
+        let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs"))
+            .workspace_crates(&ws)
+            .module_paths(&mp)
+            .reexport_map(&map)
+            .build();
+        let deps = parse_workspace_dependencies(&uses, &ctx);
+        assert_eq!(deps.len(), 1, "{deps:?}");
+        let dep = &deps[0];
+        assert_eq!(dep.target_package, "other_crate");
+        assert_eq!(dep.target_module, "dispatch");
+        assert_eq!(dep.target_item, Some("Interface".to_string()));
+    }
+
+    #[test]
+    fn test_crate_local_import_through_module_from_root_glob() {
+        // The crate's own root: `pub mod frame; pub use frame::*;`, and
+        // frame/mod.rs holds `pub mod values;`. A module of the same crate
+        // imports `crate::values::Value` through the glob.
+        let mp: ModulePathMap = [(
+            "my_crate".to_string(),
+            HashSet::from(["frame".into(), "frame::values".into(), "user".into()]),
+        )]
+        .into_iter()
+        .collect();
+        let mut root_info = ModuleExportInfo::default();
+        root_info.glob_sources.push("frame".to_string());
+        let mut values_info = ModuleExportInfo::default();
+        values_info.definitions.insert(
+            "Value".to_string(),
+            Definition {
+                kind: DefKind::Struct,
+                line: 1,
+            },
+        );
+        let map: ReExportMap = [(
+            "my_crate".to_string(),
+            HashMap::from([
+                (String::new(), root_info),
+                ("frame".to_string(), ModuleExportInfo::default()),
+                ("frame::values".to_string(), values_info),
+            ]),
+        )]
+        .into_iter()
+        .collect();
+        let uses = parse_test_uses("use crate::values::Value;");
+        let ctx = ResolutionContextBuilder::new(Path::new("src/user.rs"))
+            .module_paths(&mp)
+            .current_module_path("user")
+            .reexport_map(&map)
+            .build();
+        let deps = parse_workspace_dependencies(&uses, &ctx);
+        assert_eq!(deps.len(), 1, "{deps:?}");
+        let dep = &deps[0];
+        assert_eq!(dep.target_package, "my_crate");
+        assert_eq!(dep.target_module, "frame::values");
+        assert_eq!(dep.target_item, Some("Value".to_string()));
+    }
+
+    #[test]
+    fn test_crate_local_import_through_root_glob_reexport() {
+        // The crate's own root: `mod ty; pub use ty::*;`. A module of the same
+        // crate imports `crate::Type`, which only the glob brings into the root.
+        let mp: ModulePathMap = [(
+            "my_crate".to_string(),
+            HashSet::from(["ty".into(), "user".into()]),
+        )]
+        .into_iter()
+        .collect();
+        let mut root_info = ModuleExportInfo::default();
+        root_info.glob_sources.push("ty".to_string());
+        let mut ty_info = ModuleExportInfo::default();
+        ty_info.definitions.insert(
+            "Type".to_string(),
+            Definition {
+                kind: DefKind::Enum,
+                line: 1,
+            },
+        );
+        let map: ReExportMap = [(
+            "my_crate".to_string(),
+            HashMap::from([(String::new(), root_info), ("ty".to_string(), ty_info)]),
+        )]
+        .into_iter()
+        .collect();
+        let uses = parse_test_uses("use crate::Type;");
+        let ctx = ResolutionContextBuilder::new(Path::new("src/user.rs"))
+            .module_paths(&mp)
+            .current_module_path("user")
+            .reexport_map(&map)
+            .build();
+        let deps = parse_workspace_dependencies(&uses, &ctx);
+        assert_eq!(deps.len(), 1, "{deps:?}");
+        let dep = &deps[0];
+        assert_eq!(dep.target_package, "my_crate");
+        assert_eq!(dep.target_module, "ty");
+        assert_eq!(dep.target_item, Some("Type".to_string()));
+    }
+
+    #[test]
+    fn test_crate_local_import_through_named_root_reexport() {
+        // The crate's own root: `mod eval; pub use eval::{eval_call};`. A module
+        // of the same crate imports `crate::eval_call`, a fn, not a module.
+        let mp: ModulePathMap = [(
+            "my_crate".to_string(),
+            HashSet::from(["eval".into(), "user".into()]),
+        )]
+        .into_iter()
+        .collect();
+        let mut root_info = ModuleExportInfo::default();
+        root_info.explicit_reexports.insert(
+            "eval_call".to_string(),
+            ReExportTarget {
+                crate_name: "my_crate".to_string(),
+                module: "eval".to_string(),
+                original_name: "eval_call".to_string(),
+            },
+        );
+        let mut eval_info = ModuleExportInfo::default();
+        eval_info.definitions.insert(
+            "eval_call".to_string(),
+            Definition {
+                kind: DefKind::Fn,
+                line: 1,
+            },
+        );
+        let map: ReExportMap = [(
+            "my_crate".to_string(),
+            HashMap::from([(String::new(), root_info), ("eval".to_string(), eval_info)]),
+        )]
+        .into_iter()
+        .collect();
+        let uses = parse_test_uses("use crate::eval_call;");
+        let ctx = ResolutionContextBuilder::new(Path::new("src/user.rs"))
+            .module_paths(&mp)
+            .current_module_path("user")
+            .reexport_map(&map)
+            .build();
+        let deps = parse_workspace_dependencies(&uses, &ctx);
+        assert_eq!(deps.len(), 1, "{deps:?}");
+        let dep = &deps[0];
+        assert_eq!(dep.target_package, "my_crate");
+        assert_eq!(dep.target_module, "eval");
+        assert_eq!(dep.target_item, Some("eval_call".to_string()));
+    }
+
+    #[test]
     fn test_cross_crate_no_paths_fallback() {
         let ws: WorkspacePackages = ["other_crate".to_string()].into_iter().collect();
         let uses = parse_test_uses("use other_crate::foo::bar::Baz;");
