@@ -76,6 +76,10 @@ impl AssociatedItems {
 pub(crate) struct ModuleExportInfo {
     /// Own public definitions: name → kind and line at the definition site
     pub(crate) definitions: HashMap<String, Definition>,
+    /// Names of the items defined here that other crates cannot see: private,
+    /// `pub(self)` and `pub(in …)`. They stay out of `definitions`; in the
+    /// root, every module of the crate can name them through `crate::`.
+    pub(crate) private_definitions: HashSet<String>,
     /// The associated items of the types and traits defined here, by the
     /// defined name. An `impl` block in another file of the crate lands here
     /// too, on the module that defines the type.
@@ -105,6 +109,7 @@ impl ModuleExportInfo {
     #[must_use]
     pub(crate) fn is_empty(&self) -> bool {
         self.definitions.is_empty()
+            && self.private_definitions.is_empty()
             && self.associated.is_empty()
             && self.explicit_reexports.is_empty()
             && self.private_uses.is_empty()
@@ -347,6 +352,16 @@ fn root_reexports(reexport_map: &ReExportMap, crate_name: &str, symbol: &str) ->
                 module_exports_symbol(crate_exports, glob_src, symbol, &mut HashSet::new())
             })
     })
+}
+
+/// Whether the root of `crate_name` defines `symbol` itself, privately or not.
+fn root_defines(reexport_map: &ReExportMap, crate_name: &str, symbol: &str) -> bool {
+    reexport_map
+        .get(crate_name)
+        .and_then(|crate_exports| crate_exports.get(""))
+        .is_some_and(|root| {
+            root.definitions.contains_key(symbol) || root.private_definitions.contains(symbol)
+        })
 }
 
 /// The module a `pub use` in the root of `crate_name` brings in as `name`, by
@@ -983,7 +998,9 @@ fn parse_crate_local_import(
             target_module,
             extract_item_from_parts(&in_crate, prefix_len),
         )
-    } else if !module_paths.contains(first) && root_reexports(ctx.reexport_map, &crate_name, first)
+    } else if !module_paths.contains(first)
+        && (root_reexports(ctx.reexport_map, &crate_name, first)
+            || root_defines(ctx.reexport_map, &crate_name, first))
     {
         (String::new(), Some(first.to_string()))
     } else {
