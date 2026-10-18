@@ -636,6 +636,8 @@ Once the edge carries a symbol the entry does not name, it is reported again:
 ```
 
 Renaming a frozen symbol makes the run report the edge again, and the fix is to regenerate the baseline.
+A newer cargo-arc that resolves more imports can find more symbols on a frozen edge, and the run reports that edge again the same way, although the code did not change.
+Regenerating the baseline on the last commit that was green before the update freezes the newly found symbols without freezing new debt.
 An edge that carries fewer symbols than its entry names is reported as an `unmatched-baseline-entry`, so the file can be narrowed as the debt goes down.
 
 Moving an edge from the baseline into an `allow` entry means deleting its baseline entry.
