@@ -110,27 +110,25 @@ fn collect_module_info(
                 collect_use_reexports(ctx, use_item, source_file, module_path, &mut info, true);
                 None
             }
-            syn::Item::Fn(i) if is_reexport_visibility(&i.vis) => Some((&i.sig.ident, DefKind::Fn)),
-            syn::Item::Struct(i) if is_reexport_visibility(&i.vis) => {
-                Some((&i.ident, DefKind::Struct))
-            }
-            syn::Item::Enum(i) if is_reexport_visibility(&i.vis) => Some((&i.ident, DefKind::Enum)),
-            syn::Item::Trait(i) if is_reexport_visibility(&i.vis) => {
-                Some((&i.ident, DefKind::Trait))
-            }
-            syn::Item::Const(i) if is_reexport_visibility(&i.vis) => {
-                Some((&i.ident, DefKind::Const))
-            }
-            syn::Item::Static(i) if is_reexport_visibility(&i.vis) => {
-                Some((&i.ident, DefKind::Static))
-            }
-            syn::Item::Type(i) if is_reexport_visibility(&i.vis) => Some((&i.ident, DefKind::Type)),
+            syn::Item::Fn(i) => Some((&i.vis, &i.sig.ident, DefKind::Fn)),
+            syn::Item::Struct(i) => Some((&i.vis, &i.ident, DefKind::Struct)),
+            syn::Item::Enum(i) => Some((&i.vis, &i.ident, DefKind::Enum)),
+            syn::Item::Trait(i) => Some((&i.vis, &i.ident, DefKind::Trait)),
+            syn::Item::Const(i) => Some((&i.vis, &i.ident, DefKind::Const)),
+            syn::Item::Static(i) => Some((&i.vis, &i.ident, DefKind::Static)),
+            syn::Item::Type(i) => Some((&i.vis, &i.ident, DefKind::Type)),
             _ => None,
         };
-        if let Some((ident, kind)) = defined {
-            let line = item.span().start().line;
-            info.definitions
-                .insert(ident.to_string(), Definition { kind, line });
+        match defined {
+            Some((vis, ident, kind)) if is_reexport_visibility(vis) => {
+                let line = item.span().start().line;
+                info.definitions
+                    .insert(ident.to_string(), Definition { kind, line });
+            }
+            Some((_, ident, _)) => {
+                info.private_definitions.insert(ident.to_string());
+            }
+            None => {}
         }
     }
 
@@ -824,6 +822,69 @@ impl AStruct { pub fn method(&self) {} }
         ] {
             assert!(!defs.contains_key(name), "unexpected {name} in {defs:?}");
         }
+    }
+
+    /// A private item in the root is visible to every module of the crate,
+    /// but not to other crates, so it stays out of `definitions`.
+    #[test]
+    fn private_root_items_are_recorded_apart_from_definitions() {
+        let tmp = test_crate(&[
+            (
+                "src/lib.rs",
+                "pub mod module;\nstruct Hidden;\nfn helper() {}\npub struct Shown;\n",
+            ),
+            ("src/module.rs", ""),
+        ]);
+        let crate_info = make_crate_info(&tmp, "test_crate");
+        let mp: ModulePathMap = [("test_crate".to_string(), HashSet::from(["module".into()]))]
+            .into_iter()
+            .collect();
+
+        let result = collect_single_root_reexports(
+            &crate_info,
+            &mp,
+            &WorkspacePackages::default(),
+            &PackageExportMap::default(),
+        );
+
+        let root = result.get("").expect("root info");
+        assert_eq!(
+            root.private_definitions,
+            HashSet::from(["Hidden".to_string(), "helper".to_string()])
+        );
+        assert!(!root.definitions.contains_key("Hidden"));
+        assert!(root.definitions.contains_key("Shown"));
+    }
+
+    /// `pub(self)` and `pub(in …)` in the root reach no further than the
+    /// crate, like a private item.
+    #[test]
+    fn restricted_root_items_are_recorded_as_private() {
+        let tmp = test_crate(&[
+            (
+                "src/lib.rs",
+                "pub mod module;\npub(self) struct SelfScoped;\npub(in crate) fn in_crate() {}\n",
+            ),
+            ("src/module.rs", ""),
+        ]);
+        let crate_info = make_crate_info(&tmp, "test_crate");
+        let mp: ModulePathMap = [("test_crate".to_string(), HashSet::from(["module".into()]))]
+            .into_iter()
+            .collect();
+
+        let result = collect_single_root_reexports(
+            &crate_info,
+            &mp,
+            &WorkspacePackages::default(),
+            &PackageExportMap::default(),
+        );
+
+        let root = result.get("").expect("root info");
+        assert_eq!(
+            root.private_definitions,
+            HashSet::from(["SelfScoped".to_string(), "in_crate".to_string()])
+        );
+        assert!(root.definitions.is_empty());
     }
 
     /// Each definition records the line its item starts on, attributes
