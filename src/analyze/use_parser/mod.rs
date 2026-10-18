@@ -288,6 +288,73 @@ fn module_exports_symbol(
     false
 }
 
+/// Whether a `pub use` in the root of `crate_name` brings `symbol` into the
+/// root, by name or through a glob. A glob does not name the symbol in the
+/// root file, so only the map knows it.
+fn root_reexports(reexport_map: &ReExportMap, crate_name: &str, symbol: &str) -> bool {
+    let Some(crate_exports) = reexport_map.get(crate_name) else {
+        return false;
+    };
+    crate_exports.get("").is_some_and(|root| {
+        root.explicit_reexports.contains_key(symbol)
+            || root.glob_sources.iter().any(|glob_src| {
+                module_exports_symbol(crate_exports, glob_src, symbol, &mut HashSet::new())
+            })
+    })
+}
+
+/// The module a `pub use` in the root of `crate_name` brings in as `name`, by
+/// name or through a glob: `pub use errors::*` with `pub mod shell_error` in
+/// `errors` makes `shell_error` in the root name `errors::shell_error`.
+fn root_reexported_module(
+    reexport_map: &ReExportMap,
+    crate_name: &str,
+    name: &str,
+    module_paths: &HashSet<String>,
+) -> Option<String> {
+    let crate_exports = reexport_map.get(crate_name)?;
+    let root = crate_exports.get("")?;
+    if let Some(target) = root.explicit_reexports.get(name) {
+        let module = append_to_path(&target.module, &target.original_name);
+        return (target.crate_name == crate_name && module_paths.contains(&module))
+            .then_some(module);
+    }
+    root.glob_sources.iter().find_map(|glob_src| {
+        glob_child_module(
+            crate_exports,
+            glob_src,
+            name,
+            module_paths,
+            &mut HashSet::new(),
+        )
+    })
+}
+
+/// The child module `name` of `module_path`, or of a module its globs
+/// republish.
+fn glob_child_module(
+    crate_exports: &HashMap<String, ModuleExportInfo>,
+    module_path: &str,
+    name: &str,
+    module_paths: &HashSet<String>,
+    visited: &mut HashSet<String>,
+) -> Option<String> {
+    if !visited.insert(module_path.to_string()) {
+        return None;
+    }
+    let child = append_to_path(module_path, name);
+    if module_paths.contains(&child) {
+        return Some(child);
+    }
+    crate_exports
+        .get(module_path)?
+        .glob_sources
+        .iter()
+        .find_map(|glob_src| {
+            glob_child_module(crate_exports, glob_src, name, module_paths, visited)
+        })
+}
+
 /// Whether `importer_module` can name `symbol` through `module_path`: what
 /// the module exports, plus what its private globs forward to a descendant.
 /// A private glob is followed on direct hops only; a `pub use m::*` on the
@@ -853,15 +920,35 @@ fn parse_crate_local_import(
         return None;
     }
 
-    let module_paths = ctx
-        .all_module_paths
-        .get_or_empty(&normalize_crate_name(ctx.current_crate));
-    let (target_module, prefix_len) = find_longest_module_prefix(&parts, module_paths);
+    let crate_name = normalize_crate_name(ctx.current_crate);
+    let module_paths = ctx.all_module_paths.get_or_empty(&crate_name);
+    let root_module = if module_paths.contains(first) {
+        None
+    } else {
+        root_reexported_module(ctx.reexport_map, &crate_name, first, module_paths)
+    };
+    let (target_module, target_item) = if let Some(module) = &root_module {
+        let in_crate: Vec<&str> = module
+            .split("::")
+            .chain(parts[1..].iter().copied())
+            .collect();
+        let (target_module, prefix_len) = find_longest_module_prefix(&in_crate, module_paths);
+        (
+            target_module,
+            extract_item_from_parts(&in_crate, prefix_len),
+        )
+    } else if !module_paths.contains(first) && root_reexports(ctx.reexport_map, &crate_name, first)
+    {
+        (String::new(), Some(first.to_string()))
+    } else {
+        let (target_module, prefix_len) = find_longest_module_prefix(&parts, module_paths);
+        (target_module, extract_item_from_parts(&parts, prefix_len))
+    };
 
     Some(DependencyRef {
-        target_package: normalize_crate_name(ctx.current_crate),
+        target_package: crate_name,
         target_module,
-        target_item: extract_item_from_parts(&parts, prefix_len),
+        target_item,
         source_file: ctx.source_file.to_path_buf(),
         line: line_num,
         context: context.clone(),
@@ -945,23 +1032,42 @@ fn parse_workspace_import(
 
     let target_crate_name = normalize_crate_name(crate_name);
     let module_paths = ctx.all_module_paths.get_or_empty(&target_crate_name);
-    let (target_module, prefix_len) = find_longest_module_prefix(&parts[1..], module_paths);
+    let root_module = if module_paths.contains(module_segment) {
+        None
+    } else {
+        root_reexported_module(
+            ctx.reexport_map,
+            &target_crate_name,
+            module_segment,
+            module_paths,
+        )
+    };
+    let in_crate: Vec<&str> = match &root_module {
+        Some(module) => module
+            .split("::")
+            .chain(parts[2..].iter().copied())
+            .collect(),
+        None => parts[1..].to_vec(),
+    };
+    let (target_module, prefix_len) = find_longest_module_prefix(&in_crate, module_paths);
 
     // Entry-point detection: if the resolved target_module is not a known module
     // and the first segment after the crate name is a known export, treat it as
-    // an entry-point dependency (target_module = "").
+    // an entry-point dependency (target_module = ""). `crate_exports` reads only
+    // the root file, so a name a root glob brings in is looked up in the map.
     let is_entry_point = !module_paths.contains(&target_module)
-        && ctx
+        && (ctx
             .crate_exports
             .get(&target_crate_name)
-            .is_some_and(|e| e.contains(module_segment));
+            .is_some_and(|e| e.contains(module_segment))
+            || root_reexports(ctx.reexport_map, &target_crate_name, module_segment));
 
     let (target_module, target_item) = if is_entry_point {
         (String::new(), Some(module_segment.to_string()))
     } else {
         (
             target_module,
-            extract_item_from_parts(&parts, 1 + prefix_len),
+            extract_item_from_parts(&in_crate, prefix_len),
         )
     };
 
