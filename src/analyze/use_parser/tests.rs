@@ -732,6 +732,66 @@ mod submodule_tests {
     }
 
     #[test]
+    fn test_crate_local_import_through_a_reexported_crate() {
+        // my_crate's root: `pub use mid_crate::leaf;`; mid_crate's root:
+        // `pub use leaf_crate as leaf;`. The path runs through both into
+        // leaf_crate.
+        let ws: WorkspacePackages = ["my_crate", "mid_crate", "leaf_crate"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let mp: ModulePathMap = [
+            ("my_crate".to_string(), HashSet::from(["user".into()])),
+            ("leaf_crate".to_string(), HashSet::from(["error".into()])),
+        ]
+        .into_iter()
+        .collect();
+        let mut my_root = ModuleExportInfo::default();
+        my_root.explicit_reexports.insert(
+            "leaf".to_string(),
+            ReExportTarget {
+                crate_name: "mid_crate".to_string(),
+                module: String::new(),
+                original_name: "leaf".to_string(),
+            },
+        );
+        let mut mid_root = ModuleExportInfo::default();
+        mid_root.explicit_reexports.insert(
+            "leaf".to_string(),
+            ReExportTarget {
+                crate_name: "leaf_crate".to_string(),
+                module: String::new(),
+                original_name: String::new(),
+            },
+        );
+        let map: ReExportMap = [
+            (
+                "my_crate".to_string(),
+                HashMap::from([(String::new(), my_root)]),
+            ),
+            (
+                "mid_crate".to_string(),
+                HashMap::from([(String::new(), mid_root)]),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let uses = parse_test_uses("use crate::leaf::error::ParseError;");
+        let ctx = ResolutionContextBuilder::new(Path::new("src/user.rs"))
+            .workspace_crates(&ws)
+            .module_paths(&mp)
+            .current_module_path("user")
+            .reexport_map(&map)
+            .build();
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
+        assert_eq!(deps.len(), 1, "{deps:?}");
+        let dep = &deps[0];
+        assert_eq!(dep.target_package, "leaf_crate");
+        assert_eq!(dep.target_module, "error");
+        assert_eq!(dep.target_item, Some("ParseError".to_string()));
+    }
+
+    #[test]
     fn test_crate_local_import_of_item_defined_in_root() {
         // The crate's own root: `mod user; pub struct Server;`. A module of the
         // same crate imports `crate::Server`, defined in the root itself.
@@ -2768,6 +2828,102 @@ mod resolve_reexport_tests {
         let mut dep = test_dep("my_crate", "render", None);
         resolve_reexport(&mut dep, &map, "");
         assert_eq!(dep.target_module, "render");
+    }
+
+    #[test]
+    fn resolve_reexport_of_a_module_ends_on_the_module() {
+        let mut root = ModuleExportInfo::default();
+        root.explicit_reexports.insert(
+            "custom".to_string(),
+            ReExportTarget {
+                crate_name: "my_crate".to_string(),
+                module: "backend".to_string(),
+                original_name: "custom".to_string(),
+            },
+        );
+        root.explicit_reexports.insert(
+            "leaf".to_string(),
+            ReExportTarget {
+                crate_name: "leaf_crate".to_string(),
+                module: String::new(),
+                original_name: String::new(),
+            },
+        );
+        let mut custom = ModuleExportInfo::default();
+        custom.glob_sources.push("dispatch".to_string());
+        let mut leaf_root = ModuleExportInfo::default();
+        leaf_root.glob_sources.push("ir".to_string());
+        let map: ReExportMap = [
+            (
+                "my_crate".to_string(),
+                HashMap::from([
+                    (String::new(), root),
+                    ("backend::custom".to_string(), custom),
+                ]),
+            ),
+            (
+                "leaf_crate".to_string(),
+                HashMap::from([(String::new(), leaf_root)]),
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        let mut module_dep = test_dep("my_crate", "", Some("custom"));
+        resolve_reexport(&mut module_dep, &map, "api");
+        let mut crate_dep = test_dep("my_crate", "", Some("leaf"));
+        resolve_reexport(&mut crate_dep, &map, "api");
+
+        assert_eq!(
+            (module_dep.target_module.as_str(), module_dep.target_item),
+            ("backend::custom", None)
+        );
+        assert_eq!(
+            (
+                crate_dep.target_package.as_str(),
+                crate_dep.target_module.as_str(),
+                crate_dep.target_item
+            ),
+            ("leaf_crate", "", None)
+        );
+    }
+
+    #[test]
+    fn resolve_private_use_of_a_module_ends_on_the_module() {
+        let mut parent = ModuleExportInfo::default();
+        parent.private_uses.insert(
+            "arena".to_string(),
+            ReExportTarget {
+                crate_name: "my_crate".to_string(),
+                module: String::new(),
+                original_name: "arena".to_string(),
+            },
+        );
+        let mut arena = ModuleExportInfo::default();
+        arena.definitions.insert(
+            "HandleSet".to_string(),
+            Definition {
+                kind: DefKind::Struct,
+                line: 1,
+            },
+        );
+        let map: ReExportMap = [(
+            "my_crate".to_string(),
+            HashMap::from([
+                ("compact".to_string(), parent),
+                ("arena".to_string(), arena),
+            ]),
+        )]
+        .into_iter()
+        .collect();
+
+        let mut dep = test_dep("my_crate", "compact", Some("arena"));
+        resolve_reexport(&mut dep, &map, "compact::functions");
+
+        assert_eq!(
+            (dep.target_module.as_str(), dep.target_item),
+            ("arena", None)
+        );
     }
 
     // --- resolve_reexport: Cycle 2 — Crate not in map → dep unchanged ---

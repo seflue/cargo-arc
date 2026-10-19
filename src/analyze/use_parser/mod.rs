@@ -227,6 +227,9 @@ pub(crate) fn resolve_reexport(
 
         // Tier 1: Explicit re-export
         if let Some(target) = module_info.explicit_reexports.get(item) {
+            if end_on_module(dep, target, reexport_map) {
+                break;
+            }
             let original_target = dep.target_module.clone();
             dep.target_package = target.crate_name.clone();
             dep.target_module = target.module.clone();
@@ -251,6 +254,9 @@ pub(crate) fn resolve_reexport(
         if is_descendant(importer_module, &dep.target_module)
             && let Some(target) = module_info.private_uses.get(item)
         {
+            if end_on_module(dep, target, reexport_map) {
+                break;
+            }
             dep.target_package = target.crate_name.clone();
             dep.target_module = target.module.clone();
             lookup_name = Some(target.original_name.clone());
@@ -310,6 +316,25 @@ pub(crate) fn resolve_reexport(
         break;
     }
     true
+}
+
+/// Point `dep` at the module `target` binds, when it binds a module or a crate
+/// root: the reference then names the module, not an item in it.
+fn end_on_module(
+    dep: &mut DependencyRef,
+    target: &ReExportTarget,
+    reexport_map: &ReExportMap,
+) -> bool {
+    let module = append_to_path(&target.module, &target.original_name);
+    let binds_module = reexport_map
+        .get(&target.crate_name)
+        .is_some_and(|exports| exports.contains_key(&module));
+    if binds_module {
+        dep.target_package.clone_from(&target.crate_name);
+        dep.target_module = module;
+        dep.target_item = None;
+    }
+    binds_module
 }
 
 /// Check whether a module exports a symbol (own definition OR re-export).
@@ -389,6 +414,44 @@ fn root_reexported_module(
             &mut HashSet::new(),
         )
     })
+}
+
+/// The crate and module in another workspace crate that a `pub use` in the
+/// root of `crate_name` brings in as `name`, following re-exports from root to
+/// root: `pub use other::m;` names module `m` of `other`, `pub use other;` its
+/// root (module `""`).
+fn root_reexported_foreign_module(
+    ctx: &ResolutionContext,
+    crate_name: &str,
+    name: &str,
+) -> Option<(String, String)> {
+    let mut visited = HashSet::new();
+    let (mut current_crate, mut current_name) = (crate_name.to_string(), name.to_string());
+    loop {
+        if !visited.insert((current_crate.clone(), current_name.clone())) {
+            return None;
+        }
+        let target = ctx
+            .reexport_map
+            .get(&current_crate)?
+            .get("")?
+            .explicit_reexports
+            .get(&current_name)?;
+        let module = append_to_path(&target.module, &target.original_name);
+        let names_module = module.is_empty()
+            || ctx
+                .all_module_paths
+                .get_or_empty(&target.crate_name)
+                .contains(&module);
+        if names_module {
+            return (target.crate_name != crate_name).then(|| (target.crate_name.clone(), module));
+        }
+        if !target.module.is_empty() {
+            return None;
+        }
+        current_crate = target.crate_name.clone();
+        current_name = target.original_name.clone();
+    }
 }
 
 /// The child module `name` of `module_path`, or of a module its globs
@@ -987,6 +1050,17 @@ fn parse_crate_local_import(
 
     let crate_name = normalize_crate_name(ctx.current_crate);
     let module_paths = ctx.all_module_paths.get_or_empty(&crate_name);
+    if parts.len() > 1
+        && !module_paths.contains(first)
+        && let Some((other_crate, module)) = root_reexported_foreign_module(ctx, &crate_name, first)
+    {
+        let in_other = std::iter::once(other_crate.as_str())
+            .chain((!module.is_empty()).then_some(module.as_str()))
+            .chain(parts[1..].iter().copied())
+            .collect::<Vec<_>>()
+            .join("::");
+        return parse_workspace_import(ctx, &in_other, line_num, context);
+    }
     let root_module = if module_paths.contains(first) {
         None
     } else {
