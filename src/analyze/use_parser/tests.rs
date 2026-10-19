@@ -3620,6 +3620,34 @@ mod file_binding_tests {
             "the path names `DispatchAdapter` in `dispatch`: {deps:?}"
         );
     }
+
+    /// A name a `pub use` binds and the module goes on to use is a use of
+    /// the item, so the edge is no longer a pure re-export.
+    #[test]
+    fn test_reexported_name_the_module_uses_is_not_a_pure_reexport() {
+        let mp: ModulePathMap = [(
+            "my_crate".to_string(),
+            HashSet::from(["value".into(), "value::record".into()]),
+        )]
+        .into_iter()
+        .collect();
+        let ctx = ResolutionContextBuilder::new(Path::new("src/value/mod.rs"))
+            .module_paths(&mp)
+            .current_module_path("value")
+            .build();
+        let deps = parse_file_dependencies(
+            &syn::parse_file("pub use record::Record;\npub enum Value { Record(Record) }").unwrap(),
+            &ctx,
+            EdgeContext::production(),
+        );
+        let record: Vec<_> = deps
+            .iter()
+            .filter(|d| d.target_item.as_deref() == Some("Record"))
+            .collect();
+        assert_eq!(record.len(), 1, "deps: {deps:?}");
+        assert_eq!(record[0].target_module, "value::record");
+        assert!(!record[0].via_reexport, "the enum uses `Record`: {deps:?}");
+    }
 }
 
 /// `use path::{self, ...}` imports the module itself — the `self` segment is

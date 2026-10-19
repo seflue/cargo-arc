@@ -1833,14 +1833,18 @@ pub(crate) fn parse_path_ref_dependencies(
                 // A qualified path may still name a module beside the file: a
                 // `use` of a fn `helper` leaves the module `helper` addressable,
                 // the two being in different namespaces. The module wins where
-                // it resolves.
+                // it resolves. An occurrence of a name a `pub use` binds is a
+                // use of the item, not part of the re-export.
                 PathBinding::Item(bound, associated) => {
-                    match associated.and_then(|_| resolve(&path_ref.path)) {
-                        Some(dep) => {
-                            let associated = associated_segment(&path_ref.path, &dep);
-                            (dep, associated, None)
-                        }
-                        None => (bound.clone(), associated, None),
+                    if let Some(dep) = associated.and_then(|_| resolve(&path_ref.path)) {
+                        let associated = associated_segment(&path_ref.path, &dep);
+                        (dep, associated, None)
+                    } else {
+                        let dep = DependencyRef {
+                            via_reexport: false,
+                            ..bound.clone()
+                        };
+                        (dep, associated, None)
                     }
                 }
                 PathBinding::Path(effective) => {
