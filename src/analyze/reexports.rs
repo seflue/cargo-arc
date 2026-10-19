@@ -320,7 +320,7 @@ fn collect_use_reexports(
     let res_ctx = resolution_context(ctx, source_file, module_path);
 
     for (alias_path, original_path) in alias_paths.iter().zip(original_paths.iter()) {
-        let Some(dep) =
+        let Some(mut dep) =
             resolve_single_path(&res_ctx, original_path, 0, &EdgeContext::production(), 0)
         else {
             let alias_name = alias_path.rsplit("::").next().unwrap_or(alias_path);
@@ -329,6 +329,10 @@ fn collect_use_reexports(
             }
             continue;
         };
+        if let Some(name) = root_item_name(ctx, original_path) {
+            dep.target_module = String::new();
+            dep.target_item = Some(name.to_string());
+        }
 
         if dep.target_item.as_deref() == Some("*") {
             if private {
@@ -351,6 +355,20 @@ fn collect_use_reexports(
             }
         }
     }
+}
+
+/// The item `crate::Name` names in the root, when `Name` is no module. The
+/// resolution cannot tell while the map is built: a name the root only
+/// re-exports is not in it yet.
+fn root_item_name<'p>(ctx: &CollectContext, path: &'p str) -> Option<&'p str> {
+    let name = path.strip_prefix("crate::")?;
+    let is_item = !name.contains("::")
+        && name != "*"
+        && !ctx
+            .all_module_paths
+            .get_or_empty(ctx.crate_name)
+            .contains(name);
+    is_item.then_some(name)
 }
 
 fn walk_collect_reexports(
@@ -1112,5 +1130,57 @@ impl AStruct { pub fn method(&self) {} }
                 .is_some_and(|f| f.associated.contains_key("Writer")),
             "the impl in features is Writer's, not a type of features"
         );
+    }
+
+    // A name the root only re-exports is not known while the map is built, so
+    // a `use crate::Name` records the root as its target and the resolution
+    // follows the root's re-export later.
+    #[test]
+    fn use_of_a_name_the_root_reexports_targets_the_root() {
+        let tmp = test_crate(&[
+            (
+                "src/lib.rs",
+                "pub mod span;\npub mod value;\npub mod front;\n\
+                 pub use crate::span::Span;\npub use value::*;",
+            ),
+            ("src/span.rs", "pub struct Span;"),
+            ("src/value.rs", "pub struct Value;"),
+            ("src/front/mod.rs", "pub mod glsl;\npub mod prelude;"),
+            ("src/front/glsl/mod.rs", "use crate::Span;"),
+            ("src/front/prelude.rs", "pub use crate::Value;"),
+        ]);
+        let crate_info = make_crate_info(&tmp, "test_crate");
+        let mp: ModulePathMap = [(
+            "test_crate".to_string(),
+            HashSet::from([
+                "span".into(),
+                "value".into(),
+                "front".into(),
+                "front::glsl".into(),
+                "front::prelude".into(),
+            ]),
+        )]
+        .into_iter()
+        .collect();
+
+        let result = collect_single_root_reexports(
+            &crate_info,
+            &mp,
+            &WorkspacePackages::default(),
+            &PackageExportMap::default(),
+        );
+
+        let private = result
+            .get("front::glsl")
+            .and_then(|info| info.private_uses.get("Span"))
+            .expect("the private use of a root re-export is recorded");
+        assert_eq!(private.module, "");
+        assert_eq!(private.original_name, "Span");
+        let public = result
+            .get("front::prelude")
+            .and_then(|info| info.explicit_reexports.get("Value"))
+            .expect("the re-export of a root glob name is recorded");
+        assert_eq!(public.module, "");
+        assert_eq!(public.original_name, "Value");
     }
 }
