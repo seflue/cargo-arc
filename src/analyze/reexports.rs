@@ -333,6 +333,24 @@ fn collect_use_reexports(
             dep.target_module = String::new();
             dep.target_item = Some(name.to_string());
         }
+        // A module: its parent and its name. A whole workspace crate: its root,
+        // which has neither. Without an item the resolution may also have
+        // fallen back to a module that does not exist.
+        let names_module = if dep.target_module.is_empty() {
+            dep.target_package != ctx.crate_name
+        } else {
+            ctx.all_module_paths
+                .get_or_empty(&dep.target_package)
+                .contains(&dep.target_module)
+        };
+        if dep.target_item.is_none() && names_module {
+            let (parent, name) = match dep.target_module.rsplit_once("::") {
+                Some((parent, name)) => (parent.to_string(), name.to_string()),
+                None => (String::new(), dep.target_module.clone()),
+            };
+            dep.target_module = parent;
+            dep.target_item = Some(name);
+        }
 
         if dep.target_item.as_deref() == Some("*") {
             if private {
@@ -1182,5 +1200,70 @@ impl AStruct { pub fn method(&self) {} }
             .expect("the re-export of a root glob name is recorded");
         assert_eq!(public.module, "");
         assert_eq!(public.original_name, "Value");
+    }
+
+    // A `pub use` of a whole workspace crate re-exports that crate's root.
+    #[test]
+    fn reexport_of_a_workspace_crate_targets_its_root() {
+        let tmp = test_crate(&[("src/lib.rs", "pub use other_crate;\n")]);
+        let crate_info = make_crate_info(&tmp, "test_crate");
+        let ws: WorkspacePackages = ["test_crate", "other_crate"].into_iter().collect();
+
+        let result = collect_single_root_reexports(
+            &crate_info,
+            &ModulePathMap::default(),
+            &ws,
+            &PackageExportMap::default(),
+        );
+
+        let target = result
+            .get("")
+            .and_then(|root| root.explicit_reexports.get("other_crate"));
+        assert_eq!(
+            target.map(|t| (
+                t.crate_name.as_str(),
+                t.module.as_str(),
+                t.original_name.as_str()
+            )),
+            Some(("other_crate", "", "")),
+            "{result:?}"
+        );
+    }
+
+    // A `pub use` of a module re-exports it by its parent and its name.
+    #[test]
+    fn reexport_of_a_module_targets_it_in_its_parent() {
+        let tmp = test_crate(&[
+            ("src/lib.rs", "mod backend;\npub use backend::custom;\n"),
+            ("src/backend/mod.rs", "pub mod custom;"),
+            ("src/backend/custom.rs", ""),
+        ]);
+        let crate_info = make_crate_info(&tmp, "test_crate");
+        let mp: ModulePathMap = [(
+            "test_crate".to_string(),
+            HashSet::from(["backend".into(), "backend::custom".into()]),
+        )]
+        .into_iter()
+        .collect();
+
+        let result = collect_single_root_reexports(
+            &crate_info,
+            &mp,
+            &WorkspacePackages::default(),
+            &PackageExportMap::default(),
+        );
+
+        let target = result
+            .get("")
+            .and_then(|root| root.explicit_reexports.get("custom"));
+        assert_eq!(
+            target.map(|t| (
+                t.crate_name.as_str(),
+                t.module.as_str(),
+                t.original_name.as_str()
+            )),
+            Some(("test_crate", "backend", "custom")),
+            "{result:?}"
+        );
     }
 }
