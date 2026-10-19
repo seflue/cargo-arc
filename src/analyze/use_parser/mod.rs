@@ -1201,9 +1201,23 @@ pub(crate) fn resolve_single_path(
         return parse_crate_local_import(ctx, &as_crate_path, line_num, context);
     }
 
-    // Handle glob: `crate::module::*` → resolve base, set target_item = "*"
+    // Handle glob: `crate::module::*` → resolve base, set target_item = "*".
+    // `crate::*` has no module to resolve and is the root's glob.
     if let Some(base) = path.strip_suffix("::*") {
-        let mut dep = resolve_single_path(ctx, base, line_num, context, inline_depth)?;
+        let mut dep = if base == "crate" {
+            DependencyRef {
+                target_package: normalize_crate_name(ctx.current_crate),
+                target_module: String::new(),
+                target_item: None,
+                source_file: ctx.source_file.to_path_buf(),
+                line: line_num,
+                context: context.clone(),
+                via_reexport: false,
+                uses: Vec::new(),
+            }
+        } else {
+            resolve_single_path(ctx, base, line_num, context, inline_depth)?
+        };
         // The base resolved as a module — push "*" as the item
         dep.target_item = Some("*".to_string());
         return Some(dep);
@@ -1413,6 +1427,10 @@ fn glob_payload_known(dep: &DependencyRef, reexport_map: &ReExportMap) -> bool {
 /// dependency on the module with the `*` still in place. A name nothing else
 /// binds and the file does not define is the glob's where the module exports
 /// it.
+///
+/// `glob_modules` holds the child modules of a glob's module, by name, as
+/// absolute paths like `modules`. A glob brings them in like any other name,
+/// so a path may start with one.
 #[derive(Debug, Default)]
 pub(crate) struct FileBindings {
     regions: BindingRegions,
@@ -1420,6 +1438,7 @@ pub(crate) struct FileBindings {
     elsewhere: HashMap<RegionId, HashSet<String>>,
     items: HashMap<RegionId, HashMap<String, DependencyRef>>,
     globs: HashMap<RegionId, Vec<DependencyRef>>,
+    glob_modules: HashMap<RegionId, HashMap<String, String>>,
     /// The names of the items the file defines, at any depth. A glob never
     /// brings in a name the file defines itself.
     local_definitions: HashSet<String>,
@@ -1460,13 +1479,10 @@ impl FileBindings {
             ..FileBindings::default()
         };
 
-        // A `use` path may start with a module another `use` binds, written
-        // before or after it. Those bindings come first; a chain through two
-        // such bindings is followed one step only.
+        // A `use` path may start with a module another `use` or a glob binds,
+        // written before or after it. Those bindings come first; a chain
+        // through two such bindings is followed one step only.
         for (collected, binding, original_path) in use_bindings(use_items) {
-            if binding == "*" {
-                continue;
-            }
             let dep = resolve_single_path(
                 ctx,
                 &original_path,
@@ -1474,6 +1490,12 @@ impl FileBindings {
                 &collected.context,
                 collected.inline_depth,
             );
+            if binding == "*" {
+                if let Some(dep) = dep {
+                    bindings.bind_glob_modules(collected.region, ctx, &dep);
+                }
+                continue;
+            }
             if let Binding::Module(module_path) = classify_binding(ctx, dep.as_ref(), &binding) {
                 bindings.bind_module(collected.region, &binding, module_path);
             }
@@ -1567,6 +1589,12 @@ impl FileBindings {
             {
                 return PathBinding::Elsewhere;
             }
+            if let Some(target) = self.glob_modules.get(&enclosing).and_then(|m| m.get(first))
+                && let Some(rest) = rest
+                && !self.local_definitions.contains(first)
+            {
+                return PathBinding::Path(Cow::Owned(format!("{target}::{rest}")));
+            }
         }
         PathBinding::Unbound(first, last)
     }
@@ -1607,6 +1635,31 @@ impl FileBindings {
 
     fn bind_glob(&mut self, region: RegionId, dep: DependencyRef) {
         self.globs.entry(region).or_default().push(dep);
+    }
+
+    /// Bind the child modules of the module the glob `dep` imports from.
+    fn bind_glob_modules(
+        &mut self,
+        region: RegionId,
+        ctx: &ResolutionContext,
+        dep: &DependencyRef,
+    ) {
+        let module_paths = ctx.all_module_paths.get_or_empty(&dep.target_package);
+        let children = module_paths.iter().filter_map(|path| {
+            let (parent, name) = path.rsplit_once("::").unwrap_or(("", path));
+            (parent == dep.target_module).then(|| {
+                let child = DependencyRef {
+                    target_module: path.clone(),
+                    target_item: None,
+                    ..dep.clone()
+                };
+                (name.to_string(), absolute_module_path(ctx, &child))
+            })
+        });
+        self.glob_modules
+            .entry(region)
+            .or_default()
+            .extend(children);
     }
 
     /// Record the names of the items the file defines, so no glob claims them.

@@ -3583,6 +3583,43 @@ mod file_binding_tests {
             "the import names `Reason` in `api::schema`: {deps:?}"
         );
     }
+
+    /// A glob brings in the modules of the module it imports from, private
+    /// ones included where the file sits below it.
+    #[rstest]
+    #[case::in_a_path("use crate::*;\nstruct Adapter { inner: dispatch::DispatchAdapter }")]
+    #[case::in_a_use("use crate::*;\nuse dispatch::DispatchAdapter;")]
+    fn test_path_through_a_module_from_a_glob_resolves(#[case] source: &str) {
+        let mp: ModulePathMap = [(
+            "my_crate".to_string(),
+            HashSet::from(["api".into(), "api::adapter".into(), "dispatch".into()]),
+        )]
+        .into_iter()
+        .collect();
+        let mut root_info = ModuleExportInfo::default();
+        root_info.private_definitions.insert("Config".to_string());
+        let map: ReExportMap = [(
+            "my_crate".to_string(),
+            HashMap::from([(String::new(), root_info)]),
+        )]
+        .into_iter()
+        .collect();
+        let ctx = ResolutionContextBuilder::new(Path::new("src/api/adapter.rs"))
+            .module_paths(&mp)
+            .current_module_path("api::adapter")
+            .reexport_map(&map)
+            .build();
+        let deps = parse_file_dependencies(
+            &syn::parse_file(source).unwrap(),
+            &ctx,
+            EdgeContext::production(),
+        );
+        assert!(
+            deps.iter().any(|d| d.target_module == "dispatch"
+                && d.target_item.as_deref() == Some("DispatchAdapter")),
+            "the path names `DispatchAdapter` in `dispatch`: {deps:?}"
+        );
+    }
 }
 
 /// `use path::{self, ...}` imports the module itself — the `self` segment is
