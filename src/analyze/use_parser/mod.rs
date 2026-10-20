@@ -1663,6 +1663,51 @@ pub(crate) fn resolve_single_path(
     context: &EdgeContext,
     inline_depth: usize,
 ) -> Option<DependencyRef> {
+    let mut dep = resolve_path_in_chain(ctx, path, line_num, context, inline_depth)?;
+    take_item_the_parent_reexports(&mut dep, ctx.reexport_map);
+    Some(dep)
+}
+
+/// Point a dependency on a module at the item of the same name that the
+/// module's parent re-exports. Beside `mod helper; pub use helper::helper;`
+/// the path `parent::helper` names the private module and the fn, and only
+/// the fn is visible outside `parent`. A re-export of a module under that
+/// name keeps the dependency on the module. Module visibility is not
+/// recorded, so a public module named like the item is taken for the item
+/// too.
+fn take_item_the_parent_reexports(dep: &mut DependencyRef, reexport_map: &ReExportMap) {
+    if dep.target_item.is_some() || dep.target_module.is_empty() {
+        return;
+    }
+    let (parent, name) = dep
+        .target_module
+        .rsplit_once("::")
+        .unwrap_or(("", dep.target_module.as_str()));
+    let Some(target) = reexport_map
+        .exports_for(dep)
+        .and_then(|modules| modules.get(parent))
+        .and_then(|info| info.explicit_reexports.get(name))
+    else {
+        return;
+    };
+    let binds_module = reexport_map.get(&target.crate_name).is_some_and(|exports| {
+        exports.contains_key(&append_to_path(&target.module, &target.original_name))
+    });
+    if !binds_module {
+        let (parent, name) = (parent.to_string(), name.to_string());
+        dep.target_module = parent;
+        dep.target_item = Some(name);
+    }
+}
+
+/// The resolution chain of [`resolve_single_path`].
+fn resolve_path_in_chain(
+    ctx: &ResolutionContext,
+    path: &str,
+    line_num: usize,
+    context: &EdgeContext,
+    inline_depth: usize,
+) -> Option<DependencyRef> {
     // Resolve super::/self:: to absolute crate-local path, then route to crate:: handler
     if let Some(resolved) = resolve_relative_path(path, ctx.current_module_path, inline_depth) {
         let as_crate_path = format!("crate::{resolved}");
@@ -1685,7 +1730,7 @@ pub(crate) fn resolve_single_path(
                 in_lib_view: false,
             }
         } else {
-            resolve_single_path(ctx, base, line_num, context, inline_depth)?
+            resolve_path_in_chain(ctx, base, line_num, context, inline_depth)?
         };
         // The base resolved as a module — push "*" as the item
         dep.target_item = Some("*".to_string());
