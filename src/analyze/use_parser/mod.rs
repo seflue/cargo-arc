@@ -1401,6 +1401,59 @@ fn find_longest_module_prefix(parts: &[&str], module_paths: &HashSet<String>) ->
     (parts[0].to_string(), 1)
 }
 
+/// The module and item `parts` name in the own crate `crate_name`. A name
+/// after the longest module prefix that this module binds to another module
+/// of the crate, by `pub use` or, for a descendant of the module, by a
+/// private `use`, carries the rest of the path into that module: beside
+/// `use crate::store::{self as bound};` in `holder`, `holder::bound::Set`
+/// names `Set` in `store`.
+fn module_and_item(
+    ctx: &ResolutionContext,
+    crate_name: &str,
+    parts: &[&str],
+    module_paths: &HashSet<String>,
+) -> (String, Option<String>) {
+    let mut parts: Vec<String> = parts.iter().map(ToString::to_string).collect();
+    let mut visited = HashSet::new();
+    loop {
+        let segments: Vec<&str> = parts.iter().map(String::as_str).collect();
+        let (module, prefix_len) = find_longest_module_prefix(&segments, module_paths);
+        let item = extract_item_from_parts(&segments, prefix_len);
+        let bound = item
+            .as_deref()
+            .filter(|_| segments.len() > prefix_len + 1 && module_paths.contains(&module))
+            .filter(|name| visited.insert((module.clone(), (*name).to_string())))
+            .and_then(|name| module_bound_as(ctx, crate_name, &module, name, module_paths));
+        let Some(bound) = bound else {
+            return (module, item);
+        };
+        parts = bound
+            .split("::")
+            .map(ToString::to_string)
+            .chain(parts[prefix_len + 1..].iter().cloned())
+            .collect();
+    }
+}
+
+/// The module of `crate_name` that `module` binds as `name`, where the file
+/// being resolved can see the binding.
+fn module_bound_as(
+    ctx: &ResolutionContext,
+    crate_name: &str,
+    module: &str,
+    name: &str,
+    module_paths: &HashSet<String>,
+) -> Option<String> {
+    let info = ctx.reexport_map.get(crate_name)?.get(module)?;
+    let target = info.explicit_reexports.get(name).or_else(|| {
+        is_descendant(ctx.current_module_path, module)
+            .then(|| info.private_uses.get(name))
+            .flatten()
+    })?;
+    let bound = append_to_path(&target.module, &target.original_name);
+    (target.crate_name == crate_name && module_paths.contains(&bound)).then_some(bound)
+}
+
 /// Extract an item from path parts at given index, handling trailing `{` and empty strings.
 fn extract_item_from_parts(parts: &[&str], index: usize) -> Option<String> {
     let part = parts
@@ -1453,19 +1506,14 @@ fn parse_crate_local_import(
             .split("::")
             .chain(parts[1..].iter().copied())
             .collect();
-        let (target_module, prefix_len) = find_longest_module_prefix(&in_crate, module_paths);
-        (
-            target_module,
-            extract_item_from_parts(&in_crate, prefix_len),
-        )
+        module_and_item(ctx, &crate_name, &in_crate, module_paths)
     } else if !module_paths.contains(first)
         && (root_reexports(ctx.reexport_map, &crate_name, first)
             || root_defines(ctx.reexport_map, &crate_name, first))
     {
         (String::new(), Some(first.to_string()))
     } else {
-        let (target_module, prefix_len) = find_longest_module_prefix(&parts, module_paths);
-        (target_module, extract_item_from_parts(&parts, prefix_len))
+        module_and_item(ctx, &crate_name, &parts, module_paths)
     };
 
     Some(DependencyRef {
@@ -1521,12 +1569,14 @@ fn parse_bare_module_import(
         return None;
     };
 
-    let (target_module, prefix_len) = find_longest_module_prefix(&effective_parts, module_paths);
+    let crate_name = normalize_crate_name(ctx.current_crate);
+    let (target_module, target_item) =
+        module_and_item(ctx, &crate_name, &effective_parts, module_paths);
 
     Some(DependencyRef {
-        target_package: normalize_crate_name(ctx.current_crate),
+        target_package: crate_name,
         target_module,
-        target_item: extract_item_from_parts(&effective_parts, prefix_len),
+        target_item,
         source_file: ctx.source_file.to_path_buf(),
         line: line_num,
         context: context.clone(),
