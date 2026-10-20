@@ -623,11 +623,18 @@ impl Default for BindingRegions {
     }
 }
 
-/// Shared `visit_item_mod` and `visit_block` for both collectors.
+/// Whether a fn carries `#[test]`. The compiler builds such a fn only into the
+/// test harness, with or without `#[cfg(test)]` around it.
+fn is_test_fn(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| attr.path().is_ident("test"))
+}
+
+/// Shared `visit_item_mod`, `visit_item_fn` and `visit_block` for both collectors.
 ///
-/// Both open a binding region. `visit_item_mod` also carries the cfg(test)
-/// context and the inline module depth, which counts modules only: `use super::X`
-/// in a function body still means the parent module.
+/// `visit_item_mod` and `visit_block` open a binding region. `visit_item_mod`
+/// also carries the cfg(test) context and the inline module depth, which counts
+/// modules only: `use super::X` in a function body still means the parent
+/// module. `visit_item_fn` carries the test context of a `#[test]` fn.
 macro_rules! impl_binding_region_visits {
     () => {
         fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
@@ -646,6 +653,15 @@ macro_rules! impl_binding_region_visits {
             self.context = prev_context;
             self.inline_depth = prev_depth;
             self.region = prev_region;
+        }
+
+        fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
+            let prev_context = self.context.clone();
+            if is_test_fn(&node.attrs) {
+                self.context = promote_to_test(&self.context);
+            }
+            syn::visit::visit_item_fn(self, node);
+            self.context = prev_context;
         }
 
         fn visit_block(&mut self, node: &'ast syn::Block) {
