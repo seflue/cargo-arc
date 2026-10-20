@@ -748,6 +748,7 @@ mod tests {
             context: EdgeContext::production(),
             via_reexport: false,
             uses: Vec::new(),
+            in_lib_view: false,
         }
     }
 

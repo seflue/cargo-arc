@@ -861,6 +861,46 @@ fn test_each_crate_root_keeps_its_own_reexports() {
     }
 }
 
+/// A module of the bin tree that names its own package names the lib root:
+/// `use dual::Value;` in `launch` goes through the lib root's `pub use` to
+/// the module that defines `Value`.
+#[test]
+fn bin_naming_its_own_package_sees_the_lib_root() {
+    let (temp, cmd) = fixture_args("lib_bin_roots", false);
+
+    let result = run(cmd);
+    assert!(result.is_ok(), "run() should succeed: {result:?}");
+
+    let svg = std::fs::read_to_string(temp.path()).unwrap();
+    let arcs = resolve_arc_names(&extract_arcs(&svg), &extract_node_names(&svg));
+    let targets: Vec<&str> = arcs
+        .iter()
+        .filter(|(from, _, _)| from == "launch")
+        .map(|(_, to, _)| to.as_str())
+        .collect();
+    assert_eq!(targets, ["values"], "launch depends on values only");
+}
+
+/// A name the lib root defines stays the lib root's when a bin module names
+/// it through the package, although a glob of the bin root brings in a
+/// module that defines the same name.
+#[test]
+fn bin_naming_a_lib_root_item_skips_the_bin_root_glob() {
+    let (temp, cmd) = fixture_args("lib_bin_roots", false);
+
+    let result = run(cmd);
+    assert!(result.is_ok(), "run() should succeed: {result:?}");
+
+    let svg = std::fs::read_to_string(temp.path()).unwrap();
+    let arcs = resolve_arc_names(&extract_arcs(&svg), &extract_node_names(&svg));
+    let targets: Vec<&str> = arcs
+        .iter()
+        .filter(|(from, _, _)| from == "banner")
+        .map(|(_, to, _)| to.as_str())
+        .collect();
+    assert_eq!(targets, ["dual"], "banner depends on the package root only");
+}
+
 /// Packages whose root file declares no submodules carry no `Contains` edge and
 /// therefore reach the layout only through a production package dependency.
 #[test]
