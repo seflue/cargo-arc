@@ -3110,6 +3110,7 @@ mod resolve_reexport_tests {
             context: EdgeContext::production(),
             via_reexport: false,
             uses: Vec::new(),
+            in_lib_view: false,
         }
     }
 
@@ -4280,6 +4281,65 @@ mod use_category_tests {
             category,
             imported_for_methods: false,
         }
+    }
+
+    /// `my_crate` with a lib root that defines the unit struct `Shared` and a
+    /// bin root that defines nothing, seen from a file of the bin tree.
+    fn bin_tree_deps_of(source: &str) -> Vec<DependencyRef> {
+        let mut lib_root = ModuleExportInfo::default();
+        lib_root
+            .definitions
+            .insert("Shared".to_string(), definition(DefKind::Struct));
+        let roots = vec![
+            RootReExports {
+                kind: EntryKind::Lib,
+                modules: HashMap::from([(String::new(), lib_root)]),
+            },
+            RootReExports {
+                kind: EntryKind::Bin,
+                modules: HashMap::from([(String::new(), ModuleExportInfo::default())]),
+            },
+        ];
+        let map: ReExportMap = [("my_crate".to_string(), roots)].into_iter().collect();
+        let bin_view = map.for_root("my_crate", 1);
+        let ws: WorkspacePackages = ["my_crate".to_string()].into_iter().collect();
+        let exports: PackageExportMap = [(
+            "my_crate".to_string(),
+            HashSet::from(["Shared".to_string()]),
+        )]
+        .into_iter()
+        .collect();
+        let ctx = ResolutionContextBuilder::new(Path::new("src/banner.rs"))
+            .workspace_crates(&ws)
+            .crate_exports(&exports)
+            .reexport_map(&bin_view)
+            .current_module_path("banner")
+            .build();
+        parse_file_dependencies(
+            &syn::parse_file(source).unwrap(),
+            &ctx,
+            EdgeContext::production(),
+        )
+    }
+
+    /// A file of the bin tree that names its own package names the lib root,
+    /// so a bare pattern matches the unit struct the lib root defines.
+    #[test]
+    fn a_bin_file_naming_its_package_matches_a_lib_root_struct_in_a_pattern() {
+        let deps =
+            bin_tree_deps_of("use my_crate::Shared;\nfn show(x: Shared) {\n    let Shared = x;\n}");
+        assert_eq!(
+            uses_of(&deps, "Shared"),
+            [use_at(2, UseCategory::Types), use_at(3, UseCategory::Types)]
+        );
+    }
+
+    /// A glob on the own package from a file of the bin tree brings in what
+    /// the lib root defines.
+    #[test]
+    fn a_bin_file_globbing_its_package_takes_a_lib_root_name() {
+        let deps = bin_tree_deps_of("use my_crate::*;\nfn show(_: Shared) {}");
+        assert_eq!(uses_of(&deps, "Shared"), [use_at(2, UseCategory::Types)]);
     }
 
     /// The `use` binds the name; the occurrences are the uses, the import line
