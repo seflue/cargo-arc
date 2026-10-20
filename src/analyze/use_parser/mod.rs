@@ -629,28 +629,56 @@ fn is_test_fn(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|attr| attr.path().is_ident("test"))
 }
 
+/// The outer attributes of an item; none for tokens syn could not parse.
+fn item_attrs(item: &syn::Item) -> &[syn::Attribute] {
+    match item {
+        syn::Item::Const(i) => &i.attrs,
+        syn::Item::Enum(i) => &i.attrs,
+        syn::Item::ExternCrate(i) => &i.attrs,
+        syn::Item::Fn(i) => &i.attrs,
+        syn::Item::ForeignMod(i) => &i.attrs,
+        syn::Item::Impl(i) => &i.attrs,
+        syn::Item::Macro(i) => &i.attrs,
+        syn::Item::Mod(i) => &i.attrs,
+        syn::Item::Static(i) => &i.attrs,
+        syn::Item::Struct(i) => &i.attrs,
+        syn::Item::Trait(i) => &i.attrs,
+        syn::Item::TraitAlias(i) => &i.attrs,
+        syn::Item::Type(i) => &i.attrs,
+        syn::Item::Union(i) => &i.attrs,
+        syn::Item::Use(i) => &i.attrs,
+        _ => &[],
+    }
+}
+
+/// The context inside an item: a test context when the item has
+/// `#[cfg(test)]`, the surrounding context otherwise.
+fn item_context(item: &syn::Item, outer: &EdgeContext) -> EdgeContext {
+    if is_cfg_test(item_attrs(item)) {
+        promote_to_test(outer)
+    } else {
+        outer.clone()
+    }
+}
+
 /// Shared `visit_item_mod`, `visit_item_fn` and `visit_block` for both collectors.
 ///
 /// `visit_item_mod` and `visit_block` open a binding region. `visit_item_mod`
-/// also carries the cfg(test) context and the inline module depth, which counts
-/// modules only: `use super::X` in a function body still means the parent
-/// module. `visit_item_fn` carries the test context of a `#[test]` fn.
+/// also carries the inline module depth, which counts modules only:
+/// `use super::X` in a function body still means the parent module.
+/// `visit_item_fn` carries the test context of a fn with `#[test]`; each
+/// collector's `visit_item` carries the one of any item with `#[cfg(test)]`.
 macro_rules! impl_binding_region_visits {
     () => {
         fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
-            let prev_context = self.context.clone();
             let prev_depth = self.inline_depth;
             let prev_region = self.region;
-            if is_cfg_test(&node.attrs) {
-                self.context = promote_to_test(&self.context);
-            }
             // Inline modules (with body) add nesting depth; `mod foo;` (external) does not
             if node.content.is_some() {
                 self.inline_depth += 1;
                 self.region = self.regions.open(prev_region);
             }
             syn::visit::visit_item_mod(self, node);
-            self.context = prev_context;
             self.inline_depth = prev_depth;
             self.region = prev_region;
         }
@@ -714,18 +742,29 @@ pub(crate) fn collect_all_use_items(
         region: RegionId,
     }
     impl<'ast> Visit<'ast> for UseCollector {
+        fn visit_item(&mut self, node: &'ast syn::Item) {
+            let prev_context = self.context.clone();
+            self.context = item_context(node, &prev_context);
+            syn::visit::visit_item(self, node);
+            self.context = prev_context;
+        }
+
         fn visit_item_use(&mut self, node: &'ast syn::ItemUse) {
-            let ctx = if is_cfg_test(&node.attrs) {
-                promote_to_test(&self.context)
-            } else {
-                self.context.clone()
-            };
             self.uses.push(CollectedUse {
                 item: node.clone(),
-                context: ctx,
+                context: self.context.clone(),
                 inline_depth: self.inline_depth,
                 region: self.region,
             });
+        }
+
+        fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
+            let prev_context = self.context.clone();
+            if is_cfg_test(&node.attrs) {
+                self.context = promote_to_test(&self.context);
+            }
+            syn::visit::visit_impl_item_fn(self, node);
+            self.context = prev_context;
         }
 
         impl_binding_region_visits!();
@@ -993,12 +1032,20 @@ impl<'ast> Visit<'ast> for PathRefCollector {
     // An item nested in a fn body sees none of the fn's variables.
     fn visit_item(&mut self, node: &'ast syn::Item) {
         let outer = std::mem::take(&mut self.locals);
+        let prev_context = self.context.clone();
+        self.context = item_context(node, &prev_context);
         syn::visit::visit_item(self, node);
+        self.context = prev_context;
         self.locals = outer;
     }
 
     fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
+        let prev_context = self.context.clone();
+        if is_cfg_test(&node.attrs) {
+            self.context = promote_to_test(&self.context);
+        }
         self.in_scope(|s| syn::visit::visit_impl_item_fn(s, node));
+        self.context = prev_context;
     }
 
     fn visit_trait_item_fn(&mut self, node: &'ast syn::TraitItemFn) {
