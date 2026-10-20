@@ -154,20 +154,47 @@ impl ReExportMap {
         }
     }
 
+    /// The same map, seen from outside every package: each sees its lib root.
+    /// A bin root that names its own package by name names the lib.
+    pub(crate) fn lib_view(&self) -> Self {
+        Self {
+            packages: Arc::clone(&self.packages),
+            own_root: None,
+        }
+    }
+
     /// The export info of `crate_name`'s modules, as this map sees them.
     pub(crate) fn get(&self, crate_name: &str) -> Option<&HashMap<String, ModuleExportInfo>> {
+        self.modules_of(crate_name, false)
+    }
+
+    /// The export info of the modules of the crate a dependency points at, in
+    /// the view the dependency names them in: a dependency in the lib view
+    /// sees the lib root of its own package too.
+    pub(crate) fn exports_for(
+        &self,
+        dep: &DependencyRef,
+    ) -> Option<&HashMap<String, ModuleExportInfo>> {
+        self.modules_of(&dep.target_package, dep.in_lib_view)
+    }
+
+    fn modules_of(
+        &self,
+        crate_name: &str,
+        in_lib_view: bool,
+    ) -> Option<&HashMap<String, ModuleExportInfo>> {
         let roots = self.packages.get(crate_name)?;
         let root = match &self.own_root {
-            Some((own, index)) if own == crate_name => roots.get(*index)?,
+            Some((own, index)) if !in_lib_view && own == crate_name => roots.get(*index)?,
             _ => roots.iter().find(|root| root.kind == EntryKind::Lib)?,
         };
         Some(&root.modules)
     }
 
     /// Look up the export info of the module a dependency points at, where
-    /// the map has it.
+    /// the map has it, in the view the dependency names it in.
     pub(crate) fn module_info(&self, dep: &DependencyRef) -> Option<&ModuleExportInfo> {
-        self.get(&dep.target_package)?.get(&dep.target_module)
+        self.exports_for(dep)?.get(&dep.target_module)
     }
 }
 
@@ -245,8 +272,24 @@ impl ForwardedGlobs {
 /// name a private `use` bound to something outside the crate (an external
 /// crate) — the caller then produces no edge for `dep` — and `true` otherwise.
 /// Each private glob of an ancestor the chain passes through is noted in
-/// `forwarded`.
+/// `forwarded`. A `dep` in the lib view follows the chain from its package's
+/// lib root.
 fn resolve_reexport_noting(
+    dep: &mut DependencyRef,
+    reexport_map: &ReExportMap,
+    importer_module: &str,
+    forwarded: Option<&ForwardedGlobs>,
+) -> bool {
+    if dep.in_lib_view {
+        follow_reexports(dep, &reexport_map.lib_view(), importer_module, forwarded)
+    } else {
+        follow_reexports(dep, reexport_map, importer_module, forwarded)
+    }
+}
+
+/// The chain of [`resolve_reexport_noting`], followed as `reexport_map` sees
+/// it.
+fn follow_reexports(
     dep: &mut DependencyRef,
     reexport_map: &ReExportMap,
     importer_module: &str,
@@ -1434,6 +1477,7 @@ fn parse_crate_local_import(
         context: context.clone(),
         via_reexport: false,
         uses: Vec::new(),
+        in_lib_view: false,
     })
 }
 
@@ -1488,6 +1532,7 @@ fn parse_bare_module_import(
         context: context.clone(),
         via_reexport: false,
         uses: Vec::new(),
+        in_lib_view: false,
     })
 }
 
@@ -1511,12 +1556,21 @@ fn parse_workspace_import(
     }
 
     let target_crate_name = normalize_crate_name(crate_name);
+    // The own package by name is its lib, also from a file of the bin tree.
+    let names_own_package = target_crate_name == normalize_crate_name(ctx.current_crate);
+    let lib_view;
+    let reexport_map = if names_own_package {
+        lib_view = ctx.reexport_map.lib_view();
+        &lib_view
+    } else {
+        ctx.reexport_map
+    };
     let module_paths = ctx.all_module_paths.get_or_empty(&target_crate_name);
     let root_module = if module_paths.contains(module_segment) {
         None
     } else {
         root_reexported_module(
-            ctx.reexport_map,
+            reexport_map,
             &target_crate_name,
             module_segment,
             module_paths,
@@ -1540,7 +1594,7 @@ fn parse_workspace_import(
             .crate_exports
             .get(&target_crate_name)
             .is_some_and(|e| e.contains(module_segment))
-            || root_reexports(ctx.reexport_map, &target_crate_name, module_segment));
+            || root_reexports(reexport_map, &target_crate_name, module_segment));
 
     let (target_module, target_item) = if is_entry_point {
         (String::new(), Some(module_segment.to_string()))
@@ -1560,6 +1614,7 @@ fn parse_workspace_import(
         context: context.clone(),
         via_reexport: false,
         uses: Vec::new(),
+        in_lib_view: names_own_package,
     })
 }
 
@@ -1627,6 +1682,7 @@ pub(crate) fn resolve_single_path(
                 context: context.clone(),
                 via_reexport: false,
                 uses: Vec::new(),
+                in_lib_view: false,
             }
         } else {
             resolve_single_path(ctx, base, line_num, context, inline_depth)?
@@ -1667,6 +1723,8 @@ pub(crate) fn resolve_single_path(
                     context: context.clone(),
                     via_reexport: false,
                     uses: Vec::new(),
+                    in_lib_view: normalize_crate_name(path)
+                        == normalize_crate_name(ctx.current_crate),
                 })
             } else {
                 None
@@ -1716,6 +1774,7 @@ fn parse_external_crate_import(
         context: context.clone(),
         via_reexport: false,
         uses: Vec::new(),
+        in_lib_view: false,
     })
 }
 
@@ -2333,7 +2392,7 @@ pub(crate) fn parse_path_ref_dependencies(
 /// or a private glob the file's module sees as a descendant.
 fn glob_exports(ctx: &ResolutionContext, glob: &DependencyRef, name: &str) -> bool {
     ctx.reexport_map
-        .get(&glob.target_package)
+        .exports_for(glob)
         .is_some_and(|crate_exports| {
             module_scope_holds_symbol(
                 crate_exports,

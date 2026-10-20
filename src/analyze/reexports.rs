@@ -1397,6 +1397,7 @@ impl AStruct { pub fn method(&self) {} }
             context: EdgeContext::production(),
             via_reexport: false,
             uses: Vec::new(),
+            in_lib_view: false,
         };
         resolve_reexport(&mut dep, &map, "");
 
