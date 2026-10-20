@@ -329,7 +329,9 @@ fn collect_use_reexports(
             }
             continue;
         };
-        if let Some(name) = root_item_name(ctx, original_path) {
+        if let Some((crate_name, name)) = root_item_name(ctx, original_path)
+            && dep.target_package == crate_name
+        {
             dep.target_module = String::new();
             dep.target_item = Some(name.to_string());
         }
@@ -375,18 +377,26 @@ fn collect_use_reexports(
     }
 }
 
-/// The item `crate::Name` names in the root, when `Name` is no module. The
-/// resolution cannot tell while the map is built: a name the root only
-/// re-exports is not in it yet.
-fn root_item_name<'p>(ctx: &CollectContext, path: &'p str) -> Option<&'p str> {
-    let name = path.strip_prefix("crate::")?;
+/// The crate and item that `crate::Name`, `other_crate::Name` or `alias::Name`
+/// (`extern crate other_crate as alias;`) names in a crate root, when `Name` is
+/// no module. The resolution cannot tell while the
+/// map is built: a name the root only re-exports is not in it yet.
+fn root_item_name<'p>(ctx: &CollectContext, path: &'p str) -> Option<(String, &'p str)> {
+    let (first, name) = path.split_once("::")?;
+    let crate_name = if first == "crate" {
+        ctx.crate_name.to_string()
+    } else if ctx.workspace_crates.contains(first) {
+        normalize_crate_name(first)
+    } else {
+        ctx.extern_crates.get(first)?.clone()
+    };
     let is_item = !name.contains("::")
         && name != "*"
         && !ctx
             .all_module_paths
-            .get_or_empty(ctx.crate_name)
+            .get_or_empty(&crate_name)
             .contains(name);
-    is_item.then_some(name)
+    is_item.then_some((crate_name, name))
 }
 
 fn walk_collect_reexports(
@@ -1226,6 +1236,118 @@ impl AStruct { pub fn method(&self) {} }
                 t.original_name.as_str()
             )),
             Some(("other_crate", "", "")),
+            "{result:?}"
+        );
+    }
+
+    // A name another crate's root only brings in through a glob is unknown
+    // while the map is built; the re-export records that root as its target.
+    #[test]
+    fn reexport_of_a_name_another_root_reexports_targets_that_root() {
+        let tmp = test_crate(&[
+            ("src/lib.rs", "pub mod prelude;\n"),
+            ("src/prelude.rs", "pub use other_crate::{Type, ty};\n"),
+        ]);
+        let crate_info = make_crate_info(&tmp, "test_crate");
+        let ws: WorkspacePackages = ["test_crate", "other_crate"].into_iter().collect();
+        let mp: ModulePathMap = [
+            ("test_crate".to_string(), HashSet::from(["prelude".into()])),
+            ("other_crate".to_string(), HashSet::from(["ty".into()])),
+        ]
+        .into_iter()
+        .collect();
+
+        let result =
+            collect_single_root_reexports(&crate_info, &mp, &ws, &PackageExportMap::default());
+
+        let prelude = result.get("prelude").expect("prelude is collected");
+        let target = |name: &str| {
+            prelude.explicit_reexports.get(name).map(|t| {
+                (
+                    t.crate_name.as_str(),
+                    t.module.as_str(),
+                    t.original_name.as_str(),
+                )
+            })
+        };
+        assert_eq!(
+            target("Type"),
+            Some(("other_crate", "", "Type")),
+            "{result:?}"
+        );
+        assert_eq!(target("ty"), Some(("other_crate", "", "ty")), "{result:?}");
+    }
+
+    // The same through `extern crate other_crate as oc;` in the root.
+    #[test]
+    fn reexport_through_an_extern_crate_alias_targets_the_other_root() {
+        let tmp = test_crate(&[(
+            "src/lib.rs",
+            "extern crate other_crate as oc;\npub use oc::{Type, ty};\n",
+        )]);
+        let crate_info = make_crate_info(&tmp, "test_crate");
+        let ws: WorkspacePackages = ["test_crate", "other_crate"].into_iter().collect();
+        let mp: ModulePathMap = [("other_crate".to_string(), HashSet::from(["ty".into()]))]
+            .into_iter()
+            .collect();
+
+        let result =
+            collect_single_root_reexports(&crate_info, &mp, &ws, &PackageExportMap::default());
+
+        let root = result.get("").expect("root is collected");
+        let target = |name: &str| {
+            root.explicit_reexports.get(name).map(|t| {
+                (
+                    t.crate_name.as_str(),
+                    t.module.as_str(),
+                    t.original_name.as_str(),
+                )
+            })
+        };
+        assert_eq!(
+            target("Type"),
+            Some(("other_crate", "", "Type")),
+            "{result:?}"
+        );
+        assert_eq!(target("ty"), Some(("other_crate", "", "ty")), "{result:?}");
+    }
+
+    // A child module named like a workspace crate shadows that crate's root.
+    #[test]
+    fn reexport_through_a_child_module_named_like_a_crate_stays_local() {
+        let tmp = test_crate(&[
+            ("src/lib.rs", "pub mod cmds;\n"),
+            (
+                "src/cmds/mod.rs",
+                "mod other_crate;\npub use other_crate::Cmd;\n",
+            ),
+            ("src/cmds/other_crate.rs", "pub struct Cmd;\n"),
+        ]);
+        let crate_info = make_crate_info(&tmp, "test_crate");
+        let ws: WorkspacePackages = ["test_crate", "other_crate"].into_iter().collect();
+        let mp: ModulePathMap = [(
+            "test_crate".to_string(),
+            HashSet::from(["cmds".into(), "cmds::other_crate".into()]),
+        )]
+        .into_iter()
+        .collect();
+
+        let result =
+            collect_single_root_reexports(&crate_info, &mp, &ws, &PackageExportMap::default());
+
+        let target = result
+            .get("cmds")
+            .and_then(|info| info.explicit_reexports.get("Cmd"))
+            .map(|t| {
+                (
+                    t.crate_name.as_str(),
+                    t.module.as_str(),
+                    t.original_name.as_str(),
+                )
+            });
+        assert_eq!(
+            target,
+            Some(("test_crate", "cmds::other_crate", "Cmd")),
             "{result:?}"
         );
     }
