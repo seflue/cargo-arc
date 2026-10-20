@@ -760,6 +760,29 @@ pub(crate) struct PathRef {
     /// the resolution chain is not asked, so no edge comes from macro input
     /// alone.
     pub(crate) in_macro: bool,
+    /// The local variable a bare name in an expression may refer to: the
+    /// innermost one of that name in scope where the path is written.
+    pub(crate) local: Option<LocalBinding>,
+}
+
+/// The pattern that declares a local variable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LocalBinding {
+    /// `mut x`, `ref x` or `x @ ..`: a variable for certain.
+    Variable,
+    /// A bare identifier, the path reference at this index. It declares a
+    /// variable unless it matches an item (see [`PathPosition::Binding`]).
+    Pattern(usize),
+}
+
+/// A local variable while the walk is inside its scope.
+#[derive(Debug)]
+struct ScopedLocal {
+    name: String,
+    binding: LocalBinding,
+    /// The block or module the variable was declared in. Leaving it ends the
+    /// variable's scope.
+    region: RegionId,
 }
 
 /// The qualified path references of one file, with the regions they stand in.
@@ -790,6 +813,14 @@ struct PathRefCollector {
     regions: BindingRegions,
     region: RegionId,
     position: PathPosition,
+    /// The local variables in scope, innermost last.
+    locals: Vec<ScopedLocal>,
+    /// The variables a pattern declares that come into scope only after the
+    /// expression the pattern stands before: `let x = <expr>`,
+    /// `if let x = <expr>`, `for x in <expr>`.
+    declared_later: Option<Vec<ScopedLocal>>,
+    /// Inside the name of a macro, which no variable can hide.
+    naming_macro: bool,
 }
 impl PathRefCollector {
     fn in_position(&mut self, position: PathPosition, visit: impl FnOnce(&mut Self)) {
@@ -799,7 +830,57 @@ impl PathRefCollector {
         self.position = prev;
     }
 
+    /// Visit a scope that ends with the visit: a fn, a closure, a match arm.
+    fn in_scope(&mut self, visit: impl FnOnce(&mut Self)) {
+        let outer = self.locals.len();
+        visit(self);
+        self.locals.truncate(outer);
+    }
+
+    /// Visit a pattern and return the variables it declares instead of
+    /// bringing them into scope.
+    fn declarations_of(&mut self, pattern: impl FnOnce(&mut Self)) -> Vec<ScopedLocal> {
+        let outer = self.declared_later.replace(Vec::new());
+        pattern(self);
+        std::mem::replace(&mut self.declared_later, outer).unwrap_or_default()
+    }
+
+    fn declare(&mut self, name: String, binding: LocalBinding) {
+        let local = ScopedLocal {
+            name,
+            binding,
+            region: self.region,
+        };
+        match &mut self.declared_later {
+            Some(later) => later.push(local),
+            None => self.locals.push(local),
+        }
+    }
+
+    /// The variable a bare name in an expression refers to. Types, struct
+    /// paths and macros live in other namespaces than variables.
+    fn local_named(&self, path: &str) -> Option<LocalBinding> {
+        if self.naming_macro
+            || path.contains("::")
+            || !matches!(self.position, PathPosition::Value | PathPosition::Call)
+        {
+            return None;
+        }
+        self.locals
+            .iter()
+            .rev()
+            .find(|local| {
+                local.name == path
+                    && self
+                        .regions
+                        .enclosing(self.region)
+                        .any(|r| r == local.region)
+            })
+            .map(|local| local.binding)
+    }
+
     fn record(&mut self, path: String, line: usize, in_macro: bool) {
+        let local = self.local_named(&path);
         self.paths.push(PathRef {
             path,
             line,
@@ -808,6 +889,7 @@ impl PathRefCollector {
             region: self.region,
             position: self.position,
             in_macro,
+            local,
         });
     }
 
@@ -875,7 +957,8 @@ impl<'ast> Visit<'ast> for PathRefCollector {
     // Syntax alone cannot tell a const matched from a variable declared; the
     // lookup against the file's bindings and the item's definition can.
     fn visit_pat_ident(&mut self, node: &'ast syn::PatIdent) {
-        if node.by_ref.is_none() && node.mutability.is_none() && node.subpat.is_none() {
+        let binding = if node.by_ref.is_none() && node.mutability.is_none() && node.subpat.is_none()
+        {
             self.in_position(PathPosition::Binding, |s| {
                 s.record(
                     node.ident.to_string(),
@@ -883,8 +966,89 @@ impl<'ast> Visit<'ast> for PathRefCollector {
                     false,
                 );
             });
-        }
+            LocalBinding::Pattern(self.paths.len() - 1)
+        } else {
+            LocalBinding::Variable
+        };
+        self.declare(node.ident.to_string(), binding);
         syn::visit::visit_pat_ident(self, node);
+    }
+
+    // An item nested in a fn body sees none of the fn's variables.
+    fn visit_item(&mut self, node: &'ast syn::Item) {
+        let outer = std::mem::take(&mut self.locals);
+        syn::visit::visit_item(self, node);
+        self.locals = outer;
+    }
+
+    fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
+        self.in_scope(|s| syn::visit::visit_impl_item_fn(s, node));
+    }
+
+    fn visit_trait_item_fn(&mut self, node: &'ast syn::TraitItemFn) {
+        self.in_scope(|s| syn::visit::visit_trait_item_fn(s, node));
+    }
+
+    fn visit_expr_closure(&mut self, node: &'ast syn::ExprClosure) {
+        self.in_scope(|s| syn::visit::visit_expr_closure(s, node));
+    }
+
+    fn visit_arm(&mut self, node: &'ast syn::Arm) {
+        self.in_scope(|s| syn::visit::visit_arm(s, node));
+    }
+
+    fn visit_local(&mut self, node: &'ast syn::Local) {
+        for attr in &node.attrs {
+            self.visit_attribute(attr);
+        }
+        let declared = self.declarations_of(|s| s.visit_pat(&node.pat));
+        if let Some(init) = &node.init {
+            self.visit_local_init(init);
+        }
+        self.locals.extend(declared);
+    }
+
+    // The variables of an `if let` are in scope in the condition after it and
+    // in the `then` block, not in the `else` branch.
+    fn visit_expr_if(&mut self, node: &'ast syn::ExprIf) {
+        for attr in &node.attrs {
+            self.visit_attribute(attr);
+        }
+        self.in_scope(|s| {
+            s.visit_expr(&node.cond);
+            s.visit_block(&node.then_branch);
+        });
+        if let Some((_, else_branch)) = &node.else_branch {
+            self.visit_expr(else_branch);
+        }
+    }
+
+    fn visit_expr_while(&mut self, node: &'ast syn::ExprWhile) {
+        self.in_scope(|s| syn::visit::visit_expr_while(s, node));
+    }
+
+    fn visit_expr_let(&mut self, node: &'ast syn::ExprLet) {
+        for attr in &node.attrs {
+            self.visit_attribute(attr);
+        }
+        let declared = self.declarations_of(|s| s.visit_pat(&node.pat));
+        self.visit_expr(&node.expr);
+        self.locals.extend(declared);
+    }
+
+    fn visit_expr_for_loop(&mut self, node: &'ast syn::ExprForLoop) {
+        for attr in &node.attrs {
+            self.visit_attribute(attr);
+        }
+        if let Some(label) = &node.label {
+            self.visit_label(label);
+        }
+        let declared = self.declarations_of(|s| s.visit_pat(&node.pat));
+        self.visit_expr(&node.expr);
+        self.in_scope(|s| {
+            s.locals.extend(declared);
+            s.visit_block(&node.body);
+        });
     }
 
     fn visit_type_path(&mut self, node: &'ast syn::TypePath) {
@@ -937,7 +1101,9 @@ impl<'ast> Visit<'ast> for PathRefCollector {
     }
 
     fn visit_macro(&mut self, node: &'ast syn::Macro) {
+        self.naming_macro = true;
         self.in_position(PathPosition::Call, |s| syn::visit::visit_macro(s, node));
+        self.naming_macro = false;
         self.record_token_paths(&node.tokens);
     }
 
@@ -974,6 +1140,9 @@ pub(crate) fn collect_all_path_refs(
         regions: BindingRegions::default(),
         region: BindingRegions::ROOT,
         position: PathPosition::Value,
+        locals: Vec::new(),
+        declared_later: None,
+        naming_macro: false,
     };
     collector.visit_file(syntax);
     CollectedPathRefs {
@@ -1909,8 +2078,19 @@ pub(crate) fn parse_path_ref_dependencies(
     let mut seen_targets: HashMap<(String, UsageKind), usize> = HashMap::new();
     // The globs a name was taken from, by `(full_target, kind)` of the glob.
     let mut used_globs: HashSet<(String, UsageKind)> = HashSet::new();
+    // The bare identifier patterns that matched an item and so declared no
+    // variable, by their index among the path references.
+    let mut matching_patterns: HashSet<usize> = HashSet::new();
 
-    for path_ref in paths.iter() {
+    for (index, path_ref) in paths.iter().enumerate() {
+        let names_a_variable = match path_ref.local {
+            None => false,
+            Some(LocalBinding::Variable) => true,
+            Some(LocalBinding::Pattern(pattern)) => !matching_patterns.contains(&pattern),
+        };
+        if names_a_variable {
+            continue;
+        }
         // A path written in macro input resolves through a binding only.
         let resolve = |path: &str| {
             (!path_ref.in_macro)
@@ -1982,8 +2162,11 @@ pub(crate) fn parse_path_ref_dependencies(
             DependencyRef::dedup_push(&mut deps, &mut seen_targets, dep);
             continue;
         };
-        if path_ref.position == PathPosition::Binding && !is_matched_by_a_bare_pattern(ctx, &dep) {
-            continue;
+        if path_ref.position == PathPosition::Binding {
+            if !is_matched_by_a_bare_pattern(ctx, &dep) {
+                continue;
+            }
+            matching_patterns.insert(index);
         }
         if let Some(glob) = glob_taken_from {
             used_globs.insert(glob);
