@@ -3092,6 +3092,69 @@ mod reexport_resolution_tests {
             "path refs should also resolve through re-export"
         );
     }
+
+    /// `pub use helper::helper;` next to a private `mod helper;`: a path
+    /// ending in that name from another crate names the fn the module
+    /// re-exports, not the private module.
+    #[test]
+    fn path_naming_a_module_and_the_item_its_parent_reexports_takes_the_item() {
+        let mp: ModulePathMap = [(
+            "core_crate".to_string(),
+            HashSet::from(["util".into(), "util::helper".into()]),
+        )]
+        .into_iter()
+        .collect();
+        let mut util_info = ModuleExportInfo::default();
+        util_info.explicit_reexports.insert(
+            "helper".to_string(),
+            ReExportTarget {
+                crate_name: "core_crate".to_string(),
+                module: "util::helper".to_string(),
+                original_name: "helper".to_string(),
+            },
+        );
+        let mut helper_info = ModuleExportInfo::default();
+        helper_info.definitions.insert(
+            "helper".to_string(),
+            Definition {
+                kind: DefKind::Fn,
+                line: 1,
+            },
+        );
+        let map: ReExportMap = [(
+            "core_crate".to_string(),
+            HashMap::from([
+                ("util".to_string(), util_info),
+                ("util::helper".to_string(), helper_info),
+            ]),
+        )]
+        .into_iter()
+        .collect();
+        let ws: WorkspacePackages = ["core_crate".to_string()].into_iter().collect();
+
+        let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs"))
+            .workspace_crates(&ws)
+            .module_paths(&mp)
+            .reexport_map(&map)
+            .build();
+        let deps = parse_file_dependencies(
+            &syn::parse_file("use core_crate::util::helper;\nfn f() { helper(); }").unwrap(),
+            &ctx,
+            EdgeContext::production(),
+        );
+
+        let targets: Vec<_> = deps
+            .iter()
+            .map(|d| {
+                (
+                    d.target_module.as_str(),
+                    d.target_item.as_deref(),
+                    d.uses.len(),
+                )
+            })
+            .collect();
+        assert_eq!(targets, [("util::helper", Some("helper"), 1)], "{deps:?}");
+    }
 }
 
 mod resolve_reexport_tests {
