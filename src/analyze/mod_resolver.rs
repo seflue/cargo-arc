@@ -12,19 +12,26 @@ pub(crate) struct ModDecl {
     pub(crate) explicit_path: Option<String>,
 }
 
-/// Check whether attributes contain `#[cfg(test)]`, including compound
-/// expressions like `#[cfg(all(test, feature = "..."))]`.
+/// Check whether a `#[cfg]` admits the item into test builds only: `test`,
+/// `all(..)` with `test` among its predicates, or `any(..)` whose every
+/// predicate admits test builds only. `any(windows, test)` also builds
+/// outside the test harness and is no test code.
 pub(crate) fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
-    fn meta_contains_test(meta: &syn::Meta) -> bool {
+    fn requires_test(meta: &syn::Meta) -> bool {
         use syn::parse::Parser;
+        let nested = |list: &syn::MetaList| {
+            syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated
+                .parse2(list.tokens.clone())
+        };
         match meta {
             syn::Meta::Path(path) => path.is_ident("test"),
-            syn::Meta::List(list) if list.path.is_ident("all") || list.path.is_ident("any") => {
-                let parser =
-                    syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated;
-                parser
-                    .parse2(list.tokens.clone())
-                    .is_ok_and(|nested| nested.iter().any(meta_contains_test))
+            syn::Meta::List(list) if list.path.is_ident("all") => {
+                nested(list).is_ok_and(|predicates| predicates.iter().any(requires_test))
+            }
+            syn::Meta::List(list) if list.path.is_ident("any") => {
+                nested(list).is_ok_and(|predicates| {
+                    !predicates.is_empty() && predicates.iter().all(requires_test)
+                })
             }
             _ => false,
         }
@@ -35,7 +42,7 @@ pub(crate) fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
             return false;
         }
         attr.parse_args::<syn::Meta>()
-            .is_ok_and(|meta| meta_contains_test(&meta))
+            .is_ok_and(|meta| requires_test(&meta))
     })
 }
 

@@ -1939,11 +1939,45 @@ mod checks {
         );
     }
 
-    /// Known limitation: `#[cfg(test)]` on `fn` items is NOT detected —
-    /// only `mod`-level `#[cfg(test)]` propagates. This is acceptable because
-    /// the dominant pattern is `#[cfg(test)] mod tests { ... }`.
+    /// `any(windows, test)` also builds outside the test harness, on Windows.
     #[test]
-    fn test_cfg_test_on_fn_not_detected() {
+    fn test_cfg_any_with_non_test_branch_not_marked() {
+        let source = r"
+#[cfg(any(windows, test))]
+mod platform {
+    use other_crate::helper;
+}
+#[cfg(any(windows, test))]
+fn platform_helper() {
+    use other_crate::other_helper;
+}
+";
+        let syntax = syn::parse_file(source).unwrap();
+        let uses = collect_all_use_items(&syntax, EdgeContext::production());
+        assert_eq!(uses.len(), 2);
+        assert_eq!(uses[0].context, EdgeContext::production());
+        assert_eq!(uses[1].context, EdgeContext::production());
+    }
+
+    #[test]
+    fn test_cfg_any_with_only_test_branches_marked() {
+        let source = r#"
+#[cfg(any(test, all(test, feature = "hir")))]
+mod hir_tests {
+    use other_crate::helper;
+}
+"#;
+        let syntax = syn::parse_file(source).unwrap();
+        let uses = collect_all_use_items(&syntax, EdgeContext::production());
+        assert_eq!(uses.len(), 1);
+        assert_eq!(
+            uses[0].context,
+            EdgeContext::test(crate::model::TestKind::Unit)
+        );
+    }
+
+    #[test]
+    fn test_cfg_test_on_fn_marked() {
         let source = r"
 #[cfg(test)]
 fn test_helper() {
@@ -1953,8 +1987,62 @@ fn test_helper() {
         let syntax = syn::parse_file(source).unwrap();
         let uses = collect_all_use_items(&syntax, EdgeContext::production());
         assert_eq!(uses.len(), 1);
-        // fn-level cfg(test) is NOT propagated — use is tagged Production
-        assert_eq!(uses[0].context, EdgeContext::production());
+        assert_eq!(
+            uses[0].context,
+            EdgeContext::test(crate::model::TestKind::Unit)
+        );
+    }
+
+    #[test]
+    fn test_cfg_test_on_method_marked() {
+        let source = r"
+impl Widget {
+    #[cfg(test)]
+    fn fixture() {
+        use other_crate::helper;
+    }
+    fn run() {
+        use other_crate::engine;
+    }
+}
+";
+        let syntax = syn::parse_file(source).unwrap();
+        let uses = collect_all_use_items(&syntax, EdgeContext::production());
+        let contexts: Vec<_> = uses.iter().map(|u| u.context.clone()).collect();
+        assert_eq!(
+            contexts,
+            [
+                EdgeContext::test(crate::model::TestKind::Unit),
+                EdgeContext::production(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_cfg_test_on_impl_block_marked() {
+        let source = r"
+#[cfg(test)]
+impl Widget {
+    fn fixture() {
+        use other_crate::helper;
+    }
+}
+impl Widget {
+    fn run() {
+        use other_crate::engine;
+    }
+}
+";
+        let syntax = syn::parse_file(source).unwrap();
+        let uses = collect_all_use_items(&syntax, EdgeContext::production());
+        let contexts: Vec<_> = uses.iter().map(|u| u.context.clone()).collect();
+        assert_eq!(
+            contexts,
+            [
+                EdgeContext::test(crate::model::TestKind::Unit),
+                EdgeContext::production(),
+            ]
+        );
     }
 }
 
@@ -2179,6 +2267,89 @@ fn after() {
             context_of("support_crate::other"),
             EdgeContext::production()
         );
+    }
+
+    #[test]
+    fn test_path_ref_in_cfg_test_fn_marked() {
+        let source = r"
+#[cfg(test)]
+pub(crate) fn dir_name() -> io::Name {
+    io::dir_name()
+}
+fn after() {
+    io::other();
+}
+";
+        let syntax = syn::parse_file(source).unwrap();
+        let refs = collect_all_path_refs(&syntax, EdgeContext::production());
+        let context_of = |path: &str| {
+            let matching: Vec<_> = refs.iter().filter(|r| r.path == path).collect();
+            assert_eq!(matching.len(), 1, "{path}");
+            matching[0].context.clone()
+        };
+        let test = EdgeContext::test(crate::model::TestKind::Unit);
+        assert_eq!(context_of("io::Name"), test);
+        assert_eq!(context_of("io::dir_name"), test);
+        assert_eq!(context_of("io::other"), EdgeContext::production());
+    }
+
+    #[test]
+    fn test_path_ref_in_cfg_test_method_marked() {
+        let source = r"
+impl Widget {
+    #[cfg(test)]
+    fn fixture() -> io::Name {
+        io::dir_name()
+    }
+    fn run() {
+        io::other();
+    }
+}
+";
+        let syntax = syn::parse_file(source).unwrap();
+        let refs = collect_all_path_refs(&syntax, EdgeContext::production());
+        let context_of = |path: &str| {
+            let matching: Vec<_> = refs.iter().filter(|r| r.path == path).collect();
+            assert_eq!(matching.len(), 1, "{path}");
+            matching[0].context.clone()
+        };
+        let test = EdgeContext::test(crate::model::TestKind::Unit);
+        assert_eq!(context_of("io::Name"), test);
+        assert_eq!(context_of("io::dir_name"), test);
+        assert_eq!(context_of("io::other"), EdgeContext::production());
+    }
+
+    #[test]
+    fn test_path_ref_in_cfg_test_items_marked() {
+        let source = r"
+#[cfg(test)]
+#[harness::gpu_test]
+static TEST: harness::Params = harness::Params::new();
+#[cfg(test)]
+impl io::Reader for Widget {}
+#[cfg(test)]
+struct Fixture {
+    name: io::Name,
+}
+#[cfg(test)]
+const LIMIT: limits::Size = limits::DEFAULT;
+static LIVE: io::Live = io::Live::new();
+";
+        let syntax = syn::parse_file(source).unwrap();
+        let refs = collect_all_path_refs(&syntax, EdgeContext::production());
+        let context_of = |path: &str| {
+            let matching: Vec<_> = refs.iter().filter(|r| r.path == path).collect();
+            assert_eq!(matching.len(), 1, "{path}");
+            matching[0].context.clone()
+        };
+        let test = EdgeContext::test(crate::model::TestKind::Unit);
+        assert_eq!(context_of("harness::gpu_test"), test);
+        assert_eq!(context_of("harness::Params::new"), test);
+        assert_eq!(context_of("io::Reader"), test);
+        assert_eq!(context_of("io::Name"), test);
+        assert_eq!(context_of("limits::Size"), test);
+        assert_eq!(context_of("limits::DEFAULT"), test);
+        assert_eq!(context_of("io::Live::new"), EdgeContext::production());
     }
 
     #[test]
