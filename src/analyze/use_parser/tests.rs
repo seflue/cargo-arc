@@ -1918,6 +1918,27 @@ mod hir_tests {
         );
     }
 
+    /// A `#[test]` fn is compiled only into the test harness, even in a module
+    /// without `#[cfg(test)]`.
+    #[test]
+    fn test_use_in_test_fn_without_cfg_test_marked() {
+        let source = r"
+mod checks {
+    #[test]
+    fn check_examples() {
+        use other_crate::helper;
+    }
+}
+";
+        let syntax = syn::parse_file(source).unwrap();
+        let uses = collect_all_use_items(&syntax, EdgeContext::production());
+        assert_eq!(uses.len(), 1);
+        assert_eq!(
+            uses[0].context,
+            EdgeContext::test(crate::model::TestKind::Unit)
+        );
+    }
+
     /// Known limitation: `#[cfg(test)]` on `fn` items is NOT detected —
     /// only `mod`-level `#[cfg(test)]` propagates. This is acceptable because
     /// the dominant pattern is `#[cfg(test)] mod tests { ... }`.
@@ -2128,6 +2149,35 @@ mod tests {
         assert_eq!(
             matching[0].context,
             EdgeContext::test(crate::model::TestKind::Unit)
+        );
+    }
+
+    #[test]
+    fn test_path_ref_in_test_fn_without_cfg_test_marked() {
+        let source = r"
+mod checks {
+    #[test]
+    fn check_examples() -> support_crate::Result {
+        support_crate::tester().run()
+    }
+}
+fn after() {
+    support_crate::other();
+}
+";
+        let syntax = syn::parse_file(source).unwrap();
+        let refs = collect_all_path_refs(&syntax, EdgeContext::production());
+        let context_of = |path: &str| {
+            let matching: Vec<_> = refs.iter().filter(|r| r.path == path).collect();
+            assert_eq!(matching.len(), 1, "{path}");
+            matching[0].context.clone()
+        };
+        let test = EdgeContext::test(crate::model::TestKind::Unit);
+        assert_eq!(context_of("support_crate::Result"), test);
+        assert_eq!(context_of("support_crate::tester"), test);
+        assert_eq!(
+            context_of("support_crate::other"),
+            EdgeContext::production()
         );
     }
 
