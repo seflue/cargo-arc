@@ -3155,6 +3155,107 @@ mod reexport_resolution_tests {
             .collect();
         assert_eq!(targets, [("util::helper", Some("helper"), 1)], "{deps:?}");
     }
+
+    /// `my_crate` with `pub struct Set;` in `store::set`, re-exported by
+    /// `store`, and a module `holder` that binds the name `bound` to the
+    /// module `store`, privately or with `pub use`.
+    fn map_with_a_module_bound_in_holder(private: bool) -> (ModulePathMap, ReExportMap) {
+        let mp: ModulePathMap = [(
+            "my_crate".to_string(),
+            HashSet::from([
+                "store".into(),
+                "store::set".into(),
+                "holder".into(),
+                "holder::user".into(),
+            ]),
+        )]
+        .into_iter()
+        .collect();
+        let bound = ReExportTarget {
+            crate_name: "my_crate".to_string(),
+            module: String::new(),
+            original_name: "store".to_string(),
+        };
+        let mut holder_info = ModuleExportInfo::default();
+        if private {
+            holder_info.private_uses.insert("bound".to_string(), bound);
+        } else {
+            holder_info
+                .explicit_reexports
+                .insert("bound".to_string(), bound);
+        }
+        let mut store_info = ModuleExportInfo::default();
+        store_info.explicit_reexports.insert(
+            "Set".to_string(),
+            ReExportTarget {
+                crate_name: "my_crate".to_string(),
+                module: "store::set".to_string(),
+                original_name: "Set".to_string(),
+            },
+        );
+        let mut set_info = ModuleExportInfo::default();
+        set_info.definitions.insert(
+            "Set".to_string(),
+            Definition {
+                kind: DefKind::Struct,
+                line: 1,
+            },
+        );
+        let map: ReExportMap = [(
+            "my_crate".to_string(),
+            HashMap::from([
+                ("holder".to_string(), holder_info),
+                ("store".to_string(), store_info),
+                ("store::set".to_string(), set_info),
+            ]),
+        )]
+        .into_iter()
+        .collect();
+        (mp, map)
+    }
+
+    fn targets_of(
+        source: &str,
+        current_module: &str,
+        private: bool,
+    ) -> Vec<(String, Option<String>, usize)> {
+        let (mp, map) = map_with_a_module_bound_in_holder(private);
+        let ctx = ResolutionContextBuilder::new(Path::new("src/holder/user.rs"))
+            .module_paths(&mp)
+            .current_module_path(current_module)
+            .reexport_map(&map)
+            .build();
+        parse_file_dependencies(
+            &syn::parse_file(source).unwrap(),
+            &ctx,
+            EdgeContext::production(),
+        )
+        .into_iter()
+        .map(|d| (d.target_module, d.target_item, d.uses.len()))
+        .collect()
+    }
+
+    #[test]
+    fn path_through_a_private_module_binding_of_an_ancestor_keeps_its_item() {
+        let targets = targets_of(
+            "use super::bound::Set;\nfn f(_: Set) {}",
+            "holder::user",
+            true,
+        );
+        assert_eq!(
+            targets,
+            [("store::set".to_string(), Some("Set".to_string()), 1)]
+        );
+    }
+
+    #[test]
+    fn path_through_a_reexported_module_keeps_its_item() {
+        let targets = targets_of("use crate::holder::bound::Set;\nfn f(_: Set) {}", "", false);
+        assert_eq!(
+            targets,
+            [("store::set".to_string(), Some("Set".to_string()), 1)]
+        );
+    }
 }
 
 mod resolve_reexport_tests {
