@@ -1330,6 +1330,18 @@ pub(crate) fn resolve_single_path(
         return Some(dep);
     }
 
+    // As many `super::` as inline modules leave them all and land in the file's
+    // module, where the rest is a bare path: `super::child::X` names a child.
+    if inline_depth > 0 {
+        let supers = vec!["super"; inline_depth].join("::");
+        if let Some(rest) = path
+            .strip_prefix(supers.as_str())
+            .and_then(|tail| tail.strip_prefix("::"))
+        {
+            return parse_bare_module_import(ctx, rest, line_num, context);
+        }
+    }
+
     parse_crate_local_import(ctx, path, line_num, context)
         .or_else(|| parse_bare_module_import(ctx, path, line_num, context))
         .or_else(|| parse_workspace_import(ctx, path, line_num, context))
