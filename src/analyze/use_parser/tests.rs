@@ -794,6 +794,58 @@ mod submodule_tests {
     }
 
     #[test]
+    fn test_workspace_import_through_a_crate_another_root_reexports() {
+        // mid_crate's root: `pub use leaf_crate;`. A module of my_crate
+        // imports `mid_crate::leaf_crate::error::ParseError`, a path that
+        // runs on into leaf_crate.
+        let ws: WorkspacePackages = ["my_crate", "mid_crate", "leaf_crate"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let mp: ModulePathMap = [
+            ("my_crate".to_string(), HashSet::from(["user".into()])),
+            ("mid_crate".to_string(), HashSet::from(["device".into()])),
+            ("leaf_crate".to_string(), HashSet::from(["error".into()])),
+        ]
+        .into_iter()
+        .collect();
+        let mut mid_root = ModuleExportInfo::default();
+        mid_root.explicit_reexports.insert(
+            "leaf_crate".to_string(),
+            ReExportTarget {
+                crate_name: "leaf_crate".to_string(),
+                module: String::new(),
+                original_name: String::new(),
+            },
+        );
+        let map: ReExportMap = [(
+            "mid_crate".to_string(),
+            HashMap::from([(String::new(), mid_root)]),
+        )]
+        .into_iter()
+        .collect();
+        let uses = parse_test_uses("use mid_crate::leaf_crate::error::ParseError;");
+        let ctx = ResolutionContextBuilder::new(Path::new("src/user.rs"))
+            .workspace_crates(&ws)
+            .module_paths(&mp)
+            .current_module_path("user")
+            .reexport_map(&map)
+            .build();
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
+        let targets: Vec<_> = deps
+            .iter()
+            .map(|dep| {
+                (
+                    dep.target_package.as_str(),
+                    dep.target_module.as_str(),
+                    dep.target_item.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(targets, [("leaf_crate", "error", Some("ParseError"))]);
+    }
+
+    #[test]
     fn test_crate_local_import_of_item_defined_in_root() {
         // The crate's own root: `mod user; pub struct Server;`. A module of the
         // same crate imports `crate::Server`, defined in the root itself.

@@ -557,6 +557,7 @@ fn root_reexported_module(
 /// root (module `""`).
 fn root_reexported_foreign_module(
     ctx: &ResolutionContext,
+    reexport_map: &ReExportMap,
     crate_name: &str,
     name: &str,
 ) -> Option<(String, String)> {
@@ -566,8 +567,7 @@ fn root_reexported_foreign_module(
         if !visited.insert((current_crate.clone(), current_name.clone())) {
             return None;
         }
-        let target = ctx
-            .reexport_map
+        let target = reexport_map
             .get(&current_crate)?
             .get("")?
             .explicit_reexports
@@ -587,6 +587,29 @@ fn root_reexported_foreign_module(
         current_crate = target.crate_name.clone();
         current_name = target.original_name.clone();
     }
+}
+
+/// `parts`, a path inside `crate_name`, rewritten as a path that starts at
+/// another workspace crate, when the root of `crate_name` re-exports that
+/// crate or one of its modules under the first segment: beside
+/// `pub use other;` the path `other::error::E` runs on in `other`.
+fn path_in_root_reexported_crate(
+    ctx: &ResolutionContext,
+    reexport_map: &ReExportMap,
+    crate_name: &str,
+    parts: &[&str],
+) -> Option<String> {
+    let (first, rest) = parts.split_first()?;
+    let first = first.trim_end_matches('{').trim();
+    let (other_crate, module) =
+        root_reexported_foreign_module(ctx, reexport_map, crate_name, first)?;
+    Some(
+        std::iter::once(other_crate.as_str())
+            .chain((!module.is_empty()).then_some(module.as_str()))
+            .chain(rest.iter().copied())
+            .collect::<Vec<_>>()
+            .join("::"),
+    )
 }
 
 /// The child module `name` of `module_path`, or of a module its globs
@@ -1487,13 +1510,9 @@ fn parse_crate_local_import(
     let module_paths = ctx.all_module_paths.get_or_empty(&crate_name);
     if parts.len() > 1
         && !module_paths.contains(first)
-        && let Some((other_crate, module)) = root_reexported_foreign_module(ctx, &crate_name, first)
+        && let Some(in_other) =
+            path_in_root_reexported_crate(ctx, ctx.reexport_map, &crate_name, &parts)
     {
-        let in_other = std::iter::once(other_crate.as_str())
-            .chain((!module.is_empty()).then_some(module.as_str()))
-            .chain(parts[1..].iter().copied())
-            .collect::<Vec<_>>()
-            .join("::");
         return parse_workspace_import(ctx, &in_other, line_num, context);
     }
     let root_module = if module_paths.contains(first) {
@@ -1616,6 +1635,13 @@ fn parse_workspace_import(
         ctx.reexport_map
     };
     let module_paths = ctx.all_module_paths.get_or_empty(&target_crate_name);
+    if parts.len() > 2
+        && !module_paths.contains(module_segment)
+        && let Some(in_other) =
+            path_in_root_reexported_crate(ctx, reexport_map, &target_crate_name, &parts[1..])
+    {
+        return parse_workspace_import(ctx, &in_other, line_num, context);
+    }
     let root_module = if module_paths.contains(module_segment) {
         None
     } else {
