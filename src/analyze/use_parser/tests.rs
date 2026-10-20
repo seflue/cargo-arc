@@ -116,6 +116,7 @@ fn root_path_refs(paths: Vec<(String, usize, EdgeContext, usize)>) -> CollectedP
                 region: BindingRegions::ROOT,
                 position: PathPosition::Value,
                 in_macro: false,
+                local: None,
             })
             .collect(),
         regions: BindingRegions::default(),
@@ -898,6 +899,7 @@ mod submodule_tests {
 
 mod parsing_tests {
     use super::*;
+    use rstest::rstest;
 
     #[test]
     fn test_parse_workspace_dependencies_mixed() {
@@ -1099,6 +1101,47 @@ use crate::graph;
                 .any(|d| d.target_module == "analyze" && d.target_item.as_deref() != Some("*")),
             "nothing from the glob is used: {deps:?}"
         );
+    }
+
+    /// A local variable hides a name the glob brings in, from where the
+    /// variable is declared to the end of its scope.
+    #[rstest]
+    #[case::let_binding("fn f() { let analyze_module = 1; drop(analyze_module); }")]
+    #[case::mutable_let("fn f() { let mut analyze_module = 1; analyze_module += 1; }")]
+    #[case::parameter("fn f(analyze_module: u8) { drop(analyze_module); }")]
+    #[case::closure_parameter("fn f() { let g = |analyze_module: u8| analyze_module(); }")]
+    #[case::field_pattern(
+        "fn f(v: V) { let V { val: analyze_module } = v; drop(analyze_module); }"
+    )]
+    #[case::match_arm(
+        "fn f(v: Option<u8>) { match v { Some(analyze_module) => drop(analyze_module), None => {} } }"
+    )]
+    #[case::if_let(
+        "fn f(v: Option<u8>) { if let Some(analyze_module) = v { drop(analyze_module); } }"
+    )]
+    #[case::for_loop("fn f(v: Vec<u8>) { for analyze_module in v { drop(analyze_module); } }")]
+    #[case::macro_input("fn f() { let analyze_module = 1; println!(\"{}\", analyze_module); }")]
+    fn test_process_use_glob_yields_to_a_local_variable(#[case] body: &str) {
+        let map = analyze_map();
+        let deps = glob_deps(&format!("use crate::analyze::*;\n{body}"), &map);
+        assert_eq!(items_of(&deps), ["*"], "deps: {deps:?}");
+    }
+
+    /// Outside the variable's scope, and in the expression that initializes
+    /// it, the name is still the glob's.
+    #[rstest]
+    #[case::before_the_let("fn f() { analyze_module(); let analyze_module = 1; }")]
+    #[case::in_the_initializer("fn f() { let analyze_module = analyze_module(); }")]
+    #[case::after_the_block("fn f() { { let analyze_module = 1; } analyze_module(); }")]
+    #[case::in_the_else_branch(
+        "fn f(v: Option<u8>) { if let Some(analyze_module) = v {} else { analyze_module(); } }"
+    )]
+    #[case::in_another_fn("fn f(analyze_module: u8) {}\nfn g() { analyze_module(); }")]
+    #[case::in_a_nested_fn("fn f() { let analyze_module = 1; fn g() { analyze_module(); } }")]
+    fn test_process_use_glob_name_outside_a_local_scope_is_the_globs(#[case] body: &str) {
+        let map = analyze_map();
+        let deps = glob_deps(&format!("use crate::analyze::*;\n{body}"), &map);
+        assert_eq!(items_of(&deps), ["analyze_module"], "deps: {deps:?}");
     }
 
     /// A glob written in a block binds in that block only.
@@ -4080,6 +4123,23 @@ mod use_category_tests {
         );
         assert_eq!(uses_of(&deps, "build"), [use_at(1, UseCategory::Fns)]);
         assert_eq!(uses_of(&deps, "Config"), [use_at(2, UseCategory::Types)]);
+    }
+
+    /// A pattern that matches a const declares no variable, so the const
+    /// stays a use in the arm's body.
+    #[test]
+    fn a_const_matched_by_a_pattern_stays_visible_in_the_arm() {
+        let deps = deps_of(
+            "use crate::vocab::LIMIT;\n\
+             fn f(n: usize) -> usize { match n { LIMIT => LIMIT, _ => 0 } }",
+        );
+        assert_eq!(
+            uses_of(&deps, "LIMIT"),
+            [
+                use_at(2, UseCategory::Values),
+                use_at(2, UseCategory::Values)
+            ]
+        );
     }
 
     /// A republished name is not used here, so a `pub use` carries no use and
