@@ -93,6 +93,9 @@ pub(crate) struct ModuleExportInfo {
     pub(crate) private_uses: HashMap<String, ReExportTarget>,
     /// Glob re-export sources (module paths from `pub use *`)
     pub(crate) glob_sources: Vec<String>,
+    /// Glob re-export sources in another workspace crate
+    /// (`pub use other_crate::m::*`): crate name and module path there.
+    pub(crate) foreign_glob_sources: Vec<(String, String)>,
     /// Private glob sources (module paths from a private `use *`). Like
     /// `private_uses`, visible to descendants only, which may name any of
     /// the forwarded symbols through this module.
@@ -114,6 +117,7 @@ impl ModuleExportInfo {
             && self.explicit_reexports.is_empty()
             && self.private_uses.is_empty()
             && self.glob_sources.is_empty()
+            && self.foreign_glob_sources.is_empty()
             && self.private_glob_sources.is_empty()
             && self.elsewhere.is_empty()
     }
@@ -296,6 +300,12 @@ pub(crate) fn resolve_reexport(
             continue;
         }
 
+        // Tier 2a: Glob re-exports from a module of another workspace crate
+        if let Some(next_exports) = follow_foreign_glob(dep, module_info, reexport_map, item) {
+            crate_exports = next_exports;
+            continue;
+        }
+
         // Tier 2b: Private glob, visible only to descendants of the module
         // that holds it, like Tier 1b.
         if is_descendant(importer_module, &dep.target_module)
@@ -316,6 +326,29 @@ pub(crate) fn resolve_reexport(
         break;
     }
     true
+}
+
+/// Point `dep` at the first module of another workspace crate that a glob of
+/// `module_info` republishes and that exports `symbol`. Returns that crate's
+/// export info, where the chain goes on.
+fn follow_foreign_glob<'m>(
+    dep: &mut DependencyRef,
+    module_info: &ModuleExportInfo,
+    reexport_map: &'m ReExportMap,
+    symbol: &str,
+) -> Option<&'m HashMap<String, ModuleExportInfo>> {
+    module_info
+        .foreign_glob_sources
+        .iter()
+        .find_map(|(crate_name, glob_src)| {
+            let exports = reexport_map.get(crate_name)?;
+            if !module_exports_symbol(exports, glob_src, symbol, &mut HashSet::new()) {
+                return None;
+            }
+            dep.target_package.clone_from(crate_name);
+            dep.target_module.clone_from(glob_src);
+            Some(exports)
+        })
 }
 
 /// Point `dep` at the module `target` binds, when it binds a module or a crate
