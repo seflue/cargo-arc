@@ -88,6 +88,7 @@ impl<'a> ResolutionContextBuilder<'a> {
             reexport_map: self.reexport_map,
             external_crate_names: self.external_crate_names,
             extern_crates: self.extern_crates,
+            forwarded_globs: None,
         }
     }
 }

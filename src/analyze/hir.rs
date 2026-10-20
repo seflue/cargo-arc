@@ -349,6 +349,7 @@ fn extract_module_dependencies(
         reexport_map: &empty_reexport_map,
         external_crate_names: ctx.external_crate_names,
         extern_crates: &std::collections::HashMap::new(),
+        forwarded_globs: None,
     };
     parse_workspace_dependencies_from_source(&source_text, &res_ctx)
 }
