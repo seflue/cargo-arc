@@ -2033,9 +2033,11 @@ fn glob_payload_known(dep: &DependencyRef, reexport_map: &ReExportMap) -> bool {
 /// binds and the file does not define is the glob's where the module exports
 /// it.
 ///
-/// `glob_modules` holds the child modules of a glob's module, by name, as
-/// absolute paths like `modules`. A glob brings them in like any other name,
-/// so a path may start with one.
+/// `glob_modules` holds, by name and as absolute paths like `modules`, the
+/// child modules of a glob's module and the names that module binds to a
+/// module by `pub use` or, where the file sits below it in the same crate, by
+/// a private `use`. A glob brings them in like any other name, so a path may
+/// start with one.
 #[derive(Debug, Default)]
 pub(crate) struct FileBindings {
     regions: BindingRegions,
@@ -2242,7 +2244,9 @@ impl FileBindings {
         self.globs.entry(region).or_default().push(dep);
     }
 
-    /// Bind the child modules of the module the glob `dep` imports from.
+    /// Bind the child modules of the module the glob `dep` imports from, and
+    /// the names that module binds to a module by `pub use` or, where the
+    /// file sits below it in the same crate, by a private `use`.
     fn bind_glob_modules(
         &mut self,
         region: RegionId,
@@ -2261,10 +2265,36 @@ impl FileBindings {
                 (name.to_string(), absolute_module_path(ctx, &child))
             })
         });
+        let sees_private_uses = !dep.in_lib_view
+            && dep.target_package == normalize_crate_name(ctx.current_crate)
+            && is_descendant(ctx.current_module_path, &dep.target_module);
+        let used_modules = ctx
+            .reexport_map
+            .module_info(dep)
+            .into_iter()
+            .flat_map(|info| {
+                let private_uses = sees_private_uses.then_some(&info.private_uses);
+                info.explicit_reexports
+                    .iter()
+                    .chain(private_uses.into_iter().flatten())
+            })
+            .filter_map(|(name, target)| {
+                let module = append_to_path(&target.module, &target.original_name);
+                let bound = DependencyRef {
+                    target_package: target.crate_name.clone(),
+                    target_module: module,
+                    target_item: None,
+                    ..dep.clone()
+                };
+                ctx.all_module_paths
+                    .get_or_empty(&bound.target_package)
+                    .contains(&bound.target_module)
+                    .then(|| (name.clone(), absolute_module_path(ctx, &bound)))
+            });
         self.glob_modules
             .entry(region)
             .or_default()
-            .extend(children);
+            .extend(children.chain(used_modules));
     }
 
     /// Record the names of the items the file defines, so no glob claims them.
