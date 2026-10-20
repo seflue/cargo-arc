@@ -4287,6 +4287,72 @@ mod file_binding_tests {
         );
     }
 
+    /// A glob brings in the modules its module binds by `use`: by `pub use`,
+    /// and by a private `use` only where the file sits below that module.
+    #[rstest]
+    #[case::private_use_of_an_ancestor("render::writer", "render", false, true)]
+    #[case::pub_use("other", "render", true, true)]
+    #[case::private_use_seen_from_outside("other", "render", false, false)]
+    fn test_path_through_a_module_a_glob_brings_by_use_resolves(
+        #[case] current_module: &str,
+        #[case] glob_module: &str,
+        #[case] public: bool,
+        #[case] resolves: bool,
+    ) {
+        let mp: ModulePathMap = [(
+            "my_crate".to_string(),
+            HashSet::from([
+                "render".into(),
+                "render::writer".into(),
+                "other".into(),
+                "shared".into(),
+                "shared::flow".into(),
+            ]),
+        )]
+        .into_iter()
+        .collect();
+        let binding = ReExportTarget {
+            crate_name: "my_crate".to_string(),
+            module: String::new(),
+            original_name: "shared".to_string(),
+        };
+        let mut render_info = ModuleExportInfo::default();
+        if public {
+            render_info
+                .explicit_reexports
+                .insert("shared".to_string(), binding);
+        } else {
+            render_info
+                .private_uses
+                .insert("shared".to_string(), binding);
+        }
+        let map: ReExportMap = [(
+            "my_crate".to_string(),
+            HashMap::from([(glob_module.to_string(), render_info)]),
+        )]
+        .into_iter()
+        .collect();
+        let ctx = ResolutionContextBuilder::new(Path::new("src/consumer.rs"))
+            .module_paths(&mp)
+            .current_module_path(current_module)
+            .reexport_map(&map)
+            .build();
+        let source =
+            format!("use crate::{glob_module}::*;\nfn f() {{\n    use shared::flow::Exit;\n}}");
+        let deps = parse_file_dependencies(
+            &syn::parse_file(&source).unwrap(),
+            &ctx,
+            EdgeContext::production(),
+        );
+        assert_eq!(
+            deps.iter().any(|d| d.target_module == "shared::flow"
+                && d.target_item.as_deref() == Some("Exit")
+                && d.line == 3),
+            resolves,
+            "whether the import names `Exit` in `shared::flow`: {deps:?}"
+        );
+    }
+
     /// A name a `pub use` binds and the module goes on to use is a use of
     /// the item, so the edge is no longer a pure re-export.
     #[test]
