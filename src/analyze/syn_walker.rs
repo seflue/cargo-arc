@@ -8,7 +8,7 @@ use super::mod_resolver::{ModDecl, child_resolve_dir, extract_mod_declarations, 
 use super::packages::{ModulePathMap, PackageExportMap, WorkspacePackages, normalize_crate_name};
 use super::reexports::root_extern_crates;
 use super::use_parser::ReExportMap;
-use super::use_parser::{ResolutionContext, parse_file_dependencies};
+use super::use_parser::{ForwardedGlobs, ResolutionContext, parse_file_dependencies};
 use crate::model::{
     EdgeContext, EntryKind, ModuleInfo, ModuleTree, PackageInfo, TestKind, UsageKind,
 };
@@ -211,6 +211,7 @@ struct WalkContext<'a> {
     reexport_map: &'a ReExportMap,
     external_crate_names: &'a std::collections::HashMap<String, String>,
     extern_crates: &'a std::collections::HashMap<String, String>,
+    forwarded_globs: &'a ForwardedGlobs,
     include_tests: bool,
     base_context: EdgeContext,
 }
@@ -282,6 +283,7 @@ fn walk_module_syn(
         reexport_map: ctx.reexport_map,
         external_crate_names: ctx.external_crate_names,
         extern_crates: ctx.extern_crates,
+        forwarded_globs: Some(ctx.forwarded_globs),
     };
     let mut dependencies = parse_file_dependencies(&syntax, &res_ctx, ctx.base_context.clone());
 
@@ -307,6 +309,14 @@ fn walk_module_syn(
             child_file.map(|cf| walk_module_syn(ctx, &cf, &decl.name, &full_path, false, unparsed))
         })
         .collect();
+
+    // The descendants are walked now. A private glob this module takes no
+    // name from but a descendant names something through only passes the
+    // names on, which is no dependency of this module.
+    dependencies.retain(|dep| {
+        !ctx.forwarded_globs
+            .passes_on(ctx.crate_name, current_module_path, dep)
+    });
 
     let definitions = ctx
         .reexport_map
@@ -338,6 +348,7 @@ pub(crate) fn analyze_modules_syn(
 ) -> ModuleTree {
     let normalized = normalize_crate_name(&crate_info.name);
     let no_extern_crates = std::collections::HashMap::new();
+    let forwarded_globs = ForwardedGlobs::default();
 
     let ctx = WalkContext {
         crate_name: &normalized,
@@ -348,6 +359,7 @@ pub(crate) fn analyze_modules_syn(
         reexport_map,
         external_crate_names,
         extern_crates: &no_extern_crates,
+        forwarded_globs: &forwarded_globs,
         include_tests,
         base_context: EdgeContext::production(),
     };

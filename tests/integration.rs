@@ -1167,7 +1167,8 @@ fn test_glob_import_carries_the_names_used() {
 
 /// A private glob in a parent module is visible to its children. A child that
 /// takes a name through `use super::*` depends on the module that defines it,
-/// not on the parent; the parent's own edge keeps the `*` it never uses.
+/// not on the parent. The parent uses none of the names and only passes them
+/// on, so the glob is no dependency of the parent.
 #[test]
 fn test_child_resolves_through_the_parents_private_glob() {
     let (temp, cmd) = fixture_args("reexport_workspace", false);
@@ -1184,15 +1185,33 @@ fn test_child_resolves_through_the_parents_private_glob() {
         Some(["Mapping".to_string()].as_slice()),
         "buffer -> actions should carry the name buffer uses, found: {symbols:?}"
     );
-    let parent = ("forwarder".to_string(), "actions".to_string());
-    assert_eq!(
-        symbols.get(&parent).map(Vec::as_slice),
-        Some(["*".to_string()].as_slice()),
-        "forwarder -> actions should keep the unused glob's `*`, found: {symbols:?}"
+    assert!(
+        !symbols.contains_key(&("forwarder".to_string(), "actions".to_string())),
+        "forwarder -> actions should not exist, found: {symbols:?}"
     );
     assert!(
         !symbols.contains_key(&("buffer".to_string(), "forwarder".to_string())),
         "buffer -> forwarder should not exist, found: {symbols:?}"
+    );
+}
+
+/// A private glob in a parent that neither the parent nor a child takes a name
+/// from passes nothing on; the import is there, and the edge with it.
+#[test]
+fn test_unused_private_glob_in_a_parent_keeps_its_edge() {
+    let (temp, cmd) = fixture_args("reexport_workspace", false);
+
+    let result = run(cmd);
+    assert!(result.is_ok(), "run() should succeed: {result:?}");
+
+    let svg = std::fs::read_to_string(temp.path()).unwrap();
+    let symbols = extract_arc_symbols(&svg);
+
+    let parent = ("holder".to_string(), "item".to_string());
+    assert_eq!(
+        symbols.get(&parent).map(Vec::as_slice),
+        Some(["*".to_string()].as_slice()),
+        "holder -> item should keep the unused glob's `*`, found: {symbols:?}"
     );
 }
 

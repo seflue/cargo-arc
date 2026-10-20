@@ -6,6 +6,7 @@ use crate::model::{
     UseCategory,
 };
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::path::Path;
@@ -196,6 +197,46 @@ impl FromIterator<(String, HashMap<String, ModuleExportInfo>)> for ReExportMap {
     }
 }
 
+/// [`resolve_reexport_noting`] with nowhere to note forwarded globs.
+#[cfg(test)]
+pub(crate) fn resolve_reexport(
+    dep: &mut DependencyRef,
+    reexport_map: &ReExportMap,
+    importer_module: &str,
+) -> bool {
+    resolve_reexport_noting(dep, reexport_map, importer_module, None)
+}
+
+/// The private globs a descendant named something through, per crate: which
+/// module holds the glob and which module it imports from. The module holding
+/// such a glob passes the names on to its descendants.
+#[derive(Debug, Default)]
+pub(crate) struct ForwardedGlobs(RefCell<HashSet<(String, String, String)>>);
+
+impl ForwardedGlobs {
+    fn note(&self, crate_name: &str, holder: &str, source: &str) {
+        self.0.borrow_mut().insert((
+            crate_name.to_string(),
+            holder.to_string(),
+            source.to_string(),
+        ));
+    }
+
+    /// Whether `dep` is the `*` of a private glob in `holder` of `crate_name`
+    /// that a descendant named something through. It stands for no name
+    /// `holder` uses itself, since a used name replaces the `*`.
+    pub(crate) fn passes_on(&self, crate_name: &str, holder: &str, dep: &DependencyRef) -> bool {
+        is_glob(dep)
+            && !dep.via_reexport
+            && dep.target_package == crate_name
+            && self.0.borrow().contains(&(
+                crate_name.to_string(),
+                holder.to_string(),
+                dep.target_module.clone(),
+            ))
+    }
+}
+
 /// Resolve re-exports in a [`DependencyRef`]: follow the re-export chain
 /// until the original definition module is found, crossing into another
 /// workspace crate where the chain does.
@@ -203,10 +244,13 @@ impl FromIterator<(String, HashMap<String, ModuleExportInfo>)> for ReExportMap {
 /// no re-export applies. Returns `false` when the chain instead reaches a
 /// name a private `use` bound to something outside the crate (an external
 /// crate) — the caller then produces no edge for `dep` — and `true` otherwise.
-pub(crate) fn resolve_reexport(
+/// Each private glob of an ancestor the chain passes through is noted in
+/// `forwarded`.
+fn resolve_reexport_noting(
     dep: &mut DependencyRef,
     reexport_map: &ReExportMap,
     importer_module: &str,
+    forwarded: Option<&ForwardedGlobs>,
 ) -> bool {
     let Some(mut crate_exports) = reexport_map.get(&dep.target_package) else {
         return true;
@@ -309,16 +353,12 @@ pub(crate) fn resolve_reexport(
         // Tier 2b: Private glob, visible only to descendants of the module
         // that holds it, like Tier 1b.
         if is_descendant(importer_module, &dep.target_module)
-            && let Some(glob_src) = module_info.private_glob_sources.iter().find(|glob_src| {
-                module_scope_holds_symbol(
-                    crate_exports,
-                    glob_src,
-                    item,
-                    importer_module,
-                    &mut HashSet::new(),
-                )
-            })
+            && let Some(glob_src) =
+                private_glob_holding(crate_exports, module_info, item, importer_module)
         {
+            if let Some(forwarded) = forwarded.filter(|_| importer_module != dep.target_module) {
+                forwarded.note(&dep.target_package, &dep.target_module, glob_src);
+            }
             dep.target_module = glob_src.clone();
             continue;
         }
@@ -326,6 +366,25 @@ pub(crate) fn resolve_reexport(
         break;
     }
     true
+}
+
+/// The module a private glob of `module_info` imports from that brings
+/// `symbol` into the scope of `importer_module`.
+fn private_glob_holding<'m>(
+    crate_exports: &HashMap<String, ModuleExportInfo>,
+    module_info: &'m ModuleExportInfo,
+    symbol: &str,
+    importer_module: &str,
+) -> Option<&'m String> {
+    module_info.private_glob_sources.iter().find(|glob_src| {
+        module_scope_holds_symbol(
+            crate_exports,
+            glob_src,
+            symbol,
+            importer_module,
+            &mut HashSet::new(),
+        )
+    })
 }
 
 /// Point `dep` at the first module of another workspace crate that a glob of
@@ -562,6 +621,21 @@ pub(crate) struct ResolutionContext<'a> {
     /// the current file belongs to. The root puts `Y` in the extern prelude,
     /// so it names `X` in every module of the crate.
     pub(crate) extern_crates: &'a HashMap<String, String>,
+    /// Where to note the private globs of ancestors this file names something
+    /// through. `None` where no caller asks.
+    pub(crate) forwarded_globs: Option<&'a ForwardedGlobs>,
+}
+
+impl ResolutionContext<'_> {
+    /// [`resolve_reexport_noting`] from this file's module.
+    fn resolve_reexport(&self, dep: &mut DependencyRef) -> bool {
+        resolve_reexport_noting(
+            dep,
+            self.reexport_map,
+            self.current_module_path,
+            self.forwarded_globs,
+        )
+    }
 }
 
 /// Promote any context to a test context. Production becomes Unit test;
@@ -1688,7 +1762,7 @@ pub(crate) fn parse_workspace_dependencies(
                 }
                 dep.via_reexport = via_reexport;
                 for mut dep in expand_glob(dep, ctx.reexport_map) {
-                    if resolve_reexport(&mut dep, ctx.reexport_map, ctx.current_module_path) {
+                    if ctx.resolve_reexport(&mut dep) {
                         DependencyRef::dedup_push(&mut deps, &mut seen_targets, dep);
                     }
                 }
@@ -2218,7 +2292,7 @@ pub(crate) fn parse_path_ref_dependencies(
                 }
                 PathBinding::Elsewhere => continue,
             };
-        if !resolve_reexport(&mut dep, ctx.reexport_map, ctx.current_module_path) {
+        if !ctx.resolve_reexport(&mut dep) {
             continue;
         }
         let Some(item) = dep.target_item.as_deref() else {
