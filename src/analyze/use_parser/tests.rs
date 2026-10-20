@@ -2499,6 +2499,34 @@ mod tests {
     }
 
     #[test]
+    fn super_from_inline_mod_reaches_a_child_module_of_the_file() {
+        // `pub mod api { pub use super::backend::Api; }` in render/mod.rs:
+        // `super` leaves the inline module, `backend` is a child of `render`.
+        let source = r"
+pub mod api {
+    pub use super::backend::Api;
+    pub use super::*;
+    pub use super::helper;
+}
+";
+        let mp: ModulePathMap = [(
+            "my_crate".to_string(),
+            HashSet::from(["render".into(), "render::backend".into()]),
+        )]
+        .into_iter()
+        .collect();
+        let uses = parse_test_uses(source);
+        let ctx = ResolutionContextBuilder::new(Path::new("src/render/mod.rs"))
+            .module_paths(&mp)
+            .current_module_path("render")
+            .build();
+        let deps = parse_workspace_dependencies(&uses, &ctx, &FileBindings::default());
+        assert_eq!(deps.len(), 1, "only the child module is a target: {deps:?}");
+        assert_eq!(deps[0].target_module, "render::backend");
+        assert_eq!(deps[0].target_item, Some("Api".to_string()));
+    }
+
+    #[test]
     fn test_collect_use_items_tracks_inline_depth() {
         let source = r"
 use crate::top;
