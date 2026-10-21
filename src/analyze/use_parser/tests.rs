@@ -4637,6 +4637,51 @@ mod use_category_tests {
         assert_eq!(deps[0].line, 1);
     }
 
+    /// What a name is used for is decided where it is written: a name a glob
+    /// brings in and test code uses is a test use, and the glob, from which no
+    /// production code takes a name, keeps its production `*`.
+    #[test]
+    fn a_glob_name_used_in_test_code_is_a_test_use() {
+        let deps = deps_of(
+            "use crate::vocab::*;\n#[cfg(test)]\nfn check(_: Config) {}\n#[test]\nfn checks(_: Mode) {}",
+        );
+        let test = EdgeContext::test(crate::model::TestKind::Unit);
+        let contexts: Vec<_> = deps
+            .iter()
+            .map(|d| (d.target_item.as_deref(), d.context.clone()))
+            .collect();
+        assert_eq!(
+            contexts,
+            [
+                (Some("Config"), test.clone()),
+                (Some("Mode"), test),
+                (Some("*"), EdgeContext::production()),
+            ]
+        );
+    }
+
+    /// A name a file-level `use` binds and only test code uses: the import
+    /// stays a production dependency, the occurrence is a test use.
+    #[test]
+    fn a_bound_name_used_in_test_code_is_a_test_use() {
+        let deps = deps_of("use crate::vocab::Config;\n#[cfg(test)]\nfn check(_: Config) {}");
+        let test = EdgeContext::test(crate::model::TestKind::Unit);
+        let test_dep = deps
+            .iter()
+            .find(|d| d.context == test)
+            .unwrap_or_else(|| panic!("no test dependency: {deps:?}"));
+        assert_eq!(test_dep.uses, [use_at(3, UseCategory::Types)]);
+        let production = deps
+            .iter()
+            .find(|d| d.context == EdgeContext::production())
+            .unwrap_or_else(|| panic!("no production dependency: {deps:?}"));
+        assert_eq!(production.line, 1);
+        assert!(
+            production.uses.iter().all(|u| u.line == 1),
+            "the import alone: {deps:?}"
+        );
+    }
+
     #[test]
     fn a_free_fn_called_is_a_fns_use() {
         let deps = deps_of("use crate::vocab::build;\nfn f() { build(); crate::vocab::build(); }");

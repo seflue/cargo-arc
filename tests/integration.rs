@@ -1395,6 +1395,31 @@ fn test_file_module_under_cfg_test_has_test_edges() {
     );
 }
 
+/// A name a glob brings in that only test code uses is a test use: the glob's
+/// production edge keeps its `*`, and the name joins it only when test code
+/// is read.
+#[test]
+fn test_glob_name_used_only_in_tests_keeps_the_production_star() {
+    for (include_tests, expected) in [(false, vec!["*"]), (true, vec!["*", "assist"])] {
+        let (temp, cmd) = fixture_args("test_context", include_tests);
+        let svg = run_to_string(&temp, cmd);
+        let symbols = extract_arc_symbols(&svg);
+        let contexts = extract_arc_contexts(&svg);
+
+        let key = ("globbed".to_string(), "helpers".to_string());
+        assert_eq!(
+            symbols.get(&key),
+            Some(&expected.iter().map(ToString::to_string).collect()),
+            "globbed -> helpers symbols (include_tests {include_tests}), found: {symbols:?}"
+        );
+        assert_eq!(
+            contexts.get(&key).map(|(kind, _)| kind.as_str()),
+            Some("production"),
+            "globbed -> helpers context (include_tests {include_tests}), found: {contexts:?}"
+        );
+    }
+}
+
 /// Every use on an edge, with its category, goes to stderr under `--debug`,
 /// so the walker's result can be read without a rule that consumes it.
 /// A subprocess, because `run` installs the debug log on the process's own
