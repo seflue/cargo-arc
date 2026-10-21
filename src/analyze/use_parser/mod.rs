@@ -81,6 +81,10 @@ pub(crate) struct ModuleExportInfo {
     /// `pub(self)` and `pub(in …)`. They stay out of `definitions`; in the
     /// root, every module of the crate can name them through `crate::`.
     pub(crate) private_definitions: HashSet<String>,
+    /// Names of the child modules declared private, `pub(self)` or `pub(in …)`,
+    /// split like `private_definitions`. A glob from outside this module does
+    /// not bring them in.
+    pub(crate) private_modules: HashSet<String>,
     /// The associated items of the types and traits defined here, by the
     /// defined name. An `impl` block in another file of the crate lands here
     /// too, on the module that defines the type.
@@ -114,6 +118,7 @@ impl ModuleExportInfo {
     pub(crate) fn is_empty(&self) -> bool {
         self.definitions.is_empty()
             && self.private_definitions.is_empty()
+            && self.private_modules.is_empty()
             && self.associated.is_empty()
             && self.explicit_reexports.is_empty()
             && self.private_uses.is_empty()
@@ -1936,9 +1941,8 @@ pub(crate) fn resolve_single_path(
 /// the path `parent::helper` names the private module and the fn, and only
 /// the fn is visible outside `parent`. A file of the same crate inside
 /// `parent` sees the module, so its dependency stays on the module. A
-/// re-export of a module under that name keeps the dependency on the module.
-/// Module visibility is not recorded, so a public module named like the item
-/// is taken for the item too.
+/// re-export of a module under that name keeps the dependency on the module,
+/// and so does a public module, which is visible wherever the item is.
 fn take_item_the_parent_reexports(ctx: &ResolutionContext, dep: &mut DependencyRef) {
     if dep.target_item.is_some() || dep.target_module.is_empty() {
         return;
@@ -1956,6 +1960,7 @@ fn take_item_the_parent_reexports(ctx: &ResolutionContext, dep: &mut DependencyR
         .reexport_map
         .exports_for(dep)
         .and_then(|modules| modules.get(parent))
+        .filter(|info| info.private_modules.contains(name))
         .and_then(|info| info.explicit_reexports.get(name))
     else {
         return;
@@ -2438,18 +2443,25 @@ impl FileBindings {
     }
 
     /// Bind the child modules of the module the glob `dep` imports from, and
-    /// the names that module binds to a module by `pub use` or, where the
-    /// file sits below it in the same crate, by a private `use`.
+    /// the names that module binds to a module by `pub use`. Where the file
+    /// sits below that module in the same crate, its private child modules
+    /// and the modules a private `use` binds count too.
     fn bind_glob_modules(
         &mut self,
         region: RegionId,
         ctx: &ResolutionContext,
         dep: &DependencyRef,
     ) {
+        let sees_private = !dep.in_lib_view
+            && dep.target_package == normalize_crate_name(ctx.current_crate)
+            && is_descendant(ctx.current_module_path, &dep.target_module);
+        let info = ctx.reexport_map.module_info(dep);
         let module_paths = ctx.all_module_paths.get_or_empty(&dep.target_package);
         let children = module_paths.iter().filter_map(|path| {
             let (parent, name) = path.rsplit_once("::").unwrap_or(("", path));
-            (parent == dep.target_module).then(|| {
+            let visible =
+                sees_private || info.is_none_or(|info| !info.private_modules.contains(name));
+            (parent == dep.target_module && visible).then(|| {
                 let child = DependencyRef {
                     target_module: path.clone(),
                     target_item: None,
@@ -2458,15 +2470,10 @@ impl FileBindings {
                 (name.to_string(), absolute_module_path(ctx, &child))
             })
         });
-        let sees_private_uses = !dep.in_lib_view
-            && dep.target_package == normalize_crate_name(ctx.current_crate)
-            && is_descendant(ctx.current_module_path, &dep.target_module);
-        let used_modules = ctx
-            .reexport_map
-            .module_info(dep)
+        let used_modules = info
             .into_iter()
             .flat_map(|info| {
-                let private_uses = sees_private_uses.then_some(&info.private_uses);
+                let private_uses = sees_private.then_some(&info.private_uses);
                 info.explicit_reexports
                     .iter()
                     .chain(private_uses.into_iter().flatten())
