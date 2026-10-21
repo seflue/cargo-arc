@@ -1493,6 +1493,24 @@ fn test_module_without_own_items_is_a_module_in_the_chain() {
     }
 }
 
+/// A file inside the module that declares a private module sees the module,
+/// even where the module re-exports an item of the module's name: a path on
+/// through the module names an item in it.
+#[test]
+fn test_private_module_is_a_module_for_a_descendant() {
+    for include_tests in [false, true] {
+        let symbols = module_facts_symbols(include_tests);
+        let key = ("sub".to_string(), "helper".to_string());
+        assert!(
+            symbols
+                .get(&key)
+                .is_some_and(|names| names.contains(&"run".to_string())),
+            "sub -> helper should carry `run` (include_tests {include_tests}), \
+             found: {symbols:?}"
+        );
+    }
+}
+
 /// Every use on an edge, with its category, goes to stderr under `--debug`,
 /// so the walker's result can be read without a rule that consumes it.
 /// A subprocess, because `run` installs the debug log on the process's own
