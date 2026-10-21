@@ -2,6 +2,8 @@ pub mod consumer;
 pub mod facade;
 pub mod fullfacade;
 pub mod hub;
+pub mod parent;
+pub mod prelude;
 pub mod pubtk;
 pub mod tk;
 pub mod user;

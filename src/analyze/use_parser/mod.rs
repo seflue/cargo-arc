@@ -105,6 +105,10 @@ pub(crate) struct ModuleExportInfo {
     /// `private_uses`, visible to descendants only, which may name any of
     /// the forwarded symbols through this module.
     pub(crate) private_glob_sources: Vec<String>,
+    /// Private glob sources in another workspace crate
+    /// (`use other_crate::m::*`): crate name and module path there. Visible
+    /// to descendants like `private_glob_sources`.
+    pub(crate) foreign_private_glob_sources: Vec<(String, String)>,
     /// Names a private `use` binds to a path the resolution chain cannot
     /// place: an external crate, invisible while re-exports are collected.
     /// Visible to descendants like `private_uses`, but nothing here names a
@@ -125,6 +129,7 @@ impl ModuleExportInfo {
             && self.glob_sources.is_empty()
             && self.foreign_glob_sources.is_empty()
             && self.private_glob_sources.is_empty()
+            && self.foreign_private_glob_sources.is_empty()
             && self.elsewhere.is_empty()
     }
 }
@@ -545,28 +550,18 @@ fn follow_reexports(
         }
 
         // Tier 2: Glob re-exports
-        let mut found = false;
-        for glob_src in &module_info.glob_sources {
-            let mut glob_visited = HashSet::new();
-            if module_exports_symbol(crate_exports, glob_src, item, &mut glob_visited) {
-                let original_target = dep.target_module.clone();
-                dep.target_module = glob_src.clone();
-                tracing::debug!(
-                    "re-export resolved: {} -> {} (via glob re-export in {})",
-                    original_target,
-                    dep.target_module,
-                    original_target
-                );
-                found = true;
-                break;
-            }
-        }
-        if found {
+        if follow_local_glob(dep, &module_info.glob_sources, reexport_map, item, &visited) {
             continue;
         }
 
         // Tier 2a: Glob re-exports from a module of another workspace crate
-        if let Some(next_exports) = follow_foreign_glob(dep, module_info, reexport_map, item) {
+        if let Some(next_exports) = follow_foreign_glob(
+            dep,
+            &module_info.foreign_glob_sources,
+            reexport_map,
+            item,
+            &visited,
+        ) {
             crate_exports = next_exports;
             continue;
         }
@@ -574,13 +569,17 @@ fn follow_reexports(
         // Tier 2b: Private glob, visible only to descendants of the module
         // that holds it, like Tier 1b.
         if is_descendant(importer_module, &dep.target_module)
-            && let Some(glob_src) =
-                private_glob_holding(crate_exports, module_info, item, importer_module)
+            && let Some(next_exports) = follow_private_glob(
+                dep,
+                crate_exports,
+                module_info,
+                reexport_map,
+                item,
+                importer_module,
+                passed_on,
+            )
         {
-            if let Some(passed_on) = passed_on.filter(|_| importer_module != dep.target_module) {
-                passed_on.note_glob(dep, glob_src);
-            }
-            dep.target_module = glob_src.clone();
+            crate_exports = next_exports;
             continue;
         }
 
@@ -592,17 +591,54 @@ fn follow_reexports(
     true
 }
 
+/// Point `dep` at the module a private glob of `module_info` imports from
+/// that brings `symbol` into the scope of `importer_module`: one of this
+/// crate, noted in `passed_on`, or else one of another workspace crate.
+/// Returns the export info of that module's crate, where the chain goes on.
+fn follow_private_glob<'m>(
+    dep: &mut DependencyRef,
+    crate_exports: &'m HashMap<String, ModuleExportInfo>,
+    module_info: &ModuleExportInfo,
+    reexport_map: &'m ReExportMap,
+    symbol: &str,
+    importer_module: &str,
+    passed_on: Option<&PassedOn>,
+) -> Option<&'m HashMap<String, ModuleExportInfo>> {
+    if let Some(glob_src) = private_glob_holding(
+        reexport_map,
+        &dep.target_package,
+        module_info,
+        symbol,
+        importer_module,
+    ) {
+        if let Some(passed_on) = passed_on.filter(|_| importer_module != dep.target_module) {
+            passed_on.note_glob(dep, glob_src);
+        }
+        dep.target_module.clone_from(glob_src);
+        return Some(crate_exports);
+    }
+    follow_foreign_glob(
+        dep,
+        &module_info.foreign_private_glob_sources,
+        reexport_map,
+        symbol,
+        &HashSet::new(),
+    )
+}
+
 /// The module a private glob of `module_info` imports from that brings
 /// `symbol` into the scope of `importer_module`.
 fn private_glob_holding<'m>(
-    crate_exports: &HashMap<String, ModuleExportInfo>,
+    reexport_map: &ReExportMap,
+    crate_name: &str,
     module_info: &'m ModuleExportInfo,
     symbol: &str,
     importer_module: &str,
 ) -> Option<&'m String> {
     module_info.private_glob_sources.iter().find(|glob_src| {
         module_scope_holds_symbol(
-            crate_exports,
+            reexport_map,
+            crate_name,
             glob_src,
             symbol,
             importer_module,
@@ -611,27 +647,64 @@ fn private_glob_holding<'m>(
     })
 }
 
-/// Point `dep` at the first module of another workspace crate that a glob of
-/// `module_info` republishes and that exports `symbol`. Returns that crate's
-/// export info, where the chain goes on.
+/// Point `dep` at the first of the glob sources `sources`, modules of the
+/// crate `dep` points into, that exports `symbol` without passing a module in
+/// `passed`: a source that reaches it only through a module the chain already
+/// passed leads back, not on. Returns whether one does.
+fn follow_local_glob(
+    dep: &mut DependencyRef,
+    sources: &[String],
+    reexport_map: &ReExportMap,
+    symbol: &str,
+    passed: &HashSet<(String, String)>,
+) -> bool {
+    let Some(glob_src) = sources.iter().find(|glob_src| {
+        module_exports_symbol(
+            reexport_map,
+            &dep.target_package,
+            glob_src,
+            symbol,
+            &mut passed.clone(),
+        )
+    }) else {
+        return false;
+    };
+    tracing::debug!(
+        "re-export resolved: {} -> {} (via glob re-export in {})",
+        dep.target_module,
+        glob_src,
+        dep.target_module
+    );
+    dep.target_module.clone_from(glob_src);
+    true
+}
+
+/// Point `dep` at the first of the glob sources `sources`, modules of another
+/// workspace crate by crate name and module path, that exports `symbol`
+/// without passing a module in `passed`. Returns that crate's export info,
+/// where the chain goes on.
 fn follow_foreign_glob<'m>(
     dep: &mut DependencyRef,
-    module_info: &ModuleExportInfo,
+    sources: &[(String, String)],
     reexport_map: &'m ReExportMap,
     symbol: &str,
+    passed: &HashSet<(String, String)>,
 ) -> Option<&'m HashMap<String, ModuleExportInfo>> {
-    module_info
-        .foreign_glob_sources
-        .iter()
-        .find_map(|(crate_name, glob_src)| {
-            let exports = reexport_map.get(crate_name)?;
-            if !module_exports_symbol(exports, glob_src, symbol, &mut HashSet::new()) {
-                return None;
-            }
-            dep.target_package.clone_from(crate_name);
-            dep.target_module.clone_from(glob_src);
-            Some(exports)
-        })
+    sources.iter().find_map(|(crate_name, glob_src)| {
+        let exports = reexport_map.get(crate_name)?;
+        if !module_exports_symbol(
+            reexport_map,
+            crate_name,
+            glob_src,
+            symbol,
+            &mut passed.clone(),
+        ) {
+            return None;
+        }
+        dep.target_package.clone_from(crate_name);
+        dep.target_module.clone_from(glob_src);
+        Some(exports)
+    })
 }
 
 /// Point `dep` at the module `target` binds, when it binds a module or a crate
@@ -663,17 +736,23 @@ fn binds_a_module(target: &ReExportTarget, module_paths: &ModulePathMap) -> bool
     }
 }
 
-/// Check whether a module exports a symbol (own definition OR re-export).
+/// Check whether a module of `crate_name` exports a symbol (own definition OR
+/// re-export), following glob re-exports into other workspace crates. A
+/// module in `visited`, by crate and module path, exports nothing more.
 fn module_exports_symbol(
-    crate_exports: &HashMap<String, ModuleExportInfo>,
+    reexport_map: &ReExportMap,
+    crate_name: &str,
     module_path: &str,
     symbol: &str,
-    visited: &mut HashSet<String>,
+    visited: &mut HashSet<(String, String)>,
 ) -> bool {
-    if !visited.insert(module_path.to_string()) {
+    if !visited.insert((crate_name.to_string(), module_path.to_string())) {
         return false;
     }
-    let Some(info) = crate_exports.get(module_path) else {
+    let Some(info) = reexport_map
+        .get(crate_name)
+        .and_then(|crate_exports| crate_exports.get(module_path))
+    else {
         return false;
     };
     if info.definitions.contains_key(symbol) {
@@ -682,12 +761,19 @@ fn module_exports_symbol(
     if info.explicit_reexports.contains_key(symbol) {
         return true;
     }
-    for glob_src in &info.glob_sources {
-        if module_exports_symbol(crate_exports, glob_src, symbol, visited) {
-            return true;
-        }
-    }
-    false
+    let local_globs = info
+        .glob_sources
+        .iter()
+        .map(|glob_src| (crate_name, glob_src.as_str()));
+    let foreign_globs = info
+        .foreign_glob_sources
+        .iter()
+        .map(|(glob_crate, glob_src)| (glob_crate.as_str(), glob_src.as_str()));
+    local_globs
+        .chain(foreign_globs)
+        .any(|(glob_crate, glob_src)| {
+            module_exports_symbol(reexport_map, glob_crate, glob_src, symbol, visited)
+        })
 }
 
 /// Whether a `pub use` in the root of `crate_name` brings `symbol` into the
@@ -700,7 +786,13 @@ fn root_reexports(reexport_map: &ReExportMap, crate_name: &str, symbol: &str) ->
     crate_exports.get("").is_some_and(|root| {
         root.explicit_reexports.contains_key(symbol)
             || root.glob_sources.iter().any(|glob_src| {
-                module_exports_symbol(crate_exports, glob_src, symbol, &mut HashSet::new())
+                module_exports_symbol(
+                    reexport_map,
+                    crate_name,
+                    glob_src,
+                    symbol,
+                    &mut HashSet::new(),
+                )
             })
     })
 }
@@ -833,7 +925,8 @@ fn glob_child_module(
 /// A private glob is followed on direct hops only; a `pub use m::*` on the
 /// way republishes `m`'s public items, none of `m`'s private imports.
 fn module_scope_holds_symbol(
-    crate_exports: &HashMap<String, ModuleExportInfo>,
+    reexport_map: &ReExportMap,
+    crate_name: &str,
     module_path: &str,
     symbol: &str,
     importer_module: &str,
@@ -842,17 +935,33 @@ fn module_scope_holds_symbol(
     if !visited.insert(module_path.to_string()) {
         return false;
     }
-    if module_exports_symbol(crate_exports, module_path, symbol, &mut HashSet::new()) {
+    if module_exports_symbol(
+        reexport_map,
+        crate_name,
+        module_path,
+        symbol,
+        &mut HashSet::new(),
+    ) {
         return true;
     }
     if !is_descendant(importer_module, module_path) {
         return false;
     }
-    let Some(info) = crate_exports.get(module_path) else {
+    let Some(info) = reexport_map
+        .get(crate_name)
+        .and_then(|crate_exports| crate_exports.get(module_path))
+    else {
         return false;
     };
     info.private_glob_sources.iter().any(|glob_src| {
-        module_scope_holds_symbol(crate_exports, glob_src, symbol, importer_module, visited)
+        module_scope_holds_symbol(
+            reexport_map,
+            crate_name,
+            glob_src,
+            symbol,
+            importer_module,
+            visited,
+        )
     })
 }
 
@@ -2775,17 +2884,21 @@ fn context_of_use(reference: &EdgeContext, binding: &EdgeContext) -> EdgeContext
 /// scope: by its own definition, a named re-export, a glob re-export chain,
 /// or a private glob the file's module sees as a descendant.
 fn glob_exports(ctx: &ResolutionContext, glob: &DependencyRef, name: &str) -> bool {
-    ctx.reexport_map
-        .exports_for(glob)
-        .is_some_and(|crate_exports| {
-            module_scope_holds_symbol(
-                crate_exports,
-                &glob.target_module,
-                name,
-                ctx.current_module_path,
-                &mut HashSet::new(),
-            )
-        })
+    let lib_view;
+    let reexport_map = if glob.in_lib_view {
+        lib_view = ctx.reexport_map.lib_view();
+        &lib_view
+    } else {
+        ctx.reexport_map
+    };
+    module_scope_holds_symbol(
+        reexport_map,
+        &glob.target_package,
+        &glob.target_module,
+        name,
+        ctx.current_module_path,
+        &mut HashSet::new(),
+    )
 }
 
 /// Take the segment a path writes after the item it resolved to:
