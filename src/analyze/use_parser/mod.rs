@@ -242,21 +242,30 @@ type DefinedAt = (String, String, String);
 
 /// The private `use` items and globs a descendant named something through,
 /// per module that holds them. Such a module passes the names on to its
-/// descendants.
+/// descendants. Each note records whether production code named something
+/// through it, since only that passes a name on for production code.
 #[derive(Debug, Default)]
 pub(crate) struct PassedOn {
     /// Holder and the module its glob imports from.
-    globs: RefCell<HashSet<(Holder, String)>>,
+    globs: RefCell<HashMap<(Holder, String), FromProduction>>,
     /// Holder and where the name the descendant reached is defined.
-    uses: RefCell<HashSet<(Holder, DefinedAt)>>,
+    uses: RefCell<HashMap<(Holder, DefinedAt), FromProduction>>,
 }
 
+/// Whether production code, not only test code, named something through a
+/// note's holder.
+type FromProduction = bool;
+
 impl PassedOn {
-    fn note_glob(&self, crate_name: &str, holder: &str, source: &str) {
-        self.globs.borrow_mut().insert((
-            (crate_name.to_string(), holder.to_string()),
+    /// Note that the module `dep` now points at passed on what its private
+    /// glob from `source` brings in.
+    fn note_glob(&self, dep: &DependencyRef, source: &str) {
+        let noted = (
+            (dep.target_package.clone(), dep.target_module.clone()),
             source.to_string(),
-        ));
+        );
+        *self.globs.borrow_mut().entry(noted).or_default() |=
+            dep.context.kind == UsageKind::Production;
     }
 
     /// Note that each of `holders` other than `importer_module` itself passed
@@ -275,7 +284,8 @@ impl PassedOn {
                 dep.target_module.clone(),
                 name.to_string(),
             );
-            uses.insert((holder, defined_at));
+            *uses.entry((holder, defined_at)).or_default() |=
+                dep.context.kind == UsageKind::Production;
         }
     }
 
@@ -285,7 +295,8 @@ impl PassedOn {
     /// used name replaces the `*`, or a private `use` whose name nothing in
     /// `holder`'s file names. A trait import stays: its methods may be called
     /// without the name being written. So does a glob that may bring in a
-    /// trait, as `reexport_map` tells.
+    /// trait, as `reexport_map` tells. A production dependency passes on only
+    /// what production code named through it.
     pub(crate) fn passes_on(
         &self,
         crate_name: &str,
@@ -302,23 +313,31 @@ impl PassedOn {
                 dep.target_module.clone(),
             );
             return dep.target_package == crate_name
-                && self.globs.borrow().contains(&noted)
+                && covers(self.globs.borrow().get(&noted), dep)
                 && !glob_may_bring_a_trait(dep, holder, reexport_map, &mut HashSet::new());
         }
         let holder = (crate_name.to_string(), holder.to_string());
         let Some(item) = &dep.target_item else {
             return false;
         };
-        is_import_only(dep)
-            && self.uses.borrow().contains(&(
-                holder,
-                (
-                    dep.target_package.clone(),
-                    dep.target_module.clone(),
-                    item.clone(),
-                ),
-            ))
+        let noted = (
+            holder,
+            (
+                dep.target_package.clone(),
+                dep.target_module.clone(),
+                item.clone(),
+            ),
+        );
+        is_import_only(dep) && covers(self.uses.borrow().get(&noted), dep)
     }
+}
+
+/// Whether a note passes `dep` on: a production dependency only through a
+/// note from production code, a test dependency through any.
+fn covers(note: Option<&FromProduction>, dep: &DependencyRef) -> bool {
+    note.is_some_and(|&from_production| {
+        from_production || dep.context.kind != UsageKind::Production
+    })
 }
 
 /// Whether the only use of `dep` is the one [`import_only_use`] derives for an
@@ -535,7 +554,7 @@ fn follow_reexports(
                 private_glob_holding(crate_exports, module_info, item, importer_module)
         {
             if let Some(passed_on) = passed_on.filter(|_| importer_module != dep.target_module) {
-                passed_on.note_glob(&dep.target_package, &dep.target_module, glob_src);
+                passed_on.note_glob(dep, glob_src);
             }
             dep.target_module = glob_src.clone();
             continue;
