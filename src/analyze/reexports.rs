@@ -294,7 +294,7 @@ fn resolution_context<'a>(
         reexport_map: &EMPTY_REEXPORT_MAP,
         external_crate_names: &EMPTY_EXT_NAMES,
         extern_crates: ctx.extern_crates,
-        forwarded_globs: None,
+        passed_on: None,
     }
 }
 

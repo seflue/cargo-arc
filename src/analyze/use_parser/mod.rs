@@ -224,7 +224,7 @@ impl FromIterator<(String, HashMap<String, ModuleExportInfo>)> for ReExportMap {
     }
 }
 
-/// [`resolve_reexport_noting`] with nowhere to note forwarded globs.
+/// [`resolve_reexport_noting`] with nowhere to note what is passed on.
 #[cfg(test)]
 pub(crate) fn resolve_reexport(
     dep: &mut DependencyRef,
@@ -234,34 +234,92 @@ pub(crate) fn resolve_reexport(
     resolve_reexport_noting(dep, reexport_map, importer_module, None)
 }
 
-/// The private globs a descendant named something through, per crate: which
-/// module holds the glob and which module it imports from. The module holding
-/// such a glob passes the names on to its descendants.
-#[derive(Debug, Default)]
-pub(crate) struct ForwardedGlobs(RefCell<HashSet<(String, String, String)>>);
+/// A module holding a private `use` or glob, by crate and module path.
+type Holder = (String, String);
 
-impl ForwardedGlobs {
-    fn note(&self, crate_name: &str, holder: &str, source: &str) {
-        self.0.borrow_mut().insert((
-            crate_name.to_string(),
-            holder.to_string(),
+/// Where a name is defined: crate, module path and the name there.
+type DefinedAt = (String, String, String);
+
+/// The private `use` items and globs a descendant named something through,
+/// per module that holds them. Such a module passes the names on to its
+/// descendants.
+#[derive(Debug, Default)]
+pub(crate) struct PassedOn {
+    /// Holder and the module its glob imports from.
+    globs: RefCell<HashSet<(Holder, String)>>,
+    /// Holder and where the name the descendant reached is defined.
+    uses: RefCell<HashSet<(Holder, DefinedAt)>>,
+}
+
+impl PassedOn {
+    fn note_glob(&self, crate_name: &str, holder: &str, source: &str) {
+        self.globs.borrow_mut().insert((
+            (crate_name.to_string(), holder.to_string()),
             source.to_string(),
         ));
     }
 
-    /// Whether `dep` is the `*` of a private glob in `holder` of `crate_name`
-    /// that a descendant named something through. It stands for no name
-    /// `holder` uses itself, since a used name replaces the `*`.
-    pub(crate) fn passes_on(&self, crate_name: &str, holder: &str, dep: &DependencyRef) -> bool {
-        is_glob(dep)
-            && !dep.via_reexport
-            && dep.target_package == crate_name
-            && self.0.borrow().contains(&(
-                crate_name.to_string(),
-                holder.to_string(),
+    /// Note that each of `holders` other than `importer_module` itself passed
+    /// `name`, which `dep` now points at the module of, on.
+    fn note_uses(
+        &self,
+        holders: Vec<Holder>,
+        importer_module: &str,
+        dep: &DependencyRef,
+        name: &str,
+    ) {
+        let mut uses = self.uses.borrow_mut();
+        for holder in holders.into_iter().filter(|(_, m)| m != importer_module) {
+            let defined_at = (
+                dep.target_package.clone(),
                 dep.target_module.clone(),
+                name.to_string(),
+            );
+            uses.insert((holder, defined_at));
+        }
+    }
+
+    /// Whether `dep`, a dependency of `holder` in `crate_name`, only passes a
+    /// name on to a descendant that named something through it: the `*` of a
+    /// private glob, which stands for no name `holder` uses itself, since a
+    /// used name replaces the `*`, or a private `use` whose name nothing in
+    /// `holder`'s file names. A trait import stays: its methods may be called
+    /// without the name being written.
+    pub(crate) fn passes_on(&self, crate_name: &str, holder: &str, dep: &DependencyRef) -> bool {
+        if dep.via_reexport {
+            return false;
+        }
+        let holder = (crate_name.to_string(), holder.to_string());
+        if is_glob(dep) {
+            return dep.target_package == crate_name
+                && self
+                    .globs
+                    .borrow()
+                    .contains(&(holder, dep.target_module.clone()));
+        }
+        let Some(item) = &dep.target_item else {
+            return false;
+        };
+        is_import_only(dep)
+            && self.uses.borrow().contains(&(
+                holder,
+                (
+                    dep.target_package.clone(),
+                    dep.target_module.clone(),
+                    item.clone(),
+                ),
             ))
     }
+}
+
+/// Whether the only use of `dep` is the one [`import_only_use`] derives for an
+/// import nothing in the file names, and it is no trait imported for its
+/// methods.
+fn is_import_only(dep: &DependencyRef) -> bool {
+    matches!(
+        dep.uses.as_slice(),
+        [only] if only.line == dep.line && !only.imported_for_methods
+    )
 }
 
 /// Resolve re-exports in a [`DependencyRef`]: follow the re-export chain
@@ -271,19 +329,19 @@ impl ForwardedGlobs {
 /// no re-export applies. Returns `false` when the chain instead reaches a
 /// name a private `use` bound to something outside the crate (an external
 /// crate) — the caller then produces no edge for `dep` — and `true` otherwise.
-/// Each private glob of an ancestor the chain passes through is noted in
-/// `forwarded`. A `dep` in the lib view follows the chain from its package's
-/// lib root.
+/// Each private glob and private `use` of an ancestor the chain passes
+/// through is noted in `passed_on`. A `dep` in the lib view follows the chain
+/// from its package's lib root.
 fn resolve_reexport_noting(
     dep: &mut DependencyRef,
     reexport_map: &ReExportMap,
     importer_module: &str,
-    forwarded: Option<&ForwardedGlobs>,
+    passed_on: Option<&PassedOn>,
 ) -> bool {
     if dep.in_lib_view {
-        follow_reexports(dep, &reexport_map.lib_view(), importer_module, forwarded)
+        follow_reexports(dep, &reexport_map.lib_view(), importer_module, passed_on)
     } else {
-        follow_reexports(dep, reexport_map, importer_module, forwarded)
+        follow_reexports(dep, reexport_map, importer_module, passed_on)
     }
 }
 
@@ -293,13 +351,14 @@ fn follow_reexports(
     dep: &mut DependencyRef,
     reexport_map: &ReExportMap,
     importer_module: &str,
-    forwarded: Option<&ForwardedGlobs>,
+    passed_on: Option<&PassedOn>,
 ) -> bool {
     let Some(mut crate_exports) = reexport_map.get(&dep.target_package) else {
         return true;
     };
     let mut visited = HashSet::new();
     let mut lookup_name = dep.target_item.clone();
+    let mut use_holders: Vec<Holder> = Vec::new();
 
     loop {
         if !visited.insert((dep.target_package.clone(), dep.target_module.clone())) {
@@ -348,6 +407,7 @@ fn follow_reexports(
             if end_on_module(dep, target, reexport_map) {
                 break;
             }
+            use_holders.push((dep.target_package.clone(), dep.target_module.clone()));
             dep.target_package = target.crate_name.clone();
             dep.target_module = target.module.clone();
             lookup_name = Some(target.original_name.clone());
@@ -399,14 +459,17 @@ fn follow_reexports(
             && let Some(glob_src) =
                 private_glob_holding(crate_exports, module_info, item, importer_module)
         {
-            if let Some(forwarded) = forwarded.filter(|_| importer_module != dep.target_module) {
-                forwarded.note(&dep.target_package, &dep.target_module, glob_src);
+            if let Some(passed_on) = passed_on.filter(|_| importer_module != dep.target_module) {
+                passed_on.note_glob(&dep.target_package, &dep.target_module, glob_src);
             }
             dep.target_module = glob_src.clone();
             continue;
         }
 
         break;
+    }
+    if let (Some(passed_on), Some(name)) = (passed_on, &lookup_name) {
+        passed_on.note_uses(use_holders, importer_module, dep, name);
     }
     true
 }
@@ -687,9 +750,9 @@ pub(crate) struct ResolutionContext<'a> {
     /// the current file belongs to. The root puts `Y` in the extern prelude,
     /// so it names `X` in every module of the crate.
     pub(crate) extern_crates: &'a HashMap<String, String>,
-    /// Where to note the private globs of ancestors this file names something
-    /// through. `None` where no caller asks.
-    pub(crate) forwarded_globs: Option<&'a ForwardedGlobs>,
+    /// Where to note the private globs and private `use` items of ancestors
+    /// this file names something through. `None` where no caller asks.
+    pub(crate) passed_on: Option<&'a PassedOn>,
 }
 
 impl ResolutionContext<'_> {
@@ -699,7 +762,7 @@ impl ResolutionContext<'_> {
             dep,
             self.reexport_map,
             self.current_module_path,
-            self.forwarded_globs,
+            self.passed_on,
         )
     }
 }
