@@ -1399,7 +1399,7 @@ impl AStruct { pub fn method(&self) {} }
             uses: Vec::new(),
             in_lib_view: false,
         };
-        resolve_reexport(&mut dep, &map, "");
+        resolve_reexport(&mut dep, &map, &mp, "");
 
         assert_eq!(
             (dep.target_package.as_str(), dep.target_module.as_str()),
