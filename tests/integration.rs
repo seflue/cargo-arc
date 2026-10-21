@@ -1420,6 +1420,51 @@ fn test_glob_name_used_only_in_tests_keeps_the_production_star() {
     }
 }
 
+/// A test module naming something through a parent's private `use` or glob
+/// does not pass the name on for the parent's production code: the parent
+/// keeps its production edge whether test code is read or not.
+#[test]
+fn test_test_module_keeps_the_parents_production_edge() {
+    for include_tests in [false, true] {
+        let (temp, cmd) = fixture_args("test_context", include_tests);
+        let svg = run_to_string(&temp, cmd);
+        let symbols = extract_arc_symbols(&svg);
+        let contexts = extract_arc_contexts(&svg);
+
+        for (parent, part, symbol) in [("parent", "part", "Piece"), ("globparent", "gpart", "*")] {
+            let key = (parent.to_string(), part.to_string());
+            assert_eq!(
+                symbols.get(&key).map(Vec::as_slice),
+                Some([symbol.to_string()].as_slice()),
+                "{parent} -> {part} (include_tests {include_tests}), found: {symbols:?}"
+            );
+            assert_eq!(
+                contexts.get(&key).map(|(kind, _)| kind.as_str()),
+                Some("production"),
+                "{parent} -> {part} context (include_tests {include_tests}), \
+                 found: {contexts:?}"
+            );
+        }
+    }
+}
+
+/// Reading test code adds test edges and changes no production edge.
+#[test]
+fn test_production_edges_do_not_depend_on_include_tests() {
+    let production_edges = |include_tests| {
+        let (temp, cmd) = fixture_args("test_context", include_tests);
+        let svg = run_to_string(&temp, cmd);
+        let mut edges: Vec<_> = extract_arc_contexts(&svg)
+            .into_iter()
+            .filter(|(_, (kind, _))| kind == "production")
+            .map(|(key, _)| key)
+            .collect();
+        edges.sort();
+        edges
+    };
+    assert_eq!(production_edges(true), production_edges(false));
+}
+
 /// Every use on an edge, with its category, goes to stderr under `--debug`,
 /// so the walker's result can be read without a rule that consumes it.
 /// A subprocess, because `run` installs the debug log on the process's own
