@@ -200,26 +200,28 @@ fn lua_namespaces_under_lua_dir_are_the_packages() {
     assert_eq!(packages, vec!["alpha", "beta"]);
 }
 
+/// The node `id`, named by its ancestors' names and its own, joined by `::`.
+fn qualified_node_name(nodes: &serde_json::Map<String, Value>, id: &str) -> String {
+    let mut parts = Vec::new();
+    let mut current = Some(id.to_string());
+    while let Some(id) = current {
+        let node = &nodes[&id];
+        parts.push(node["name"].as_str().unwrap().to_string());
+        current = node["parent"].as_str().map(str::to_string);
+    }
+    parts.reverse();
+    parts.join("::")
+}
+
 /// The module nodes in `STATIC_DATA`, each named by its ancestors' names and
 /// its own, joined by `::`, sorted.
 fn qualified_module_names(svg: &str) -> Vec<String> {
     let data = parse_static_data(svg);
     let nodes = data["nodes"].as_object().expect("nodes is object");
-    let qualified = |id: &str| {
-        let mut parts = Vec::new();
-        let mut current = Some(id.to_string());
-        while let Some(id) = current {
-            let node = &nodes[&id];
-            parts.push(node["name"].as_str().unwrap().to_string());
-            current = node["parent"].as_str().map(str::to_string);
-        }
-        parts.reverse();
-        parts.join("::")
-    };
     let mut names: Vec<String> = nodes
         .iter()
         .filter(|(_, node)| node["type"] == "module")
-        .map(|(id, _)| qualified(id))
+        .map(|(id, _)| qualified_node_name(nodes, id))
         .collect();
     names.sort();
     names
@@ -1526,6 +1528,82 @@ fn test_use_of_a_parents_module_binding_carries_the_path_on() {
                  found: {symbols:?}"
             );
         }
+    }
+}
+
+/// The symbols of each arc in the `module_facts` fixture, keyed by the
+/// qualified names of its ends, so two modules of one name stay apart.
+fn module_facts_qualified_symbols(
+    include_tests: bool,
+) -> std::collections::HashMap<(String, String), Vec<String>> {
+    let (temp, cmd) = fixture_args("module_facts", include_tests);
+    let data = parse_static_data(&run_to_string(&temp, cmd));
+    let nodes = data["nodes"].as_object().expect("nodes is object");
+    data["arcs"]
+        .as_object()
+        .expect("arcs is object")
+        .values()
+        .filter_map(|a| {
+            let from = qualified_node_name(nodes, a["from"].as_str()?);
+            let to = qualified_node_name(nodes, a["to"].as_str()?);
+            let mut symbols: Vec<String> = a["usages"]
+                .as_array()?
+                .iter()
+                .filter_map(|u| Some(u["symbol"].as_str()?.to_string()))
+                .collect();
+            symbols.sort();
+            Some(((from, to), symbols))
+        })
+        .collect()
+}
+
+/// A glob into another crate brings in its public child modules only: a path
+/// through a name like a private child's names what the name means here, the
+/// crate of that name.
+#[test]
+fn test_glob_does_not_bring_in_a_private_child_module() {
+    for include_tests in [false, true] {
+        let symbols = module_facts_qualified_symbols(include_tests);
+        let from = "app::consumer".to_string();
+        let crate_arc = (from.clone(), "extra".to_string());
+        assert_eq!(
+            symbols.get(&crate_arc).map(Vec::as_slice),
+            Some(["Thing".to_string()].as_slice()),
+            "app::consumer -> extra should carry `Thing` (include_tests {include_tests}), \
+             found: {symbols:?}"
+        );
+        let private_child = (from.clone(), "types::extra".to_string());
+        assert!(
+            !symbols.contains_key(&private_child),
+            "app::consumer -> types::extra should not exist (include_tests {include_tests}), \
+             found: {symbols:?}"
+        );
+        let public_child = (from, "types::math".to_string());
+        assert_eq!(
+            symbols.get(&public_child).map(Vec::as_slice),
+            Some(["double".to_string()].as_slice()),
+            "app::consumer -> types::math should carry `double` \
+             (include_tests {include_tests}), found: {symbols:?}"
+        );
+    }
+}
+
+/// A public module stays a module where its parent also re-exports an item of
+/// its name: from outside the parent, a path on through the name names an
+/// item in the module.
+#[test]
+fn test_public_module_named_like_a_reexported_item_stays_a_module() {
+    for include_tests in [false, true] {
+        let symbols = module_facts_qualified_symbols(include_tests);
+        let key = ("app::user".to_string(), "app::pubtk::tool".to_string());
+        assert!(
+            symbols
+                .get(&key)
+                .is_some_and(|names| names.contains(&"other".to_string())
+                    && !names.contains(&"tool".to_string())),
+            "app::user -> app::pubtk::tool should carry `other`, not `tool` \
+             (include_tests {include_tests}), found: {symbols:?}"
+        );
     }
 }
 

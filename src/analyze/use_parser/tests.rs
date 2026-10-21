@@ -3157,6 +3157,7 @@ mod reexport_resolution_tests {
         .into_iter()
         .collect();
         let mut util_info = ModuleExportInfo::default();
+        util_info.private_modules.insert("helper".to_string());
         util_info.explicit_reexports.insert(
             "helper".to_string(),
             ReExportTarget {

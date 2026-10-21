@@ -150,6 +150,10 @@ fn collect_module_info(
             syn::Item::Const(i) => Some((&i.vis, &i.ident, DefKind::Const)),
             syn::Item::Static(i) => Some((&i.vis, &i.ident, DefKind::Static)),
             syn::Item::Type(i) => Some((&i.vis, &i.ident, DefKind::Type)),
+            syn::Item::Mod(i) if !is_reexport_visibility(&i.vis) => {
+                info.private_modules.insert(i.ident.to_string());
+                None
+            }
             _ => None,
         };
         match defined {
@@ -940,6 +944,45 @@ impl AStruct { pub fn method(&self) {} }
         );
         assert!(!root.definitions.contains_key("Hidden"));
         assert!(root.definitions.contains_key("Shown"));
+    }
+
+    #[test]
+    fn private_child_modules_are_recorded() {
+        let tmp = test_crate(&[
+            (
+                "src/lib.rs",
+                "pub mod shown;\npub(crate) mod inner;\nmod hidden;\npub(self) mod scoped;\n",
+            ),
+            ("src/shown.rs", ""),
+            ("src/inner.rs", ""),
+            ("src/hidden.rs", ""),
+            ("src/scoped.rs", ""),
+        ]);
+        let crate_info = make_crate_info(&tmp, "test_crate");
+        let mp: ModulePathMap = [(
+            "test_crate".to_string(),
+            HashSet::from([
+                "shown".into(),
+                "inner".into(),
+                "hidden".into(),
+                "scoped".into(),
+            ]),
+        )]
+        .into_iter()
+        .collect();
+
+        let result = collect_single_root_reexports(
+            &crate_info,
+            &mp,
+            &WorkspacePackages::default(),
+            &PackageExportMap::default(),
+        );
+
+        let root = result.get("").expect("root info");
+        assert_eq!(
+            root.private_modules,
+            HashSet::from(["hidden".to_string(), "scoped".to_string()])
+        );
     }
 
     /// `extern crate other_crate as oc;` in the root lets the root re-export
