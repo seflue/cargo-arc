@@ -5,3 +5,15 @@ version = 4
 [[package]]
 name = "app"
 version = "0.1.0"
+dependencies = [
+ "extra",
+ "types",
+]
+
+[[package]]
+name = "extra"
+version = "0.1.0"
+
+[[package]]
+name = "types"
+version = "0.1.0"
