@@ -1255,6 +1255,31 @@ fn test_unused_private_glob_in_a_parent_keeps_its_edge() {
     );
 }
 
+/// A private `use` in a parent whose name only a child takes, through
+/// `use super::Piece`, passes the name on: the child depends on the module
+/// that defines it, the parent does not.
+#[test]
+fn test_parent_passing_a_private_use_on_has_no_edge() {
+    let (temp, cmd) = fixture_args("reexport_workspace", false);
+
+    let result = run(cmd);
+    assert!(result.is_ok(), "run() should succeed: {result:?}");
+
+    let svg = std::fs::read_to_string(temp.path()).unwrap();
+    let symbols = extract_arc_symbols(&svg);
+
+    let child = ("user".to_string(), "part".to_string());
+    assert_eq!(
+        symbols.get(&child).map(Vec::as_slice),
+        Some(["Piece".to_string()].as_slice()),
+        "user -> part should carry the name user uses, found: {symbols:?}"
+    );
+    assert!(
+        !symbols.contains_key(&("relay".to_string(), "part".to_string())),
+        "relay -> part should not exist, found: {symbols:?}"
+    );
+}
+
 /// Every use on an edge, with its category, goes to stderr under `--debug`,
 /// so the walker's result can be read without a rule that consumes it.
 /// A subprocess, because `run` installs the debug log on the process's own
