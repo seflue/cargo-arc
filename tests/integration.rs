@@ -152,6 +152,27 @@ fn extract_arc_symbols(svg: &str) -> std::collections::HashMap<(String, String),
         .collect()
 }
 
+/// Extract each arc's context from `STATIC_DATA`: (`from_name`, `to_name`) →
+/// (`kind`, `sub_kind`).
+fn extract_arc_contexts(
+    svg: &str,
+) -> std::collections::HashMap<(String, String), (String, Option<String>)> {
+    let nodes = extract_node_names(svg);
+    let data = parse_static_data(svg);
+    data["arcs"]
+        .as_object()
+        .expect("arcs is object")
+        .values()
+        .filter_map(|a| {
+            let from = nodes.get(a["from"].as_str()?)?.clone();
+            let to = nodes.get(a["to"].as_str()?)?.clone();
+            let kind = a["context"]["kind"].as_str()?.to_string();
+            let sub_kind = a["context"]["subKind"].as_str().map(String::from);
+            Some(((from, to), (kind, sub_kind)))
+        })
+        .collect()
+}
+
 /// Helper: build `ArcCommand` for a Lua plugin fixture under `--language lua`,
 /// with `--manifest-path` naming the plugin directory.
 fn lua_fixture_args(fixture: &str) -> (tempfile::NamedTempFile, ArcCommand) {
@@ -1354,6 +1375,23 @@ fn test_glob_bringing_a_reexported_trait_keeps_its_edge() {
         symbols.get(&parent).map(Vec::as_slice),
         Some(["*".to_string()].as_slice()),
         "relayed -> front should keep the glob's `*`, found: {symbols:?}"
+    );
+}
+
+/// A module whose `mod` declaration stands under `#[cfg(test)]` is test code
+/// with all it holds: under `--include-tests` its edges carry the unit test
+/// context, as those of an inline `#[cfg(test)] mod` do.
+#[test]
+fn test_file_module_under_cfg_test_has_test_edges() {
+    let (temp, cmd) = fixture_args("test_context", true);
+    let svg = run_to_string(&temp, cmd);
+    let contexts = extract_arc_contexts(&svg);
+
+    let key = ("ptests".to_string(), "part".to_string());
+    assert_eq!(
+        contexts.get(&key),
+        Some(&("test".to_string(), Some("unit".to_string()))),
+        "ptests -> part should be a unit test edge, found: {contexts:?}"
     );
 }
 

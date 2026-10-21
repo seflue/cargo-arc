@@ -844,7 +844,7 @@ impl ResolutionContext<'_> {
 
 /// Promote any context to a test context. Production becomes Unit test;
 /// already-test contexts are preserved (idempotent for test contexts).
-fn promote_to_test(base: &EdgeContext) -> EdgeContext {
+pub(crate) fn promote_to_test(base: &EdgeContext) -> EdgeContext {
     EdgeContext {
         kind: match base.kind {
             UsageKind::Production => UsageKind::Test(TestKind::Unit),

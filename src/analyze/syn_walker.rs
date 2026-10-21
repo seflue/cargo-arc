@@ -8,7 +8,7 @@ use super::mod_resolver::{ModDecl, child_resolve_dir, extract_mod_declarations, 
 use super::packages::{ModulePathMap, PackageExportMap, WorkspacePackages, normalize_crate_name};
 use super::reexports::root_extern_crates;
 use super::use_parser::ReExportMap;
-use super::use_parser::{PassedOn, ResolutionContext, parse_file_dependencies};
+use super::use_parser::{PassedOn, ResolutionContext, parse_file_dependencies, promote_to_test};
 use crate::model::{
     EdgeContext, EntryKind, ModuleInfo, ModuleTree, PackageInfo, TestKind, UsageKind,
 };
@@ -306,7 +306,17 @@ fn walk_module_syn(
                 resolve_mod_path(&resolve_dir, &decl.name)
             };
 
-            child_file.map(|cf| walk_module_syn(ctx, &cf, &decl.name, &full_path, false, unparsed))
+            // A module declared under `#[cfg(test)]` is test code with all it holds
+            let child_ctx = if decl.cfg_test {
+                &WalkContext {
+                    base_context: promote_to_test(&ctx.base_context),
+                    ..ctx.clone()
+                }
+            } else {
+                ctx
+            };
+            child_file
+                .map(|cf| walk_module_syn(child_ctx, &cf, &decl.name, &full_path, false, unparsed))
         })
         .collect();
 
