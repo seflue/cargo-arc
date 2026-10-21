@@ -1607,6 +1607,30 @@ fn test_public_module_named_like_a_reexported_item_stays_a_module() {
     }
 }
 
+/// A name a child takes through its parent's private glob into another crate
+/// names the item in that crate's module, not in a module of the same name
+/// in the child's own crate.
+#[test]
+fn test_private_glob_into_another_crate_keeps_its_crate() {
+    for include_tests in [false, true] {
+        let symbols = module_facts_qualified_symbols(include_tests);
+        let from = "app::parent::child".to_string();
+        let foreign = (from.clone(), "types::prelude".to_string());
+        assert_eq!(
+            symbols.get(&foreign).map(Vec::as_slice),
+            Some(["Widget".to_string()].as_slice()),
+            "app::parent::child -> types::prelude should carry `Widget` \
+             (include_tests {include_tests}), found: {symbols:?}"
+        );
+        let own = (from, "app::prelude".to_string());
+        assert!(
+            !symbols.contains_key(&own),
+            "app::parent::child -> app::prelude should not exist \
+             (include_tests {include_tests}), found: {symbols:?}"
+        );
+    }
+}
+
 /// Every use on an edge, with its category, goes to stderr under `--debug`,
 /// so the walker's result can be read without a rule that consumes it.
 /// A subprocess, because `run` installs the debug log on the process's own
@@ -3943,6 +3967,62 @@ fn cross_package_private_use_edge_attaches_to_the_definer() {
         Some(["Handle".to_string()].as_slice()),
         "address -> store should carry the uses of Handle, found: {symbols:?}"
     );
+}
+
+/// `consumer::util` republishes `provider::math` with `pub use
+/// provider::math::*;`, and its child `util::belt` takes `align_to` through
+/// `use super::*;`. The glob the child imports from reaches the other crate's
+/// module one glob further, so the name lands on `math`, not on `util`.
+#[test]
+fn glob_import_of_a_module_with_a_foreign_glob_reaches_the_definer() {
+    for include_tests in [false, true] {
+        let (temp, cmd) = fixture_args("cross_crate_reexport", include_tests);
+        run(cmd).expect("run() should succeed");
+        let svg = std::fs::read_to_string(temp.path()).unwrap();
+        let symbols = extract_arc_symbols(&svg);
+
+        assert_eq!(
+            symbols
+                .get(&("belt".to_string(), "math".to_string()))
+                .map(Vec::as_slice),
+            Some(["align_to".to_string()].as_slice()),
+            "belt -> math should carry `align_to` (include_tests {include_tests}), \
+             found: {symbols:?}"
+        );
+        assert!(
+            !symbols.contains_key(&("belt".to_string(), "util".to_string())),
+            "belt -> util should not exist (include_tests {include_tests}), \
+             found: {symbols:?}"
+        );
+    }
+}
+
+/// `consumer::nest` republishes its private child `inner` with `pub use
+/// inner::*;`, and `inner` republishes `provider::math` with `pub use
+/// provider::math::*;`. A name taken through `nest` follows both globs into
+/// the other crate.
+#[test]
+fn chain_over_two_globs_into_another_crate_reaches_the_definer() {
+    for include_tests in [false, true] {
+        let (temp, cmd) = fixture_args("cross_crate_reexport", include_tests);
+        run(cmd).expect("run() should succeed");
+        let svg = std::fs::read_to_string(temp.path()).unwrap();
+        let symbols = extract_arc_symbols(&svg);
+
+        assert_eq!(
+            symbols
+                .get(&("nestuser".to_string(), "math".to_string()))
+                .map(Vec::as_slice),
+            Some(["align_to".to_string()].as_slice()),
+            "nestuser -> math should carry `align_to` (include_tests \
+             {include_tests}), found: {symbols:?}"
+        );
+        assert!(
+            !symbols.contains_key(&("nestuser".to_string(), "nest".to_string())),
+            "nestuser -> nest should not exist (include_tests {include_tests}), \
+             found: {symbols:?}"
+        );
+    }
 }
 
 /// `net` holds a private `use external_lib::Client;` to a package outside the
