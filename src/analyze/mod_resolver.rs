@@ -6,10 +6,12 @@
 use std::path::{Path, PathBuf};
 
 /// A declared `mod` item (external, not inline).
-#[derive(PartialEq)]
 pub(crate) struct ModDecl {
     pub(crate) name: String,
     pub(crate) explicit_path: Option<String>,
+    /// Whether every declaration of the module stands under `#[cfg(test)]`,
+    /// which makes the module test code with all it holds.
+    pub(crate) cfg_test: bool,
 }
 
 /// Check whether a `#[cfg]` admits the item into test builds only: `test`,
@@ -67,24 +69,32 @@ fn extract_path_attribute(attrs: &[syn::Attribute]) -> Option<String> {
 /// Extract external `mod` declarations from a parsed syntax tree,
 /// filtering out `#[cfg(test)]` modules (unless included) and inline modules.
 pub(crate) fn extract_mod_declarations(syntax: &syn::File, include_tests: bool) -> Vec<ModDecl> {
-    let mut decls = Vec::new();
+    let mut decls: Vec<ModDecl> = Vec::new();
     for item in &syntax.items {
         if let syn::Item::Mod(item_mod) = item {
             if item_mod.content.is_some() {
                 continue;
             }
+            let cfg_test = is_cfg_test(&item_mod.attrs);
             // Skip #[cfg(test)] modules unless --include-tests was passed
-            if !include_tests && is_cfg_test(&item_mod.attrs) {
+            if !include_tests && cfg_test {
                 continue;
             }
-            let decl = ModDecl {
-                name: item_mod.ident.to_string(),
-                explicit_path: extract_path_attribute(&item_mod.attrs),
-            };
+            let name = item_mod.ident.to_string();
+            let explicit_path = extract_path_attribute(&item_mod.attrs);
             // `mod foo;` repeated under complementary cfgs names one file
-            if !decls.contains(&decl) {
-                decls.push(decl);
+            if let Some(known) = decls
+                .iter_mut()
+                .find(|d| d.name == name && d.explicit_path == explicit_path)
+            {
+                known.cfg_test &= cfg_test;
+                continue;
             }
+            decls.push(ModDecl {
+                name,
+                explicit_path,
+                cfg_test,
+            });
         }
     }
     decls
@@ -207,6 +217,24 @@ mod tests {
         fn test_is_cfg_test_no_attrs() {
             let attrs = parse_attrs("mod foo;");
             assert!(!is_cfg_test(&attrs));
+        }
+    }
+
+    mod mod_declarations {
+        use super::*;
+
+        #[test]
+        fn test_module_is_test_code_only_where_every_declaration_is() {
+            let syntax: syn::File = syn::parse_str(
+                "#[cfg(test)] mod both; #[cfg(not(test))] mod both; #[cfg(test)] mod only;",
+            )
+            .unwrap();
+            let decls = extract_mod_declarations(&syntax, true);
+            let cfg_test: Vec<_> = decls
+                .iter()
+                .map(|d| (d.name.as_str(), d.cfg_test))
+                .collect();
+            assert_eq!(cfg_test, [("both", false), ("only", true)]);
         }
     }
 
