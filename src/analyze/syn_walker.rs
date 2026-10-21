@@ -315,7 +315,7 @@ fn walk_module_syn(
     // passes the names on, which is no dependency of this module.
     dependencies.retain(|dep| {
         !ctx.passed_on
-            .passes_on(ctx.crate_name, current_module_path, dep)
+            .passes_on(ctx.crate_name, current_module_path, dep, ctx.reexport_map)
     });
 
     let definitions = ctx
