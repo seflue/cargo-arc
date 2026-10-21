@@ -2608,9 +2608,10 @@ pub(crate) fn parse_path_ref_dependencies(
                         };
                         let dep = DependencyRef {
                             target_item: Some(name.to_string()),
+                            context: context_of_use(&path_ref.context, &glob.context),
                             ..glob.clone()
                         };
-                        let taken_from = (glob.full_target(), glob.context.kind);
+                        let taken_from = (glob.full_target(), dep.context.kind);
                         (dep, associated, Some(taken_from))
                     }
                 }
@@ -2626,6 +2627,7 @@ pub(crate) fn parse_path_ref_dependencies(
                     } else {
                         let dep = DependencyRef {
                             via_reexport: false,
+                            context: context_of_use(&path_ref.context, &bound.context),
                             ..bound.clone()
                         };
                         (dep, associated, None)
@@ -2674,6 +2676,16 @@ pub(crate) fn parse_path_ref_dependencies(
     }
 
     deps
+}
+
+/// The context of a name used through a binding: a test context where the
+/// use or the binding is test code, with the use's test kind where both are.
+fn context_of_use(reference: &EdgeContext, binding: &EdgeContext) -> EdgeContext {
+    if matches!(reference.kind, UsageKind::Test(_)) {
+        reference.clone()
+    } else {
+        binding.clone()
+    }
 }
 
 /// Whether the module a glob imports from brings `name` into this file's
