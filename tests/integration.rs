@@ -1280,6 +1280,83 @@ fn test_parent_passing_a_private_use_on_has_no_edge() {
     );
 }
 
+/// A variable a child declares under the name of something a parent's glob
+/// brings in takes no name through the glob. The parent's unused glob keeps
+/// its `*`, as it does where the child's variable has another name.
+#[test]
+fn test_variable_in_a_child_keeps_the_parents_unused_glob() {
+    for include_tests in [false, true] {
+        let (temp, cmd) = fixture_args("passing_on", include_tests);
+
+        let result = run(cmd);
+        assert!(result.is_ok(), "run() should succeed: {result:?}");
+
+        let svg = std::fs::read_to_string(temp.path()).unwrap();
+        let symbols = extract_arc_symbols(&svg);
+
+        for (parent, source) in [("quiet", "srcq"), ("quiet2", "srcq2")] {
+            let key = (parent.to_string(), source.to_string());
+            assert_eq!(
+                symbols.get(&key).map(Vec::as_slice),
+                Some(["*".to_string()].as_slice()),
+                "{parent} -> {source} should keep the unused glob's `*` \
+                 (include_tests {include_tests}), found: {symbols:?}"
+            );
+        }
+    }
+}
+
+/// A parent that calls a trait's methods through a glob names no name of it,
+/// so the glob keeps its `*` even where a child takes another name through
+/// the same glob.
+#[test]
+fn test_glob_used_for_trait_methods_keeps_its_edge() {
+    for include_tests in [false, true] {
+        let (temp, cmd) = fixture_args("passing_on", include_tests);
+
+        let result = run(cmd);
+        assert!(result.is_ok(), "run() should succeed: {result:?}");
+
+        let svg = std::fs::read_to_string(temp.path()).unwrap();
+        let symbols = extract_arc_symbols(&svg);
+
+        let parent = ("holder".to_string(), "traits".to_string());
+        assert_eq!(
+            symbols.get(&parent).map(Vec::as_slice),
+            Some(["*".to_string()].as_slice()),
+            "holder -> traits should keep the glob's `*` \
+             (include_tests {include_tests}), found: {symbols:?}"
+        );
+        let child = ("reader".to_string(), "traits".to_string());
+        assert_eq!(
+            symbols.get(&child).map(Vec::as_slice),
+            Some(["Marker".to_string()].as_slice()),
+            "reader -> traits should carry the name reader uses, found: {symbols:?}"
+        );
+    }
+}
+
+/// A trait the glob's module only re-exports counts by its kind where it is
+/// defined: the glob keeps its `*` as it does for a trait defined in the
+/// glob's module.
+#[test]
+fn test_glob_bringing_a_reexported_trait_keeps_its_edge() {
+    let (temp, cmd) = fixture_args("passing_on", false);
+
+    let result = run(cmd);
+    assert!(result.is_ok(), "run() should succeed: {result:?}");
+
+    let svg = std::fs::read_to_string(temp.path()).unwrap();
+    let symbols = extract_arc_symbols(&svg);
+
+    let parent = ("relayed".to_string(), "front".to_string());
+    assert_eq!(
+        symbols.get(&parent).map(Vec::as_slice),
+        Some(["*".to_string()].as_slice()),
+        "relayed -> front should keep the glob's `*`, found: {symbols:?}"
+    );
+}
+
 /// Every use on an edge, with its category, goes to stderr under `--debug`,
 /// so the walker's result can be read without a rule that consumes it.
 /// A subprocess, because `run` installs the debug log on the process's own
