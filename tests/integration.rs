@@ -1511,6 +1511,24 @@ fn test_private_module_is_a_module_for_a_descendant() {
     }
 }
 
+/// `use super::m;`, where the parent binds the module `m` by a private `use`,
+/// binds that module: a path on through it names an item of a child module.
+#[test]
+fn test_use_of_a_parents_module_binding_carries_the_path_on() {
+    for include_tests in [false, true] {
+        let symbols = module_facts_symbols(include_tests);
+        for (child, item) in [("leaf", "go"), ("fleaf", "go2")] {
+            let key = ("spoke".to_string(), child.to_string());
+            assert_eq!(
+                symbols.get(&key).map(Vec::as_slice),
+                Some([item.to_string()].as_slice()),
+                "spoke -> {child} should carry `{item}` (include_tests {include_tests}), \
+                 found: {symbols:?}"
+            );
+        }
+    }
+}
+
 /// Every use on an edge, with its category, goes to stderr under `--debug`,
 /// so the walker's result can be read without a rule that consumes it.
 /// A subprocess, because `run` installs the debug log on the process's own
