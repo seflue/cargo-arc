@@ -307,8 +307,9 @@ fn resolution_context<'a>(
 /// `private` selects where named targets land: a `pub`/`pub(crate)`/`pub(super)`
 /// re-export fills `explicit_reexports`, a private `use` fills `private_uses`
 /// (a binding descendants can still name through this module). A glob lands in
-/// `glob_sources` or `private_glob_sources` by the same split, a public one
-/// from a module of another workspace crate in `foreign_glob_sources`. A private,
+/// `glob_sources` or `private_glob_sources` by the same split, one from a module
+/// of another workspace crate in `foreign_glob_sources` or
+/// `foreign_private_glob_sources`. A private,
 /// non-glob leaf the resolution chain cannot place at all names something
 /// outside this crate; recording it in `elsewhere` keeps a descendant's
 /// reference to it from resolving to this module.
@@ -361,13 +362,16 @@ fn collect_use_reexports(
         }
 
         if dep.target_item.as_deref() == Some("*") {
-            if private {
-                info.private_glob_sources.push(dep.target_module.clone());
-            } else if dep.target_package != ctx.crate_name {
-                info.foreign_glob_sources
-                    .push((dep.target_package.clone(), dep.target_module.clone()));
-            } else {
-                info.glob_sources.push(dep.target_module.clone());
+            let foreign = dep.target_package != ctx.crate_name;
+            match (private, foreign) {
+                (true, false) => info.private_glob_sources.push(dep.target_module.clone()),
+                (true, true) => info
+                    .foreign_private_glob_sources
+                    .push((dep.target_package.clone(), dep.target_module.clone())),
+                (false, true) => info
+                    .foreign_glob_sources
+                    .push((dep.target_package.clone(), dep.target_module.clone())),
+                (false, false) => info.glob_sources.push(dep.target_module.clone()),
             }
         } else if let Some(original_name) = &dep.target_item {
             let alias_name = alias_path.rsplit("::").next().unwrap_or(alias_path);
@@ -1443,6 +1447,124 @@ impl AStruct { pub fn method(&self) {} }
             in_lib_view: false,
         };
         resolve_reexport(&mut dep, &map, &mp, "");
+
+        assert_eq!(
+            (dep.target_package.as_str(), dep.target_module.as_str()),
+            ("other_crate", "math")
+        );
+    }
+
+    // Two crates that republish each other's modules by glob: a name behind
+    // the cycle is still found, and a name nobody defines ends the chain.
+    #[test]
+    fn globs_republishing_each_other_across_crates_end() {
+        let ws: WorkspacePackages = ["test_crate", "other_crate"].into_iter().collect();
+        let mp: ModulePathMap = [
+            (
+                "test_crate".to_string(),
+                HashSet::from(["front".into(), "defs".into()]),
+            ),
+            ("other_crate".to_string(), HashSet::from(["back".into()])),
+        ]
+        .into_iter()
+        .collect();
+        let user = test_crate(&[
+            ("src/lib.rs", "pub mod defs;\npub mod front;\n"),
+            ("src/front.rs", "pub use other_crate::back::*;\n"),
+            ("src/defs.rs", "pub fn deep() {}\n"),
+        ]);
+        let other = test_crate(&[
+            ("src/lib.rs", "pub mod back;\n"),
+            (
+                "src/back.rs",
+                "pub use test_crate::front::*;\npub use test_crate::defs::*;\n",
+            ),
+        ]);
+        let collect = |tmp: &TempDir, name: &str| {
+            let info = make_crate_info(tmp, name);
+            collect_single_root_reexports(&info, &mp, &ws, &PackageExportMap::default())
+        };
+        let map: ReExportMap = [
+            ("test_crate".to_string(), collect(&user, "test_crate")),
+            ("other_crate".to_string(), collect(&other, "other_crate")),
+        ]
+        .into_iter()
+        .collect();
+
+        let resolved = |item: &str| {
+            let mut dep = DependencyRef {
+                target_package: "test_crate".to_string(),
+                target_module: "front".to_string(),
+                target_item: Some(item.to_string()),
+                source_file: "src/main.rs".into(),
+                line: 1,
+                context: EdgeContext::production(),
+                via_reexport: false,
+                uses: Vec::new(),
+                in_lib_view: false,
+            };
+            resolve_reexport(&mut dep, &map, &mp, "");
+            (dep.target_package, dep.target_module)
+        };
+
+        assert_eq!(
+            resolved("deep"),
+            ("test_crate".to_string(), "defs".to_string())
+        );
+        assert_eq!(
+            resolved("missing"),
+            ("test_crate".to_string(), "front".to_string())
+        );
+    }
+
+    // A name a descendant takes through a private `use other_crate::m::*` of
+    // its ancestor reaches the module of the other crate, not a module of
+    // the same name in its own crate.
+    #[test]
+    fn private_glob_from_a_module_of_another_crate_reaches_that_module() {
+        let ws: WorkspacePackages = ["test_crate", "other_crate"].into_iter().collect();
+        let mp: ModulePathMap = [
+            (
+                "test_crate".to_string(),
+                HashSet::from(["math".into(), "util".into(), "util::child".into()]),
+            ),
+            ("other_crate".to_string(), HashSet::from(["math".into()])),
+        ]
+        .into_iter()
+        .collect();
+        let user = test_crate(&[
+            ("src/lib.rs", "pub mod math;\npub mod util;\n"),
+            ("src/math.rs", "pub fn align_to() {}\n"),
+            ("src/util/mod.rs", "mod child;\nuse other_crate::math::*;\n"),
+            ("src/util/child.rs", ""),
+        ]);
+        let other = test_crate(&[
+            ("src/lib.rs", "pub mod math;\n"),
+            ("src/math.rs", "pub fn align_to() {}\n"),
+        ]);
+        let collect = |tmp: &TempDir, name: &str| {
+            let info = make_crate_info(tmp, name);
+            collect_single_root_reexports(&info, &mp, &ws, &PackageExportMap::default())
+        };
+        let map: ReExportMap = [
+            ("test_crate".to_string(), collect(&user, "test_crate")),
+            ("other_crate".to_string(), collect(&other, "other_crate")),
+        ]
+        .into_iter()
+        .collect();
+
+        let mut dep = DependencyRef {
+            target_package: "test_crate".to_string(),
+            target_module: "util".to_string(),
+            target_item: Some("align_to".to_string()),
+            source_file: "src/util/child.rs".into(),
+            line: 1,
+            context: EdgeContext::production(),
+            via_reexport: false,
+            uses: Vec::new(),
+            in_lib_view: false,
+        };
+        resolve_reexport(&mut dep, &map, &mp, "util::child");
 
         assert_eq!(
             (dep.target_package.as_str(), dep.target_module.as_str()),
