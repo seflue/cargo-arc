@@ -2294,7 +2294,9 @@ impl FileBindings {
                 }
                 continue;
             }
-            if let Binding::Module(module_path) = classify_binding(ctx, dep.as_ref(), &binding) {
+            let chained = through_the_chain(ctx, dep.as_ref());
+            if let Binding::Module(module_path) = classify_binding(ctx, chained.as_ref(), &binding)
+            {
                 bindings.bind_module(collected.region, &binding, module_path);
             }
         }
@@ -2320,7 +2322,7 @@ impl FileBindings {
                 }
                 continue;
             }
-            match classify_binding(ctx, dep.as_ref(), binding) {
+            match classify_binding(ctx, through_the_chain(ctx, dep.as_ref()).as_ref(), binding) {
                 Binding::Module(module_path) => {
                     bindings.bind_module(collected.region, binding, module_path);
                 }
@@ -2585,6 +2587,27 @@ fn classify_binding(
         return Binding::Module(dep.full_target());
     }
     Binding::Elsewhere
+}
+
+/// `dep` followed through the re-export chain, without noting what the chain
+/// passes on, so that a `use` of a name an ancestor binds to a module is
+/// classified as the module. Where the chain leads out of the crate, `dep`
+/// as it resolved.
+fn through_the_chain(
+    ctx: &ResolutionContext,
+    dep: Option<&DependencyRef>,
+) -> Option<DependencyRef> {
+    let dep = dep?;
+    let mut chained = dep.clone();
+    let unnoted = ResolutionContext {
+        passed_on: None,
+        ..*ctx
+    };
+    Some(if unnoted.resolve_reexport(&mut chained) {
+        chained
+    } else {
+        dep.clone()
+    })
 }
 
 /// Render a resolved module dependency as a path that `resolve_single_path` can
