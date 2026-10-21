@@ -1927,22 +1927,19 @@ pub(crate) fn resolve_single_path(
     inline_depth: usize,
 ) -> Option<DependencyRef> {
     let mut dep = resolve_path_in_chain(ctx, path, line_num, context, inline_depth)?;
-    take_item_the_parent_reexports(&mut dep, ctx.reexport_map, ctx.all_module_paths);
+    take_item_the_parent_reexports(ctx, &mut dep);
     Some(dep)
 }
 
 /// Point a dependency on a module at the item of the same name that the
 /// module's parent re-exports. Beside `mod helper; pub use helper::helper;`
 /// the path `parent::helper` names the private module and the fn, and only
-/// the fn is visible outside `parent`. A re-export of a module under that
-/// name keeps the dependency on the module. Module visibility is not
-/// recorded, so a public module named like the item is taken for the item
-/// too.
-fn take_item_the_parent_reexports(
-    dep: &mut DependencyRef,
-    reexport_map: &ReExportMap,
-    module_paths: &ModulePathMap,
-) {
+/// the fn is visible outside `parent`. A file of the same crate inside
+/// `parent` sees the module, so its dependency stays on the module. A
+/// re-export of a module under that name keeps the dependency on the module.
+/// Module visibility is not recorded, so a public module named like the item
+/// is taken for the item too.
+fn take_item_the_parent_reexports(ctx: &ResolutionContext, dep: &mut DependencyRef) {
     if dep.target_item.is_some() || dep.target_module.is_empty() {
         return;
     }
@@ -1950,14 +1947,20 @@ fn take_item_the_parent_reexports(
         .target_module
         .rsplit_once("::")
         .unwrap_or(("", dep.target_module.as_str()));
-    let Some(target) = reexport_map
+    if dep.target_package == normalize_crate_name(ctx.current_crate)
+        && is_descendant(ctx.current_module_path, parent)
+    {
+        return;
+    }
+    let Some(target) = ctx
+        .reexport_map
         .exports_for(dep)
         .and_then(|modules| modules.get(parent))
         .and_then(|info| info.explicit_reexports.get(name))
     else {
         return;
     };
-    if !binds_a_module(target, module_paths) {
+    if !binds_a_module(target, ctx.all_module_paths) {
         let (parent, name) = (parent.to_string(), name.to_string());
         dep.target_module = parent;
         dep.target_item = Some(name);
