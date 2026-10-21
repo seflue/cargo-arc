@@ -284,19 +284,28 @@ impl PassedOn {
     /// private glob, which stands for no name `holder` uses itself, since a
     /// used name replaces the `*`, or a private `use` whose name nothing in
     /// `holder`'s file names. A trait import stays: its methods may be called
-    /// without the name being written.
-    pub(crate) fn passes_on(&self, crate_name: &str, holder: &str, dep: &DependencyRef) -> bool {
+    /// without the name being written. So does a glob that may bring in a
+    /// trait, as `reexport_map` tells.
+    pub(crate) fn passes_on(
+        &self,
+        crate_name: &str,
+        holder: &str,
+        dep: &DependencyRef,
+        reexport_map: &ReExportMap,
+    ) -> bool {
         if dep.via_reexport {
             return false;
         }
-        let holder = (crate_name.to_string(), holder.to_string());
         if is_glob(dep) {
+            let noted = (
+                (crate_name.to_string(), holder.to_string()),
+                dep.target_module.clone(),
+            );
             return dep.target_package == crate_name
-                && self
-                    .globs
-                    .borrow()
-                    .contains(&(holder, dep.target_module.clone()));
+                && self.globs.borrow().contains(&noted)
+                && !glob_may_bring_a_trait(dep, holder, reexport_map, &mut HashSet::new());
         }
+        let holder = (crate_name.to_string(), holder.to_string());
         let Some(item) = &dep.target_item else {
             return false;
         };
@@ -320,6 +329,72 @@ fn is_import_only(dep: &DependencyRef) -> bool {
         dep.uses.as_slice(),
         [only] if only.line == dep.line && !only.imported_for_methods
     )
+}
+
+/// Whether the glob `dep` brings a trait into `holder`, or a name whose kind
+/// the map does not know at its definer. A module the map does not hold
+/// counts as unknown, and so does a name the chain follows out of the map.
+fn glob_may_bring_a_trait(
+    dep: &DependencyRef,
+    holder: &str,
+    reexport_map: &ReExportMap,
+    visited: &mut HashSet<(String, String)>,
+) -> bool {
+    if !visited.insert((dep.target_package.clone(), dep.target_module.clone())) {
+        return false;
+    }
+    let Some(info) = reexport_map.module_info(dep) else {
+        return true;
+    };
+    let defines_a_trait = info
+        .definitions
+        .values()
+        .any(|definition| definition.kind == DefKind::Trait);
+    let reexports_a_trait = info
+        .explicit_reexports
+        .keys()
+        .any(|name| reexports_a_trait_or_unknown(dep, name, holder, reexport_map));
+    let local_globs = info
+        .glob_sources
+        .iter()
+        .map(|module| (dep.target_package.clone(), module.clone()));
+    defines_a_trait
+        || reexports_a_trait
+        || local_globs
+            .chain(info.foreign_glob_sources.iter().cloned())
+            .any(|(package, module)| {
+                let source = DependencyRef {
+                    target_package: package,
+                    target_module: module,
+                    ..dep.clone()
+                };
+                glob_may_bring_a_trait(&source, holder, reexport_map, visited)
+            })
+}
+
+/// Whether `name`, re-exported by the module `dep` imports from, is a trait at
+/// its definer, or the chain ends on no definition the map knows. A name that
+/// ends on a module is no trait.
+fn reexports_a_trait_or_unknown(
+    dep: &DependencyRef,
+    name: &str,
+    holder: &str,
+    reexport_map: &ReExportMap,
+) -> bool {
+    let mut named = DependencyRef {
+        target_item: Some(name.to_string()),
+        ..dep.clone()
+    };
+    if !resolve_reexport_noting(&mut named, reexport_map, holder, None) {
+        return true;
+    }
+    let Some(item) = &named.target_item else {
+        return false;
+    };
+    reexport_map
+        .module_info(&named)
+        .and_then(|info| info.definitions.get(item))
+        .is_none_or(|definition| definition.kind == DefKind::Trait)
 }
 
 /// Resolve re-exports in a [`DependencyRef`]: follow the re-export chain
@@ -2565,6 +2640,9 @@ pub(crate) fn parse_path_ref_dependencies(
                 }
                 PathBinding::Elsewhere => continue,
             };
+        if path_ref.position == PathPosition::Binding && declares_a_variable(ctx, &dep) {
+            continue;
+        }
         if !ctx.resolve_reexport(&mut dep) {
             continue;
         }
@@ -2573,9 +2651,6 @@ pub(crate) fn parse_path_ref_dependencies(
             continue;
         };
         if path_ref.position == PathPosition::Binding {
-            if !is_matched_by_a_bare_pattern(ctx, &dep) {
-                continue;
-            }
             matching_patterns.insert(index);
         }
         if let Some(glob) = glob_taken_from {
@@ -2631,6 +2706,20 @@ fn definition_kind(ctx: &ResolutionContext, dep: &DependencyRef, item: &str) -> 
         .module_info(dep)
         .and_then(|info| info.definitions.get(item))
         .map(|definition| definition.kind)
+}
+
+/// Whether a bare identifier pattern naming `dep` declares a variable, which
+/// takes no name through an ancestor. The chain is resolved without noting
+/// what it passes on, so only a pattern that matches an item notes it.
+fn declares_a_variable(ctx: &ResolutionContext, dep: &DependencyRef) -> bool {
+    let unnoted = ResolutionContext {
+        passed_on: None,
+        ..*ctx
+    };
+    let mut probed = dep.clone();
+    unnoted.resolve_reexport(&mut probed)
+        && probed.target_item.is_some()
+        && !is_matched_by_a_bare_pattern(ctx, &probed)
 }
 
 /// Whether a bare identifier pattern matches `dep`'s item rather than
