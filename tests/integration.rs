@@ -1465,6 +1465,34 @@ fn test_production_edges_do_not_depend_on_include_tests() {
     assert_eq!(production_edges(true), production_edges(false));
 }
 
+/// The symbols of each arc in the `module_facts` fixture.
+fn module_facts_symbols(
+    include_tests: bool,
+) -> std::collections::HashMap<(String, String), Vec<String>> {
+    let (temp, cmd) = fixture_args("module_facts", include_tests);
+    extract_arc_symbols(&run_to_string(&temp, cmd))
+}
+
+/// A module that only declares child modules is a module all the same: a
+/// private `use` of it in an ancestor binds the module, not an item of the
+/// crate root.
+#[test]
+fn test_module_without_own_items_is_a_module_in_the_chain() {
+    for include_tests in [false, true] {
+        let symbols = module_facts_symbols(include_tests);
+        let module = ("spoke".to_string(), "facade".to_string());
+        assert!(
+            symbols.contains_key(&module),
+            "spoke -> facade should exist (include_tests {include_tests}), found: {symbols:?}"
+        );
+        let root = ("spoke".to_string(), "app".to_string());
+        assert!(
+            !symbols.contains_key(&root),
+            "spoke -> app should not exist (include_tests {include_tests}), found: {symbols:?}"
+        );
+    }
+}
+
 /// Every use on an edge, with its category, goes to stderr under `--debug`,
 /// so the walker's result can be read without a rule that consumes it.
 /// A subprocess, because `run` installs the debug log on the process's own

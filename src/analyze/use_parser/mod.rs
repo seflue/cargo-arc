@@ -229,9 +229,10 @@ impl FromIterator<(String, HashMap<String, ModuleExportInfo>)> for ReExportMap {
 pub(crate) fn resolve_reexport(
     dep: &mut DependencyRef,
     reexport_map: &ReExportMap,
+    module_paths: &ModulePathMap,
     importer_module: &str,
 ) -> bool {
-    resolve_reexport_noting(dep, reexport_map, importer_module, None)
+    resolve_reexport_noting(dep, reexport_map, module_paths, importer_module, None)
 }
 
 /// A module holding a private `use` or glob, by crate and module path.
@@ -303,6 +304,7 @@ impl PassedOn {
         holder: &str,
         dep: &DependencyRef,
         reexport_map: &ReExportMap,
+        module_paths: &ModulePathMap,
     ) -> bool {
         if dep.via_reexport {
             return false;
@@ -314,7 +316,13 @@ impl PassedOn {
             );
             return dep.target_package == crate_name
                 && covers(self.globs.borrow().get(&noted), dep)
-                && !glob_may_bring_a_trait(dep, holder, reexport_map, &mut HashSet::new());
+                && !glob_may_bring_a_trait(
+                    dep,
+                    holder,
+                    reexport_map,
+                    module_paths,
+                    &mut HashSet::new(),
+                );
         }
         let holder = (crate_name.to_string(), holder.to_string());
         let Some(item) = &dep.target_item else {
@@ -357,6 +365,7 @@ fn glob_may_bring_a_trait(
     dep: &DependencyRef,
     holder: &str,
     reexport_map: &ReExportMap,
+    module_paths: &ModulePathMap,
     visited: &mut HashSet<(String, String)>,
 ) -> bool {
     if !visited.insert((dep.target_package.clone(), dep.target_module.clone())) {
@@ -372,7 +381,7 @@ fn glob_may_bring_a_trait(
     let reexports_a_trait = info
         .explicit_reexports
         .keys()
-        .any(|name| reexports_a_trait_or_unknown(dep, name, holder, reexport_map));
+        .any(|name| reexports_a_trait_or_unknown(dep, name, holder, reexport_map, module_paths));
     let local_globs = info
         .glob_sources
         .iter()
@@ -387,7 +396,7 @@ fn glob_may_bring_a_trait(
                     target_module: module,
                     ..dep.clone()
                 };
-                glob_may_bring_a_trait(&source, holder, reexport_map, visited)
+                glob_may_bring_a_trait(&source, holder, reexport_map, module_paths, visited)
             })
 }
 
@@ -399,12 +408,13 @@ fn reexports_a_trait_or_unknown(
     name: &str,
     holder: &str,
     reexport_map: &ReExportMap,
+    module_paths: &ModulePathMap,
 ) -> bool {
     let mut named = DependencyRef {
         target_item: Some(name.to_string()),
         ..dep.clone()
     };
-    if !resolve_reexport_noting(&mut named, reexport_map, holder, None) {
+    if !resolve_reexport_noting(&mut named, reexport_map, module_paths, holder, None) {
         return true;
     }
     let Some(item) = &named.target_item else {
@@ -425,17 +435,25 @@ fn reexports_a_trait_or_unknown(
 /// crate) — the caller then produces no edge for `dep` — and `true` otherwise.
 /// Each private glob and private `use` of an ancestor the chain passes
 /// through is noted in `passed_on`. A `dep` in the lib view follows the chain
-/// from its package's lib root.
+/// from its package's lib root. Whether a name binds a module, `module_paths`
+/// tells.
 fn resolve_reexport_noting(
     dep: &mut DependencyRef,
     reexport_map: &ReExportMap,
+    module_paths: &ModulePathMap,
     importer_module: &str,
     passed_on: Option<&PassedOn>,
 ) -> bool {
     if dep.in_lib_view {
-        follow_reexports(dep, &reexport_map.lib_view(), importer_module, passed_on)
+        follow_reexports(
+            dep,
+            &reexport_map.lib_view(),
+            module_paths,
+            importer_module,
+            passed_on,
+        )
     } else {
-        follow_reexports(dep, reexport_map, importer_module, passed_on)
+        follow_reexports(dep, reexport_map, module_paths, importer_module, passed_on)
     }
 }
 
@@ -444,6 +462,7 @@ fn resolve_reexport_noting(
 fn follow_reexports(
     dep: &mut DependencyRef,
     reexport_map: &ReExportMap,
+    module_paths: &ModulePathMap,
     importer_module: &str,
     passed_on: Option<&PassedOn>,
 ) -> bool {
@@ -471,7 +490,7 @@ fn follow_reexports(
 
         // Tier 1: Explicit re-export
         if let Some(target) = module_info.explicit_reexports.get(item) {
-            if end_on_module(dep, target, reexport_map) {
+            if end_on_module(dep, target, module_paths) {
                 break;
             }
             let original_target = dep.target_module.clone();
@@ -498,7 +517,7 @@ fn follow_reexports(
         if is_descendant(importer_module, &dep.target_module)
             && let Some(target) = module_info.private_uses.get(item)
         {
-            if end_on_module(dep, target, reexport_map) {
+            if end_on_module(dep, target, module_paths) {
                 break;
             }
             use_holders.push((dep.target_package.clone(), dep.target_module.clone()));
@@ -615,18 +634,28 @@ fn follow_foreign_glob<'m>(
 fn end_on_module(
     dep: &mut DependencyRef,
     target: &ReExportTarget,
-    reexport_map: &ReExportMap,
+    module_paths: &ModulePathMap,
 ) -> bool {
-    let module = append_to_path(&target.module, &target.original_name);
-    let binds_module = reexport_map
-        .get(&target.crate_name)
-        .is_some_and(|exports| exports.contains_key(&module));
+    let binds_module = binds_a_module(target, module_paths);
     if binds_module {
         dep.target_package.clone_from(&target.crate_name);
-        dep.target_module = module;
+        dep.target_module = append_to_path(&target.module, &target.original_name);
         dep.target_item = None;
     }
     binds_module
+}
+
+/// Whether `target` binds a module of a workspace crate, or its root, as the
+/// module tree has it.
+fn binds_a_module(target: &ReExportTarget, module_paths: &ModulePathMap) -> bool {
+    let module = append_to_path(&target.module, &target.original_name);
+    if module.is_empty() {
+        module_paths.contains_key(&target.crate_name)
+    } else {
+        module_paths
+            .get_or_empty(&target.crate_name)
+            .contains(&module)
+    }
 }
 
 /// Check whether a module exports a symbol (own definition OR re-export).
@@ -855,6 +884,7 @@ impl ResolutionContext<'_> {
         resolve_reexport_noting(
             dep,
             self.reexport_map,
+            self.all_module_paths,
             self.current_module_path,
             self.passed_on,
         )
@@ -1897,7 +1927,7 @@ pub(crate) fn resolve_single_path(
     inline_depth: usize,
 ) -> Option<DependencyRef> {
     let mut dep = resolve_path_in_chain(ctx, path, line_num, context, inline_depth)?;
-    take_item_the_parent_reexports(&mut dep, ctx.reexport_map);
+    take_item_the_parent_reexports(&mut dep, ctx.reexport_map, ctx.all_module_paths);
     Some(dep)
 }
 
@@ -1908,7 +1938,11 @@ pub(crate) fn resolve_single_path(
 /// name keeps the dependency on the module. Module visibility is not
 /// recorded, so a public module named like the item is taken for the item
 /// too.
-fn take_item_the_parent_reexports(dep: &mut DependencyRef, reexport_map: &ReExportMap) {
+fn take_item_the_parent_reexports(
+    dep: &mut DependencyRef,
+    reexport_map: &ReExportMap,
+    module_paths: &ModulePathMap,
+) {
     if dep.target_item.is_some() || dep.target_module.is_empty() {
         return;
     }
@@ -1923,10 +1957,7 @@ fn take_item_the_parent_reexports(dep: &mut DependencyRef, reexport_map: &ReExpo
     else {
         return;
     };
-    let binds_module = reexport_map.get(&target.crate_name).is_some_and(|exports| {
-        exports.contains_key(&append_to_path(&target.module, &target.original_name))
-    });
-    if !binds_module {
+    if !binds_a_module(target, module_paths) {
         let (parent, name) = (parent.to_string(), name.to_string());
         dep.target_module = parent;
         dep.target_item = Some(name);

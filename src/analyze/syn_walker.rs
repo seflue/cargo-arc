@@ -216,6 +216,18 @@ struct WalkContext<'a> {
     base_context: EdgeContext,
 }
 
+/// Whether `dep` of the module at `module_path` only passes a name on to a
+/// descendant, as [`PassedOn::passes_on`] decides.
+fn only_passes_on(ctx: &WalkContext, module_path: &str, dep: &crate::model::DependencyRef) -> bool {
+    ctx.passed_on.passes_on(
+        ctx.crate_name,
+        module_path,
+        dep,
+        ctx.reexport_map,
+        ctx.all_module_paths,
+    )
+}
+
 /// Recursively walk a module, building `ModuleInfo` with dependency
 /// extraction. A file that does not parse is pushed onto `unparsed`.
 fn walk_module_syn(
@@ -323,10 +335,7 @@ fn walk_module_syn(
     // The descendants are walked now. A private glob or `use` this module
     // takes no name from but a descendant names something through only
     // passes the names on, which is no dependency of this module.
-    dependencies.retain(|dep| {
-        !ctx.passed_on
-            .passes_on(ctx.crate_name, current_module_path, dep, ctx.reexport_map)
-    });
+    dependencies.retain(|dep| !only_passes_on(ctx, current_module_path, dep));
 
     let definitions = ctx
         .reexport_map

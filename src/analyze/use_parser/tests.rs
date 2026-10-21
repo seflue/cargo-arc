@@ -3311,9 +3311,12 @@ mod reexport_resolution_tests {
 }
 
 mod resolve_reexport_tests {
-    use super::super::{ModuleExportInfo, ReExportMap, ReExportTarget, resolve_reexport};
+    use super::super::{
+        ModuleExportInfo, ModulePathMap, ReExportMap, ReExportTarget, resolve_reexport,
+    };
+    use super::DEFAULT_MP;
     use crate::model::{DefKind, Definition, DependencyRef, EdgeContext};
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::path::PathBuf;
 
     fn test_dep(crate_name: &str, module: &str, item: Option<&str>) -> DependencyRef {
@@ -3336,7 +3339,7 @@ mod resolve_reexport_tests {
     fn resolve_noop_without_target_item() {
         let map = ReExportMap::default();
         let mut dep = test_dep("my_crate", "render", None);
-        resolve_reexport(&mut dep, &map, "");
+        resolve_reexport(&mut dep, &map, &DEFAULT_MP, "");
         assert_eq!(dep.target_module, "render");
     }
 
@@ -3378,11 +3381,20 @@ mod resolve_reexport_tests {
         ]
         .into_iter()
         .collect();
+        let module_paths: ModulePathMap = [
+            (
+                "my_crate".to_string(),
+                HashSet::from(["backend".to_string(), "backend::custom".to_string()]),
+            ),
+            ("leaf_crate".to_string(), HashSet::from(["ir".to_string()])),
+        ]
+        .into_iter()
+        .collect();
 
         let mut module_dep = test_dep("my_crate", "", Some("custom"));
-        resolve_reexport(&mut module_dep, &map, "api");
+        resolve_reexport(&mut module_dep, &map, &module_paths, "api");
         let mut crate_dep = test_dep("my_crate", "", Some("leaf"));
-        resolve_reexport(&mut crate_dep, &map, "api");
+        resolve_reexport(&mut crate_dep, &map, &module_paths, "api");
 
         assert_eq!(
             (module_dep.target_module.as_str(), module_dep.target_item),
@@ -3426,9 +3438,19 @@ mod resolve_reexport_tests {
         )]
         .into_iter()
         .collect();
+        let module_paths: ModulePathMap = [(
+            "my_crate".to_string(),
+            HashSet::from([
+                "compact".to_string(),
+                "compact::functions".to_string(),
+                "arena".to_string(),
+            ]),
+        )]
+        .into_iter()
+        .collect();
 
         let mut dep = test_dep("my_crate", "compact", Some("arena"));
-        resolve_reexport(&mut dep, &map, "compact::functions");
+        resolve_reexport(&mut dep, &map, &module_paths, "compact::functions");
 
         assert_eq!(
             (dep.target_module.as_str(), dep.target_item),
@@ -3442,7 +3464,7 @@ mod resolve_reexport_tests {
     fn resolve_noop_when_crate_not_in_map() {
         let map = ReExportMap::default();
         let mut dep = test_dep("my_crate", "render", Some("Widget"));
-        resolve_reexport(&mut dep, &map, "");
+        resolve_reexport(&mut dep, &map, &DEFAULT_MP, "");
         assert_eq!(dep.target_module, "render");
     }
 
@@ -3465,7 +3487,7 @@ mod resolve_reexport_tests {
             .collect();
 
         let mut dep = test_dep("my_crate", "render", Some("Widget"));
-        resolve_reexport(&mut dep, &map, "");
+        resolve_reexport(&mut dep, &map, &DEFAULT_MP, "");
         assert_eq!(dep.target_module, "render");
     }
 
@@ -3499,7 +3521,7 @@ mod resolve_reexport_tests {
             .collect();
 
         let mut dep = test_dep("my_crate", "render", Some("Widget"));
-        resolve_reexport(&mut dep, &map, "");
+        resolve_reexport(&mut dep, &map, &DEFAULT_MP, "");
         assert_eq!(dep.target_module, "render::elements");
     }
 
@@ -3543,7 +3565,7 @@ mod resolve_reexport_tests {
             .collect();
 
         let mut dep = test_dep("my_crate", "root", Some("Widget"));
-        resolve_reexport(&mut dep, &map, "");
+        resolve_reexport(&mut dep, &map, &DEFAULT_MP, "");
         assert_eq!(dep.target_module, "origin");
     }
 
@@ -3577,7 +3599,7 @@ mod resolve_reexport_tests {
             .collect();
 
         let mut dep = test_dep("my_crate", "facade", Some("Alias"));
-        resolve_reexport(&mut dep, &map, "");
+        resolve_reexport(&mut dep, &map, &DEFAULT_MP, "");
         assert_eq!(dep.target_module, "origin");
     }
 
@@ -3604,7 +3626,7 @@ mod resolve_reexport_tests {
             .collect();
 
         let mut dep = test_dep("my_crate", "render", Some("Widget"));
-        resolve_reexport(&mut dep, &map, "");
+        resolve_reexport(&mut dep, &map, &DEFAULT_MP, "");
         assert_eq!(dep.target_module, "elements");
     }
 
@@ -3641,7 +3663,7 @@ mod resolve_reexport_tests {
             .collect();
 
         let mut dep = test_dep("my_crate", "facade", Some("Widget"));
-        resolve_reexport(&mut dep, &map, "");
+        resolve_reexport(&mut dep, &map, &DEFAULT_MP, "");
         assert_eq!(dep.target_module, "origin");
     }
 
@@ -3676,7 +3698,7 @@ mod resolve_reexport_tests {
             .collect();
 
         let mut dep = test_dep("my_crate", "a", Some("Widget"));
-        resolve_reexport(&mut dep, &map, "");
+        resolve_reexport(&mut dep, &map, &DEFAULT_MP, "");
         // Terminates without infinite loop; ends back at "a"
         assert_eq!(dep.target_module, "a");
     }
@@ -3711,7 +3733,7 @@ mod resolve_reexport_tests {
             .collect();
 
         let mut dep = test_dep("other_crate", "", Some("Config"));
-        resolve_reexport(&mut dep, &map, "");
+        resolve_reexport(&mut dep, &map, &DEFAULT_MP, "");
         assert_eq!(dep.target_module, "settings");
     }
 
@@ -3750,6 +3772,7 @@ mod resolve_reexport_tests {
         resolve_reexport(
             &mut dep,
             &map,
+            &DEFAULT_MP,
             "front::wgsl::parse::directive::enable_extension",
         );
         assert_eq!(dep.target_module, "front::wgsl::error");
@@ -3775,7 +3798,7 @@ mod resolve_reexport_tests {
             .collect();
 
         let mut dep = test_dep("my_crate", "front::wgsl", Some("Error"));
-        resolve_reexport(&mut dep, &map, "back::spv");
+        resolve_reexport(&mut dep, &map, &DEFAULT_MP, "back::spv");
         assert_eq!(dep.target_module, "front::wgsl");
     }
 
@@ -3819,7 +3842,7 @@ mod resolve_reexport_tests {
         let map = private_glob_map("api", "api::actions", "Mapping");
 
         let mut dep = test_dep("my_crate", "api", Some("Mapping"));
-        resolve_reexport(&mut dep, &map, "api::buffer");
+        resolve_reexport(&mut dep, &map, &DEFAULT_MP, "api::buffer");
         assert_eq!(dep.target_module, "api::actions");
     }
 
@@ -3830,7 +3853,7 @@ mod resolve_reexport_tests {
         let map = private_glob_map("api", "api::actions", "Mapping");
 
         let mut dep = test_dep("my_crate", "api", Some("Mapping"));
-        resolve_reexport(&mut dep, &map, "backend");
+        resolve_reexport(&mut dep, &map, &DEFAULT_MP, "backend");
         assert_eq!(dep.target_module, "api");
     }
 
@@ -3846,7 +3869,7 @@ mod resolve_reexport_tests {
         let map: ReExportMap = [("my_crate".to_string(), modules)].into_iter().collect();
 
         let mut dep = test_dep("my_crate", "api::buffer", Some("Mapping"));
-        resolve_reexport(&mut dep, &map, "api::buffer::view");
+        resolve_reexport(&mut dep, &map, &DEFAULT_MP, "api::buffer::view");
         assert_eq!(dep.target_module, "api::actions");
     }
 
@@ -3868,7 +3891,7 @@ mod resolve_reexport_tests {
         let map: ReExportMap = [("my_crate".to_string(), modules)].into_iter().collect();
 
         let mut dep = test_dep("my_crate", "custom", Some("Mapping"));
-        resolve_reexport(&mut dep, &map, "dispatch");
+        resolve_reexport(&mut dep, &map, &DEFAULT_MP, "dispatch");
         assert_eq!(dep.target_module, "custom");
     }
 
