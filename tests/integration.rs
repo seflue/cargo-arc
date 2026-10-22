@@ -2073,6 +2073,14 @@ fn name_resolution_glob_chain_brings_in_what_every_holder_sees() {
     assert_no_name_resolution_arc("m::gk::a::user", "m::gk::a::z");
 }
 
+/// Cell 73: `mx` defines `macro_rules! min` and imports `std::cmp::min`, a
+/// function of the other namespace. `kid` calls `super::min()`, which is
+/// outside the workspace, so there is no arc to `mx`.
+#[test]
+fn name_resolution_use_from_outside_beside_a_same_named_macro_has_no_arc() {
+    assert_no_name_resolution_arc("m::mx::kid", "m::mx");
+}
+
 /// Every use on an edge, with its category, goes to stderr under `--debug`,
 /// so the walker's result can be read without a rule that consumes it.
 /// A subprocess, because `run` installs the debug log on the process's own
