@@ -11,37 +11,45 @@ pub(crate) struct ModDecl {
     pub(crate) explicit_path: Option<String>,
     /// The paths `#[cfg_attr(…, path = …)]` names. Each is an alternative to
     /// the file the declaration loads without it.
-    pub(crate) cfg_attr_paths: Vec<String>,
+    pub(crate) cfg_attr_paths: Vec<CfgAttrPath>,
     /// Whether every declaration of the module stands under `#[cfg(test)]`,
     /// which makes the module test code with all it holds.
     pub(crate) cfg_test: bool,
 }
 
-/// Check whether a `#[cfg]` admits the item into test builds only: `test`,
-/// `all(..)` with `test` among its predicates, or `any(..)` whose every
-/// predicate admits test builds only. `any(windows, test)` also builds
-/// outside the test harness and is no test code.
-pub(crate) fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
-    fn requires_test(meta: &syn::Meta) -> bool {
-        use syn::parse::Parser;
-        let nested = |list: &syn::MetaList| {
-            syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated
-                .parse2(list.tokens.clone())
-        };
-        match meta {
-            syn::Meta::Path(path) => path.is_ident("test"),
-            syn::Meta::List(list) if list.path.is_ident("all") => {
-                nested(list).is_ok_and(|predicates| predicates.iter().any(requires_test))
-            }
-            syn::Meta::List(list) if list.path.is_ident("any") => {
-                nested(list).is_ok_and(|predicates| {
-                    !predicates.is_empty() && predicates.iter().all(requires_test)
-                })
-            }
-            _ => false,
-        }
-    }
+/// A path `#[cfg_attr(predicate, path = …)]` names.
+#[derive(PartialEq)]
+pub(crate) struct CfgAttrPath {
+    pub(crate) path: String,
+    /// Whether the predicate admits the path into test builds only, as
+    /// [`is_cfg_test`] decides for a `#[cfg]`.
+    pub(crate) cfg_test: bool,
+}
 
+/// Whether a cfg predicate admits test builds only: `test`, `all(..)` with
+/// `test` among its predicates, or `any(..)` whose every predicate admits
+/// test builds only. `any(windows, test)` also builds outside the test
+/// harness and is no test code.
+fn requires_test(meta: &syn::Meta) -> bool {
+    use syn::parse::Parser;
+    let nested = |list: &syn::MetaList| {
+        syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated
+            .parse2(list.tokens.clone())
+    };
+    match meta {
+        syn::Meta::Path(path) => path.is_ident("test"),
+        syn::Meta::List(list) if list.path.is_ident("all") => {
+            nested(list).is_ok_and(|predicates| predicates.iter().any(requires_test))
+        }
+        syn::Meta::List(list) if list.path.is_ident("any") => nested(list)
+            .is_ok_and(|predicates| !predicates.is_empty() && predicates.iter().all(requires_test)),
+        _ => false,
+    }
+}
+
+/// Check whether a `#[cfg]` admits the item into test builds only, as
+/// [`requires_test`] decides for its predicate.
+pub(crate) fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|attr| {
         if !attr.path().is_ident("cfg") {
             return false;
@@ -70,7 +78,7 @@ fn extract_path_attribute(attrs: &[syn::Attribute]) -> Option<String> {
 }
 
 /// Extract the values of `path = "..."` inside `#[cfg_attr(predicate, …)]`.
-fn extract_cfg_attr_paths(attrs: &[syn::Attribute]) -> Vec<String> {
+fn extract_cfg_attr_paths(attrs: &[syn::Attribute]) -> Vec<CfgAttrPath> {
     attrs
         .iter()
         .filter(|attr| attr.path().is_ident("cfg_attr"))
@@ -80,16 +88,24 @@ fn extract_cfg_attr_paths(attrs: &[syn::Attribute]) -> Vec<String> {
             )
             .ok()
         })
-        .flat_map(|metas| metas.into_iter().skip(1))
-        .filter_map(|meta| match meta {
-            syn::Meta::NameValue(nv) if nv.path.is_ident("path") => match nv.value {
-                syn::Expr::Lit(syn::ExprLit {
-                    lit: syn::Lit::Str(s),
-                    ..
-                }) => Some(s.value()),
+        .flat_map(|metas| {
+            let mut metas = metas.into_iter();
+            let cfg_test = metas
+                .next()
+                .is_some_and(|predicate| requires_test(&predicate));
+            metas.filter_map(move |meta| match meta {
+                syn::Meta::NameValue(nv) if nv.path.is_ident("path") => match nv.value {
+                    syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Str(s),
+                        ..
+                    }) => Some(CfgAttrPath {
+                        path: s.value(),
+                        cfg_test,
+                    }),
+                    _ => None,
+                },
                 _ => None,
-            },
-            _ => None,
+            })
         })
         .collect()
 }
@@ -110,7 +126,10 @@ pub(crate) fn extract_mod_declarations(syntax: &syn::File, include_tests: bool) 
             }
             let name = item_mod.ident.to_string();
             let explicit_path = extract_path_attribute(&item_mod.attrs);
-            let cfg_attr_paths = extract_cfg_attr_paths(&item_mod.attrs);
+            let mut cfg_attr_paths = extract_cfg_attr_paths(&item_mod.attrs);
+            if !include_tests {
+                cfg_attr_paths.retain(|path| !path.cfg_test);
+            }
             // `mod foo;` repeated under complementary cfgs names one file
             if let Some(known) = decls.iter_mut().find(|d| {
                 d.name == name
@@ -153,6 +172,14 @@ pub(crate) struct ModuleFile {
     pub(crate) owns_directory: bool,
 }
 
+/// A file a `mod` declaration loads.
+pub(crate) struct DeclaredFile {
+    pub(crate) file: ModuleFile,
+    /// Whether only a `#[cfg_attr]` path that admits test builds only loads
+    /// the file, which makes it test code with all it holds.
+    pub(crate) cfg_test: bool,
+}
+
 /// The files a `mod` declaration in `file_path` loads. A `#[path]`, plain or
 /// in `#[cfg_attr]`, is relative to the directory of `file_path`, and the
 /// file it names owns its directory. Each `#[cfg_attr(…, path = …)]` file is
@@ -162,28 +189,42 @@ pub(crate) fn declared_files(
     file_path: &Path,
     owns_directory: bool,
     decl: &ModDecl,
-) -> Vec<ModuleFile> {
+) -> Vec<DeclaredFile> {
     let dir = file_path.parent().unwrap_or(Path::new("."));
-    let by_path = |path: &String| {
+    let by_path = |path: &String, cfg_test: bool| {
         let path = dir.join(path);
-        path.exists().then_some(ModuleFile {
-            path,
-            owns_directory: true,
+        path.exists().then_some(DeclaredFile {
+            file: ModuleFile {
+                path,
+                owns_directory: true,
+            },
+            cfg_test,
         })
     };
     let plain = match &decl.explicit_path {
-        Some(path) => by_path(path),
+        Some(path) => by_path(path, false),
         None => resolve_mod_path(&child_resolve_dir(file_path, owns_directory), &decl.name).map(
-            |path| ModuleFile {
-                path,
-                owns_directory: false,
+            |path| DeclaredFile {
+                file: ModuleFile {
+                    path,
+                    owns_directory: false,
+                },
+                cfg_test: false,
             },
         ),
     };
-    let mut files: Vec<ModuleFile> = plain.into_iter().collect();
-    for file in decl.cfg_attr_paths.iter().filter_map(by_path) {
-        if !files.iter().any(|known| known.path == file.path) {
-            files.push(file);
+    let mut files: Vec<DeclaredFile> = plain.into_iter().collect();
+    for file in decl
+        .cfg_attr_paths
+        .iter()
+        .filter_map(|cfg_attr| by_path(&cfg_attr.path, cfg_attr.cfg_test))
+    {
+        match files
+            .iter_mut()
+            .find(|known| known.file.path == file.file.path)
+        {
+            Some(known) => known.cfg_test &= file.cfg_test,
+            None => files.push(file),
         }
     }
     files
@@ -323,7 +364,10 @@ mod tests {
             let decls = extract_mod_declarations(&syntax, true);
             let paths: Vec<_> = decls
                 .iter()
-                .map(|d| (d.name.as_str(), d.cfg_attr_paths.clone()))
+                .map(|d| {
+                    let paths: Vec<_> = d.cfg_attr_paths.iter().map(|p| p.path.clone()).collect();
+                    (d.name.as_str(), paths)
+                })
                 .collect();
             assert_eq!(
                 paths,
@@ -332,6 +376,30 @@ mod tests {
                     ("plain", vec![])
                 ]
             );
+        }
+
+        #[test]
+        fn test_cfg_attr_path_under_test_predicate_is_test_only() {
+            let source = r#"#[cfg_attr(test, path = "t.rs")] #[cfg_attr(all(unix, test), path = "a.rs")]
+                #[cfg_attr(any(unix, test), path = "o.rs")] mod imp;"#;
+            let syntax: syn::File = syn::parse_str(source).unwrap();
+            let paths = |include_tests| {
+                extract_mod_declarations(&syntax, include_tests)[0]
+                    .cfg_attr_paths
+                    .iter()
+                    .map(|p| (p.path.clone(), p.cfg_test))
+                    .collect::<Vec<_>>()
+            };
+            let owned = |p: &str, cfg_test| (p.to_string(), cfg_test);
+            assert_eq!(
+                paths(true),
+                [
+                    owned("t.rs", true),
+                    owned("a.rs", true),
+                    owned("o.rs", false)
+                ]
+            );
+            assert_eq!(paths(false), [owned("o.rs", false)]);
         }
     }
 

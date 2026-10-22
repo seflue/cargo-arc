@@ -49,19 +49,18 @@ fn parse_mod_declarations(file_path: &Path, include_tests: bool) -> Result<Vec<M
 // Public API: collect_syn_module_paths
 // ---------------------------------------------------------------------------
 
-/// Recursively walk `mod` declarations starting from `file_path`,
+/// Recursively walk `mod` declarations starting from `module`,
 /// collecting relative module paths (e.g. `"foo"`, `"foo::bar"`).
 fn walk_modules_for_paths(
-    file_path: &Path,
-    owns_directory: bool,
+    module: &ModuleFile,
     parent_path: &str,
     paths: &mut HashSet<String>,
     include_tests: bool,
 ) {
-    let decls = match parse_mod_declarations(file_path, include_tests) {
+    let decls = match parse_mod_declarations(&module.path, include_tests) {
         Ok(d) => d,
         Err(e) => {
-            tracing::warn!("skipping {}: {e:#}", file_path.display());
+            tracing::warn!("skipping {}: {e:#}", module.path.display());
             return;
         }
     };
@@ -74,14 +73,8 @@ fn walk_modules_for_paths(
         };
         paths.insert(child_full.clone());
 
-        for child in declared_files(file_path, owns_directory, &decl) {
-            walk_modules_for_paths(
-                &child.path,
-                child.owns_directory,
-                &child_full,
-                paths,
-                include_tests,
-            );
+        for child in declared_files(&module.path, module.owns_directory, &decl) {
+            walk_modules_for_paths(&child.file, &child_full, paths, include_tests);
         }
     }
 }
@@ -93,12 +86,12 @@ pub(crate) fn collect_syn_module_paths(
     include_tests: bool,
 ) -> HashSet<String> {
     let mut paths = HashSet::new();
-    for root_file in crate_info
-        .entry_files
-        .iter()
-        .map(|entry| entry.file.as_path())
-    {
-        walk_modules_for_paths(root_file, true, "", &mut paths, include_tests);
+    for entry in &crate_info.entry_files {
+        let root = ModuleFile {
+            path: entry.file.clone(),
+            owns_directory: true,
+        };
+        walk_modules_for_paths(&root, "", &mut paths, include_tests);
     }
     paths
 }
@@ -256,24 +249,26 @@ fn walk_declared_module(
     parent_path: &str,
     unparsed: &mut Vec<PathBuf>,
 ) -> Option<ModuleInfo> {
-    // A module declared under `#[cfg(test)]` is test code with all it holds
-    let child_ctx = if decl.cfg_test {
-        &WalkContext {
-            base_context: promote_to_test(&ctx.base_context),
-            ..ctx.clone()
-        }
-    } else {
-        ctx
+    // A module declared under `#[cfg(test)]`, or a file only a test-only
+    // `#[cfg_attr]` path loads, is test code with all it holds
+    let test_ctx = WalkContext {
+        base_context: promote_to_test(&ctx.base_context),
+        ..ctx.clone()
     };
     let mut alternatives = declared_files(&parent.path, parent.owns_directory, decl)
         .into_iter()
-        .map(|file| {
+        .map(|declared| {
+            let child_ctx = if decl.cfg_test || declared.cfg_test {
+                &test_ctx
+            } else {
+                ctx
+            };
             walk_module_syn(
                 child_ctx,
-                &file.path,
+                &declared.file.path,
                 &decl.name,
                 parent_path,
-                file.owns_directory,
+                declared.file.owns_directory,
                 unparsed,
             )
         });

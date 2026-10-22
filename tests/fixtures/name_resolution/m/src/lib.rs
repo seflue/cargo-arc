@@ -5,3 +5,8 @@ pub mod npuser;
 #[path = "foo/bar.rs"]
 pub mod viapath;
 pub mod cpath;
+pub mod cpath2;
+pub mod u;
+pub mod w;
+pub mod cfgimp;
+pub mod cimp;

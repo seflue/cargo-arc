@@ -531,7 +531,13 @@ fn walk_collect_reexports(
         };
 
         for child in declared_files(file_path, file.owns_directory, &decl) {
-            walk_collect_reexports(ctx, &child, &child_module_path, result, out_of_module_impls);
+            walk_collect_reexports(
+                ctx,
+                &child.file,
+                &child_module_path,
+                result,
+                out_of_module_impls,
+            );
         }
     }
 }
