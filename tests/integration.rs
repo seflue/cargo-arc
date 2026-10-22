@@ -1943,6 +1943,19 @@ fn name_resolution_names_of_another_crate_from_another_path() {
     assert_name_resolution_arc("x::zz", "y::am", "production", &["Thing2"]);
 }
 
+/// Cell 52: a glob of a proc-macro crate brings in the names its
+/// `#[proc_macro_derive(Name)]` attributes give the derives, not the names of
+/// the functions behind them.
+#[test]
+fn name_resolution_glob_of_a_proc_macro_crate_carries_the_derive_names() {
+    assert_name_resolution_arc(
+        "probe",
+        "pm",
+        "production",
+        &["Marker", "Other", "Shadow", "Shadow2"],
+    );
+}
+
 /// Every use on an edge, with its category, goes to stderr under `--debug`,
 /// so the walker's result can be read without a rule that consumes it.
 /// A subprocess, because `run` installs the debug log on the process's own

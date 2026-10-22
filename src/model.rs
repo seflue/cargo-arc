@@ -110,6 +110,9 @@ pub enum DefKind {
     Const,
     Static,
     Type,
+    /// A procedural macro: a derive, attribute or function-like macro of a
+    /// proc-macro crate.
+    Macro,
 }
 
 /// A symbol's definition site: the item kind and the line the item starts on
