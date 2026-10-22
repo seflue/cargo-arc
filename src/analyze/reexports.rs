@@ -42,7 +42,8 @@ pub(crate) fn collect_crate_reexports(
         .entry_files
         .iter()
         .map(|entry| {
-            let extern_crates = root_extern_crates(&entry.file, workspace_crates);
+            let extern_crates =
+                root_extern_crates(&entry.file, workspace_crates, &crate_info.code_names);
             let ctx = CollectContext {
                 crate_name: &crate_name,
                 workspace_root: &crate_info.workspace_root,
@@ -59,32 +60,38 @@ pub(crate) fn collect_crate_reexports(
         .collect()
 }
 
-/// Alias -> workspace crate name for each `extern crate X as Y;` in a crate
-/// root, where `X` is a workspace crate. Empty when the file does not parse.
+/// Name -> workspace crate name for each name a crate root's code writes for a
+/// workspace crate other than the crate's key: the package's `code_names` from
+/// the manifest, and the alias of each `extern crate X as Y;` in the root,
+/// where `X` names a workspace crate. Only the `code_names` when the file does
+/// not parse.
 pub(crate) fn root_extern_crates(
     root_file: &Path,
     workspace_crates: &WorkspacePackages,
+    code_names: &HashMap<String, String>,
 ) -> HashMap<String, String> {
+    let mut names = code_names.clone();
     let Ok(source) = std::fs::read_to_string(root_file) else {
-        return HashMap::new();
+        return names;
     };
     let Ok(syntax) = syn::parse_file(&source) else {
-        return HashMap::new();
+        return names;
     };
-    syntax
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            syn::Item::ExternCrate(extern_crate) => {
-                let (_, alias) = extern_crate.rename.as_ref()?;
-                let name = extern_crate.ident.to_string();
+    let aliases = syntax.items.iter().filter_map(|item| match item {
+        syn::Item::ExternCrate(extern_crate) => {
+            let (_, alias) = extern_crate.rename.as_ref()?;
+            let name = extern_crate.ident.to_string();
+            let crate_name = code_names.get(&name).cloned().or_else(|| {
                 workspace_crates
                     .contains(&name)
-                    .then(|| (alias.to_string(), normalize_crate_name(&name)))
-            }
-            _ => None,
-        })
-        .collect()
+                    .then(|| normalize_crate_name(&name))
+            })?;
+            Some((alias.to_string(), crate_name))
+        }
+        _ => None,
+    });
+    names.extend(aliases);
+    names
 }
 
 fn collect_root_reexports(
@@ -458,10 +465,12 @@ fn root_item_name<'p>(ctx: &CollectContext, path: &'p str) -> Option<(String, &'
     let (first, name) = path.split_once("::")?;
     let crate_name = if first == "crate" {
         ctx.crate_name.to_string()
+    } else if let Some(crate_name) = ctx.extern_crates.get(first) {
+        crate_name.clone()
     } else if ctx.workspace_crates.contains(first) {
         normalize_crate_name(first)
     } else {
-        ctx.extern_crates.get(first)?.clone()
+        return None;
     };
     let is_item = !name.contains("::")
         && name != "*"

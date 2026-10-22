@@ -79,6 +79,7 @@ pub(crate) fn conventional_package(name: &str, path: impl Into<PathBuf>) -> Pack
     PackageInfo {
         name: name.to_string(),
         key: normalize_crate_name(name),
+        code_names: HashMap::new(),
         entry_files: existing(path.join("src/lib.rs"))
             .map(EntryFile::lib)
             .into_iter()

@@ -30,6 +30,14 @@ name = "extra"
 version = "0.1.0"
 
 [[package]]
+name = "kernpkg"
+version = "0.1.0"
+
+[[package]]
+name = "other"
+version = "0.1.0"
+
+[[package]]
 name = "pm"
 version = "0.1.0"
 
@@ -38,6 +46,15 @@ name = "probe"
 version = "0.1.0"
 dependencies = [
  "pm",
+]
+
+[[package]]
+name = "ren"
+version = "0.1.0"
+dependencies = [
+ "kernpkg",
+ "other",
+ "types",
 ]
 
 [[package]]

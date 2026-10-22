@@ -56,6 +56,7 @@ impl LanguageAdapter for Lua {
             packages.push(PackageInfo {
                 name: key.clone(),
                 key,
+                code_names: HashMap::new(),
                 path: if dir.is_dir() {
                     dir
                 } else {
