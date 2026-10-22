@@ -1718,6 +1718,18 @@ fn name_resolution_private_module_is_a_module_for_a_child() {
     );
 }
 
+/// Cell 2: a child sees the private module, but a call names the value
+/// namespace, where the name is the item the parent re-exports.
+#[test]
+fn name_resolution_call_takes_the_reexported_item_beside_a_visible_module() {
+    assert_name_resolution_arc(
+        "app::ppriv::sub2",
+        "app::ppriv::helper",
+        "production",
+        &["helper"],
+    );
+}
+
 /// Cell 4: outside its parent a private module is not visible, and the
 /// name is the item the parent re-exports.
 #[test]
@@ -1735,6 +1747,13 @@ fn name_resolution_private_module_is_the_reexported_item_for_another_crate() {
 #[test]
 fn name_resolution_pub_crate_module_is_a_module_in_its_crate() {
     assert_name_resolution_arc("app::c6", "app::pcrate::helper", "production", &["run"]);
+}
+
+/// Cell 7: a call of the name of a `pub(crate)` module in its crate is the
+/// item its parent re-exports.
+#[test]
+fn name_resolution_call_takes_the_reexported_item_beside_a_pub_crate_module() {
+    assert_name_resolution_arc("app::c7", "app::pcrate::helper", "production", &["helper"]);
 }
 
 /// Cell 8: another crate does not see a `pub(crate)` module, and the name is
@@ -1763,10 +1782,23 @@ fn name_resolution_public_module_is_a_module_for_another_crate() {
     assert_name_resolution_arc("app::c10", "types::ppub::helper", "production", &["run"]);
 }
 
+/// Cell 11: a call from another crate of the name of a public module is the
+/// item its parent re-exports.
+#[test]
+fn name_resolution_call_takes_the_reexported_item_beside_a_public_module() {
+    assert_name_resolution_arc("app::c11", "types::ppub::helper", "production", &["helper"]);
+}
+
 /// Cell 13: a type in a public module.
 #[test]
 fn name_resolution_type_in_a_public_module() {
     assert_name_resolution_arc("app::c13", "app::ppub::helper", "production", &["Thing"]);
+}
+
+/// Cell 14: a path in value position, not called, names the item too.
+#[test]
+fn name_resolution_value_takes_the_reexported_item_beside_a_public_module() {
+    assert_name_resolution_arc("app::c14", "app::ppub::helper", "production", &["helper"]);
 }
 
 /// Cell 15: a `pub(super)` module is a module in its grandparent.
@@ -1868,6 +1900,16 @@ fn name_resolution_macro_bound_by_pub_crate_use() {
 fn name_resolution_pub_in_path_use_reaches_the_definer() {
     assert_name_resolution_arc("app::pin::kid", "app::util", "production", &["job"]);
     assert_no_name_resolution_arc("app::pin::kid", "app::pin");
+}
+
+/// Cell 46: `self` in braces binds the type namespace only, so the name is
+/// the module, not the fn the root re-exports under it. The `""` is the
+/// `use` line's own, which every module import whose name the file uses
+/// carries; the cell expects it gone, which the position does not decide.
+#[test]
+fn name_resolution_self_in_braces_binds_the_module_only() {
+    assert_name_resolution_arc("app5::selfuse", "app5::lex", "production", &["", "tok"]);
+    assert_no_name_resolution_arc("app5::selfuse", "app5");
 }
 
 /// Cells 61 and 61b: a private `use` of another crate's module is not

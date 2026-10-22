@@ -13,8 +13,9 @@ use crate::model::{DefKind, Definition, EdgeContext, PackageInfo};
 
 use super::mod_resolver::{child_resolve_dir, extract_mod_declarations, resolve_mod_path};
 use super::use_parser::{
-    AssociatedItems, GlobSource, ModuleExportInfo, ReExportMap, ReExportTarget, ResolutionContext,
-    RootReExports, Visibility, is_reexport_visibility, resolve_single_path, resolve_use_tree,
+    AssociatedItems, GlobSource, Meaning, ModuleExportInfo, ReExportMap, ReExportTarget,
+    ResolutionContext, RootReExports, Visibility, is_reexport_visibility, resolve_single_path,
+    resolve_use_tree,
 };
 
 /// Invariant parameters shared across the recursive re-export walk.
@@ -275,6 +276,7 @@ fn impl_owner(
         0,
         &EdgeContext::production(),
         0,
+        Meaning::Type,
     )?;
     if dep.target_package != ctx.crate_name {
         return None;
@@ -339,9 +341,14 @@ fn collect_use_reexports(
     let visibility = Visibility::of(&use_item.vis, module_path);
 
     for (alias_path, original_path) in alias_paths.iter().zip(original_paths.iter()) {
-        let Some(mut dep) =
-            resolve_single_path(&res_ctx, original_path, 0, &EdgeContext::production(), 0)
-        else {
+        let Some(mut dep) = resolve_single_path(
+            &res_ctx,
+            original_path,
+            0,
+            &EdgeContext::production(),
+            0,
+            Meaning::Any,
+        ) else {
             let alias_name = alias_path.rsplit("::").next().unwrap_or(alias_path);
             if private && alias_name != "*" {
                 info.elsewhere
