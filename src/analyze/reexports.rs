@@ -105,6 +105,7 @@ fn collect_root_reexports(
         owns_directory: true,
     };
     walk_collect_reexports(ctx, &root, "", &mut result, &mut out_of_module_impls);
+    result.retain(|_, info| !info.is_empty());
 
     for block in out_of_module_impls {
         result
@@ -519,13 +520,13 @@ fn walk_collect_reexports(
         .strip_prefix(ctx.workspace_root)
         .map_or_else(|_| file_path.to_path_buf(), Path::to_path_buf);
 
+    // Merged even when empty: a public declaration widens what an alternative
+    // file of the module declares narrower.
     let info = collect_module_info(ctx, &syntax, &source_file, module_path, out_of_module_impls);
-    if !info.is_empty() {
-        result
-            .entry(module_path.to_string())
-            .or_default()
-            .merge(info);
-    }
+    result
+        .entry(module_path.to_string())
+        .or_default()
+        .merge(info);
 
     // Recurse into child modules
     let decls = extract_mod_declarations(&syntax, false);

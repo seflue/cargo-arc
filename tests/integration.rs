@@ -2087,6 +2087,24 @@ fn name_resolution_use_named_only_in_a_macro_argument() {
     );
 }
 
+/// Cell 66e: an item or module one alternative of a module declares `pub` and
+/// the other private is public, whichever file is read last. A glob of `imp`
+/// outside it brings in `run` and the module `k`, and `job` is still `imp`'s
+/// own and not the one the glob in `imp` brings in. In `cpath4`, the file read
+/// last holds nothing but the `pub mod k`.
+#[test]
+fn name_resolution_cfg_attr_alternatives_keep_the_wider_visibility() {
+    assert_name_resolution_arc(
+        "m::cpath3user",
+        "m::cpath3::imp",
+        "production",
+        &["job", "run"],
+    );
+    assert_name_resolution_arc("m::cpath3user", "m::cpath3::imp::k", "production", &["f"]);
+    assert_no_name_resolution_arc("m::cpath3user", "m::util");
+    assert_name_resolution_arc("m::cpath4user", "m::cpath4::imp::k", "production", &["f"]);
+}
+
 /// Cell 72: a glob brings in only what the module holding it sees. `b` globs
 /// `a::s`, whose `pub(super) fn f` only `a` sees, and `c` with `pub fn f`; a
 /// module under `a` writing `crate::gh::b::f()` names `c::f`.
