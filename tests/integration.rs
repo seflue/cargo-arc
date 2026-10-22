@@ -1477,15 +1477,16 @@ fn module_facts_symbols(
 
 /// A module that only declares child modules is a module all the same: a
 /// private `use` of it in an ancestor binds the module, not an item of the
-/// crate root.
+/// crate root. A path through the binding reaches the module's child.
 #[test]
 fn test_module_without_own_items_is_a_module_in_the_chain() {
     for include_tests in [false, true] {
         let symbols = module_facts_symbols(include_tests);
-        let module = ("spoke".to_string(), "facade".to_string());
-        assert!(
-            symbols.contains_key(&module),
-            "spoke -> facade should exist (include_tests {include_tests}), found: {symbols:?}"
+        let child = ("spoke".to_string(), "leaf".to_string());
+        assert_eq!(
+            symbols.get(&child),
+            Some(&vec!["go".to_string()]),
+            "spoke -> leaf should carry go (include_tests {include_tests}), found: {symbols:?}"
         );
         let root = ("spoke".to_string(), "app".to_string());
         assert!(
@@ -2079,6 +2080,15 @@ fn name_resolution_glob_chain_brings_in_what_every_holder_sees() {
 #[test]
 fn name_resolution_use_from_outside_beside_a_same_named_macro_has_no_arc() {
     assert_no_name_resolution_arc("m::mx::kid", "m::mx");
+}
+
+/// Cell 74: `ren2` writes `use hub::b; b::g()`, where `hub` has
+/// `pub use types::b;`. `ren2` has no name for the package `types`, and its
+/// name `types` means `other`.
+#[test]
+fn name_resolution_module_binding_needs_no_name_for_its_package() {
+    assert_name_resolution_arc("ren2::c74", "types::b", "production", &["g"]);
+    assert_no_name_resolution_arc("ren2::c74", "other::b");
 }
 
 /// Every use on an edge, with its category, goes to stderr under `--debug`,

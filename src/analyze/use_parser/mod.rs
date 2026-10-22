@@ -5,7 +5,6 @@ use crate::model::{
     DefKind, Definition, DependencyRef, EdgeContext, EntryKind, SymbolUse, TestKind, UsageKind,
     UseCategory,
 };
-use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
@@ -1674,9 +1673,8 @@ pub(crate) struct PathRef {
 }
 
 impl PathRef {
-    /// Resolve `path`, this reference or the path a binding rebased it to,
-    /// through the resolution chain. A path written in macro input resolves
-    /// through a binding only.
+    /// Resolve `path`, this reference, through the resolution chain. A path
+    /// written in macro input resolves through a binding only.
     fn resolve(&self, ctx: &ResolutionContext, path: &str) -> Option<DependencyRef> {
         if self.in_macro {
             return None;
@@ -1684,6 +1682,28 @@ impl PathRef {
         resolve_single_path(
             ctx,
             path,
+            self.line,
+            &self.context,
+            self.inline_depth,
+            self.meaning,
+        )
+    }
+
+    /// Resolve `rest`, what this reference writes after a name bound to
+    /// `module`, under that module. Not for a path written in macro input, as
+    /// [`PathRef::resolve`].
+    fn resolve_under(
+        &self,
+        ctx: &ResolutionContext,
+        module: &BoundModule,
+        rest: &str,
+    ) -> Option<DependencyRef> {
+        if self.in_macro {
+            return None;
+        }
+        module.resolve(
+            ctx,
+            rest,
             self.line,
             &self.context,
             self.inline_depth,
@@ -2646,27 +2666,60 @@ fn resolve_path_in_chain(
     parse_crate_local_import(ctx, path, line_num, context)
         .or_else(|| parse_bare_module_import(ctx, path, line_num, context))
         .or_else(|| parse_workspace_import(ctx, in_workspace, line_num, context))
-        .or_else(|| {
-            // Bare workspace crate name (e.g. from `use other_crate::{Foo}` → path = "other_crate")
-            let path = in_workspace;
-            if !path.contains("::") && ctx.workspace_crates.contains(path) {
-                Some(DependencyRef {
-                    target_package: path.to_string(),
-                    target_module: String::new(),
-                    target_item: None,
-                    source_file: ctx.source_file.to_path_buf(),
-                    line: line_num,
-                    context: context.clone(),
-                    via_reexport: false,
-                    uses: Vec::new(),
-                    in_lib_view: normalize_crate_name(path)
-                        == normalize_crate_name(ctx.current_crate),
-                })
-            } else {
-                None
-            }
-        })
+        .or_else(|| workspace_crate_root(ctx, in_workspace, line_num, context))
         .or_else(|| parse_external_crate_import(ctx, path, line_num, context))
+}
+
+/// The root of the workspace crate `path` names bare, as `use other_crate::{Foo}`
+/// leaves `other_crate`.
+fn workspace_crate_root(
+    ctx: &ResolutionContext,
+    path: &str,
+    line_num: usize,
+    context: &EdgeContext,
+) -> Option<DependencyRef> {
+    if path.contains("::") || !ctx.workspace_crates.contains(path) {
+        return None;
+    }
+    Some(DependencyRef {
+        target_package: path.to_string(),
+        target_module: String::new(),
+        target_item: None,
+        source_file: ctx.source_file.to_path_buf(),
+        line: line_num,
+        context: context.clone(),
+        via_reexport: false,
+        uses: Vec::new(),
+        in_lib_view: normalize_crate_name(path) == normalize_crate_name(ctx.current_crate),
+    })
+}
+
+/// Resolve `path`, written from the root of `package`, a workspace crate other
+/// than this one or an external crate. No name of this crate is asked: the
+/// package is known. A glob keeps its `*` as the item.
+fn resolve_in_package(
+    ctx: &ResolutionContext,
+    package: &str,
+    path: &str,
+    line_num: usize,
+    context: &EdgeContext,
+) -> Option<DependencyRef> {
+    if let Some(base) = path
+        .strip_suffix("::*")
+        .or_else(|| (path == "*").then_some(""))
+    {
+        let mut dep = resolve_in_package(ctx, package, base, line_num, context)?;
+        dep.target_item = Some("*".to_string());
+        return Some(dep);
+    }
+    let full = if path.is_empty() {
+        package.to_string()
+    } else {
+        format!("{package}::{path}")
+    };
+    parse_workspace_import(ctx, &full, line_num, context)
+        .or_else(|| workspace_crate_root(ctx, &full, line_num, context))
+        .or_else(|| parse_external_crate_import(ctx, &full, line_num, context))
 }
 
 /// `path` with a leading name from `extern_crates` replaced by the crate it
@@ -2737,10 +2790,7 @@ pub(crate) fn parse_workspace_dependencies(
 
     for collected in use_items.iter() {
         let item = &collected.item;
-        let line_num = item.use_token.span.start().line;
-        let paths = resolve_use_tree(&item.tree, "", false)
-            .into_iter()
-            .map(|path| bindings.rebased(&path, collected.region));
+        let paths = resolve_use_tree(&item.tree, "", false);
         // A `use` that republishes a name under a visibility reachable from
         // outside the module is a re-export. Path references (non-use) are never
         // re-exports.
@@ -2748,14 +2798,7 @@ pub(crate) fn parse_workspace_dependencies(
 
         // A `use` binds every meaning of its target.
         for path in paths {
-            if let Some(mut dep) = resolve_single_path(
-                ctx,
-                &path,
-                line_num,
-                &collected.context,
-                collected.inline_depth,
-                Meaning::Any,
-            ) {
+            if let Some(mut dep) = bindings.resolve_use_path(ctx, &path, collected) {
                 // A private glob whose target the map knows is resolved into
                 // the names the file uses, by `parse_path_ref_dependencies`.
                 // A `pub use` glob republishes every name and uses none, so it
@@ -2859,9 +2902,8 @@ fn glob_payload_known(dep: &DependencyRef, reexport_map: &ReExportMap) -> bool {
 /// elsewhere, names bound to items, glob imports, and the file's own item
 /// names.
 ///
-/// `modules` holds a binding name → the absolute path of the module it names.
-/// Absolute means `crate::a::b` for the current crate and `other_crate::b`
-/// otherwise, so a binding stays valid wherever in the file it is used.
+/// `modules` holds a binding name → the module it names, by package and path,
+/// so a binding stays valid wherever in the file it is used.
 ///
 /// `module_imports` holds, for a name in `modules` a `use` of the file binds,
 /// the [`DependencyRef::full_target`] of that `use`'s dependency.
@@ -2882,7 +2924,7 @@ fn glob_payload_known(dep: &DependencyRef, reexport_map: &ReExportMap) -> bool {
 /// binds and the file does not define is the glob's where the module exports
 /// it.
 ///
-/// `glob_modules` holds, by name and as absolute paths like `modules`, the
+/// `glob_modules` holds, by name and like `modules`, the
 /// child modules of a glob's module and the names that module binds to a
 /// module by `pub use` or, where the file sits below it in the same crate, by
 /// a private `use`. A glob brings them in like any other name, so a path may
@@ -2890,13 +2932,13 @@ fn glob_payload_known(dep: &DependencyRef, reexport_map: &ReExportMap) -> bool {
 #[derive(Debug, Default)]
 pub(crate) struct FileBindings {
     regions: BindingRegions,
-    modules: HashMap<RegionId, HashMap<String, String>>,
+    modules: HashMap<RegionId, HashMap<String, BoundModule>>,
     module_imports: HashMap<RegionId, HashMap<String, String>>,
     used_module_imports: RefCell<HashMap<String, FromProduction>>,
     elsewhere: HashMap<RegionId, HashSet<String>>,
     items: HashMap<RegionId, HashMap<String, DependencyRef>>,
     globs: HashMap<RegionId, Vec<DependencyRef>>,
-    glob_modules: HashMap<RegionId, HashMap<String, String>>,
+    glob_modules: HashMap<RegionId, HashMap<String, BoundModule>>,
     /// The names of the items the file defines, at any depth. A glob never
     /// brings in a name the file defines itself.
     local_definitions: HashSet<String>,
@@ -2904,10 +2946,10 @@ pub(crate) struct FileBindings {
 
 /// What one path reference stands for, given the bindings around it.
 enum PathBinding<'a> {
-    /// A path to run through the resolution chain, with a bound module alias
-    /// replaced by the module's absolute path, and the target of the `use`
-    /// that binds the alias, if a `use` of the file does.
-    Path(Cow<'a, str>, Option<&'a str>),
+    /// A path whose first segment is bound to a module: the module, what the
+    /// path writes after the segment, and the target of the `use` that binds
+    /// the segment, if a `use` of the file does.
+    Module(&'a BoundModule, &'a str, Option<&'a str>),
     /// An occurrence of an item a `use` binds, plus the associated item the
     /// path goes on to name: `Config::new` on the binding `Config` leaves
     /// `new`.
@@ -2957,23 +2999,14 @@ impl FileBindings {
                 continue;
             }
             let chained = through_the_chain(ctx, dep.as_ref());
-            if let Binding::Module(module_path) = classify_binding(ctx, chained.as_ref(), &binding)
-            {
-                bindings.bind_module(collected.region, &binding, module_path);
+            if let Binding::Module(module) = classify_binding(ctx, chained.as_ref(), &binding) {
+                bindings.bind_module(collected.region, &binding, module);
             }
         }
 
         for (collected, binding, original_path) in use_bindings(use_items) {
             let binding = binding.as_str();
-            let path = bindings.rebased(&original_path, collected.region);
-            let dep = resolve_single_path(
-                ctx,
-                &path,
-                collected.item.use_token.span.start().line,
-                &collected.context,
-                collected.inline_depth,
-                Meaning::Any,
-            );
+            let dep = bindings.resolve_use_path(ctx, &original_path, collected);
             // A glob binds every name its module exports and none of them is
             // written here; the names are found where the file uses them.
             if binding == "*" {
@@ -2985,15 +3018,18 @@ impl FileBindings {
                 }
                 continue;
             }
-            match classify_binding(ctx, through_the_chain(ctx, dep.as_ref()).as_ref(), binding) {
-                Binding::Module(module_path) => {
-                    bindings.bind_module(collected.region, binding, module_path);
-                    if let Some(dep) = &dep {
+            // The arc of the `use` ends where the chain does, so the import is
+            // noted under that target.
+            let chained = through_the_chain(ctx, dep.as_ref());
+            match classify_binding(ctx, chained.as_ref(), binding) {
+                Binding::Module(module) => {
+                    bindings.bind_module(collected.region, binding, module);
+                    if let Some(chained) = &chained {
                         bindings
                             .module_imports
                             .entry(collected.region)
                             .or_default()
-                            .insert(binding.to_string(), dep.full_target());
+                            .insert(binding.to_string(), chained.full_target());
                     }
                 }
                 Binding::Elsewhere => bindings.bind_elsewhere(collected.region, binding),
@@ -3014,14 +3050,25 @@ impl FileBindings {
         bindings
     }
 
-    /// The module path a name is bound to as seen from `region`, where it is
-    /// bound to one.
+    /// The module a name is bound to as seen from `region`, where it is bound
+    /// to one, written from the package's root: `crate::a::b` for the current
+    /// crate, `other_crate::b` for another.
     #[cfg(test)]
-    fn target(&self, region: RegionId, name: &str) -> Option<&str> {
-        self.regions
+    fn target(&self, region: RegionId, name: &str, ctx: &ResolutionContext) -> Option<String> {
+        let module = self
+            .regions
             .enclosing(region)
-            .find_map(|enclosing| self.modules.get(&enclosing)?.get(name))
-            .map(String::as_str)
+            .find_map(|enclosing| self.modules.get(&enclosing)?.get(name))?;
+        let package = if module.package == normalize_crate_name(ctx.current_crate) {
+            "crate"
+        } else {
+            &module.package
+        };
+        Some(if module.path.is_empty() {
+            package.to_string()
+        } else {
+            format!("{package}::{}", module.path)
+        })
     }
 
     /// Look up what a reference standing in `region` stands for.
@@ -3044,7 +3091,7 @@ impl FileBindings {
         };
         let last = rest.and_then(|r| r.rsplit("::").next());
         for enclosing in self.regions.enclosing(region) {
-            if let Some(target) = self.modules.get(&enclosing).and_then(|m| m.get(first))
+            if let Some(module) = self.modules.get(&enclosing).and_then(|m| m.get(first))
                 && let Some(rest) = rest
             {
                 let import = self
@@ -3052,7 +3099,7 @@ impl FileBindings {
                     .get(&enclosing)
                     .and_then(|m| m.get(first))
                     .map(String::as_str);
-                return PathBinding::Path(Cow::Owned(format!("{target}::{rest}")), import);
+                return PathBinding::Module(module, rest, import);
             }
             if let Some(dep) = self.items.get(&enclosing).and_then(|m| m.get(first)) {
                 return PathBinding::Item(dep, last);
@@ -3064,22 +3111,31 @@ impl FileBindings {
             {
                 return PathBinding::Elsewhere;
             }
-            if let Some(target) = self.glob_modules.get(&enclosing).and_then(|m| m.get(first))
+            if let Some(module) = self.glob_modules.get(&enclosing).and_then(|m| m.get(first))
                 && let Some(rest) = rest
                 && !self.local_definitions.contains(first)
             {
-                return PathBinding::Path(Cow::Owned(format!("{target}::{rest}")), None);
+                return PathBinding::Module(module, rest, None);
             }
         }
         PathBinding::Unbound(first, last)
     }
 
-    /// `path` with a first segment bound to a module replaced by the module's
-    /// absolute path, as seen from `region`.
-    fn rebased(&self, path: &str, region: RegionId) -> String {
-        match self.binding_of(path, region) {
-            PathBinding::Path(rebased, _) => rebased.into_owned(),
-            _ => path.to_string(),
+    /// Resolve the path `collected` imports, under the module its first
+    /// segment is bound to where it is bound to one.
+    fn resolve_use_path(
+        &self,
+        ctx: &ResolutionContext,
+        path: &str,
+        collected: &CollectedUse,
+    ) -> Option<DependencyRef> {
+        let line = collected.item.use_token.span.start().line;
+        let (context, inline_depth) = (&collected.context, collected.inline_depth);
+        match self.binding_of(path, collected.region) {
+            PathBinding::Module(module, rest, _) => {
+                module.resolve(ctx, rest, line, context, inline_depth, Meaning::Any)
+            }
+            _ => resolve_single_path(ctx, path, line, context, inline_depth, Meaning::Any),
         }
     }
 
@@ -3094,11 +3150,11 @@ impl FileBindings {
             .flatten()
     }
 
-    fn bind_module(&mut self, region: RegionId, name: &str, module_path: String) {
+    fn bind_module(&mut self, region: RegionId, name: &str, module: BoundModule) {
         self.modules
             .entry(region)
             .or_default()
-            .insert(name.to_string(), module_path);
+            .insert(name.to_string(), module);
     }
 
     fn bind_item(&mut self, region: RegionId, name: &str, dep: DependencyRef) {
@@ -3139,12 +3195,11 @@ impl FileBindings {
             if parent != dep.target_module || !seen {
                 return None;
             }
-            let child = DependencyRef {
-                target_module: path.clone(),
-                target_item: None,
-                ..dep.clone()
+            let child = BoundModule {
+                package: dep.target_package.clone(),
+                path: path.clone(),
             };
-            Some((name.to_string(), absolute_module_path(ctx, &child)?))
+            Some((name.to_string(), child))
         });
         let used_modules = info
             .into_iter()
@@ -3159,21 +3214,18 @@ impl FileBindings {
                     )
             })
             .filter_map(|(name, target)| {
-                let module = append_to_path(&target.module, &target.original_name);
-                let bound = DependencyRef {
-                    target_package: target.crate_name.clone(),
-                    target_module: module,
-                    target_item: None,
-                    ..dep.clone()
+                let bound = BoundModule {
+                    package: target.crate_name.clone(),
+                    path: append_to_path(&target.module, &target.original_name),
                 };
                 if !ctx
                     .all_module_paths
-                    .get_or_empty(&bound.target_package)
-                    .contains(&bound.target_module)
+                    .get_or_empty(&bound.package)
+                    .contains(&bound.path)
                 {
                     return None;
                 }
-                Some((name.clone(), absolute_module_path(ctx, &bound)?))
+                Some((name.clone(), bound))
             });
         self.glob_modules
             .entry(region)
@@ -3237,8 +3289,8 @@ fn use_bindings(
 
 /// What one `use` binding means for later references to its name.
 enum Binding {
-    /// Names a module. A later `binding::Item` resolves through this path.
-    Module(String),
+    /// Names a module. A later `binding::Item` resolves under this module.
+    Module(BoundModule),
     /// Names something this crate does not contain.
     Elsewhere,
     /// Names an item of this crate. A qualified use of an item is a reference to
@@ -3254,7 +3306,7 @@ enum Binding {
 /// keeps `parse_bare_module_import` off it.
 ///
 /// A binding to a module, or to the root of another crate, is a module binding:
-/// what follows the name resolves under that path.
+/// what follows the name resolves under that module.
 ///
 /// A binding from another crate to an item needs an entry only where its name
 /// also names a module of this crate. Without one, the reference lands on that
@@ -3269,13 +3321,13 @@ fn classify_binding(
         return Binding::Elsewhere;
     };
     if dep.target_item.is_none() {
-        return absolute_module_path(ctx, dep).map_or(Binding::Elsewhere, Binding::Module);
+        return Binding::Module(BoundModule::of(dep));
     }
     if dep.target_package == normalize_crate_name(ctx.current_crate) {
         return Binding::OwnItem;
     }
     if parse_bare_module_import(ctx, binding, 0, &EdgeContext::production()).is_some() {
-        return spelled_in_this_crate(ctx, dep).map_or(Binding::Elsewhere, Binding::Module);
+        return Binding::Module(BoundModule::of(dep));
     }
     Binding::Elsewhere
 }
@@ -3301,33 +3353,49 @@ fn through_the_chain(
     })
 }
 
-/// Render a resolved module dependency as a path that `resolve_single_path` can
-/// re-resolve from any position in the file. Another crate's root is its name.
-/// `None` where no path can, as [`spelled_in_this_crate`] decides.
-fn absolute_module_path(ctx: &ResolutionContext, dep: &DependencyRef) -> Option<String> {
-    if dep.target_package == normalize_crate_name(ctx.current_crate) {
-        Some(format!("crate::{}", dep.target_module))
-    } else {
-        spelled_in_this_crate(ctx, dep)
-    }
+/// The module a binding names, by the package holding it and its path from the
+/// package's root. A binding of another crate's item whose name also names a
+/// module of this crate holds the item's path.
+#[derive(Debug)]
+struct BoundModule {
+    package: String,
+    path: String,
 }
 
-/// `dep.full_target()` with the crate written as this crate's code names it.
-/// `extern_crates` turns a name into a crate before the crate keys are asked,
-/// so a key it holds for another crate cannot stand for its own crate; then
-/// the crate is written under a name `extern_crates` gives it, and `None`
-/// stands where it gives none.
-fn spelled_in_this_crate(ctx: &ResolutionContext, dep: &DependencyRef) -> Option<String> {
-    let key = dep.target_package.as_str();
-    let target = dep.full_target();
-    if ctx.extern_crates.get(key).is_none_or(|named| named == key) {
-        return Some(target);
+impl BoundModule {
+    fn of(dep: &DependencyRef) -> BoundModule {
+        let path = match &dep.target_item {
+            Some(item) => append_to_path(&dep.target_module, item),
+            None => dep.target_module.clone(),
+        };
+        BoundModule {
+            package: dep.target_package.clone(),
+            path,
+        }
     }
-    let (name, _) = ctx
-        .extern_crates
-        .iter()
-        .find(|(_, named)| named.as_str() == key)?;
-    Some(format!("{name}{}", &target[key.len()..]))
+
+    /// Resolve `rest`, what a path writes after the bound name, under this
+    /// module. A module of this crate resolves as a `crate::` path. Another
+    /// package's is looked up in that package, so this crate needs no name
+    /// for it, and a name it has that means another package plays no part.
+    fn resolve(
+        &self,
+        ctx: &ResolutionContext,
+        rest: &str,
+        line_num: usize,
+        context: &EdgeContext,
+        inline_depth: usize,
+        meaning: Meaning,
+    ) -> Option<DependencyRef> {
+        let path = append_to_path(&self.path, rest);
+        if self.package == normalize_crate_name(ctx.current_crate) {
+            let path = format!("crate::{path}");
+            return resolve_single_path(ctx, &path, line_num, context, inline_depth, meaning);
+        }
+        let mut dep = resolve_in_package(ctx, &self.package, &path, line_num, context)?;
+        take_item_the_parent_reexports(ctx, &mut dep, meaning);
+        Some(dep)
+    }
 }
 
 /// Parse path references into workspace-relevant dependencies, each carrying
@@ -3407,8 +3475,8 @@ pub(crate) fn parse_path_ref_dependencies(
                         (dep, associated, None)
                     }
                 }
-                PathBinding::Path(effective, import) => {
-                    let Some(dep) = resolve(&effective) else {
+                PathBinding::Module(module, rest, import) => {
+                    let Some(dep) = path_ref.resolve_under(ctx, module, rest) else {
                         continue;
                     };
                     module_import = import;

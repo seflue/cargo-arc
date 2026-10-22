@@ -1,0 +1,8 @@
+[package]
+name = "ren2"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+types = { package = "other", path = "../other" }
+hub = { path = "../hub" }
