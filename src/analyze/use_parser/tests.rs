@@ -116,6 +116,7 @@ fn root_path_refs(paths: Vec<(String, usize, EdgeContext, usize)>) -> CollectedP
                 inline_depth,
                 region: BindingRegions::ROOT,
                 position: PathPosition::Value,
+                meaning: Meaning::Value,
                 in_macro: false,
                 local: None,
             })
@@ -2186,6 +2187,26 @@ fn process<T: my_lib::Trait>(_t: T) {}
     }
 
     #[test]
+    fn a_path_asks_the_meaning_of_its_position() {
+        let source = r"
+#[derive(my_lib::Marker)]
+struct S(my_lib::Kind);
+fn main() {
+    my_lib::mac!(my_lib::arg);
+    my_lib::run();
+}
+";
+        let syntax = syn::parse_file(source).unwrap();
+        let refs = collect_all_path_refs(&syntax, EdgeContext::production());
+        let meaning_of = |path: &str| refs.iter().find(|r| r.path == path).map(|r| r.meaning);
+        assert_eq!(meaning_of("my_lib::Marker"), Some(Meaning::Macro));
+        assert_eq!(meaning_of("my_lib::Kind"), Some(Meaning::Type));
+        assert_eq!(meaning_of("my_lib::mac"), Some(Meaning::Macro));
+        assert_eq!(meaning_of("my_lib::arg"), Some(Meaning::Any));
+        assert_eq!(meaning_of("my_lib::run"), Some(Meaning::Value));
+    }
+
+    #[test]
     fn test_collect_path_refs_struct_literal() {
         let source = r"
 fn main() {
@@ -4007,7 +4028,14 @@ mod external_crate_tests {
         let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs"))
             .external_crate_names(&ext_names)
             .build();
-        let dep = resolve_single_path(&ctx, "serde::Deserialize", 1, &EdgeContext::production(), 0);
+        let dep = resolve_single_path(
+            &ctx,
+            "serde::Deserialize",
+            1,
+            &EdgeContext::production(),
+            0,
+            Meaning::Any,
+        );
         assert!(dep.is_some(), "should resolve external crate import");
         let dep = dep.unwrap();
         assert_eq!(dep.target_package, "serde");
@@ -4026,7 +4054,14 @@ mod external_crate_tests {
             .external_crate_names(&ext_names)
             .build();
         // With serde as both workspace crate and external, workspace should win
-        let dep = resolve_single_path(&ctx, "serde::Foo", 1, &EdgeContext::production(), 0);
+        let dep = resolve_single_path(
+            &ctx,
+            "serde::Foo",
+            1,
+            &EdgeContext::production(),
+            0,
+            Meaning::Any,
+        );
         assert!(dep.is_some());
         let dep = dep.unwrap();
         // Workspace import resolution takes priority
@@ -4036,7 +4071,14 @@ mod external_crate_tests {
     #[test]
     fn test_resolve_external_no_match() {
         let ctx = ResolutionContextBuilder::new(Path::new("src/lib.rs")).build();
-        let dep = resolve_single_path(&ctx, "unknown_crate::Foo", 1, &EdgeContext::production(), 0);
+        let dep = resolve_single_path(
+            &ctx,
+            "unknown_crate::Foo",
+            1,
+            &EdgeContext::production(),
+            0,
+            Meaning::Any,
+        );
         assert!(dep.is_none(), "unknown crate should not resolve");
     }
 }
