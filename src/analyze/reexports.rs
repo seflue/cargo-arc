@@ -144,25 +144,33 @@ fn collect_module_info(
     out_of_module_impls: &mut Vec<OutOfModuleImpl>,
 ) -> ModuleExportInfo {
     let mut info = ModuleExportInfo::default();
-    let mut macros = Vec::new();
+    let macros: Vec<String> = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Macro(i) => i.ident.as_ref().map(ToString::to_string),
+            _ => None,
+        })
+        .collect();
 
     for item in &syntax.items {
         let defined = match item {
-            syn::Item::Use(use_item) if is_reexport_visibility(&use_item.vis) => {
-                collect_use_reexports(ctx, use_item, source_file, module_path, &mut info, false);
-                None
-            }
             syn::Item::Use(use_item) => {
-                collect_use_reexports(ctx, use_item, source_file, module_path, &mut info, true);
+                let private = !is_reexport_visibility(&use_item.vis);
+                collect_use_reexports(
+                    ctx,
+                    use_item,
+                    source_file,
+                    module_path,
+                    &macros,
+                    &mut info,
+                    private,
+                );
                 None
             }
             syn::Item::Mod(i) => {
                 info.module_visibility
                     .insert(i.ident.to_string(), Visibility::of(&i.vis, module_path));
-                None
-            }
-            syn::Item::Macro(i) => {
-                macros.extend(i.ident.as_ref().map(ToString::to_string));
                 None
             }
             _ => defined_item(item),
@@ -177,12 +185,6 @@ fn collect_module_info(
                 .insert(ident.to_string(), Visibility::of(vis, module_path));
         }
     }
-    // `use name;` on the file's own `macro_rules! name` passes that macro on:
-    // the name is bound here, not outside the crate.
-    for name in &macros {
-        info.elsewhere.remove(name);
-    }
-
     // Second pass, once every `use` of the file is known: an `impl` block may
     // precede the `use` that names its type.
     for item in &syntax.items {
@@ -371,12 +373,16 @@ fn resolution_context<'a>(
 /// `foreign_private_glob_sources`. A private,
 /// non-glob leaf the resolution chain cannot place at all names something
 /// outside this crate; recording it in `elsewhere` keeps a descendant's
-/// reference to it from resolving to this module.
+/// reference to it from resolving to this module. A `use name;` of one of
+/// `macros`, the file's own `macro_rules!`, binds that macro here and stays
+/// out. Renamed, it may also bind what another `use` brought in under `name`,
+/// so it stays in.
 fn collect_use_reexports(
     ctx: &CollectContext,
     use_item: &syn::ItemUse,
     source_file: &Path,
     module_path: &str,
+    macros: &[String],
     info: &mut ModuleExportInfo,
     private: bool,
 ) {
@@ -396,7 +402,8 @@ fn collect_use_reexports(
             Meaning::Any,
         ) else {
             let alias_name = alias_path.rsplit("::").next().unwrap_or(alias_path);
-            if private && alias_name != "*" {
+            let own_macro = alias_path == original_path && macros.contains(original_path);
+            if private && alias_name != "*" && !own_macro {
                 info.elsewhere
                     .insert(alias_name.to_string(), visibility.clone());
             }
