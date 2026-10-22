@@ -2039,6 +2039,54 @@ fn name_resolution_cfg_attr_path_under_test_is_test_code() {
     );
 }
 
+/// Cell 45: two `#[path]` modules `imp` under `cfg`, one with `pub use
+/// crate::u::open;`, the other with `pub use crate::w::open;`. A user of
+/// `crate::cfgimp::imp::open()` reaches `w` only. The cell expects
+/// `cimp -> u ["open"]` as well; this pins today's coarser value. Each file
+/// is a node of its own, both named `m::cfgimp::imp`, which these arcs do
+/// not tell apart.
+#[test]
+fn name_resolution_cfg_path_alternatives_reexport_the_same_name() {
+    assert_name_resolution_arc("m::cfgimp::imp", "m::u", "production", &["open"]);
+    assert_name_resolution_arc("m::cfgimp::imp", "m::w", "production", &["open"]);
+    assert_name_resolution_arc("m::cimp", "m::w", "production", &["open"]);
+    assert_no_name_resolution_arc("m::cimp", "m::u");
+}
+
+/// Cell 54: paths in a `macro_rules!` body, in macro arguments and in a file
+/// `include!` reads give no arc to a wrong target. An arc to `a`, where every
+/// path points, is allowed.
+#[test]
+fn name_resolution_paths_in_macros_give_no_wrong_arc() {
+    for include_tests in [false, true] {
+        for (from, to) in name_resolution_arcs(include_tests).keys() {
+            let in_cell = [
+                "probe::m_dollar_def",
+                "probe::m_dollar_use",
+                "probe::m_args",
+                "probe::m_include",
+            ]
+            .contains(&from.as_str());
+            assert!(
+                !in_cell || to == "probe::a",
+                "{from} -> {to} should not exist (include_tests {include_tests})"
+            );
+        }
+    }
+}
+
+/// Cell 55: a `use` whose name only a `println!` argument uses keeps its arc
+/// with the name.
+#[test]
+fn name_resolution_use_named_only_in_a_macro_argument() {
+    assert_name_resolution_arc(
+        "probe::m_use_only_in_macro",
+        "probe::a",
+        "production",
+        &["h"],
+    );
+}
+
 /// Cell 72: a glob brings in only what the module holding it sees. `b` globs
 /// `a::s`, whose `pub(super) fn f` only `a` sees, and `c` with `pub fn f`; a
 /// module under `a` writing `crate::gh::b::f()` names `c::f`.
