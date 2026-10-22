@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use super::mod_resolver::{ModDecl, child_resolve_dir, extract_mod_declarations, resolve_mod_path};
 use super::packages::{ModulePathMap, PackageExportMap, WorkspacePackages, normalize_crate_name};
-use super::reexports::root_extern_crates;
+use super::reexports::{name_a_fn_defines, root_extern_crates};
 use super::use_parser::ReExportMap;
 use super::use_parser::{PassedOn, ResolutionContext, parse_file_dependencies, promote_to_test};
 use crate::model::{
@@ -138,6 +138,7 @@ fn is_pub(vis: &syn::Visibility) -> bool {
 ///
 /// Includes:
 /// - `pub fn`, `pub struct`, `pub enum`, `pub trait`, `pub const`, `pub static`, `pub type`
+/// - a `#[proc_macro_derive(Name)]` fn under `Name`
 /// - `pub use` re-exports (simple, aliased, grouped — NOT glob)
 ///
 /// Ignores `pub mod` declarations (module structure, not exports).
@@ -166,7 +167,7 @@ pub(crate) fn collect_crate_exports(crate_info: &PackageInfo) -> HashSet<String>
     for item in &syntax.items {
         match item {
             syn::Item::Fn(i) if is_pub(&i.vis) => {
-                exports.insert(i.sig.ident.to_string());
+                exports.insert(name_a_fn_defines(i).0.to_string());
             }
             syn::Item::Struct(i) if is_pub(&i.vis) => {
                 exports.insert(i.ident.to_string());

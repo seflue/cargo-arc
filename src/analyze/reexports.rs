@@ -145,13 +145,6 @@ fn collect_module_info(
                 collect_use_reexports(ctx, use_item, source_file, module_path, &mut info, true);
                 None
             }
-            syn::Item::Fn(i) => Some((&i.vis, &i.sig.ident, DefKind::Fn)),
-            syn::Item::Struct(i) => Some((&i.vis, &i.ident, DefKind::Struct)),
-            syn::Item::Enum(i) => Some((&i.vis, &i.ident, DefKind::Enum)),
-            syn::Item::Trait(i) => Some((&i.vis, &i.ident, DefKind::Trait)),
-            syn::Item::Const(i) => Some((&i.vis, &i.ident, DefKind::Const)),
-            syn::Item::Static(i) => Some((&i.vis, &i.ident, DefKind::Static)),
-            syn::Item::Type(i) => Some((&i.vis, &i.ident, DefKind::Type)),
             syn::Item::Mod(i) => {
                 info.module_visibility
                     .insert(i.ident.to_string(), Visibility::of(&i.vis, module_path));
@@ -161,7 +154,7 @@ fn collect_module_info(
                 macros.extend(i.ident.as_ref().map(ToString::to_string));
                 None
             }
-            _ => None,
+            _ => defined_item(item),
         };
         if let Some((vis, ident, kind)) = defined {
             if is_reexport_visibility(vis) {
@@ -236,6 +229,48 @@ fn collect_module_info(
     }
 
     info
+}
+
+/// The visibility, name and kind of an item that defines a symbol, or `None`
+/// for any other item.
+fn defined_item(item: &syn::Item) -> Option<(&syn::Visibility, syn::Ident, DefKind)> {
+    let (vis, ident, kind) = match item {
+        syn::Item::Fn(i) => {
+            let (name, kind) = name_a_fn_defines(i);
+            return Some((&i.vis, name, kind));
+        }
+        syn::Item::Struct(i) => (&i.vis, &i.ident, DefKind::Struct),
+        syn::Item::Enum(i) => (&i.vis, &i.ident, DefKind::Enum),
+        syn::Item::Trait(i) => (&i.vis, &i.ident, DefKind::Trait),
+        syn::Item::Const(i) => (&i.vis, &i.ident, DefKind::Const),
+        syn::Item::Static(i) => (&i.vis, &i.ident, DefKind::Static),
+        syn::Item::Type(i) => (&i.vis, &i.ident, DefKind::Type),
+        _ => return None,
+    };
+    Some((vis, ident.clone(), kind))
+}
+
+/// The name a function defines and what it is. A `#[proc_macro_derive(Name)]`
+/// defines the derive macro `Name`, not a function under its own name; a
+/// `#[proc_macro]` or `#[proc_macro_attribute]` defines a macro under its own
+/// name.
+pub(crate) fn name_a_fn_defines(item: &syn::ItemFn) -> (syn::Ident, DefKind) {
+    for attr in &item.attrs {
+        let path = attr.path();
+        if path.is_ident("proc_macro_derive") {
+            let derive_name = attr.parse_args_with(|input: syn::parse::ParseStream| {
+                let name: syn::Ident = input.parse()?;
+                input.parse::<proc_macro2::TokenStream>()?;
+                Ok(name)
+            });
+            if let Ok(name) = derive_name {
+                return (name, DefKind::Macro);
+            }
+        } else if path.is_ident("proc_macro") || path.is_ident("proc_macro_attribute") {
+            return (item.sig.ident.clone(), DefKind::Macro);
+        }
+    }
+    (item.sig.ident.clone(), DefKind::Fn)
 }
 
 /// Find the module that defines the type an `impl` block is for, and the
@@ -956,6 +991,45 @@ impl AStruct { pub fn method(&self) {} }
         ] {
             assert!(!defs.contains_key(name), "unexpected {name} in {defs:?}");
         }
+    }
+
+    /// A function of a proc-macro crate defines a macro: a derive under the
+    /// name its attribute gives, the others under the function's own name.
+    #[test]
+    fn proc_macro_functions_define_macros() {
+        let tmp = test_crate(&[(
+            "src/lib.rs",
+            r"
+#[proc_macro_derive(Widget, attributes(widget))]
+pub fn derive_widget(input: TokenStream) -> TokenStream { input }
+#[proc_macro]
+pub fn make(input: TokenStream) -> TokenStream { input }
+#[proc_macro_attribute]
+pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
+",
+        )]);
+        let crate_info = make_crate_info(&tmp, "test_crate");
+
+        let result = collect_single_root_reexports(
+            &crate_info,
+            &ModulePathMap::default(),
+            &WorkspacePackages::default(),
+            &PackageExportMap::default(),
+        );
+
+        let defs = &result.get("").expect("root info").definitions;
+        for name in ["Widget", "make", "wrap"] {
+            assert_eq!(
+                defs.get(name).map(|d| d.kind),
+                Some(DefKind::Macro),
+                "wrong kind for {name}"
+            );
+        }
+        assert!(!defs.contains_key("derive_widget"), "{defs:?}");
+        assert_eq!(
+            super::super::syn_walker::collect_crate_exports(&crate_info),
+            HashSet::from(["Widget".to_string(), "make".to_string(), "wrap".to_string()])
+        );
     }
 
     /// A private item in the root is visible to every module of the crate,
