@@ -342,7 +342,14 @@ pub(crate) fn resolve_reexport(
     module_paths: &ModulePathMap,
     importer_module: &str,
 ) -> bool {
-    resolve_reexport_noting(dep, reexport_map, module_paths, importer_module, None)
+    resolve_reexport_noting(
+        dep,
+        reexport_map,
+        module_paths,
+        importer_module,
+        None,
+        Meaning::Any,
+    )
 }
 
 /// A module holding a private `use` or glob, by crate and module path.
@@ -514,7 +521,8 @@ fn glob_may_bring_a_trait(
 
 /// Whether `name`, re-exported by the module `dep` imports from, is a trait at
 /// its definer, or the chain ends on no definition the map knows. A name that
-/// ends on a module is no trait.
+/// ends on a module is no trait. Nothing in `holder` asks a meaning of the
+/// name, so the chain follows any.
 fn reexports_a_trait_or_unknown(
     dep: &DependencyRef,
     name: &str,
@@ -526,7 +534,14 @@ fn reexports_a_trait_or_unknown(
         target_item: Some(name.to_string()),
         ..dep.clone()
     };
-    if !resolve_reexport_noting(&mut named, reexport_map, module_paths, holder, None) {
+    if !resolve_reexport_noting(
+        &mut named,
+        reexport_map,
+        module_paths,
+        holder,
+        None,
+        Meaning::Any,
+    ) {
         return true;
     }
     let Some(item) = &named.target_item else {
@@ -548,13 +563,14 @@ fn reexports_a_trait_or_unknown(
 /// Each private glob and private `use` of an ancestor the chain passes
 /// through is noted in `passed_on`. A `dep` in the lib view follows the chain
 /// from its package's lib root. Whether a name binds a module, `module_paths`
-/// tells.
+/// tells; whether the reference means it, `meaning`.
 fn resolve_reexport_noting(
     dep: &mut DependencyRef,
     reexport_map: &ReExportMap,
     module_paths: &ModulePathMap,
     importer_module: &str,
     passed_on: Option<&PassedOn>,
+    meaning: Meaning,
 ) -> bool {
     if dep.in_lib_view {
         follow_reexports(
@@ -563,9 +579,17 @@ fn resolve_reexport_noting(
             module_paths,
             importer_module,
             passed_on,
+            meaning,
         )
     } else {
-        follow_reexports(dep, reexport_map, module_paths, importer_module, passed_on)
+        follow_reexports(
+            dep,
+            reexport_map,
+            module_paths,
+            importer_module,
+            passed_on,
+            meaning,
+        )
     }
 }
 
@@ -577,6 +601,7 @@ fn follow_reexports(
     module_paths: &ModulePathMap,
     importer_module: &str,
     passed_on: Option<&PassedOn>,
+    meaning: Meaning,
 ) -> bool {
     let Some(mut crate_exports) = reexport_map.get(&dep.target_package) else {
         return true;
@@ -587,6 +612,16 @@ fn follow_reexports(
     let in_lib_view = dep.in_lib_view;
     let visible = |crate_name: &str, visibility: &Visibility| {
         reexport_map.is_visible(crate_name, in_lib_view, visibility, importer_module)
+    };
+    let ends_on_module = |dep: &mut DependencyRef, target: &ReExportTarget| {
+        end_on_module(
+            dep,
+            target,
+            reexport_map,
+            module_paths,
+            importer_module,
+            meaning,
+        )
     };
 
     loop {
@@ -614,7 +649,7 @@ fn follow_reexports(
             visible(&dep.target_package, visibility)
         });
         if let Some((target, private_use)) = binding {
-            if end_on_module(dep, target, reexport_map, module_paths, importer_module) {
+            if ends_on_module(dep, target) {
                 break;
             }
             if private_use {
@@ -647,21 +682,11 @@ fn follow_reexports(
         }
 
         // Tier 2: Glob re-exports
-        if follow_local_glob(
-            dep,
-            &module_info.glob_sources,
-            reexport_map,
-            item,
-            importer_module,
-            &visited,
-        ) {
-            continue;
-        }
-
         // Tier 2a: Glob re-exports from a module of another workspace crate
-        if let Some(next_exports) = follow_foreign_glob(
+        if let Some(next_exports) = follow_public_glob(
             dep,
-            &module_info.foreign_glob_sources,
+            crate_exports,
+            module_info,
             reexport_map,
             item,
             importer_module,
@@ -719,6 +744,39 @@ fn visible_binding<'a>(
                 .filter(visible_target)
                 .map(|target| (target, true))
         })
+}
+
+/// Point `dep` at the module a glob re-export of `module_info` imports from
+/// that exports `symbol` to `importer_module` without passing a module in
+/// `passed`: one of this crate first, then one of another workspace crate.
+/// Returns the export info of that module's crate, where the chain goes on.
+fn follow_public_glob<'m>(
+    dep: &mut DependencyRef,
+    crate_exports: &'m HashMap<String, ModuleExportInfo>,
+    module_info: &ModuleExportInfo,
+    reexport_map: &'m ReExportMap,
+    symbol: &str,
+    importer_module: &str,
+    passed: &HashSet<(String, String)>,
+) -> Option<&'m HashMap<String, ModuleExportInfo>> {
+    if follow_local_glob(
+        dep,
+        &module_info.glob_sources,
+        reexport_map,
+        symbol,
+        importer_module,
+        passed,
+    ) {
+        return Some(crate_exports);
+    }
+    follow_foreign_glob(
+        dep,
+        &module_info.foreign_glob_sources,
+        reexport_map,
+        symbol,
+        importer_module,
+        passed,
+    )
 }
 
 /// Point `dep` at the module a private glob of `module_info` imports from
@@ -872,22 +930,66 @@ fn follow_foreign_glob<'m>(
 
 /// Point `dep` at the module `target` binds, when it binds a module or a crate
 /// root that `importer_module` sees: the reference then names the module, not
-/// an item in it.
+/// an item in it. A reference whose `meaning` is no module goes on to an item
+/// of that name beside the module, where its holder shows one.
 fn end_on_module(
     dep: &mut DependencyRef,
     target: &ReExportTarget,
     reexport_map: &ReExportMap,
     module_paths: &ModulePathMap,
     importer_module: &str,
+    meaning: Meaning,
 ) -> bool {
+    let item_meant = || {
+        !meaning.admits_a_module()
+            && holds_an_item_named(
+                reexport_map,
+                module_paths,
+                &target.crate_name,
+                dep.in_lib_view,
+                &target.module,
+                &target.original_name,
+                importer_module,
+            )
+    };
     let binds_module = binds_a_module(target, module_paths)
-        && module_is_visible(reexport_map, target, dep.in_lib_view, importer_module);
+        && module_is_visible(reexport_map, target, dep.in_lib_view, importer_module)
+        && !item_meant();
     if binds_module {
         dep.target_package.clone_from(&target.crate_name);
         dep.target_module = append_to_path(&target.module, &target.original_name);
         dep.target_item = None;
     }
     binds_module
+}
+
+/// Whether `module` of `crate_name`, reached in the lib view or not, holds an
+/// item `name` visible from `importer_module`: its own definition, or a `use`
+/// of something that is no module. Beside a module of that name, it is what a
+/// reference that does not mean the module names.
+fn holds_an_item_named(
+    reexport_map: &ReExportMap,
+    module_paths: &ModulePathMap,
+    crate_name: &str,
+    in_lib_view: bool,
+    module: &str,
+    name: &str,
+    importer_module: &str,
+) -> bool {
+    let Some(info) = reexport_map
+        .modules_of(crate_name, in_lib_view)
+        .and_then(|modules| modules.get(module))
+    else {
+        return false;
+    };
+    let visible = |visibility: &Visibility| {
+        reexport_map.is_visible(crate_name, in_lib_view, visibility, importer_module)
+    };
+    let defined =
+        info.definitions.contains_key(name) && info.item_visibility.get(name).is_none_or(visible);
+    defined
+        || visible_binding(info, name, visible)
+            .is_some_and(|(target, _)| !binds_a_module(target, module_paths))
 }
 
 /// Whether `target` binds a module of a workspace crate, or its root, as the
@@ -1211,14 +1313,16 @@ pub(crate) struct ResolutionContext<'a> {
 }
 
 impl ResolutionContext<'_> {
-    /// [`resolve_reexport_noting`] from this file's module.
-    fn resolve_reexport(&self, dep: &mut DependencyRef) -> bool {
+    /// [`resolve_reexport_noting`] from this file's module, for a reference
+    /// that asks `meaning` of `dep`'s item.
+    fn resolve_reexport(&self, dep: &mut DependencyRef, meaning: Meaning) -> bool {
         resolve_reexport_noting(
             dep,
             self.reexport_map,
             self.all_module_paths,
             self.current_module_path,
             self.passed_on,
+            meaning,
         )
     }
 }
@@ -1460,6 +1564,40 @@ pub(crate) enum PathPosition {
     Binding,
 }
 
+impl PathPosition {
+    /// The meaning this position asks of the last segment of its path.
+    fn meaning(self) -> Meaning {
+        match self {
+            PathPosition::Type | PathPosition::Construct => Meaning::Type,
+            PathPosition::Call | PathPosition::Value | PathPosition::Binding => Meaning::Value,
+        }
+    }
+}
+
+/// The meaning a reference asks of a name: one of the three namespaces of the
+/// Rust Reference, or any of them. A module stands in the type namespace
+/// only, so a call of a name that is a module and a fn calls the fn. A
+/// segment that more segments follow is a type. A `use` asks any meaning,
+/// since it binds every meaning its target has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Meaning {
+    /// Modules, crates, structs, enums, traits, type aliases.
+    Type,
+    /// Functions, constants, statics, constructors.
+    Value,
+    /// Macros, and the names in `#[derive(…)]`.
+    Macro,
+    /// Whatever the name binds.
+    Any,
+}
+
+impl Meaning {
+    /// Whether a module is what this meaning may name.
+    fn admits_a_module(self) -> bool {
+        matches!(self, Meaning::Type | Meaning::Any)
+    }
+}
+
 /// One path reference with what its position says about it.
 #[derive(Debug)]
 pub(crate) struct PathRef {
@@ -1469,6 +1607,10 @@ pub(crate) struct PathRef {
     pub(crate) inline_depth: usize,
     pub(crate) region: RegionId,
     pub(crate) position: PathPosition,
+    /// What the position asks the last segment to mean: the namespace of its
+    /// position, the macro namespace for the name of a macro or a derive, any
+    /// for another path read off tokens.
+    pub(crate) meaning: Meaning,
     /// Written in macro input or an attribute, where syn does not parse and
     /// the segments are read off the tokens. A binding resolves such a path;
     /// the resolution chain is not asked, so no edge comes from macro input
@@ -1477,6 +1619,36 @@ pub(crate) struct PathRef {
     /// The local variable a bare name in an expression may refer to: the
     /// innermost one of that name in scope where the path is written.
     pub(crate) local: Option<LocalBinding>,
+}
+
+impl PathRef {
+    /// Resolve `path`, this reference or the path a binding rebased it to,
+    /// through the resolution chain. A path written in macro input resolves
+    /// through a binding only.
+    fn resolve(&self, ctx: &ResolutionContext, path: &str) -> Option<DependencyRef> {
+        if self.in_macro {
+            return None;
+        }
+        resolve_single_path(
+            ctx,
+            path,
+            self.line,
+            &self.context,
+            self.inline_depth,
+            self.meaning,
+        )
+    }
+
+    /// The meaning the path asks of the item it resolved to, with `associated`
+    /// the segment it writes after the item: an item the path goes on past is
+    /// a type.
+    fn meaning_of_item(&self, associated: Option<&str>) -> Meaning {
+        if associated.is_some() {
+            Meaning::Type
+        } else {
+            self.meaning
+        }
+    }
 }
 
 /// The pattern that declares a local variable.
@@ -1594,6 +1766,15 @@ impl PathRefCollector {
     }
 
     fn record(&mut self, path: String, line: usize, in_macro: bool) {
+        let meaning = if self.naming_macro {
+            Meaning::Macro
+        } else {
+            self.position.meaning()
+        };
+        self.record_meaning(path, line, in_macro, meaning);
+    }
+
+    fn record_meaning(&mut self, path: String, line: usize, in_macro: bool, meaning: Meaning) {
         let local = self.local_named(&path);
         self.paths.push(PathRef {
             path,
@@ -1602,6 +1783,7 @@ impl PathRefCollector {
             inline_depth: self.inline_depth,
             region: self.region,
             position: self.position,
+            meaning,
             in_macro,
             local,
         });
@@ -1609,14 +1791,15 @@ impl PathRefCollector {
 
     /// Read the paths off a token stream syn leaves unparsed: a run of
     /// identifiers joined by `::`, at any nesting of brackets. Every other
-    /// token is skipped, so nothing here knows what position a path is in.
-    fn record_token_paths(&mut self, tokens: &proc_macro2::TokenStream) {
+    /// token is skipped, so nothing here knows what position a path is in;
+    /// `meaning` is what each path is asked to mean, any where nothing says.
+    fn record_token_paths(&mut self, tokens: &proc_macro2::TokenStream, meaning: Meaning) {
         use proc_macro2::TokenTree;
         let tokens: Vec<TokenTree> = tokens.clone().into_iter().collect();
         let mut index = 0;
         while index < tokens.len() {
             match &tokens[index] {
-                TokenTree::Group(group) => self.record_token_paths(&group.stream()),
+                TokenTree::Group(group) => self.record_token_paths(&group.stream(), meaning),
                 // A lifetime is a `'` followed by an identifier, not a name.
                 TokenTree::Ident(ident) if !is_lifetime_tick(tokens.get(index.wrapping_sub(1))) => {
                     let line = ident.span().start().line;
@@ -1628,7 +1811,7 @@ impl PathRefCollector {
                         index += 3;
                     }
                     self.in_position(PathPosition::Value, |s| {
-                        s.record(path.join("::"), line, true);
+                        s.record_meaning(path.join("::"), line, true, meaning);
                     });
                 }
                 _ => {}
@@ -1826,13 +2009,19 @@ impl<'ast> Visit<'ast> for PathRefCollector {
         self.naming_macro = true;
         self.in_position(PathPosition::Call, |s| syn::visit::visit_macro(s, node));
         self.naming_macro = false;
-        self.record_token_paths(&node.tokens);
+        self.record_token_paths(&node.tokens, Meaning::Any);
     }
 
     // `#[derive(Serialize)]` and the like name what they use in tokens too.
+    // A name in `#[derive(…)]` is a derive macro.
     fn visit_meta_list(&mut self, node: &'ast syn::MetaList) {
         syn::visit::visit_meta_list(self, node);
-        self.record_token_paths(&node.tokens);
+        let meaning = if node.path.is_ident("derive") {
+            Meaning::Macro
+        } else {
+            Meaning::Any
+        };
+        self.record_token_paths(&node.tokens, meaning);
     }
 
     // `pub(in path)` names the scope that may see the item; nothing is used
@@ -2268,27 +2457,35 @@ fn join_module_segments(base_path: &str, levels_up: usize, suffix: &[&str]) -> O
 
 /// Resolve a single use path through the resolution chain: crate-local → bare module → workspace.
 /// Handles glob paths (`crate::module::*`) by stripping the glob and setting `target_item` = "*".
+/// `meaning` is what the reference asks of the path's last segment.
 pub(crate) fn resolve_single_path(
     ctx: &ResolutionContext,
     path: &str,
     line_num: usize,
     context: &EdgeContext,
     inline_depth: usize,
+    meaning: Meaning,
 ) -> Option<DependencyRef> {
     let mut dep = resolve_path_in_chain(ctx, path, line_num, context, inline_depth)?;
-    take_item_the_parent_reexports(ctx, &mut dep);
+    take_item_the_parent_reexports(ctx, &mut dep, meaning);
     Some(dep)
 }
 
-/// Point a dependency on a module at the item of the same name that the
-/// module's parent re-exports. Beside `mod helper; pub use helper::helper;`
-/// the path `parent::helper` names the private module and the fn, and only
-/// the fn is visible outside `parent`. A file that sees the module, as its
+/// Point a dependency on a module at the item of the same name in the
+/// module's parent, where the reference does not mean the module. Beside
+/// `mod helper; pub use helper::helper;` the path `parent::helper` names the
+/// module and the fn. A call or a value means the fn, where the parent holds
+/// one; an item the parent does not show keeps the module. Otherwise only the
+/// fn is visible outside `parent`: a file that sees the module, as its
 /// declaration says from the file's crate, root and module, keeps its
 /// dependency on the module. A re-export of a module under that name keeps the
 /// dependency on the module, and so does a public module, which is visible
 /// wherever the item is.
-fn take_item_the_parent_reexports(ctx: &ResolutionContext, dep: &mut DependencyRef) {
+fn take_item_the_parent_reexports(
+    ctx: &ResolutionContext,
+    dep: &mut DependencyRef,
+    meaning: Meaning,
+) {
     if dep.target_item.is_some() || dep.target_module.is_empty() {
         return;
     }
@@ -2296,6 +2493,22 @@ fn take_item_the_parent_reexports(ctx: &ResolutionContext, dep: &mut DependencyR
         .target_module
         .rsplit_once("::")
         .unwrap_or(("", dep.target_module.as_str()));
+    if !meaning.admits_a_module()
+        && holds_an_item_named(
+            ctx.reexport_map,
+            ctx.all_module_paths,
+            &dep.target_package,
+            dep.in_lib_view,
+            parent,
+            name,
+            ctx.current_module_path,
+        )
+    {
+        let (parent, name) = (parent.to_string(), name.to_string());
+        dep.target_module = parent;
+        dep.target_item = Some(name);
+        return;
+    }
     let visible = |visibility: &Visibility| {
         ctx.reexport_map.is_visible(
             &dep.target_package,
@@ -2474,6 +2687,7 @@ pub(crate) fn parse_workspace_dependencies(
         // re-exports.
         let via_reexport = is_reexport_visibility(&item.vis);
 
+        // A `use` binds every meaning of its target.
         for path in paths {
             if let Some(mut dep) = resolve_single_path(
                 ctx,
@@ -2481,6 +2695,7 @@ pub(crate) fn parse_workspace_dependencies(
                 line_num,
                 &collected.context,
                 collected.inline_depth,
+                Meaning::Any,
             ) {
                 // A private glob whose target the map knows is resolved into
                 // the names the file uses, by `parse_path_ref_dependencies`.
@@ -2491,7 +2706,7 @@ pub(crate) fn parse_workspace_dependencies(
                 }
                 dep.via_reexport = via_reexport;
                 for mut dep in expand_glob(dep, ctx.reexport_map) {
-                    if ctx.resolve_reexport(&mut dep) {
+                    if ctx.resolve_reexport(&mut dep, Meaning::Any) {
                         DependencyRef::dedup_push(&mut deps, &mut seen_targets, dep);
                     }
                 }
@@ -2645,6 +2860,7 @@ impl FileBindings {
                 collected.item.use_token.span.start().line,
                 &collected.context,
                 collected.inline_depth,
+                Meaning::Any,
             );
             if binding == "*" {
                 if let Some(dep) = dep {
@@ -2668,6 +2884,7 @@ impl FileBindings {
                 collected.item.use_token.span.start().line,
                 &collected.context,
                 collected.inline_depth,
+                Meaning::Any,
             );
             // A glob binds every name its module exports and none of them is
             // written here; the names are found where the file uses them.
@@ -2972,7 +3189,7 @@ fn through_the_chain(
         passed_on: None,
         ..*ctx
     };
-    Some(if unnoted.resolve_reexport(&mut chained) {
+    Some(if unnoted.resolve_reexport(&mut chained, Meaning::Any) {
         chained
     } else {
         dep.clone()
@@ -3021,20 +3238,7 @@ pub(crate) fn parse_path_ref_dependencies(
         if names_a_variable {
             continue;
         }
-        // A path written in macro input resolves through a binding only.
-        let resolve = |path: &str| {
-            (!path_ref.in_macro)
-                .then(|| {
-                    resolve_single_path(
-                        ctx,
-                        path,
-                        path_ref.line,
-                        &path_ref.context,
-                        path_ref.inline_depth,
-                    )
-                })
-                .flatten()
-        };
+        let resolve = |path: &str| path_ref.resolve(ctx, path);
         let (mut dep, associated, glob_taken_from) =
             match bindings.binding_of(&path_ref.path, path_ref.region) {
                 PathBinding::Unbound(name, associated) => {
@@ -3087,10 +3291,11 @@ pub(crate) fn parse_path_ref_dependencies(
                 }
                 PathBinding::Elsewhere => continue,
             };
-        if path_ref.position == PathPosition::Binding && declares_a_variable(ctx, &dep) {
+        let meaning = path_ref.meaning_of_item(associated);
+        if path_ref.position == PathPosition::Binding && declares_a_variable(ctx, &dep, meaning) {
             continue;
         }
-        if !ctx.resolve_reexport(&mut dep) {
+        if !ctx.resolve_reexport(&mut dep, meaning) {
             continue;
         }
         let Some(item) = dep.target_item.as_deref() else {
@@ -3171,14 +3376,15 @@ fn definition_kind(ctx: &ResolutionContext, dep: &DependencyRef, item: &str) -> 
 
 /// Whether a bare identifier pattern naming `dep` declares a variable, which
 /// takes no name through an ancestor. The chain is resolved without noting
-/// what it passes on, so only a pattern that matches an item notes it.
-fn declares_a_variable(ctx: &ResolutionContext, dep: &DependencyRef) -> bool {
+/// what it passes on, so only a pattern that matches an item notes it. The
+/// pattern asks `meaning` of the name.
+fn declares_a_variable(ctx: &ResolutionContext, dep: &DependencyRef, meaning: Meaning) -> bool {
     let unnoted = ResolutionContext {
         passed_on: None,
         ..*ctx
     };
     let mut probed = dep.clone();
-    unnoted.resolve_reexport(&mut probed)
+    unnoted.resolve_reexport(&mut probed, meaning)
         && probed.target_item.is_some()
         && !is_matched_by_a_bare_pattern(ctx, &probed)
 }
