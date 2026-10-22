@@ -194,6 +194,30 @@ mod reexport_visibility_tests {
     }
 }
 
+mod wider_visibility_tests {
+    use super::*;
+    use rstest::rstest;
+
+    fn restricted(module: &str) -> Visibility {
+        Visibility::Restricted(module.to_string())
+    }
+
+    #[rstest]
+    #[case::public_over_restricted(Visibility::Public, restricted("a"), Visibility::Public)]
+    #[case::restricted_under_public(restricted("a"), Visibility::Public, Visibility::Public)]
+    #[case::ancestor_over_descendant(restricted("a::b"), restricted("a"), restricted("a"))]
+    #[case::crate_over_module(restricted("a"), restricted(""), restricted(""))]
+    #[case::apart_widen_to_common_ancestor(restricted("a::b"), restricted("a::c"), restricted("a"))]
+    #[case::apart_at_top_widen_to_crate(restricted("a"), restricted("b"), restricted(""))]
+    fn wider_reaches_where_both_do(
+        #[case] left: Visibility,
+        #[case] right: Visibility,
+        #[case] expected: Visibility,
+    ) {
+        assert_eq!(left.wider(right), expected);
+    }
+}
+
 mod normalize_tests {
     use super::*;
 
