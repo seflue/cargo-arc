@@ -3439,7 +3439,7 @@ fn categorize(
             Some(DefKind::Struct | DefKind::Enum | DefKind::Type | DefKind::Trait) => {
                 UseCategory::Types
             }
-            None => category_by_convention(item),
+            Some(DefKind::Macro) | None => category_by_convention(item),
         },
     }
 }
