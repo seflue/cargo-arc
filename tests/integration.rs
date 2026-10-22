@@ -1995,6 +1995,29 @@ fn name_resolution_extern_crate_takes_a_renamed_dependency() {
     assert_name_resolution_arc("ren::c65f", "types::b", "production", &["g"]);
 }
 
+/// Cell 66: `#[path]` in a file that is no `mod.rs` names a file beside it.
+#[test]
+fn name_resolution_path_outside_mod_rs_is_relative_to_the_file() {
+    assert_name_resolution_arc("m::npuser", "m::np::child", "production", &["c"]);
+    assert_name_resolution_arc("m::np::child", "m::util", "production", &["job"]);
+}
+
+/// Cell 66b: a file loaded by `#[path]` finds its children beside it, as a
+/// `mod.rs` does.
+#[test]
+fn name_resolution_children_of_a_path_loaded_file_live_beside_it() {
+    assert_name_resolution_arc("m::npuser", "m::viapath::kid", "production", &["k"]);
+    assert_name_resolution_arc("m::viapath::kid", "m::util2", "production", &["job"]);
+}
+
+/// Cell 66c: a module with `#[cfg_attr(…, path = …)]` is read from the file
+/// the attribute names and from its default file.
+#[test]
+fn name_resolution_cfg_attr_path_reads_every_alternative() {
+    assert_name_resolution_arc("m::cpath::imp", "m::util", "production", &["job"]);
+    assert_name_resolution_arc("m::cpath::imp", "m::util2", "production", &["job"]);
+}
+
 /// Every use on an edge, with its category, goes to stderr under `--debug`,
 /// so the walker's result can be read without a rule that consumes it.
 /// A subprocess, because `run` installs the debug log on the process's own

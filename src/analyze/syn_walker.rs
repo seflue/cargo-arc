@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use super::mod_resolver::{ModDecl, child_resolve_dir, extract_mod_declarations, resolve_mod_path};
+use super::mod_resolver::{ModDecl, ModuleFile, declared_files, extract_mod_declarations};
 use super::packages::{ModulePathMap, PackageExportMap, WorkspacePackages, normalize_crate_name};
 use super::reexports::{name_a_fn_defines, root_extern_crates};
 use super::use_parser::ReExportMap;
@@ -53,6 +53,7 @@ fn parse_mod_declarations(file_path: &Path, include_tests: bool) -> Result<Vec<M
 /// collecting relative module paths (e.g. `"foo"`, `"foo::bar"`).
 fn walk_modules_for_paths(
     file_path: &Path,
+    owns_directory: bool,
     parent_path: &str,
     paths: &mut HashSet<String>,
     include_tests: bool,
@@ -65,16 +66,7 @@ fn walk_modules_for_paths(
         }
     };
 
-    let resolve_dir = child_resolve_dir(file_path, parent_path.is_empty());
-
     for decl in decls {
-        let child_path = if let Some(ref explicit) = decl.explicit_path {
-            let p = resolve_dir.join(explicit);
-            if p.exists() { Some(p) } else { None }
-        } else {
-            resolve_mod_path(&resolve_dir, &decl.name)
-        };
-
         let child_full = if parent_path.is_empty() {
             decl.name.clone()
         } else {
@@ -82,8 +74,14 @@ fn walk_modules_for_paths(
         };
         paths.insert(child_full.clone());
 
-        if let Some(resolved) = child_path {
-            walk_modules_for_paths(&resolved, &child_full, paths, include_tests);
+        for child in declared_files(file_path, owns_directory, &decl) {
+            walk_modules_for_paths(
+                &child.path,
+                child.owns_directory,
+                &child_full,
+                paths,
+                include_tests,
+            );
         }
     }
 }
@@ -100,7 +98,7 @@ pub(crate) fn collect_syn_module_paths(
         .iter()
         .map(|entry| entry.file.as_path())
     {
-        walk_modules_for_paths(root_file, "", &mut paths, include_tests);
+        walk_modules_for_paths(root_file, true, "", &mut paths, include_tests);
     }
     paths
 }
@@ -229,6 +227,63 @@ fn only_passes_on(ctx: &WalkContext, module_path: &str, dep: &crate::model::Depe
     )
 }
 
+/// Take in the module read from another file of the same declaration
+/// (`#[cfg_attr(…, path = …)]`): its dependencies, definitions and children,
+/// a child of the same name merged in turn. The first file stays the module's.
+fn merge_alternative(module: &mut ModuleInfo, alternative: ModuleInfo) {
+    for dep in alternative.dependencies {
+        if !module.dependencies.contains(&dep) {
+            module.dependencies.push(dep);
+        }
+    }
+    for (name, definition) in alternative.definitions {
+        module.definitions.entry(name).or_insert(definition);
+    }
+    for child in alternative.children {
+        match module.children.iter_mut().find(|c| c.name == child.name) {
+            Some(known) => merge_alternative(known, child),
+            None => module.children.push(child),
+        }
+    }
+}
+
+/// Walk the module `decl` declares in `parent`, every file it loads merged
+/// into one. `None` when no file it names exists.
+fn walk_declared_module(
+    ctx: &WalkContext,
+    parent: &ModuleFile,
+    decl: &ModDecl,
+    parent_path: &str,
+    unparsed: &mut Vec<PathBuf>,
+) -> Option<ModuleInfo> {
+    // A module declared under `#[cfg(test)]` is test code with all it holds
+    let child_ctx = if decl.cfg_test {
+        &WalkContext {
+            base_context: promote_to_test(&ctx.base_context),
+            ..ctx.clone()
+        }
+    } else {
+        ctx
+    };
+    let mut alternatives = declared_files(&parent.path, parent.owns_directory, decl)
+        .into_iter()
+        .map(|file| {
+            walk_module_syn(
+                child_ctx,
+                &file.path,
+                &decl.name,
+                parent_path,
+                file.owns_directory,
+                unparsed,
+            )
+        });
+    let mut module = alternatives.next()?;
+    for alternative in alternatives {
+        merge_alternative(&mut module, alternative);
+    }
+    Some(module)
+}
+
 /// Recursively walk a module, building `ModuleInfo` with dependency
 /// extraction. A file that does not parse is pushed onto `unparsed`.
 fn walk_module_syn(
@@ -236,7 +291,7 @@ fn walk_module_syn(
     file_path: &Path,
     module_name: &str,
     parent_path: &str,
-    is_crate_root: bool,
+    owns_directory: bool,
     unparsed: &mut Vec<PathBuf>,
 ) -> ModuleInfo {
     let full_path = if parent_path == module_name {
@@ -307,30 +362,13 @@ fn walk_module_syn(
     // Extract mod declarations from the same AST (no second file read)
     let decls = extract_mod_declarations(&syntax, ctx.include_tests);
 
-    let resolve_dir = child_resolve_dir(file_path, is_crate_root);
-
+    let parent = ModuleFile {
+        path: file_path.to_path_buf(),
+        owns_directory,
+    };
     let children: Vec<ModuleInfo> = decls
         .into_iter()
-        .filter_map(|decl| {
-            let child_file = if let Some(ref explicit) = decl.explicit_path {
-                let p = resolve_dir.join(explicit);
-                if p.exists() { Some(p) } else { None }
-            } else {
-                resolve_mod_path(&resolve_dir, &decl.name)
-            };
-
-            // A module declared under `#[cfg(test)]` is test code with all it holds
-            let child_ctx = if decl.cfg_test {
-                &WalkContext {
-                    base_context: promote_to_test(&ctx.base_context),
-                    ..ctx.clone()
-                }
-            } else {
-                ctx
-            };
-            child_file
-                .map(|cf| walk_module_syn(child_ctx, &cf, &decl.name, &full_path, false, unparsed))
-        })
+        .filter_map(|decl| walk_declared_module(ctx, &parent, &decl, &full_path, unparsed))
         .collect();
 
     // The descendants are walked now. A private glob or `use` this module
