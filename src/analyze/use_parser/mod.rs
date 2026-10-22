@@ -813,7 +813,7 @@ fn follow_private_glob<'m>(
 ) -> Option<&'m HashMap<String, ModuleExportInfo>> {
     if let Some(glob_src) = private_glob_holding(
         reexport_map,
-        &dep.target_package,
+        (&dep.target_package, &dep.target_module),
         module_info,
         symbol,
         importer_module,
@@ -834,15 +834,17 @@ fn follow_private_glob<'m>(
     )
 }
 
-/// The module a private glob of `module_info` imports from that brings
-/// `symbol` into the scope of `importer_module`.
+/// The module a private glob of `module_info`, the module `holder` by crate
+/// and module path, imports from that brings `symbol` into the scope of
+/// `importer_module`.
 fn private_glob_holding<'m>(
     reexport_map: &ReExportMap,
-    crate_name: &str,
+    holder: (&str, &str),
     module_info: &'m ModuleExportInfo,
     symbol: &str,
     importer_module: &str,
 ) -> Option<&'m String> {
+    let crate_name = holder.0;
     module_info
         .private_glob_sources
         .iter()
@@ -857,6 +859,7 @@ fn private_glob_holding<'m>(
                 glob_src,
                 symbol,
                 importer_module,
+                &[holder],
                 &mut HashSet::new(),
             )
         })
@@ -894,6 +897,7 @@ fn follow_local_glob(
                 glob_src,
                 symbol,
                 importer_module,
+                &[(&dep.target_package, &dep.target_module)],
                 &mut passed.clone(),
             )
         })
@@ -937,6 +941,7 @@ fn follow_foreign_glob<'m>(
             &glob.module,
             symbol,
             importer_module,
+            &[(&dep.target_package, &dep.target_module)],
             &mut passed.clone(),
         ) {
             return None;
@@ -1042,17 +1047,31 @@ fn module_is_visible(
         })
 }
 
+/// Whether the module `holder`, by crate and module path, sees what `crate_name`
+/// declares with `visibility`. A restricted visibility stays in its crate.
+fn holder_sees(holder: (&str, &str), crate_name: &str, visibility: &Visibility) -> bool {
+    match visibility {
+        Visibility::Public => true,
+        Visibility::Restricted(ancestor) => {
+            holder.0 == crate_name && is_descendant(holder.1, ancestor)
+        }
+    }
+}
+
 /// Check whether a module of `crate_name` exports a symbol to
-/// `importer_module` (own definition OR re-export), following glob re-exports
-/// into other workspace crates. What `importer_module` does not see, it does
-/// not export there. A module in `visited`, by crate and module path, exports
-/// nothing more.
+/// `importer_module` (own definition OR re-export) through the chain of globs
+/// held by `holders`, by crate and module path, following glob re-exports into
+/// other workspace crates. A glob brings in only what its holder sees, so a
+/// chain only what every holder on it sees, and what `importer_module` does
+/// not see, it does not export there. A module in `visited`, by crate and
+/// module path, exports nothing more.
 fn module_exports_symbol(
     reexport_map: &ReExportMap,
     crate_name: &str,
     module_path: &str,
     symbol: &str,
     importer_module: &str,
+    holders: &[(&str, &str)],
     visited: &mut HashSet<(String, String)>,
 ) -> bool {
     if !visited.insert((crate_name.to_string(), module_path.to_string())) {
@@ -1066,6 +1085,9 @@ fn module_exports_symbol(
     };
     let visible = |visibility: &Visibility| {
         reexport_map.is_visible(crate_name, false, visibility, importer_module)
+            && holders
+                .iter()
+                .all(|&holder| holder_sees(holder, crate_name, visibility))
     };
     let defined = info.definitions.contains_key(symbol)
         && info.item_visibility.get(symbol).is_none_or(visible);
@@ -1084,6 +1106,7 @@ fn module_exports_symbol(
         .foreign_glob_sources
         .iter()
         .map(|(glob_crate, glob)| (glob_crate.as_str(), glob));
+    let holders = [holders, &[(crate_name, module_path)]].concat();
     local_globs
         .chain(foreign_globs)
         .filter(|(_, glob)| visible(&glob.visibility))
@@ -1094,6 +1117,7 @@ fn module_exports_symbol(
                 &glob.module,
                 symbol,
                 importer_module,
+                &holders,
                 visited,
             )
         })
@@ -1126,6 +1150,7 @@ fn root_reexports(
                         &glob.module,
                         symbol,
                         importer_module,
+                        &[(crate_name, "")],
                         &mut HashSet::new(),
                     )
                 })
@@ -1255,17 +1280,18 @@ fn glob_child_module(
         })
 }
 
-/// Whether `importer_module` can name `symbol` through `module_path`: what
-/// the module exports, plus what its private globs forward to a module that
-/// sees them. A private glob is followed on direct hops only; a `pub use
-/// m::*` on the way republishes `m`'s public items, none of `m`'s private
-/// imports.
+/// Whether `importer_module` can name `symbol` through `module_path`, a
+/// module the chain of globs held by `holders` imports from: what the module
+/// exports, plus what its private globs forward to a module that sees them. A private glob is
+/// followed on direct hops only; a `pub use m::*` on the way republishes
+/// `m`'s public items, none of `m`'s private imports.
 fn module_scope_holds_symbol(
     reexport_map: &ReExportMap,
     crate_name: &str,
     module_path: &str,
     symbol: &str,
     importer_module: &str,
+    holders: &[(&str, &str)],
     visited: &mut HashSet<String>,
 ) -> bool {
     if !visited.insert(module_path.to_string()) {
@@ -1277,6 +1303,7 @@ fn module_scope_holds_symbol(
         module_path,
         symbol,
         importer_module,
+        holders,
         &mut HashSet::new(),
     ) {
         return true;
@@ -1291,6 +1318,9 @@ fn module_scope_holds_symbol(
         .iter()
         .filter(|glob| {
             reexport_map.is_visible(crate_name, false, &glob.visibility, importer_module)
+                && holders
+                    .iter()
+                    .all(|&holder| holder_sees(holder, crate_name, &glob.visibility))
         })
         .any(|glob| {
             module_scope_holds_symbol(
@@ -1299,6 +1329,7 @@ fn module_scope_holds_symbol(
                 &glob.module,
                 symbol,
                 importer_module,
+                &[holders, &[(crate_name, module_path)]].concat(),
                 visited,
             )
         })
@@ -2733,7 +2764,7 @@ pub(crate) fn parse_workspace_dependencies(
                     continue;
                 }
                 dep.via_reexport = via_reexport;
-                for mut dep in expand_glob(dep, ctx.reexport_map) {
+                for mut dep in expand_glob(dep, ctx.reexport_map, ctx.current_module_path) {
                     if ctx.resolve_reexport(&mut dep, Meaning::Any) {
                         DependencyRef::dedup_push(&mut deps, &mut seen_targets, dep);
                     }
@@ -2745,20 +2776,37 @@ pub(crate) fn parse_workspace_dependencies(
     deps
 }
 
-/// The names `use <module>::*` brings into scope: the module's own definitions
-/// plus what it republishes under a name.
+/// The names `use <module>::*` in `holder_module` brings into scope: the
+/// module's own definitions plus what it republishes under a name, as far as
+/// `holder_module` sees them.
 ///
 /// `None` when the module is absent from the map or exports nothing under a name
-/// it can see. Sorted, because the map iterates in arbitrary order and the names
-/// reach the rendered output.
-fn glob_payload(dep: &DependencyRef, reexport_map: &ReExportMap) -> Option<Vec<String>> {
+/// `holder_module` sees. Sorted, because the map iterates in arbitrary order and
+/// the names reach the rendered output.
+fn glob_payload(
+    dep: &DependencyRef,
+    reexport_map: &ReExportMap,
+    holder_module: &str,
+) -> Option<Vec<String>> {
     let module_info = reexport_map.module_info(dep)?;
-    let mut names: Vec<String> = module_info
+    let visible = |visibility: &Visibility| {
+        reexport_map.is_visible(
+            &dep.target_package,
+            dep.in_lib_view,
+            visibility,
+            holder_module,
+        )
+    };
+    let definitions = module_info
         .definitions
         .keys()
-        .chain(module_info.explicit_reexports.keys())
-        .cloned()
-        .collect();
+        .filter(|name| module_info.item_visibility.get(*name).is_none_or(visible));
+    let reexports = module_info
+        .explicit_reexports
+        .iter()
+        .filter(|(_, target)| visible(&target.visibility))
+        .map(|(name, _)| name);
+    let mut names: Vec<String> = definitions.chain(reexports).cloned().collect();
     if names.is_empty() {
         return None;
     }
@@ -2773,11 +2821,15 @@ fn glob_payload(dep: &DependencyRef, reexport_map: &ReExportMap) -> Option<Vec<S
 /// Non-globs pass through. So does a glob whose payload is unknown: it keeps the
 /// `*`, which scores as a single unnamed symbol — an understatement, but a
 /// smaller one than dropping the edge to zero.
-fn expand_glob(dep: DependencyRef, reexport_map: &ReExportMap) -> Vec<DependencyRef> {
+fn expand_glob(
+    dep: DependencyRef,
+    reexport_map: &ReExportMap,
+    holder_module: &str,
+) -> Vec<DependencyRef> {
     if !is_glob(&dep) {
         return vec![dep];
     }
-    let Some(names) = glob_payload(&dep, reexport_map) else {
+    let Some(names) = glob_payload(&dep, reexport_map, holder_module) else {
         return vec![dep];
     };
     names
@@ -3436,6 +3488,10 @@ fn glob_exports(ctx: &ResolutionContext, glob: &DependencyRef, name: &str) -> bo
         &glob.target_module,
         name,
         ctx.current_module_path,
+        &[(
+            &normalize_crate_name(ctx.current_crate),
+            ctx.current_module_path,
+        )],
         &mut HashSet::new(),
     )
 }
