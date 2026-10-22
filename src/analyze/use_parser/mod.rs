@@ -2811,6 +2811,11 @@ fn glob_payload_known(dep: &DependencyRef, reexport_map: &ReExportMap) -> bool {
 /// Absolute means `crate::a::b` for the current crate and `other_crate::b`
 /// otherwise, so a binding stays valid wherever in the file it is used.
 ///
+/// `module_imports` holds, for a name in `modules` a `use` of the file binds,
+/// the [`DependencyRef::full_target`] of that `use`'s dependency.
+/// `used_module_imports` notes those a path resolved through, and whether
+/// production code did.
+///
 /// `elsewhere` holds the names bound to something this crate does not contain.
 /// The parser need not know what that something is. An import from a crate it has
 /// no metadata for still binds the name, and the module beside the file is then not
@@ -2834,6 +2839,8 @@ fn glob_payload_known(dep: &DependencyRef, reexport_map: &ReExportMap) -> bool {
 pub(crate) struct FileBindings {
     regions: BindingRegions,
     modules: HashMap<RegionId, HashMap<String, String>>,
+    module_imports: HashMap<RegionId, HashMap<String, String>>,
+    used_module_imports: RefCell<HashMap<String, FromProduction>>,
     elsewhere: HashMap<RegionId, HashSet<String>>,
     items: HashMap<RegionId, HashMap<String, DependencyRef>>,
     globs: HashMap<RegionId, Vec<DependencyRef>>,
@@ -2846,8 +2853,9 @@ pub(crate) struct FileBindings {
 /// What one path reference stands for, given the bindings around it.
 enum PathBinding<'a> {
     /// A path to run through the resolution chain, with a bound module alias
-    /// replaced by the module's absolute path.
-    Path(Cow<'a, str>),
+    /// replaced by the module's absolute path, and the target of the `use`
+    /// that binds the alias, if a `use` of the file does.
+    Path(Cow<'a, str>, Option<&'a str>),
     /// An occurrence of an item a `use` binds, plus the associated item the
     /// path goes on to name: `Config::new` on the binding `Config` leaves
     /// `new`.
@@ -2928,6 +2936,13 @@ impl FileBindings {
             match classify_binding(ctx, through_the_chain(ctx, dep.as_ref()).as_ref(), binding) {
                 Binding::Module(module_path) => {
                     bindings.bind_module(collected.region, binding, module_path);
+                    if let Some(dep) = &dep {
+                        bindings
+                            .module_imports
+                            .entry(collected.region)
+                            .or_default()
+                            .insert(binding.to_string(), dep.full_target());
+                    }
                 }
                 Binding::Elsewhere => bindings.bind_elsewhere(collected.region, binding),
                 Binding::OwnItem => {}
@@ -2980,7 +2995,12 @@ impl FileBindings {
             if let Some(target) = self.modules.get(&enclosing).and_then(|m| m.get(first))
                 && let Some(rest) = rest
             {
-                return PathBinding::Path(Cow::Owned(format!("{target}::{rest}")));
+                let import = self
+                    .module_imports
+                    .get(&enclosing)
+                    .and_then(|m| m.get(first))
+                    .map(String::as_str);
+                return PathBinding::Path(Cow::Owned(format!("{target}::{rest}")), import);
             }
             if let Some(dep) = self.items.get(&enclosing).and_then(|m| m.get(first)) {
                 return PathBinding::Item(dep, last);
@@ -2996,7 +3016,7 @@ impl FileBindings {
                 && let Some(rest) = rest
                 && !self.local_definitions.contains(first)
             {
-                return PathBinding::Path(Cow::Owned(format!("{target}::{rest}")));
+                return PathBinding::Path(Cow::Owned(format!("{target}::{rest}")), None);
             }
         }
         PathBinding::Unbound(first, last)
@@ -3006,7 +3026,7 @@ impl FileBindings {
     /// absolute path, as seen from `region`.
     fn rebased(&self, path: &str, region: RegionId) -> String {
         match self.binding_of(path, region) {
-            PathBinding::Path(rebased) => rebased.into_owned(),
+            PathBinding::Path(rebased, _) => rebased.into_owned(),
             _ => path.to_string(),
         }
     }
@@ -3291,6 +3311,7 @@ pub(crate) fn parse_path_ref_dependencies(
             continue;
         }
         let resolve = |path: &str| path_ref.resolve(ctx, path);
+        let mut module_import = None;
         let (mut dep, associated, glob_taken_from) =
             match bindings.binding_of(&path_ref.path, path_ref.region) {
                 PathBinding::Unbound(name, associated) => {
@@ -3334,10 +3355,11 @@ pub(crate) fn parse_path_ref_dependencies(
                         (dep, associated, None)
                     }
                 }
-                PathBinding::Path(effective) => {
+                PathBinding::Path(effective, import) => {
                     let Some(dep) = resolve(&effective) else {
                         continue;
                     };
+                    module_import = import;
                     let associated = associated_segment(&path_ref.path, &dep);
                     (dep, associated, None)
                 }
@@ -3349,6 +3371,13 @@ pub(crate) fn parse_path_ref_dependencies(
         }
         if !ctx.resolve_reexport(&mut dep, meaning) {
             continue;
+        }
+        if let Some(import) = module_import {
+            *bindings
+                .used_module_imports
+                .borrow_mut()
+                .entry(import.to_string())
+                .or_default() |= dep.context.kind == UsageKind::Production;
         }
         let Some(item) = dep.target_item.as_deref() else {
             DependencyRef::dedup_push(&mut deps, &mut seen_targets, dep);
@@ -3541,6 +3570,17 @@ pub(crate) fn parse_file_dependencies(
     let path_refs = collect_all_path_refs(syntax, base_context);
     let path_deps = parse_path_ref_dependencies(&path_refs, ctx, &bindings);
 
+    // A private `use` of a module whose name a path resolved through carries
+    // no symbol of its own; the uses through it carry theirs.
+    let used_module_imports = bindings.used_module_imports.borrow();
+    let use_deps: Vec<DependencyRef> = use_deps
+        .into_iter()
+        .filter(|dep| {
+            dep.target_item.is_some()
+                || dep.via_reexport
+                || !covers(used_module_imports.get(&dep.full_target()), dep)
+        })
+        .collect();
     let mut seen = DependencyRef::build_seen_index(&use_deps);
     let mut deps = use_deps;
     for dep in path_deps {

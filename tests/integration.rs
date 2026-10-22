@@ -1903,13 +1903,19 @@ fn name_resolution_pub_in_path_use_reaches_the_definer() {
 }
 
 /// Cell 46: `self` in braces binds the type namespace only, so the name is
-/// the module, not the fn the root re-exports under it. The `""` is the
-/// `use` line's own, which every module import whose name the file uses
-/// carries; the cell expects it gone, which the position does not decide.
+/// the module, not the fn the root re-exports under it. The `use` line whose
+/// name the file uses carries no `""` of its own.
 #[test]
 fn name_resolution_self_in_braces_binds_the_module_only() {
-    assert_name_resolution_arc("app5::selfuse", "app5::lex", "production", &["", "tok"]);
+    assert_name_resolution_arc("app5::selfuse", "app5::lex", "production", &["tok"]);
     assert_no_name_resolution_arc("app5::selfuse", "app5");
+}
+
+/// Cell 46b: a `use` of a module whose name the file never uses keeps its
+/// own `""`: the import is there, and the edge with it.
+#[test]
+fn name_resolution_unused_module_import_keeps_its_edge() {
+    assert_name_resolution_arc("app5::selfunused", "app5::lex", "production", &[""]);
 }
 
 /// Cells 61 and 61b: a private `use` of another crate's module is not
@@ -1982,7 +1988,7 @@ fn name_resolution_renamed_dependency_is_not_the_package_of_its_new_name() {
 /// package's name.
 #[test]
 fn name_resolution_module_of_a_renamed_dependency_keeps_its_package() {
-    assert_name_resolution_arc("ren::c65d", "types::b", "production", &["", "g"]);
+    assert_name_resolution_arc("ren::c65d", "types::b", "production", &["g"]);
     assert_no_name_resolution_arc("ren::c65d", "other::b");
     assert_name_resolution_arc("ren::c65e", "types::b", "production", &["g"]);
     assert_no_name_resolution_arc("ren::c65e", "other::b");
@@ -3364,7 +3370,7 @@ fn test_a_frozen_edge_turns_red_when_it_gains_a_symbol() {
         "the new symbol is outside what the entry froze, stderr: {stderr}"
     );
     assert!(
-        stderr.contains("frozen for connect, an unnamed reference; now also carries open"),
+        stderr.contains("frozen for connect; now also carries open"),
         "the report should say what the entry froze and what came on top, stderr: {stderr}"
     );
     assert!(
