@@ -76,6 +76,39 @@ impl Visibility {
             }
         }
     }
+
+    /// The narrowest visibility that reaches everywhere both `self` and
+    /// `other` do. Two restrictions to modules apart from each other widen to
+    /// their nearest common ancestor, which also reaches modules neither does.
+    #[must_use]
+    pub(crate) fn wider(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Restricted(left), Self::Restricted(right)) => Self::Restricted(
+                left.split("::")
+                    .zip(right.split("::"))
+                    .take_while(|(left, right)| left == right)
+                    .map(|(segment, _)| segment)
+                    .collect::<Vec<_>>()
+                    .join("::"),
+            ),
+            _ => Self::Public,
+        }
+    }
+}
+
+/// Take `other`'s visibilities into `visibilities`, the wider one where both
+/// hold a name.
+fn widen_visibilities(
+    visibilities: &mut HashMap<String, Visibility>,
+    other: HashMap<String, Visibility>,
+) {
+    for (name, visibility) in other {
+        let widened = match visibilities.remove(&name) {
+            Some(known) => known.wider(visibility),
+            None => visibility,
+        };
+        visibilities.insert(name, widened);
+    }
 }
 
 /// Where a re-exported symbol originally comes from.
@@ -198,11 +231,12 @@ impl ModuleExportInfo {
     }
 
     /// Take in what another file of the same module holds (an alternative
-    /// under `cfg`): the names of both, `other`'s where both hold one.
+    /// under `cfg`): the names of both, `other`'s where both hold one. An item
+    /// or child module both declare keeps the wider of the two visibilities.
     pub(crate) fn merge(&mut self, other: Self) {
         self.definitions.extend(other.definitions);
-        self.item_visibility.extend(other.item_visibility);
-        self.module_visibility.extend(other.module_visibility);
+        widen_visibilities(&mut self.item_visibility, other.item_visibility);
+        widen_visibilities(&mut self.module_visibility, other.module_visibility);
         for (name, items) in other.associated {
             self.associated.entry(name).or_default().merge(items);
         }
