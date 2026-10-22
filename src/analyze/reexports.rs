@@ -177,11 +177,9 @@ fn collect_module_info(
             _ => defined_item(item),
         };
         if let Some((vis, ident, kind)) = defined {
-            if is_reexport_visibility(vis) {
-                let line = item.span().start().line;
-                info.definitions
-                    .insert(ident.to_string(), Definition { kind, line });
-            }
+            let line = item.span().start().line;
+            info.definitions
+                .insert(ident.to_string(), Definition { kind, line });
             info.item_visibility
                 .insert(ident.to_string(), Visibility::of(vis, module_path));
         }
@@ -301,7 +299,7 @@ fn impl_owner(
 ) -> Option<(ImplOwner, String)> {
     let name = path.segments.last()?.ident.to_string();
     if path.segments.len() == 1 {
-        if info.definitions.contains_key(&name) {
+        if info.item_visibility.contains_key(&name) {
             return Some((ImplOwner::ThisModule, name));
         }
         let bound = info
@@ -942,8 +940,8 @@ mod tests {
         );
     }
 
-    /// Characterization: which item kinds reach `definitions`, and with which
-    /// visibilities. Pins the pre-`DefKind` behaviour.
+    /// Characterization: which item kinds reach `definitions`, whatever their
+    /// visibility.
     #[test]
     fn definitions_cover_all_matched_item_kinds() {
         let tmp = test_crate(&[
@@ -991,6 +989,9 @@ impl AStruct { pub fn method(&self) {} }
             ("AnAlias", DefKind::Type),
             ("CrateStruct", DefKind::Struct),
             ("SuperStruct", DefKind::Struct),
+            ("private_fn", DefKind::Fn),
+            ("PrivateStruct", DefKind::Struct),
+            ("InPathStruct", DefKind::Struct),
         ] {
             assert_eq!(
                 defs.get(name).map(|d| d.kind),
@@ -998,14 +999,7 @@ impl AStruct { pub fn method(&self) {} }
                 "wrong kind for {name}"
             );
         }
-        for name in [
-            "AUnion",
-            "private_fn",
-            "PrivateStruct",
-            "InPathStruct",
-            "method",
-            "V",
-        ] {
+        for name in ["AUnion", "method", "V"] {
             assert!(!defs.contains_key(name), "unexpected {name} in {defs:?}");
         }
     }
@@ -1050,9 +1044,9 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
     }
 
     /// A private item in the root is visible to every module of the crate,
-    /// but not to other crates, so it stays out of `definitions`.
+    /// but not to other crates.
     #[test]
-    fn private_root_items_are_recorded_apart_from_definitions() {
+    fn private_root_items_are_recorded_as_restricted() {
         let tmp = test_crate(&[
             (
                 "src/lib.rs",
@@ -1078,8 +1072,6 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
             ["Hidden", "helper"]
         );
         assert_eq!(root.item_visibility.get("Shown"), Some(&Visibility::Public));
-        assert!(!root.definitions.contains_key("Hidden"));
-        assert!(root.definitions.contains_key("Shown"));
     }
 
     /// `pub(in …) use name;` passes on the module's own `macro_rules! name`:
@@ -1232,7 +1224,6 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
             restricted_names(&root.item_visibility),
             ["SelfScoped", "in_crate"]
         );
-        assert!(root.definitions.is_empty());
     }
 
     /// Each definition records the line its item starts on, attributes

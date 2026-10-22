@@ -2157,6 +2157,21 @@ fn name_resolution_module_binding_needs_no_name_for_its_package() {
     assert_no_name_resolution_arc("ren2::c74", "other::b");
 }
 
+/// Cell 75: `sf` holds `pub mod job;` and a private `fn job()`. `sf::user`
+/// calls `super::job()`, which names the fn.
+#[test]
+fn name_resolution_private_fn_beside_a_same_named_module() {
+    assert_name_resolution_arc("m::sf::user", "m::sf", "production", &["job"]);
+    assert_no_name_resolution_arc("m::sf::user", "m::sf::job");
+}
+
+/// Cell 75b: `sf::gl` reads the private `fn tool` of `sf` through
+/// `use super::*;`.
+#[test]
+fn name_resolution_glob_of_the_parent_brings_in_its_private_fn() {
+    assert_name_resolution_arc("m::sf::gl", "m::sf", "production", &["tool"]);
+}
+
 /// Every use on an edge, with its category, goes to stderr under `--debug`,
 /// so the walker's result can be read without a rule that consumes it.
 /// A subprocess, because `run` installs the debug log on the process's own
