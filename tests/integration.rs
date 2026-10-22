@@ -1956,6 +1956,45 @@ fn name_resolution_glob_of_a_proc_macro_crate_carries_the_derive_names() {
     );
 }
 
+/// Cell 65: a dependency renamed in the manifest is written under its new
+/// name.
+#[test]
+fn name_resolution_renamed_dependency_names_its_package() {
+    assert_name_resolution_arc("ren::c65", "types::b", "production", &["g"]);
+}
+
+/// Cell 65b: a package is written under the name its `[lib]` section gives.
+#[test]
+fn name_resolution_lib_name_names_its_package() {
+    assert_name_resolution_arc("ren::c65b", "kernpkg::a", "production", &["f"]);
+}
+
+/// Cell 65c: a dependency renamed to the name of another workspace package
+/// names the package it was renamed from.
+#[test]
+fn name_resolution_renamed_dependency_is_not_the_package_of_its_new_name() {
+    assert_name_resolution_arc("ren::c65c", "other::b", "production", &["g"]);
+    assert_no_name_resolution_arc("ren::c65c", "types::b");
+}
+
+/// Cells 65d, 65e: a module a renamed dependency brings in by `use` or by a
+/// glob stays in that dependency, though another dependency is renamed to its
+/// package's name.
+#[test]
+fn name_resolution_module_of_a_renamed_dependency_keeps_its_package() {
+    assert_name_resolution_arc("ren::c65d", "types::b", "production", &["", "g"]);
+    assert_no_name_resolution_arc("ren::c65d", "other::b");
+    assert_name_resolution_arc("ren::c65e", "types::b", "production", &["g"]);
+    assert_no_name_resolution_arc("ren::c65e", "other::b");
+}
+
+/// Cell 65f: `extern crate` in the root takes a renamed dependency under its
+/// new name.
+#[test]
+fn name_resolution_extern_crate_takes_a_renamed_dependency() {
+    assert_name_resolution_arc("ren::c65f", "types::b", "production", &["g"]);
+}
+
 /// Every use on an edge, with its category, goes to stderr under `--debug`,
 /// so the walker's result can be read without a rule that consumes it.
 /// A subprocess, because `run` installs the debug log on the process's own

@@ -388,7 +388,8 @@ pub(crate) fn analyze_modules_syn(
     let mut root: Option<ModuleInfo> = None;
     for (index, entry) in crate_info.entry_files.iter().enumerate() {
         let root_reexports = reexport_map.for_root(&normalized, index);
-        let extern_crates = root_extern_crates(&entry.file, workspace_crates);
+        let extern_crates =
+            root_extern_crates(&entry.file, workspace_crates, &crate_info.code_names);
         let root_ctx = WalkContext {
             reexport_map: &root_reexports,
             extern_crates: &extern_crates,

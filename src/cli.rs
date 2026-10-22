@@ -1315,6 +1315,7 @@ mod tests {
                 let package = PackageInfo {
                     name: "plugin".into(),
                     key: "plugin".into(),
+                    code_names: HashMap::new(),
                     path: PathBuf::from("/repo/lua/plugin"),
                     workspace_root: PathBuf::from("/repo"),
                     entry_files: vec![],
@@ -1372,6 +1373,7 @@ mod tests {
         let krate = PackageInfo {
             name: "a".into(),
             key: "a".into(),
+            code_names: HashMap::new(),
             path: PathBuf::from("/ws/a"),
             workspace_root: PathBuf::from("/ws"),
             entry_files: vec![],

@@ -184,8 +184,13 @@ pub struct PackageInfo {
     /// As the manifest declares it; the diagram shows it.
     pub name: String,
     /// The name as the source code spells it. For Rust that is `name` with
-    /// `-` replaced by `_`.
+    /// `-` replaced by `_`, except where `code_names` gives another.
     pub key: String,
+    /// Name in this package's code → `key` of the workspace package it names,
+    /// for each name that differs from that key: a dependency renamed in the
+    /// manifest, a dependency's `[lib] name`, and the own `[lib] name`, under
+    /// which the bin roots name the lib.
+    pub code_names: HashMap<String, String>,
     pub path: PathBuf,
     pub workspace_root: PathBuf,
     pub entry_files: Vec<EntryFile>,

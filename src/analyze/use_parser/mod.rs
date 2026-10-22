@@ -1303,9 +1303,11 @@ pub(crate) struct ResolutionContext<'a> {
     /// Code-side crate name -> `package_id` for external crates visible to
     /// the current workspace crate. Populated from `crate_name_map[current_crate]`.
     pub(crate) external_crate_names: &'a HashMap<String, String>,
-    /// Alias -> workspace crate name, from `extern crate X as Y;` in the root
-    /// the current file belongs to. The root puts `Y` in the extern prelude,
-    /// so it names `X` in every module of the crate.
+    /// Name -> workspace crate name, for the names the package's manifest
+    /// gives its workspace crates (`PackageInfo::code_names`) and from
+    /// `extern crate X as Y;` in the root the current file belongs to. Both
+    /// put the name in the extern prelude, so it names the crate in every
+    /// module of the crate.
     pub(crate) extern_crates: &'a HashMap<String, String>,
     /// Where to note the private globs and private `use` items of ancestors
     /// this file names something through. `None` where no caller asks.
@@ -2587,15 +2589,16 @@ fn resolve_path_in_chain(
         }
     }
 
+    // A name the crate writes for a workspace crate other than its key names
+    // that crate, even where the name is another workspace crate's key.
+    let dealiased = dealias_extern_crate(ctx, path);
+    let in_workspace = dealiased.as_deref().unwrap_or(path);
     parse_crate_local_import(ctx, path, line_num, context)
         .or_else(|| parse_bare_module_import(ctx, path, line_num, context))
-        .or_else(|| parse_workspace_import(ctx, path, line_num, context))
-        .or_else(|| {
-            let dealiased = dealias_extern_crate(ctx, path)?;
-            parse_workspace_import(ctx, &dealiased, line_num, context)
-        })
+        .or_else(|| parse_workspace_import(ctx, in_workspace, line_num, context))
         .or_else(|| {
             // Bare workspace crate name (e.g. from `use other_crate::{Foo}` → path = "other_crate")
+            let path = in_workspace;
             if !path.contains("::") && ctx.workspace_crates.contains(path) {
                 Some(DependencyRef {
                     target_package: path.to_string(),
@@ -2616,11 +2619,17 @@ fn resolve_path_in_chain(
         .or_else(|| parse_external_crate_import(ctx, path, line_num, context))
 }
 
-/// `path` with a leading `extern crate` alias replaced by the crate it names.
+/// `path` with a leading name from `extern_crates` replaced by the crate it
+/// names, also when the name is all of `path`.
 fn dealias_extern_crate(ctx: &ResolutionContext, path: &str) -> Option<String> {
-    let (first, rest) = path.split_once("::")?;
+    let (first, rest) = path
+        .split_once("::")
+        .map_or((path, None), |(first, rest)| (first, Some(rest)));
     let crate_name = ctx.extern_crates.get(first)?;
-    Some(format!("{crate_name}::{rest}"))
+    Some(rest.map_or_else(
+        || crate_name.clone(),
+        |rest| format!("{crate_name}::{rest}"),
+    ))
 }
 
 /// Parse external crate imports: `use serde::Deserialize` where `serde` is a known external crate.
@@ -3036,14 +3045,15 @@ impl FileBindings {
             let seen = info
                 .and_then(|info| info.module_visibility.get(name))
                 .is_none_or(visible);
-            (parent == dep.target_module && seen).then(|| {
-                let child = DependencyRef {
-                    target_module: path.clone(),
-                    target_item: None,
-                    ..dep.clone()
-                };
-                (name.to_string(), absolute_module_path(ctx, &child))
-            })
+            if parent != dep.target_module || !seen {
+                return None;
+            }
+            let child = DependencyRef {
+                target_module: path.clone(),
+                target_item: None,
+                ..dep.clone()
+            };
+            Some((name.to_string(), absolute_module_path(ctx, &child)?))
         });
         let used_modules = info
             .into_iter()
@@ -3065,10 +3075,14 @@ impl FileBindings {
                     target_item: None,
                     ..dep.clone()
                 };
-                ctx.all_module_paths
+                if !ctx
+                    .all_module_paths
                     .get_or_empty(&bound.target_package)
                     .contains(&bound.target_module)
-                    .then(|| (name.clone(), absolute_module_path(ctx, &bound)))
+                {
+                    return None;
+                }
+                Some((name.clone(), absolute_module_path(ctx, &bound)?))
             });
         self.glob_modules
             .entry(region)
@@ -3164,13 +3178,13 @@ fn classify_binding(
         return Binding::Elsewhere;
     };
     if dep.target_item.is_none() {
-        return Binding::Module(absolute_module_path(ctx, dep));
+        return absolute_module_path(ctx, dep).map_or(Binding::Elsewhere, Binding::Module);
     }
     if dep.target_package == normalize_crate_name(ctx.current_crate) {
         return Binding::OwnItem;
     }
     if parse_bare_module_import(ctx, binding, 0, &EdgeContext::production()).is_some() {
-        return Binding::Module(dep.full_target());
+        return spelled_in_this_crate(ctx, dep).map_or(Binding::Elsewhere, Binding::Module);
     }
     Binding::Elsewhere
 }
@@ -3198,12 +3212,31 @@ fn through_the_chain(
 
 /// Render a resolved module dependency as a path that `resolve_single_path` can
 /// re-resolve from any position in the file. Another crate's root is its name.
-fn absolute_module_path(ctx: &ResolutionContext, dep: &DependencyRef) -> String {
+/// `None` where no path can, as [`spelled_in_this_crate`] decides.
+fn absolute_module_path(ctx: &ResolutionContext, dep: &DependencyRef) -> Option<String> {
     if dep.target_package == normalize_crate_name(ctx.current_crate) {
-        format!("crate::{}", dep.target_module)
+        Some(format!("crate::{}", dep.target_module))
     } else {
-        dep.full_target()
+        spelled_in_this_crate(ctx, dep)
     }
+}
+
+/// `dep.full_target()` with the crate written as this crate's code names it.
+/// `extern_crates` turns a name into a crate before the crate keys are asked,
+/// so a key it holds for another crate cannot stand for its own crate; then
+/// the crate is written under a name `extern_crates` gives it, and `None`
+/// stands where it gives none.
+fn spelled_in_this_crate(ctx: &ResolutionContext, dep: &DependencyRef) -> Option<String> {
+    let key = dep.target_package.as_str();
+    let target = dep.full_target();
+    if ctx.extern_crates.get(key).is_none_or(|named| named == key) {
+        return Some(target);
+    }
+    let (name, _) = ctx
+        .extern_crates
+        .iter()
+        .find(|(_, named)| named.as_str() == key)?;
+    Some(format!("{name}{}", &target[key.len()..]))
 }
 
 /// Parse path references into workspace-relevant dependencies, each carrying
