@@ -1,0 +1,9 @@
+[package]
+name = "ren"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+t2 = { package = "types", path = "../types" }
+types = { package = "other", path = "../other" }
+kernpkg = { path = "../kernpkg" }

@@ -121,6 +121,39 @@ fn build_resolved_deps(
     (prod_deps, dev_deps)
 }
 
+/// Package key → (name in its code → key of the workspace package named).
+type CodeNameMap = std::collections::HashMap<String, std::collections::HashMap<String, String>>;
+
+/// For each workspace package, the workspace dependencies its code writes
+/// under another name than their key. `node.deps[].name` is that name: it
+/// follows a rename in the manifest and the dependency's `[lib] name`.
+fn build_code_names(resolve: &cargo_metadata::Resolve, ctx: &WorkspaceContext<'_>) -> CodeNameMap {
+    let mut code_names = CodeNameMap::new();
+    for node in &resolve.nodes {
+        let node_id = node.id.repr.as_str();
+        if !ctx.workspace_member_ids.contains(node_id) {
+            continue;
+        }
+        let Some(pkg_name) = ctx.pkg_id_to_name.get(node_id) else {
+            continue;
+        };
+        let names = node.deps.iter().filter_map(|dep| {
+            let dep_id = dep.pkg.repr.as_str();
+            if !ctx.workspace_member_ids.contains(dep_id) {
+                return None;
+            }
+            let key = normalize_crate_name(ctx.pkg_id_to_name.get(dep_id)?);
+            let name = normalize_crate_name(&dep.name);
+            (name != key).then_some((name, key))
+        });
+        code_names
+            .entry(normalize_crate_name(pkg_name))
+            .or_default()
+            .extend(names);
+    }
+    code_names
+}
+
 /// Determines if a crate should be included based on feature config and reachability.
 fn should_include_crate(
     pkg: &cargo_metadata::Package,
@@ -158,14 +191,26 @@ fn build_crate_info(
     workspace_root: &Path,
     prod_deps: &DependencyMap,
     dev_deps: &DependencyMap,
+    code_names: &CodeNameMap,
 ) -> PackageInfo {
     let normalized_name = normalize_crate_name(&pkg.name);
     let dependencies = prod_deps.get(&normalized_name).cloned().unwrap_or_default();
     let dev_dependencies = dev_deps.get(&normalized_name).cloned().unwrap_or_default();
+    let mut own_code_names = code_names
+        .get(&normalized_name)
+        .cloned()
+        .unwrap_or_default();
+    if let Some(lib) = pkg.targets.iter().find(|t| is_lib_target(t)) {
+        let lib_name = normalize_crate_name(&lib.name);
+        if lib_name != normalized_name {
+            own_code_names.insert(lib_name, normalized_name.clone());
+        }
+    }
 
     PackageInfo {
         name: pkg.name.to_string(),
         key: normalized_name,
+        code_names: own_code_names,
         path: pkg.manifest_path.parent().unwrap().into(),
         workspace_root: workspace_root.to_path_buf(),
         entry_files: entry_files(pkg),
@@ -197,6 +242,7 @@ fn build_filtered_crates(
     metadata: &cargo_metadata::Metadata,
     prod_deps: &DependencyMap,
     dev_deps: &DependencyMap,
+    code_names: &CodeNameMap,
     feature_config: &FeatureConfig,
     workspace_member_names: &WorkspacePackages,
 ) -> Vec<PackageInfo> {
@@ -227,6 +273,7 @@ fn build_filtered_crates(
                 metadata.workspace_root.as_std_path(),
                 prod_deps,
                 dev_deps,
+                code_names,
             )
         })
         .collect();
@@ -256,10 +303,12 @@ pub fn analyze_workspace(
 
     let ctx = build_workspace_context(&metadata);
     let (prod_deps, dev_deps) = build_resolved_deps(resolve, &ctx);
+    let code_names = build_code_names(resolve, &ctx);
     let crates = build_filtered_crates(
         &metadata,
         &prod_deps,
         &dev_deps,
+        &code_names,
         feature_config,
         &ctx.workspace_member_names,
     );
