@@ -13,8 +13,8 @@ use crate::model::{DefKind, Definition, EdgeContext, PackageInfo};
 
 use super::mod_resolver::{child_resolve_dir, extract_mod_declarations, resolve_mod_path};
 use super::use_parser::{
-    AssociatedItems, ModuleExportInfo, ReExportMap, ReExportTarget, ResolutionContext,
-    RootReExports, is_reexport_visibility, resolve_single_path, resolve_use_tree,
+    AssociatedItems, GlobSource, ModuleExportInfo, ReExportMap, ReExportTarget, ResolutionContext,
+    RootReExports, Visibility, is_reexport_visibility, resolve_single_path, resolve_use_tree,
 };
 
 /// Invariant parameters shared across the recursive re-export walk.
@@ -132,6 +132,7 @@ fn collect_module_info(
     out_of_module_impls: &mut Vec<OutOfModuleImpl>,
 ) -> ModuleExportInfo {
     let mut info = ModuleExportInfo::default();
+    let mut macros = Vec::new();
 
     for item in &syntax.items {
         let defined = match item {
@@ -139,7 +140,7 @@ fn collect_module_info(
                 collect_use_reexports(ctx, use_item, source_file, module_path, &mut info, false);
                 None
             }
-            syn::Item::Use(use_item) if matches!(use_item.vis, syn::Visibility::Inherited) => {
+            syn::Item::Use(use_item) => {
                 collect_use_reexports(ctx, use_item, source_file, module_path, &mut info, true);
                 None
             }
@@ -150,23 +151,31 @@ fn collect_module_info(
             syn::Item::Const(i) => Some((&i.vis, &i.ident, DefKind::Const)),
             syn::Item::Static(i) => Some((&i.vis, &i.ident, DefKind::Static)),
             syn::Item::Type(i) => Some((&i.vis, &i.ident, DefKind::Type)),
-            syn::Item::Mod(i) if !is_reexport_visibility(&i.vis) => {
-                info.private_modules.insert(i.ident.to_string());
+            syn::Item::Mod(i) => {
+                info.module_visibility
+                    .insert(i.ident.to_string(), Visibility::of(&i.vis, module_path));
+                None
+            }
+            syn::Item::Macro(i) => {
+                macros.extend(i.ident.as_ref().map(ToString::to_string));
                 None
             }
             _ => None,
         };
-        match defined {
-            Some((vis, ident, kind)) if is_reexport_visibility(vis) => {
+        if let Some((vis, ident, kind)) = defined {
+            if is_reexport_visibility(vis) {
                 let line = item.span().start().line;
                 info.definitions
                     .insert(ident.to_string(), Definition { kind, line });
             }
-            Some((_, ident, _)) => {
-                info.private_definitions.insert(ident.to_string());
-            }
-            None => {}
+            info.item_visibility
+                .insert(ident.to_string(), Visibility::of(vis, module_path));
         }
+    }
+    // `use name;` on the file's own `macro_rules! name` passes that macro on:
+    // the name is bound here, not outside the crate.
+    for name in &macros {
+        info.elsewhere.remove(name);
     }
 
     // Second pass, once every `use` of the file is known: an `impl` block may
@@ -302,11 +311,13 @@ fn resolution_context<'a>(
     }
 }
 
-/// Resolve a single `use` item into re-export entries.
+/// Resolve a single `use` item into re-export entries, each with the
+/// visibility of the `use`.
 ///
 /// `private` selects where named targets land: a `pub`/`pub(crate)`/`pub(super)`
-/// re-export fills `explicit_reexports`, a private `use` fills `private_uses`
-/// (a binding descendants can still name through this module). A glob lands in
+/// re-export fills `explicit_reexports`, a private, `pub(self)` or `pub(in …)`
+/// `use` fills `private_uses` (a binding descendants can still name through
+/// this module). A glob lands in
 /// `glob_sources` or `private_glob_sources` by the same split, one from a module
 /// of another workspace crate in `foreign_glob_sources` or
 /// `foreign_private_glob_sources`. A private,
@@ -325,6 +336,7 @@ fn collect_use_reexports(
     let original_paths = resolve_use_tree(&use_item.tree, "", false);
 
     let res_ctx = resolution_context(ctx, source_file, module_path);
+    let visibility = Visibility::of(&use_item.vis, module_path);
 
     for (alias_path, original_path) in alias_paths.iter().zip(original_paths.iter()) {
         let Some(mut dep) =
@@ -332,7 +344,8 @@ fn collect_use_reexports(
         else {
             let alias_name = alias_path.rsplit("::").next().unwrap_or(alias_path);
             if private && alias_name != "*" {
-                info.elsewhere.insert(alias_name.to_string());
+                info.elsewhere
+                    .insert(alias_name.to_string(), visibility.clone());
             }
             continue;
         };
@@ -363,15 +376,19 @@ fn collect_use_reexports(
 
         if dep.target_item.as_deref() == Some("*") {
             let foreign = dep.target_package != ctx.crate_name;
+            let glob = GlobSource {
+                module: dep.target_module.clone(),
+                visibility: visibility.clone(),
+            };
             match (private, foreign) {
-                (true, false) => info.private_glob_sources.push(dep.target_module.clone()),
+                (true, false) => info.private_glob_sources.push(glob),
                 (true, true) => info
                     .foreign_private_glob_sources
-                    .push((dep.target_package.clone(), dep.target_module.clone())),
+                    .push((dep.target_package.clone(), glob)),
                 (false, true) => info
                     .foreign_glob_sources
-                    .push((dep.target_package.clone(), dep.target_module.clone())),
-                (false, false) => info.glob_sources.push(dep.target_module.clone()),
+                    .push((dep.target_package.clone(), glob)),
+                (false, false) => info.glob_sources.push(glob),
             }
         } else if let Some(original_name) = &dep.target_item {
             let alias_name = alias_path.rsplit("::").next().unwrap_or(alias_path);
@@ -379,6 +396,7 @@ fn collect_use_reexports(
                 crate_name: dep.target_package.clone(),
                 module: dep.target_module.clone(),
                 original_name: original_name.clone(),
+                visibility: visibility.clone(),
             };
             if private {
                 info.private_uses.insert(alias_name.to_string(), target);
@@ -481,6 +499,17 @@ mod tests {
     use crate::test_support::conventional_package;
     use std::collections::HashSet;
     use tempfile::TempDir;
+
+    /// The names whose visibility stops short of the public, sorted.
+    fn restricted_names(visibility: &HashMap<String, Visibility>) -> Vec<&str> {
+        let mut names: Vec<&str> = visibility
+            .iter()
+            .filter(|(_, vis)| **vis != Visibility::Public)
+            .map(|(name, _)| name.as_str())
+            .collect();
+        names.sort_unstable();
+        names
+    }
 
     /// The re-exports of a package with a single crate root.
     fn collect_single_root_reexports(
@@ -650,9 +679,10 @@ mod tests {
 
         let render_info = result.get("render").expect("render should have exports");
         assert!(
-            render_info
-                .glob_sources
-                .contains(&"render::elements".to_string()),
+            render_info.glob_sources.contains(&GlobSource {
+                module: "render::elements".to_string(),
+                visibility: Visibility::Public,
+            }),
             "glob_sources should contain render::elements, found: {:?}",
             render_info.glob_sources
         );
@@ -812,7 +842,10 @@ mod tests {
         let parent_info = result.get("parent").expect("parent should have exports");
         assert_eq!(
             parent_info.private_glob_sources,
-            vec!["parent::sibling".to_string()]
+            vec![GlobSource {
+                module: "parent::sibling".to_string(),
+                visibility: Visibility::Restricted("parent".to_string()),
+            }]
         );
         assert!(
             parent_info.glob_sources.is_empty(),
@@ -943,11 +976,60 @@ impl AStruct { pub fn method(&self) {} }
 
         let root = result.get("").expect("root info");
         assert_eq!(
-            root.private_definitions,
-            HashSet::from(["Hidden".to_string(), "helper".to_string()])
+            restricted_names(&root.item_visibility),
+            ["Hidden", "helper"]
         );
+        assert_eq!(root.item_visibility.get("Shown"), Some(&Visibility::Public));
         assert!(!root.definitions.contains_key("Hidden"));
         assert!(root.definitions.contains_key("Shown"));
+    }
+
+    /// `pub(in …) use name;` passes on the module's own `macro_rules! name`:
+    /// a sibling naming the macro through the module depends on that module.
+    #[test]
+    fn restricted_use_of_the_modules_own_macro_keeps_the_edge() {
+        let tmp = test_crate(&[
+            ("src/lib.rs", "pub mod tools;\n"),
+            ("src/tools/mod.rs", "mod expand;\nmod user;\n"),
+            (
+                "src/tools/expand.rs",
+                "macro_rules! expand { () => {} }\npub(in crate::tools) use expand;\n",
+            ),
+            ("src/tools/user.rs", ""),
+        ]);
+        let crate_info = make_crate_info(&tmp, "test_crate");
+        let mp: ModulePathMap = [(
+            "test_crate".to_string(),
+            HashSet::from(["tools".into(), "tools::expand".into(), "tools::user".into()]),
+        )]
+        .into_iter()
+        .collect();
+        let modules = collect_single_root_reexports(
+            &crate_info,
+            &mp,
+            &WorkspacePackages::default(),
+            &PackageExportMap::default(),
+        );
+        let map = [("test_crate".to_string(), modules)]
+            .into_iter()
+            .collect::<ReExportMap>()
+            .for_root("test_crate", 0);
+
+        let mut dep = DependencyRef {
+            target_package: "test_crate".to_string(),
+            target_module: "tools::expand".to_string(),
+            target_item: Some("expand".to_string()),
+            source_file: "src/tools/user.rs".into(),
+            line: 1,
+            context: EdgeContext::production(),
+            via_reexport: false,
+            uses: Vec::new(),
+            in_lib_view: false,
+        };
+        let keeps_edge = resolve_reexport(&mut dep, &map, &mp, "tools::user");
+
+        assert!(keeps_edge, "{dep:?}");
+        assert_eq!(dep.target_module, "tools::expand");
     }
 
     #[test]
@@ -984,8 +1066,12 @@ impl AStruct { pub fn method(&self) {} }
 
         let root = result.get("").expect("root info");
         assert_eq!(
-            root.private_modules,
-            HashSet::from(["hidden".to_string(), "scoped".to_string()])
+            restricted_names(&root.module_visibility),
+            ["hidden", "inner", "scoped"]
+        );
+        assert_eq!(
+            root.module_visibility.get("shown"),
+            Some(&Visibility::Public)
         );
     }
 
@@ -1045,8 +1131,8 @@ impl AStruct { pub fn method(&self) {} }
 
         let root = result.get("").expect("root info");
         assert_eq!(
-            root.private_definitions,
-            HashSet::from(["SelfScoped".to_string(), "in_crate".to_string()])
+            restricted_names(&root.item_visibility),
+            ["SelfScoped", "in_crate"]
         );
         assert!(root.definitions.is_empty());
     }
@@ -1546,12 +1632,13 @@ impl AStruct { pub fn method(&self) {} }
             let info = make_crate_info(tmp, name);
             collect_single_root_reexports(&info, &mp, &ws, &PackageExportMap::default())
         };
-        let map: ReExportMap = [
+        let map = [
             ("test_crate".to_string(), collect(&user, "test_crate")),
             ("other_crate".to_string(), collect(&other, "other_crate")),
         ]
         .into_iter()
-        .collect();
+        .collect::<ReExportMap>()
+        .for_root("test_crate", 0);
 
         let mut dep = DependencyRef {
             target_package: "test_crate".to_string(),
