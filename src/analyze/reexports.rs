@@ -11,7 +11,7 @@ use syn::spanned::Spanned;
 use super::packages::{ModulePathMap, PackageExportMap, WorkspacePackages, normalize_crate_name};
 use crate::model::{DefKind, Definition, EdgeContext, PackageInfo};
 
-use super::mod_resolver::{child_resolve_dir, extract_mod_declarations, resolve_mod_path};
+use super::mod_resolver::{ModuleFile, declared_files, extract_mod_declarations};
 use super::use_parser::{
     AssociatedItems, GlobSource, Meaning, ModuleExportInfo, ReExportMap, ReExportTarget,
     ResolutionContext, RootReExports, Visibility, is_reexport_visibility, resolve_single_path,
@@ -100,7 +100,11 @@ fn collect_root_reexports(
 ) -> HashMap<String, ModuleExportInfo> {
     let mut result = HashMap::new();
     let mut out_of_module_impls = Vec::new();
-    walk_collect_reexports(ctx, root_file, "", &mut result, &mut out_of_module_impls);
+    let root = ModuleFile {
+        path: root_file.to_path_buf(),
+        owns_directory: true,
+    };
+    walk_collect_reexports(ctx, &root, "", &mut result, &mut out_of_module_impls);
 
     for block in out_of_module_impls {
         result
@@ -483,11 +487,12 @@ fn root_item_name<'p>(ctx: &CollectContext, path: &'p str) -> Option<(String, &'
 
 fn walk_collect_reexports(
     ctx: &CollectContext,
-    file_path: &Path,
+    file: &ModuleFile,
     module_path: &str,
     result: &mut HashMap<String, ModuleExportInfo>,
     out_of_module_impls: &mut Vec<OutOfModuleImpl>,
 ) {
+    let file_path = file.path.as_path();
     let source = match std::fs::read_to_string(file_path) {
         Ok(s) => s,
         Err(e) => {
@@ -509,35 +514,24 @@ fn walk_collect_reexports(
 
     let info = collect_module_info(ctx, &syntax, &source_file, module_path, out_of_module_impls);
     if !info.is_empty() {
-        result.insert(module_path.to_string(), info);
+        result
+            .entry(module_path.to_string())
+            .or_default()
+            .merge(info);
     }
 
     // Recurse into child modules
     let decls = extract_mod_declarations(&syntax, false);
-    let resolve_dir = child_resolve_dir(file_path, module_path.is_empty());
 
     for decl in decls {
-        let child_file = if let Some(ref explicit) = decl.explicit_path {
-            let p = resolve_dir.join(explicit);
-            if p.exists() { Some(p) } else { None }
-        } else {
-            resolve_mod_path(&resolve_dir, &decl.name)
-        };
-
         let child_module_path = if module_path.is_empty() {
             decl.name.clone()
         } else {
             format!("{module_path}::{}", decl.name)
         };
 
-        if let Some(child_path) = child_file {
-            walk_collect_reexports(
-                ctx,
-                &child_path,
-                &child_module_path,
-                result,
-                out_of_module_impls,
-            );
+        for child in declared_files(file_path, file.owns_directory, &decl) {
+            walk_collect_reexports(ctx, &child, &child_module_path, result, out_of_module_impls);
         }
     }
 }

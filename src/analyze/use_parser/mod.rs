@@ -197,6 +197,25 @@ impl ModuleExportInfo {
             && self.foreign_private_glob_sources.is_empty()
             && self.elsewhere.is_empty()
     }
+
+    /// Take in what another file of the same module holds (an alternative
+    /// under `cfg`): the names of both, `other`'s where both hold one.
+    pub(crate) fn merge(&mut self, other: Self) {
+        self.definitions.extend(other.definitions);
+        self.item_visibility.extend(other.item_visibility);
+        self.module_visibility.extend(other.module_visibility);
+        for (name, items) in other.associated {
+            self.associated.entry(name).or_default().merge(items);
+        }
+        self.explicit_reexports.extend(other.explicit_reexports);
+        self.private_uses.extend(other.private_uses);
+        self.glob_sources.extend(other.glob_sources);
+        self.foreign_glob_sources.extend(other.foreign_glob_sources);
+        self.private_glob_sources.extend(other.private_glob_sources);
+        self.foreign_private_glob_sources
+            .extend(other.foreign_private_glob_sources);
+        self.elsewhere.extend(other.elsewhere);
+    }
 }
 
 /// What one crate root's module tree exports: module path → export info.
