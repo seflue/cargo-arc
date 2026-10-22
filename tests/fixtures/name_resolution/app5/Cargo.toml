@@ -1,0 +1,8 @@
+[package]
+name = "app5"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+t5 = { path = "../t5" }
+t6 = { path = "../t6" }

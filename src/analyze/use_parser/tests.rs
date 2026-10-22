@@ -434,7 +434,10 @@ mod submodule_tests {
             .into_iter()
             .collect();
         let mut root_info = ModuleExportInfo::default();
-        root_info.glob_sources.push("ty".to_string());
+        root_info.glob_sources.push(GlobSource {
+            module: "ty".to_string(),
+            visibility: Visibility::Public,
+        });
         let mut ty_info = ModuleExportInfo::default();
         ty_info.definitions.insert(
             "Type".to_string(),
@@ -476,7 +479,10 @@ mod submodule_tests {
         .into_iter()
         .collect();
         let mut root_info = ModuleExportInfo::default();
-        root_info.glob_sources.push("errors".to_string());
+        root_info.glob_sources.push(GlobSource {
+            module: "errors".to_string(),
+            visibility: Visibility::Public,
+        });
         let mut shell_error_info = ModuleExportInfo::default();
         shell_error_info.definitions.insert(
             "ShellError".to_string(),
@@ -531,6 +537,7 @@ mod submodule_tests {
                 crate_name: "other_crate".to_string(),
                 module: "backend".to_string(),
                 original_name: "custom".to_string(),
+                visibility: Visibility::Public,
             },
         );
         let mut custom_info = ModuleExportInfo::default();
@@ -540,6 +547,7 @@ mod submodule_tests {
                 crate_name: "other_crate".to_string(),
                 module: "dispatch".to_string(),
                 original_name: "Interface".to_string(),
+                visibility: Visibility::Public,
             },
         );
         let mut dispatch_info = ModuleExportInfo::default();
@@ -613,7 +621,10 @@ mod submodule_tests {
         .into_iter()
         .collect();
         let mut root_info = ModuleExportInfo::default();
-        root_info.glob_sources.push("frame".to_string());
+        root_info.glob_sources.push(GlobSource {
+            module: "frame".to_string(),
+            visibility: Visibility::Public,
+        });
         let mut values_info = ModuleExportInfo::default();
         values_info.definitions.insert(
             "Value".to_string(),
@@ -657,7 +668,10 @@ mod submodule_tests {
         .into_iter()
         .collect();
         let mut root_info = ModuleExportInfo::default();
-        root_info.glob_sources.push("ty".to_string());
+        root_info.glob_sources.push(GlobSource {
+            module: "ty".to_string(),
+            visibility: Visibility::Public,
+        });
         let mut ty_info = ModuleExportInfo::default();
         ty_info.definitions.insert(
             "Type".to_string(),
@@ -703,6 +717,7 @@ mod submodule_tests {
                 crate_name: "my_crate".to_string(),
                 module: "eval".to_string(),
                 original_name: "eval_call".to_string(),
+                visibility: Visibility::Public,
             },
         );
         let mut eval_info = ModuleExportInfo::default();
@@ -755,6 +770,7 @@ mod submodule_tests {
                 crate_name: "mid_crate".to_string(),
                 module: String::new(),
                 original_name: "leaf".to_string(),
+                visibility: Visibility::Public,
             },
         );
         let mut mid_root = ModuleExportInfo::default();
@@ -764,6 +780,7 @@ mod submodule_tests {
                 crate_name: "leaf_crate".to_string(),
                 module: String::new(),
                 original_name: String::new(),
+                visibility: Visibility::Public,
             },
         );
         let map: ReExportMap = [
@@ -816,6 +833,7 @@ mod submodule_tests {
                 crate_name: "leaf_crate".to_string(),
                 module: String::new(),
                 original_name: String::new(),
+                visibility: Visibility::Public,
             },
         );
         let map: ReExportMap = [(
@@ -888,7 +906,9 @@ mod submodule_tests {
             .into_iter()
             .collect();
         let mut root_info = ModuleExportInfo::default();
-        root_info.private_definitions.insert("helper".to_string());
+        root_info
+            .item_visibility
+            .insert("helper".to_string(), Visibility::Restricted(String::new()));
         let map: ReExportMap = [(
             "my_crate".to_string(),
             HashMap::from([(String::new(), root_info)]),
@@ -1220,6 +1240,7 @@ use crate::graph;
                 crate_name: "my_crate".to_string(),
                 module: "origin".to_string(),
                 original_name: "Widget".to_string(),
+                visibility: Visibility::Public,
             },
         );
         let mut origin_info = ModuleExportInfo::default();
@@ -2980,7 +3001,7 @@ mod context_aware_dedup_tests {
 }
 
 mod reexport_resolution_tests {
-    use super::super::{ModuleExportInfo, ReExportMap, ReExportTarget};
+    use super::super::{ModuleExportInfo, ReExportMap, ReExportTarget, Visibility};
     use super::*;
 
     #[test]
@@ -3017,6 +3038,7 @@ mod reexport_resolution_tests {
                 crate_name: "my_crate".to_string(),
                 module: "parent::sibling".to_string(),
                 original_name: "Item".to_string(),
+                visibility: Visibility::Public,
             },
         );
         let mut sibling_info = ModuleExportInfo::default();
@@ -3064,6 +3086,7 @@ mod reexport_resolution_tests {
                 crate_name: "my_crate".to_string(),
                 module: "parent::child".to_string(),
                 original_name: "Config".to_string(),
+                visibility: Visibility::Public,
             },
         );
         let mut child_info = ModuleExportInfo::default();
@@ -3110,6 +3133,7 @@ mod reexport_resolution_tests {
                 crate_name: "my_crate".to_string(),
                 module: "parent::child".to_string(),
                 original_name: "Config".to_string(),
+                visibility: Visibility::Public,
             },
         );
         let mut child_info = ModuleExportInfo::default();
@@ -3157,13 +3181,17 @@ mod reexport_resolution_tests {
         .into_iter()
         .collect();
         let mut util_info = ModuleExportInfo::default();
-        util_info.private_modules.insert("helper".to_string());
+        util_info.module_visibility.insert(
+            "helper".to_string(),
+            Visibility::Restricted("util".to_string()),
+        );
         util_info.explicit_reexports.insert(
             "helper".to_string(),
             ReExportTarget {
                 crate_name: "core_crate".to_string(),
                 module: "util::helper".to_string(),
                 original_name: "helper".to_string(),
+                visibility: Visibility::Public,
             },
         );
         let mut helper_info = ModuleExportInfo::default();
@@ -3228,6 +3256,11 @@ mod reexport_resolution_tests {
             crate_name: "my_crate".to_string(),
             module: String::new(),
             original_name: "store".to_string(),
+            visibility: if private {
+                Visibility::Restricted("holder".to_string())
+            } else {
+                Visibility::Public
+            },
         };
         let mut holder_info = ModuleExportInfo::default();
         if private {
@@ -3244,6 +3277,7 @@ mod reexport_resolution_tests {
                 crate_name: "my_crate".to_string(),
                 module: "store::set".to_string(),
                 original_name: "Set".to_string(),
+                visibility: Visibility::Public,
             },
         );
         let mut set_info = ModuleExportInfo::default();
@@ -3263,7 +3297,8 @@ mod reexport_resolution_tests {
             ]),
         )]
         .into_iter()
-        .collect();
+        .collect::<ReExportMap>()
+        .for_root("my_crate", 0);
         (mp, map)
     }
 
@@ -3313,7 +3348,8 @@ mod reexport_resolution_tests {
 
 mod resolve_reexport_tests {
     use super::super::{
-        ModuleExportInfo, ModulePathMap, ReExportMap, ReExportTarget, resolve_reexport,
+        GlobSource, ModuleExportInfo, ModulePathMap, ReExportMap, ReExportTarget, Visibility,
+        resolve_reexport,
     };
     use super::DEFAULT_MP;
     use crate::model::{DefKind, Definition, DependencyRef, EdgeContext};
@@ -3353,6 +3389,7 @@ mod resolve_reexport_tests {
                 crate_name: "my_crate".to_string(),
                 module: "backend".to_string(),
                 original_name: "custom".to_string(),
+                visibility: Visibility::Public,
             },
         );
         root.explicit_reexports.insert(
@@ -3361,12 +3398,19 @@ mod resolve_reexport_tests {
                 crate_name: "leaf_crate".to_string(),
                 module: String::new(),
                 original_name: String::new(),
+                visibility: Visibility::Public,
             },
         );
         let mut custom = ModuleExportInfo::default();
-        custom.glob_sources.push("dispatch".to_string());
+        custom.glob_sources.push(GlobSource {
+            module: "dispatch".to_string(),
+            visibility: Visibility::Public,
+        });
         let mut leaf_root = ModuleExportInfo::default();
-        leaf_root.glob_sources.push("ir".to_string());
+        leaf_root.glob_sources.push(GlobSource {
+            module: "ir".to_string(),
+            visibility: Visibility::Public,
+        });
         let map: ReExportMap = [
             (
                 "my_crate".to_string(),
@@ -3420,6 +3464,7 @@ mod resolve_reexport_tests {
                 crate_name: "my_crate".to_string(),
                 module: String::new(),
                 original_name: "arena".to_string(),
+                visibility: Visibility::Restricted("compact".to_string()),
             },
         );
         let mut arena = ModuleExportInfo::default();
@@ -3438,7 +3483,8 @@ mod resolve_reexport_tests {
             ]),
         )]
         .into_iter()
-        .collect();
+        .collect::<ReExportMap>()
+        .for_root("my_crate", 0);
         let module_paths: ModulePathMap = [(
             "my_crate".to_string(),
             HashSet::from([
@@ -3503,6 +3549,7 @@ mod resolve_reexport_tests {
                 crate_name: "my_crate".to_string(),
                 module: "render::elements".to_string(),
                 original_name: "Widget".to_string(),
+                visibility: Visibility::Public,
             },
         );
         let mut n_info = ModuleExportInfo::default();
@@ -3537,6 +3584,7 @@ mod resolve_reexport_tests {
                 crate_name: "my_crate".to_string(),
                 module: "middle".to_string(),
                 original_name: "Widget".to_string(),
+                visibility: Visibility::Public,
             },
         );
         let mut n_info = ModuleExportInfo::default();
@@ -3546,6 +3594,7 @@ mod resolve_reexport_tests {
                 crate_name: "my_crate".to_string(),
                 module: "origin".to_string(),
                 original_name: "Widget".to_string(),
+                visibility: Visibility::Public,
             },
         );
         let mut o_info = ModuleExportInfo::default();
@@ -3581,6 +3630,7 @@ mod resolve_reexport_tests {
                 crate_name: "my_crate".to_string(),
                 module: "origin".to_string(),
                 original_name: "Original".to_string(),
+                visibility: Visibility::Public,
             },
         );
         let mut o_info = ModuleExportInfo::default();
@@ -3609,7 +3659,10 @@ mod resolve_reexport_tests {
     #[test]
     fn resolve_glob_reexport() {
         let mut m_info = ModuleExportInfo::default();
-        m_info.glob_sources.push("elements".to_string());
+        m_info.glob_sources.push(GlobSource {
+            module: "elements".to_string(),
+            visibility: Visibility::Public,
+        });
         let mut n_info = ModuleExportInfo::default();
         n_info.definitions.insert(
             "Widget".to_string(),
@@ -3636,7 +3689,10 @@ mod resolve_reexport_tests {
     #[test]
     fn resolve_glob_then_explicit() {
         let mut m_info = ModuleExportInfo::default();
-        m_info.glob_sources.push("middle".to_string());
+        m_info.glob_sources.push(GlobSource {
+            module: "middle".to_string(),
+            visibility: Visibility::Public,
+        });
         let mut n_info = ModuleExportInfo::default();
         n_info.explicit_reexports.insert(
             "Widget".to_string(),
@@ -3644,6 +3700,7 @@ mod resolve_reexport_tests {
                 crate_name: "my_crate".to_string(),
                 module: "origin".to_string(),
                 original_name: "Widget".to_string(),
+                visibility: Visibility::Public,
             },
         );
         let mut o_info = ModuleExportInfo::default();
@@ -3679,6 +3736,7 @@ mod resolve_reexport_tests {
                 crate_name: "my_crate".to_string(),
                 module: "b".to_string(),
                 original_name: "Widget".to_string(),
+                visibility: Visibility::Public,
             },
         );
         let mut b_info = ModuleExportInfo::default();
@@ -3688,6 +3746,7 @@ mod resolve_reexport_tests {
                 crate_name: "my_crate".to_string(),
                 module: "a".to_string(),
                 original_name: "Widget".to_string(),
+                visibility: Visibility::Public,
             },
         );
 
@@ -3715,6 +3774,7 @@ mod resolve_reexport_tests {
                 crate_name: "other_crate".to_string(),
                 module: "settings".to_string(),
                 original_name: "Config".to_string(),
+                visibility: Visibility::Public,
             },
         );
         let mut settings_info = ModuleExportInfo::default();
@@ -3751,6 +3811,7 @@ mod resolve_reexport_tests {
                 crate_name: "my_crate".to_string(),
                 module: "front::wgsl::error".to_string(),
                 original_name: "Error".to_string(),
+                visibility: Visibility::Restricted("front::wgsl".to_string()),
             },
         );
         let mut error_info = ModuleExportInfo::default();
@@ -3765,9 +3826,10 @@ mod resolve_reexport_tests {
         let mut crate_exports = HashMap::new();
         crate_exports.insert("front::wgsl".to_string(), wgsl_info);
         crate_exports.insert("front::wgsl::error".to_string(), error_info);
-        let map: ReExportMap = [("my_crate".to_string(), crate_exports)]
+        let map = [("my_crate".to_string(), crate_exports)]
             .into_iter()
-            .collect();
+            .collect::<ReExportMap>()
+            .for_root("my_crate", 0);
 
         let mut dep = test_dep("my_crate", "front::wgsl", Some("Error"));
         resolve_reexport(
@@ -3790,13 +3852,15 @@ mod resolve_reexport_tests {
                 crate_name: "my_crate".to_string(),
                 module: "front::wgsl::error".to_string(),
                 original_name: "Error".to_string(),
+                visibility: Visibility::Restricted("front::wgsl".to_string()),
             },
         );
         let mut crate_exports = HashMap::new();
         crate_exports.insert("front::wgsl".to_string(), wgsl_info);
-        let map: ReExportMap = [("my_crate".to_string(), crate_exports)]
+        let map = [("my_crate".to_string(), crate_exports)]
             .into_iter()
-            .collect();
+            .collect::<ReExportMap>()
+            .for_root("my_crate", 0);
 
         let mut dep = test_dep("my_crate", "front::wgsl", Some("Error"));
         resolve_reexport(&mut dep, &map, &DEFAULT_MP, "back::spv");
@@ -3811,7 +3875,8 @@ mod resolve_reexport_tests {
             private_glob_modules(holder, source, item),
         )]
         .into_iter()
-        .collect()
+        .collect::<ReExportMap>()
+        .for_root("my_crate", 0)
     }
 
     fn private_glob_modules(
@@ -3820,7 +3885,10 @@ mod resolve_reexport_tests {
         item: &str,
     ) -> HashMap<String, ModuleExportInfo> {
         let mut holder_info = ModuleExportInfo::default();
-        holder_info.private_glob_sources.push(source.to_string());
+        holder_info.private_glob_sources.push(GlobSource {
+            module: source.to_string(),
+            visibility: Visibility::Restricted(holder.to_string()),
+        });
         let mut source_info = ModuleExportInfo::default();
         source_info.definitions.insert(
             item.to_string(),
@@ -3865,9 +3933,15 @@ mod resolve_reexport_tests {
         // the definer through both.
         let mut modules = private_glob_modules("api", "api::actions", "Mapping");
         let mut buffer_info = ModuleExportInfo::default();
-        buffer_info.private_glob_sources.push("api".to_string());
+        buffer_info.private_glob_sources.push(GlobSource {
+            module: "api".to_string(),
+            visibility: Visibility::Restricted("api::buffer".to_string()),
+        });
         modules.insert("api::buffer".to_string(), buffer_info);
-        let map: ReExportMap = [("my_crate".to_string(), modules)].into_iter().collect();
+        let map = [("my_crate".to_string(), modules)]
+            .into_iter()
+            .collect::<ReExportMap>()
+            .for_root("my_crate", 0);
 
         let mut dep = test_dep("my_crate", "api::buffer", Some("Mapping"));
         resolve_reexport(&mut dep, &map, &DEFAULT_MP, "api::buffer::view");
@@ -3882,13 +3956,19 @@ mod resolve_reexport_tests {
         // even to dispatch itself.
         let mut modules = private_glob_modules("dispatch", "core", "Mapping");
         let mut custom_info = ModuleExportInfo::default();
-        custom_info.glob_sources.push("dispatch".to_string());
+        custom_info.glob_sources.push(GlobSource {
+            module: "dispatch".to_string(),
+            visibility: Visibility::Public,
+        });
         modules.insert("custom".to_string(), custom_info);
         modules
             .get_mut("dispatch")
             .unwrap()
             .private_glob_sources
-            .push("custom".to_string());
+            .push(GlobSource {
+                module: "custom".to_string(),
+                visibility: Visibility::Restricted("dispatch".to_string()),
+            });
         let map: ReExportMap = [("my_crate".to_string(), modules)].into_iter().collect();
 
         let mut dep = test_dep("my_crate", "custom", Some("Mapping"));
@@ -4287,7 +4367,9 @@ mod file_binding_tests {
         .into_iter()
         .collect();
         let mut root_info = ModuleExportInfo::default();
-        root_info.private_definitions.insert("Config".to_string());
+        root_info
+            .item_visibility
+            .insert("Config".to_string(), Visibility::Restricted(String::new()));
         let map: ReExportMap = [(
             "my_crate".to_string(),
             HashMap::from([(String::new(), root_info)]),
@@ -4339,6 +4421,11 @@ mod file_binding_tests {
             crate_name: "my_crate".to_string(),
             module: String::new(),
             original_name: "shared".to_string(),
+            visibility: if public {
+                Visibility::Public
+            } else {
+                Visibility::Restricted(glob_module.to_string())
+            },
         };
         let mut render_info = ModuleExportInfo::default();
         if public {
@@ -4355,7 +4442,8 @@ mod file_binding_tests {
             HashMap::from([(glob_module.to_string(), render_info)]),
         )]
         .into_iter()
-        .collect();
+        .collect::<ReExportMap>()
+        .for_root("my_crate", 0);
         let ctx = ResolutionContextBuilder::new(Path::new("src/consumer.rs"))
             .module_paths(&mp)
             .current_module_path(current_module)
