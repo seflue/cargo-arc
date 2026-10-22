@@ -2038,6 +2038,41 @@ fn name_resolution_cfg_attr_path_under_test_is_test_code() {
     );
 }
 
+/// Cell 72: a glob brings in only what the module holding it sees. `b` globs
+/// `a::s`, whose `pub(super) fn f` only `a` sees, and `c` with `pub fn f`; a
+/// module under `a` writing `crate::gh::b::f()` names `c::f`.
+#[test]
+fn name_resolution_glob_brings_in_what_its_holder_sees() {
+    assert_name_resolution_arc("m::gh::a::user", "m::gh::c", "production", &["f"]);
+    assert_no_name_resolution_arc("m::gh::a::user", "m::gh::a::s");
+}
+
+/// Cell 72c: the payload of `pub use …::*` in 72 holds only what `b` sees.
+/// From `a::s` that is nothing, so the arc of the `use` keeps the `*`.
+#[test]
+fn name_resolution_pub_glob_payload_holds_what_its_holder_sees() {
+    assert_name_resolution_arc("m::gh::b", "m::gh::a::s", "production", &["*"]);
+    assert_name_resolution_arc("m::gh::b", "m::gh::c", "production", &["f"]);
+}
+
+/// Cell 72b: as 72 with private globs in `gp`, read by a descendant through
+/// `crate::gp::f()`.
+#[test]
+fn name_resolution_private_glob_brings_in_what_its_holder_sees() {
+    assert_name_resolution_arc("m::gp::k::user", "m::gp::c", "production", &["f"]);
+    assert_no_name_resolution_arc("m::gp::k::user", "m::gp::k::s");
+}
+
+/// Cell 76: a chain of globs brings in only what every holder on it sees.
+/// `a::y` globs `a::z`, whose `pub(in crate::gk::a) fn f` `x` does not see;
+/// `x` globs `a::y` and `c` with `pub fn f`. A module under `a` writing
+/// `crate::gk::x::f()` names `c::f`.
+#[test]
+fn name_resolution_glob_chain_brings_in_what_every_holder_sees() {
+    assert_name_resolution_arc("m::gk::a::user", "m::gk::c", "production", &["f"]);
+    assert_no_name_resolution_arc("m::gk::a::user", "m::gk::a::z");
+}
+
 /// Every use on an edge, with its category, goes to stderr under `--debug`,
 /// so the walker's result can be read without a rule that consumes it.
 /// A subprocess, because `run` installs the debug log on the process's own
