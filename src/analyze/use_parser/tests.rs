@@ -4106,7 +4106,9 @@ mod file_binding_tests {
             .build();
         let bindings = bindings_of("use crate::parent::child;", &ctx);
         assert_eq!(
-            bindings.target(BindingRegions::ROOT, "child"),
+            bindings
+                .target(BindingRegions::ROOT, "child", &ctx)
+                .as_deref(),
             Some("crate::parent::child"),
             "leaf name should bind to the full module path: {bindings:?}"
         );
@@ -4120,11 +4122,15 @@ mod file_binding_tests {
             .build();
         let bindings = bindings_of("use crate::parent::{child, Other};", &ctx);
         assert_eq!(
-            bindings.target(BindingRegions::ROOT, "child"),
+            bindings
+                .target(BindingRegions::ROOT, "child", &ctx)
+                .as_deref(),
             Some("crate::parent::child")
         );
         assert!(
-            bindings.target(BindingRegions::ROOT, "Other").is_none(),
+            bindings
+                .target(BindingRegions::ROOT, "Other", &ctx)
+                .is_none(),
             "non-module items must not enter the alias map: {bindings:?}"
         );
     }
@@ -4137,7 +4143,9 @@ mod file_binding_tests {
             .build();
         let bindings = bindings_of("use crate::parent::child as kid;", &ctx);
         assert_eq!(
-            bindings.target(BindingRegions::ROOT, "kid"),
+            bindings
+                .target(BindingRegions::ROOT, "kid", &ctx)
+                .as_deref(),
             Some("crate::parent::child"),
             "rename binds the alias name to the original module: {bindings:?}"
         );
@@ -4155,7 +4163,9 @@ mod file_binding_tests {
             .build();
         let bindings = bindings_of("use other_crate::module;", &ctx);
         assert_eq!(
-            bindings.target(BindingRegions::ROOT, "module"),
+            bindings
+                .target(BindingRegions::ROOT, "module", &ctx)
+                .as_deref(),
             Some("other_crate::module"),
             "workspace module alias keeps the code-side crate name: {bindings:?}"
         );
@@ -4614,7 +4624,9 @@ mod use_self_tests {
             .build();
         let bindings = bindings_of("use crate::auxil::{self, dxgi::Factory};", &ctx);
         assert_eq!(
-            bindings.target(BindingRegions::ROOT, "auxil"),
+            bindings
+                .target(BindingRegions::ROOT, "auxil", &ctx)
+                .as_deref(),
             Some("crate::auxil"),
             "`self` binds the module name locally: {bindings:?}"
         );
