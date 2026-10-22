@@ -76,8 +76,8 @@ fn walk_modules_for_paths(
 
         for child in declared_files(file_path, owns_directory, &decl) {
             walk_modules_for_paths(
-                &child.path,
-                child.owns_directory,
+                &child.file.path,
+                child.file.owns_directory,
                 &child_full,
                 paths,
                 include_tests,
@@ -256,24 +256,26 @@ fn walk_declared_module(
     parent_path: &str,
     unparsed: &mut Vec<PathBuf>,
 ) -> Option<ModuleInfo> {
-    // A module declared under `#[cfg(test)]` is test code with all it holds
-    let child_ctx = if decl.cfg_test {
-        &WalkContext {
-            base_context: promote_to_test(&ctx.base_context),
-            ..ctx.clone()
-        }
-    } else {
-        ctx
+    // A module declared under `#[cfg(test)]`, or a file only a test-only
+    // `#[cfg_attr]` path loads, is test code with all it holds
+    let test_ctx = WalkContext {
+        base_context: promote_to_test(&ctx.base_context),
+        ..ctx.clone()
     };
     let mut alternatives = declared_files(&parent.path, parent.owns_directory, decl)
         .into_iter()
-        .map(|file| {
+        .map(|declared| {
+            let child_ctx = if decl.cfg_test || declared.cfg_test {
+                &test_ctx
+            } else {
+                ctx
+            };
             walk_module_syn(
                 child_ctx,
-                &file.path,
+                &declared.file.path,
                 &decl.name,
                 parent_path,
-                file.owns_directory,
+                declared.file.owns_directory,
                 unparsed,
             )
         });

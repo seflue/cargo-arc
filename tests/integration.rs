@@ -2018,6 +2018,20 @@ fn name_resolution_cfg_attr_path_reads_every_alternative() {
     assert_name_resolution_arc("m::cpath::imp", "m::util2", "production", &["job"]);
 }
 
+/// Cell 66d: a file `#[cfg_attr(test, path = …)]` names is test code, read
+/// only with `--include-tests`.
+#[test]
+fn name_resolution_cfg_attr_path_under_test_is_test_code() {
+    assert_name_resolution_arc("m::cpath2::imp", "m::util", "production", &["job"]);
+    assert_name_resolution_arc("m::cpath2::imp", "m::util2", "test", &["job"]);
+    let arcs = name_resolution_arcs(false);
+    assert_eq!(
+        arcs.get(&("m::cpath2::imp".to_string(), "m::util2".to_string())),
+        None,
+        "m::cpath2::imp -> m::util2 should not exist without tests"
+    );
+}
+
 /// Every use on an edge, with its category, goes to stderr under `--debug`,
 /// so the walker's result can be read without a rule that consumes it.
 /// A subprocess, because `run` installs the debug log on the process's own

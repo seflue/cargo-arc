@@ -5,3 +5,4 @@ pub mod npuser;
 #[path = "foo/bar.rs"]
 pub mod viapath;
 pub mod cpath;
+pub mod cpath2;
