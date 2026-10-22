@@ -22,7 +22,7 @@ use {
     ra_ap_cfg::{CfgAtom, CfgDiff},
     ra_ap_hir as hir, ra_ap_ide as ide, ra_ap_load_cargo as load_cargo, ra_ap_paths as paths,
     ra_ap_project_model as project_model,
-    std::collections::HashSet,
+    std::collections::{HashMap, HashSet},
     std::path::{Path, PathBuf},
 };
 
@@ -526,6 +526,7 @@ mod hir_tests {
                 &workspace_crates,
                 &ModulePathMap::default(),
                 &PackageExportMap::default(),
+                &HashMap::new(),
             )
             .expect("should analyze modules");
 
@@ -573,6 +574,7 @@ mod hir_tests {
                 &workspace_crates,
                 &ModulePathMap::default(),
                 &PackageExportMap::default(),
+                &HashMap::new(),
             )
             .expect("should analyze modules");
 
@@ -606,6 +608,7 @@ mod hir_tests {
                 &workspace_crates,
                 &ModulePathMap::default(),
                 &PackageExportMap::default(),
+                &HashMap::new(),
             )
             .expect("should analyze modules");
 
