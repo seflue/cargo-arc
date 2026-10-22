@@ -356,7 +356,8 @@ pub struct ModuleInfo {
     pub file: Option<PathBuf>,
     pub children: Vec<ModuleInfo>,
     pub dependencies: Vec<DependencyRef>,
-    /// The module's own public definitions, by symbol name.
+    /// The module's own definitions, whatever their visibility, by symbol
+    /// name.
     pub definitions: HashMap<String, Definition>,
 }
 

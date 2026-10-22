@@ -22,7 +22,7 @@ pub enum Node {
         package_idx: NodeIndex,
         /// Absolute path of the declaring file, see `ModuleInfo::file`.
         file: Option<PathBuf>,
-        /// The module's own public definitions, see `ModuleInfo::definitions`.
+        /// The module's own definitions, see `ModuleInfo::definitions`.
         definitions: HashMap<String, Definition>,
     },
     ExternalPackage {
