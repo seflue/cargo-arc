@@ -1631,6 +1631,276 @@ fn test_private_glob_into_another_crate_keeps_its_crate() {
     }
 }
 
+/// The arcs of the `name_resolution` fixture, keyed by the qualified names of
+/// their ends: the context kind and the sorted symbols of each. The fixture is
+/// read once per value of `include_tests`.
+fn name_resolution_arcs(
+    include_tests: bool,
+) -> &'static std::collections::HashMap<(String, String), (String, Vec<String>)> {
+    type Arcs = std::collections::HashMap<(String, String), (String, Vec<String>)>;
+    static WITHOUT_TESTS: std::sync::OnceLock<Arcs> = std::sync::OnceLock::new();
+    static WITH_TESTS: std::sync::OnceLock<Arcs> = std::sync::OnceLock::new();
+    let read = || {
+        let (temp, cmd) = fixture_args("name_resolution", include_tests);
+        let data = parse_static_data(&run_to_string(&temp, cmd));
+        let nodes = data["nodes"].as_object().expect("nodes is object");
+        data["arcs"]
+            .as_object()
+            .expect("arcs is object")
+            .values()
+            .filter_map(|a| {
+                let from = qualified_node_name(nodes, a["from"].as_str()?);
+                let to = qualified_node_name(nodes, a["to"].as_str()?);
+                let kind = a["context"]["kind"].as_str()?.to_string();
+                let mut symbols: Vec<String> = a["usages"]
+                    .as_array()?
+                    .iter()
+                    .filter_map(|u| Some(u["symbol"].as_str()?.to_string()))
+                    .collect();
+                symbols.sort();
+                symbols.dedup();
+                Some(((from, to), (kind, symbols)))
+            })
+            .collect()
+    };
+    if include_tests {
+        WITH_TESTS.get_or_init(read)
+    } else {
+        WITHOUT_TESTS.get_or_init(read)
+    }
+}
+
+/// Assert that the `name_resolution` fixture has the arc `from -> to` with
+/// the context `kind` and exactly `symbols`: a production arc whether test
+/// code is read or not, a test arc when it is.
+fn assert_name_resolution_arc(from: &str, to: &str, kind: &str, symbols: &[&str]) {
+    let flags: &[bool] = if kind == "production" {
+        &[false, true]
+    } else {
+        &[true]
+    };
+    for &include_tests in flags {
+        let arcs = name_resolution_arcs(include_tests);
+        let expected = (
+            kind.to_string(),
+            symbols.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            arcs.get(&(from.to_string(), to.to_string())),
+            Some(&expected),
+            "{from} -> {to} (include_tests {include_tests})"
+        );
+    }
+}
+
+/// Assert that the `name_resolution` fixture has no arc `from -> to`, whether
+/// test code is read or not.
+fn assert_no_name_resolution_arc(from: &str, to: &str) {
+    for include_tests in [false, true] {
+        let arcs = name_resolution_arcs(include_tests);
+        assert_eq!(
+            arcs.get(&(from.to_string(), to.to_string())),
+            None,
+            "{from} -> {to} should not exist (include_tests {include_tests})"
+        );
+    }
+}
+
+/// Cell 1: a child of the module that declares a private module names an
+/// item in it through the module.
+#[test]
+fn name_resolution_private_module_is_a_module_for_a_child() {
+    assert_name_resolution_arc(
+        "app::ppriv::sub1",
+        "app::ppriv::helper",
+        "production",
+        &["run"],
+    );
+}
+
+/// Cell 4: outside its parent a private module is not visible, and the
+/// name is the item the parent re-exports.
+#[test]
+fn name_resolution_private_module_is_the_reexported_item_outside_its_parent() {
+    assert_name_resolution_arc("app::c4", "app::ppriv::helper", "production", &["helper"]);
+}
+
+/// Cell 5: the same from another crate.
+#[test]
+fn name_resolution_private_module_is_the_reexported_item_for_another_crate() {
+    assert_name_resolution_arc("app::c5", "types::ppriv::helper", "production", &["helper"]);
+}
+
+/// Cell 6: a `pub(crate)` module is a module anywhere in its crate.
+#[test]
+fn name_resolution_pub_crate_module_is_a_module_in_its_crate() {
+    assert_name_resolution_arc("app::c6", "app::pcrate::helper", "production", &["run"]);
+}
+
+/// Cell 8: another crate does not see a `pub(crate)` module, and the name is
+/// the item its parent re-exports.
+#[test]
+fn name_resolution_pub_crate_module_is_the_reexported_item_for_another_crate() {
+    assert_name_resolution_arc(
+        "app::c8",
+        "types::pcrate::helper",
+        "production",
+        &["helper"],
+    );
+}
+
+/// Cell 9: a glob from another crate does not bring in a `pub(crate)` child
+/// module, so a path through its name names the crate of that name.
+#[test]
+fn name_resolution_glob_from_another_crate_skips_a_pub_crate_child_module() {
+    assert_name_resolution_arc("app::c9", "extra", "production", &["X"]);
+    assert_no_name_resolution_arc("app::c9", "types::pcrate::extra");
+}
+
+/// Cell 10: a public module is a module for another crate.
+#[test]
+fn name_resolution_public_module_is_a_module_for_another_crate() {
+    assert_name_resolution_arc("app::c10", "types::ppub::helper", "production", &["run"]);
+}
+
+/// Cell 13: a type in a public module.
+#[test]
+fn name_resolution_type_in_a_public_module() {
+    assert_name_resolution_arc("app::c13", "app::ppub::helper", "production", &["Thing"]);
+}
+
+/// Cell 15: a `pub(super)` module is a module in its grandparent.
+#[test]
+fn name_resolution_pub_super_module_is_a_module_in_the_grandparent() {
+    assert_name_resolution_arc(
+        "app::outer::q",
+        "app::outer::p::helper",
+        "production",
+        &["run"],
+    );
+}
+
+/// Cell 16: outside the grandparent a `pub(super)` module is not visible, and
+/// the name is the item its parent re-exports.
+#[test]
+fn name_resolution_pub_super_module_is_the_reexported_item_outside_the_grandparent() {
+    assert_name_resolution_arc(
+        "app::c16",
+        "app::outer::p::helper",
+        "production",
+        &["helper"],
+    );
+}
+
+/// Cell 21: an integration test is a crate of its own: a glob into a module
+/// of the lib does not bring in a `pub(crate)` child module there.
+#[test]
+fn name_resolution_integration_test_glob_skips_a_pub_crate_child_module() {
+    assert_name_resolution_arc("app::c21", "extra", "test", &["X"]);
+    assert_name_resolution_arc("app::c21", "types::ppriv::helper", "test", &["helper"]);
+    assert_no_name_resolution_arc("app::c21", "types::pcrate::extra");
+}
+
+/// Cell 23: an integration test does not see a private module of its
+/// package's root, and the name is the item the root re-exports.
+#[test]
+fn name_resolution_integration_test_takes_the_item_the_root_reexports() {
+    assert_name_resolution_arc("types::c23", "types::lex", "test", &["lex"]);
+}
+
+/// Cell 23a: the same for a private module below the root.
+#[test]
+fn name_resolution_integration_test_takes_the_item_a_module_reexports() {
+    assert_name_resolution_arc("types::c23a", "types::ppriv::helper", "test", &["helper"]);
+}
+
+/// Cell 24: an item of the value namespace other than a fn.
+#[test]
+fn name_resolution_private_module_is_the_reexported_const_outside_its_parent() {
+    assert_name_resolution_arc("app::c24", "app::pconst::limit", "production", &["limit"]);
+}
+
+/// Cell 25: a bin root is a crate of its own: it does not see a private
+/// module of the lib root. The edge still starts at the package node.
+#[test]
+fn name_resolution_bin_root_takes_the_item_the_lib_root_reexports() {
+    assert_name_resolution_arc("app5", "app5::lex", "production", &["lex"]);
+}
+
+/// Cell 26: a bin root does not see a `pub(crate)` module of the lib.
+#[test]
+fn name_resolution_bin_root_takes_the_item_beside_a_pub_crate_module() {
+    assert_name_resolution_arc("app", "app::pcrate::helper", "production", &["helper"]);
+}
+
+/// Cell 27: a `pub use` of a name that is a `pub(crate)` module and a public
+/// fn binds the module for its own crate only; another crate names the fn.
+#[test]
+fn name_resolution_reexport_binds_a_pub_crate_module_for_its_crate_only() {
+    assert_name_resolution_arc("app7::c27", "t7::p", "production", &["helper"]);
+    assert_no_name_resolution_arc("app7::c27", "t7::p::helper");
+}
+
+/// Cell 36: a glob into another crate's root does not bring in what the
+/// root binds by `pub(crate) use`.
+#[test]
+fn name_resolution_glob_from_another_crate_skips_a_pub_crate_use() {
+    assert_name_resolution_arc("app5::user1", "app5::mine", "production", &["Item"]);
+    assert_no_name_resolution_arc("app5::user1", "t5::z");
+}
+
+/// Cell 37: nor what the root brings in by a private glob.
+#[test]
+fn name_resolution_glob_from_another_crate_skips_a_private_glob() {
+    assert_name_resolution_arc("app5::user2", "app5::mine", "production", &["Item"]);
+    assert_no_name_resolution_arc("app5::user2", "t6::z");
+}
+
+/// Cell 40: a macro made pathable by `pub(crate) use`.
+#[test]
+fn name_resolution_macro_bound_by_pub_crate_use() {
+    assert_name_resolution_arc("app::c40", "app::macs", "production", &["m2"]);
+}
+
+/// Cell 42: a `pub(in path)` use binds its name for the modules below the
+/// path, and naming it reaches the definer.
+#[test]
+fn name_resolution_pub_in_path_use_reaches_the_definer() {
+    assert_name_resolution_arc("app::pin::kid", "app::util", "production", &["job"]);
+    assert_no_name_resolution_arc("app::pin::kid", "app::pin");
+}
+
+/// Cells 61 and 61b: a private `use` of another crate's module is not
+/// visible from a module of the same path in this crate; the type comes
+/// from the module's glob.
+#[test]
+fn name_resolution_private_use_of_another_crate_is_not_visible_at_the_same_path() {
+    for user in ["x::a::b", "x::a::c"] {
+        assert_name_resolution_arc(user, "y::q", "production", &["Item"]);
+        assert_no_name_resolution_arc(user, "y::p");
+    }
+}
+
+/// Cell 62: nor is a private glob of another crate's module.
+#[test]
+fn name_resolution_private_glob_of_another_crate_is_not_visible_at_the_same_path() {
+    assert_name_resolution_arc("x::am::d", "y::am", "production", &["Thing2"]);
+    assert_no_name_resolution_arc("x::am::d", "y::r");
+}
+
+/// Cell 63: nor a private `use` of an external crate there.
+#[test]
+fn name_resolution_private_external_use_of_another_crate_is_not_visible_at_the_same_path() {
+    assert_name_resolution_arc("x::a::e", "y::q", "production", &["Write"]);
+}
+
+/// Cell 63k: the same names from a module of another path.
+#[test]
+fn name_resolution_names_of_another_crate_from_another_path() {
+    assert_name_resolution_arc("x::zz", "y::q", "production", &["Item", "Write"]);
+    assert_name_resolution_arc("x::zz", "y::am", "production", &["Thing2"]);
+}
+
 /// Every use on an edge, with its category, goes to stderr under `--debug`,
 /// so the walker's result can be read without a rule that consumes it.
 /// A subprocess, because `run` installs the debug log on the process's own
