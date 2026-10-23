@@ -3613,23 +3613,138 @@ mod binding_tests {
         })
     }
 
-    /// The bindings of `holder` in a map that holds `info` there.
+    /// A map that holds `info` as the module `holder` of `my_crate`, seen
+    /// from the lib root of `my_crate`.
     fn holder_map(info: ModuleExportInfo) -> ReExportMap {
-        [(
+        let map: ReExportMap = [(
             "my_crate".to_string(),
             HashMap::from([("holder".to_string(), info)]),
         )]
         .into_iter()
-        .collect()
+        .collect();
+        map.for_root("my_crate", 0)
     }
 
-    fn holder(map: &ReExportMap) -> ModuleBindings<'_> {
-        map.viewer(TargetRoot::AsSeen, "")
-            .bindings_in(CrateModule {
-                crate_name: "my_crate",
-                path: "holder",
-            })
+    const HOLDER: CrateModule<'static> = CrateModule {
+        crate_name: "my_crate",
+        path: "holder",
+    };
+
+    /// The bindings of `holder`, as `holder` itself sees them.
+    fn holder(map: &ReExportMap) -> SeenBindings<'_> {
+        map.viewer(TargetRoot::AsSeen, "holder")
+            .bindings_in(HOLDER)
             .expect("the map holds the module")
+    }
+
+    /// The bindings of a name a viewer sees come apart from those it does
+    /// not: a binding restricted to `holder` is unseen from outside it.
+    #[test]
+    fn a_viewer_sees_the_bindings_of_a_name_visible_from_its_module() {
+        let public = NameBinding::new(definition(1), Visibility::Public);
+        let private_use = NameBinding::new(
+            BindingKind::PrivateUse(target("a")),
+            Visibility::Restricted("holder".to_string()),
+        );
+        let mut info = ModuleExportInfo::default();
+        info.bind("Name".to_string(), public.clone());
+        info.bind("Name".to_string(), private_use.clone());
+        let map = holder_map(info);
+        let seen_from = |module| {
+            map.viewer(TargetRoot::AsSeen, module)
+                .bindings_in(HOLDER)
+                .expect("the map holds the module")
+        };
+
+        let outside = seen_from("other");
+        assert_eq!(outside.named("Name").collect::<Vec<_>>(), [&public]);
+        assert_eq!(outside.unseen("Name").collect::<Vec<_>>(), [&private_use]);
+        let inside = seen_from("holder::kid");
+        assert_eq!(
+            inside.named("Name").collect::<Vec<_>>(),
+            [&public, &private_use]
+        );
+        assert_eq!(inside.unseen("Name").next(), None);
+    }
+
+    /// A viewer through the holder of a glob sees what both see: a binding
+    /// restricted to a module only the viewer is in is unseen, and so is
+    /// every restricted binding through a holder in another crate.
+    #[test]
+    fn a_viewer_through_a_holder_sees_what_both_see() {
+        let in_a = NameBinding::new(definition(1), Visibility::Restricted("a".to_string()));
+        let in_a_b = NameBinding::new(definition(2), Visibility::Restricted("a::b".to_string()));
+        let mut info = ModuleExportInfo::default();
+        info.bind("Name".to_string(), in_a.clone());
+        info.bind("Name".to_string(), in_a_b.clone());
+        let map = holder_map(info);
+        let viewer = map.viewer(TargetRoot::AsSeen, "a::b::c");
+        let through = |crate_name, path| {
+            viewer
+                .through(CrateModule { crate_name, path })
+                .bindings_in(HOLDER)
+                .expect("the map holds the module")
+        };
+
+        let sibling = through("my_crate", "a::d");
+        assert_eq!(sibling.named("Name").collect::<Vec<_>>(), [&in_a]);
+        assert_eq!(sibling.unseen("Name").collect::<Vec<_>>(), [&in_a_b]);
+        assert_eq!(through("other", "a::b").named("Name").next(), None);
+    }
+
+    /// A bin module that globs a module of its own package's lib sees no
+    /// `pub(crate)` trait of the lib, which is another crate than the bin:
+    /// the glob passes on what a descendant named through it.
+    #[test]
+    fn a_bin_glob_on_the_own_lib_brings_in_no_trait_of_the_lib_crate() {
+        let mut lib_module = ModuleExportInfo::default();
+        define(&mut lib_module, "f", DefKind::Fn);
+        define_with(
+            &mut lib_module,
+            "T",
+            DefKind::Trait,
+            Visibility::Restricted(String::new()),
+        );
+        let roots = vec![
+            RootReExports {
+                kind: EntryKind::Lib,
+                modules: HashMap::from([("tm".to_string(), lib_module)]),
+                test_build_modules: None,
+            },
+            RootReExports {
+                kind: EntryKind::Bin,
+                modules: HashMap::from([("holder".to_string(), ModuleExportInfo::default())]),
+                test_build_modules: None,
+            },
+        ];
+        let map: ReExportMap = [("my_crate".to_string(), roots)].into_iter().collect();
+        let glob = DependencyRef {
+            target_package: "my_crate".to_string(),
+            target_module: "tm".to_string(),
+            target_item: Some("*".to_string()),
+            source_file: Path::new("src/holder.rs").to_path_buf(),
+            line: 1,
+            context: EdgeContext::production(),
+            via_reexport: false,
+            uses: Vec::new(),
+            target_root: TargetRoot::Lib,
+        };
+        let holder_and_source = (
+            ("my_crate".to_string(), "holder".to_string()),
+            "tm".to_string(),
+        );
+        let passed_on = PassedOn {
+            globs: HashMap::from([(holder_and_source, true)]),
+            uses: HashMap::new(),
+        };
+
+        assert!(passed_on.passes_on(
+            "my_crate",
+            "holder",
+            &glob,
+            &map.for_root("my_crate", 1),
+            &ModulePathMap::default(),
+        ));
     }
 
     #[test]
