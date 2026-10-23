@@ -639,8 +639,12 @@ fn walk_collect_reexports(
 
         for child in declared_files(file_path, file.owns_directory, &decl) {
             let child_builds = Builds {
-                without_test: builds.without_test && !decl.cfg_test && !child.cfg_test,
-                test: builds.test && decl.test_build_may_load && child.test_build_may_load,
+                without_test: builds.without_test
+                    && !decl.condition.test_builds_only()
+                    && !child.condition.test_builds_only(),
+                test: builds.test
+                    && decl.condition.may_hold_in_test_build()
+                    && child.condition.may_hold_in_test_build(),
             };
             if !child_builds.without_test && !child_builds.test {
                 continue;

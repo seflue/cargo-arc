@@ -12,165 +12,166 @@ pub(crate) struct ModDecl {
     /// The paths `#[cfg_attr(…, path = …)]` names. Each is an alternative to
     /// the file the declaration loads without it.
     pub(crate) cfg_attr_paths: Vec<CfgAttrPath>,
-    /// In which builds the declaration loads the file it names without a
-    /// `#[cfg_attr]` path.
-    pub(crate) plain_file: PlainFile,
-    /// Whether every declaration of the module stands under `#[cfg(test)]`,
-    /// which makes the module test code with all it holds.
-    pub(crate) cfg_test: bool,
-    /// Whether a test build may load the module: not where the `#[cfg]` of
-    /// every declaration keeps it out of all, as [`holds_in_no_test_build`]
-    /// decides.
-    pub(crate) test_build_may_load: bool,
+    /// Where the declaration loads the file it names without a `#[cfg_attr]`
+    /// path: where none of the paths holds. `None` where only test builds
+    /// load it and tests are left out.
+    pub(crate) plain_file: Option<CfgCondition>,
+    /// Where the `#[cfg]` of one of the module's declarations holds. A
+    /// condition that holds in test builds only makes the module and all it
+    /// holds test code.
+    pub(crate) condition: CfgCondition,
 }
 
 /// A path `#[cfg_attr(predicate, path = …)]` names.
 #[derive(PartialEq)]
 pub(crate) struct CfgAttrPath {
     pub(crate) path: String,
-    /// Whether the predicates on the way to the path, together as under
-    /// `all(…)`, admit it into test builds only, as [`is_cfg_test`] decides
-    /// for a `#[cfg]`.
-    pub(crate) cfg_test: bool,
-    /// Whether the predicates on the way to the path, together as under
-    /// `all(…)`, hold in every build without `test`, as
-    /// [`holds_outside_test`] decides, so that the path replaces the plain
-    /// file there.
-    pub(crate) outside_test: bool,
-    /// The predicates on the way to the path, together as under `all(…)`,
-    /// evaluated in test builds as [`in_test_builds`] does.
-    pub(crate) in_test_builds: Option<bool>,
+    /// Where the predicates on the way to the path hold, together as under
+    /// `all(…)`.
+    pub(crate) condition: CfgCondition,
 }
 
-/// In which builds a `mod` declaration loads the file it names without a
-/// `#[cfg_attr]` path.
+/// Where a cfg condition holds, evaluated by [`evaluate_cfg`] once in the
+/// builds without `test` and once in the test builds.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) enum PlainFile {
-    /// Some build without `test` loads it, as far as the predicates tell.
-    Production,
-    /// A `#[cfg_attr]` path replaces it in every build without `test`.
-    Test,
-    /// As `Test`, and tests are left out.
-    LeftOut,
+pub(crate) struct CfgCondition {
+    without_test: Option<bool>,
+    test: Option<bool>,
 }
 
-/// Whether a cfg predicate holds in every build without `test`: `not(..)`
-/// of a predicate that admits test builds only, `all(..)` whose every
-/// predicate holds so, or `any(..)` with one among its predicates that does.
-/// Every other predicate, `unix` among them, may fail in some build.
-fn holds_outside_test(meta: &syn::Meta) -> bool {
-    use syn::parse::Parser;
-    let nested = |list: &syn::MetaList| {
-        syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated
-            .parse2(list.tokens.clone())
-    };
-    match meta {
-        syn::Meta::List(list) if list.path.is_ident("not") => list
-            .parse_args::<syn::Meta>()
-            .is_ok_and(|predicate| requires_test(&predicate)),
-        syn::Meta::List(list) if list.path.is_ident("all") => {
-            nested(list).is_ok_and(|predicates| predicates.iter().all(holds_outside_test))
-        }
-        syn::Meta::List(list) if list.path.is_ident("any") => {
-            nested(list).is_ok_and(|predicates| predicates.iter().any(holds_outside_test))
-        }
-        _ => false,
-    }
-}
-
-/// Whether a cfg predicate admits test builds only: `test`, `all(..)` with
-/// `test` among its predicates, or `any(..)` whose every predicate admits
-/// test builds only. `any(windows, test)` also builds outside the test
-/// harness and is no test code.
-fn requires_test(meta: &syn::Meta) -> bool {
-    use syn::parse::Parser;
-    let nested = |list: &syn::MetaList| {
-        syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated
-            .parse2(list.tokens.clone())
-    };
-    match meta {
-        syn::Meta::Path(path) => path.is_ident("test"),
-        syn::Meta::List(list) if list.path.is_ident("all") => {
-            nested(list).is_ok_and(|predicates| predicates.iter().any(requires_test))
-        }
-        syn::Meta::List(list) if list.path.is_ident("any") => nested(list)
-            .is_ok_and(|predicates| !predicates.is_empty() && predicates.iter().all(requires_test)),
-        _ => false,
-    }
-}
-
-/// Check whether a `#[cfg]` admits the item into test builds only, as
-/// [`requires_test`] decides for its predicate.
-pub(crate) fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
-    attrs.iter().any(|attr| {
-        if !attr.path().is_ident("cfg") {
-            return false;
-        }
-        attr.parse_args::<syn::Meta>()
-            .is_ok_and(|meta| requires_test(&meta))
-    })
-}
-
-/// Evaluate a cfg predicate in test builds: `Some(true)` where it holds in
-/// every one, `Some(false)` where it holds in none, `None` where the answer
-/// depends on another atom. Only `test` is known; `unix`, a feature and every
-/// other atom are open.
-fn in_test_builds(meta: &syn::Meta) -> Option<bool> {
-    use syn::parse::Parser;
-    let nested = |list: &syn::MetaList| {
-        syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated
-            .parse2(list.tokens.clone())
-            .ok()
-    };
-    let values = |list: &syn::MetaList| {
-        nested(list).map(|predicates| predicates.iter().map(in_test_builds).collect::<Vec<_>>())
-    };
-    match meta {
-        syn::Meta::Path(path) if path.is_ident("test") => Some(true),
-        syn::Meta::List(list) if list.path.is_ident("not") => list
-            .parse_args::<syn::Meta>()
-            .ok()
-            .and_then(|predicate| in_test_builds(&predicate))
-            .map(|value| !value),
-        syn::Meta::List(list) if list.path.is_ident("all") => all_in_test_builds(&values(list)?),
-        syn::Meta::List(list) if list.path.is_ident("any") => {
-            let values = values(list)?;
-            if values.contains(&Some(true)) {
-                Some(true)
-            } else {
-                values
+impl CfgCondition {
+    /// Combine the predicates as `all(…)` does.
+    fn all(predicates: &[syn::Meta]) -> Self {
+        let evaluate = |test| {
+            all_of(
+                predicates
                     .iter()
-                    .all(|value| *value == Some(false))
-                    .then_some(false)
-            }
+                    .map(|predicate| evaluate_cfg(predicate, test)),
+            )
+        };
+        CfgCondition {
+            without_test: evaluate(false),
+            test: evaluate(true),
         }
+    }
+
+    /// Combine the `#[cfg]`s among `attrs` as `all(…)` does, since an item
+    /// needs each to hold. A `#[cfg]` that does not parse is open in every
+    /// build.
+    fn of_attrs(attrs: &[syn::Attribute]) -> Self {
+        let evaluate = |test| {
+            all_of(
+                attrs
+                    .iter()
+                    .filter(|attr| attr.path().is_ident("cfg"))
+                    .map(|attr| {
+                        attr.parse_args::<syn::Meta>()
+                            .ok()
+                            .and_then(|predicate| evaluate_cfg(&predicate, test))
+                    }),
+            )
+        };
+        CfgCondition {
+            without_test: evaluate(false),
+            test: evaluate(true),
+        }
+    }
+
+    /// Combine the conditions as `any(…)` does, as for alternatives that
+    /// load the same file.
+    fn any(conditions: impl IntoIterator<Item = CfgCondition>) -> Self {
+        let (without_test, test): (Vec<_>, Vec<_>) = conditions
+            .into_iter()
+            .map(|condition| (condition.without_test, condition.test))
+            .unzip();
+        CfgCondition {
+            without_test: any_of(without_test),
+            test: any_of(test),
+        }
+    }
+
+    /// Check whether the condition admits test builds only: it holds in no
+    /// build without `test`.
+    pub(crate) fn test_builds_only(self) -> bool {
+        self.without_test == Some(false)
+    }
+
+    /// Check whether the condition may hold in a test build: unless it holds
+    /// in none.
+    pub(crate) fn may_hold_in_test_build(self) -> bool {
+        self.test != Some(false)
+    }
+}
+
+impl std::ops::Not for CfgCondition {
+    type Output = CfgCondition;
+
+    fn not(self) -> CfgCondition {
+        CfgCondition {
+            without_test: self.without_test.map(|holds| !holds),
+            test: self.test.map(|holds| !holds),
+        }
+    }
+}
+
+/// Evaluate a cfg predicate in the builds where the atom `test` is as `test`
+/// says: `Some(true)` where it holds in every one, `Some(false)` where it
+/// holds in none, `None` where the answer depends on another atom. Only
+/// `test` is known; `unix`, a feature and every other atom are open.
+fn evaluate_cfg(predicate: &syn::Meta, test: bool) -> Option<bool> {
+    use syn::parse::Parser;
+    let values = |list: &syn::MetaList| {
+        syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated
+            .parse2(list.tokens.clone())
+            .ok()
+            .map(|predicates| {
+                predicates
+                    .iter()
+                    .map(|predicate| evaluate_cfg(predicate, test))
+                    .collect::<Vec<_>>()
+            })
+    };
+    match predicate {
+        syn::Meta::Path(path) if path.is_ident("test") => Some(test),
+        syn::Meta::List(list) if list.path.is_ident("not") => list
+            .parse_args::<syn::Meta>()
+            .ok()
+            .and_then(|predicate| evaluate_cfg(&predicate, test))
+            .map(|holds| !holds),
+        syn::Meta::List(list) if list.path.is_ident("all") => all_of(values(list)?),
+        syn::Meta::List(list) if list.path.is_ident("any") => any_of(values(list)?),
         _ => None,
     }
 }
 
-/// Combine the values [`in_test_builds`] gives predicates as `all(…)` does:
-/// false where one holds in no test build, true where each holds in every one.
-fn all_in_test_builds(values: &[Option<bool>]) -> Option<bool> {
-    if values.contains(&Some(false)) {
-        Some(false)
-    } else {
-        values
-            .iter()
-            .all(|value| *value == Some(true))
-            .then_some(true)
-    }
+/// Combine values of [`evaluate_cfg`] as `all(…)` does: false where one is
+/// false, true where each is true, open otherwise.
+fn all_of(values: impl IntoIterator<Item = Option<bool>>) -> Option<bool> {
+    values
+        .into_iter()
+        .try_fold(Some(true), |all, value| match value {
+            Some(false) => Err(()),
+            Some(true) => Ok(all),
+            None => Ok(None),
+        })
+        .unwrap_or(Some(false))
 }
 
-/// Check whether a `#[cfg]` keeps the item out of every test build, as
-/// [`in_test_builds`] decides for its predicate: `not(test)` and whatever
-/// holds only where `test` does not.
+/// Combine values of [`evaluate_cfg`] as `any(…)` does: true where one is
+/// true, false where each is false, open otherwise.
+fn any_of(values: impl IntoIterator<Item = Option<bool>>) -> Option<bool> {
+    all_of(values.into_iter().map(|value| value.map(|holds| !holds))).map(|holds| !holds)
+}
+
+/// Check whether a `#[cfg]` admits the item into test builds only.
+pub(crate) fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
+    CfgCondition::of_attrs(attrs).test_builds_only()
+}
+
+/// Check whether a `#[cfg]` keeps the item out of every test build:
+/// `not(test)` and whatever holds only where `test` does not.
 pub(crate) fn holds_in_no_test_build(attrs: &[syn::Attribute]) -> bool {
-    attrs.iter().any(|attr| {
-        attr.path().is_ident("cfg")
-            && attr
-                .parse_args::<syn::Meta>()
-                .is_ok_and(|meta| in_test_builds(&meta) == Some(false))
-    })
+    !CfgCondition::of_attrs(attrs).may_hold_in_test_build()
 }
 
 /// Extract the value of a `#[path = "..."]` attribute, if present.
@@ -250,11 +251,7 @@ impl CfgAttrPath {
     fn under(path: String, predicates: &[syn::Meta]) -> Self {
         CfgAttrPath {
             path,
-            cfg_test: predicates.iter().any(requires_test),
-            outside_test: predicates.iter().all(holds_outside_test),
-            in_test_builds: all_in_test_builds(
-                &predicates.iter().map(in_test_builds).collect::<Vec<_>>(),
-            ),
+            condition: CfgCondition::all(predicates),
         }
     }
 }
@@ -268,33 +265,26 @@ pub(crate) fn extract_mod_declarations(syntax: &syn::File, include_tests: bool) 
             if item_mod.content.is_some() {
                 continue;
             }
-            let cfg_test = is_cfg_test(&item_mod.attrs);
+            let condition = CfgCondition::of_attrs(&item_mod.attrs);
             // Skip #[cfg(test)] modules unless --include-tests was passed
-            if !include_tests && cfg_test {
+            if !include_tests && condition.test_builds_only() {
                 continue;
             }
-            let test_build_may_load = !holds_in_no_test_build(&item_mod.attrs);
             let name = item_mod.ident.to_string();
             let explicit_path = extract_path_attribute(&item_mod.attrs);
             let mut cfg_attr_paths = extract_cfg_attr_paths(&item_mod.attrs);
             if !include_tests {
-                cfg_attr_paths.retain(|path| !path.cfg_test);
+                cfg_attr_paths.retain(|path| !path.condition.test_builds_only());
             }
-            let plain_file = if !cfg_attr_paths.iter().any(|path| path.outside_test) {
-                PlainFile::Production
-            } else if include_tests {
-                PlainFile::Test
-            } else {
-                PlainFile::LeftOut
-            };
+            let plain = !CfgCondition::any(cfg_attr_paths.iter().map(|path| path.condition));
+            let plain_file = (include_tests || !plain.test_builds_only()).then_some(plain);
             // `mod foo;` repeated under complementary cfgs names one file
             if let Some(known) = decls.iter_mut().find(|d| {
                 d.name == name
                     && d.explicit_path == explicit_path
                     && d.cfg_attr_paths == cfg_attr_paths
             }) {
-                known.cfg_test &= cfg_test;
-                known.test_build_may_load |= test_build_may_load;
+                known.condition = CfgCondition::any([known.condition, condition]);
                 continue;
             }
             decls.push(ModDecl {
@@ -302,8 +292,7 @@ pub(crate) fn extract_mod_declarations(syntax: &syn::File, include_tests: bool) 
                 explicit_path,
                 cfg_attr_paths,
                 plain_file,
-                cfg_test,
-                test_build_may_load,
+                condition,
             });
         }
     }
@@ -335,13 +324,11 @@ pub(crate) struct ModuleFile {
 /// A file a `mod` declaration loads.
 pub(crate) struct DeclaredFile {
     pub(crate) file: ModuleFile,
-    /// Whether only test builds load the file, which makes it test code with
-    /// all it holds.
-    pub(crate) cfg_test: bool,
-    /// Whether a test build may load the file: the file without a path
-    /// unless a `#[cfg_attr]` path holds in every test build, a path's file
-    /// unless its predicates hold in none.
-    pub(crate) test_build_may_load: bool,
+    /// Where the declaration loads the file: the file without a path where
+    /// none of the `#[cfg_attr]` paths holds, a path's file where its
+    /// predicates hold, either where both name it. A condition that holds in
+    /// test builds only makes the file and all it holds test code.
+    pub(crate) condition: CfgCondition,
 }
 
 /// The files a `mod` declaration in `file_path` loads. A `#[path]`, plain or
@@ -356,52 +343,40 @@ pub(crate) fn declared_files(
     decl: &ModDecl,
 ) -> Vec<DeclaredFile> {
     let dir = file_path.parent().unwrap_or(Path::new("."));
-    let by_path = |path: &String, cfg_test: bool, test_build_may_load: bool| {
+    let by_path = |path: &String, condition: CfgCondition| {
         let path = dir.join(path);
         path.exists().then_some(DeclaredFile {
             file: ModuleFile {
                 path,
                 owns_directory: true,
             },
-            cfg_test,
-            test_build_may_load,
+            condition,
         })
     };
-    let plain_cfg_test = decl.plain_file == PlainFile::Test;
-    let plain_test_build_may_load = !decl
+    let plain = decl
+        .plain_file
+        .and_then(|condition| match &decl.explicit_path {
+            Some(path) => by_path(path, condition),
+            None => resolve_mod_path(&child_resolve_dir(file_path, owns_directory), &decl.name)
+                .map(|path| DeclaredFile {
+                    file: ModuleFile {
+                        path,
+                        owns_directory: false,
+                    },
+                    condition,
+                }),
+        });
+    let mut files: Vec<DeclaredFile> = plain.into_iter().collect();
+    for file in decl
         .cfg_attr_paths
         .iter()
-        .any(|cfg_attr| cfg_attr.in_test_builds == Some(true));
-    let plain = match &decl.explicit_path {
-        _ if decl.plain_file == PlainFile::LeftOut => None,
-        Some(path) => by_path(path, plain_cfg_test, plain_test_build_may_load),
-        None => resolve_mod_path(&child_resolve_dir(file_path, owns_directory), &decl.name).map(
-            |path| DeclaredFile {
-                file: ModuleFile {
-                    path,
-                    owns_directory: false,
-                },
-                cfg_test: plain_cfg_test,
-                test_build_may_load: plain_test_build_may_load,
-            },
-        ),
-    };
-    let mut files: Vec<DeclaredFile> = plain.into_iter().collect();
-    for file in decl.cfg_attr_paths.iter().filter_map(|cfg_attr| {
-        by_path(
-            &cfg_attr.path,
-            cfg_attr.cfg_test,
-            cfg_attr.in_test_builds != Some(false),
-        )
-    }) {
+        .filter_map(|cfg_attr| by_path(&cfg_attr.path, cfg_attr.condition))
+    {
         match files
             .iter_mut()
             .find(|known| known.file.path == file.file.path)
         {
-            Some(known) => {
-                known.cfg_test &= file.cfg_test;
-                known.test_build_may_load |= file.test_build_may_load;
-            }
+            Some(known) => known.condition = CfgCondition::any([known.condition, file.condition]),
             None => files.push(file),
         }
     }
@@ -515,6 +490,13 @@ mod tests {
         }
 
         #[test]
+        fn test_is_cfg_test_where_a_double_negation_admits_test_builds_only() {
+            let attrs = parse_attrs("#[cfg(not(not(test)))] mod x;");
+            assert!(is_cfg_test(&attrs));
+            assert!(!holds_in_no_test_build(&attrs));
+        }
+
+        #[test]
         fn test_holds_in_no_test_build() {
             let cases = [
                 ("#[cfg(test)] mod x;", false),
@@ -549,24 +531,30 @@ mod tests {
             let decls = extract_mod_declarations(&syntax, true);
             let cfg_test: Vec<_> = decls
                 .iter()
-                .map(|d| (d.name.as_str(), d.cfg_test))
+                .map(|d| (d.name.as_str(), d.condition.test_builds_only()))
                 .collect();
             assert_eq!(cfg_test, [("both", false), ("only", true)]);
         }
 
         #[test]
-        fn test_in_test_builds_evaluates_test_and_leaves_other_atoms_open() {
+        fn test_evaluate_cfg_evaluates_test_and_leaves_other_atoms_open() {
+            // (predicate, in test builds, in builds without test)
             let cases = [
-                ("test", Some(true)),
-                ("not(test)", Some(false)),
-                ("any(unix, test)", Some(true)),
-                ("all(unix, test)", None),
-                ("not(any(unix, test))", Some(false)),
-                ("unix", None),
+                ("test", Some(true), Some(false)),
+                ("not(test)", Some(false), Some(true)),
+                ("any(unix, test)", Some(true), None),
+                ("all(unix, test)", None, Some(false)),
+                ("not(any(unix, test))", Some(false), None),
+                ("not(not(test))", Some(true), Some(false)),
+                ("unix", None, None),
             ];
-            for (predicate, expected) in cases {
+            for (predicate, test, without_test) in cases {
                 let meta: syn::Meta = syn::parse_str(predicate).unwrap();
-                assert_eq!(in_test_builds(&meta), expected, "{predicate}");
+                assert_eq!(
+                    (evaluate_cfg(&meta, true), evaluate_cfg(&meta, false)),
+                    (test, without_test),
+                    "{predicate}"
+                );
             }
         }
 
@@ -579,7 +567,7 @@ mod tests {
             .unwrap();
             let loaded: Vec<_> = extract_mod_declarations(&syntax, true)
                 .into_iter()
-                .map(|d| (d.name, d.test_build_may_load))
+                .map(|d| (d.name, d.condition.may_hold_in_test_build()))
                 .collect();
             let owned = |name: &str, loaded| (name.to_string(), loaded);
             assert_eq!(
@@ -619,7 +607,7 @@ mod tests {
                             let name = declared.file.path.file_name().unwrap();
                             (
                                 name.to_string_lossy().into_owned(),
-                                declared.test_build_may_load,
+                                declared.condition.may_hold_in_test_build(),
                             )
                         })
                         .collect()
@@ -676,7 +664,7 @@ mod tests {
                 extract_mod_declarations(&syntax, include_tests)[0]
                     .cfg_attr_paths
                     .iter()
-                    .map(|p| (p.path.clone(), p.cfg_test))
+                    .map(|p| (p.path.clone(), p.condition.test_builds_only()))
                     .collect::<Vec<_>>()
             };
             let owned = |p: &str, cfg_test| (p.to_string(), cfg_test);
@@ -706,31 +694,35 @@ mod tests {
                 #[cfg_attr(not(test), allow(dead_code))] mod no_path;
                 #[cfg_attr(not(test), cfg_attr(not(test), path = "p.rs"))] mod nested_outside;
                 #[cfg_attr(not(test), cfg_attr(unix, path = "p.rs"))] mod nested_unix;
-                #[cfg_attr(unix, cfg_attr(not(test), path = "p.rs"))] mod nested_unix_outer;"#;
+                #[cfg_attr(unix, cfg_attr(not(test), path = "p.rs"))] mod nested_unix_outer;
+                #[cfg_attr(not(not(not(test))), path = "p.rs")] mod double_negation;"#;
             let syntax: syn::File = syn::parse_str(source).unwrap();
             let plain = |include_tests| {
                 extract_mod_declarations(&syntax, include_tests)
                     .into_iter()
-                    .map(|d| (d.name, d.plain_file))
+                    .map(|d| (d.name, d.plain_file.map(CfgCondition::test_builds_only)))
                     .collect::<Vec<_>>()
             };
+            // Some build without `test` loads the plain file.
+            let production = Some(false);
             let owned = |name: &str, plain_file| (name.to_string(), plain_file);
             let expected = |test_only| {
                 vec![
                     owned("not_test", test_only),
                     owned("all_outside", test_only),
                     owned("any_outside", test_only),
-                    owned("all_unix", PlainFile::Production),
-                    owned("not_unix", PlainFile::Production),
-                    owned("not_any", PlainFile::Production),
-                    owned("no_path", PlainFile::Production),
+                    owned("all_unix", production),
+                    owned("not_unix", production),
+                    owned("not_any", production),
+                    owned("no_path", production),
                     owned("nested_outside", test_only),
-                    owned("nested_unix", PlainFile::Production),
-                    owned("nested_unix_outer", PlainFile::Production),
+                    owned("nested_unix", production),
+                    owned("nested_unix_outer", production),
+                    owned("double_negation", test_only),
                 ]
             };
-            assert_eq!(plain(true), expected(PlainFile::Test));
-            assert_eq!(plain(false), expected(PlainFile::LeftOut));
+            assert_eq!(plain(true), expected(Some(true)));
+            assert_eq!(plain(false), expected(None));
         }
     }
 

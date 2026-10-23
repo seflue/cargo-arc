@@ -268,11 +268,12 @@ fn walk_declared_module(
     let mut alternatives = declared_files(&parent.path, parent.owns_directory, decl)
         .into_iter()
         .map(|declared| {
-            let child_ctx = if decl.cfg_test || declared.cfg_test {
-                &test_ctx
-            } else {
-                ctx
-            };
+            let child_ctx =
+                if decl.condition.test_builds_only() || declared.condition.test_builds_only() {
+                    &test_ctx
+                } else {
+                    ctx
+                };
             walk_module_syn(
                 child_ctx,
                 &declared.file.path,
