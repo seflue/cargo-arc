@@ -320,6 +320,8 @@ impl ModuleExportInfo {
 pub(crate) enum UseCondition {
     /// Test builds only, as `is_cfg_test` decides.
     TestBuilds,
+    /// No test build, as `holds_in_no_test_build` decides.
+    NoTestBuild,
     /// Some builds, which syn cannot name.
     SomeBuilds,
 }
@@ -327,8 +329,10 @@ pub(crate) enum UseCondition {
 /// The private `use` items under `#[cfg]` that bring a name in a resolution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CountedUses {
-    /// Every one, as for a reference in test code.
+    /// Every one, whatever the build.
     Every,
+    /// All but those of no test build, as for a reference in test code.
+    InTest,
     /// All but those of test builds only, as for a reference in production
     /// code.
     OutsideTest,
@@ -342,7 +346,7 @@ impl CountedUses {
         if context.kind == UsageKind::Production {
             CountedUses::OutsideTest
         } else {
-            CountedUses::Every
+            CountedUses::InTest
         }
     }
 
@@ -351,7 +355,8 @@ impl CountedUses {
     fn count(self, condition: Option<&UseCondition>) -> bool {
         match (self, condition) {
             (_, None) | (CountedUses::Every, _) => true,
-            (CountedUses::OutsideTest, Some(condition)) => *condition == UseCondition::SomeBuilds,
+            (CountedUses::InTest, Some(condition)) => *condition != UseCondition::NoTestBuild,
+            (CountedUses::OutsideTest, Some(condition)) => *condition != UseCondition::TestBuilds,
             (CountedUses::Unconditional, Some(_)) => false,
         }
     }
@@ -848,7 +853,8 @@ fn follow_reexports(
         // same crate. A descendant naming the symbol through this ancestor
         // really depends on the definer, in the same crate or another
         // workspace crate. A private `use` of test builds only binds nothing
-        // for a reference in production code.
+        // for a reference in production code, one of no test build nothing
+        // for a reference in test code.
         // Tier 1c: Bound elsewhere, visible only to descendants like Tier 1b.
         let binding = visible_binding(module_info, item, counted, |visibility| {
             visible(&dep.target_package, visibility)
@@ -926,8 +932,11 @@ fn follow_reexports(
 
 /// Whether a reference to `item` through `module_info` names no definer syn
 /// can place, and so produces no edge: private `use` items bind `item` to
-/// different targets and `binding` is one of them, or, without a `binding`,
-/// a `use` that `visible` lets through binds `item` outside the crate.
+/// different targets and `binding` is one of them or missing, or, without a
+/// `binding`, a `use` that `visible` lets through binds `item` outside the
+/// crate. A `binding` goes missing where its `use` is in builds the reference
+/// is not; which of the other targets the reference has, the one `use` that
+/// `private_uses` keeps does not tell.
 fn places_no_definer(
     module_info: &ModuleExportInfo,
     item: &str,
@@ -938,8 +947,26 @@ fn places_no_definer(
         Some((_, private_use)) => {
             private_use && module_info.private_uses_of_differing_targets.contains(item)
         }
-        None => module_info.elsewhere.get(item).is_some_and(visible),
+        None => {
+            binds_to_differing_targets(module_info, item, &visible)
+                || module_info.elsewhere.get(item).is_some_and(visible)
+        }
     }
+}
+
+/// Whether private `use` items of `module_info` bind `item` to different
+/// targets, the one `private_uses` keeps visible as `visible` decides,
+/// whatever builds it is in.
+fn binds_to_differing_targets(
+    module_info: &ModuleExportInfo,
+    item: &str,
+    visible: impl Fn(&Visibility) -> bool,
+) -> bool {
+    module_info.private_uses_of_differing_targets.contains(item)
+        && module_info
+            .private_uses
+            .get(item)
+            .is_some_and(|target| visible(&target.visibility))
 }
 
 /// The binding of `item` in `module_info` that `visible` lets through: a
@@ -1266,7 +1293,9 @@ fn module_is_visible(
 /// only what its holder sees, so a chain only what every holder on it sees,
 /// and what `importer_module` does not see, it does not bring there. Of the
 /// private `use` items under `#[cfg]`, only those `counted` counts bring a
-/// symbol. A module in `visited`, by crate and module path, brings nothing
+/// symbol, except where they bind it to different targets: the module holds
+/// it then in whichever build, and a glob of the module does not go on to
+/// another. A module in `visited`, by crate and module path, brings nothing
 /// more.
 fn module_exports_symbol(
     reexport_map: &ReExportMap,
@@ -1301,6 +1330,7 @@ fn module_exports_symbol(
         return true;
     }
     let bound = visible_binding(info, symbol, counted, visible).is_some()
+        || binds_to_differing_targets(info, symbol, visible)
         || info.elsewhere.get(symbol).is_some_and(visible);
     if bound {
         return true;

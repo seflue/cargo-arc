@@ -11,7 +11,9 @@ use syn::spanned::Spanned;
 use super::packages::{ModulePathMap, PackageExportMap, WorkspacePackages, normalize_crate_name};
 use crate::model::{DefKind, Definition, EdgeContext, PackageInfo};
 
-use super::mod_resolver::{ModuleFile, declared_files, extract_mod_declarations, is_cfg_test};
+use super::mod_resolver::{
+    ModuleFile, declared_files, extract_mod_declarations, holds_in_no_test_build, is_cfg_test,
+};
 use super::use_parser::{
     AssociatedItems, DefinedItem, GlobSource, Meaning, ModuleExportInfo, ReExportMap,
     ReExportTarget, ResolutionContext, RootReExports, UseCondition, Visibility,
@@ -470,11 +472,14 @@ fn collect_use_reexports(
 }
 
 /// The builds a `use` with the attributes `attrs` is in, or `None` for every
-/// build: test builds only under a `#[cfg]` that admits nothing else, some
-/// builds under any other `#[cfg]`.
+/// build: test builds only under a `#[cfg]` that admits nothing else, no test
+/// build under a `#[cfg]` that keeps it out of all, some builds under any
+/// other `#[cfg]`.
 fn use_condition(attrs: &[syn::Attribute]) -> Option<UseCondition> {
     if is_cfg_test(attrs) {
         Some(UseCondition::TestBuilds)
+    } else if holds_in_no_test_build(attrs) {
+        Some(UseCondition::NoTestBuild)
     } else if attrs.iter().any(|attr| attr.path().is_ident("cfg")) {
         Some(UseCondition::SomeBuilds)
     } else {
