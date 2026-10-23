@@ -5,3 +5,5 @@ mod user1;
 mod user2;
 mod selfuse;
 mod selfunused;
+#[cfg(test)]
+mod tests;

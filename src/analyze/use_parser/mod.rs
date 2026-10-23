@@ -5,7 +5,7 @@ use crate::model::{
     DefKind, Definition, DependencyRef, EdgeContext, EntryKind, SymbolUse, TestKind, UsageKind,
     UseCategory,
 };
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::path::Path;
@@ -368,7 +368,11 @@ impl CountedUses {
 #[derive(Debug, Clone)]
 pub(crate) struct RootReExports {
     pub(crate) kind: EntryKind,
+    /// The modules the root's build without `test` loads.
     pub(crate) modules: HashMap<String, ModuleExportInfo>,
+    /// The modules the root's test build loads, where it loads other files
+    /// than the build without `test`. Collected only when test code is read.
+    pub(crate) test_build_modules: Option<HashMap<String, ModuleExportInfo>>,
 }
 
 /// Crate name → one [`RootReExports`] per entry file, in `entry_files` order.
@@ -376,11 +380,16 @@ pub(crate) struct RootReExports {
 /// A lib and a bin root of one package share the module tree but not their
 /// root's exports. Another package sees only the lib root, the only one it can
 /// depend on. The package of the file being resolved sees the root whose tree
-/// holds the file, set with [`ReExportMap::for_root`].
+/// holds the file, set with [`ReExportMap::for_root`]. Test code of that root
+/// sees the root as its test build loads it, set with
+/// [`ReExportMap::test_build`]; every other root and package it sees as built
+/// without `test`, which is how its test build compiles them.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct ReExportMap {
     packages: Arc<HashMap<String, Vec<RootReExports>>>,
     own_root: Option<(String, usize)>,
+    /// Whether the own root is seen as its test build loads it.
+    test_build: bool,
 }
 
 impl ReExportMap {
@@ -389,6 +398,7 @@ impl ReExportMap {
         Self {
             packages: Arc::clone(&self.packages),
             own_root: Some((crate_name.to_string(), root)),
+            test_build: false,
         }
     }
 
@@ -398,7 +408,51 @@ impl ReExportMap {
         Self {
             packages: Arc::clone(&self.packages),
             own_root: None,
+            test_build: false,
         }
+    }
+
+    /// The same map, seen from the test build of the own root, or `None`
+    /// where the root has no modules of its test build: it then loads the
+    /// files its build without `test` does, or test code is not read.
+    pub(crate) fn test_build(&self) -> Option<Self> {
+        let (own, index) = self.own_root.as_ref()?;
+        self.packages
+            .get(own)?
+            .get(*index)?
+            .test_build_modules
+            .as_ref()?;
+        Some(Self {
+            packages: Arc::clone(&self.packages),
+            own_root: self.own_root.clone(),
+            test_build: true,
+        })
+    }
+
+    /// The same map, with the own root seen as built without `test`, as a
+    /// crate that depends on it sees it.
+    pub(crate) fn build_without_test(&self) -> Self {
+        Self {
+            packages: Arc::clone(&self.packages),
+            own_root: self.own_root.clone(),
+            test_build: false,
+        }
+    }
+
+    /// Whether the own root is seen as its test build loads it.
+    pub(crate) fn is_test_build(&self) -> bool {
+        self.test_build
+    }
+
+    /// Whether a resolution that reaches `crate_name` leaves the test build:
+    /// a crate other than the own root's is compiled against the own root
+    /// built without `test`, so the rest of the way reads that build.
+    fn leaves_test_build_at(&self, crate_name: &str) -> bool {
+        self.test_build
+            && self
+                .own_root
+                .as_ref()
+                .is_some_and(|(own, _)| own != crate_name)
     }
 
     /// The export info of `crate_name`'s modules, as this map sees them.
@@ -422,11 +476,18 @@ impl ReExportMap {
         in_lib_view: bool,
     ) -> Option<&HashMap<String, ModuleExportInfo>> {
         let roots = self.packages.get(crate_name)?;
-        let root = match &self.own_root {
-            Some((own, index)) if !in_lib_view && own == crate_name => roots.get(*index)?,
-            _ => roots.iter().find(|root| root.kind == EntryKind::Lib)?,
-        };
-        Some(&root.modules)
+        match &self.own_root {
+            Some((own, index)) if !in_lib_view && own == crate_name => {
+                let root = roots.get(*index)?;
+                let test_build_modules =
+                    root.test_build_modules.as_ref().filter(|_| self.test_build);
+                Some(test_build_modules.unwrap_or(&root.modules))
+            }
+            _ => roots
+                .iter()
+                .find(|root| root.kind == EntryKind::Lib)
+                .map(|root| &root.modules),
+        }
     }
 
     /// Look up the export info of the module a dependency points at, where
@@ -476,6 +537,7 @@ impl FromIterator<(String, Vec<RootReExports>)> for ReExportMap {
         Self {
             packages: Arc::new(iter.into_iter().collect()),
             own_root: None,
+            test_build: false,
         }
     }
 }
@@ -490,6 +552,7 @@ impl FromIterator<(String, HashMap<String, ModuleExportInfo>)> for ReExportMap {
                 let lib = RootReExports {
                     kind: EntryKind::Lib,
                     modules,
+                    test_build_modules: None,
                 };
                 (crate_name, vec![lib])
             })
@@ -680,6 +743,15 @@ fn glob_may_bring_a_trait(
     module_paths: &ModulePathMap,
     visited: &mut HashSet<(String, String)>,
 ) -> bool {
+    if reexport_map.leaves_test_build_at(&dep.target_package) {
+        return glob_may_bring_a_trait(
+            dep,
+            holder,
+            &reexport_map.build_without_test(),
+            module_paths,
+            visited,
+        );
+    }
     if !visited.insert((dep.target_package.clone(), dep.target_module.clone())) {
         return false;
     }
@@ -810,6 +882,8 @@ fn follow_reexports(
     passed_on: Option<&PassedOn>,
     meaning: Meaning,
 ) -> bool {
+    let without_test = OnceCell::new();
+    let mut reexport_map = reexport_map;
     let Some(mut crate_exports) = reexport_map.get(&dep.target_package) else {
         return true;
     };
@@ -818,21 +892,14 @@ fn follow_reexports(
     let mut use_holders: Vec<Holder> = Vec::new();
     let in_lib_view = dep.in_lib_view;
     let counted = CountedUses::for_reference(&dep.context);
-    let visible = |crate_name: &str, visibility: &Visibility| {
-        reexport_map.is_visible(crate_name, in_lib_view, visibility, importer_module)
-    };
-    let ends_on_module = |dep: &mut DependencyRef, target: &ReExportTarget| {
-        end_on_module(
-            dep,
-            target,
-            reexport_map,
-            module_paths,
-            importer_module,
-            meaning,
-        )
+    let visible = |map: &ReExportMap, crate_name: &str, visibility: &Visibility| {
+        map.is_visible(crate_name, in_lib_view, visibility, importer_module)
     };
 
     loop {
+        if reexport_map.leaves_test_build_at(&dep.target_package) {
+            reexport_map = without_test.get_or_init(|| reexport_map.build_without_test());
+        }
         if !visited.insert((dep.target_package.clone(), dep.target_module.clone())) {
             break;
         }
@@ -857,15 +924,22 @@ fn follow_reexports(
         // for a reference in test code.
         // Tier 1c: Bound elsewhere, visible only to descendants like Tier 1b.
         let binding = visible_binding(module_info, item, counted, |visibility| {
-            visible(&dep.target_package, visibility)
+            visible(reexport_map, &dep.target_package, visibility)
         });
         if places_no_definer(module_info, item, binding, |visibility| {
-            visible(&dep.target_package, visibility)
+            visible(reexport_map, &dep.target_package, visibility)
         }) {
             return false;
         }
         if let Some((target, private_use)) = binding {
-            if ends_on_module(dep, target) {
+            if end_on_module(
+                dep,
+                target,
+                reexport_map,
+                module_paths,
+                importer_module,
+                meaning,
+            ) {
                 break;
             }
             if private_use {
@@ -1307,6 +1381,17 @@ fn module_exports_symbol(
     counted: CountedUses,
 ) -> bool {
     let crate_name = module.crate_name;
+    if reexport_map.leaves_test_build_at(crate_name) {
+        return module_exports_symbol(
+            &reexport_map.build_without_test(),
+            module,
+            symbol,
+            importer_module,
+            holders,
+            visited,
+            counted,
+        );
+    }
     if !visited.insert((crate_name.to_string(), module.path.to_string())) {
         return false;
     }
@@ -1708,6 +1793,7 @@ macro_rules! impl_binding_region_visits {
 }
 
 /// One `use` item with what its position says about it.
+#[derive(Clone)]
 pub(crate) struct CollectedUse {
     pub(crate) item: syn::ItemUse,
     pub(crate) context: EdgeContext,
@@ -1727,6 +1813,21 @@ impl Deref for CollectedUses {
 
     fn deref(&self) -> &Self::Target {
         &self.items
+    }
+}
+
+impl CollectedUses {
+    /// The `use` items whose context `keep` accepts, in the same regions.
+    fn retaining(&self, keep: impl Fn(&EdgeContext) -> bool) -> Self {
+        Self {
+            items: self
+                .items
+                .iter()
+                .filter(|collected| keep(&collected.context))
+                .cloned()
+                .collect(),
+            regions: self.regions.clone(),
+        }
     }
 }
 
@@ -1842,7 +1943,7 @@ impl Meaning {
 }
 
 /// One path reference with what its position says about it.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct PathRef {
     pub(crate) path: String,
     pub(crate) line: usize,
@@ -1952,6 +2053,22 @@ impl Deref for CollectedPathRefs {
 
     fn deref(&self) -> &Self::Target {
         &self.refs
+    }
+}
+
+impl CollectedPathRefs {
+    /// The references whose context `keep` accepts.
+    fn retaining(&self, keep: impl Fn(&EdgeContext) -> bool) -> Self {
+        Self {
+            refs: self
+                .refs
+                .iter()
+                .filter(|path_ref| keep(&path_ref.context))
+                .cloned()
+                .collect(),
+            #[cfg(test)]
+            regions: self.regions.clone(),
+        }
     }
 }
 
@@ -3940,11 +4057,75 @@ pub(crate) fn parse_file_dependencies(
     base_context: EdgeContext,
 ) -> Vec<DependencyRef> {
     let use_items = collect_all_use_items(syntax, base_context.clone());
-    let bindings = FileBindings::of(syntax, &use_items, ctx);
-    let use_deps = parse_workspace_dependencies(&use_items, ctx, &bindings);
-
     let path_refs = collect_all_path_refs(syntax, base_context);
-    let path_deps = parse_path_ref_dependencies(&path_refs, ctx, &bindings);
+    let is_production = |context: &EdgeContext| context.kind == UsageKind::Production;
+    let holds_test_code = use_items
+        .iter()
+        .any(|collected| !is_production(&collected.context))
+        || path_refs
+            .iter()
+            .any(|path_ref| !is_production(&path_ref.context));
+    let test_build = (!ctx.reexport_map.is_test_build() && holds_test_code)
+        .then(|| ctx.reexport_map.test_build())
+        .flatten();
+    let Some(test_build) = test_build else {
+        return resolve_file_dependencies(syntax, ctx, ctx, &use_items, &use_items, &path_refs);
+    };
+    // Test code of the file is compiled in the root's test build, which loads
+    // other files: its references resolve there, and the production code's
+    // in the build without `test`. Each pass notes in `passed_on` only what
+    // it keeps.
+    let production_uses = use_items.retaining(is_production);
+    let mut deps = resolve_file_dependencies(
+        syntax,
+        ctx,
+        ctx,
+        &production_uses,
+        &production_uses,
+        &path_refs.retaining(is_production),
+    );
+    let test_ctx = ResolutionContext {
+        reexport_map: &test_build,
+        ..*ctx
+    };
+    let bindings_ctx = ResolutionContext {
+        passed_on: None,
+        ..test_ctx
+    };
+    let test_deps = resolve_file_dependencies(
+        syntax,
+        &test_ctx,
+        &bindings_ctx,
+        &use_items,
+        &use_items.retaining(|context| !is_production(context)),
+        &path_refs.retaining(|context| !is_production(context)),
+    );
+    // A glob in production code that no test reference takes a name from
+    // comes back from the second pass with its `*`; the first pass decides it.
+    let mut seen = DependencyRef::build_seen_index(&deps);
+    for dep in test_deps
+        .into_iter()
+        .filter(|dep| !is_production(&dep.context))
+    {
+        DependencyRef::dedup_push(&mut deps, &mut seen, dep);
+    }
+    deps
+}
+
+/// Resolve the `use` items `dep_uses` and the references `path_refs` of one
+/// file against the bindings that `bound_uses`, resolved in `bindings_ctx`,
+/// give the file.
+fn resolve_file_dependencies(
+    syntax: &syn::File,
+    ctx: &ResolutionContext,
+    bindings_ctx: &ResolutionContext,
+    bound_uses: &CollectedUses,
+    dep_uses: &CollectedUses,
+    path_refs: &CollectedPathRefs,
+) -> Vec<DependencyRef> {
+    let bindings = FileBindings::of(syntax, bound_uses, bindings_ctx);
+    let use_deps = parse_workspace_dependencies(dep_uses, ctx, &bindings);
+    let path_deps = parse_path_ref_dependencies(path_refs, ctx, &bindings);
 
     // A private `use` of a module whose name a path resolved through carries
     // no symbol of its own; the uses through it carry theirs.
