@@ -1,0 +1,7 @@
+[package]
+name = "gp"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+gq = { path = "../gq" }

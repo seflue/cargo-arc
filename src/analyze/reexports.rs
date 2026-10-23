@@ -11,11 +11,11 @@ use syn::spanned::Spanned;
 use super::packages::{ModulePathMap, PackageExportMap, WorkspacePackages, normalize_crate_name};
 use crate::model::{DefKind, Definition, EdgeContext, PackageInfo};
 
-use super::mod_resolver::{ModuleFile, declared_files, extract_mod_declarations};
+use super::mod_resolver::{ModuleFile, declared_files, extract_mod_declarations, is_cfg_test};
 use super::use_parser::{
     AssociatedItems, DefinedItem, GlobSource, Meaning, ModuleExportInfo, ReExportMap,
-    ReExportTarget, ResolutionContext, RootReExports, Visibility, is_reexport_visibility,
-    resolve_single_path, resolve_use_tree,
+    ReExportTarget, ResolutionContext, RootReExports, UseCondition, Visibility,
+    is_reexport_visibility, resolve_single_path, resolve_use_tree,
 };
 
 /// Invariant parameters shared across the recursive re-export walk.
@@ -391,6 +391,7 @@ fn collect_use_reexports(
 
     let res_ctx = resolution_context(ctx, source_file, module_path);
     let visibility = Visibility::of(&use_item.vis, module_path);
+    let condition = use_condition(&use_item.attrs);
 
     for (alias_path, original_path) in alias_paths.iter().zip(original_paths.iter()) {
         let Some(mut dep) = resolve_single_path(
@@ -459,12 +460,25 @@ fn collect_use_reexports(
                 visibility: visibility.clone(),
             };
             if private {
-                info.private_uses.insert(alias_name.to_string(), target);
+                info.bind_privately(alias_name.to_string(), target, condition);
             } else {
                 info.explicit_reexports
                     .insert(alias_name.to_string(), target);
             }
         }
+    }
+}
+
+/// The builds a `use` with the attributes `attrs` is in, or `None` for every
+/// build: test builds only under a `#[cfg]` that admits nothing else, some
+/// builds under any other `#[cfg]`.
+fn use_condition(attrs: &[syn::Attribute]) -> Option<UseCondition> {
+    if is_cfg_test(attrs) {
+        Some(UseCondition::TestBuilds)
+    } else if attrs.iter().any(|attr| attr.path().is_ident("cfg")) {
+        Some(UseCondition::SomeBuilds)
+    } else {
+        None
     }
 }
 
