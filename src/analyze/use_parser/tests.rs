@@ -1217,6 +1217,7 @@ use crate::graph;
             &syn::parse_file(source).unwrap(),
             &ctx,
             EdgeContext::production(),
+            true,
             &mut PassedOn::default(),
         )
     }
@@ -3462,6 +3463,7 @@ mod reexport_resolution_tests {
             &syn::parse_file("use core_crate::util::helper;\nfn f() { helper(); }").unwrap(),
             &ctx,
             EdgeContext::production(),
+            true,
             &mut PassedOn::default(),
         );
 
@@ -3554,6 +3556,7 @@ mod reexport_resolution_tests {
             &syn::parse_file(source).unwrap(),
             &ctx,
             EdgeContext::production(),
+            true,
             &mut PassedOn::default(),
         )
         .into_iter()
@@ -4746,6 +4749,7 @@ mod file_binding_tests {
             &syn::parse_file(source).unwrap(),
             &ctx,
             EdgeContext::production(),
+            true,
             &mut PassedOn::default(),
         );
         assert!(
@@ -4792,6 +4796,7 @@ mod file_binding_tests {
             &syn::parse_file(source).unwrap(),
             &ctx,
             EdgeContext::production(),
+            true,
             &mut PassedOn::default(),
         );
         assert!(
@@ -4864,6 +4869,7 @@ mod file_binding_tests {
             &syn::parse_file(&source).unwrap(),
             &ctx,
             EdgeContext::production(),
+            true,
             &mut PassedOn::default(),
         );
         assert_eq!(
@@ -4893,6 +4899,7 @@ mod file_binding_tests {
             &syn::parse_file("pub use record::Record;\npub enum Value { Record(Record) }").unwrap(),
             &ctx,
             EdgeContext::production(),
+            true,
             &mut PassedOn::default(),
         );
         let record: Vec<_> = deps
@@ -5061,6 +5068,10 @@ mod use_category_tests {
     static VOCAB_MAP: LazyLock<ReExportMap> = LazyLock::new(vocab_map);
 
     fn deps_of(source: &str) -> Vec<DependencyRef> {
+        vocab_user_deps(source, true)
+    }
+
+    fn vocab_user_deps(source: &str, include_tests: bool) -> Vec<DependencyRef> {
         let ctx = ResolutionContextBuilder::new(Path::new("src/user.rs"))
             .module_paths(&VOCAB_MP)
             .reexport_map(&VOCAB_MAP)
@@ -5070,6 +5081,7 @@ mod use_category_tests {
             &syn::parse_file(source).unwrap(),
             &ctx,
             EdgeContext::production(),
+            include_tests,
             &mut PassedOn::default(),
         )
     }
@@ -5132,6 +5144,7 @@ mod use_category_tests {
             &syn::parse_file(source).unwrap(),
             &ctx,
             EdgeContext::production(),
+            true,
             &mut PassedOn::default(),
         )
     }
@@ -5235,6 +5248,19 @@ mod use_category_tests {
         );
     }
 
+    /// Without test code read, a file's test code adds no dependency, and its
+    /// production code resolves as it does with test code read.
+    #[test]
+    fn without_tests_a_file_yields_its_production_dependencies_only() {
+        let source = "use crate::vocab::*;\n#[cfg(test)]\nuse crate::vocab::Mode;\n\
+                      fn run(_: Config) {}\n#[cfg(test)]\nfn check(_: Mode) {}";
+        let production_with_tests: Vec<_> = vocab_user_deps(source, true)
+            .into_iter()
+            .filter(|d| d.context == EdgeContext::production())
+            .collect();
+        assert_eq!(vocab_user_deps(source, false), production_with_tests);
+    }
+
     #[test]
     fn a_free_fn_called_is_a_fns_use() {
         let deps = deps_of("use crate::vocab::build;\nfn f() { build(); crate::vocab::build(); }");
@@ -5335,6 +5361,7 @@ mod use_category_tests {
             &syn::parse_file(source).unwrap(),
             &ctx,
             EdgeContext::production(),
+            true,
             &mut PassedOn::default(),
         );
         assert_eq!(uses_of(&deps, "Wrapper"), [use_at(1, UseCategory::Types)]);

@@ -376,6 +376,7 @@ fn walk_module_syn(
         &syntax,
         &res_ctx,
         ctx.base_context.clone(),
+        ctx.include_tests,
         &mut walked.passed_on,
     );
 

@@ -4131,11 +4131,13 @@ fn category_of_unknown_call(name: &str) -> UseCategory {
 /// against the same bindings and deduplicated by `(full_target, kind)`, the
 /// `use` items first so a location stays at the import line. What the
 /// re-export chains of the dependencies pass through is noted in
-/// `passed_on`.
+/// `passed_on`. Without `include_tests`, the file's test code is not
+/// resolved and yields no dependency.
 pub(crate) fn parse_file_dependencies(
     syntax: &syn::File,
     ctx: &ResolutionContext,
     base_context: EdgeContext,
+    include_tests: bool,
     passed_on: &mut PassedOn,
 ) -> Vec<DependencyRef> {
     let use_items = collect_all_use_items(syntax, base_context.clone());
@@ -4152,7 +4154,6 @@ pub(crate) fn parse_file_dependencies(
             syntax, ctx, &use_items, &use_items, &path_refs, passed_on,
         );
     }
-    let test_build = ctx.reexport_map.test_build();
     // Test code of the file is compiled in the root's test build: its
     // references resolve there, and the production code's in the build
     // without `test`, which binds none of the test code's `use` items. Each
@@ -4166,6 +4167,10 @@ pub(crate) fn parse_file_dependencies(
         &path_refs.retaining(is_production),
         passed_on,
     );
+    if !include_tests {
+        return deps;
+    }
+    let test_build = ctx.reexport_map.test_build();
     let test_ctx = ResolutionContext {
         reexport_map: test_build.as_ref().unwrap_or(ctx.reexport_map),
         ..*ctx
@@ -4270,6 +4275,7 @@ pub(crate) fn parse_workspace_dependencies_from_source(
         &syntax,
         ctx,
         EdgeContext::production(),
+        true,
         &mut PassedOn::default(),
     )
 }
