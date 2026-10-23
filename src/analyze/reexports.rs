@@ -379,16 +379,7 @@ fn impl_owner(
         {
             return Some((ImplOwner::ThisModule, name));
         }
-        let private_use = named.clone().find_map(|binding| match &binding.kind {
-            BindingKind::PrivateUse(target) => Some(target),
-            _ => None,
-        });
-        let bound = private_use.or_else(|| {
-            named.clone().find_map(|binding| match &binding.kind {
-                BindingKind::ReExport(target) => Some(target),
-                _ => None,
-            })
-        })?;
+        let (bound, _) = named.clone().find_map(NameBinding::use_target)?;
         return Some((
             ImplOwner::Other(bound.module.clone()),
             bound.original_name.clone(),
@@ -1550,6 +1541,45 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
                 .is_some_and(|f| f.associated.contains_key("Writer")),
             "the impl in features is Writer's, not a type of features"
         );
+    }
+
+    /// An `impl` of a name that a `pub use` and a private `use` bind under
+    /// alternative `cfg`s lands where the `pub use` points, the order in
+    /// which every lookup reads the bindings of a name.
+    #[test]
+    fn associated_items_of_a_name_bound_twice_land_where_the_pub_use_points() {
+        let tmp = test_crate(&[
+            ("src/lib.rs", "pub mod a;\npub mod b;\npub mod user;"),
+            ("src/a.rs", "pub struct S;"),
+            ("src/b.rs", "pub struct S;"),
+            (
+                "src/user.rs",
+                "#[cfg(feature = \"x\")]\npub use crate::a::S;\n\
+                 #[cfg(not(feature = \"x\"))]\nuse crate::b::S;\n\
+                 impl S { pub fn made() {} }",
+            ),
+        ]);
+        let crate_info = make_crate_info(&tmp, "test_crate");
+        let mp: ModulePathMap = [(
+            "test_crate".to_string(),
+            HashSet::from(["a".into(), "b".into(), "user".into()]),
+        )]
+        .into_iter()
+        .collect();
+
+        let result = collect_single_root_reexports(
+            &crate_info,
+            &mp,
+            &WorkspacePackages::default(),
+            &PackageExportMap::default(),
+        );
+
+        let associated_in = |module: &str| {
+            result
+                .get(module)
+                .is_some_and(|info| info.associated.contains_key("S"))
+        };
+        assert_eq!((associated_in("a"), associated_in("b")), (true, false));
     }
 
     // A name the root only re-exports is not known while the map is built, so
