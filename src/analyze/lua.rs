@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use super::LanguageAdapter;
 use crate::model::{
     Analysis, DependencyRef, EdgeContext, EntryFile, LanguageProfile, ModuleInfo, ModuleTree,
-    PackageInfo, Wording,
+    PackageInfo, TargetRoot, Wording,
 };
 
 pub(crate) static PROFILE: LanguageProfile = LanguageProfile {
@@ -303,7 +303,7 @@ fn dependency(
         context: EdgeContext::production(),
         via_reexport: false,
         uses: Vec::new(),
-        in_lib_view: false,
+        target_root: TargetRoot::AsSeen,
     })
 }
 

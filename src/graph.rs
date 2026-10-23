@@ -710,7 +710,9 @@ fn aggregate_context(deps: &[&DependencyRef]) -> EdgeContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{DefKind, Definition, DependencyRef, ModuleInfo, ModuleTree, PackageInfo};
+    use crate::model::{
+        DefKind, Definition, DependencyRef, ModuleInfo, ModuleTree, PackageInfo, TargetRoot,
+    };
     use crate::test_support::{conventional_package, module_node, package_node};
     use std::path::{Path, PathBuf};
 
@@ -748,7 +750,7 @@ mod tests {
             context: EdgeContext::production(),
             via_reexport: false,
             uses: Vec::new(),
-            in_lib_view: false,
+            target_root: TargetRoot::AsSeen,
         }
     }
 

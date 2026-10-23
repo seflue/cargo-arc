@@ -283,11 +283,21 @@ pub struct DependencyRef {
     /// Every occurrence of the item in the importing file, in file order.
     /// Merged when two references to one item are deduplicated.
     pub uses: Vec<SymbolUse>,
-    /// True when the importing file names its own package by name. That name
-    /// stands for the lib root, also in a file of a bin tree, so the
-    /// reference resolves against the lib root's re-exports.
+    /// The root of the target package the reference resolves against.
     #[serde(skip)]
-    pub in_lib_view: bool,
+    pub target_root: TargetRoot,
+}
+
+/// Which root of its target package a reference resolves against.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TargetRoot {
+    /// The root the importing file sees: its own root for its own package,
+    /// the lib root for every other package.
+    #[default]
+    AsSeen,
+    /// The lib root, which the importing file names through its own
+    /// package's name, also from a file of a bin tree.
+    Lib,
 }
 
 impl DependencyRef {
@@ -586,7 +596,7 @@ mod tests {
             context: EdgeContext::production(),
             via_reexport: false,
             uses: Vec::new(),
-            in_lib_view: false,
+            target_root: TargetRoot::AsSeen,
         };
         assert_eq!(prod_dep.context, EdgeContext::production());
 
@@ -599,7 +609,7 @@ mod tests {
             context: EdgeContext::test(TestKind::Unit),
             via_reexport: false,
             uses: Vec::new(),
-            in_lib_view: false,
+            target_root: TargetRoot::AsSeen,
         };
         assert_eq!(test_dep.context, EdgeContext::test(TestKind::Unit));
 
@@ -618,7 +628,7 @@ mod tests {
             context: EdgeContext::production(),
             via_reexport: false,
             uses: Vec::new(),
-            in_lib_view: false,
+            target_root: TargetRoot::AsSeen,
         };
         assert_eq!(dep.target_package, "my_crate");
         assert_eq!(dep.target_module, "graph");
@@ -638,7 +648,7 @@ mod tests {
             context: EdgeContext::production(),
             via_reexport: false,
             uses: Vec::new(),
-            in_lib_view: false,
+            target_root: TargetRoot::AsSeen,
         };
         assert_eq!(dep.full_target(), "crate::graph::build");
     }
@@ -654,7 +664,7 @@ mod tests {
             context: EdgeContext::production(),
             via_reexport: false,
             uses: Vec::new(),
-            in_lib_view: false,
+            target_root: TargetRoot::AsSeen,
         };
         assert_eq!(dep.module_target(), "crate::graph");
     }
@@ -670,7 +680,7 @@ mod tests {
             context: EdgeContext::production(),
             via_reexport: false,
             uses: Vec::new(),
-            in_lib_view: false,
+            target_root: TargetRoot::AsSeen,
         };
         assert_eq!(dep.full_target(), "crate::graph");
     }
@@ -686,7 +696,7 @@ mod tests {
             context: EdgeContext::production(),
             via_reexport: false,
             uses: Vec::new(),
-            in_lib_view: false,
+            target_root: TargetRoot::AsSeen,
         };
         assert_eq!(dep.module_target(), "crate_b");
     }
@@ -702,7 +712,7 @@ mod tests {
             context: EdgeContext::production(),
             via_reexport: false,
             uses: Vec::new(),
-            in_lib_view: false,
+            target_root: TargetRoot::AsSeen,
         };
         assert_eq!(dep.full_target(), "crate_b::Symbol");
     }
@@ -718,7 +728,7 @@ mod tests {
             context: EdgeContext::production(),
             via_reexport: false,
             uses: Vec::new(),
-            in_lib_view: false,
+            target_root: TargetRoot::AsSeen,
         };
         assert_eq!(dep.full_target(), "crate_b");
     }
@@ -740,7 +750,7 @@ mod tests {
                 context: EdgeContext::production(),
                 via_reexport: false,
                 uses: Vec::new(),
-                in_lib_view: false,
+                target_root: TargetRoot::AsSeen,
             }],
         };
         assert!(

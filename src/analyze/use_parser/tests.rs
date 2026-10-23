@@ -3332,7 +3332,7 @@ mod resolve_reexport_tests {
         resolve_reexport,
     };
     use super::{DEFAULT_MP, define};
-    use crate::model::{DefKind, DependencyRef, EdgeContext};
+    use crate::model::{DefKind, DependencyRef, EdgeContext, TargetRoot};
     use std::collections::{HashMap, HashSet};
     use std::path::PathBuf;
 
@@ -3346,7 +3346,7 @@ mod resolve_reexport_tests {
             context: EdgeContext::production(),
             via_reexport: false,
             uses: Vec::new(),
-            in_lib_view: false,
+            target_root: TargetRoot::AsSeen,
         }
     }
 
@@ -4634,8 +4634,8 @@ mod use_category_tests {
     }
 
     /// `my_crate` with a lib root that defines the unit struct `Shared` and a
-    /// bin root that defines nothing, seen from a file of the bin tree.
-    fn bin_tree_deps_of(source: &str) -> Vec<DependencyRef> {
+    /// bin root that defines nothing, seen from the bin root.
+    fn bin_root_of_my_crate() -> ReExportMap {
         let mut lib_root = ModuleExportInfo::default();
         define(&mut lib_root, "Shared", DefKind::Struct);
         let roots = vec![
@@ -4651,7 +4651,13 @@ mod use_category_tests {
             },
         ];
         let map: ReExportMap = [("my_crate".to_string(), roots)].into_iter().collect();
-        let bin_view = map.for_root("my_crate", 1);
+        map.for_root("my_crate", 1)
+    }
+
+    /// `my_crate` with a lib root that defines the unit struct `Shared` and a
+    /// bin root that defines nothing, seen from a file of the bin tree.
+    fn bin_tree_deps_of(source: &str) -> Vec<DependencyRef> {
+        let bin_view = bin_root_of_my_crate();
         let ws: WorkspacePackages = ["my_crate".to_string()].into_iter().collect();
         let exports: PackageExportMap = [(
             "my_crate".to_string(),
@@ -4670,6 +4676,27 @@ mod use_category_tests {
             &ctx,
             EdgeContext::production(),
         )
+    }
+
+    /// From the bin root, the package's name stands for the lib root, which
+    /// shows the bin tree only what is public; the bin root sees itself.
+    #[test]
+    fn a_reference_through_the_package_name_sees_the_lib_root_from_outside() {
+        let bin_view = bin_root_of_my_crate();
+        let in_crate = Visibility::Restricted(String::new());
+        let defines_shared = |view: &ReExportMap| {
+            view.get("my_crate")
+                .and_then(|modules| modules.get(""))
+                .is_some_and(|root| root.definitions.contains_key("Shared"))
+        };
+
+        let through_name = bin_view.seen_through(TargetRoot::Lib);
+        assert!(defines_shared(&through_name));
+        assert!(!through_name.is_visible("my_crate", &in_crate, "banner"));
+
+        let as_seen = bin_view.seen_through(TargetRoot::AsSeen);
+        assert!(!defines_shared(&as_seen));
+        assert!(as_seen.is_visible("my_crate", &in_crate, "banner"));
     }
 
     /// A file of the bin tree that names its own package names the lib root,
