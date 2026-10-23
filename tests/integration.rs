@@ -2119,6 +2119,16 @@ fn name_resolution_cfg_attr_alternatives_keep_the_wider_visibility() {
     assert_name_resolution_arc("m::cpath4user", "m::cpath4::imp::k", "production", &["f"]);
 }
 
+/// Cell 66g: `run` is public in one alternative of `imp` and private in the
+/// other, and a glob of `cpath6other` offers a `run` too. Where `go` is
+/// built, `imp` holds `run` privately and `run` is `cpath6other`'s. Neither
+/// glob is said to bring in `run`, so `cpath6other` keeps its `*`.
+#[test]
+fn name_resolution_name_of_differing_visibility_beside_another_glob_names_neither() {
+    assert_name_resolution_arc("m::cpath6user", "m::cpath6::imp", "production", &["keep"]);
+    assert_name_resolution_arc("m::cpath6user", "m::cpath6other", "production", &["*"]);
+}
+
 /// Cell 72: a glob brings in only what the module holding it sees. `b` globs
 /// `a::s`, whose `pub(super) fn f` only `a` sees, and `c` with `pub fn f`; a
 /// module under `a` writing `crate::gh::b::f()` names `c::f`.

@@ -170,6 +170,10 @@ pub(crate) struct ModuleExportInfo {
     /// Where each item defined here is visible, by name. In the root, every
     /// module of the crate can name a private item through `crate::`.
     pub(crate) item_visibility: HashMap<String, Visibility>,
+    /// The items alternative files of the module declare with different
+    /// visibilities. `item_visibility` holds the wider one, which the file a
+    /// build reads may not grant.
+    pub(crate) items_of_differing_visibility: HashSet<String>,
     /// Where each child module declared here is visible, by name. A glob or
     /// a path from where a module is not visible does not reach it.
     pub(crate) module_visibility: HashMap<String, Visibility>,
@@ -218,6 +222,7 @@ impl ModuleExportInfo {
         let public = |visibility: &Visibility| *visibility == Visibility::Public;
         self.definitions.is_empty()
             && self.item_visibility.values().all(public)
+            && self.items_of_differing_visibility.is_empty()
             && self.module_visibility.values().all(public)
             && self.associated.is_empty()
             && self.explicit_reexports.is_empty()
@@ -231,9 +236,23 @@ impl ModuleExportInfo {
 
     /// Take in what another file of the same module holds (an alternative
     /// under `cfg`): the names of both, `other`'s where both hold one. An item
-    /// or child module both declare keeps the wider of the two visibilities.
+    /// or child module both declare keeps the wider of the two visibilities;
+    /// an item both declare differently is noted as such.
     pub(crate) fn merge(&mut self, other: Self) {
         self.definitions.extend(other.definitions);
+        let differing: Vec<String> = other
+            .item_visibility
+            .iter()
+            .filter(|(name, visibility)| {
+                self.item_visibility
+                    .get(*name)
+                    .is_some_and(|known| known != *visibility)
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        self.items_of_differing_visibility.extend(differing);
+        self.items_of_differing_visibility
+            .extend(other.items_of_differing_visibility);
         widen_visibilities(&mut self.item_visibility, other.item_visibility);
         widen_visibilities(&mut self.module_visibility, other.module_visibility);
         for (name, items) in other.associated {
@@ -3480,10 +3499,7 @@ pub(crate) fn parse_path_ref_dependencies(
                         let associated = associated_segment(&path_ref.path, &dep);
                         (dep, associated, None)
                     } else {
-                        let Some(glob) = bindings
-                            .globs_for(name, path_ref.region)
-                            .find(|glob| glob_exports(ctx, glob, name))
-                        else {
+                        let Some(glob) = glob_taking(ctx, bindings, name, path_ref.region) else {
                             continue;
                         };
                         let dep = DependencyRef {
@@ -3575,6 +3591,33 @@ fn context_of_use(reference: &EdgeContext, binding: &EdgeContext) -> EdgeContext
     } else {
         binding.clone()
     }
+}
+
+/// The glob import of `bindings` that brings `name`, standing in `region`,
+/// into scope: the innermost that exports it. `None` where a glob of another
+/// module exports it too and the module of one of them declares `name` with
+/// different visibilities in its alternative files: the file a build reads
+/// may hold it privately, leaving it to another glob.
+fn glob_taking<'b>(
+    ctx: &ResolutionContext,
+    bindings: &'b FileBindings,
+    name: &str,
+    region: RegionId,
+) -> Option<&'b DependencyRef> {
+    let mut exporting = bindings
+        .globs_for(name, region)
+        .filter(|glob| glob_exports(ctx, glob, name));
+    let first = exporting.next()?;
+    let differs = |glob: &DependencyRef| {
+        ctx.reexport_map
+            .module_info(glob)
+            .is_some_and(|info| info.items_of_differing_visibility.contains(name))
+    };
+    let mut others = exporting
+        .filter(|glob| glob.full_target() != first.full_target())
+        .peekable();
+    let contested = others.peek().is_some() && (differs(first) || others.any(differs));
+    (!contested).then_some(first)
 }
 
 /// Whether the module a glob imports from brings `name` into this file's
