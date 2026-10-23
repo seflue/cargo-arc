@@ -2053,6 +2053,84 @@ fn name_resolution_file_beside_a_cfg_attr_path_outside_test_is_test_code() {
     );
 }
 
+/// Assert the arcs of a module whose nested `#[cfg_attr]` names a file only
+/// test builds load: its default file to `util`, the nested file to `util2`.
+fn assert_nested_cfg_attr_test_path(module: &str) {
+    assert_name_resolution_arc(module, "m::util", "production", &["job"]);
+    assert_name_resolution_arc(module, "m::util2", "test", &["job"]);
+    let arcs = name_resolution_arcs(false);
+    assert_eq!(
+        arcs.get(&(module.to_string(), "m::util2".to_string())),
+        None,
+        "{module} -> m::util2 should not exist without tests"
+    );
+}
+
+/// Cell 66n1: a `path` in `#[cfg_attr(test, cfg_attr(unix, path = …))]` names
+/// a file only test builds load, as `all(test, unix)` would.
+#[test]
+fn name_resolution_nested_cfg_attr_path_under_test_is_test_code() {
+    assert_nested_cfg_attr_test_path("m::cpath7::imp");
+}
+
+/// Cell 66n2: as 66n1 with the predicates swapped and a private module.
+#[test]
+fn name_resolution_nested_cfg_attr_path_ignores_predicate_order() {
+    assert_nested_cfg_attr_test_path("m::cpath8::imp");
+}
+
+/// Cell 66n3: as 66n1 three levels deep, beside another attribute.
+#[test]
+fn name_resolution_cfg_attr_path_three_levels_deep_is_read() {
+    assert_nested_cfg_attr_test_path("m::cpath9::imp");
+}
+
+/// Cell 66n4: under `cfg_attr(not(test), cfg_attr(unix, path = …))` builds
+/// without `test` and without `unix` load the default file, so both files are
+/// production.
+#[test]
+fn name_resolution_nested_cfg_attr_path_outside_test_on_a_platform_is_production() {
+    assert_name_resolution_arc("m::cpath10::imp", "m::util", "production", &["job"]);
+    assert_name_resolution_arc("m::cpath10::imp", "m::util2", "production", &["job"]);
+}
+
+/// Cell 66n5: under `cfg_attr(not(test), cfg_attr(not(test), path = …))` only
+/// test builds load the default file, which is test code.
+#[test]
+fn name_resolution_file_beside_a_nested_cfg_attr_path_outside_test_is_test_code() {
+    assert_name_resolution_arc("m::cpath11::imp", "m::util2", "production", &["job"]);
+    assert_name_resolution_arc("m::cpath11::imp", "m::util", "test", &["job"]);
+    let arcs = name_resolution_arcs(false);
+    assert_eq!(
+        arcs.get(&("m::cpath11::imp".to_string(), "m::util".to_string())),
+        None,
+        "m::cpath11::imp -> m::util should not exist without tests"
+    );
+}
+
+/// Cell 66n6: a flat and a nested `path` under `test`. rustc loads the first
+/// only; the arc to `u` from the nested file pins today's coarser value.
+#[test]
+fn name_resolution_flat_and_nested_cfg_attr_paths_are_both_read() {
+    assert_name_resolution_arc("m::cpath12::imp", "m::util", "production", &["job"]);
+    assert_name_resolution_arc("m::cpath12::imp", "m::util2", "test", &["job"]);
+    assert_name_resolution_arc("m::cpath12::imp", "m::u", "test", &["open"]);
+}
+
+/// Cell 66n7: a module the nested file declares is a node of its own, test
+/// code like the file, and a path to it names it.
+#[test]
+fn name_resolution_child_of_a_nested_cfg_attr_file_is_a_node() {
+    assert_name_resolution_arc(
+        "m::cpath13user",
+        "m::cpath13::imp::cpath13kid",
+        "test",
+        &["k"],
+    );
+    assert_name_resolution_arc("m::cpath13::imp::cpath13kid", "m::util2", "test", &["job"]);
+    assert_no_name_resolution_arc("m::cpath13user", "m::cpath13::imp");
+}
+
 /// Cell 45: two `#[path]` modules `imp` under `cfg`, one with `pub use
 /// crate::u::open;`, the other with `pub use crate::w::open;`. A user of
 /// `crate::cfgimp::imp::open()` reaches `w` only. The cell expects
