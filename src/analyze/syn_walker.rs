@@ -375,7 +375,12 @@ fn walk_module_syn(
         .reexport_map
         .get(ctx.crate_name)
         .and_then(|modules| modules.get(current_module_path))
-        .map(|info| info.definitions.clone())
+        .map(|info| {
+            info.definitions
+                .iter()
+                .map(|(name, item)| (name.clone(), item.definition))
+                .collect()
+        })
         .unwrap_or_default();
 
     ModuleInfo {
@@ -500,7 +505,7 @@ pub(crate) fn analyze_modules_syn(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analyze::use_parser::ModuleExportInfo;
+    use crate::analyze::use_parser::{DefinedItem, ModuleExportInfo, Visibility};
     use crate::model::{DefKind, Definition};
     use crate::test_support::conventional_package;
     use tempfile::TempDir;
@@ -964,7 +969,11 @@ mod tests {
             };
             let module_info = |name: &str, line| {
                 let mut info = ModuleExportInfo::default();
-                info.definitions.insert(name.to_string(), definition(line));
+                let item = DefinedItem {
+                    definition: definition(line),
+                    visibility: Visibility::Public,
+                };
+                info.definitions.insert(name.to_string(), item);
                 info
             };
             let reexport_map: ReExportMap = [(
