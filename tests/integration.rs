@@ -2131,6 +2131,326 @@ fn name_resolution_child_of_a_nested_cfg_attr_file_is_a_node() {
     assert_no_name_resolution_arc("m::cpath13user", "m::cpath13::imp");
 }
 
+/// Assert that the arcs of the `name_resolution` fixture leaving the modules
+/// `roots` or modules below them are exactly `expected`, as `(from, to, kind,
+/// symbols)` with names relative to the package `gp`.
+fn assert_gp_cell_arcs(
+    roots: &[&str],
+    include_tests: bool,
+    expected: &[(&str, &str, &str, &[&str])],
+) {
+    let in_cell = |from: &str| {
+        roots.iter().any(|root| {
+            let root = format!("gp::{root}");
+            from == root || from.starts_with(&format!("{root}::"))
+        })
+    };
+    let mut actual: Vec<(String, String, String, Vec<String>)> =
+        name_resolution_arcs(include_tests)
+            .iter()
+            .filter(|((from, _), _)| in_cell(from))
+            .map(|((from, to), (kind, symbols))| {
+                (from.clone(), to.clone(), kind.clone(), symbols.clone())
+            })
+            .collect();
+    actual.sort();
+    let qualified = |name: &str| {
+        if name.starts_with("gq::") {
+            name.to_string()
+        } else {
+            format!("gp::{name}")
+        }
+    };
+    let mut expected: Vec<(String, String, String, Vec<String>)> = expected
+        .iter()
+        .map(|(from, to, kind, symbols)| {
+            (
+                qualified(from),
+                qualified(to),
+                (*kind).to_string(),
+                symbols.iter().map(ToString::to_string).collect(),
+            )
+        })
+        .collect();
+    expected.sort();
+    assert_eq!(
+        actual, expected,
+        "arcs of {roots:?} (include_tests {include_tests})"
+    );
+}
+
+/// Assert [`assert_gp_cell_arcs`] whether test code is read or not.
+fn assert_gp_cell_arcs_always(roots: &[&str], expected: &[(&str, &str, &str, &[&str])]) {
+    for include_tests in [false, true] {
+        assert_gp_cell_arcs(roots, include_tests, expected);
+    }
+}
+
+/// Cell GP1: a child's `use super::*` brings the names its parent binds by a
+/// private `use` and a `pub(in …)` `use`. The child depends on the definers;
+/// the parent only passes the names on.
+#[test]
+fn name_resolution_glob_brings_the_private_uses_of_the_parent() {
+    assert_gp_cell_arcs_always(
+        &["g1"],
+        &[
+            ("g1::k", "c", "production", &["f"]),
+            ("g1::k", "d", "production", &["h"]),
+        ],
+    );
+}
+
+/// Cell GP2: a `pub(super) use` in the parent stays the parent's arc.
+#[test]
+fn name_resolution_glob_through_a_pub_super_use_keeps_the_parent_arc() {
+    assert_gp_cell_arcs_always(
+        &["g2"],
+        &[
+            ("g2::pa", "c", "production", &["f"]),
+            ("g2::pa::k", "c", "production", &["f"]),
+        ],
+    );
+}
+
+/// Cell GP3: a `pub use super::*` passes the parent's private `use` on to a
+/// grandchild's glob.
+#[test]
+fn name_resolution_reexport_glob_passes_a_private_use_on() {
+    assert_gp_cell_arcs_always(
+        &["g3"],
+        &[
+            ("g3::k", "c", "production", &["f"]),
+            ("g3::k::kk", "c", "production", &["f"]),
+        ],
+    );
+}
+
+/// Cell GP4: a private `use super::*` on the way brings the grandparent's
+/// private `use` to a grandchild's glob.
+#[test]
+fn name_resolution_private_glob_on_the_way_passes_a_private_use_on() {
+    assert_gp_cell_arcs_always(&["g4"], &[("g4::k::kk", "c", "production", &["f"])]);
+}
+
+/// Cell GP5: a sibling's path through a `pub use super::*` names the definer
+/// of the parent's private `use`.
+#[test]
+fn name_resolution_path_through_a_reexport_glob_reaches_a_private_use() {
+    assert_gp_cell_arcs_always(
+        &["g5"],
+        &[
+            ("g5::k", "c", "production", &["f"]),
+            ("g5::q", "c", "production", &["f"]),
+        ],
+    );
+}
+
+/// Cell GP6: a `use super::*` in a fn block shadows the outer glob for a name
+/// the parent binds by a private `use`.
+#[test]
+fn name_resolution_block_glob_of_a_private_use_shadows_the_outer_glob() {
+    assert_gp_cell_arcs_always(
+        &["g6"],
+        &[
+            ("g6::k", "c", "production", &["f"]),
+            ("g6::k", "d", "production", &["*"]),
+        ],
+    );
+}
+
+/// Cell GP7: as GP6 with a name the parent binds from `std`: no arc to `std`,
+/// and the outer glob does not take the name.
+#[test]
+fn name_resolution_block_glob_of_an_external_name_shadows_the_outer_glob() {
+    assert_gp_cell_arcs_always(
+        &["g7"],
+        &[
+            ("g7::k", "d", "production", &["*"]),
+            ("g7::k", "g7", "production", &["*"]),
+        ],
+    );
+}
+
+/// Cell GP8: a name the parent binds from `std` leaves the glob its `*`.
+#[test]
+fn name_resolution_glob_of_an_external_name_keeps_its_star() {
+    assert_gp_cell_arcs_always(&["g8"], &[("g8::k", "g8", "production", &["*"])]);
+}
+
+/// Cell GP9: outside the parent, a `pub use super::*` does not pass the
+/// parent's private `use` on, so another glob brings the name.
+#[test]
+fn name_resolution_reexport_glob_passes_no_private_use_out_of_the_subtree() {
+    assert_gp_cell_arcs_always(
+        &["g9", "g9o"],
+        &[
+            ("g9::k", "d", "production", &["f"]),
+            ("g9o", "c", "production", &["f"]),
+            ("g9o", "g9::k", "production", &["*"]),
+        ],
+    );
+}
+
+/// Cell GP10: `cfg` alternatives of a private `use` to two targets give no
+/// arc for the name; the glob keeps its `*`.
+#[test]
+fn name_resolution_glob_of_cfg_alternative_private_uses_names_no_target() {
+    assert_gp_cell_arcs_always(
+        &["g10"],
+        &[
+            ("g10", "c", "production", &["f"]),
+            ("g10", "d", "production", &["f"]),
+            ("g10::k", "g10", "production", &["*"]),
+        ],
+    );
+}
+
+/// Cell GP11: an inline test module's glob leaves the parent's production arc.
+#[test]
+fn name_resolution_inline_test_glob_leaves_the_parent_arc() {
+    assert_gp_cell_arcs_always(&["g11"], &[("g11", "c", "production", &["f"])]);
+}
+
+/// Cell GP12: a test file's glob brings the parent's private `use`; the
+/// parent's production arc stays, since only test code passes the name on.
+#[test]
+fn name_resolution_test_file_glob_brings_a_production_private_use() {
+    assert_gp_cell_arcs(&["g12"], false, &[("g12", "c", "production", &["f"])]);
+    assert_gp_cell_arcs(
+        &["g12"],
+        true,
+        &[
+            ("g12", "c", "production", &["f"]),
+            ("g12::tests", "c", "test", &["f"]),
+        ],
+    );
+}
+
+/// Cell GP13: a glob brings a private `use` under its rename.
+#[test]
+fn name_resolution_glob_brings_a_renamed_private_use() {
+    assert_gp_cell_arcs_always(&["g13"], &[("g13::k", "c", "production", &["f"])]);
+}
+
+/// Cell GP14: a private `use` of a module stays the parent's arc.
+#[test]
+fn name_resolution_glob_of_a_private_module_use_is_unchanged() {
+    assert_gp_cell_arcs_always(
+        &["g14"],
+        &[
+            ("g14", "c", "production", &[""]),
+            ("g14::k", "c", "production", &["f"]),
+            ("g14::k", "g14", "production", &["*"]),
+        ],
+    );
+}
+
+/// Cell GP15: a test file's glob brings a `#[cfg(test)]` private `use`.
+#[test]
+fn name_resolution_test_file_glob_brings_a_test_private_use() {
+    assert_gp_cell_arcs(&["g15"], false, &[]);
+    assert_gp_cell_arcs(&["g15"], true, &[("g15::tests", "c", "test", &["f"])]);
+}
+
+/// Cell GP16: a grandchild's glob reaches the definer through a private glob
+/// of the grandparent; the `pub use super::*` keeps its `*`.
+#[test]
+fn name_resolution_reexport_glob_over_a_private_glob_reaches_the_definer() {
+    assert_gp_cell_arcs_always(
+        &["g16"],
+        &[
+            ("g16::k", "g16", "production", &["*"]),
+            ("g16::k::kk", "c", "production", &["f"]),
+        ],
+    );
+}
+
+/// Cell GP17: a glob brings a private `use` of another workspace crate's item.
+#[test]
+fn name_resolution_glob_brings_a_private_use_into_another_crate() {
+    assert_gp_cell_arcs_always(&["g17"], &[("g17::k", "gq::m", "production", &["f"])]);
+}
+
+/// Cell GP18: a glob that may bring a trait from the parent's private `use`
+/// keeps its arc, while a grandchild's glob reaches the definer of `f`.
+#[test]
+fn name_resolution_glob_of_a_private_trait_use_keeps_its_arc() {
+    assert_gp_cell_arcs_always(
+        &["g18"],
+        &[
+            ("g18", "tr", "production", &["Tr"]),
+            ("g18::k", "g18", "production", &["*"]),
+            ("g18::k", "tr", "production", &["S"]),
+            ("g18::k::kk", "c", "production", &["f"]),
+        ],
+    );
+}
+
+/// Cell GP19: a `#[cfg(test)]` private `use` of the parent brings nothing to a
+/// production reference, which takes the name from the other glob.
+#[test]
+fn name_resolution_test_private_use_brings_nothing_to_production() {
+    assert_gp_cell_arcs(
+        &["g19"],
+        false,
+        &[
+            ("g19::k", "d", "production", &["f"]),
+            ("g19::k", "g19", "production", &["*"]),
+        ],
+    );
+    assert_gp_cell_arcs(
+        &["g19"],
+        true,
+        &[
+            ("g19", "c", "test", &["f"]),
+            ("g19::k", "d", "production", &["f"]),
+            ("g19::k", "g19", "production", &["*"]),
+        ],
+    );
+}
+
+/// Cell GP20: a private `use` under a platform `cfg` gives way to another glob
+/// of the same scope.
+#[test]
+fn name_resolution_conditional_private_use_gives_way_to_another_glob() {
+    assert_gp_cell_arcs_always(
+        &["g20"],
+        &[
+            ("g20", "c", "production", &["f"]),
+            ("g20::k", "d", "production", &["f"]),
+            ("g20::k", "g20", "production", &["*"]),
+        ],
+    );
+}
+
+/// Cell GP21: as GP20 with the parent's glob in a fn block: the inner glob
+/// takes the name, one `cfg` alternative of two.
+#[test]
+fn name_resolution_block_glob_of_a_conditional_private_use_takes_the_name() {
+    assert_gp_cell_arcs_always(
+        &["g21"],
+        &[
+            ("g21::k", "c", "production", &["f"]),
+            ("g21::k", "d", "production", &["*"]),
+        ],
+    );
+}
+
+/// Cell GP22: a production reference through the parent passes over its
+/// `#[cfg(test)]` private `use` to the parent's private glob.
+#[test]
+fn name_resolution_production_path_passes_over_a_test_private_use() {
+    assert_gp_cell_arcs(&["g22"], false, &[("g22::k", "d", "production", &["f"])]);
+    assert_gp_cell_arcs(
+        &["g22"],
+        true,
+        &[
+            ("g22", "c", "test", &["f"]),
+            ("g22::k", "d", "production", &["f"]),
+        ],
+    );
+}
+
 /// Cell 45: two `#[path]` modules `imp` under `cfg`, one with `pub use
 /// crate::u::open;`, the other with `pub use crate::w::open;`. A user of
 /// `crate::cfgimp::imp::open()` reaches `w` only. The cell expects
