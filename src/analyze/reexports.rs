@@ -13,9 +13,9 @@ use crate::model::{DefKind, Definition, EdgeContext, PackageInfo};
 
 use super::mod_resolver::{CfgCondition, ModuleFile, declared_files, extract_mod_declarations};
 use super::use_parser::{
-    AssociatedItems, DefinedItem, GlobSource, Meaning, ModuleExportInfo, ReExportMap,
-    ReExportTarget, ResolutionContext, RootReExports, Visibility, is_reexport_visibility,
-    item_attrs, resolve_single_path, resolve_use_tree,
+    AssociatedItems, DefinedItem, GlobSource, Meaning, ModuleBindings, ModuleExportInfo,
+    NameBinding, ReExportMap, ReExportTarget, ResolutionContext, RootReExports, Visibility,
+    is_reexport_visibility, item_attrs, resolve_single_path, resolve_use_tree,
 };
 
 /// Invariant parameters shared across the recursive re-export walk.
@@ -368,13 +368,23 @@ fn impl_owner(
 ) -> Option<(ImplOwner, String)> {
     let name = path.segments.last()?.ident.to_string();
     if path.segments.len() == 1 {
-        if info.definitions.contains_key(&name) {
+        let named = ModuleBindings::new(ctx.crate_name, info).named(&name);
+        if named
+            .clone()
+            .any(|binding| matches!(binding, NameBinding::Definition { .. }))
+        {
             return Some((ImplOwner::ThisModule, name));
         }
-        let bound = info
-            .private_uses
-            .get(&name)
-            .or_else(|| info.explicit_reexports.get(&name))?;
+        let private_use = named.clone().find_map(|binding| match binding {
+            NameBinding::PrivateUse { target, .. } => Some(target),
+            _ => None,
+        });
+        let bound = private_use.or_else(|| {
+            named.clone().find_map(|binding| match binding {
+                NameBinding::ReExport(target) => Some(target),
+                _ => None,
+            })
+        })?;
         return Some((
             ImplOwner::Other(bound.module.clone()),
             bound.original_name.clone(),
