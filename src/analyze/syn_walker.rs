@@ -201,6 +201,9 @@ struct WalkContext<'a> {
     all_module_paths: &'a ModulePathMap,
     crate_exports: &'a PackageExportMap,
     reexport_map: &'a ReExportMap,
+    /// The map as the root's test build sees it, where the root has one: the
+    /// map of a file only test builds load.
+    test_build_map: Option<&'a ReExportMap>,
     external_crate_names: &'a std::collections::HashMap<String, String>,
     extern_crates: &'a std::collections::HashMap<String, String>,
     passed_on: &'a PassedOn,
@@ -209,13 +212,18 @@ struct WalkContext<'a> {
 }
 
 /// Whether `dep` of the module at `module_path` only passes a name on to a
-/// descendant, as [`PassedOn::passes_on`] decides.
+/// descendant, as [`PassedOn::passes_on`] decides in the build `dep`'s code
+/// is compiled in.
 fn only_passes_on(ctx: &WalkContext, module_path: &str, dep: &crate::model::DependencyRef) -> bool {
+    let reexport_map = match ctx.test_build_map {
+        Some(test_build_map) if dep.context.kind != UsageKind::Production => test_build_map,
+        _ => ctx.reexport_map,
+    };
     ctx.passed_on.passes_on(
         ctx.crate_name,
         module_path,
         dep,
-        ctx.reexport_map,
+        reexport_map,
         ctx.all_module_paths,
     )
 }
@@ -250,9 +258,11 @@ fn walk_declared_module(
     unparsed: &mut Vec<PathBuf>,
 ) -> Option<ModuleInfo> {
     // A module declared under `#[cfg(test)]`, or a file only a test-only
-    // `#[cfg_attr]` path loads, is test code with all it holds
+    // `#[cfg_attr]` path loads, is test code with all it holds, and resolves
+    // in the root's test build
     let test_ctx = WalkContext {
         base_context: promote_to_test(&ctx.base_context),
+        reexport_map: ctx.test_build_map.unwrap_or(ctx.reexport_map),
         ..ctx.clone()
     };
     let mut alternatives = declared_files(&parent.path, parent.owns_directory, decl)
@@ -415,6 +425,7 @@ pub(crate) fn analyze_modules_syn(
         all_module_paths,
         crate_exports,
         reexport_map,
+        test_build_map: None,
         external_crate_names,
         extern_crates: &no_extern_crates,
         passed_on: &passed_on,
@@ -426,10 +437,12 @@ pub(crate) fn analyze_modules_syn(
     let mut root: Option<ModuleInfo> = None;
     for (index, entry) in crate_info.entry_files.iter().enumerate() {
         let root_reexports = reexport_map.for_root(&normalized, index);
+        let root_test_build = root_reexports.test_build();
         let extern_crates =
             root_extern_crates(&entry.file, workspace_crates, &crate_info.code_names);
         let root_ctx = WalkContext {
             reexport_map: &root_reexports,
+            test_build_map: root_test_build.as_ref(),
             extern_crates: &extern_crates,
             ..ctx.clone()
         };

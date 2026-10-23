@@ -18,6 +18,10 @@ pub(crate) struct ModDecl {
     /// Whether every declaration of the module stands under `#[cfg(test)]`,
     /// which makes the module test code with all it holds.
     pub(crate) cfg_test: bool,
+    /// Whether a test build may load the module: not where the `#[cfg]` of
+    /// every declaration keeps it out of all, as [`holds_in_no_test_build`]
+    /// decides.
+    pub(crate) test_build_may_load: bool,
 }
 
 /// A path `#[cfg_attr(predicate, path = …)]` names.
@@ -33,6 +37,9 @@ pub(crate) struct CfgAttrPath {
     /// [`holds_outside_test`] decides, so that the path replaces the plain
     /// file there.
     pub(crate) outside_test: bool,
+    /// The predicates on the way to the path, together as under `all(…)`,
+    /// evaluated in test builds as [`in_test_builds`] does.
+    pub(crate) in_test_builds: Option<bool>,
 }
 
 /// In which builds a `mod` declaration loads the file it names without a
@@ -125,17 +132,7 @@ fn in_test_builds(meta: &syn::Meta) -> Option<bool> {
             .ok()
             .and_then(|predicate| in_test_builds(&predicate))
             .map(|value| !value),
-        syn::Meta::List(list) if list.path.is_ident("all") => {
-            let values = values(list)?;
-            if values.contains(&Some(false)) {
-                Some(false)
-            } else {
-                values
-                    .iter()
-                    .all(|value| *value == Some(true))
-                    .then_some(true)
-            }
-        }
+        syn::Meta::List(list) if list.path.is_ident("all") => all_in_test_builds(&values(list)?),
         syn::Meta::List(list) if list.path.is_ident("any") => {
             let values = values(list)?;
             if values.contains(&Some(true)) {
@@ -148,6 +145,19 @@ fn in_test_builds(meta: &syn::Meta) -> Option<bool> {
             }
         }
         _ => None,
+    }
+}
+
+/// Combine the values [`in_test_builds`] gives predicates as `all(…)` does:
+/// false where one holds in no test build, true where each holds in every one.
+fn all_in_test_builds(values: &[Option<bool>]) -> Option<bool> {
+    if values.contains(&Some(false)) {
+        Some(false)
+    } else {
+        values
+            .iter()
+            .all(|value| *value == Some(true))
+            .then_some(true)
     }
 }
 
@@ -242,6 +252,9 @@ impl CfgAttrPath {
             path,
             cfg_test: predicates.iter().any(requires_test),
             outside_test: predicates.iter().all(holds_outside_test),
+            in_test_builds: all_in_test_builds(
+                &predicates.iter().map(in_test_builds).collect::<Vec<_>>(),
+            ),
         }
     }
 }
@@ -260,6 +273,7 @@ pub(crate) fn extract_mod_declarations(syntax: &syn::File, include_tests: bool) 
             if !include_tests && cfg_test {
                 continue;
             }
+            let test_build_may_load = !holds_in_no_test_build(&item_mod.attrs);
             let name = item_mod.ident.to_string();
             let explicit_path = extract_path_attribute(&item_mod.attrs);
             let mut cfg_attr_paths = extract_cfg_attr_paths(&item_mod.attrs);
@@ -280,6 +294,7 @@ pub(crate) fn extract_mod_declarations(syntax: &syn::File, include_tests: bool) 
                     && d.cfg_attr_paths == cfg_attr_paths
             }) {
                 known.cfg_test &= cfg_test;
+                known.test_build_may_load |= test_build_may_load;
                 continue;
             }
             decls.push(ModDecl {
@@ -288,6 +303,7 @@ pub(crate) fn extract_mod_declarations(syntax: &syn::File, include_tests: bool) 
                 cfg_attr_paths,
                 plain_file,
                 cfg_test,
+                test_build_may_load,
             });
         }
     }
@@ -322,6 +338,10 @@ pub(crate) struct DeclaredFile {
     /// Whether only test builds load the file, which makes it test code with
     /// all it holds.
     pub(crate) cfg_test: bool,
+    /// Whether a test build may load the file: the file without a path
+    /// unless a `#[cfg_attr]` path holds in every test build, a path's file
+    /// unless its predicates hold in none.
+    pub(crate) test_build_may_load: bool,
 }
 
 /// The files a `mod` declaration in `file_path` loads. A `#[path]`, plain or
@@ -336,7 +356,7 @@ pub(crate) fn declared_files(
     decl: &ModDecl,
 ) -> Vec<DeclaredFile> {
     let dir = file_path.parent().unwrap_or(Path::new("."));
-    let by_path = |path: &String, cfg_test: bool| {
+    let by_path = |path: &String, cfg_test: bool, test_build_may_load: bool| {
         let path = dir.join(path);
         path.exists().then_some(DeclaredFile {
             file: ModuleFile {
@@ -344,12 +364,17 @@ pub(crate) fn declared_files(
                 owns_directory: true,
             },
             cfg_test,
+            test_build_may_load,
         })
     };
     let plain_cfg_test = decl.plain_file == PlainFile::Test;
+    let plain_test_build_may_load = !decl
+        .cfg_attr_paths
+        .iter()
+        .any(|cfg_attr| cfg_attr.in_test_builds == Some(true));
     let plain = match &decl.explicit_path {
         _ if decl.plain_file == PlainFile::LeftOut => None,
-        Some(path) => by_path(path, plain_cfg_test),
+        Some(path) => by_path(path, plain_cfg_test, plain_test_build_may_load),
         None => resolve_mod_path(&child_resolve_dir(file_path, owns_directory), &decl.name).map(
             |path| DeclaredFile {
                 file: ModuleFile {
@@ -357,20 +382,26 @@ pub(crate) fn declared_files(
                     owns_directory: false,
                 },
                 cfg_test: plain_cfg_test,
+                test_build_may_load: plain_test_build_may_load,
             },
         ),
     };
     let mut files: Vec<DeclaredFile> = plain.into_iter().collect();
-    for file in decl
-        .cfg_attr_paths
-        .iter()
-        .filter_map(|cfg_attr| by_path(&cfg_attr.path, cfg_attr.cfg_test))
-    {
+    for file in decl.cfg_attr_paths.iter().filter_map(|cfg_attr| {
+        by_path(
+            &cfg_attr.path,
+            cfg_attr.cfg_test,
+            cfg_attr.in_test_builds != Some(false),
+        )
+    }) {
         match files
             .iter_mut()
             .find(|known| known.file.path == file.file.path)
         {
-            Some(known) => known.cfg_test &= file.cfg_test,
+            Some(known) => {
+                known.cfg_test &= file.cfg_test;
+                known.test_build_may_load |= file.test_build_may_load;
+            }
             None => files.push(file),
         }
     }
@@ -521,6 +552,88 @@ mod tests {
                 .map(|d| (d.name.as_str(), d.cfg_test))
                 .collect();
             assert_eq!(cfg_test, [("both", false), ("only", true)]);
+        }
+
+        #[test]
+        fn test_in_test_builds_evaluates_test_and_leaves_other_atoms_open() {
+            let cases = [
+                ("test", Some(true)),
+                ("not(test)", Some(false)),
+                ("any(unix, test)", Some(true)),
+                ("all(unix, test)", None),
+                ("not(any(unix, test))", Some(false)),
+                ("unix", None),
+            ];
+            for (predicate, expected) in cases {
+                let meta: syn::Meta = syn::parse_str(predicate).unwrap();
+                assert_eq!(in_test_builds(&meta), expected, "{predicate}");
+            }
+        }
+
+        #[test]
+        fn test_declaration_test_builds_load_unless_its_cfg_keeps_them_out() {
+            let syntax: syn::File = syn::parse_str(
+                "#[cfg(not(test))] mod prod; #[cfg(test)] mod both; #[cfg(not(test))] mod both;
+                 #[cfg(test)] mod only; mod plain; #[cfg(all(unix, not(test)))] mod unix_prod;",
+            )
+            .unwrap();
+            let loaded: Vec<_> = extract_mod_declarations(&syntax, true)
+                .into_iter()
+                .map(|d| (d.name, d.test_build_may_load))
+                .collect();
+            let owned = |name: &str, loaded| (name.to_string(), loaded);
+            assert_eq!(
+                loaded,
+                [
+                    owned("prod", false),
+                    owned("both", true),
+                    owned("only", true),
+                    owned("plain", true),
+                    owned("unix_prod", false)
+                ]
+            );
+        }
+
+        #[test]
+        fn test_files_test_builds_load_follow_the_cfg_attr_paths() {
+            let tmp = TestProject::new()
+                .file("src/lib.rs", "")
+                .file("src/t.rs", "")
+                .file("src/p.rs", "")
+                .file("src/u.rs", "")
+                .file("src/under_test.rs", "")
+                .file("src/outside_test.rs", "")
+                .file("src/on_unix.rs", "")
+                .build();
+            let source = r#"#[cfg_attr(test, path = "t.rs")] mod under_test;
+                #[cfg_attr(not(test), path = "p.rs")] mod outside_test;
+                #[cfg_attr(all(unix, test), path = "u.rs")] mod on_unix;"#;
+            let syntax: syn::File = syn::parse_str(source).unwrap();
+            let root = tmp.path().join("src/lib.rs");
+            let loaded: Vec<Vec<(String, bool)>> = extract_mod_declarations(&syntax, true)
+                .iter()
+                .map(|decl| {
+                    declared_files(&root, true, decl)
+                        .into_iter()
+                        .map(|declared| {
+                            let name = declared.file.path.file_name().unwrap();
+                            (
+                                name.to_string_lossy().into_owned(),
+                                declared.test_build_may_load,
+                            )
+                        })
+                        .collect()
+                })
+                .collect();
+            let owned = |name: &str, loaded| (name.to_string(), loaded);
+            assert_eq!(
+                loaded,
+                [
+                    vec![owned("under_test.rs", false), owned("t.rs", true)],
+                    vec![owned("outside_test.rs", true), owned("p.rs", false)],
+                    vec![owned("on_unix.rs", true), owned("u.rs", true)],
+                ]
+            );
         }
 
         #[test]

@@ -34,3 +34,35 @@ pub mod sf;
 pub mod mown;
 pub mod gth;
 pub mod gts;
+pub mod tro;
+pub mod tra;
+pub mod trb;
+#[cfg(test)]
+pub mod tr1fake;
+pub mod tr1user;
+pub mod tr2;
+pub mod tr2user;
+#[cfg(test)]
+mod tr3fake;
+pub mod tr3user;
+#[cfg(test)]
+mod tr4t;
+#[cfg(test)]
+mod tr5a;
+#[cfg(test)]
+mod tr5b;
+pub mod tr5user;
+pub mod tr6;
+pub mod tr6user;
+pub mod tr6usert;
+#[cfg(test)]
+#[path = "tr7_test.rs"]
+pub mod tr7;
+#[cfg(not(test))]
+pub mod tr7;
+pub mod tr7user;
+pub mod tr8;
+pub mod tr8user;
+pub mod tr9;
+pub mod tr9user;
+pub mod trglob;

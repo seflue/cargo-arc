@@ -2053,6 +2053,190 @@ fn name_resolution_file_beside_a_cfg_attr_path_outside_test_is_test_code() {
     );
 }
 
+/// Assert that the `name_resolution` fixture, read with or without test code
+/// as `include_tests` says, has the arc `from -> to` with the context `kind`
+/// and exactly `symbols`.
+fn assert_name_resolution_arc_in(
+    include_tests: bool,
+    from: &str,
+    to: &str,
+    kind: &str,
+    symbols: &[&str],
+) {
+    let expected = (
+        kind.to_string(),
+        symbols.iter().map(ToString::to_string).collect::<Vec<_>>(),
+    );
+    assert_eq!(
+        name_resolution_arcs(include_tests).get(&(from.to_string(), to.to_string())),
+        Some(&expected),
+        "{from} -> {to} (include_tests {include_tests})"
+    );
+}
+
+/// The arcs of the `name_resolution` fixture that leave `from`, read with or
+/// without test code as `include_tests` says, by target, sorted.
+fn name_resolution_arcs_from(
+    include_tests: bool,
+    from: &str,
+) -> Vec<(String, String, Vec<String>)> {
+    let mut arcs: Vec<_> = name_resolution_arcs(include_tests)
+        .iter()
+        .filter(|((source, _), _)| source == from)
+        .map(|((_, to), (kind, symbols))| (to.clone(), kind.clone(), symbols.clone()))
+        .collect();
+    arcs.sort();
+    arcs
+}
+
+/// Cell 47: a `#[cfg(test)]` module binds a name from its own child module,
+/// which only test builds load; another child names it through the parent and
+/// depends on the definer.
+#[test]
+fn name_resolution_use_in_a_test_module_reaches_its_test_child() {
+    assert_name_resolution_arc(
+        "app5::tests::inner",
+        "app5::tests::fixtures",
+        "test",
+        &["make"],
+    );
+    assert_no_name_resolution_arc("app5::tests::inner", "app5::tests");
+}
+
+/// Cell 47r1: a `#[cfg(test)]` module re-exports a glob and defines an item;
+/// test code naming both through it depends on each definer.
+#[test]
+fn name_resolution_test_module_glob_reexport_reaches_the_definer() {
+    assert_name_resolution_arc("m::tr1user", "m::tro", "test", &["helper"]);
+    assert_name_resolution_arc("m::tr1user", "m::tr1fake", "test", &["mock"]);
+    assert_eq!(name_resolution_arcs_from(false, "m::tr1user"), []);
+}
+
+/// Cell 47r2: a file `#[cfg_attr(test, path = …)]` names re-exports a glob;
+/// test code reaches the definer through it, production code the file
+/// without the path.
+#[test]
+fn name_resolution_cfg_attr_test_file_reexport_reaches_the_definer() {
+    assert_name_resolution_arc_in(
+        false,
+        "m::tr2user",
+        "m::tr2::inner",
+        "production",
+        &["real"],
+    );
+    assert_name_resolution_arc_in(
+        true,
+        "m::tr2user",
+        "m::tr2::inner",
+        "production",
+        &["mock", "real"],
+    );
+    assert_name_resolution_arc("m::tr2user", "m::tro", "test", &["helper"]);
+}
+
+/// Cell 47r3: a private `#[cfg(test)]` module re-exports by name and under
+/// another name; test code depends on the definer, not on the module.
+#[test]
+fn name_resolution_private_test_module_reexport_reaches_the_definer() {
+    assert_name_resolution_arc("m::tr3user", "m::tro", "test", &["helper", "helper2"]);
+    assert_no_name_resolution_arc("m::tr3user", "m::tr3fake");
+}
+
+/// Cell 47r4: a child of a `#[cfg(test)]` module names an item its parent's
+/// private glob brings in; the parent only passes it on.
+#[test]
+fn name_resolution_private_glob_of_a_test_module_passes_on_to_its_child() {
+    assert_name_resolution_arc("m::tr4t::inner", "m::tro", "test", &["helper"]);
+    assert_no_name_resolution_arc("m::tr4t", "m::tro");
+}
+
+/// Cell 47r5: a re-export chain through two `#[cfg(test)]` modules ends on
+/// the definer.
+#[test]
+fn name_resolution_reexport_chain_through_test_modules_reaches_the_definer() {
+    assert_name_resolution_arc("m::tr5user", "m::tro", "test", &["helper"]);
+    assert_no_name_resolution_arc("m::tr5user", "m::tr5a");
+}
+
+/// Cell 47r6: alternative files bind a name to different targets; production
+/// code takes the one of the build without `test`, test code the one of the
+/// test build.
+#[test]
+fn name_resolution_alternative_files_bind_by_build() {
+    assert_name_resolution_arc("m::tr6user", "m::tra", "production", &["Thing"]);
+    assert_name_resolution_arc("m::tr6usert", "m::trb", "test", &["Thing"]);
+    assert_no_name_resolution_arc("m::tr6user", "m::trb");
+    assert_no_name_resolution_arc("m::tr6usert", "m::tra");
+}
+
+/// Cell 47r7: a module declared under `#[cfg(test)] #[path = …]` and under
+/// `#[cfg(not(test))]`; each build reads its own file.
+#[test]
+fn name_resolution_module_declared_per_build_reads_the_file_of_the_build() {
+    assert_name_resolution_arc("m::tr7user", "m::tr7", "production", &["helper"]);
+    assert_name_resolution_arc("m::tr7user", "m::tro", "test", &["helper"]);
+}
+
+/// Cell 47r8: under `#[cfg_attr(not(test), path = …)]` only test builds load
+/// the file without the path, and it re-exports what test code names.
+#[test]
+fn name_resolution_file_beside_a_path_outside_test_serves_test_code() {
+    assert_name_resolution_arc("m::tr8user", "m::tr8::inner", "production", &["helper"]);
+    assert_name_resolution_arc("m::tr8user", "m::tro", "test", &["helper"]);
+}
+
+/// Cell 47r9: under `#[cfg_attr(all(unix, test), path = …)]` test builds may
+/// load either file; test code reaches the definer the path's file names.
+#[test]
+fn name_resolution_platform_test_path_is_an_alternative_for_test_code() {
+    assert_name_resolution_arc("m::tr9user", "m::tr9::inner", "production", &["real"]);
+    assert_name_resolution_arc("m::tr9user", "m::tro", "test", &["helper"]);
+}
+
+/// Cell 47r10: test code of another crate resolves through the crate it
+/// depends on as that crate's build without `test` has it.
+#[test]
+fn name_resolution_test_code_of_another_crate_reads_the_build_without_test() {
+    assert_name_resolution_arc("xb::user", "xa::a", "test", &["thing"]);
+    assert_no_name_resolution_arc("xb::user", "xa::b");
+}
+
+/// Cell 47r11: a crate's test code reaches its own alternative directly
+/// through the test build, and through a crate that depends on it through
+/// the build without `test`.
+#[test]
+fn name_resolution_resolution_back_through_another_crate_reads_the_build_without_test() {
+    assert_name_resolution_arc("xa::user", "xa::a", "test", &["thing"]);
+    assert_name_resolution_arc("xa::user", "xa::b", "test", &["thing"]);
+    assert_name_resolution_arc("xb", "xa::a", "production", &["thing"]);
+    assert_no_name_resolution_arc("xb", "xa::b");
+}
+
+/// Cell 47r14: a crate's test code takes a name from the glob of a crate that
+/// depends on it, and that glob reaches back into the crate through its build
+/// without `test`. The trait that build's file defines keeps the private glob
+/// of a test module that passes the name on to its child.
+#[test]
+fn name_resolution_glob_back_through_another_crate_reads_the_build_without_test() {
+    assert_eq!(
+        name_resolution_arcs_from(true, "xa::guser"),
+        [(
+            "xa::g::inner".to_string(),
+            "test".to_string(),
+            vec!["item".to_string()]
+        )]
+    );
+    assert_name_resolution_arc("xa::gt::inner", "xa::g::inner", "test", &["item"]);
+    assert_name_resolution_arc("xa::gt", "xa::gre", "test", &["*"]);
+}
+
+/// A glob in production code of a root with a test build, which inline test
+/// code takes no name from, keeps only the names production code takes.
+#[test]
+fn name_resolution_production_glob_beside_test_code_keeps_its_names() {
+    assert_name_resolution_arc("m::trglob", "m::tro", "production", &["helper"]);
+}
+
 /// Assert the arcs of a module whose nested `#[cfg_attr]` names a file only
 /// test builds load: its default file to `util`, the nested file to `util2`.
 fn assert_nested_cfg_attr_test_path(module: &str) {
