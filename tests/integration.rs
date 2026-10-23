@@ -2230,6 +2230,67 @@ fn name_resolution_glob_back_through_another_crate_reads_the_build_without_test(
     assert_name_resolution_arc("xa::gt", "xa::gre", "test", &["*"]);
 }
 
+/// Cell 47r12: a lib that names itself by `extern crate self as …` reaches
+/// through that name, from its own test code, the definer its test build
+/// re-exports.
+#[test]
+fn name_resolution_lib_naming_itself_in_its_tests_reads_its_test_build() {
+    assert_name_resolution_arc("xs::user", "xs::b", "test", &["helper"]);
+    assert_name_resolution_arc("xs::user", "xs::c", "test", &["helper2"]);
+    assert_no_name_resolution_arc("xs::user", "xs::a");
+    assert_no_name_resolution_arc("xs::user", "xs::fake");
+    assert_no_name_resolution_arc("xs::user", "xs::tfake");
+}
+
+/// Cell 47r13: test code of an integration test and of a bin reaches the lib
+/// through its name as the lib's build without `test` re-exports it.
+#[test]
+fn name_resolution_other_roots_naming_the_lib_read_its_build_without_test() {
+    assert_name_resolution_arc("xs::xsit", "xs::a", "test", &["helper"]);
+    assert_name_resolution_arc("xs::xsbin", "xs::a", "test", &["helper"]);
+    assert_no_name_resolution_arc("xs::xsit", "xs::b");
+    assert_no_name_resolution_arc("xs::xsbin", "xs::b");
+}
+
+/// Cell 47r15: production code of a lib that names itself by
+/// `extern crate self as …` reaches through that name the definer a
+/// `pub(crate)` re-export names, not the module that re-exports it.
+#[test]
+fn name_resolution_lib_naming_itself_in_production_sees_its_crate_visible_reexport() {
+    assert_name_resolution_arc("xs::user", "xs::d", "production", &["shared"]);
+    assert_no_name_resolution_arc("xs::user", "xs::pc");
+}
+
+/// Cell 47r16: test code of a lib that names itself and has no test build of
+/// its own reaches through that name the definer a `pub(crate)` re-export
+/// names.
+#[test]
+fn name_resolution_lib_naming_itself_without_test_build_sees_its_crate_visible_reexport() {
+    assert_name_resolution_arc("xn::user", "xn::d", "test", &["helper"]);
+    assert_no_name_resolution_arc("xn::user", "xn::m");
+}
+
+/// Cell 47r17: an integration test and a bin that glob a module of the lib
+/// through its name take nothing from a `pub(crate)` re-export there: the
+/// name comes from their other glob, and the glob that takes nothing keeps
+/// only its `*` arc.
+#[test]
+fn name_resolution_other_roots_naming_the_lib_skip_its_crate_visible_reexport() {
+    for root in ["xs::xsit", "xs::xsbin"] {
+        assert_name_resolution_arc(root, "xs::e", "test", &["shared"]);
+        assert_name_resolution_arc(root, "xs::pc", "test", &["*"]);
+        assert_no_name_resolution_arc(root, "xs::d");
+    }
+}
+
+/// Cell 47r18: production code of a lib that names itself by
+/// `extern crate self as …` takes through a glob over that name the item a
+/// `pub(crate)` re-export names, as the same glob written with `crate::` does.
+#[test]
+fn name_resolution_lib_naming_itself_in_production_globs_its_crate_visible_reexport() {
+    assert_name_resolution_arc("xs::guser", "xs::d", "production", &["shared"]);
+}
+
 /// A glob in production code of a root with a test build, which inline test
 /// code takes no name from, keeps only the names production code takes.
 #[test]
