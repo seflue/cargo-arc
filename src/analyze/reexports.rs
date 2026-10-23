@@ -657,7 +657,7 @@ fn walk_collect_reexports(
 mod tests {
     use super::super::use_parser::resolve_reexport;
     use super::*;
-    use crate::model::{DependencyRef, PackageInfo};
+    use crate::model::{DependencyRef, PackageInfo, TargetRoot};
     use crate::test_support::conventional_package;
     use std::collections::HashSet;
     use tempfile::TempDir;
@@ -1232,7 +1232,7 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
             context: EdgeContext::production(),
             via_reexport: false,
             uses: Vec::new(),
-            in_lib_view: false,
+            target_root: TargetRoot::AsSeen,
         };
         let keeps_edge = resolve_reexport(&mut dep, &map, &mp, "tools::user");
 
@@ -1737,7 +1737,7 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
             context: EdgeContext::production(),
             via_reexport: false,
             uses: Vec::new(),
-            in_lib_view: false,
+            target_root: TargetRoot::AsSeen,
         };
         resolve_reexport(&mut dep, &map, &mp, "");
 
@@ -1794,7 +1794,7 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
                 context: EdgeContext::production(),
                 via_reexport: false,
                 uses: Vec::new(),
-                in_lib_view: false,
+                target_root: TargetRoot::AsSeen,
             };
             resolve_reexport(&mut dep, &map, &mp, "");
             (dep.target_package, dep.target_module)
@@ -1856,7 +1856,7 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
             context: EdgeContext::production(),
             via_reexport: false,
             uses: Vec::new(),
-            in_lib_view: false,
+            target_root: TargetRoot::AsSeen,
         };
         resolve_reexport(&mut dep, &map, &mp, "util::child");
 

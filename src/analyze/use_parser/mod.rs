@@ -2,9 +2,10 @@
 
 use super::packages::{ModulePathMap, PackageExportMap, WorkspacePackages, normalize_crate_name};
 use crate::model::{
-    DefKind, Definition, DependencyRef, EdgeContext, EntryKind, SymbolUse, TestKind, UsageKind,
-    UseCategory,
+    DefKind, Definition, DependencyRef, EdgeContext, EntryKind, SymbolUse, TargetRoot, TestKind,
+    UsageKind, UseCategory,
 };
+use std::borrow::Cow;
 use std::cell::{OnceCell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
@@ -360,13 +361,25 @@ impl ReExportMap {
     /// this map does, its `pub(crate)` items and its test build included;
     /// every other root sees its lib from outside.
     pub(crate) fn lib_view(&self) -> Self {
-        if self.own_root_is_lib() {
-            return self.clone();
-        }
+        let own_root = self.lib_view_root().cloned();
         Self {
             packages: Arc::clone(&self.packages),
-            own_root: None,
-            test_build: false,
+            test_build: self.test_build && own_root.is_some(),
+            own_root,
+        }
+    }
+
+    /// The own root as [`ReExportMap::lib_view`] sees it: kept where it is
+    /// its package's lib root, else none.
+    fn lib_view_root(&self) -> Option<&(String, usize)> {
+        self.own_root.as_ref().filter(|_| self.own_root_is_lib())
+    }
+
+    /// The same map, as a reference resolving against `root` sees it.
+    pub(crate) fn seen_through(&self, root: TargetRoot) -> Cow<'_, Self> {
+        match root {
+            TargetRoot::AsSeen => Cow::Borrowed(self),
+            TargetRoot::Lib => Cow::Owned(self.lib_view()),
         }
     }
 
@@ -415,27 +428,31 @@ impl ReExportMap {
 
     /// The export info of `crate_name`'s modules, as this map sees them.
     pub(crate) fn get(&self, crate_name: &str) -> Option<&HashMap<String, ModuleExportInfo>> {
-        self.modules_of(crate_name, false)
+        self.modules_from(self.own_root.as_ref(), crate_name)
     }
 
-    /// The export info of the modules of the crate a dependency points at, in
-    /// the view the dependency names them in: a dependency in the lib view
-    /// sees the lib root of its own package too.
+    /// The export info of the modules of the crate a dependency points at, as
+    /// the root it resolves against shows them.
     pub(crate) fn exports_for(
         &self,
         dep: &DependencyRef,
     ) -> Option<&HashMap<String, ModuleExportInfo>> {
-        self.modules_of(&dep.target_package, dep.in_lib_view)
+        let own_root = match dep.target_root {
+            TargetRoot::AsSeen => self.own_root.as_ref(),
+            TargetRoot::Lib => self.lib_view_root(),
+        };
+        self.modules_from(own_root, &dep.target_package)
     }
 
-    fn modules_of(
+    /// The export info of `crate_name`'s modules, seen from `own_root`.
+    fn modules_from(
         &self,
+        own_root: Option<&(String, usize)>,
         crate_name: &str,
-        in_lib_view: bool,
     ) -> Option<&HashMap<String, ModuleExportInfo>> {
         let roots = self.packages.get(crate_name)?;
-        match &self.own_root {
-            Some((own, index)) if self.is_own_root(crate_name, in_lib_view) => {
+        match own_root {
+            Some((own, index)) if own == crate_name => {
                 let root = roots.get(*index)?;
                 let test_build_modules =
                     root.test_build_modules.as_ref().filter(|_| self.test_build);
@@ -449,38 +466,31 @@ impl ReExportMap {
     }
 
     /// Look up the export info of the module a dependency points at, where
-    /// the map has it, in the view the dependency names it in.
+    /// the map has it, as the root it resolves against shows it.
     pub(crate) fn module_info(&self, dep: &DependencyRef) -> Option<&ModuleExportInfo> {
         self.exports_for(dep)?.get(&dep.target_module)
     }
 
-    /// Whether a binding with `visibility` in `crate_name`, reached in the lib
-    /// view or not, is visible from `module` of the crate root this map is
-    /// seen from. A restricted binding is visible from below its module in
-    /// the same crate only: another package, another root of the same
-    /// package and a map seen from outside every package see what is public.
+    /// Whether a binding with `visibility` in `crate_name` is visible from
+    /// `module` of the crate root this map is seen from. A restricted binding
+    /// is visible from below its module in the same crate only: another
+    /// package, another root of the same package and a map seen from outside
+    /// every package see what is public.
     pub(crate) fn is_visible(
         &self,
         crate_name: &str,
-        in_lib_view: bool,
         visibility: &Visibility,
         module: &str,
     ) -> bool {
         match visibility {
             Visibility::Public => true,
             Visibility::Restricted(ancestor) => {
-                self.is_own_root(crate_name, in_lib_view) && is_descendant(module, ancestor)
+                self.own_root
+                    .as_ref()
+                    .is_some_and(|(own, _)| own == crate_name)
+                    && is_descendant(module, ancestor)
             }
         }
-    }
-
-    /// Whether the modules of `crate_name`, reached in the lib view or not,
-    /// are those of the root this map is seen from.
-    fn is_own_root(&self, crate_name: &str, in_lib_view: bool) -> bool {
-        let Some((own, _)) = &self.own_root else {
-            return false;
-        };
-        own == crate_name && (!in_lib_view || self.own_root_is_lib())
     }
 
     /// Whether the root this map is seen from is its package's lib root.
@@ -802,9 +812,9 @@ fn reexports_a_trait_or_unknown(
 /// name a private `use` bound to something outside the crate (an external
 /// crate) — the caller then produces no edge for `dep` — and `true` otherwise.
 /// Each private glob and private `use` of an ancestor the chain passes
-/// through is noted in `passed_on`. A `dep` in the lib view follows the chain
-/// from its package's lib root. Whether a name binds a module, `module_paths`
-/// tells; whether the reference means it, `meaning`.
+/// through is noted in `passed_on`. A `dep` on [`TargetRoot::Lib`] follows the
+/// chain from its package's lib root. Whether a name binds a module,
+/// `module_paths` tells; whether the reference means it, `meaning`.
 fn resolve_reexport_noting(
     dep: &mut DependencyRef,
     reexport_map: &ReExportMap,
@@ -813,25 +823,15 @@ fn resolve_reexport_noting(
     passed_on: Option<&PassedOn>,
     meaning: Meaning,
 ) -> bool {
-    if dep.in_lib_view {
-        follow_reexports(
-            dep,
-            &reexport_map.lib_view(),
-            module_paths,
-            importer_module,
-            passed_on,
-            meaning,
-        )
-    } else {
-        follow_reexports(
-            dep,
-            reexport_map,
-            module_paths,
-            importer_module,
-            passed_on,
-            meaning,
-        )
-    }
+    let reexport_map = reexport_map.seen_through(dep.target_root);
+    follow_reexports(
+        dep,
+        &reexport_map,
+        module_paths,
+        importer_module,
+        passed_on,
+        meaning,
+    )
 }
 
 /// The chain of [`resolve_reexport_noting`], followed as `reexport_map` sees
@@ -852,9 +852,8 @@ fn follow_reexports(
     let mut visited = HashSet::new();
     let mut lookup_name = dep.target_item.clone();
     let mut use_holders: Vec<Holder> = Vec::new();
-    let in_lib_view = dep.in_lib_view;
     let visible = |map: &ReExportMap, crate_name: &str, visibility: &Visibility| {
-        map.is_visible(crate_name, in_lib_view, visibility, importer_module)
+        map.is_visible(crate_name, visibility, importer_module)
     };
 
     loop {
@@ -1106,9 +1105,7 @@ fn private_glob_holding<'m>(
     module_info
         .private_glob_sources
         .iter()
-        .filter(|glob| {
-            reexport_map.is_visible(crate_name, false, &glob.visibility, importer_module)
-        })
+        .filter(|glob| reexport_map.is_visible(crate_name, &glob.visibility, importer_module))
         .map(|glob| &glob.module)
         .find(|glob_src| {
             module_exports_symbol(
@@ -1143,12 +1140,7 @@ fn follow_local_glob(
     let Some(glob_src) = sources
         .iter()
         .filter(|glob| {
-            reexport_map.is_visible(
-                &dep.target_package,
-                false,
-                &glob.visibility,
-                importer_module,
-            )
+            reexport_map.is_visible(&dep.target_package, &glob.visibility, importer_module)
         })
         .map(|glob| &glob.module)
         .find(|glob_src| {
@@ -1194,23 +1186,19 @@ fn follow_foreign_glob<'m>(
 ) -> Option<&'m HashMap<String, ModuleExportInfo>> {
     sources.iter().find_map(|(crate_name, glob)| {
         let exports = reexport_map.get(crate_name)?;
-        if !reexport_map.is_visible(
-            &dep.target_package,
-            false,
-            &glob.visibility,
-            importer_module,
-        ) || module_exports_symbol(
-            reexport_map,
-            CrateModule {
-                crate_name,
-                path: &glob.module,
-            },
-            symbol,
-            importer_module,
-            &[CrateModule::of(dep)],
-            &mut passed.clone(),
-        )
-        .is_none()
+        if !reexport_map.is_visible(&dep.target_package, &glob.visibility, importer_module)
+            || module_exports_symbol(
+                reexport_map,
+                CrateModule {
+                    crate_name,
+                    path: &glob.module,
+                },
+                symbol,
+                importer_module,
+                &[CrateModule::of(dep)],
+                &mut passed.clone(),
+            )
+            .is_none()
         {
             return None;
         }
@@ -1238,14 +1226,13 @@ fn end_on_module(
                 reexport_map,
                 module_paths,
                 &target.crate_name,
-                dep.in_lib_view,
                 &target.module,
                 &target.original_name,
                 importer_module,
             )
     };
     let binds_module = binds_a_module(target, module_paths)
-        && module_is_visible(reexport_map, target, dep.in_lib_view, importer_module)
+        && module_is_visible(reexport_map, target, importer_module)
         && !item_meant();
     if binds_module {
         dep.target_package.clone_from(&target.crate_name);
@@ -1255,28 +1242,26 @@ fn end_on_module(
     binds_module
 }
 
-/// Whether `module` of `crate_name`, reached in the lib view or not, holds an
-/// item `name` visible from `importer_module`: its own definition, or a `use`
-/// of something that is no module. Beside a module of that name, it is what a
-/// reference that does not mean the module names.
+/// Whether `module` of `crate_name` holds an item `name` visible from
+/// `importer_module`: its own definition, or a `use` of something that is no
+/// module. Beside a module of that name, it is what a reference that does not
+/// mean the module names.
 fn holds_an_item_named(
     reexport_map: &ReExportMap,
     module_paths: &ModulePathMap,
     crate_name: &str,
-    in_lib_view: bool,
     module: &str,
     name: &str,
     importer_module: &str,
 ) -> bool {
     let Some(info) = reexport_map
-        .modules_of(crate_name, in_lib_view)
+        .get(crate_name)
         .and_then(|modules| modules.get(module))
     else {
         return false;
     };
-    let visible = |visibility: &Visibility| {
-        reexport_map.is_visible(crate_name, in_lib_view, visibility, importer_module)
-    };
+    let visible =
+        |visibility: &Visibility| reexport_map.is_visible(crate_name, visibility, importer_module);
     info.definitions
         .get(name)
         .is_some_and(|item| visible(&item.visibility))
@@ -1300,19 +1285,12 @@ fn binds_a_module(target: &ReExportTarget, module_paths: &ModulePathMap) -> bool
 /// Whether the module `target` binds is visible from `module`, as the `mod`
 /// declaration in its parent has it. A crate root is, and so is a module the
 /// map holds no restricted declaration of.
-fn module_is_visible(
-    reexport_map: &ReExportMap,
-    target: &ReExportTarget,
-    in_lib_view: bool,
-    module: &str,
-) -> bool {
+fn module_is_visible(reexport_map: &ReExportMap, target: &ReExportTarget, module: &str) -> bool {
     reexport_map
-        .modules_of(&target.crate_name, in_lib_view)
+        .get(&target.crate_name)
         .and_then(|crate_exports| crate_exports.get(&target.module))
         .and_then(|parent| parent.module_visibility.get(&target.original_name))
-        .is_none_or(|visibility| {
-            reexport_map.is_visible(&target.crate_name, in_lib_view, visibility, module)
-        })
+        .is_none_or(|visibility| reexport_map.is_visible(&target.crate_name, visibility, module))
 }
 
 /// Check whether `module` brings a symbol into the scope of `importer_module`
@@ -1353,7 +1331,7 @@ fn module_exports_symbol(
         .get(crate_name)
         .and_then(|crate_exports| crate_exports.get(module.path))?;
     let visible = |visibility: &Visibility| {
-        reexport_map.is_visible(crate_name, false, visibility, importer_module)
+        reexport_map.is_visible(crate_name, visibility, importer_module)
             && holders
                 .iter()
                 .all(|holder| holder.sees(crate_name, visibility))
@@ -1426,7 +1404,7 @@ fn root_reexports(
                 .glob_sources
                 .iter()
                 .filter(|glob| {
-                    reexport_map.is_visible(crate_name, false, &glob.visibility, importer_module)
+                    reexport_map.is_visible(crate_name, &glob.visibility, importer_module)
                 })
                 .any(|glob| {
                     module_exports_symbol(
@@ -2516,12 +2494,8 @@ fn module_bound_as(
 ) -> Option<String> {
     let info = ctx.reexport_map.get(crate_name)?.get(module)?;
     let visible = |target: &&ReExportTarget| {
-        ctx.reexport_map.is_visible(
-            crate_name,
-            false,
-            &target.visibility,
-            ctx.current_module_path,
-        )
+        ctx.reexport_map
+            .is_visible(crate_name, &target.visibility, ctx.current_module_path)
     };
     let target = info
         .explicit_reexports
@@ -2603,7 +2577,7 @@ fn parse_crate_local_import(
         context: context.clone(),
         via_reexport: false,
         uses: Vec::new(),
-        in_lib_view: false,
+        target_root: TargetRoot::AsSeen,
     })
 }
 
@@ -2660,7 +2634,7 @@ fn parse_bare_module_import(
         context: context.clone(),
         via_reexport: false,
         uses: Vec::new(),
-        in_lib_view: false,
+        target_root: TargetRoot::AsSeen,
     })
 }
 
@@ -2684,20 +2658,13 @@ fn parse_workspace_import(
     }
 
     let target_crate_name = normalize_crate_name(crate_name);
-    // The own package by name is its lib, also from a file of the bin tree.
-    let names_own_package = target_crate_name == normalize_crate_name(ctx.current_crate);
-    let lib_view;
-    let reexport_map = if names_own_package {
-        lib_view = ctx.reexport_map.lib_view();
-        &lib_view
-    } else {
-        ctx.reexport_map
-    };
+    let target_root = root_named_by(ctx, &target_crate_name);
+    let reexport_map = ctx.reexport_map.seen_through(target_root);
     let module_paths = ctx.all_module_paths.get_or_empty(&target_crate_name);
     if parts.len() > 2
         && !module_paths.contains(module_segment)
         && let Some(in_other) =
-            path_in_root_reexported_crate(ctx, reexport_map, &target_crate_name, &parts[1..])
+            path_in_root_reexported_crate(ctx, &reexport_map, &target_crate_name, &parts[1..])
     {
         return parse_workspace_import(ctx, &in_other, line_num, context);
     }
@@ -2705,7 +2672,7 @@ fn parse_workspace_import(
         None
     } else {
         root_reexported_module(
-            reexport_map,
+            &reexport_map,
             &target_crate_name,
             module_segment,
             module_paths,
@@ -2730,7 +2697,7 @@ fn parse_workspace_import(
             .get(&target_crate_name)
             .is_some_and(|e| e.contains(module_segment))
             || root_reexports(
-                reexport_map,
+                &reexport_map,
                 &target_crate_name,
                 module_segment,
                 ctx.current_module_path,
@@ -2754,7 +2721,7 @@ fn parse_workspace_import(
         context: context.clone(),
         via_reexport: false,
         uses: Vec::new(),
-        in_lib_view: names_own_package,
+        target_root,
     })
 }
 
@@ -2832,12 +2799,12 @@ fn take_item_the_parent_reexports(
         .target_module
         .rsplit_once("::")
         .unwrap_or(("", dep.target_module.as_str()));
+    let reexport_map = ctx.reexport_map.seen_through(dep.target_root);
     if !meaning.admits_a_module()
         && holds_an_item_named(
-            ctx.reexport_map,
+            &reexport_map,
             ctx.all_module_paths,
             &dep.target_package,
-            dep.in_lib_view,
             parent,
             name,
             ctx.current_module_path,
@@ -2849,16 +2816,10 @@ fn take_item_the_parent_reexports(
         return;
     }
     let visible = |visibility: &Visibility| {
-        ctx.reexport_map.is_visible(
-            &dep.target_package,
-            dep.in_lib_view,
-            visibility,
-            ctx.current_module_path,
-        )
+        reexport_map.is_visible(&dep.target_package, visibility, ctx.current_module_path)
     };
-    let Some(target) = ctx
-        .reexport_map
-        .exports_for(dep)
+    let Some(target) = reexport_map
+        .get(&dep.target_package)
         .and_then(|modules| modules.get(parent))
         .filter(|info| {
             info.module_visibility
@@ -2904,7 +2865,7 @@ fn resolve_path_in_chain(
                 context: context.clone(),
                 via_reexport: false,
                 uses: Vec::new(),
-                in_lib_view: false,
+                target_root: TargetRoot::AsSeen,
             }
         } else {
             resolve_path_in_chain(ctx, base, line_num, context, inline_depth)?
@@ -2957,8 +2918,19 @@ fn workspace_crate_root(
         context: context.clone(),
         via_reexport: false,
         uses: Vec::new(),
-        in_lib_view: normalize_crate_name(path) == normalize_crate_name(ctx.current_crate),
+        target_root: root_named_by(ctx, &normalize_crate_name(path)),
     })
+}
+
+/// The root a path through the name of the workspace crate `crate_name`
+/// resolves against: the own package by name is its lib, also from a file of
+/// the bin tree.
+fn root_named_by(ctx: &ResolutionContext, crate_name: &str) -> TargetRoot {
+    if crate_name == normalize_crate_name(ctx.current_crate) {
+        TargetRoot::Lib
+    } else {
+        TargetRoot::AsSeen
+    }
 }
 
 /// Resolve `path`, written from the root of `package`, a workspace crate other
@@ -3036,7 +3008,7 @@ fn parse_external_crate_import(
         context: context.clone(),
         via_reexport: false,
         uses: Vec::new(),
-        in_lib_view: false,
+        target_root: TargetRoot::AsSeen,
     })
 }
 
@@ -3098,14 +3070,10 @@ fn glob_payload(
     reexport_map: &ReExportMap,
     holder_module: &str,
 ) -> Option<Vec<String>> {
+    let reexport_map = reexport_map.seen_through(dep.target_root);
     let module_info = reexport_map.module_info(dep)?;
     let visible = |visibility: &Visibility| {
-        reexport_map.is_visible(
-            &dep.target_package,
-            dep.in_lib_view,
-            visibility,
-            holder_module,
-        )
+        reexport_map.is_visible(&dep.target_package, visibility, holder_module)
     };
     let definitions = module_info
         .definitions
@@ -3436,15 +3404,11 @@ impl FileBindings {
         ctx: &ResolutionContext,
         dep: &DependencyRef,
     ) {
+        let reexport_map = ctx.reexport_map.seen_through(dep.target_root);
         let visible = |visibility: &Visibility| {
-            ctx.reexport_map.is_visible(
-                &dep.target_package,
-                dep.in_lib_view,
-                visibility,
-                ctx.current_module_path,
-            )
+            reexport_map.is_visible(&dep.target_package, visibility, ctx.current_module_path)
         };
-        let info = ctx.reexport_map.module_info(dep);
+        let info = reexport_map.module_info(dep);
         let module_paths = ctx.all_module_paths.get_or_empty(&dep.target_package);
         let children = module_paths.iter().filter_map(|path| {
             let (parent, name) = path.rsplit_once("::").unwrap_or(("", path));
@@ -3457,7 +3421,7 @@ impl FileBindings {
             let child = BoundModule {
                 package: dep.target_package.clone(),
                 path: path.clone(),
-                in_lib_view: dep.in_lib_view,
+                target_root: dep.target_root,
                 import: None,
             };
             Some((name.to_string(), child))
@@ -3467,18 +3431,13 @@ impl FileBindings {
             .flat_map(|info| info.explicit_reexports.iter().chain(&info.private_uses))
             .filter(|(_, target)| {
                 visible(&target.visibility)
-                    && module_is_visible(
-                        ctx.reexport_map,
-                        target,
-                        dep.in_lib_view,
-                        ctx.current_module_path,
-                    )
+                    && module_is_visible(&reexport_map, target, ctx.current_module_path)
             })
             .filter_map(|(name, target)| {
                 let bound = BoundModule {
                     package: target.crate_name.clone(),
                     path: append_to_path(&target.module, &target.original_name),
-                    in_lib_view: dep.in_lib_view,
+                    target_root: dep.target_root,
                     import: None,
                 };
                 if !ctx
@@ -3617,14 +3576,14 @@ fn through_the_chain(
 }
 
 /// The module a binding names, by the package holding it, its path from the
-/// package's root, and whether that root is the lib one the package name
-/// stands for. A binding of another crate's item whose name also names a
-/// module of this crate holds the item's path.
+/// package's root, and the root it resolves against. A binding of another
+/// crate's item whose name also names a module of this crate holds the item's
+/// path.
 #[derive(Debug)]
 struct BoundModule {
     package: String,
     path: String,
-    in_lib_view: bool,
+    target_root: TargetRoot,
     /// The [`DependencyRef::full_target`] of the `use` of the file that binds
     /// the name, if one does.
     import: Option<String>,
@@ -3639,7 +3598,7 @@ impl BoundModule {
         BoundModule {
             package: dep.target_package.clone(),
             path,
-            in_lib_view: dep.in_lib_view,
+            target_root: dep.target_root,
             import: None,
         }
     }
@@ -3659,7 +3618,9 @@ impl BoundModule {
         meaning: Meaning,
     ) -> Option<DependencyRef> {
         let path = append_to_path(&self.path, rest);
-        if !self.in_lib_view && self.package == normalize_crate_name(ctx.current_crate) {
+        if self.target_root == TargetRoot::AsSeen
+            && self.package == normalize_crate_name(ctx.current_crate)
+        {
             let path = format!("crate::{path}");
             return resolve_single_path(ctx, &path, line_num, context, inline_depth, meaning);
         }
@@ -3853,15 +3814,8 @@ fn glob_taking<'b>(
 /// scope, and in which builds, as [`module_exports_symbol`] decides for the
 /// file's module.
 fn glob_exports(ctx: &ResolutionContext, glob: &DependencyRef, name: &str) -> Option<Brought> {
-    let lib_view;
-    let reexport_map = if glob.in_lib_view {
-        lib_view = ctx.reexport_map.lib_view();
-        &lib_view
-    } else {
-        ctx.reexport_map
-    };
     module_exports_symbol(
-        reexport_map,
+        &ctx.reexport_map.seen_through(glob.target_root),
         CrateModule::of(glob),
         name,
         ctx.current_module_path,
