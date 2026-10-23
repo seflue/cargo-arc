@@ -104,6 +104,65 @@ pub(crate) fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
     })
 }
 
+/// Evaluate a cfg predicate in test builds: `Some(true)` where it holds in
+/// every one, `Some(false)` where it holds in none, `None` where the answer
+/// depends on another atom. Only `test` is known; `unix`, a feature and every
+/// other atom are open.
+fn in_test_builds(meta: &syn::Meta) -> Option<bool> {
+    use syn::parse::Parser;
+    let nested = |list: &syn::MetaList| {
+        syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated
+            .parse2(list.tokens.clone())
+            .ok()
+    };
+    let values = |list: &syn::MetaList| {
+        nested(list).map(|predicates| predicates.iter().map(in_test_builds).collect::<Vec<_>>())
+    };
+    match meta {
+        syn::Meta::Path(path) if path.is_ident("test") => Some(true),
+        syn::Meta::List(list) if list.path.is_ident("not") => list
+            .parse_args::<syn::Meta>()
+            .ok()
+            .and_then(|predicate| in_test_builds(&predicate))
+            .map(|value| !value),
+        syn::Meta::List(list) if list.path.is_ident("all") => {
+            let values = values(list)?;
+            if values.contains(&Some(false)) {
+                Some(false)
+            } else {
+                values
+                    .iter()
+                    .all(|value| *value == Some(true))
+                    .then_some(true)
+            }
+        }
+        syn::Meta::List(list) if list.path.is_ident("any") => {
+            let values = values(list)?;
+            if values.contains(&Some(true)) {
+                Some(true)
+            } else {
+                values
+                    .iter()
+                    .all(|value| *value == Some(false))
+                    .then_some(false)
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Check whether a `#[cfg]` keeps the item out of every test build, as
+/// [`in_test_builds`] decides for its predicate: `not(test)` and whatever
+/// holds only where `test` does not.
+pub(crate) fn holds_in_no_test_build(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        attr.path().is_ident("cfg")
+            && attr
+                .parse_args::<syn::Meta>()
+                .is_ok_and(|meta| in_test_builds(&meta) == Some(false))
+    })
+}
+
 /// Extract the value of a `#[path = "..."]` attribute, if present.
 fn extract_path_attribute(attrs: &[syn::Attribute]) -> Option<String> {
     attrs.iter().find_map(|attr| {
@@ -422,6 +481,28 @@ mod tests {
         fn test_is_cfg_test_no_attrs() {
             let attrs = parse_attrs("mod foo;");
             assert!(!is_cfg_test(&attrs));
+        }
+
+        #[test]
+        fn test_holds_in_no_test_build() {
+            let cases = [
+                ("#[cfg(test)] mod x;", false),
+                ("#[cfg(not(test))] mod x;", true),
+                ("#[cfg(any(unix, test))] mod x;", false),
+                ("#[cfg(all(unix, test))] mod x;", false),
+                ("#[cfg(not(any(unix, test)))] mod x;", true),
+                ("#[cfg(all(unix, not(test)))] mod x;", true),
+                ("#[cfg(unix)] mod x;", false),
+                ("#[cfg(unix)] #[cfg(not(test))] mod x;", true),
+                ("mod x;", false),
+            ];
+            for (code, expected) in cases {
+                assert_eq!(
+                    holds_in_no_test_build(&parse_attrs(code)),
+                    expected,
+                    "{code}"
+                );
+            }
         }
     }
 
