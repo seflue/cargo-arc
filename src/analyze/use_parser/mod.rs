@@ -6,7 +6,7 @@ use crate::model::{
     UsageKind, UseCategory,
 };
 use std::borrow::Cow;
-use std::cell::{OnceCell, RefCell};
+use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::path::Path;
@@ -532,20 +532,19 @@ impl FromIterator<(String, HashMap<String, ModuleExportInfo>)> for ReExportMap {
     }
 }
 
-/// [`resolve_reexport_noting`] with nowhere to note what is passed on.
+/// [`resolve_reexport_as`] for a reference that asks any meaning.
 #[cfg(test)]
 pub(crate) fn resolve_reexport(
     dep: &mut DependencyRef,
     reexport_map: &ReExportMap,
     module_paths: &ModulePathMap,
     importer_module: &str,
-) -> bool {
-    resolve_reexport_noting(
+) -> Resolution {
+    resolve_reexport_as(
         dep,
         reexport_map,
         module_paths,
         importer_module,
-        None,
         Meaning::Any,
     )
 }
@@ -591,45 +590,83 @@ type DefinedAt = (String, String, String);
 #[derive(Debug, Default)]
 pub(crate) struct PassedOn {
     /// Holder and the module its glob imports from.
-    globs: RefCell<HashMap<(Holder, String), FromProduction>>,
+    globs: HashMap<(Holder, String), FromProduction>,
     /// Holder and where the name the descendant reached is defined.
-    uses: RefCell<HashMap<(Holder, DefinedAt), FromProduction>>,
+    uses: HashMap<(Holder, DefinedAt), FromProduction>,
 }
 
 /// Whether production code, not only test code, named something through a
 /// note's holder.
 type FromProduction = bool;
 
-impl PassedOn {
-    /// Note that the module `dep` now points at passed on what its private
-    /// glob from `source` brings in.
-    fn note_glob(&self, dep: &DependencyRef, source: &str) {
-        let noted = (
-            (dep.target_package.clone(), dep.target_module.clone()),
-            source.to_string(),
-        );
-        *self.globs.borrow_mut().entry(noted).or_default() |=
-            dep.context.kind == UsageKind::Production;
+/// What a re-export chain followed from a reference: whether it ends on a
+/// definer syn can place, the name it ends on, and the bindings of other
+/// modules it passed through. Following the chain notes nothing; a caller
+/// that keeps the reference notes the chain in [`PassedOn`].
+#[derive(Debug)]
+pub(crate) struct Resolution {
+    ends_on_no_definer: bool,
+    name: Option<String>,
+    passed: Vec<PassedThrough>,
+}
+
+impl Resolution {
+    /// Whether the chain reaches a name a private `use` bound to something
+    /// outside the crate, or to targets syn cannot tell apart: the reference
+    /// then produces no edge.
+    pub(crate) fn places_no_definer(&self) -> bool {
+        self.ends_on_no_definer
     }
 
-    /// Note that each of `holders` other than `importer_module` itself passed
-    /// `name`, which `dep` now points at the module of, on.
-    fn note_uses(
-        &self,
-        holders: Vec<Holder>,
+    /// The private bindings the chain passed through, in order.
+    #[cfg(test)]
+    pub(crate) fn passed_through(&self) -> &[PassedThrough] {
+        &self.passed
+    }
+}
+
+/// A private binding a re-export chain passed through, by the module that
+/// holds it.
+#[derive(Debug, PartialEq)]
+pub(crate) enum PassedThrough {
+    /// A private `use` that binds the name the chain followed.
+    PrivateUse(Holder),
+    /// A private glob, with the module it imports from.
+    PrivateGlob { holder: Holder, source: String },
+}
+
+impl PassedOn {
+    /// Note what `resolution`, the chain of `dep` resolved from
+    /// `importer_module`, passed through in modules other than
+    /// `importer_module` itself: each private glob, and each private `use`
+    /// where the chain places a definer, under the name `dep` now points at.
+    pub(crate) fn note(
+        &mut self,
+        resolution: Resolution,
         importer_module: &str,
         dep: &DependencyRef,
-        name: &str,
     ) {
-        let mut uses = self.uses.borrow_mut();
-        for holder in holders.into_iter().filter(|(_, m)| m != importer_module) {
-            let defined_at = (
-                dep.target_package.clone(),
-                dep.target_module.clone(),
-                name.to_string(),
-            );
-            *uses.entry((holder, defined_at)).or_default() |=
-                dep.context.kind == UsageKind::Production;
+        let from_production = dep.context.kind == UsageKind::Production;
+        for step in resolution.passed {
+            match step {
+                PassedThrough::PrivateGlob { holder, source } if holder.1 != importer_module => {
+                    *self.globs.entry((holder, source)).or_default() |= from_production;
+                }
+                PassedThrough::PrivateUse(holder)
+                    if holder.1 != importer_module && !resolution.ends_on_no_definer =>
+                {
+                    let Some(name) = &resolution.name else {
+                        continue;
+                    };
+                    let defined_at = (
+                        dep.target_package.clone(),
+                        dep.target_module.clone(),
+                        name.clone(),
+                    );
+                    *self.uses.entry((holder, defined_at)).or_default() |= from_production;
+                }
+                PassedThrough::PrivateGlob { .. } | PassedThrough::PrivateUse(_) => {}
+            }
         }
     }
 
@@ -658,7 +695,7 @@ impl PassedOn {
                 dep.target_module.clone(),
             );
             return dep.target_package == crate_name
-                && covers(self.globs.borrow().get(&noted), dep)
+                && covers(self.globs.get(&noted), dep)
                 && !glob_may_bring_a_trait(
                     dep,
                     CrateModule {
@@ -682,7 +719,7 @@ impl PassedOn {
                 item.clone(),
             ),
         );
-        is_import_only(dep) && covers(self.uses.borrow().get(&noted), dep)
+        is_import_only(dep) && covers(self.uses.get(&noted), dep)
     }
 }
 
@@ -785,14 +822,9 @@ fn reexports_a_trait_or_unknown(
         target_item: Some(name.to_string()),
         ..dep.clone()
     };
-    if !resolve_reexport_noting(
-        &mut named,
-        reexport_map,
-        module_paths,
-        holder,
-        None,
-        Meaning::Any,
-    ) {
+    if resolve_reexport_as(&mut named, reexport_map, module_paths, holder, Meaning::Any)
+        .places_no_definer()
+    {
         return true;
     }
     let Some(item) = &named.target_item else {
@@ -808,50 +840,42 @@ fn reexports_a_trait_or_unknown(
 /// until the original definition module is found, crossing into another
 /// workspace crate where the chain does.
 /// Modifies `dep.target_package` and `dep.target_module` in place; a no-op if
-/// no re-export applies. Returns `false` when the chain instead reaches a
-/// name a private `use` bound to something outside the crate (an external
-/// crate) — the caller then produces no edge for `dep` — and `true` otherwise.
-/// Each private glob and private `use` of an ancestor the chain passes
-/// through is noted in `passed_on`. A `dep` on [`TargetRoot::Lib`] follows the
-/// chain from its package's lib root. Whether a name binds a module,
-/// `module_paths` tells; whether the reference means it, `meaning`.
-fn resolve_reexport_noting(
+/// no re-export applies. The [`Resolution`] tells whether the chain instead
+/// reaches a name a private `use` bound to something outside the crate (an
+/// external crate), and which private `use` items and globs of other modules
+/// it passed through. A `dep` on [`TargetRoot::Lib`] follows the chain from
+/// its package's lib root. Whether a name binds a module, `module_paths`
+/// tells; whether the reference means it, `meaning`.
+fn resolve_reexport_as(
     dep: &mut DependencyRef,
     reexport_map: &ReExportMap,
     module_paths: &ModulePathMap,
     importer_module: &str,
-    passed_on: Option<&PassedOn>,
     meaning: Meaning,
-) -> bool {
+) -> Resolution {
     let reexport_map = reexport_map.seen_through(dep.target_root);
-    follow_reexports(
-        dep,
-        &reexport_map,
-        module_paths,
-        importer_module,
-        passed_on,
-        meaning,
-    )
+    follow_reexports(dep, &reexport_map, module_paths, importer_module, meaning)
 }
 
-/// The chain of [`resolve_reexport_noting`], followed as `reexport_map` sees
-/// it.
+/// The chain of [`resolve_reexport_as`], followed as `reexport_map` sees it.
 fn follow_reexports(
     dep: &mut DependencyRef,
     reexport_map: &ReExportMap,
     module_paths: &ModulePathMap,
     importer_module: &str,
-    passed_on: Option<&PassedOn>,
     meaning: Meaning,
-) -> bool {
+) -> Resolution {
     let without_test = OnceCell::new();
     let mut reexport_map = reexport_map;
+    let mut resolution = Resolution {
+        ends_on_no_definer: false,
+        name: dep.target_item.clone(),
+        passed: Vec::new(),
+    };
     let Some(mut crate_exports) = reexport_map.get(&dep.target_package) else {
-        return true;
+        return resolution;
     };
     let mut visited = HashSet::new();
-    let mut lookup_name = dep.target_item.clone();
-    let mut use_holders: Vec<Holder> = Vec::new();
     let visible = |map: &ReExportMap, crate_name: &str, visibility: &Visibility| {
         map.is_visible(crate_name, visibility, importer_module)
     };
@@ -866,7 +890,7 @@ fn follow_reexports(
         let Some(module_info) = crate_exports.get(&dep.target_module) else {
             break;
         };
-        let Some(item) = &lookup_name else {
+        let Some(item) = &resolution.name else {
             break;
         };
 
@@ -887,7 +911,8 @@ fn follow_reexports(
         if places_no_definer(module_info, item, binding, |visibility| {
             visible(reexport_map, &dep.target_package, visibility)
         }) {
-            return false;
+            resolution.ends_on_no_definer = true;
+            return resolution;
         }
         if let Some((target, private_use)) = binding {
             if end_on_module(
@@ -901,7 +926,8 @@ fn follow_reexports(
                 break;
             }
             if private_use {
-                use_holders.push((dep.target_package.clone(), dep.target_module.clone()));
+                let holder = (dep.target_package.clone(), dep.target_module.clone());
+                resolution.passed.push(PassedThrough::PrivateUse(holder));
             }
             tracing::debug!(
                 "re-export resolved: {} -> {} (via a binding in {})",
@@ -911,7 +937,7 @@ fn follow_reexports(
             );
             dep.target_package = target.crate_name.clone();
             dep.target_module = target.module.clone();
-            lookup_name = Some(target.original_name.clone());
+            resolution.name = Some(target.original_name.clone());
             let Some(next_exports) = reexport_map.get(&dep.target_package) else {
                 break;
             };
@@ -943,7 +969,7 @@ fn follow_reexports(
             reexport_map,
             item,
             importer_module,
-            passed_on,
+            &mut resolution.passed,
         ) {
             crate_exports = next_exports;
             continue;
@@ -951,15 +977,12 @@ fn follow_reexports(
 
         break;
     }
-    if let (Some(passed_on), Some(name)) = (passed_on, &lookup_name) {
-        passed_on.note_uses(use_holders, importer_module, dep, name);
-    }
     // A rename on the way leaves the written name behind: the symbol is the
     // one the module the chain ends on knows.
     if dep.target_item.is_some() {
-        dep.target_item = lookup_name;
+        dep.target_item.clone_from(&resolution.name);
     }
-    true
+    resolution
 }
 
 /// Whether a reference to `item` through `module_info` names no definer syn
@@ -1058,7 +1081,7 @@ fn follow_public_glob<'m>(
 
 /// Point `dep` at the module a private glob of `module_info` imports from
 /// that brings `symbol` into the scope of `importer_module`: one of this
-/// crate, noted in `passed_on`, or else one of another workspace crate.
+/// crate, pushed onto `passed`, or else one of another workspace crate.
 /// Returns the export info of that module's crate, where the chain goes on.
 fn follow_private_glob<'m>(
     dep: &mut DependencyRef,
@@ -1067,7 +1090,7 @@ fn follow_private_glob<'m>(
     reexport_map: &'m ReExportMap,
     symbol: &str,
     importer_module: &str,
-    passed_on: Option<&PassedOn>,
+    passed: &mut Vec<PassedThrough>,
 ) -> Option<&'m HashMap<String, ModuleExportInfo>> {
     if let Some(glob_src) = private_glob_holding(
         reexport_map,
@@ -1076,9 +1099,10 @@ fn follow_private_glob<'m>(
         symbol,
         importer_module,
     ) {
-        if let Some(passed_on) = passed_on.filter(|_| importer_module != dep.target_module) {
-            passed_on.note_glob(dep, glob_src);
-        }
+        passed.push(PassedThrough::PrivateGlob {
+            holder: (dep.target_package.clone(), dep.target_module.clone()),
+            source: glob_src.clone(),
+        });
         dep.target_module.clone_from(glob_src);
         return Some(crate_exports);
     }
@@ -1571,23 +1595,34 @@ pub(crate) struct ResolutionContext<'a> {
     /// put the name in the extern prelude, so it names the crate in every
     /// module of the crate.
     pub(crate) extern_crates: &'a HashMap<String, String>,
-    /// Where to note the private globs and private `use` items of ancestors
-    /// this file names something through. `None` where no caller asks.
-    pub(crate) passed_on: Option<&'a PassedOn>,
 }
 
 impl ResolutionContext<'_> {
-    /// [`resolve_reexport_noting`] from this file's module, for a reference
-    /// that asks `meaning` of `dep`'s item.
-    fn resolve_reexport(&self, dep: &mut DependencyRef, meaning: Meaning) -> bool {
-        resolve_reexport_noting(
+    /// [`resolve_reexport_as`] from this file's module, for a reference that
+    /// asks `meaning` of `dep`'s item.
+    fn resolve_reexport(&self, dep: &mut DependencyRef, meaning: Meaning) -> Resolution {
+        resolve_reexport_as(
             dep,
             self.reexport_map,
             self.all_module_paths,
             self.current_module_path,
-            self.passed_on,
             meaning,
         )
+    }
+
+    /// [`ResolutionContext::resolve_reexport`], with what the chain passed
+    /// through noted in `passed_on`. Whether the chain places a definer, so
+    /// that `dep` produces an edge.
+    fn resolve_noting(
+        &self,
+        dep: &mut DependencyRef,
+        meaning: Meaning,
+        passed_on: &mut PassedOn,
+    ) -> bool {
+        let resolution = self.resolve_reexport(dep, meaning);
+        let places_a_definer = !resolution.places_no_definer();
+        passed_on.note(resolution, self.current_module_path, dep);
+        places_a_definer
     }
 }
 
@@ -3023,6 +3058,7 @@ pub(crate) fn parse_workspace_dependencies(
     use_items: &CollectedUses,
     ctx: &ResolutionContext,
     bindings: &FileBindings,
+    passed_on: &mut PassedOn,
 ) -> Vec<DependencyRef> {
     let mut deps: Vec<DependencyRef> = Vec::new();
     let mut seen_targets: HashMap<(String, UsageKind), usize> = HashMap::new();
@@ -3047,7 +3083,7 @@ pub(crate) fn parse_workspace_dependencies(
                 }
                 dep.via_reexport = via_reexport;
                 for mut dep in expand_glob(dep, ctx.reexport_map, ctx.current_module_path) {
-                    if ctx.resolve_reexport(&mut dep, Meaning::Any) {
+                    if ctx.resolve_noting(&mut dep, Meaning::Any, passed_on) {
                         DependencyRef::dedup_push(&mut deps, &mut seen_targets, dep);
                     }
                 }
@@ -3142,9 +3178,6 @@ fn glob_payload_known(dep: &DependencyRef, reexport_map: &ReExportMap) -> bool {
 /// `modules` holds a binding name → the module it names, by package and path,
 /// so a binding stays valid wherever in the file it is used.
 ///
-/// `used_module_imports` notes the [`BoundModule::import`] of each binding in
-/// `modules` a path resolved through, and whether production code did.
-///
 /// `elsewhere` holds the names bound to something this crate does not contain.
 /// The parser need not know what that something is. An import from a crate it has
 /// no metadata for still binds the name, and the module beside the file is then not
@@ -3168,7 +3201,6 @@ fn glob_payload_known(dep: &DependencyRef, reexport_map: &ReExportMap) -> bool {
 pub(crate) struct FileBindings {
     regions: BindingRegions,
     modules: HashMap<RegionId, HashMap<String, BoundModule>>,
-    used_module_imports: RefCell<HashMap<String, FromProduction>>,
     elsewhere: HashMap<RegionId, HashSet<String>>,
     items: HashMap<RegionId, HashMap<String, DependencyRef>>,
     globs: HashMap<RegionId, Vec<DependencyRef>>,
@@ -3554,25 +3586,25 @@ fn classify_binding(
     Binding::Elsewhere
 }
 
-/// `dep` followed through the re-export chain, without noting what the chain
-/// passes on, so that a `use` of a name an ancestor binds to a module is
-/// classified as the module. Where the chain leads out of the crate, `dep`
-/// as it resolved.
+/// `dep` followed through the re-export chain, so that a `use` of a name an
+/// ancestor binds to a module is classified as the module. Where the chain
+/// leads out of the crate, `dep` as it resolved.
 fn through_the_chain(
     ctx: &ResolutionContext,
     dep: Option<&DependencyRef>,
 ) -> Option<DependencyRef> {
     let dep = dep?;
     let mut chained = dep.clone();
-    let unnoted = ResolutionContext {
-        passed_on: None,
-        ..*ctx
-    };
-    Some(if unnoted.resolve_reexport(&mut chained, Meaning::Any) {
-        chained
-    } else {
-        dep.clone()
-    })
+    Some(
+        if ctx
+            .resolve_reexport(&mut chained, Meaning::Any)
+            .places_no_definer()
+        {
+            dep.clone()
+        } else {
+            chained
+        },
+    )
 }
 
 /// The module a binding names, by the package holding it, its path from the
@@ -3640,11 +3672,16 @@ impl BoundModule {
 /// The binding is authoritative, so a path it rules out is dropped rather than
 /// resolved on its own.
 /// Deduplicates by `full_target()` — same strategy as `parse_workspace_dependencies()`.
+/// What the chains pass through is noted in `passed_on`. Beside the
+/// dependencies, the [`BoundModule::import`] of each module binding a path
+/// resolved through, and whether production code did.
 pub(crate) fn parse_path_ref_dependencies(
     paths: &CollectedPathRefs,
     ctx: &ResolutionContext,
     bindings: &FileBindings,
-) -> Vec<DependencyRef> {
+    passed_on: &mut PassedOn,
+) -> (Vec<DependencyRef>, HashMap<String, FromProduction>) {
+    let mut used_module_imports: HashMap<String, FromProduction> = HashMap::new();
     let mut deps: Vec<DependencyRef> = Vec::new();
     let mut seen_targets: HashMap<(String, UsageKind), usize> = HashMap::new();
     // The globs a name was taken from, by `(full_target, kind)` of the glob.
@@ -3717,15 +3754,12 @@ pub(crate) fn parse_path_ref_dependencies(
         if path_ref.position == PathPosition::Binding && declares_a_variable(ctx, &dep, meaning) {
             continue;
         }
-        if !ctx.resolve_reexport(&mut dep, meaning) {
+        if !ctx.resolve_noting(&mut dep, meaning, passed_on) {
             continue;
         }
         if let Some(import) = module_import {
-            *bindings
-                .used_module_imports
-                .borrow_mut()
-                .entry(import.to_string())
-                .or_default() |= dep.context.kind == UsageKind::Production;
+            *used_module_imports.entry(import.to_string()).or_default() |=
+                dep.context.kind == UsageKind::Production;
         }
         let Some(item) = dep.target_item.as_deref() else {
             DependencyRef::dedup_push(&mut deps, &mut seen_targets, dep);
@@ -3754,7 +3788,7 @@ pub(crate) fn parse_path_ref_dependencies(
         }
     }
 
-    deps
+    (deps, used_module_imports)
 }
 
 /// The context of a name used through a binding: a test context where the
@@ -3843,16 +3877,13 @@ fn definition_kind(ctx: &ResolutionContext, dep: &DependencyRef, item: &str) -> 
 }
 
 /// Whether a bare identifier pattern naming `dep` declares a variable, which
-/// takes no name through an ancestor. The chain is resolved without noting
-/// what it passes on, so only a pattern that matches an item notes it. The
-/// pattern asks `meaning` of the name.
+/// takes no name through an ancestor. The chain of the probe goes unnoted, so
+/// only a pattern that matches an item notes it. The pattern asks `meaning`
+/// of the name.
 fn declares_a_variable(ctx: &ResolutionContext, dep: &DependencyRef, meaning: Meaning) -> bool {
-    let unnoted = ResolutionContext {
-        passed_on: None,
-        ..*ctx
-    };
     let mut probed = dep.clone();
-    unnoted.resolve_reexport(&mut probed, meaning)
+    !ctx.resolve_reexport(&mut probed, meaning)
+        .places_no_definer()
         && probed.target_item.is_some()
         && !is_matched_by_a_bare_pattern(ctx, &probed)
 }
@@ -3944,11 +3975,14 @@ fn category_of_unknown_call(name: &str) -> UseCategory {
 /// The `use` items name the imports; the path references say where and how
 /// each imported name, and each qualified path, is used. Both are resolved
 /// against the same bindings and deduplicated by `(full_target, kind)`, the
-/// `use` items first so a location stays at the import line.
+/// `use` items first so a location stays at the import line. What the
+/// re-export chains of the dependencies pass through is noted in
+/// `passed_on`.
 pub(crate) fn parse_file_dependencies(
     syntax: &syn::File,
     ctx: &ResolutionContext,
     base_context: EdgeContext,
+    passed_on: &mut PassedOn,
 ) -> Vec<DependencyRef> {
     let use_items = collect_all_use_items(syntax, base_context.clone());
     let path_refs = collect_all_path_refs(syntax, base_context);
@@ -3960,7 +3994,9 @@ pub(crate) fn parse_file_dependencies(
             .iter()
             .any(|path_ref| !is_production(&path_ref.context));
     if ctx.reexport_map.is_test_build() || !holds_test_code {
-        return resolve_file_dependencies(syntax, ctx, ctx, &use_items, &use_items, &path_refs);
+        return resolve_file_dependencies(
+            syntax, ctx, &use_items, &use_items, &path_refs, passed_on,
+        );
     }
     let test_build = ctx.reexport_map.test_build();
     // Test code of the file is compiled in the root's test build: its
@@ -3971,26 +4007,22 @@ pub(crate) fn parse_file_dependencies(
     let mut deps = resolve_file_dependencies(
         syntax,
         ctx,
-        ctx,
         &production_uses,
         &production_uses,
         &path_refs.retaining(is_production),
+        passed_on,
     );
     let test_ctx = ResolutionContext {
         reexport_map: test_build.as_ref().unwrap_or(ctx.reexport_map),
         ..*ctx
     };
-    let bindings_ctx = ResolutionContext {
-        passed_on: None,
-        ..test_ctx
-    };
     let test_deps = resolve_file_dependencies(
         syntax,
         &test_ctx,
-        &bindings_ctx,
         &use_items,
         &use_items.retaining(|context| !is_production(context)),
         &path_refs.retaining(|context| !is_production(context)),
+        passed_on,
     );
     // A glob in production code that no test reference takes a name from
     // comes back from the second pass with its `*`; the first pass decides it.
@@ -4005,23 +4037,23 @@ pub(crate) fn parse_file_dependencies(
 }
 
 /// Resolve the `use` items `dep_uses` and the references `path_refs` of one
-/// file against the bindings that `bound_uses`, resolved in `bindings_ctx`,
-/// give the file.
+/// file against the bindings that `bound_uses` give the file, noting in
+/// `passed_on` what their chains pass through.
 fn resolve_file_dependencies(
     syntax: &syn::File,
     ctx: &ResolutionContext,
-    bindings_ctx: &ResolutionContext,
     bound_uses: &CollectedUses,
     dep_uses: &CollectedUses,
     path_refs: &CollectedPathRefs,
+    passed_on: &mut PassedOn,
 ) -> Vec<DependencyRef> {
-    let bindings = FileBindings::of(syntax, bound_uses, bindings_ctx);
-    let use_deps = parse_workspace_dependencies(dep_uses, ctx, &bindings);
-    let path_deps = parse_path_ref_dependencies(path_refs, ctx, &bindings);
+    let bindings = FileBindings::of(syntax, bound_uses, ctx);
+    let use_deps = parse_workspace_dependencies(dep_uses, ctx, &bindings, passed_on);
+    let (path_deps, used_module_imports) =
+        parse_path_ref_dependencies(path_refs, ctx, &bindings, passed_on);
 
     // A private `use` of a module whose name a path resolved through carries
     // no symbol of its own; the uses through it carry theirs.
-    let used_module_imports = bindings.used_module_imports.borrow();
     let use_deps: Vec<DependencyRef> = use_deps
         .into_iter()
         .filter(|dep| {
@@ -4080,7 +4112,12 @@ pub(crate) fn parse_workspace_dependencies_from_source(
         Ok(f) => f,
         Err(_) => return Vec::new(),
     };
-    parse_file_dependencies(&syntax, ctx, EdgeContext::production())
+    parse_file_dependencies(
+        &syntax,
+        ctx,
+        EdgeContext::production(),
+        &mut PassedOn::default(),
+    )
 }
 
 #[cfg(test)]

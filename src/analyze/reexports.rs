@@ -425,7 +425,6 @@ fn resolution_context<'a>(
         reexport_map: &EMPTY_REEXPORT_MAP,
         external_crate_names: &EMPTY_EXT_NAMES,
         extern_crates: ctx.extern_crates,
-        passed_on: None,
     }
 }
 
@@ -1234,7 +1233,7 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
             uses: Vec::new(),
             target_root: TargetRoot::AsSeen,
         };
-        let keeps_edge = resolve_reexport(&mut dep, &map, &mp, "tools::user");
+        let keeps_edge = !resolve_reexport(&mut dep, &map, &mp, "tools::user").places_no_definer();
 
         assert!(keeps_edge, "{dep:?}");
         assert_eq!(dep.target_module, "tools::expand");
