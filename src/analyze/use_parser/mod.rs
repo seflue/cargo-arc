@@ -1723,15 +1723,15 @@ pub(crate) struct PathRef {
 }
 
 impl PathRef {
-    /// Resolve `path`, this reference, through the resolution chain. A path
-    /// written in macro input resolves through a binding only.
-    fn resolve(&self, ctx: &ResolutionContext, path: &str) -> Option<DependencyRef> {
+    /// Resolve this reference through the resolution chain. A path written
+    /// in macro input resolves through a binding only.
+    fn resolve(&self, ctx: &ResolutionContext) -> Option<DependencyRef> {
         if self.in_macro {
             return None;
         }
         resolve_single_path(
             ctx,
-            path,
+            &self.path,
             self.line,
             &self.context,
             self.inline_depth,
@@ -3487,7 +3487,6 @@ pub(crate) fn parse_path_ref_dependencies(
         if names_a_variable {
             continue;
         }
-        let resolve = |path: &str| path_ref.resolve(ctx, path);
         let mut module_import = None;
         let (mut dep, associated, glob_taken_from) =
             match bindings.binding_of(&path_ref.path, path_ref.region) {
@@ -3495,7 +3494,7 @@ pub(crate) fn parse_path_ref_dependencies(
                     // A qualified path resolves on its own where it can; what
                     // does not, and a bare name, is a glob's where a glob
                     // exports it.
-                    if let Some(dep) = associated.and_then(|_| resolve(&path_ref.path)) {
+                    if let Some(dep) = associated.and_then(|_| path_ref.resolve(ctx)) {
                         let associated = associated_segment(&path_ref.path, &dep);
                         (dep, associated, None)
                     } else {
@@ -3517,7 +3516,7 @@ pub(crate) fn parse_path_ref_dependencies(
                 // it resolves. An occurrence of a name a `pub use` binds is a
                 // use of the item, not part of the re-export.
                 PathBinding::Item(bound, associated) => {
-                    if let Some(dep) = associated.and_then(|_| resolve(&path_ref.path)) {
+                    if let Some(dep) = associated.and_then(|_| path_ref.resolve(ctx)) {
                         let associated = associated_segment(&path_ref.path, &dep);
                         (dep, associated, None)
                     } else {
