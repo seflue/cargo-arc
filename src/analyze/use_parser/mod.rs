@@ -3230,6 +3230,7 @@ impl FileBindings {
             let child = BoundModule {
                 package: dep.target_package.clone(),
                 path: path.clone(),
+                in_lib_view: dep.in_lib_view,
             };
             Some((name.to_string(), child))
         });
@@ -3249,6 +3250,7 @@ impl FileBindings {
                 let bound = BoundModule {
                     package: target.crate_name.clone(),
                     path: append_to_path(&target.module, &target.original_name),
+                    in_lib_view: dep.in_lib_view,
                 };
                 if !ctx
                     .all_module_paths
@@ -3385,13 +3387,15 @@ fn through_the_chain(
     })
 }
 
-/// The module a binding names, by the package holding it and its path from the
-/// package's root. A binding of another crate's item whose name also names a
+/// The module a binding names, by the package holding it, its path from the
+/// package's root, and whether that root is the lib one the package name
+/// stands for. A binding of another crate's item whose name also names a
 /// module of this crate holds the item's path.
 #[derive(Debug)]
 struct BoundModule {
     package: String,
     path: String,
+    in_lib_view: bool,
 }
 
 impl BoundModule {
@@ -3403,13 +3407,15 @@ impl BoundModule {
         BoundModule {
             package: dep.target_package.clone(),
             path,
+            in_lib_view: dep.in_lib_view,
         }
     }
 
     /// Resolve `rest`, what a path writes after the bound name, under this
-    /// module. A module of this crate resolves as a `crate::` path. Another
-    /// package's is looked up in that package, so this crate needs no name
-    /// for it, and a name it has that means another package plays no part.
+    /// module. A module of this crate's own tree resolves as a `crate::` path.
+    /// Another package's, or the lib's from the bin tree, is looked up in that
+    /// package, so this crate needs no name for it, and a name it has that
+    /// means another package plays no part.
     fn resolve(
         &self,
         ctx: &ResolutionContext,
@@ -3420,7 +3426,7 @@ impl BoundModule {
         meaning: Meaning,
     ) -> Option<DependencyRef> {
         let path = append_to_path(&self.path, rest);
-        if self.package == normalize_crate_name(ctx.current_crate) {
+        if !self.in_lib_view && self.package == normalize_crate_name(ctx.current_crate) {
             let path = format!("crate::{path}");
             return resolve_single_path(ctx, &path, line_num, context, inline_depth, meaning);
         }

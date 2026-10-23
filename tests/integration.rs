@@ -2140,6 +2140,15 @@ fn name_resolution_glob_chain_brings_in_what_every_holder_sees() {
     assert_no_name_resolution_arc("m::gk::a::user", "m::gk::a::z");
 }
 
+/// Cell 77: a module of the bin root binds its own package by `use bl as lib;`
+/// and writes `lib::Shared`. That is the lib root's `Shared`, although the bin
+/// root's glob on `cli` brings in a `Shared` of its own.
+#[test]
+fn name_resolution_binding_of_the_own_package_in_a_bin_means_the_lib() {
+    assert_name_resolution_arc("bl::bshow", "bl", "production", &["Shared"]);
+    assert_no_name_resolution_arc("bl::bshow", "bl::cli");
+}
+
 /// Cell 73: `mx` defines `macro_rules! min` and imports `std::cmp::min`, a
 /// function of the other namespace. `kid` calls `super::min()`, which is
 /// outside the workspace, so there is no arc to `mx`.
