@@ -24,10 +24,12 @@ pub(crate) struct ModDecl {
 #[derive(PartialEq)]
 pub(crate) struct CfgAttrPath {
     pub(crate) path: String,
-    /// Whether the predicate admits the path into test builds only, as
-    /// [`is_cfg_test`] decides for a `#[cfg]`.
+    /// Whether the predicates on the way to the path, together as under
+    /// `all(…)`, admit it into test builds only, as [`is_cfg_test`] decides
+    /// for a `#[cfg]`.
     pub(crate) cfg_test: bool,
-    /// Whether the predicate holds in every build without `test`, as
+    /// Whether the predicates on the way to the path, together as under
+    /// `all(…)`, hold in every build without `test`, as
     /// [`holds_outside_test`] decides, so that the path replaces the plain
     /// file there.
     pub(crate) outside_test: bool,
@@ -120,38 +122,69 @@ fn extract_path_attribute(attrs: &[syn::Attribute]) -> Option<String> {
     })
 }
 
-/// Extract the values of `path = "..."` inside `#[cfg_attr(predicate, …)]`.
+/// Extract the values of `path = "..."` inside `#[cfg_attr(predicate, …)]`,
+/// also where a `cfg_attr` nests in another. A nested path holds where every
+/// predicate on the way to it holds, as under `all(…)`.
 fn extract_cfg_attr_paths(attrs: &[syn::Attribute]) -> Vec<CfgAttrPath> {
-    attrs
-        .iter()
-        .filter(|attr| attr.path().is_ident("cfg_attr"))
-        .filter_map(|attr| {
-            attr.parse_args_with(
-                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
-            )
-            .ok()
-        })
-        .flat_map(|metas| {
-            let mut metas = metas.into_iter();
-            let predicate = metas.next();
-            let cfg_test = predicate.as_ref().is_some_and(requires_test);
-            let outside_test = predicate.as_ref().is_some_and(holds_outside_test);
-            metas.filter_map(move |meta| match meta {
-                syn::Meta::NameValue(nv) if nv.path.is_ident("path") => match nv.value {
+    let mut paths = Vec::new();
+    for attr in attrs.iter().filter(|attr| attr.path().is_ident("cfg_attr")) {
+        if let Ok(metas) = attr.parse_args_with(
+            syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+        ) {
+            collect_cfg_attr_paths(Vec::new(), metas, &mut paths);
+        }
+    }
+    paths
+}
+
+/// Collect the paths in the arguments of one `cfg_attr`, its predicate first,
+/// under the predicates of the `cfg_attr`s it nests in.
+fn collect_cfg_attr_paths(
+    mut predicates: Vec<syn::Meta>,
+    metas: syn::punctuated::Punctuated<syn::Meta, syn::Token![,]>,
+    paths: &mut Vec<CfgAttrPath>,
+) {
+    use syn::parse::Parser;
+    let mut metas = metas.into_iter();
+    let Some(predicate) = metas.next() else {
+        return;
+    };
+    predicates.push(predicate);
+    for meta in metas {
+        match meta {
+            syn::Meta::NameValue(syn::MetaNameValue {
+                path,
+                value:
                     syn::Expr::Lit(syn::ExprLit {
                         lit: syn::Lit::Str(s),
                         ..
-                    }) => Some(CfgAttrPath {
-                        path: s.value(),
-                        cfg_test,
-                        outside_test,
                     }),
-                    _ => None,
-                },
-                _ => None,
-            })
-        })
-        .collect()
+                ..
+            }) if path.is_ident("path") => {
+                paths.push(CfgAttrPath::under(s.value(), &predicates));
+            }
+            syn::Meta::List(list) if list.path.is_ident("cfg_attr") => {
+                if let Ok(nested) =
+                    syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated
+                        .parse2(list.tokens)
+                {
+                    collect_cfg_attr_paths(predicates.clone(), nested, paths);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl CfgAttrPath {
+    /// Take `path` as holding where all `predicates` on the way to it hold.
+    fn under(path: String, predicates: &[syn::Meta]) -> Self {
+        CfgAttrPath {
+            path,
+            cfg_test: predicates.iter().any(requires_test),
+            outside_test: predicates.iter().all(holds_outside_test),
+        }
+    }
 }
 
 /// Extract external `mod` declarations from a parsed syntax tree,
@@ -412,8 +445,9 @@ mod tests {
         #[test]
         fn test_cfg_attr_paths_are_read_and_other_cfg_attrs_ignored() {
             let syntax: syn::File = syn::parse_str(
-                r#"#[cfg_attr(unix, path = "u.rs")] #[cfg_attr(windows, allow(dead_code), path = "w.rs")] mod imp;
-                   #[cfg_attr(test, allow(dead_code))] mod plain;"#,
+                r#"#[cfg_attr(unix, path = "u.rs")] #[cfg_attr(windows, allow(dead_code), path = "w.rs")]
+                   #[cfg_attr(test, allow(dead_code), cfg_attr(unix, path = "n.rs"))] mod imp;
+                   #[cfg_attr(test, allow(dead_code))] #[cfg_attr(test, cfg_attr(unix, allow(dead_code)))] mod plain;"#,
             )
             .unwrap();
             let decls = extract_mod_declarations(&syntax, true);
@@ -427,7 +461,10 @@ mod tests {
             assert_eq!(
                 paths,
                 [
-                    ("imp", vec!["u.rs".to_string(), "w.rs".to_string()]),
+                    (
+                        "imp",
+                        vec!["u.rs".to_string(), "w.rs".to_string(), "n.rs".to_string()]
+                    ),
                     ("plain", vec![])
                 ]
             );
@@ -436,7 +473,10 @@ mod tests {
         #[test]
         fn test_cfg_attr_path_under_test_predicate_is_test_only() {
             let source = r#"#[cfg_attr(test, path = "t.rs")] #[cfg_attr(all(unix, test), path = "a.rs")]
-                #[cfg_attr(any(unix, test), path = "o.rs")] mod imp;"#;
+                #[cfg_attr(any(unix, test), path = "o.rs")]
+                #[cfg_attr(test, cfg_attr(unix, path = "nt.rs"))] #[cfg_attr(unix, cfg_attr(test, path = "nu.rs"))]
+                #[cfg_attr(unix, cfg_attr(windows, cfg_attr(test, path = "n3.rs")))]
+                #[cfg_attr(any(unix, test), cfg_attr(unix, path = "no.rs"))] mod imp;"#;
             let syntax: syn::File = syn::parse_str(source).unwrap();
             let paths = |include_tests| {
                 extract_mod_declarations(&syntax, include_tests)[0]
@@ -451,10 +491,14 @@ mod tests {
                 [
                     owned("t.rs", true),
                     owned("a.rs", true),
-                    owned("o.rs", false)
+                    owned("o.rs", false),
+                    owned("nt.rs", true),
+                    owned("nu.rs", true),
+                    owned("n3.rs", true),
+                    owned("no.rs", false)
                 ]
             );
-            assert_eq!(paths(false), [owned("o.rs", false)]);
+            assert_eq!(paths(false), [owned("o.rs", false), owned("no.rs", false)]);
         }
 
         #[test]
@@ -465,7 +509,10 @@ mod tests {
                 #[cfg_attr(all(unix, not(test)), path = "p.rs")] mod all_unix;
                 #[cfg_attr(not(unix), path = "p.rs")] mod not_unix;
                 #[cfg_attr(not(any(unix, test)), path = "p.rs")] mod not_any;
-                #[cfg_attr(not(test), allow(dead_code))] mod no_path;"#;
+                #[cfg_attr(not(test), allow(dead_code))] mod no_path;
+                #[cfg_attr(not(test), cfg_attr(not(test), path = "p.rs"))] mod nested_outside;
+                #[cfg_attr(not(test), cfg_attr(unix, path = "p.rs"))] mod nested_unix;
+                #[cfg_attr(unix, cfg_attr(not(test), path = "p.rs"))] mod nested_unix_outer;"#;
             let syntax: syn::File = syn::parse_str(source).unwrap();
             let plain = |include_tests| {
                 extract_mod_declarations(&syntax, include_tests)
@@ -483,6 +530,9 @@ mod tests {
                     owned("not_unix", PlainFile::Production),
                     owned("not_any", PlainFile::Production),
                     owned("no_path", PlainFile::Production),
+                    owned("nested_outside", test_only),
+                    owned("nested_unix", PlainFile::Production),
+                    owned("nested_unix_outer", PlainFile::Production),
                 ]
             };
             assert_eq!(plain(true), expected(PlainFile::Test));
