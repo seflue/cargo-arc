@@ -206,7 +206,6 @@ struct WalkContext<'a> {
     test_build_map: Option<&'a ReExportMap>,
     external_crate_names: &'a std::collections::HashMap<String, String>,
     extern_crates: &'a std::collections::HashMap<String, String>,
-    passed_on: &'a PassedOn,
     include_tests: bool,
     base_context: EdgeContext,
 }
@@ -214,12 +213,17 @@ struct WalkContext<'a> {
 /// Whether `dep` of the module at `module_path` only passes a name on to a
 /// descendant, as [`PassedOn::passes_on`] decides in the build `dep`'s code
 /// is compiled in.
-fn only_passes_on(ctx: &WalkContext, module_path: &str, dep: &crate::model::DependencyRef) -> bool {
+fn only_passes_on(
+    ctx: &WalkContext,
+    passed_on: &PassedOn,
+    module_path: &str,
+    dep: &crate::model::DependencyRef,
+) -> bool {
     let reexport_map = match ctx.test_build_map {
         Some(test_build_map) if dep.context.kind != UsageKind::Production => test_build_map,
         _ => ctx.reexport_map,
     };
-    ctx.passed_on.passes_on(
+    passed_on.passes_on(
         ctx.crate_name,
         module_path,
         dep,
@@ -255,7 +259,7 @@ fn walk_declared_module(
     parent: &ModuleFile,
     decl: &ModDecl,
     parent_path: &str,
-    unparsed: &mut Vec<PathBuf>,
+    walked: &mut Walked,
 ) -> Option<ModuleInfo> {
     // A module declared under `#[cfg(test)]`, or a file only a test-only
     // `#[cfg_attr]` path loads, is test code with all it holds, and resolves
@@ -280,7 +284,7 @@ fn walk_declared_module(
                 &decl.name,
                 parent_path,
                 declared.file.owns_directory,
-                unparsed,
+                walked,
             )
         });
     let mut module = alternatives.next()?;
@@ -290,15 +294,25 @@ fn walk_declared_module(
     Some(module)
 }
 
+/// What the walk of a crate's module trees gathers beyond the trees.
+#[derive(Default)]
+struct Walked {
+    /// The files that do not parse.
+    unparsed: Vec<PathBuf>,
+    /// The private bindings of ancestors the files walked so far named
+    /// something through.
+    passed_on: PassedOn,
+}
+
 /// Recursively walk a module, building `ModuleInfo` with dependency
-/// extraction. A file that does not parse is pushed onto `unparsed`.
+/// extraction. A file that does not parse is listed in `walked`.
 fn walk_module_syn(
     ctx: &WalkContext,
     file_path: &Path,
     module_name: &str,
     parent_path: &str,
     owns_directory: bool,
-    unparsed: &mut Vec<PathBuf>,
+    walked: &mut Walked,
 ) -> ModuleInfo {
     let full_path = if parent_path == module_name {
         // root module: full_path == crate name
@@ -326,7 +340,7 @@ fn walk_module_syn(
         Ok(f) => f,
         Err(e) => {
             tracing::warn!("parsing {}: {e:#}", file_path.display());
-            unparsed.push(file_path.to_path_buf());
+            walked.unparsed.push(file_path.to_path_buf());
             return ModuleInfo {
                 name: module_name.to_string(),
                 full_path,
@@ -357,9 +371,13 @@ fn walk_module_syn(
         reexport_map: ctx.reexport_map,
         external_crate_names: ctx.external_crate_names,
         extern_crates: ctx.extern_crates,
-        passed_on: Some(ctx.passed_on),
     };
-    let mut dependencies = parse_file_dependencies(&syntax, &res_ctx, ctx.base_context.clone());
+    let mut dependencies = parse_file_dependencies(
+        &syntax,
+        &res_ctx,
+        ctx.base_context.clone(),
+        &mut walked.passed_on,
+    );
 
     if !ctx.include_tests {
         dependencies.retain(|d| d.context.kind == UsageKind::Production);
@@ -374,13 +392,13 @@ fn walk_module_syn(
     };
     let children: Vec<ModuleInfo> = decls
         .into_iter()
-        .filter_map(|decl| walk_declared_module(ctx, &parent, &decl, &full_path, unparsed))
+        .filter_map(|decl| walk_declared_module(ctx, &parent, &decl, &full_path, walked))
         .collect();
 
     // The descendants are walked now. A private glob or `use` this module
     // takes no name from but a descendant names something through only
     // passes the names on, which is no dependency of this module.
-    dependencies.retain(|dep| !only_passes_on(ctx, current_module_path, dep));
+    dependencies.retain(|dep| !only_passes_on(ctx, &walked.passed_on, current_module_path, dep));
 
     // Take the definitions of both builds: a `#[cfg(test)]` item is in the
     // test build's map only.
@@ -420,7 +438,6 @@ pub(crate) fn analyze_modules_syn(
 ) -> ModuleTree {
     let normalized = normalize_crate_name(&crate_info.name);
     let no_extern_crates = std::collections::HashMap::new();
-    let passed_on = PassedOn::default();
 
     let ctx = WalkContext {
         crate_name: &normalized,
@@ -432,12 +449,11 @@ pub(crate) fn analyze_modules_syn(
         test_build_map: None,
         external_crate_names,
         extern_crates: &no_extern_crates,
-        passed_on: &passed_on,
         include_tests,
         base_context: EdgeContext::production(),
     };
 
-    let mut unparsed = Vec::new();
+    let mut walked = Walked::default();
     let mut root: Option<ModuleInfo> = None;
     for (index, entry) in crate_info.entry_files.iter().enumerate() {
         let root_reexports = reexport_map.for_root(&normalized, index);
@@ -456,7 +472,7 @@ pub(crate) fn analyze_modules_syn(
             &normalized,
             &normalized, // parent_path == name for root → triggers identity check
             true,
-            &mut unparsed,
+            &mut walked,
         );
         match &mut root {
             None => root = Some(tree),
@@ -509,14 +525,17 @@ pub(crate) fn analyze_modules_syn(
                 test_name,
                 &format!("{normalized}::tests"),
                 true,
-                &mut unparsed,
+                &mut walked,
             );
             root.children.push(tree);
         }
     }
 
     let root = root.unwrap();
-    ModuleTree { root, unparsed }
+    ModuleTree {
+        root,
+        unparsed: walked.unparsed,
+    }
 }
 
 #[cfg(test)]
