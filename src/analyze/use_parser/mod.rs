@@ -2956,10 +2956,8 @@ fn glob_payload_known(dep: &DependencyRef, reexport_map: &ReExportMap) -> bool {
 /// `modules` holds a binding name → the module it names, by package and path,
 /// so a binding stays valid wherever in the file it is used.
 ///
-/// `module_imports` holds, for a name in `modules` a `use` of the file binds,
-/// the [`DependencyRef::full_target`] of that `use`'s dependency.
-/// `used_module_imports` notes those a path resolved through, and whether
-/// production code did.
+/// `used_module_imports` notes the [`BoundModule::import`] of each binding in
+/// `modules` a path resolved through, and whether production code did.
 ///
 /// `elsewhere` holds the names bound to something this crate does not contain.
 /// The parser need not know what that something is. An import from a crate it has
@@ -2984,7 +2982,6 @@ fn glob_payload_known(dep: &DependencyRef, reexport_map: &ReExportMap) -> bool {
 pub(crate) struct FileBindings {
     regions: BindingRegions,
     modules: HashMap<RegionId, HashMap<String, BoundModule>>,
-    module_imports: HashMap<RegionId, HashMap<String, String>>,
     used_module_imports: RefCell<HashMap<String, FromProduction>>,
     elsewhere: HashMap<RegionId, HashSet<String>>,
     items: HashMap<RegionId, HashMap<String, DependencyRef>>,
@@ -2997,10 +2994,9 @@ pub(crate) struct FileBindings {
 
 /// What one path reference stands for, given the bindings around it.
 enum PathBinding<'a> {
-    /// A path whose first segment is bound to a module: the module, what the
-    /// path writes after the segment, and the target of the `use` that binds
-    /// the segment, if a `use` of the file does.
-    Module(&'a BoundModule, &'a str, Option<&'a str>),
+    /// A path whose first segment is bound to a module: the module and what
+    /// the path writes after the segment.
+    Module(&'a BoundModule, &'a str),
     /// An occurrence of an item a `use` binds, plus the associated item the
     /// path goes on to name: `Config::new` on the binding `Config` leaves
     /// `new`.
@@ -3073,15 +3069,9 @@ impl FileBindings {
             // noted under that target.
             let chained = through_the_chain(ctx, dep.as_ref());
             match classify_binding(ctx, chained.as_ref(), binding) {
-                Binding::Module(module) => {
+                Binding::Module(mut module) => {
+                    module.import = chained.as_ref().map(DependencyRef::full_target);
                     bindings.bind_module(collected.region, binding, module);
-                    if let Some(chained) = &chained {
-                        bindings
-                            .module_imports
-                            .entry(collected.region)
-                            .or_default()
-                            .insert(binding.to_string(), chained.full_target());
-                    }
                 }
                 Binding::Elsewhere => bindings.bind_elsewhere(collected.region, binding),
                 Binding::OwnItem => {}
@@ -3145,12 +3135,7 @@ impl FileBindings {
             if let Some(module) = self.modules.get(&enclosing).and_then(|m| m.get(first))
                 && let Some(rest) = rest
             {
-                let import = self
-                    .module_imports
-                    .get(&enclosing)
-                    .and_then(|m| m.get(first))
-                    .map(String::as_str);
-                return PathBinding::Module(module, rest, import);
+                return PathBinding::Module(module, rest);
             }
             if let Some(dep) = self.items.get(&enclosing).and_then(|m| m.get(first)) {
                 return PathBinding::Item(dep, last);
@@ -3166,7 +3151,7 @@ impl FileBindings {
                 && let Some(rest) = rest
                 && !self.local_definitions.contains(first)
             {
-                return PathBinding::Module(module, rest, None);
+                return PathBinding::Module(module, rest);
             }
         }
         PathBinding::Unbound(first, last)
@@ -3183,7 +3168,7 @@ impl FileBindings {
         let line = collected.item.use_token.span.start().line;
         let (context, inline_depth) = (&collected.context, collected.inline_depth);
         match self.binding_of(path, collected.region) {
-            PathBinding::Module(module, rest, _) => {
+            PathBinding::Module(module, rest) => {
                 module.resolve(ctx, rest, line, context, inline_depth, Meaning::Any)
             }
             _ => resolve_single_path(ctx, path, line, context, inline_depth, Meaning::Any),
@@ -3250,6 +3235,7 @@ impl FileBindings {
                 package: dep.target_package.clone(),
                 path: path.clone(),
                 in_lib_view: dep.in_lib_view,
+                import: None,
             };
             Some((name.to_string(), child))
         });
@@ -3270,6 +3256,7 @@ impl FileBindings {
                     package: target.crate_name.clone(),
                     path: append_to_path(&target.module, &target.original_name),
                     in_lib_view: dep.in_lib_view,
+                    import: None,
                 };
                 if !ctx
                     .all_module_paths
@@ -3415,6 +3402,9 @@ struct BoundModule {
     package: String,
     path: String,
     in_lib_view: bool,
+    /// The [`DependencyRef::full_target`] of the `use` of the file that binds
+    /// the name, if one does.
+    import: Option<String>,
 }
 
 impl BoundModule {
@@ -3427,6 +3417,7 @@ impl BoundModule {
             package: dep.target_package.clone(),
             path,
             in_lib_view: dep.in_lib_view,
+            import: None,
         }
     }
 
@@ -3528,11 +3519,11 @@ pub(crate) fn parse_path_ref_dependencies(
                         (dep, associated, None)
                     }
                 }
-                PathBinding::Module(module, rest, import) => {
+                PathBinding::Module(module, rest) => {
                     let Some(dep) = path_ref.resolve_under(ctx, module, rest) else {
                         continue;
                     };
-                    module_import = import;
+                    module_import = module.import.as_deref();
                     let associated = associated_segment(&path_ref.path, &dep);
                     (dep, associated, None)
                 }
