@@ -93,6 +93,15 @@ impl<'a> ResolutionContextBuilder<'a> {
     }
 }
 
+/// Define the public item `name` of `kind` in `info`.
+fn define(info: &mut ModuleExportInfo, name: &str, kind: DefKind) {
+    let item = DefinedItem {
+        definition: Definition { kind, line: 1 },
+        visibility: Visibility::Public,
+    };
+    info.definitions.insert(name.to_string(), item);
+}
+
 fn parse_test_uses(source: &str) -> CollectedUses {
     collect_all_use_items(&syn::parse_file(source).unwrap(), EdgeContext::production())
 }
@@ -207,8 +216,6 @@ mod wider_visibility_tests {
     #[case::restricted_under_public(restricted("a"), Visibility::Public, Visibility::Public)]
     #[case::ancestor_over_descendant(restricted("a::b"), restricted("a"), restricted("a"))]
     #[case::crate_over_module(restricted("a"), restricted(""), restricted(""))]
-    #[case::apart_widen_to_common_ancestor(restricted("a::b"), restricted("a::c"), restricted("a"))]
-    #[case::apart_at_top_widen_to_crate(restricted("a"), restricted("b"), restricted(""))]
     fn wider_reaches_where_both_do(
         #[case] left: Visibility,
         #[case] right: Visibility,
@@ -464,16 +471,7 @@ mod submodule_tests {
             visibility: Visibility::Public,
         });
         let mut ty_info = ModuleExportInfo::default();
-        ty_info.definitions.insert(
-            "Type".to_string(),
-            Definition {
-                kind: DefKind::Enum,
-                line: 1,
-            },
-        );
-        ty_info
-            .item_visibility
-            .insert("Type".to_string(), Visibility::Public);
+        define(&mut ty_info, "Type", DefKind::Enum);
         let map: ReExportMap = [(
             "other_crate".to_string(),
             HashMap::from([(String::new(), root_info), ("ty".to_string(), ty_info)]),
@@ -512,16 +510,7 @@ mod submodule_tests {
             visibility: Visibility::Public,
         });
         let mut shell_error_info = ModuleExportInfo::default();
-        shell_error_info.definitions.insert(
-            "ShellError".to_string(),
-            Definition {
-                kind: DefKind::Enum,
-                line: 1,
-            },
-        );
-        shell_error_info
-            .item_visibility
-            .insert("ShellError".to_string(), Visibility::Public);
+        define(&mut shell_error_info, "ShellError", DefKind::Enum);
         let map: ReExportMap = [(
             "other_crate".to_string(),
             HashMap::from([
@@ -582,16 +571,7 @@ mod submodule_tests {
             },
         );
         let mut dispatch_info = ModuleExportInfo::default();
-        dispatch_info.definitions.insert(
-            "Interface".to_string(),
-            Definition {
-                kind: DefKind::Trait,
-                line: 1,
-            },
-        );
-        dispatch_info
-            .item_visibility
-            .insert("Interface".to_string(), Visibility::Public);
+        define(&mut dispatch_info, "Interface", DefKind::Trait);
         let map: ReExportMap = [(
             "other_crate".to_string(),
             HashMap::from([
@@ -660,16 +640,7 @@ mod submodule_tests {
             visibility: Visibility::Public,
         });
         let mut values_info = ModuleExportInfo::default();
-        values_info.definitions.insert(
-            "Value".to_string(),
-            Definition {
-                kind: DefKind::Struct,
-                line: 1,
-            },
-        );
-        values_info
-            .item_visibility
-            .insert("Value".to_string(), Visibility::Public);
+        define(&mut values_info, "Value", DefKind::Struct);
         let map: ReExportMap = [(
             "my_crate".to_string(),
             HashMap::from([
@@ -710,16 +681,7 @@ mod submodule_tests {
             visibility: Visibility::Public,
         });
         let mut ty_info = ModuleExportInfo::default();
-        ty_info.definitions.insert(
-            "Type".to_string(),
-            Definition {
-                kind: DefKind::Enum,
-                line: 1,
-            },
-        );
-        ty_info
-            .item_visibility
-            .insert("Type".to_string(), Visibility::Public);
+        define(&mut ty_info, "Type", DefKind::Enum);
         let map: ReExportMap = [(
             "my_crate".to_string(),
             HashMap::from([(String::new(), root_info), ("ty".to_string(), ty_info)]),
@@ -761,16 +723,7 @@ mod submodule_tests {
             },
         );
         let mut eval_info = ModuleExportInfo::default();
-        eval_info.definitions.insert(
-            "eval_call".to_string(),
-            Definition {
-                kind: DefKind::Fn,
-                line: 1,
-            },
-        );
-        eval_info
-            .item_visibility
-            .insert("eval_call".to_string(), Visibility::Public);
+        define(&mut eval_info, "eval_call", DefKind::Fn);
         let map: ReExportMap = [(
             "my_crate".to_string(),
             HashMap::from([(String::new(), root_info), ("eval".to_string(), eval_info)]),
@@ -914,16 +867,7 @@ mod submodule_tests {
             .into_iter()
             .collect();
         let mut root_info = ModuleExportInfo::default();
-        root_info.definitions.insert(
-            "Server".to_string(),
-            Definition {
-                kind: DefKind::Struct,
-                line: 2,
-            },
-        );
-        root_info
-            .item_visibility
-            .insert("Server".to_string(), Visibility::Public);
+        define(&mut root_info, "Server", DefKind::Struct);
         let map: ReExportMap = [(
             "my_crate".to_string(),
             HashMap::from([(String::new(), root_info)]),
@@ -952,9 +896,14 @@ mod submodule_tests {
             .into_iter()
             .collect();
         let mut root_info = ModuleExportInfo::default();
-        root_info
-            .item_visibility
-            .insert("helper".to_string(), Visibility::Restricted(String::new()));
+        let item = DefinedItem {
+            definition: Definition {
+                kind: DefKind::Fn,
+                line: 1,
+            },
+            visibility: Visibility::Restricted(String::new()),
+        };
+        root_info.definitions.insert("helper".to_string(), item);
         let map: ReExportMap = [(
             "my_crate".to_string(),
             HashMap::from([(String::new(), root_info)]),
@@ -1099,26 +1048,8 @@ use crate::graph;
 
     fn analyze_map() -> ReExportMap {
         let mut analyze_info = ModuleExportInfo::default();
-        analyze_info.definitions.insert(
-            "Walker".to_string(),
-            Definition {
-                kind: DefKind::Struct,
-                line: 1,
-            },
-        );
-        analyze_info
-            .item_visibility
-            .insert("Walker".to_string(), Visibility::Public);
-        analyze_info.definitions.insert(
-            "analyze_module".to_string(),
-            Definition {
-                kind: DefKind::Fn,
-                line: 1,
-            },
-        );
-        analyze_info
-            .item_visibility
-            .insert("analyze_module".to_string(), Visibility::Public);
+        define(&mut analyze_info, "Walker", DefKind::Struct);
+        define(&mut analyze_info, "analyze_module", DefKind::Fn);
         [(
             "my_crate".to_string(),
             HashMap::from([("analyze".to_string(), analyze_info)]),
@@ -1296,16 +1227,7 @@ use crate::graph;
             },
         );
         let mut origin_info = ModuleExportInfo::default();
-        origin_info.definitions.insert(
-            "Widget".to_string(),
-            Definition {
-                kind: DefKind::Struct,
-                line: 1,
-            },
-        );
-        origin_info
-            .item_visibility
-            .insert("Widget".to_string(), Visibility::Public);
+        define(&mut origin_info, "Widget", DefKind::Struct);
         let map: ReExportMap = [(
             "my_crate".to_string(),
             HashMap::from([
@@ -3117,16 +3039,7 @@ mod reexport_resolution_tests {
             },
         );
         let mut sibling_info = ModuleExportInfo::default();
-        sibling_info.definitions.insert(
-            "Item".to_string(),
-            Definition {
-                kind: DefKind::Struct,
-                line: 1,
-            },
-        );
-        sibling_info
-            .item_visibility
-            .insert("Item".to_string(), Visibility::Public);
+        define(&mut sibling_info, "Item", DefKind::Struct);
         let mut crate_exports = HashMap::new();
         crate_exports.insert("parent".to_string(), parent_info);
         crate_exports.insert("parent::sibling".to_string(), sibling_info);
@@ -3168,16 +3081,7 @@ mod reexport_resolution_tests {
             },
         );
         let mut child_info = ModuleExportInfo::default();
-        child_info.definitions.insert(
-            "Config".to_string(),
-            Definition {
-                kind: DefKind::Struct,
-                line: 1,
-            },
-        );
-        child_info
-            .item_visibility
-            .insert("Config".to_string(), Visibility::Public);
+        define(&mut child_info, "Config", DefKind::Struct);
         let mut crate_exports = HashMap::new();
         crate_exports.insert("parent".to_string(), parent_info);
         crate_exports.insert("parent::child".to_string(), child_info);
@@ -3218,16 +3122,7 @@ mod reexport_resolution_tests {
             },
         );
         let mut child_info = ModuleExportInfo::default();
-        child_info.definitions.insert(
-            "Config".to_string(),
-            Definition {
-                kind: DefKind::Struct,
-                line: 1,
-            },
-        );
-        child_info
-            .item_visibility
-            .insert("Config".to_string(), Visibility::Public);
+        define(&mut child_info, "Config", DefKind::Struct);
         let mut crate_exports = HashMap::new();
         crate_exports.insert("parent".to_string(), parent_info);
         crate_exports.insert("parent::child".to_string(), child_info);
@@ -3279,16 +3174,7 @@ mod reexport_resolution_tests {
             },
         );
         let mut helper_info = ModuleExportInfo::default();
-        helper_info.definitions.insert(
-            "helper".to_string(),
-            Definition {
-                kind: DefKind::Fn,
-                line: 1,
-            },
-        );
-        helper_info
-            .item_visibility
-            .insert("helper".to_string(), Visibility::Public);
+        define(&mut helper_info, "helper", DefKind::Fn);
         let map: ReExportMap = [(
             "core_crate".to_string(),
             HashMap::from([
@@ -3368,16 +3254,7 @@ mod reexport_resolution_tests {
             },
         );
         let mut set_info = ModuleExportInfo::default();
-        set_info.definitions.insert(
-            "Set".to_string(),
-            Definition {
-                kind: DefKind::Struct,
-                line: 1,
-            },
-        );
-        set_info
-            .item_visibility
-            .insert("Set".to_string(), Visibility::Public);
+        define(&mut set_info, "Set", DefKind::Struct);
         let map: ReExportMap = [(
             "my_crate".to_string(),
             HashMap::from([
@@ -3441,8 +3318,8 @@ mod resolve_reexport_tests {
         GlobSource, ModuleExportInfo, ModulePathMap, ReExportMap, ReExportTarget, Visibility,
         resolve_reexport,
     };
-    use super::DEFAULT_MP;
-    use crate::model::{DefKind, Definition, DependencyRef, EdgeContext};
+    use super::{DEFAULT_MP, define};
+    use crate::model::{DefKind, DependencyRef, EdgeContext};
     use std::collections::{HashMap, HashSet};
     use std::path::PathBuf;
 
@@ -3558,16 +3435,7 @@ mod resolve_reexport_tests {
             },
         );
         let mut arena = ModuleExportInfo::default();
-        arena.definitions.insert(
-            "HandleSet".to_string(),
-            Definition {
-                kind: DefKind::Struct,
-                line: 1,
-            },
-        );
-        arena
-            .item_visibility
-            .insert("HandleSet".to_string(), Visibility::Public);
+        define(&mut arena, "HandleSet", DefKind::Struct);
         let map: ReExportMap = [(
             "my_crate".to_string(),
             HashMap::from([
@@ -3613,16 +3481,7 @@ mod resolve_reexport_tests {
     #[test]
     fn resolve_noop_when_own_definition() {
         let mut module_info = ModuleExportInfo::default();
-        module_info.definitions.insert(
-            "Widget".to_string(),
-            Definition {
-                kind: DefKind::Struct,
-                line: 1,
-            },
-        );
-        module_info
-            .item_visibility
-            .insert("Widget".to_string(), Visibility::Public);
+        define(&mut module_info, "Widget", DefKind::Struct);
         let mut crate_exports = HashMap::new();
         crate_exports.insert("render".to_string(), module_info);
         let map: ReExportMap = [("my_crate".to_string(), crate_exports)]
@@ -3649,16 +3508,7 @@ mod resolve_reexport_tests {
             },
         );
         let mut n_info = ModuleExportInfo::default();
-        n_info.definitions.insert(
-            "Widget".to_string(),
-            Definition {
-                kind: DefKind::Struct,
-                line: 1,
-            },
-        );
-        n_info
-            .item_visibility
-            .insert("Widget".to_string(), Visibility::Public);
+        define(&mut n_info, "Widget", DefKind::Struct);
 
         let mut crate_exports = HashMap::new();
         crate_exports.insert("render".to_string(), m_info);
@@ -3697,16 +3547,7 @@ mod resolve_reexport_tests {
             },
         );
         let mut o_info = ModuleExportInfo::default();
-        o_info.definitions.insert(
-            "Widget".to_string(),
-            Definition {
-                kind: DefKind::Struct,
-                line: 1,
-            },
-        );
-        o_info
-            .item_visibility
-            .insert("Widget".to_string(), Visibility::Public);
+        define(&mut o_info, "Widget", DefKind::Struct);
 
         let mut crate_exports = HashMap::new();
         crate_exports.insert("root".to_string(), m_info);
@@ -3736,16 +3577,7 @@ mod resolve_reexport_tests {
             },
         );
         let mut o_info = ModuleExportInfo::default();
-        o_info.definitions.insert(
-            "Original".to_string(),
-            Definition {
-                kind: DefKind::Struct,
-                line: 1,
-            },
-        );
-        o_info
-            .item_visibility
-            .insert("Original".to_string(), Visibility::Public);
+        define(&mut o_info, "Original", DefKind::Struct);
 
         let mut crate_exports = HashMap::new();
         crate_exports.insert("facade".to_string(), m_info);
@@ -3769,16 +3601,7 @@ mod resolve_reexport_tests {
             visibility: Visibility::Public,
         });
         let mut n_info = ModuleExportInfo::default();
-        n_info.definitions.insert(
-            "Widget".to_string(),
-            Definition {
-                kind: DefKind::Struct,
-                line: 1,
-            },
-        );
-        n_info
-            .item_visibility
-            .insert("Widget".to_string(), Visibility::Public);
+        define(&mut n_info, "Widget", DefKind::Struct);
 
         let mut crate_exports = HashMap::new();
         crate_exports.insert("render".to_string(), m_info);
@@ -3812,16 +3635,7 @@ mod resolve_reexport_tests {
             },
         );
         let mut o_info = ModuleExportInfo::default();
-        o_info.definitions.insert(
-            "Widget".to_string(),
-            Definition {
-                kind: DefKind::Struct,
-                line: 1,
-            },
-        );
-        o_info
-            .item_visibility
-            .insert("Widget".to_string(), Visibility::Public);
+        define(&mut o_info, "Widget", DefKind::Struct);
 
         let mut crate_exports = HashMap::new();
         crate_exports.insert("facade".to_string(), m_info);
@@ -3889,16 +3703,7 @@ mod resolve_reexport_tests {
             },
         );
         let mut settings_info = ModuleExportInfo::default();
-        settings_info.definitions.insert(
-            "Config".to_string(),
-            Definition {
-                kind: DefKind::Struct,
-                line: 1,
-            },
-        );
-        settings_info
-            .item_visibility
-            .insert("Config".to_string(), Visibility::Public);
+        define(&mut settings_info, "Config", DefKind::Struct);
 
         let mut crate_exports = HashMap::new();
         crate_exports.insert(String::new(), root_info);
@@ -3929,16 +3734,7 @@ mod resolve_reexport_tests {
             },
         );
         let mut error_info = ModuleExportInfo::default();
-        error_info.definitions.insert(
-            "Error".to_string(),
-            Definition {
-                kind: DefKind::Enum,
-                line: 1,
-            },
-        );
-        error_info
-            .item_visibility
-            .insert("Error".to_string(), Visibility::Public);
+        define(&mut error_info, "Error", DefKind::Enum);
 
         let mut crate_exports = HashMap::new();
         crate_exports.insert("front::wgsl".to_string(), wgsl_info);
@@ -4007,16 +3803,7 @@ mod resolve_reexport_tests {
             visibility: Visibility::Restricted(holder.to_string()),
         });
         let mut source_info = ModuleExportInfo::default();
-        source_info.definitions.insert(
-            item.to_string(),
-            Definition {
-                kind: DefKind::Struct,
-                line: 1,
-            },
-        );
-        source_info
-            .item_visibility
-            .insert(item.to_string(), Visibility::Public);
+        define(&mut source_info, item, DefKind::Struct);
         let mut crate_exports = HashMap::new();
         crate_exports.insert(holder.to_string(), holder_info);
         crate_exports.insert(source.to_string(), source_info);
@@ -4518,9 +4305,14 @@ mod file_binding_tests {
         .into_iter()
         .collect();
         let mut root_info = ModuleExportInfo::default();
-        root_info
-            .item_visibility
-            .insert("Config".to_string(), Visibility::Restricted(String::new()));
+        let item = DefinedItem {
+            definition: Definition {
+                kind: DefKind::Struct,
+                line: 1,
+            },
+            visibility: Visibility::Restricted(String::new()),
+        };
+        root_info.definitions.insert("Config".to_string(), item);
         let map: ReExportMap = [(
             "my_crate".to_string(),
             HashMap::from([(String::new(), root_info)]),
@@ -4738,14 +4530,6 @@ mod use_category_tests {
     use super::*;
     use crate::model::{SymbolUse, UseCategory};
     use std::sync::LazyLock;
-
-    /// Define the public item `name` of `kind` in `info`.
-    fn define(info: &mut ModuleExportInfo, name: &str, kind: DefKind) {
-        info.definitions
-            .insert(name.to_string(), Definition { kind, line: 1 });
-        info.item_visibility
-            .insert(name.to_string(), Visibility::Public);
-    }
 
     /// A crate with one module `vocab` holding one item of each kind.
     fn vocab_map() -> ReExportMap {

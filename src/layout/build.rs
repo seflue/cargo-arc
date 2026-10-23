@@ -1108,7 +1108,7 @@ mod tests {
             self
         }
 
-        /// Add a module node with a declaring file and public definitions.
+        /// Add a module node with a declaring file and definitions.
         fn module_with_definitions(
             &mut self,
             parent: &str,
