@@ -506,9 +506,13 @@ mod submodule_tests {
             .into_iter()
             .collect();
         let mut root_info = ModuleExportInfo::default();
-        root_info.glob_sources.push(GlobSource {
-            module: "ty".to_string(),
-            visibility: Visibility::Public,
+        root_info.hold_glob(GlobBinding {
+            reach: GlobReach::ReExport,
+            foreign_crate: None,
+            source: GlobSource {
+                module: "ty".to_string(),
+                visibility: Visibility::Public,
+            },
         });
         let mut ty_info = ModuleExportInfo::default();
         define(&mut ty_info, "Type", DefKind::Enum);
@@ -550,9 +554,13 @@ mod submodule_tests {
         .into_iter()
         .collect();
         let mut root_info = ModuleExportInfo::default();
-        root_info.glob_sources.push(GlobSource {
-            module: "errors".to_string(),
-            visibility: Visibility::Public,
+        root_info.hold_glob(GlobBinding {
+            reach: GlobReach::ReExport,
+            foreign_crate: None,
+            source: GlobSource {
+                module: "errors".to_string(),
+                visibility: Visibility::Public,
+            },
         });
         let mut shell_error_info = ModuleExportInfo::default();
         define(&mut shell_error_info, "ShellError", DefKind::Enum);
@@ -699,9 +707,13 @@ mod submodule_tests {
         .into_iter()
         .collect();
         let mut root_info = ModuleExportInfo::default();
-        root_info.glob_sources.push(GlobSource {
-            module: "frame".to_string(),
-            visibility: Visibility::Public,
+        root_info.hold_glob(GlobBinding {
+            reach: GlobReach::ReExport,
+            foreign_crate: None,
+            source: GlobSource {
+                module: "frame".to_string(),
+                visibility: Visibility::Public,
+            },
         });
         let mut values_info = ModuleExportInfo::default();
         define(&mut values_info, "Value", DefKind::Struct);
@@ -745,9 +757,13 @@ mod submodule_tests {
         .into_iter()
         .collect();
         let mut root_info = ModuleExportInfo::default();
-        root_info.glob_sources.push(GlobSource {
-            module: "ty".to_string(),
-            visibility: Visibility::Public,
+        root_info.hold_glob(GlobBinding {
+            reach: GlobReach::ReExport,
+            foreign_crate: None,
+            source: GlobSource {
+                module: "ty".to_string(),
+                visibility: Visibility::Public,
+            },
         });
         let mut ty_info = ModuleExportInfo::default();
         define(&mut ty_info, "Type", DefKind::Enum);
@@ -3674,8 +3690,8 @@ mod binding_tests {
 
 mod resolve_reexport_tests {
     use super::super::{
-        BindingKind, GlobSource, ModuleExportInfo, ModulePathMap, NameBinding, PassedThrough,
-        ReExportMap, ReExportTarget, Visibility, resolve_reexport,
+        BindingKind, GlobBinding, GlobReach, GlobSource, ModuleExportInfo, ModulePathMap,
+        NameBinding, PassedThrough, ReExportMap, ReExportTarget, Visibility, resolve_reexport,
     };
     use super::{DEFAULT_MP, define};
     use crate::model::{DefKind, DependencyRef, EdgeContext, TargetRoot};
@@ -3732,14 +3748,22 @@ mod resolve_reexport_tests {
             ),
         );
         let mut custom = ModuleExportInfo::default();
-        custom.glob_sources.push(GlobSource {
-            module: "dispatch".to_string(),
-            visibility: Visibility::Public,
+        custom.hold_glob(GlobBinding {
+            reach: GlobReach::ReExport,
+            foreign_crate: None,
+            source: GlobSource {
+                module: "dispatch".to_string(),
+                visibility: Visibility::Public,
+            },
         });
         let mut leaf_root = ModuleExportInfo::default();
-        leaf_root.glob_sources.push(GlobSource {
-            module: "ir".to_string(),
-            visibility: Visibility::Public,
+        leaf_root.hold_glob(GlobBinding {
+            reach: GlobReach::ReExport,
+            foreign_crate: None,
+            source: GlobSource {
+                module: "ir".to_string(),
+                visibility: Visibility::Public,
+            },
         });
         let map: ReExportMap = [
             (
@@ -4006,9 +4030,13 @@ mod resolve_reexport_tests {
     #[test]
     fn resolve_glob_reexport() {
         let mut m_info = ModuleExportInfo::default();
-        m_info.glob_sources.push(GlobSource {
-            module: "elements".to_string(),
-            visibility: Visibility::Public,
+        m_info.hold_glob(GlobBinding {
+            reach: GlobReach::ReExport,
+            foreign_crate: None,
+            source: GlobSource {
+                module: "elements".to_string(),
+                visibility: Visibility::Public,
+            },
         });
         let mut n_info = ModuleExportInfo::default();
         define(&mut n_info, "Widget", DefKind::Struct);
@@ -4030,9 +4058,13 @@ mod resolve_reexport_tests {
     #[test]
     fn resolve_glob_then_explicit() {
         let mut m_info = ModuleExportInfo::default();
-        m_info.glob_sources.push(GlobSource {
-            module: "middle".to_string(),
-            visibility: Visibility::Public,
+        m_info.hold_glob(GlobBinding {
+            reach: GlobReach::ReExport,
+            foreign_crate: None,
+            source: GlobSource {
+                module: "middle".to_string(),
+                visibility: Visibility::Public,
+            },
         });
         let mut n_info = ModuleExportInfo::default();
         n_info.bind(
@@ -4220,9 +4252,13 @@ mod resolve_reexport_tests {
         item: &str,
     ) -> HashMap<String, ModuleExportInfo> {
         let mut holder_info = ModuleExportInfo::default();
-        holder_info.private_glob_sources.push(GlobSource {
-            module: source.to_string(),
-            visibility: Visibility::Restricted(holder.to_string()),
+        holder_info.hold_glob(GlobBinding {
+            reach: GlobReach::Private,
+            foreign_crate: None,
+            source: GlobSource {
+                module: source.to_string(),
+                visibility: Visibility::Restricted(holder.to_string()),
+            },
         });
         let mut source_info = ModuleExportInfo::default();
         define(&mut source_info, item, DefKind::Struct);
@@ -4262,9 +4298,13 @@ mod resolve_reexport_tests {
         // the definer through both.
         let mut modules = private_glob_modules("api", "api::actions", "Mapping");
         let mut buffer_info = ModuleExportInfo::default();
-        buffer_info.private_glob_sources.push(GlobSource {
-            module: "api".to_string(),
-            visibility: Visibility::Restricted("api::buffer".to_string()),
+        buffer_info.hold_glob(GlobBinding {
+            reach: GlobReach::Private,
+            foreign_crate: None,
+            source: GlobSource {
+                module: "api".to_string(),
+                visibility: Visibility::Restricted("api::buffer".to_string()),
+            },
         });
         modules.insert("api::buffer".to_string(), buffer_info);
         let map = [("my_crate".to_string(), modules)]
@@ -4285,19 +4325,23 @@ mod resolve_reexport_tests {
         // even to dispatch itself.
         let mut modules = private_glob_modules("dispatch", "core", "Mapping");
         let mut custom_info = ModuleExportInfo::default();
-        custom_info.glob_sources.push(GlobSource {
-            module: "dispatch".to_string(),
-            visibility: Visibility::Public,
+        custom_info.hold_glob(GlobBinding {
+            reach: GlobReach::ReExport,
+            foreign_crate: None,
+            source: GlobSource {
+                module: "dispatch".to_string(),
+                visibility: Visibility::Public,
+            },
         });
         modules.insert("custom".to_string(), custom_info);
-        modules
-            .get_mut("dispatch")
-            .unwrap()
-            .private_glob_sources
-            .push(GlobSource {
+        modules.get_mut("dispatch").unwrap().hold_glob(GlobBinding {
+            reach: GlobReach::Private,
+            foreign_crate: None,
+            source: GlobSource {
                 module: "custom".to_string(),
                 visibility: Visibility::Restricted("dispatch".to_string()),
-            });
+            },
+        });
         let map: ReExportMap = [("my_crate".to_string(), modules)].into_iter().collect();
 
         let mut dep = test_dep("my_crate", "custom", Some("Mapping"));
@@ -5688,9 +5732,13 @@ mod first_segment_tests {
         // Root: `mod frame; use self::frame::*;`, frame: `pub mod values;`.
         let mp = module_paths(&[("my_crate", &["frame", "frame::values", "user"])]);
         let mut root = ModuleExportInfo::default();
-        root.private_glob_sources.push(GlobSource {
-            module: "frame".to_string(),
-            visibility: Visibility::Restricted(String::new()),
+        root.hold_glob(GlobBinding {
+            reach: GlobReach::Private,
+            foreign_crate: None,
+            source: GlobSource {
+                module: "frame".to_string(),
+                visibility: Visibility::Restricted(String::new()),
+            },
         });
         let mut values = ModuleExportInfo::default();
         define(&mut values, "Value", DefKind::Struct);
@@ -5704,9 +5752,13 @@ mod first_segment_tests {
         // holder: `pub use crate::store::*;`, store: `pub mod sub;`.
         let mp = module_paths(&[("my_crate", &["holder", "store", "store::sub", "user"])]);
         let mut holder = ModuleExportInfo::default();
-        holder.glob_sources.push(GlobSource {
-            module: "store".to_string(),
-            visibility: Visibility::Public,
+        holder.hold_glob(GlobBinding {
+            reach: GlobReach::ReExport,
+            foreign_crate: None,
+            source: GlobSource {
+                module: "store".to_string(),
+                visibility: Visibility::Public,
+            },
         });
         let mut sub = ModuleExportInfo::default();
         define(&mut sub, "Set", DefKind::Struct);
@@ -5747,9 +5799,13 @@ mod first_segment_tests {
         let mp = module_paths(&[("my_crate", &["settings", "settings::Mode", "user"])]);
         let mut root = ModuleExportInfo::default();
         define(&mut root, "Mode", DefKind::Enum);
-        root.glob_sources.push(GlobSource {
-            module: "settings".to_string(),
-            visibility: Visibility::Public,
+        root.hold_glob(GlobBinding {
+            reach: GlobReach::ReExport,
+            foreign_crate: None,
+            source: GlobSource {
+                module: "settings".to_string(),
+                visibility: Visibility::Public,
+            },
         });
         let map = vec![("my_crate", vec![("", root)])];
         let found = targets("use crate::Mode::Fast;", "user", &mp, map);

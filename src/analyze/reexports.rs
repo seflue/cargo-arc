@@ -13,9 +13,10 @@ use crate::model::{DefKind, Definition, EdgeContext, PackageInfo};
 
 use super::mod_resolver::{CfgCondition, ModuleFile, declared_files, extract_mod_declarations};
 use super::use_parser::{
-    AssociatedItems, BindingKind, Brought, GlobSource, Meaning, ModuleBindings, ModuleExportInfo,
-    NameBinding, ReExportMap, ReExportTarget, ResolutionContext, RootReExports, Visibility,
-    is_reexport_visibility, item_attrs, resolve_single_path, resolve_use_tree,
+    AssociatedItems, BindingKind, Brought, GlobBinding, GlobReach, GlobSource, Meaning,
+    ModuleBindings, ModuleExportInfo, NameBinding, ReExportMap, ReExportTarget, ResolutionContext,
+    RootReExports, Visibility, is_reexport_visibility, item_attrs, resolve_single_path,
+    resolve_use_tree,
 };
 
 /// Invariant parameters shared across the recursive re-export walk.
@@ -440,10 +441,9 @@ fn resolution_context<'a>(
 /// `pub`/`pub(crate)`/`pub(super)` re-export binds by
 /// [`BindingKind::ReExport`], a private, `pub(self)` or `pub(in …)` `use` by
 /// [`BindingKind::PrivateUse`] (a binding descendants can still name through
-/// this module). A glob lands in
-/// `glob_sources` or `private_glob_sources` by the same split, one from a module
-/// of another workspace crate in `foreign_glob_sources` or
-/// `foreign_private_glob_sources`. A private,
+/// this module). A glob is held with [`GlobReach::ReExport`] or
+/// [`GlobReach::Private`] by the same split, with the crate of its module
+/// where that is another workspace crate. A private,
 /// non-glob leaf the resolution chain cannot place at all names something
 /// outside this crate; binding it by [`BindingKind::Elsewhere`] keeps a
 /// descendant's reference to it from resolving to this module. A `use name;`
@@ -515,20 +515,18 @@ fn collect_use_reexports(
 
         if dep.target_item.as_deref() == Some("*") {
             let foreign = dep.target_package != ctx.crate_name;
-            let glob = GlobSource {
-                module: dep.target_module.clone(),
-                visibility: visibility.clone(),
-            };
-            match (private, foreign) {
-                (true, false) => info.private_glob_sources.push(glob),
-                (true, true) => info
-                    .foreign_private_glob_sources
-                    .push((dep.target_package.clone(), glob)),
-                (false, true) => info
-                    .foreign_glob_sources
-                    .push((dep.target_package.clone(), glob)),
-                (false, false) => info.glob_sources.push(glob),
-            }
+            info.hold_glob(GlobBinding {
+                reach: if private {
+                    GlobReach::Private
+                } else {
+                    GlobReach::ReExport
+                },
+                foreign_crate: foreign.then(|| dep.target_package.clone()),
+                source: GlobSource {
+                    module: dep.target_module.clone(),
+                    visibility: visibility.clone(),
+                },
+            });
         } else if let Some(original_name) = &dep.target_item {
             let alias_name = alias_path.rsplit("::").next().unwrap_or(alias_path);
             let target = ReExportTarget {
@@ -894,12 +892,16 @@ mod tests {
 
         let render_info = result.get("render").expect("render should have exports");
         assert!(
-            render_info.glob_sources.contains(&GlobSource {
-                module: "render::elements".to_string(),
-                visibility: Visibility::Public,
+            render_info.held_globs().contains(&GlobBinding {
+                reach: GlobReach::ReExport,
+                foreign_crate: None,
+                source: GlobSource {
+                    module: "render::elements".to_string(),
+                    visibility: Visibility::Public,
+                },
             }),
-            "glob_sources should contain render::elements, found: {:?}",
-            render_info.glob_sources
+            "the globs should hold render::elements, found: {:?}",
+            render_info.held_globs()
         );
     }
 
@@ -1022,10 +1024,10 @@ mod tests {
         );
     }
 
-    // A private glob lands in private_glob_sources, where a descendant can
-    // still resolve the names it forwards
+    // A private glob is held as private, where a descendant can still resolve
+    // the names it forwards
     #[test]
-    fn private_glob_captured_in_private_glob_sources() {
+    fn private_glob_held_as_private() {
         let tmp = test_crate(&[
             ("src/lib.rs", "pub mod parent;"),
             ("src/parent/mod.rs", "pub mod sibling;\nuse sibling::*;"),
@@ -1048,15 +1050,16 @@ mod tests {
 
         let parent_info = result.get("parent").expect("parent should have exports");
         assert_eq!(
-            parent_info.private_glob_sources,
-            vec![GlobSource {
-                module: "parent::sibling".to_string(),
-                visibility: Visibility::Restricted("parent".to_string()),
-            }]
-        );
-        assert!(
-            parent_info.glob_sources.is_empty(),
-            "private glob must not leak into glob_sources"
+            parent_info.held_globs(),
+            [GlobBinding {
+                reach: GlobReach::Private,
+                foreign_crate: None,
+                source: GlobSource {
+                    module: "parent::sibling".to_string(),
+                    visibility: Visibility::Restricted("parent".to_string()),
+                },
+            }],
+            "the private glob is the only one, not a re-export"
         );
     }
 

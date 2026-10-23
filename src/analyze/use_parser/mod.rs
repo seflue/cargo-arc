@@ -255,20 +255,29 @@ pub(crate) struct ModuleExportInfo {
     /// defined name. An `impl` block in another file of the crate lands here
     /// too, on the module that defines the type.
     pub(crate) associated: HashMap<String, AssociatedItems>,
-    /// Glob re-export sources (module paths from `pub use *`, `pub(crate)`
-    /// and `pub(super)` included)
-    pub(crate) glob_sources: Vec<GlobSource>,
-    /// Glob re-export sources in another workspace crate
-    /// (`pub use other_crate::m::*`): crate name and module path there.
-    pub(crate) foreign_glob_sources: Vec<(String, GlobSource)>,
-    /// Private glob sources (module paths from a private, `pub(self)` or
-    /// `pub(in …)` `use *`). Like a private `use`, visible to descendants,
-    /// which may name any of the forwarded symbols through this module.
-    pub(crate) private_glob_sources: Vec<GlobSource>,
-    /// Private glob sources in another workspace crate
-    /// (`use other_crate::m::*`): crate name and module path there. Visible
-    /// to descendants like `private_glob_sources`.
-    pub(crate) foreign_private_glob_sources: Vec<(String, GlobSource)>,
+    /// The globs of the module, in the order of [`ModuleBindings::globs`].
+    globs: Vec<GlobBinding>,
+}
+
+/// A glob `use` as a module holds it: how far its names reach, the workspace
+/// crate of the module it imports from where that is not the holder's own,
+/// and the module there.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct GlobBinding {
+    pub(crate) reach: GlobReach,
+    pub(crate) foreign_crate: Option<String>,
+    pub(crate) source: GlobSource,
+}
+
+impl GlobBinding {
+    /// The place of the glob in the order of [`ModuleBindings::globs`].
+    fn rank(&self) -> u8 {
+        let reach = match self.reach {
+            GlobReach::ReExport => 0,
+            GlobReach::Private => 2,
+        };
+        reach + u8::from(self.foreign_crate.is_some())
+    }
 }
 
 impl ModuleExportInfo {
@@ -282,10 +291,24 @@ impl ModuleExportInfo {
         };
         self.bindings.values().flatten().all(public_module)
             && self.associated.is_empty()
-            && self.glob_sources.is_empty()
-            && self.foreign_glob_sources.is_empty()
-            && self.private_glob_sources.is_empty()
-            && self.foreign_private_glob_sources.is_empty()
+            && self.globs.is_empty()
+    }
+
+    /// Hold `glob`, read after the globs the module already holds.
+    pub(crate) fn hold_glob(&mut self, glob: GlobBinding) {
+        let rank = glob.rank();
+        let at = self
+            .globs
+            .iter()
+            .position(|held| held.rank() > rank)
+            .unwrap_or(self.globs.len());
+        self.globs.insert(at, glob);
+    }
+
+    /// The globs the module holds, in the order of [`ModuleBindings::globs`].
+    #[cfg(test)]
+    pub(crate) fn held_globs(&self) -> &[GlobBinding] {
+        &self.globs
     }
 
     /// Bind `name` by `binding`, read after the bindings the module already
@@ -315,11 +338,9 @@ impl ModuleExportInfo {
         for (name, items) in other.associated {
             self.associated.entry(name).or_default().merge(items);
         }
-        self.glob_sources.extend(other.glob_sources);
-        self.foreign_glob_sources.extend(other.foreign_glob_sources);
-        self.private_glob_sources.extend(other.private_glob_sources);
-        self.foreign_private_glob_sources
-            .extend(other.foreign_private_glob_sources);
+        for glob in other.globs {
+            self.hold_glob(glob);
+        }
     }
 }
 
@@ -327,7 +348,7 @@ impl ModuleExportInfo {
 /// `pub(crate)` and `pub(super)` included, or only its descendants, as a
 /// private, `pub(self)` or `pub(in …)` `use *`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GlobReach {
+pub(crate) enum GlobReach {
     ReExport,
     Private,
 }
@@ -396,40 +417,12 @@ impl<'a> ModuleBindings<'a> {
     /// The globs of the module: `pub use` globs of its own crate, of other
     /// workspace crates, then private globs of its own crate and of others.
     fn globs(self) -> impl Iterator<Item = GlobImport<'a>> {
-        let info = self.info;
-        let local = move |reach| {
-            move |source| GlobImport {
-                crate_name: self.crate_name,
-                source,
-                reach,
-                foreign: false,
-            }
-        };
-        let foreign = |reach| {
-            move |(crate_name, source): &'a (String, GlobSource)| GlobImport {
-                crate_name,
-                source,
-                reach,
-                foreign: true,
-            }
-        };
-        let reexports = info.glob_sources.iter().map(local(GlobReach::ReExport));
-        let foreign_reexports = info
-            .foreign_glob_sources
-            .iter()
-            .map(foreign(GlobReach::ReExport));
-        let private = info
-            .private_glob_sources
-            .iter()
-            .map(local(GlobReach::Private));
-        let foreign_private = info
-            .foreign_private_glob_sources
-            .iter()
-            .map(foreign(GlobReach::Private));
-        reexports
-            .chain(foreign_reexports)
-            .chain(private)
-            .chain(foreign_private)
+        self.info.globs.iter().map(move |glob| GlobImport {
+            crate_name: glob.foreign_crate.as_deref().unwrap_or(self.crate_name),
+            source: &glob.source,
+            reach: glob.reach,
+            foreign: glob.foreign_crate.is_some(),
+        })
     }
 
     /// The associated items of the type or trait the module defines as
@@ -3153,8 +3146,8 @@ fn expand_glob(dep: DependencyRef, ctx: &ResolutionContext) -> Vec<DependencyRef
 
 /// The `*` marker on a glob's dependency. It must survive upstream of here:
 /// `collect_use_reexports` reads it out of its own `resolve_use_tree` pass to
-/// build `glob_sources`, which is what `resolve_reexport` resolves glob chains
-/// against.
+/// hold the module's globs, which is what `resolve_reexport` resolves glob
+/// chains against.
 fn is_glob(dep: &DependencyRef) -> bool {
     dep.target_item.as_deref() == Some("*")
 }
