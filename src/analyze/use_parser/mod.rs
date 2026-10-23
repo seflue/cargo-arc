@@ -226,7 +226,7 @@ impl NameBinding {
     }
 
     /// The target of a `use`, marked `true` for a private one.
-    fn use_target(&self) -> Option<(&ReExportTarget, bool)> {
+    pub(crate) fn use_target(&self) -> Option<(&ReExportTarget, bool)> {
         match &self.kind {
             BindingKind::ReExport(target) => Some((target, false)),
             BindingKind::PrivateUse(target) => Some((target, true)),
@@ -343,12 +343,6 @@ struct GlobImport<'a> {
 }
 
 impl<'a> GlobImport<'a> {
-    /// Whether the glob is a `pub use *` whose source is in the holder's own
-    /// crate.
-    fn reexports_own_crate(self) -> bool {
-        self.reach == GlobReach::ReExport && !self.foreign
-    }
-
     /// The module the glob imports from.
     fn source_module(self) -> CrateModule<'a> {
         CrateModule {
@@ -1001,8 +995,12 @@ fn follow_reexports(
             break;
         };
 
+        let visible_here = |visibility: &Visibility| viewer.sees(&dep.target_package, visibility);
         let named = bindings.named(item);
-        if named.clone().any(|binding| binding.definition().is_some()) {
+        if named
+            .clone()
+            .any(|binding| binding.definition().is_some() && visible_here(&binding.visibility))
+        {
             break;
         }
 
@@ -1013,7 +1011,6 @@ fn follow_reexports(
         // really depends on the definer, in the same crate or another
         // workspace crate.
         // Tier 1c: Bound elsewhere, visible only to descendants like Tier 1b.
-        let visible_here = |visibility: &Visibility| viewer.sees(&dep.target_package, visibility);
         let binding = visible_binding(named.clone(), visible_here);
         if places_no_definer(named, binding, visible_here) {
             return Resolution {
@@ -1375,156 +1372,171 @@ fn module_exports_symbol(
     brought
 }
 
-/// Whether a `pub use` in the root of `crate_name` brings `symbol` into the
-/// root, by name or through a glob that `viewer` sees. A glob does not name
-/// the symbol in the root file, so only the map knows it.
-fn root_reexports(viewer: Viewer, crate_name: &str, symbol: &str) -> bool {
-    let root = CrateModule {
-        crate_name,
-        path: "",
-    };
-    viewer.bindings_in(root).is_some_and(|bindings| {
-        bindings
-            .named(symbol)
-            .any(|binding| binding.reexported().is_some())
-            || glob_bringing(
-                viewer,
-                root,
-                bindings.globs().filter(|glob| glob.reexports_own_crate()),
-                symbol,
-                &HashSet::new(),
-            )
-            .is_some()
-    })
+/// What a name in a module stands for, as a viewer sees it.
+#[derive(Debug, Clone, PartialEq)]
+enum NameTarget {
+    /// A module of a workspace crate, to which a path carries its rest. Its
+    /// path is `""` for the crate root.
+    Module { crate_name: String, path: String },
+    /// An item the module binds under the name, its own or through a `use`
+    /// or a glob.
+    Item,
 }
 
-/// Whether the root of `crate_name` defines `symbol` itself, privately or not.
-fn root_defines(viewer: Viewer, crate_name: &str, symbol: &str) -> bool {
-    viewer
-        .bindings_in(CrateModule {
-            crate_name,
-            path: "",
-        })
-        .is_some_and(|root| {
-            root.named(symbol)
-                .any(|binding| binding.definition().is_some())
-        })
-}
-
-/// The module a `pub use` in the root of `crate_name` brings in as `name`, by
-/// name or through a glob: `pub use errors::*` with `pub mod shell_error` in
-/// `errors` makes `shell_error` in the root name `errors::shell_error`.
-fn root_reexported_module(
+/// Look up what `name` in `module` stands for, as `viewer` sees it. `None`
+/// where the module binds nothing `viewer` sees under the name. The order is
+/// a child module, a `use` that binds a module, the module's own items and
+/// other `use` items, then its globs, so a binding of the module hides a
+/// glob as in rustc. Where `path_goes_on` after the name, a `use` is followed
+/// through further `use` items to the module it binds. There a definition
+/// outside the type namespace stands for the name only where nothing else
+/// does, since a path goes on only through a module or a type.
+fn name_in_module(
     viewer: Viewer,
-    crate_name: &str,
+    module: CrateModule,
     name: &str,
-    module_paths: &HashSet<String>,
-) -> Option<String> {
-    let root = viewer.bindings_in(CrateModule {
-        crate_name,
-        path: "",
-    })?;
-    let reexport = root.named(name).find_map(NameBinding::reexported);
-    if let Some(target) = reexport {
-        let module = append_to_path(&target.module, &target.original_name);
-        return (target.crate_name == crate_name && module_paths.contains(&module))
-            .then_some(module);
-    }
-    root.globs()
-        .filter(|glob| glob.reexports_own_crate())
-        .find_map(|glob| {
-            glob_child_module(
-                viewer,
-                glob.source_module(),
-                name,
-                module_paths,
-                &mut HashSet::new(),
-            )
-        })
-}
-
-/// The crate and module in another workspace crate that a `pub use` in the
-/// root of `crate_name` brings in as `name`, following re-exports from root to
-/// root: `pub use other::m;` names module `m` of `other`, `pub use other;` its
-/// root (module `""`).
-fn root_reexported_foreign_module(
-    ctx: &ResolutionContext,
-    viewer: Viewer,
-    crate_name: &str,
-    name: &str,
-) -> Option<(String, String)> {
-    let mut visited = HashSet::new();
-    let (mut current_crate, mut current_name) = (crate_name.to_string(), name.to_string());
-    loop {
-        if !visited.insert((current_crate.clone(), current_name.clone())) {
-            return None;
-        }
-        let target = viewer
-            .bindings_in(CrateModule {
-                crate_name: &current_crate,
-                path: "",
-            })?
-            .named(&current_name)
-            .find_map(NameBinding::reexported)?;
-        let module = append_to_path(&target.module, &target.original_name);
-        let names_module = module.is_empty()
-            || ctx
-                .all_module_paths
-                .get_or_empty(&target.crate_name)
-                .contains(&module);
-        if names_module {
-            return (target.crate_name != crate_name).then(|| (target.crate_name.clone(), module));
-        }
-        if !target.module.is_empty() {
-            return None;
-        }
-        current_crate = target.crate_name.clone();
-        current_name = target.original_name.clone();
-    }
-}
-
-/// `parts`, a path inside `crate_name`, rewritten as a path that starts at
-/// another workspace crate, when the root of `crate_name` re-exports that
-/// crate or one of its modules under the first segment: beside
-/// `pub use other;` the path `other::error::E` runs on in `other`.
-fn path_in_root_reexported_crate(
-    ctx: &ResolutionContext,
-    viewer: Viewer,
-    crate_name: &str,
-    parts: &[&str],
-) -> Option<String> {
-    let (first, rest) = parts.split_first()?;
-    let first = first.trim_end_matches('{').trim();
-    let (other_crate, module) = root_reexported_foreign_module(ctx, viewer, crate_name, first)?;
-    Some(
-        std::iter::once(other_crate.as_str())
-            .chain((!module.is_empty()).then_some(module.as_str()))
-            .chain(rest.iter().copied())
-            .collect::<Vec<_>>()
-            .join("::"),
+    module_paths: &ModulePathMap,
+    path_goes_on: bool,
+) -> Option<NameTarget> {
+    look_up_name(
+        viewer,
+        module,
+        name,
+        module_paths,
+        path_goes_on,
+        &mut HashSet::new(),
     )
 }
 
-/// The child module `name` of `module`, or of a module its globs republish,
-/// in the crate of `module`.
+/// [`name_in_module`], with the modules and names a chain of `use` items
+/// already passed in `visited`.
+fn look_up_name(
+    viewer: Viewer,
+    module: CrateModule,
+    name: &str,
+    module_paths: &ModulePathMap,
+    path_goes_on: bool,
+    visited: &mut HashSet<(String, String, String)>,
+) -> Option<NameTarget> {
+    let crate_name = module.crate_name;
+    let viewer = viewer.reaching(crate_name);
+    if !visited.insert((
+        crate_name.to_string(),
+        module.path.to_string(),
+        name.to_string(),
+    )) {
+        return None;
+    }
+    let child = append_to_path(module.path, name);
+    if module_paths.get_or_empty(crate_name).contains(&child) {
+        return Some(NameTarget::Module {
+            crate_name: crate_name.to_string(),
+            path: child,
+        });
+    }
+    let bindings = viewer.bindings_in(module)?;
+    let visible = |visibility: &Visibility| viewer.sees(crate_name, visibility);
+    let named = bindings.named(name);
+    let uses = named
+        .clone()
+        .filter(|binding| visible(&binding.visibility))
+        .filter_map(NameBinding::use_target);
+    for (target, _) in uses {
+        if binds_a_module(target, module_paths) {
+            return Some(NameTarget::Module {
+                crate_name: target.crate_name.clone(),
+                path: append_to_path(&target.module, &target.original_name),
+            });
+        }
+        if path_goes_on {
+            let bound = look_up_name(
+                viewer,
+                CrateModule {
+                    crate_name: &target.crate_name,
+                    path: &target.module,
+                },
+                &target.original_name,
+                module_paths,
+                path_goes_on,
+                visited,
+            );
+            if let Some(module) = bound.filter(|bound| *bound != NameTarget::Item) {
+                return Some(module);
+            }
+        }
+    }
+    let item_here = named.clone().any(|binding| {
+        visible(&binding.visibility)
+            && match binding.kind {
+                BindingKind::Definition(_) => {
+                    !path_goes_on || binding.namespace() == Some(Namespace::Type)
+                }
+                BindingKind::ReExport(_) | BindingKind::PrivateUse(_) | BindingKind::Elsewhere => {
+                    true
+                }
+                BindingKind::Module => false,
+            }
+    });
+    if item_here {
+        return Some(NameTarget::Item);
+    }
+    let globs = || {
+        bindings
+            .globs()
+            .filter(move |glob| viewer.sees(crate_name, &glob.source.visibility))
+    };
+    let glob_module = globs().find_map(|glob| {
+        glob_child_module(
+            viewer,
+            glob.source_module(),
+            name,
+            module_paths,
+            &mut HashSet::new(),
+        )
+    });
+    if let Some(module) = glob_module {
+        return Some(module);
+    }
+    let brought = glob_bringing(viewer, module, globs(), name, &HashSet::new()).is_some()
+        || named
+            .into_iter()
+            .any(|binding| binding.definition().is_some() && visible(&binding.visibility));
+    brought.then_some(NameTarget::Item)
+}
+
+/// The child module `name` of `module`, or of a module its `pub use` globs
+/// republish, where `viewer` sees its declaration.
 fn glob_child_module(
     viewer: Viewer,
     module: CrateModule,
     name: &str,
-    module_paths: &HashSet<String>,
-    visited: &mut HashSet<String>,
-) -> Option<String> {
-    if !visited.insert(module.path.to_string()) {
+    module_paths: &ModulePathMap,
+    visited: &mut HashSet<(String, String)>,
+) -> Option<NameTarget> {
+    let viewer = viewer.reaching(module.crate_name);
+    if !visited.insert((module.crate_name.to_string(), module.path.to_string())) {
         return None;
     }
     let child = append_to_path(module.path, name);
-    if module_paths.contains(&child) {
-        return Some(child);
+    let declared = ReExportTarget {
+        crate_name: module.crate_name.to_string(),
+        module: module.path.to_string(),
+        original_name: name.to_string(),
+    };
+    if module_paths
+        .get_or_empty(module.crate_name)
+        .contains(&child)
+        && module_is_visible(viewer, &declared)
+    {
+        return Some(NameTarget::Module {
+            crate_name: module.crate_name.to_string(),
+            path: child,
+        });
     }
     viewer
         .bindings_in(module)?
         .globs()
-        .filter(|glob| glob.reexports_own_crate())
+        .filter(|glob| glob.reach == GlobReach::ReExport)
         .find_map(|glob| {
             glob_child_module(viewer, glob.source_module(), name, module_paths, visited)
         })
@@ -2469,9 +2481,9 @@ fn find_longest_module_prefix(parts: &[&str], module_paths: &HashSet<String>) ->
 }
 
 /// The module and item `parts` name in the own crate `crate_name`. A name
-/// after the longest module prefix that this module binds to another module
-/// of the crate, by `pub use` or, for a descendant of the module, by a
-/// private `use`, carries the rest of the path into that module: beside
+/// after the longest module prefix that stands for another module of the
+/// crate there, as [`name_in_module`] finds it from the file's module, carries
+/// the rest of the path into that module: beside
 /// `use crate::store::{self as bound};` in `holder`, `holder::bound::Set`
 /// names `Set` in `store`.
 fn module_and_item(
@@ -2490,7 +2502,20 @@ fn module_and_item(
             .as_deref()
             .filter(|_| segments.len() > prefix_len + 1 && module_paths.contains(&module))
             .filter(|name| visited.insert((module.clone(), (*name).to_string())))
-            .and_then(|name| module_bound_as(ctx, crate_name, &module, name, module_paths));
+            .and_then(|name| {
+                let holder = CrateModule {
+                    crate_name,
+                    path: &module,
+                };
+                let viewer = ctx.viewer(TargetRoot::AsSeen);
+                match name_in_module(viewer, holder, name, ctx.all_module_paths, true)? {
+                    NameTarget::Module {
+                        crate_name: bound_crate,
+                        path,
+                    } if bound_crate == crate_name && !path.is_empty() => Some(path),
+                    NameTarget::Module { .. } | NameTarget::Item => None,
+                }
+            });
         let Some(bound) = bound else {
             return (module, item);
         };
@@ -2502,26 +2527,14 @@ fn module_and_item(
     }
 }
 
-/// The module of `crate_name` that `module` binds as `name`, where the file
-/// being resolved can see the binding.
-fn module_bound_as(
-    ctx: &ResolutionContext,
-    crate_name: &str,
-    module: &str,
-    name: &str,
-    module_paths: &HashSet<String>,
-) -> Option<String> {
-    let viewer = ctx.viewer(TargetRoot::AsSeen);
-    let bindings = viewer.bindings_in(CrateModule {
-        crate_name,
-        path: module,
-    })?;
-    let (target, _) = visible_binding(bindings.named(name), |visibility| {
-        viewer.sees(crate_name, visibility)
-    })?
-    .use_target()?;
-    let bound = append_to_path(&target.module, &target.original_name);
-    (target.crate_name == crate_name && module_paths.contains(&bound)).then_some(bound)
+/// The path that starts at `crate_name`, runs to its module `module` (`""`
+/// for the root) and goes on with `rest`.
+fn path_from_crate(crate_name: &str, module: &str, rest: &[&str]) -> String {
+    std::iter::once(crate_name)
+        .chain((!module.is_empty()).then_some(module))
+        .chain(rest.iter().copied())
+        .collect::<Vec<_>>()
+        .join("::")
 }
 
 /// Extract an item from path parts at given index, handling trailing `{` and empty strings.
@@ -2555,30 +2568,44 @@ fn parse_crate_local_import(
 
     let crate_name = normalize_crate_name(ctx.current_crate);
     let module_paths = ctx.all_module_paths.get_or_empty(&crate_name);
-    let viewer = ctx.viewer(TargetRoot::AsSeen);
-    if parts.len() > 1
-        && !module_paths.contains(first)
-        && let Some(in_other) = path_in_root_reexported_crate(ctx, viewer, &crate_name, &parts)
-    {
-        return parse_workspace_import(ctx, &in_other, line_num, context);
-    }
-    let root_module = if module_paths.contains(first) {
-        None
-    } else {
-        root_reexported_module(viewer, &crate_name, first, module_paths)
+    let rest = &parts[1..];
+    let root = CrateModule {
+        crate_name: &crate_name,
+        path: "",
     };
-    let (target_module, target_item) = if let Some(module) = &root_module {
-        let in_crate: Vec<&str> = module
-            .split("::")
-            .chain(parts[1..].iter().copied())
-            .collect();
-        module_and_item(ctx, &crate_name, &in_crate, module_paths)
-    } else if !module_paths.contains(first)
-        && (root_reexports(viewer, &crate_name, first) || root_defines(viewer, &crate_name, first))
-    {
-        (String::new(), Some(first.to_string()))
-    } else {
-        module_and_item(ctx, &crate_name, &parts, module_paths)
+    let named = name_in_module(
+        ctx.viewer(TargetRoot::AsSeen),
+        root,
+        first,
+        ctx.all_module_paths,
+        !rest.is_empty(),
+    );
+    let (target_module, target_item) = match named {
+        Some(NameTarget::Module {
+            crate_name: other,
+            path,
+        }) if other != crate_name => {
+            if rest.is_empty() {
+                (String::new(), Some(first.to_string()))
+            } else {
+                let in_other = path_from_crate(&other, &path, rest);
+                return parse_workspace_import(ctx, &in_other, line_num, context);
+            }
+        }
+        Some(NameTarget::Module { path, .. }) => {
+            let in_crate: Vec<&str> = path
+                .split("::")
+                .filter(|segment| !segment.is_empty())
+                .chain(rest.iter().copied())
+                .collect();
+            if in_crate.is_empty() {
+                (String::new(), Some(first.to_string()))
+            } else {
+                module_and_item(ctx, &crate_name, &in_crate, module_paths)
+            }
+        }
+        Some(NameTarget::Item) => (String::new(), Some(first.to_string())),
+        None => module_and_item(ctx, &crate_name, &parts, module_paths),
     };
 
     Some(DependencyRef {
@@ -2672,39 +2699,53 @@ fn parse_workspace_import(
 
     let target_crate_name = normalize_crate_name(crate_name);
     let target_root = root_named_by(ctx, &target_crate_name);
-    let viewer = ctx.viewer(target_root);
     let module_paths = ctx.all_module_paths.get_or_empty(&target_crate_name);
-    if parts.len() > 2
-        && !module_paths.contains(module_segment)
-        && let Some(in_other) =
-            path_in_root_reexported_crate(ctx, viewer, &target_crate_name, &parts[1..])
-    {
-        return parse_workspace_import(ctx, &in_other, line_num, context);
-    }
-    let root_module = if module_paths.contains(module_segment) {
-        None
-    } else {
-        root_reexported_module(viewer, &target_crate_name, module_segment, module_paths)
+    let rest = &parts[2..];
+    let root = CrateModule {
+        crate_name: &target_crate_name,
+        path: "",
     };
-    let in_crate: Vec<&str> = match &root_module {
-        Some(module) => module
-            .split("::")
-            .chain(parts[2..].iter().copied())
-            .collect(),
-        None => parts[1..].to_vec(),
+    let named = name_in_module(
+        ctx.viewer(target_root),
+        root,
+        module_segment,
+        ctx.all_module_paths,
+        !rest.is_empty(),
+    );
+    let in_crate: Vec<&str> = match &named {
+        Some(NameTarget::Module {
+            crate_name: other,
+            path,
+        }) if *other != target_crate_name && !rest.is_empty() => {
+            let in_other = path_from_crate(other, path, rest);
+            return parse_workspace_import(ctx, &in_other, line_num, context);
+        }
+        Some(NameTarget::Module {
+            crate_name: other,
+            path,
+        }) if *other == target_crate_name && !path.is_empty() => {
+            path.split("::").chain(rest.iter().copied()).collect()
+        }
+        _ => parts[1..].to_vec(),
     };
     let (target_module, prefix_len) = find_longest_module_prefix(&in_crate, module_paths);
 
     // Entry-point detection: if the resolved target_module is not a known module
     // and the first segment after the crate name is a known export, treat it as
     // an entry-point dependency (target_module = ""). `crate_exports` reads only
-    // the root file, so a name a root glob brings in is looked up in the map.
+    // the root file, so a name a `use` or a glob binds in the root is looked up
+    // in the map.
+    let bound_in_root = match &named {
+        Some(NameTarget::Item) => true,
+        Some(NameTarget::Module { crate_name, .. }) => *crate_name != target_crate_name,
+        None => false,
+    };
     let is_entry_point = !module_paths.contains(&target_module)
-        && (ctx
-            .crate_exports
-            .get(&target_crate_name)
-            .is_some_and(|e| e.contains(module_segment))
-            || root_reexports(viewer, &target_crate_name, module_segment));
+        && (bound_in_root
+            || ctx
+                .crate_exports
+                .get(&target_crate_name)
+                .is_some_and(|e| e.contains(module_segment)));
 
     let (target_module, target_item) = if is_entry_point {
         (String::new(), Some(module_segment.to_string()))

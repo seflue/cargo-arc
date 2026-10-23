@@ -1009,7 +1009,8 @@ mod submodule_tests {
             HashMap::from([(String::new(), root_info)]),
         )]
         .into_iter()
-        .collect();
+        .collect::<ReExportMap>()
+        .for_root("my_crate", 0);
         let uses = parse_test_uses("use crate::helper;");
         let ctx = ResolutionContextBuilder::new(Path::new("src/user.rs"))
             .module_paths(&mp)
@@ -5583,5 +5584,239 @@ mod test_build_tests {
         let map: ReExportMap = [("own".to_string(), roots)].into_iter().collect();
         assert!(map.for_root("own", 0).test_build().is_none());
         assert!(map.test_build().is_none());
+    }
+}
+
+mod first_segment_tests {
+    use super::*;
+
+    fn bound_to(crate_name: &str, module: &str, name: &str) -> ReExportTarget {
+        ReExportTarget {
+            crate_name: crate_name.to_string(),
+            module: module.to_string(),
+            original_name: name.to_string(),
+        }
+    }
+
+    fn reexport(info: &mut ModuleExportInfo, name: &str, target: ReExportTarget, vis: Visibility) {
+        info.bind(
+            name.to_string(),
+            NameBinding::new(BindingKind::ReExport(target), vis),
+        );
+    }
+
+    fn module_paths(crate_modules: &[(&str, &[&str])]) -> ModulePathMap {
+        crate_modules
+            .iter()
+            .map(|(crate_name, modules)| {
+                let modules = modules.iter().map(ToString::to_string).collect();
+                ((*crate_name).to_string(), modules)
+            })
+            .collect()
+    }
+
+    /// The targets of the `use` items in `source`, a file of `my_crate` in
+    /// `current_module`, against a map seen from `my_crate`'s root.
+    fn targets(
+        source: &str,
+        current_module: &str,
+        mp: &ModulePathMap,
+        map: Vec<(&str, Vec<(&str, ModuleExportInfo)>)>,
+    ) -> Vec<(String, String, Option<String>)> {
+        let ws: WorkspacePackages = map
+            .iter()
+            .map(|(crate_name, _)| (*crate_name).to_string())
+            .chain(["my_crate".to_string()])
+            .collect();
+        let map: ReExportMap = map
+            .into_iter()
+            .map(|(crate_name, modules)| {
+                let modules = modules
+                    .into_iter()
+                    .map(|(path, info)| (path.to_string(), info))
+                    .collect::<HashMap<_, _>>();
+                (crate_name.to_string(), modules)
+            })
+            .collect::<ReExportMap>()
+            .for_root("my_crate", 0);
+        let ctx = ResolutionContextBuilder::new(Path::new("src/user.rs"))
+            .workspace_crates(&ws)
+            .module_paths(mp)
+            .current_module_path(current_module)
+            .reexport_map(&map)
+            .build();
+        parse_workspace_dependencies(
+            &parse_test_uses(source),
+            &ctx,
+            &FileBindings::default(),
+            &mut PassedOn::default(),
+        )
+        .into_iter()
+        .map(|dep| (dep.target_package, dep.target_module, dep.target_item))
+        .collect()
+    }
+
+    fn target(crate_name: &str, module: &str, item: &str) -> (String, String, Option<String>) {
+        (
+            crate_name.to_string(),
+            module.to_string(),
+            Some(item.to_string()),
+        )
+    }
+
+    #[test]
+    fn a_private_use_of_a_module_in_the_root_carries_the_path_into_it() {
+        // Root: `mod store; use self::store::set;`.
+        let mp = module_paths(&[("my_crate", &["store", "store::set", "user"])]);
+        let mut root = ModuleExportInfo::default();
+        root.bind(
+            "set".to_string(),
+            NameBinding::new(
+                BindingKind::PrivateUse(bound_to("my_crate", "store", "set")),
+                Visibility::Restricted(String::new()),
+            ),
+        );
+        let mut set = ModuleExportInfo::default();
+        define(&mut set, "Set", DefKind::Struct);
+        let map = vec![("my_crate", vec![("", root), ("store::set", set)])];
+        let found = targets("use crate::set::Set;", "user", &mp, map);
+        assert_eq!(found, [target("my_crate", "store::set", "Set")]);
+    }
+
+    #[test]
+    fn a_private_glob_in_the_root_brings_a_module_into_a_path() {
+        // Root: `mod frame; use self::frame::*;`, frame: `pub mod values;`.
+        let mp = module_paths(&[("my_crate", &["frame", "frame::values", "user"])]);
+        let mut root = ModuleExportInfo::default();
+        root.private_glob_sources.push(GlobSource {
+            module: "frame".to_string(),
+            visibility: Visibility::Restricted(String::new()),
+        });
+        let mut values = ModuleExportInfo::default();
+        define(&mut values, "Value", DefKind::Struct);
+        let map = vec![("my_crate", vec![("", root), ("frame::values", values)])];
+        let found = targets("use crate::values::Value;", "user", &mp, map);
+        assert_eq!(found, [target("my_crate", "frame::values", "Value")]);
+    }
+
+    #[test]
+    fn a_glob_of_a_module_brings_its_child_module_into_a_path() {
+        // holder: `pub use crate::store::*;`, store: `pub mod sub;`.
+        let mp = module_paths(&[("my_crate", &["holder", "store", "store::sub", "user"])]);
+        let mut holder = ModuleExportInfo::default();
+        holder.glob_sources.push(GlobSource {
+            module: "store".to_string(),
+            visibility: Visibility::Public,
+        });
+        let mut sub = ModuleExportInfo::default();
+        define(&mut sub, "Set", DefKind::Struct);
+        let map = vec![("my_crate", vec![("holder", holder), ("store::sub", sub)])];
+        let found = targets("use crate::holder::sub::Set;", "user", &mp, map);
+        assert_eq!(found, [target("my_crate", "store::sub", "Set")]);
+    }
+
+    #[test]
+    fn a_name_bound_to_a_module_through_a_chain_carries_the_path() {
+        // holder: `pub use crate::x::y as bound;`, x: `pub use crate::z as y;`.
+        let mp = module_paths(&[("my_crate", &["holder", "x", "z", "user"])]);
+        let mut holder = ModuleExportInfo::default();
+        reexport(
+            &mut holder,
+            "bound",
+            bound_to("my_crate", "x", "y"),
+            Visibility::Public,
+        );
+        let mut x = ModuleExportInfo::default();
+        reexport(
+            &mut x,
+            "y",
+            bound_to("my_crate", "", "z"),
+            Visibility::Public,
+        );
+        let mut z = ModuleExportInfo::default();
+        define(&mut z, "Item", DefKind::Struct);
+        let map = vec![("my_crate", vec![("holder", holder), ("x", x), ("z", z)])];
+        let found = targets("use crate::holder::bound::Item;", "user", &mp, map);
+        assert_eq!(found, [target("my_crate", "z", "Item")]);
+    }
+
+    #[test]
+    fn a_type_in_the_root_hides_a_module_a_glob_brings_under_its_name() {
+        // Root: `pub enum Mode { Fast } pub use settings::*;`, settings:
+        // `pub mod Mode;`. The enum shadows the glob in the type namespace.
+        let mp = module_paths(&[("my_crate", &["settings", "settings::Mode", "user"])]);
+        let mut root = ModuleExportInfo::default();
+        define(&mut root, "Mode", DefKind::Enum);
+        root.glob_sources.push(GlobSource {
+            module: "settings".to_string(),
+            visibility: Visibility::Public,
+        });
+        let map = vec![("my_crate", vec![("", root)])];
+        let found = targets("use crate::Mode::Fast;", "user", &mp, map);
+        assert_eq!(found, [target("my_crate", "", "Mode")]);
+    }
+
+    #[test]
+    fn an_invisible_definition_does_not_end_the_chain() {
+        // m: `#[cfg(a)] fn f() {}` and `#[cfg(not(a))] pub use self::inner::f;`.
+        let mp = module_paths(&[("my_crate", &["m", "m::inner", "user"])]);
+        let mut m = ModuleExportInfo::default();
+        define_with(
+            &mut m,
+            "f",
+            DefKind::Fn,
+            Visibility::Restricted("m".to_string()),
+        );
+        reexport(
+            &mut m,
+            "f",
+            bound_to("my_crate", "m::inner", "f"),
+            Visibility::Public,
+        );
+        let mut inner = ModuleExportInfo::default();
+        define(&mut inner, "f", DefKind::Fn);
+        let map = vec![("my_crate", vec![("m", m), ("m::inner", inner)])];
+        let found = targets("use crate::m::f;", "user", &mp, map);
+        assert_eq!(found, [target("my_crate", "m::inner", "f")]);
+    }
+
+    #[test]
+    fn a_restricted_use_in_another_crates_root_is_no_entry_point() {
+        // other_crate's root: `pub(crate) use self::inner::Thing;`.
+        let mp = module_paths(&[("my_crate", &["user"]), ("other_crate", &["inner"])]);
+        let mut root = ModuleExportInfo::default();
+        reexport(
+            &mut root,
+            "Thing",
+            bound_to("other_crate", "inner", "Thing"),
+            Visibility::Restricted(String::new()),
+        );
+        let map = vec![("other_crate", vec![("", root)])];
+        let found = targets("use other_crate::Thing;", "user", &mp, map);
+        assert!(
+            !found.contains(&target("other_crate", "", "Thing")),
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn a_restricted_use_of_a_module_in_another_crates_root_carries_no_path() {
+        // other_crate's root: `pub(crate) use self::inner as alias;`.
+        let mp = module_paths(&[("my_crate", &["user"]), ("other_crate", &["inner"])]);
+        let mut root = ModuleExportInfo::default();
+        reexport(
+            &mut root,
+            "alias",
+            bound_to("other_crate", "", "inner"),
+            Visibility::Restricted(String::new()),
+        );
+        let mut inner = ModuleExportInfo::default();
+        define(&mut inner, "Thing", DefKind::Struct);
+        let map = vec![("other_crate", vec![("", root), ("inner", inner)])];
+        let found = targets("use other_crate::alias::Thing;", "user", &mp, map);
+        assert!(
+            !found.contains(&target("other_crate", "inner", "Thing")),
+            "{found:?}"
+        );
     }
 }
