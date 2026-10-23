@@ -5,8 +5,6 @@ use crate::model::{
     DefKind, Definition, DependencyRef, EdgeContext, EntryKind, SymbolUse, TargetRoot, TestKind,
     UsageKind, UseCategory,
 };
-use std::borrow::Cow;
-use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::path::Path;
@@ -570,31 +568,34 @@ impl ReExportMap {
         }
     }
 
-    /// The same map, as a path through a package's name sees it: each package
-    /// shows its lib root. The lib that names its own package sees itself as
-    /// this map does, its `pub(crate)` items and its test build included;
-    /// every other root sees its lib from outside.
-    pub(crate) fn lib_view(&self) -> Self {
-        let own_root = self.lib_view_root().cloned();
-        Self {
-            packages: Arc::clone(&self.packages),
-            test_build: self.test_build && own_root.is_some(),
-            own_root,
-        }
-    }
-
-    /// The own root as [`ReExportMap::lib_view`] sees it: kept where it is
-    /// its package's lib root, else none.
+    /// The own root as a path through a package's name sees it: kept where it
+    /// is its package's lib root, else none. Each package then shows its lib
+    /// root; the lib that names its own package sees itself as this map does,
+    /// its `pub(crate)` items and its test build included.
     fn lib_view_root(&self) -> Option<&(String, usize)> {
         self.own_root.as_ref().filter(|_| self.own_root_is_lib())
     }
 
-    /// The same map, as a reference resolving against `root` sees it.
-    pub(crate) fn seen_through(&self, root: TargetRoot) -> Cow<'_, Self> {
-        match root {
-            TargetRoot::AsSeen => Cow::Borrowed(self),
-            TargetRoot::Lib => Cow::Owned(self.lib_view()),
+    /// The viewer from `module` of the root this map is seen from, looking
+    /// through `root`: [`TargetRoot::Lib`] sees every package's lib root, and
+    /// the own root only where it is that lib.
+    fn viewer<'a>(&'a self, root: TargetRoot, module: &'a str) -> Viewer<'a> {
+        let own_root = match root {
+            TargetRoot::AsSeen => self.own_root.as_ref(),
+            TargetRoot::Lib => self.lib_view_root(),
+        };
+        Viewer {
+            packages: &self.packages,
+            own_root,
+            test_build: self.test_build && own_root.is_some(),
+            module,
         }
+    }
+
+    /// The viewer from `module` that reads what `dep` points at, through the
+    /// root `dep` resolves against.
+    fn viewer_for<'a>(&'a self, dep: &DependencyRef, module: &'a str) -> Viewer<'a> {
+        self.viewer(dep.target_root, module)
     }
 
     /// The same map, seen from the test build of the own root, or `None`
@@ -614,106 +615,16 @@ impl ReExportMap {
         })
     }
 
-    /// The same map, with the own root seen as built without `test`, as a
-    /// crate that depends on it sees it.
-    pub(crate) fn build_without_test(&self) -> Self {
-        Self {
-            packages: Arc::clone(&self.packages),
-            own_root: self.own_root.clone(),
-            test_build: false,
-        }
-    }
-
     /// Whether the own root is seen as its test build loads it.
     pub(crate) fn is_test_build(&self) -> bool {
         self.test_build
     }
 
-    /// Whether a resolution that reaches `crate_name` leaves the test build:
-    /// a crate other than the own root's is compiled against the own root
-    /// built without `test`, so the rest of the way reads that build.
-    fn leaves_test_build_at(&self, crate_name: &str) -> bool {
-        self.test_build
-            && self
-                .own_root
-                .as_ref()
-                .is_some_and(|(own, _)| own != crate_name)
-    }
-
     /// The export info of `crate_name`'s modules, as this map sees them.
     pub(crate) fn get(&self, crate_name: &str) -> Option<&HashMap<String, ModuleExportInfo>> {
-        self.modules_from(self.own_root.as_ref(), crate_name)
-    }
-
-    /// The export info of the modules of the crate a dependency points at, as
-    /// the root it resolves against shows them.
-    pub(crate) fn exports_for(
-        &self,
-        dep: &DependencyRef,
-    ) -> Option<&HashMap<String, ModuleExportInfo>> {
-        let own_root = match dep.target_root {
-            TargetRoot::AsSeen => self.own_root.as_ref(),
-            TargetRoot::Lib => self.lib_view_root(),
-        };
-        self.modules_from(own_root, &dep.target_package)
-    }
-
-    /// The export info of `crate_name`'s modules, seen from `own_root`.
-    fn modules_from(
-        &self,
-        own_root: Option<&(String, usize)>,
-        crate_name: &str,
-    ) -> Option<&HashMap<String, ModuleExportInfo>> {
-        let roots = self.packages.get(crate_name)?;
-        match own_root {
-            Some((own, index)) if own == crate_name => {
-                let root = roots.get(*index)?;
-                let test_build_modules =
-                    root.test_build_modules.as_ref().filter(|_| self.test_build);
-                Some(test_build_modules.unwrap_or(&root.modules))
-            }
-            _ => roots
-                .iter()
-                .find(|root| root.kind == EntryKind::Lib)
-                .map(|root| &root.modules),
-        }
-    }
-
-    /// The bindings of `module`, where the map holds it.
-    fn bindings_in(&self, module: CrateModule) -> Option<ModuleBindings<'_>> {
-        let (crate_name, _) = self.packages.get_key_value(module.crate_name)?;
-        let info = self.get(crate_name)?.get(module.path)?;
-        Some(ModuleBindings::new(crate_name, info))
-    }
-
-    /// The bindings of the module a dependency points at, where the map
-    /// holds it, as the root it resolves against shows it.
-    fn bindings_for(&self, dep: &DependencyRef) -> Option<ModuleBindings<'_>> {
-        let (crate_name, _) = self.packages.get_key_value(&dep.target_package)?;
-        let info = self.exports_for(dep)?.get(&dep.target_module)?;
-        Some(ModuleBindings::new(crate_name, info))
-    }
-
-    /// Whether a binding with `visibility` in `crate_name` is visible from
-    /// `module` of the crate root this map is seen from. A restricted binding
-    /// is visible from below its module in the same crate only: another
-    /// package, another root of the same package and a map seen from outside
-    /// every package see what is public.
-    pub(crate) fn is_visible(
-        &self,
-        crate_name: &str,
-        visibility: &Visibility,
-        module: &str,
-    ) -> bool {
-        match visibility {
-            Visibility::Public => true,
-            Visibility::Restricted(ancestor) => {
-                self.own_root
-                    .as_ref()
-                    .is_some_and(|(own, _)| own == crate_name)
-                    && is_descendant(module, ancestor)
-            }
-        }
+        self.viewer(TargetRoot::AsSeen, "")
+            .modules(crate_name)
+            .map(|(_, modules)| modules)
     }
 
     /// Whether the root this map is seen from is its package's lib root.
@@ -752,6 +663,81 @@ impl FromIterator<(String, HashMap<String, ModuleExportInfo>)> for ReExportMap {
                 (crate_name, vec![lib])
             })
             .collect()
+    }
+}
+
+/// Who looks a name up: a module of the crate root and build a
+/// [`ReExportMap`] is seen from, looking through the root a reference
+/// resolves against. Which root of a package it reads a module from and which
+/// bindings it sees both follow from that, so a lookup asks the viewer and no
+/// caller picks a root or a visibility check of its own.
+#[derive(Debug, Clone, Copy)]
+struct Viewer<'a> {
+    packages: &'a HashMap<String, Vec<RootReExports>>,
+    /// The root seen from inside, by package and entry-file index: its
+    /// restricted bindings are visible below their module. Every other root
+    /// shows only what is public, and every other package its lib root.
+    own_root: Option<&'a (String, usize)>,
+    /// Whether the own root is read as its test build loads it.
+    test_build: bool,
+    module: &'a str,
+}
+
+impl<'a> Viewer<'a> {
+    /// The bindings of `module`, where the root the viewer reads its crate
+    /// from holds it.
+    fn bindings_in(self, module: CrateModule) -> Option<ModuleBindings<'a>> {
+        let (crate_name, modules) = self.modules(module.crate_name)?;
+        Some(ModuleBindings::new(crate_name, modules.get(module.path)?))
+    }
+
+    /// The modules of `crate_name`, as the viewer reads them: the own root,
+    /// in its test build where the viewer reads that, or another package's
+    /// lib root.
+    fn modules(
+        self,
+        crate_name: &str,
+    ) -> Option<(&'a String, &'a HashMap<String, ModuleExportInfo>)> {
+        let (crate_name, roots) = self.packages.get_key_value(crate_name)?;
+        let modules = match self.own_root {
+            Some((own, index)) if own == crate_name => {
+                let root = roots.get(*index)?;
+                let test_build_modules =
+                    root.test_build_modules.as_ref().filter(|_| self.test_build);
+                test_build_modules.unwrap_or(&root.modules)
+            }
+            _ => {
+                &roots
+                    .iter()
+                    .find(|root| root.kind == EntryKind::Lib)?
+                    .modules
+            }
+        };
+        Some((crate_name, modules))
+    }
+
+    /// Whether the viewer sees a binding with `visibility` in `crate_name`. A
+    /// restricted binding is visible from below its module in the own root
+    /// only: another package, another root of the same package and a viewer
+    /// outside every package see what is public.
+    fn sees(self, crate_name: &str, visibility: &Visibility) -> bool {
+        match visibility {
+            Visibility::Public => true,
+            Visibility::Restricted(ancestor) => {
+                self.own_root.is_some_and(|(own, _)| own == crate_name)
+                    && is_descendant(self.module, ancestor)
+            }
+        }
+    }
+
+    /// The viewer with which a resolution that reaches `crate_name` reads on.
+    /// A crate other than the own root's is compiled against the own root
+    /// built without `test`, so from there the way reads that build.
+    fn reaching(self, crate_name: &str) -> Self {
+        Self {
+            test_build: self.test_build && self.own_root.is_none_or(|(own, _)| own == crate_name),
+            ..self
+        }
     }
 }
 
@@ -925,7 +911,7 @@ impl PassedOn {
                         crate_name,
                         path: holder,
                     },
-                    reexport_map,
+                    reexport_map.viewer_for(dep, holder),
                     module_paths,
                     &mut HashSet::new(),
                 );
@@ -967,27 +953,20 @@ fn is_import_only(dep: &DependencyRef) -> bool {
 /// Whether the glob `dep` brings a trait into `holder`, or a name whose kind
 /// the map does not know at its definer. A module the map does not hold
 /// counts as unknown, and so does a name the chain follows out of the map or
-/// a `use` binds outside the crate.
+/// a `use` binds outside the crate. `viewer` looks from `holder` through the
+/// root `dep` resolves against.
 fn glob_may_bring_a_trait(
     dep: &DependencyRef,
     holder: CrateModule,
-    reexport_map: &ReExportMap,
+    viewer: Viewer,
     module_paths: &ModulePathMap,
     visited: &mut HashSet<(String, String)>,
 ) -> bool {
-    if reexport_map.leaves_test_build_at(&dep.target_package) {
-        return glob_may_bring_a_trait(
-            dep,
-            holder,
-            &reexport_map.build_without_test(),
-            module_paths,
-            visited,
-        );
-    }
+    let viewer = viewer.reaching(&dep.target_package);
     if !visited.insert((dep.target_package.clone(), dep.target_module.clone())) {
         return false;
     }
-    let Some(bindings) = reexport_map.bindings_for(dep) else {
+    let Some(bindings) = viewer.bindings_in(CrateModule::of(dep)) else {
         return true;
     };
     let sees = |visibility: &Visibility| holder.sees(&dep.target_package, visibility);
@@ -1002,9 +981,7 @@ fn glob_may_bring_a_trait(
             NameBinding::PrivateUse { target, .. } => sees(&target.visibility),
             _ => false,
         })
-        .any(|(name, _)| {
-            reexports_a_trait_or_unknown(dep, name, holder.path, reexport_map, module_paths)
-        });
+        .any(|(name, _)| reexports_a_trait_or_unknown(dep, name, viewer, module_paths));
     let binds_elsewhere = bindings.all().any(
         |(_, binding)| matches!(binding, NameBinding::Elsewhere(visibility) if sees(visibility)),
     );
@@ -1020,35 +997,32 @@ fn glob_may_bring_a_trait(
                 target_module: glob.source.module.clone(),
                 ..dep.clone()
             };
-            glob_may_bring_a_trait(&source, holder, reexport_map, module_paths, visited)
+            glob_may_bring_a_trait(&source, holder, viewer, module_paths, visited)
         })
 }
 
 /// Whether `name`, re-exported by the module `dep` imports from, is a trait at
 /// its definer, or the chain ends on no definition the map knows. A name that
-/// ends on a module is no trait. Nothing in `holder` asks a meaning of the
-/// name, so the chain follows any.
+/// ends on a module is no trait. Nothing in the holder `viewer` looks from
+/// asks a meaning of the name, so the chain follows any.
 fn reexports_a_trait_or_unknown(
     dep: &DependencyRef,
     name: &str,
-    holder: &str,
-    reexport_map: &ReExportMap,
+    viewer: Viewer,
     module_paths: &ModulePathMap,
 ) -> bool {
     let mut named = DependencyRef {
         target_item: Some(name.to_string()),
         ..dep.clone()
     };
-    if resolve_reexport_as(&mut named, reexport_map, module_paths, holder, Meaning::Any)
-        .places_no_definer()
-    {
+    if follow_reexports(&mut named, viewer, module_paths, Meaning::Any).places_no_definer() {
         return true;
     }
     let Some(item) = &named.target_item else {
         return false;
     };
-    reexport_map
-        .bindings_for(&named)
+    viewer
+        .bindings_in(CrateModule::of(&named))
         .and_then(|bindings| {
             bindings.named(item).find_map(|binding| match binding {
                 NameBinding::Definition { item, .. } => Some(item.definition.kind),
@@ -1075,35 +1049,27 @@ fn resolve_reexport_as(
     importer_module: &str,
     meaning: Meaning,
 ) -> Resolution {
-    let reexport_map = reexport_map.seen_through(dep.target_root);
-    follow_reexports(dep, &reexport_map, module_paths, importer_module, meaning)
+    let viewer = reexport_map.viewer_for(dep, importer_module);
+    follow_reexports(dep, viewer, module_paths, meaning)
 }
 
-/// The chain of [`resolve_reexport_as`], followed as `reexport_map` sees it.
+/// The chain of [`resolve_reexport_as`], followed as `viewer` sees it.
 fn follow_reexports(
     dep: &mut DependencyRef,
-    reexport_map: &ReExportMap,
+    mut viewer: Viewer,
     module_paths: &ModulePathMap,
-    importer_module: &str,
     meaning: Meaning,
 ) -> Resolution {
-    let without_test = OnceCell::new();
-    let mut reexport_map = reexport_map;
     let mut lookup_name = dep.target_item.clone();
     let mut passed = Vec::new();
     let mut visited = HashSet::new();
-    let visible = |map: &ReExportMap, crate_name: &str, visibility: &Visibility| {
-        map.is_visible(crate_name, visibility, importer_module)
-    };
 
     loop {
-        if reexport_map.leaves_test_build_at(&dep.target_package) {
-            reexport_map = without_test.get_or_init(|| reexport_map.build_without_test());
-        }
+        viewer = viewer.reaching(&dep.target_package);
         if !visited.insert((dep.target_package.clone(), dep.target_module.clone())) {
             break;
         }
-        let Some(bindings) = reexport_map.bindings_in(CrateModule::of(dep)) else {
+        let Some(bindings) = viewer.bindings_in(CrateModule::of(dep)) else {
             break;
         };
         let Some(item) = &lookup_name else {
@@ -1125,8 +1091,7 @@ fn follow_reexports(
         // really depends on the definer, in the same crate or another
         // workspace crate.
         // Tier 1c: Bound elsewhere, visible only to descendants like Tier 1b.
-        let visible_here =
-            |visibility: &Visibility| visible(reexport_map, &dep.target_package, visibility);
+        let visible_here = |visibility: &Visibility| viewer.sees(&dep.target_package, visibility);
         let binding = visible_binding(named.clone(), visible_here);
         if places_no_definer(named, binding, visible_here) {
             return Resolution {
@@ -1136,14 +1101,7 @@ fn follow_reexports(
             };
         }
         if let Some((target, private_use)) = binding {
-            if end_on_module(
-                dep,
-                target,
-                reexport_map,
-                module_paths,
-                importer_module,
-                meaning,
-            ) {
+            if end_on_module(dep, target, viewer, module_paths, meaning) {
                 break;
             }
             if private_use {
@@ -1162,15 +1120,7 @@ fn follow_reexports(
             continue;
         }
 
-        if follow_glob(
-            dep,
-            bindings,
-            reexport_map,
-            item,
-            importer_module,
-            &visited,
-            &mut passed,
-        ) {
+        if follow_glob(dep, bindings, viewer, item, &visited, &mut passed) {
             continue;
         }
 
@@ -1189,16 +1139,15 @@ fn follow_reexports(
 }
 
 /// Point `dep` at the module a glob of `bindings`, the module `dep` points
-/// at, takes `symbol` from for `importer_module`: a `pub use` glob of this
+/// at, takes `symbol` from for `viewer`: a `pub use` glob of this
 /// crate first, then of another workspace crate, then a private glob, which
 /// reaches descendants only. A private glob of this crate is pushed onto
 /// `passed`. Returns whether a glob brings the symbol.
 fn follow_glob(
     dep: &mut DependencyRef,
     bindings: ModuleBindings,
-    reexport_map: &ReExportMap,
+    viewer: Viewer,
     symbol: &str,
-    importer_module: &str,
     visited: &HashSet<(String, String)>,
     passed: &mut Vec<PassedThrough>,
 ) -> bool {
@@ -1212,11 +1161,10 @@ fn follow_glob(
     };
     let reexported = [false, true].into_iter().find_map(|foreign| {
         glob_bringing(
-            reexport_map,
+            viewer,
             holder,
             globs(GlobReach::ReExport, foreign),
             symbol,
-            importer_module,
             visited,
         )
     });
@@ -1236,11 +1184,10 @@ fn follow_glob(
     // that holds it, like Tier 1b. One of this crate is passed through.
     let private = [false, true].into_iter().find_map(|foreign| {
         glob_bringing(
-            reexport_map,
+            viewer,
             holder,
             globs(GlobReach::Private, foreign),
             symbol,
-            importer_module,
             &HashSet::new(),
         )
     });
@@ -1323,28 +1270,24 @@ fn visible_binding<'a>(
         .find(|(target, _)| visible(&target.visibility))
 }
 
-/// The first of `globs`, held by `holder`, that `importer_module` sees and
-/// whose source exports `symbol` to `importer_module` without passing a
-/// module in `passed`: a source that reaches it only through a module the
-/// chain already passed leads back, not on.
+/// The first of `globs`, held by `holder`, that `viewer` sees and whose
+/// source exports `symbol` to `viewer` without passing a module in `passed`:
+/// a source that reaches it only through a module the chain already passed
+/// leads back, not on.
 fn glob_bringing<'a>(
-    reexport_map: &ReExportMap,
+    viewer: Viewer,
     holder: CrateModule,
     globs: impl Iterator<Item = GlobImport<'a>>,
     symbol: &str,
-    importer_module: &str,
     passed: &HashSet<(String, String)>,
 ) -> Option<GlobImport<'a>> {
     globs
-        .filter(|glob| {
-            reexport_map.is_visible(holder.crate_name, &glob.source.visibility, importer_module)
-        })
+        .filter(|glob| viewer.sees(holder.crate_name, &glob.source.visibility))
         .find(|glob| {
             module_exports_symbol(
-                reexport_map,
+                viewer,
                 glob.source_module(),
                 symbol,
-                importer_module,
                 &[holder],
                 &mut passed.clone(),
             )
@@ -1353,31 +1296,30 @@ fn glob_bringing<'a>(
 }
 
 /// Point `dep` at the module `target` binds, when it binds a module or a crate
-/// root that `importer_module` sees: the reference then names the module, not
-/// an item in it. A reference whose `meaning` is no module goes on to an item
-/// of that name beside the module, where its holder shows one.
+/// root that `viewer` sees: the reference then names the module, not an item
+/// in it. A reference whose `meaning` is no module goes on to an item of that
+/// name beside the module, where its holder shows one.
 fn end_on_module(
     dep: &mut DependencyRef,
     target: &ReExportTarget,
-    reexport_map: &ReExportMap,
+    viewer: Viewer,
     module_paths: &ModulePathMap,
-    importer_module: &str,
     meaning: Meaning,
 ) -> bool {
     let item_meant = || {
         !meaning.admits_a_module()
             && holds_an_item_named(
-                reexport_map,
+                viewer,
                 module_paths,
-                &target.crate_name,
-                &target.module,
+                CrateModule {
+                    crate_name: &target.crate_name,
+                    path: &target.module,
+                },
                 &target.original_name,
-                importer_module,
             )
     };
-    let binds_module = binds_a_module(target, module_paths)
-        && module_is_visible(reexport_map, target, importer_module)
-        && !item_meant();
+    let binds_module =
+        binds_a_module(target, module_paths) && module_is_visible(viewer, target) && !item_meant();
     if binds_module {
         dep.target_package.clone_from(&target.crate_name);
         dep.target_module = append_to_path(&target.module, &target.original_name);
@@ -1386,26 +1328,19 @@ fn end_on_module(
     binds_module
 }
 
-/// Whether `module` of `crate_name` holds an item `name` visible from
-/// `importer_module`: its own definition, or a `use` of something that is no
-/// module. Beside a module of that name, it is what a reference that does not
-/// mean the module names.
+/// Whether `module` holds an item `name` that `viewer` sees: its own
+/// definition, or a `use` of something that is no module. Beside a module of
+/// that name, it is what a reference that does not mean the module names.
 fn holds_an_item_named(
-    reexport_map: &ReExportMap,
+    viewer: Viewer,
     module_paths: &ModulePathMap,
-    crate_name: &str,
-    module: &str,
+    module: CrateModule,
     name: &str,
-    importer_module: &str,
 ) -> bool {
-    let Some(bindings) = reexport_map.bindings_in(CrateModule {
-        crate_name,
-        path: module,
-    }) else {
+    let Some(bindings) = viewer.bindings_in(module) else {
         return false;
     };
-    let visible =
-        |visibility: &Visibility| reexport_map.is_visible(crate_name, visibility, importer_module);
+    let visible = |visibility: &Visibility| viewer.sees(module.crate_name, visibility);
     let named = bindings.named(name);
     named.clone().any(|binding| {
         matches!(binding, NameBinding::Definition { item, .. } if visible(&item.visibility))
@@ -1426,15 +1361,15 @@ fn binds_a_module(target: &ReExportTarget, module_paths: &ModulePathMap) -> bool
     }
 }
 
-/// Whether the module `target` binds is visible from `module`, as the `mod`
-/// declaration in its parent has it. A crate root is, and so is a module the
-/// map holds no restricted declaration of.
-fn module_is_visible(reexport_map: &ReExportMap, target: &ReExportTarget, module: &str) -> bool {
+/// Whether `viewer` sees the module `target` binds, as the `mod` declaration
+/// in its parent has it. A crate root is visible, and so is a module the map
+/// holds no restricted declaration of.
+fn module_is_visible(viewer: Viewer, target: &ReExportTarget) -> bool {
     let parent = CrateModule {
         crate_name: &target.crate_name,
         path: &target.module,
     };
-    reexport_map
+    viewer
         .bindings_in(parent)
         .and_then(|parent| {
             parent
@@ -1444,46 +1379,36 @@ fn module_is_visible(reexport_map: &ReExportMap, target: &ReExportTarget, module
                     _ => None,
                 })
         })
-        .is_none_or(|visibility| reexport_map.is_visible(&target.crate_name, visibility, module))
+        .is_none_or(|visibility| viewer.sees(&target.crate_name, visibility))
 }
 
-/// Check whether `module` brings a symbol into the scope of `importer_module`
-/// through the chain of globs held by `holders`: by its own definition, a
-/// `use` of any visibility, a name a `use` binds outside the crate, or a glob
-/// of any visibility, followed into other workspace crates. A glob brings in
-/// only what its holder sees, so a chain only what every holder on it sees,
-/// and what `importer_module` does not see, it does not bring there. Private
-/// `use` items that bind the symbol to different targets bring it in every
+/// Check whether `module` brings a symbol into the scope of the module
+/// `viewer` looks from, through the chain of globs held by `holders`: by its
+/// own definition, a `use` of any visibility, a name a `use` binds outside
+/// the crate, or a glob of any visibility, followed into other workspace
+/// crates. A glob brings in only what its holder sees, so a chain only what
+/// every holder on it sees, and what `viewer` does not see, it does not bring
+/// there. Private `use` items that bind the symbol to different targets bring it in every
 /// build: the module holds it then in whichever, and a glob of the module
 /// does not go on to another. A `use` under a `#[cfg]` syn cannot decide
 /// brings it in some builds only, unless a glob of the module brings it in
 /// every one. A module in `visited`, by crate and module path, brings nothing
 /// more. `None` where the module does not bring the symbol.
 fn module_exports_symbol(
-    reexport_map: &ReExportMap,
+    viewer: Viewer,
     module: CrateModule,
     symbol: &str,
-    importer_module: &str,
     holders: &[CrateModule],
     visited: &mut HashSet<(String, String)>,
 ) -> Option<Brought> {
     let crate_name = module.crate_name;
-    if reexport_map.leaves_test_build_at(crate_name) {
-        return module_exports_symbol(
-            &reexport_map.build_without_test(),
-            module,
-            symbol,
-            importer_module,
-            holders,
-            visited,
-        );
-    }
+    let viewer = viewer.reaching(crate_name);
     if !visited.insert((crate_name.to_string(), module.path.to_string())) {
         return None;
     }
-    let bindings = reexport_map.bindings_in(module)?;
+    let bindings = viewer.bindings_in(module)?;
     let visible = |visibility: &Visibility| {
-        reexport_map.is_visible(crate_name, visibility, importer_module)
+        viewer.sees(crate_name, visibility)
             && holders
                 .iter()
                 .all(|holder| holder.sees(crate_name, visibility))
@@ -1509,14 +1434,7 @@ fn module_exports_symbol(
         .chain(foreign_globs)
         .filter(|glob| visible(&glob.source.visibility));
     for glob in globs {
-        match module_exports_symbol(
-            reexport_map,
-            glob.source_module(),
-            symbol,
-            importer_module,
-            &holders,
-            visited,
-        ) {
+        match module_exports_symbol(viewer, glob.source_module(), symbol, &holders, visited) {
             Some(Brought::InEveryBuild) => return Some(Brought::InEveryBuild),
             Some(Brought::InSomeBuilds) => brought = Some(Brought::InSomeBuilds),
             None => {}
@@ -1526,28 +1444,22 @@ fn module_exports_symbol(
 }
 
 /// Whether a `pub use` in the root of `crate_name` brings `symbol` into the
-/// root, by name or through a glob that `importer_module` sees. A glob does
-/// not name the symbol in the root file, so only the map knows it.
-fn root_reexports(
-    reexport_map: &ReExportMap,
-    crate_name: &str,
-    symbol: &str,
-    importer_module: &str,
-) -> bool {
+/// root, by name or through a glob that `viewer` sees. A glob does not name
+/// the symbol in the root file, so only the map knows it.
+fn root_reexports(viewer: Viewer, crate_name: &str, symbol: &str) -> bool {
     let root = CrateModule {
         crate_name,
         path: "",
     };
-    reexport_map.bindings_in(root).is_some_and(|bindings| {
+    viewer.bindings_in(root).is_some_and(|bindings| {
         bindings
             .named(symbol)
             .any(|binding| matches!(binding, NameBinding::ReExport(_)))
             || glob_bringing(
-                reexport_map,
+                viewer,
                 root,
                 bindings.globs().filter(|glob| glob.reexports_own_crate()),
                 symbol,
-                importer_module,
                 &HashSet::new(),
             )
             .is_some()
@@ -1555,8 +1467,8 @@ fn root_reexports(
 }
 
 /// Whether the root of `crate_name` defines `symbol` itself, privately or not.
-fn root_defines(reexport_map: &ReExportMap, crate_name: &str, symbol: &str) -> bool {
-    reexport_map
+fn root_defines(viewer: Viewer, crate_name: &str, symbol: &str) -> bool {
+    viewer
         .bindings_in(CrateModule {
             crate_name,
             path: "",
@@ -1571,12 +1483,12 @@ fn root_defines(reexport_map: &ReExportMap, crate_name: &str, symbol: &str) -> b
 /// name or through a glob: `pub use errors::*` with `pub mod shell_error` in
 /// `errors` makes `shell_error` in the root name `errors::shell_error`.
 fn root_reexported_module(
-    reexport_map: &ReExportMap,
+    viewer: Viewer,
     crate_name: &str,
     name: &str,
     module_paths: &HashSet<String>,
 ) -> Option<String> {
-    let root = reexport_map.bindings_in(CrateModule {
+    let root = viewer.bindings_in(CrateModule {
         crate_name,
         path: "",
     })?;
@@ -1593,7 +1505,7 @@ fn root_reexported_module(
         .filter(|glob| glob.reexports_own_crate())
         .find_map(|glob| {
             glob_child_module(
-                reexport_map,
+                viewer,
                 glob.source_module(),
                 name,
                 module_paths,
@@ -1608,7 +1520,7 @@ fn root_reexported_module(
 /// root (module `""`).
 fn root_reexported_foreign_module(
     ctx: &ResolutionContext,
-    reexport_map: &ReExportMap,
+    viewer: Viewer,
     crate_name: &str,
     name: &str,
 ) -> Option<(String, String)> {
@@ -1618,7 +1530,7 @@ fn root_reexported_foreign_module(
         if !visited.insert((current_crate.clone(), current_name.clone())) {
             return None;
         }
-        let target = reexport_map
+        let target = viewer
             .bindings_in(CrateModule {
                 crate_name: &current_crate,
                 path: "",
@@ -1651,14 +1563,13 @@ fn root_reexported_foreign_module(
 /// `pub use other;` the path `other::error::E` runs on in `other`.
 fn path_in_root_reexported_crate(
     ctx: &ResolutionContext,
-    reexport_map: &ReExportMap,
+    viewer: Viewer,
     crate_name: &str,
     parts: &[&str],
 ) -> Option<String> {
     let (first, rest) = parts.split_first()?;
     let first = first.trim_end_matches('{').trim();
-    let (other_crate, module) =
-        root_reexported_foreign_module(ctx, reexport_map, crate_name, first)?;
+    let (other_crate, module) = root_reexported_foreign_module(ctx, viewer, crate_name, first)?;
     Some(
         std::iter::once(other_crate.as_str())
             .chain((!module.is_empty()).then_some(module.as_str()))
@@ -1671,7 +1582,7 @@ fn path_in_root_reexported_crate(
 /// The child module `name` of `module`, or of a module its globs republish,
 /// in the crate of `module`.
 fn glob_child_module(
-    reexport_map: &ReExportMap,
+    viewer: Viewer,
     module: CrateModule,
     name: &str,
     module_paths: &HashSet<String>,
@@ -1684,18 +1595,12 @@ fn glob_child_module(
     if module_paths.contains(&child) {
         return Some(child);
     }
-    reexport_map
+    viewer
         .bindings_in(module)?
         .globs()
         .filter(|glob| glob.reexports_own_crate())
         .find_map(|glob| {
-            glob_child_module(
-                reexport_map,
-                glob.source_module(),
-                name,
-                module_paths,
-                visited,
-            )
+            glob_child_module(viewer, glob.source_module(), name, module_paths, visited)
         })
 }
 
@@ -1725,7 +1630,22 @@ pub(crate) struct ResolutionContext<'a> {
     pub(crate) extern_crates: &'a HashMap<String, String>,
 }
 
-impl ResolutionContext<'_> {
+impl<'a> ResolutionContext<'a> {
+    /// The viewer from this file's module, looking through `root`.
+    fn viewer(&self, root: TargetRoot) -> Viewer<'a> {
+        self.reexport_map.viewer(root, self.current_module_path)
+    }
+
+    /// The viewer from this file's module that reads what `dep` points at.
+    fn viewer_for(&self, dep: &DependencyRef) -> Viewer<'a> {
+        self.viewer(dep.target_root)
+    }
+
+    /// The bindings of the module `dep` points at, as this file sees it.
+    fn target_bindings(&self, dep: &DependencyRef) -> Option<ModuleBindings<'a>> {
+        self.viewer_for(dep).bindings_in(CrateModule::of(dep))
+    }
+
     /// [`resolve_reexport_as`] from this file's module, for a reference that
     /// asks `meaning` of `dep`'s item.
     fn resolve_reexport(&self, dep: &mut DependencyRef, meaning: Meaning) -> Resolution {
@@ -2655,13 +2575,13 @@ fn module_bound_as(
     name: &str,
     module_paths: &HashSet<String>,
 ) -> Option<String> {
-    let bindings = ctx.reexport_map.bindings_in(CrateModule {
+    let viewer = ctx.viewer(TargetRoot::AsSeen);
+    let bindings = viewer.bindings_in(CrateModule {
         crate_name,
         path: module,
     })?;
     let (target, _) = visible_binding(bindings.named(name), |visibility| {
-        ctx.reexport_map
-            .is_visible(crate_name, visibility, ctx.current_module_path)
+        viewer.sees(crate_name, visibility)
     })?;
     let bound = append_to_path(&target.module, &target.original_name);
     (target.crate_name == crate_name && module_paths.contains(&bound)).then_some(bound)
@@ -2698,17 +2618,17 @@ fn parse_crate_local_import(
 
     let crate_name = normalize_crate_name(ctx.current_crate);
     let module_paths = ctx.all_module_paths.get_or_empty(&crate_name);
+    let viewer = ctx.viewer(TargetRoot::AsSeen);
     if parts.len() > 1
         && !module_paths.contains(first)
-        && let Some(in_other) =
-            path_in_root_reexported_crate(ctx, ctx.reexport_map, &crate_name, &parts)
+        && let Some(in_other) = path_in_root_reexported_crate(ctx, viewer, &crate_name, &parts)
     {
         return parse_workspace_import(ctx, &in_other, line_num, context);
     }
     let root_module = if module_paths.contains(first) {
         None
     } else {
-        root_reexported_module(ctx.reexport_map, &crate_name, first, module_paths)
+        root_reexported_module(viewer, &crate_name, first, module_paths)
     };
     let (target_module, target_item) = if let Some(module) = &root_module {
         let in_crate: Vec<&str> = module
@@ -2717,12 +2637,7 @@ fn parse_crate_local_import(
             .collect();
         module_and_item(ctx, &crate_name, &in_crate, module_paths)
     } else if !module_paths.contains(first)
-        && (root_reexports(
-            ctx.reexport_map,
-            &crate_name,
-            first,
-            ctx.current_module_path,
-        ) || root_defines(ctx.reexport_map, &crate_name, first))
+        && (root_reexports(viewer, &crate_name, first) || root_defines(viewer, &crate_name, first))
     {
         (String::new(), Some(first.to_string()))
     } else {
@@ -2820,24 +2735,19 @@ fn parse_workspace_import(
 
     let target_crate_name = normalize_crate_name(crate_name);
     let target_root = root_named_by(ctx, &target_crate_name);
-    let reexport_map = ctx.reexport_map.seen_through(target_root);
+    let viewer = ctx.viewer(target_root);
     let module_paths = ctx.all_module_paths.get_or_empty(&target_crate_name);
     if parts.len() > 2
         && !module_paths.contains(module_segment)
         && let Some(in_other) =
-            path_in_root_reexported_crate(ctx, &reexport_map, &target_crate_name, &parts[1..])
+            path_in_root_reexported_crate(ctx, viewer, &target_crate_name, &parts[1..])
     {
         return parse_workspace_import(ctx, &in_other, line_num, context);
     }
     let root_module = if module_paths.contains(module_segment) {
         None
     } else {
-        root_reexported_module(
-            &reexport_map,
-            &target_crate_name,
-            module_segment,
-            module_paths,
-        )
+        root_reexported_module(viewer, &target_crate_name, module_segment, module_paths)
     };
     let in_crate: Vec<&str> = match &root_module {
         Some(module) => module
@@ -2857,12 +2767,7 @@ fn parse_workspace_import(
             .crate_exports
             .get(&target_crate_name)
             .is_some_and(|e| e.contains(module_segment))
-            || root_reexports(
-                &reexport_map,
-                &target_crate_name,
-                module_segment,
-                ctx.current_module_path,
-            ));
+            || root_reexports(viewer, &target_crate_name, module_segment));
 
     let (target_module, target_item) = if is_entry_point {
         (String::new(), Some(module_segment.to_string()))
@@ -2960,30 +2865,21 @@ fn take_item_the_parent_reexports(
         .target_module
         .rsplit_once("::")
         .unwrap_or(("", dep.target_module.as_str()));
-    let reexport_map = ctx.reexport_map.seen_through(dep.target_root);
+    let viewer = ctx.viewer_for(dep);
+    let parent_module = CrateModule {
+        crate_name: &dep.target_package,
+        path: parent,
+    };
     if !meaning.admits_a_module()
-        && holds_an_item_named(
-            &reexport_map,
-            ctx.all_module_paths,
-            &dep.target_package,
-            parent,
-            name,
-            ctx.current_module_path,
-        )
+        && holds_an_item_named(viewer, ctx.all_module_paths, parent_module, name)
     {
         let (parent, name) = (parent.to_string(), name.to_string());
         dep.target_module = parent;
         dep.target_item = Some(name);
         return;
     }
-    let visible = |visibility: &Visibility| {
-        reexport_map.is_visible(&dep.target_package, visibility, ctx.current_module_path)
-    };
-    let parent_module = CrateModule {
-        crate_name: &dep.target_package,
-        path: parent,
-    };
-    let Some(target) = reexport_map
+    let visible = |visibility: &Visibility| viewer.sees(&dep.target_package, visibility);
+    let Some(target) = viewer
         .bindings_in(parent_module)
         .map(|bindings| bindings.named(name))
         .filter(|named| {
@@ -3213,11 +3109,11 @@ pub(crate) fn parse_workspace_dependencies(
                 // the names the file uses, by `parse_path_ref_dependencies`.
                 // A `pub use` glob republishes every name and uses none, so it
                 // is the whole payload.
-                if is_glob(&dep) && glob_payload_known(&dep, ctx.reexport_map) && !via_reexport {
+                if is_glob(&dep) && glob_payload_known(&dep, ctx) && !via_reexport {
                     continue;
                 }
                 dep.via_reexport = via_reexport;
-                for mut dep in expand_glob(dep, ctx.reexport_map, ctx.current_module_path) {
+                for mut dep in expand_glob(dep, ctx) {
                     if ctx.resolve_noting(&mut dep, Meaning::Any, passed_on) {
                         DependencyRef::dedup_push(&mut deps, &mut seen_targets, dep);
                     }
@@ -3229,23 +3125,17 @@ pub(crate) fn parse_workspace_dependencies(
     deps
 }
 
-/// The names `use <module>::*` in `holder_module` brings into scope: the
+/// The names `use <module>::*` in the file of `ctx` brings into scope: the
 /// module's own definitions plus what any of its `use` items binds under a
-/// name, as far as `holder_module` sees them.
+/// name, as far as the file's module sees them.
 ///
 /// `None` when the module is absent from the map or exports nothing under a name
-/// `holder_module` sees. Sorted, because the map iterates in arbitrary order and
+/// the file's module sees. Sorted, because the map iterates in arbitrary order and
 /// the names reach the rendered output.
-fn glob_payload(
-    dep: &DependencyRef,
-    reexport_map: &ReExportMap,
-    holder_module: &str,
-) -> Option<Vec<String>> {
-    let reexport_map = reexport_map.seen_through(dep.target_root);
-    let bindings = reexport_map.bindings_for(dep)?;
-    let visible = |visibility: &Visibility| {
-        reexport_map.is_visible(&dep.target_package, visibility, holder_module)
-    };
+fn glob_payload(dep: &DependencyRef, ctx: &ResolutionContext) -> Option<Vec<String>> {
+    let viewer = ctx.viewer_for(dep);
+    let bindings = viewer.bindings_in(CrateModule::of(dep))?;
+    let visible = |visibility: &Visibility| viewer.sees(&dep.target_package, visibility);
     let mut names: Vec<String> = bindings
         .all()
         .filter(|(_, binding)| {
@@ -3272,15 +3162,11 @@ fn glob_payload(
 /// Non-globs pass through. So does a glob whose payload is unknown: it keeps the
 /// `*`, which scores as a single unnamed symbol — an understatement, but a
 /// smaller one than dropping the edge to zero.
-fn expand_glob(
-    dep: DependencyRef,
-    reexport_map: &ReExportMap,
-    holder_module: &str,
-) -> Vec<DependencyRef> {
+fn expand_glob(dep: DependencyRef, ctx: &ResolutionContext) -> Vec<DependencyRef> {
     if !is_glob(&dep) {
         return vec![dep];
     }
-    let Some(names) = glob_payload(&dep, reexport_map, holder_module) else {
+    let Some(names) = glob_payload(&dep, ctx) else {
         return vec![dep];
     };
     names
@@ -3302,8 +3188,8 @@ fn is_glob(dep: &DependencyRef) -> bool {
 
 /// Whether the map holds the module a glob imports from, and so can say which
 /// names the glob brings in.
-fn glob_payload_known(dep: &DependencyRef, reexport_map: &ReExportMap) -> bool {
-    reexport_map.bindings_for(dep).is_some()
+fn glob_payload_known(dep: &DependencyRef, ctx: &ResolutionContext) -> bool {
+    ctx.target_bindings(dep).is_some()
 }
 
 /// What every name in one file means, per region: module aliases, names bound
@@ -3411,7 +3297,7 @@ impl FileBindings {
             // written here; the names are found where the file uses them.
             if binding == "*" {
                 if let Some(mut dep) = dep
-                    && glob_payload_known(&dep, ctx.reexport_map)
+                    && glob_payload_known(&dep, ctx)
                 {
                     dep.via_reexport = is_reexport_visibility(&collected.item.vis);
                     bindings.bind_glob(collected.region, dep);
@@ -3571,11 +3457,9 @@ impl FileBindings {
         ctx: &ResolutionContext,
         dep: &DependencyRef,
     ) {
-        let reexport_map = ctx.reexport_map.seen_through(dep.target_root);
-        let visible = |visibility: &Visibility| {
-            reexport_map.is_visible(&dep.target_package, visibility, ctx.current_module_path)
-        };
-        let bindings = reexport_map.bindings_for(dep);
+        let viewer = ctx.viewer_for(dep);
+        let visible = |visibility: &Visibility| viewer.sees(&dep.target_package, visibility);
+        let bindings = viewer.bindings_in(CrateModule::of(dep));
         let module_paths = ctx.all_module_paths.get_or_empty(&dep.target_package);
         let children = module_paths.iter().filter_map(|path| {
             let (parent, name) = path.rsplit_once("::").unwrap_or(("", path));
@@ -3605,10 +3489,7 @@ impl FileBindings {
             .into_iter()
             .flat_map(ModuleBindings::all)
             .filter_map(|(name, binding)| Some((name, binding.use_target()?.0)))
-            .filter(|(_, target)| {
-                visible(&target.visibility)
-                    && module_is_visible(&reexport_map, target, ctx.current_module_path)
-            })
+            .filter(|(_, target)| visible(&target.visibility) && module_is_visible(viewer, target))
             .filter_map(|(name, target)| {
                 let bound = BoundModule {
                     package: target.crate_name.clone(),
@@ -3975,7 +3856,7 @@ fn glob_taking<'b>(
             .unwrap_or(first)
     };
     let differs = |glob: &DependencyRef| {
-        ctx.reexport_map.bindings_for(glob).is_some_and(|bindings| {
+        ctx.target_bindings(glob).is_some_and(|bindings| {
             bindings.named(name).any(|binding| {
                 matches!(
                     binding,
@@ -4001,10 +3882,9 @@ fn glob_taking<'b>(
 /// file's module.
 fn glob_exports(ctx: &ResolutionContext, glob: &DependencyRef, name: &str) -> Option<Brought> {
     module_exports_symbol(
-        &ctx.reexport_map.seen_through(glob.target_root),
+        ctx.viewer_for(glob),
         CrateModule::of(glob),
         name,
-        ctx.current_module_path,
         &[CrateModule {
             crate_name: &normalize_crate_name(ctx.current_crate),
             path: ctx.current_module_path,
@@ -4022,7 +3902,7 @@ fn associated_segment<'p>(path: &'p str, dep: &DependencyRef) -> Option<&'p str>
 }
 
 fn definition_kind(ctx: &ResolutionContext, dep: &DependencyRef, item: &str) -> Option<DefKind> {
-    ctx.reexport_map.bindings_for(dep).and_then(|bindings| {
+    ctx.target_bindings(dep).and_then(|bindings| {
         bindings.named(item).find_map(|binding| match binding {
             NameBinding::Definition { item, .. } => Some(item.definition.kind),
             _ => None,
@@ -4067,8 +3947,7 @@ fn categorize(
 ) -> UseCategory {
     let kind = definition_kind(ctx, dep, item);
     let items = ctx
-        .reexport_map
-        .bindings_for(dep)
+        .target_bindings(dep)
         .and_then(|bindings| bindings.associated(item));
     match (associated, position) {
         (_, PathPosition::Type | PathPosition::Construct) => UseCategory::Types,

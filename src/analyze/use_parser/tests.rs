@@ -3621,6 +3621,7 @@ mod binding_tests {
         .collect();
 
         let bindings = map
+            .viewer(TargetRoot::AsSeen, "")
             .bindings_in(CrateModule {
                 crate_name: "my_crate",
                 path: "holder",
@@ -3671,6 +3672,7 @@ mod binding_tests {
         .into_iter()
         .collect();
         let bindings = map
+            .viewer(TargetRoot::AsSeen, "")
             .bindings_in(CrateModule {
                 crate_name: "my_crate",
                 path: "holder",
@@ -5155,19 +5157,52 @@ mod use_category_tests {
     fn a_reference_through_the_package_name_sees_the_lib_root_from_outside() {
         let bin_view = bin_root_of_my_crate();
         let in_crate = Visibility::Restricted(String::new());
-        let defines_shared = |view: &ReExportMap| {
-            view.get("my_crate")
-                .and_then(|modules| modules.get(""))
-                .is_some_and(|root| root.definitions.contains_key("Shared"))
+        let defines_shared = |viewer: Viewer| {
+            viewer
+                .bindings_in(CrateModule {
+                    crate_name: "my_crate",
+                    path: "",
+                })
+                .is_some_and(|root| {
+                    root.named("Shared")
+                        .any(|binding| matches!(binding, NameBinding::Definition { .. }))
+                })
         };
 
-        let through_name = bin_view.seen_through(TargetRoot::Lib);
-        assert!(defines_shared(&through_name));
-        assert!(!through_name.is_visible("my_crate", &in_crate, "banner"));
+        let through_name = bin_view.viewer(TargetRoot::Lib, "banner");
+        assert!(defines_shared(through_name));
+        assert!(!through_name.sees("my_crate", &in_crate));
 
-        let as_seen = bin_view.seen_through(TargetRoot::AsSeen);
-        assert!(!defines_shared(&as_seen));
-        assert!(as_seen.is_visible("my_crate", &in_crate, "banner"));
+        let as_seen = bin_view.viewer(TargetRoot::AsSeen, "banner");
+        assert!(!defines_shared(as_seen));
+        assert!(as_seen.sees("my_crate", &in_crate));
+    }
+
+    /// A dependency carries the root it resolves against, so a viewer made
+    /// for it reads the module through that root: the lib root for a
+    /// reference through the package's name, from the bin tree too.
+    #[test]
+    fn a_viewer_for_a_dependency_reads_its_module_through_its_root() {
+        let bin_view = bin_root_of_my_crate();
+        let through_name = DependencyRef {
+            target_package: "my_crate".to_string(),
+            target_module: String::new(),
+            target_item: Some("Shared".to_string()),
+            source_file: Path::new("src/banner.rs").to_path_buf(),
+            line: 1,
+            context: EdgeContext::production(),
+            via_reexport: false,
+            uses: Vec::new(),
+            target_root: TargetRoot::Lib,
+        };
+
+        let viewer = bin_view.viewer_for(&through_name, "banner");
+
+        assert!(
+            viewer
+                .bindings_in(CrateModule::of(&through_name))
+                .is_some_and(|root| root.named("Shared").next().is_some())
+        );
     }
 
     /// A file of the bin tree that names its own package names the lib root,
@@ -5521,12 +5556,20 @@ mod test_build_tests {
         }]
     }
 
-    /// The names module `m` of `crate_name` defines, as `map` sees them.
-    fn names_in(map: &ReExportMap, crate_name: &str) -> Vec<String> {
-        let mut names: Vec<String> = map
-            .get(crate_name)
-            .and_then(|modules| modules.get("m"))
-            .map(|info| info.definitions.keys().cloned().collect())
+    /// The names module `m` of `crate_name` defines, as `viewer` reads them.
+    fn names_in(viewer: Viewer, crate_name: &str) -> Vec<String> {
+        let mut names: Vec<String> = viewer
+            .bindings_in(CrateModule {
+                crate_name,
+                path: "m",
+            })
+            .map(|bindings| {
+                bindings
+                    .all()
+                    .filter(|(_, binding)| matches!(binding, NameBinding::Definition { .. }))
+                    .map(|(name, _)| name.to_string())
+                    .collect()
+            })
             .unwrap_or_default();
         names.sort();
         names
@@ -5546,11 +5589,13 @@ mod test_build_tests {
         let own = map.for_root("own", 0);
         let test_build = own.test_build().expect("own root has a test build");
 
-        assert_eq!(names_in(&own, "own"), ["real"]);
-        assert_eq!(names_in(&test_build, "own"), ["mock"]);
-        assert_eq!(names_in(&test_build, "dep"), ["dep_real"]);
-        assert_eq!(names_in(&test_build.lib_view(), "own"), ["mock"]);
-        assert_eq!(names_in(&test_build.build_without_test(), "own"), ["real"]);
+        let seen = |map: &ReExportMap, root| names_in(map.viewer(root, ""), "own");
+        assert_eq!(seen(&own, TargetRoot::AsSeen), ["real"]);
+        assert_eq!(seen(&test_build, TargetRoot::AsSeen), ["mock"]);
+        let from_test_build = test_build.viewer(TargetRoot::AsSeen, "");
+        assert_eq!(names_in(from_test_build, "dep"), ["dep_real"]);
+        assert_eq!(seen(&test_build, TargetRoot::Lib), ["mock"]);
+        assert_eq!(names_in(from_test_build.reaching("dep"), "own"), ["real"]);
     }
 
     #[test]
