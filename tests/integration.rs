@@ -2205,6 +2205,58 @@ fn name_resolution_glob_of_the_parent_brings_in_its_private_fn() {
     assert_name_resolution_arc("m::sf::gl", "m::sf", "production", &["tool"]);
 }
 
+/// Cell 78: `mown` defines `macro_rules! mm` and imports it by a private
+/// `use mm;`. `kid` calls `super::mm!()`, which names the macro in `mown`.
+#[test]
+fn name_resolution_private_use_of_the_own_macro_keeps_its_arc() {
+    assert_name_resolution_arc("m::mown::kid", "m::mown", "production", &["mm"]);
+}
+
+/// Cell 78b: a glob into another workspace crate brings in only what its
+/// holder sees. `ghold::x` globs `gsrc::z`, whose `pub(crate) fn f` only
+/// `gsrc` sees, and `gsrc::b` with `pub fn f`. A test module of `gsrc`
+/// writing `ghold::x::f()` names `b::f`.
+#[test]
+fn name_resolution_glob_into_another_crate_brings_in_what_its_holder_sees() {
+    assert_name_resolution_arc("gsrc::tu", "gsrc::b", "test", &["f"]);
+    assert_no_name_resolution_arc("gsrc::tu", "gsrc::z");
+}
+
+/// Cell 78c: `gth` globs `gts`, which has `pub fn f` and a private trait
+/// that `gth` does not see. `gth::kid` calls `super::f()`, so `gth` only
+/// passes `f` on, and its glob brings in no trait that keeps the arc.
+#[test]
+fn name_resolution_glob_brings_in_no_trait_its_holder_does_not_see() {
+    assert_name_resolution_arc("m::gth::kid", "m::gts", "production", &["f"]);
+    assert_no_name_resolution_arc("m::gth", "m::gts");
+}
+
+/// Cell 78d: `use lv::*;` in a bin module binds the lib's child module `gm`.
+/// The bin root has a `gm` of its own, which re-exports `bcli::G`; `gm::G`
+/// in the bin module is the lib's `G`.
+#[test]
+fn name_resolution_child_module_through_a_glob_on_the_own_lib_is_the_libs() {
+    assert_name_resolution_arc("lv::lvglob", "lv::gm", "production", &["G"]);
+}
+
+/// Cell 78e: the same glob binds `kv`, which the lib root binds by
+/// `pub use store::kv;`. The bin root has a `store::kv` of its own, which
+/// re-exports `bcli::K`; `kv::K` in the bin module is the lib's `K`.
+#[test]
+fn name_resolution_module_a_glob_on_the_own_lib_binds_by_use_is_the_libs() {
+    assert_name_resolution_arc("lv::lvglob", "lv::store::kv", "production", &["K"]);
+    assert_no_name_resolution_arc("lv::lvglob", "lv::bcli");
+}
+
+/// Cell 78f: the integration test `itm` has a module `gm` of its own, which
+/// re-exports `tother::G`. Its module `tuser` binds `use lv::gm;`, and
+/// `gm::G` there is the lib's `G`.
+#[test]
+fn name_resolution_integration_test_binds_the_lib_module_beside_a_same_named_one() {
+    assert_name_resolution_arc("lv::itm::tuser", "lv::gm", "test", &["G"]);
+    assert_no_name_resolution_arc("lv::itm::tuser", "lv::itm::tother");
+}
+
 /// Every use on an edge, with its category, goes to stderr under `--debug`,
 /// so the walker's result can be read without a rule that consumes it.
 /// A subprocess, because `run` installs the debug log on the process's own
