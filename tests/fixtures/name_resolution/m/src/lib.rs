@@ -6,6 +6,7 @@ pub mod npuser;
 pub mod viapath;
 pub mod cpath;
 pub mod cpath2;
+pub mod cpath5;
 pub mod u;
 pub mod w;
 pub mod cfgimp;
