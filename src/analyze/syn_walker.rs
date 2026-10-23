@@ -382,17 +382,20 @@ fn walk_module_syn(
     // passes the names on, which is no dependency of this module.
     dependencies.retain(|dep| !only_passes_on(ctx, current_module_path, dep));
 
-    let definitions = ctx
-        .reexport_map
-        .get(ctx.crate_name)
-        .and_then(|modules| modules.get(current_module_path))
-        .map(|info| {
-            info.definitions
-                .iter()
-                .map(|(name, item)| (name.clone(), item.definition))
-                .collect()
-        })
-        .unwrap_or_default();
+    // Take the definitions of both builds: a `#[cfg(test)]` item is in the
+    // test build's map only.
+    let mut definitions = HashMap::new();
+    for reexport_map in std::iter::once(ctx.reexport_map).chain(ctx.test_build_map) {
+        let Some(info) = reexport_map
+            .get(ctx.crate_name)
+            .and_then(|modules| modules.get(current_module_path))
+        else {
+            continue;
+        };
+        for (name, item) in &info.definitions {
+            definitions.entry(name.clone()).or_insert(item.definition);
+        }
+    }
 
     ModuleInfo {
         name: module_name.to_string(),

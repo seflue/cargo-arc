@@ -2722,17 +2722,17 @@ fn name_resolution_private_use_outside_test_brings_nothing_to_test_code() {
 
 /// Cell GP24: the parent binds a name by a `#[cfg(not(test))]` and, read
 /// after it, a `#[cfg(test)]` private `use` to different targets. A
-/// production reference through the child's glob names no definer and does
-/// not fall through to the parent's private glob.
+/// production reference through the child's glob reaches the definer the
+/// build without `test` binds, not the parent's private glob.
 #[test]
-fn name_resolution_test_private_use_read_last_still_marks_differing_targets() {
+fn name_resolution_test_private_use_read_last_leaves_production_its_target() {
     assert_gp_cell_arcs(
         &["g24"],
         false,
         &[
             ("g24", "d", "production", &["f"]),
             ("g24", "e", "production", &["*"]),
-            ("g24::k", "g24", "production", &["*"]),
+            ("g24::k", "d", "production", &["f"]),
         ],
     );
     assert_gp_cell_arcs(
@@ -2742,7 +2742,7 @@ fn name_resolution_test_private_use_read_last_still_marks_differing_targets() {
             ("g24", "c", "test", &["f"]),
             ("g24", "d", "production", &["f"]),
             ("g24", "e", "production", &["*"]),
-            ("g24::k", "g24", "production", &["*"]),
+            ("g24::k", "d", "production", &["f"]),
         ],
     );
 }
@@ -2750,14 +2750,14 @@ fn name_resolution_test_private_use_read_last_still_marks_differing_targets() {
 /// Cell GP25: GP24 with the two `use` items swapped: the outcome does not
 /// depend on which one is read last.
 #[test]
-fn name_resolution_private_uses_of_differing_targets_in_either_order() {
+fn name_resolution_private_use_alternatives_in_either_order() {
     assert_gp_cell_arcs(
         &["g25"],
         false,
         &[
             ("g25", "d", "production", &["f"]),
             ("g25", "e", "production", &["*"]),
-            ("g25::k", "g25", "production", &["*"]),
+            ("g25::k", "d", "production", &["f"]),
         ],
     );
     assert_gp_cell_arcs(
@@ -2767,23 +2767,23 @@ fn name_resolution_private_uses_of_differing_targets_in_either_order() {
             ("g25", "c", "test", &["f"]),
             ("g25", "d", "production", &["f"]),
             ("g25", "e", "production", &["*"]),
-            ("g25::k", "g25", "production", &["*"]),
+            ("g25::k", "d", "production", &["f"]),
         ],
     );
 }
 
 /// Cell GP26: GP24 with the child's glob of the parent in a fn block and a
 /// glob of another module outside it. The inner glob takes the name, which
-/// names no definer, so the outer glob does not either.
+/// names the definer of the build without `test`, so the outer glob does not.
 #[test]
-fn name_resolution_block_glob_of_private_uses_of_differing_targets_takes_the_name() {
+fn name_resolution_block_glob_of_private_use_alternatives_takes_the_name() {
     assert_gp_cell_arcs(
         &["g26"],
         false,
         &[
             ("g26", "d", "production", &["f"]),
+            ("g26::k", "d", "production", &["f"]),
             ("g26::k", "e", "production", &["*"]),
-            ("g26::k", "g26", "production", &["*"]),
         ],
     );
     assert_gp_cell_arcs(
@@ -2792,10 +2792,49 @@ fn name_resolution_block_glob_of_private_uses_of_differing_targets_takes_the_nam
         &[
             ("g26", "c", "test", &["f"]),
             ("g26", "d", "production", &["f"]),
+            ("g26::k", "d", "production", &["f"]),
             ("g26::k", "e", "production", &["*"]),
-            ("g26::k", "g26", "production", &["*"]),
         ],
     );
+}
+
+/// Cell GP27: the parent holds a `#[cfg(test)]` and a `#[cfg(not(test))]`
+/// private glob of two modules that both define `h`. A production reference
+/// through the child's glob takes `h` from the glob of the build without
+/// `test`; the test build's glob passes nothing on to production code.
+#[test]
+fn name_resolution_glob_alternatives_give_production_the_build_without_test() {
+    assert_gp_cell_arcs(&["g27"], false, &[("g27::k", "d", "production", &["h"])]);
+    assert_gp_cell_arcs(
+        &["g27"],
+        true,
+        &[
+            ("g27", "c", "test", &["*"]),
+            ("g27::k", "d", "production", &["h"]),
+        ],
+    );
+}
+
+/// Cell GP28: the parent re-exports `h` by a `#[cfg(not(test))]` and a
+/// `#[cfg(test)]` `pub use` of different modules. A production path through
+/// the parent reaches the definer of the build without `test`.
+#[test]
+fn name_resolution_pub_use_alternatives_give_production_the_build_without_test() {
+    assert_gp_cell_arcs_always(&["g28::k"], &[("g28::k", "d", "production", &["h"])]);
+}
+
+/// Cell GP29: GP28 with a `#[cfg(test)]` and a `#[cfg(not(test))]` glob
+/// re-export in place of the named ones.
+#[test]
+fn name_resolution_glob_reexport_alternatives_give_production_the_build_without_test() {
+    assert_gp_cell_arcs_always(&["g29::k"], &[("g29::k", "d", "production", &["h"])]);
+}
+
+/// Cell GP30: a production glob re-export brings no `#[cfg(test)]` item of
+/// the module it imports from, which the build without `test` does not hold.
+#[test]
+fn name_resolution_glob_reexport_leaves_out_test_items() {
+    assert_gp_cell_arcs_always(&["g30"], &[("g30", "g30::m", "production", &["h"])]);
 }
 
 /// Cell 45: two `#[path]` modules `imp` under `cfg`, one with `pub use
