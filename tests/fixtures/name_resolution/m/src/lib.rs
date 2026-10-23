@@ -10,6 +10,7 @@ pub mod cpath3;
 pub mod cpath3user;
 pub mod cpath4;
 pub mod cpath4user;
+pub mod cpath5;
 pub mod gh;
 pub mod gp;
 pub mod gk;

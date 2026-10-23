@@ -2039,6 +2039,20 @@ fn name_resolution_cfg_attr_path_under_test_is_test_code() {
     );
 }
 
+/// Cell 66f: under `#[cfg_attr(not(test), path = …)]` only test builds load
+/// the file the declaration names without the attribute, which is test code.
+#[test]
+fn name_resolution_file_beside_a_cfg_attr_path_outside_test_is_test_code() {
+    assert_name_resolution_arc("m::cpath5::imp", "m::util", "production", &["job"]);
+    assert_name_resolution_arc("m::cpath5::imp", "m::util2", "test", &["job"]);
+    let arcs = name_resolution_arcs(false);
+    assert_eq!(
+        arcs.get(&("m::cpath5::imp".to_string(), "m::util2".to_string())),
+        None,
+        "m::cpath5::imp -> m::util2 should not exist without tests"
+    );
+}
+
 /// Cell 45: two `#[path]` modules `imp` under `cfg`, one with `pub use
 /// crate::u::open;`, the other with `pub use crate::w::open;`. A user of
 /// `crate::cfgimp::imp::open()` reaches `w` only. The cell expects
