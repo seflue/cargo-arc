@@ -71,6 +71,7 @@ impl LanguageAdapter for Rust {
                     &all_module_paths,
                     &workspace_packages,
                     &package_exports,
+                    self.feature_config.include_tests,
                 );
                 (krate.key.clone(), exports)
             })

@@ -133,5 +133,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "xa"
+version = "0.1.0"
+dependencies = [
+ "xb",
+]
+
+[[package]]
+name = "xb"
+version = "0.1.0"
+dependencies = [
+ "xa",
+]
+
+[[package]]
 name = "y"
 version = "0.1.0"

@@ -4615,10 +4615,12 @@ mod use_category_tests {
             RootReExports {
                 kind: EntryKind::Lib,
                 modules: HashMap::from([(String::new(), lib_root)]),
+                test_build_modules: None,
             },
             RootReExports {
                 kind: EntryKind::Bin,
                 modules: HashMap::from([(String::new(), ModuleExportInfo::default())]),
+                test_build_modules: None,
             },
         ];
         let map: ReExportMap = [("my_crate".to_string(), roots)].into_iter().collect();
@@ -4954,5 +4956,72 @@ mod use_category_tests {
                 imported_for_methods: false,
             }]
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The test build of a crate root
+// ---------------------------------------------------------------------------
+
+mod test_build_tests {
+    use super::*;
+
+    /// One lib root defining `name` in module `m` in its build without
+    /// `test`, and `test_name` there in its test build.
+    fn root_with_test_build(name: &str, test_name: &str) -> Vec<RootReExports> {
+        let module = |name: &str| {
+            let mut info = ModuleExportInfo::default();
+            define(&mut info, name, DefKind::Fn);
+            HashMap::from([("m".to_string(), info)])
+        };
+        vec![RootReExports {
+            kind: EntryKind::Lib,
+            modules: module(name),
+            test_build_modules: Some(module(test_name)),
+        }]
+    }
+
+    /// The names module `m` of `crate_name` defines, as `map` sees them.
+    fn names_in(map: &ReExportMap, crate_name: &str) -> Vec<String> {
+        let mut names: Vec<String> = map
+            .get(crate_name)
+            .and_then(|modules| modules.get("m"))
+            .map(|info| info.definitions.keys().cloned().collect())
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn the_test_build_sees_its_own_root_tested_and_every_other_crate_without_test() {
+        let map: ReExportMap = [
+            ("own".to_string(), root_with_test_build("real", "mock")),
+            (
+                "dep".to_string(),
+                root_with_test_build("dep_real", "dep_mock"),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let own = map.for_root("own", 0);
+        let test_build = own.test_build().expect("own root has a test build");
+
+        assert_eq!(names_in(&own, "own"), ["real"]);
+        assert_eq!(names_in(&test_build, "own"), ["mock"]);
+        assert_eq!(names_in(&test_build, "dep"), ["dep_real"]);
+        assert_eq!(names_in(&test_build.lib_view(), "own"), ["real"]);
+        assert_eq!(names_in(&test_build.build_without_test(), "own"), ["real"]);
+    }
+
+    #[test]
+    fn a_root_without_test_build_modules_has_no_test_build() {
+        let roots = vec![RootReExports {
+            kind: EntryKind::Lib,
+            modules: HashMap::new(),
+            test_build_modules: None,
+        }];
+        let map: ReExportMap = [("own".to_string(), roots)].into_iter().collect();
+        assert!(map.for_root("own", 0).test_build().is_none());
+        assert!(map.test_build().is_none());
     }
 }

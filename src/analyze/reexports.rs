@@ -31,12 +31,15 @@ struct CollectContext<'a> {
 }
 
 /// Collect re-exports and own definitions for all modules of a package,
-/// one map per entry file, in `entry_files` order.
+/// one map per entry file, in `entry_files` order. With `include_tests`, a
+/// root whose test build loads other files than its build without `test`
+/// also gets the modules of its test build.
 pub(crate) fn collect_crate_reexports(
     crate_info: &PackageInfo,
     all_module_paths: &ModulePathMap,
     workspace_crates: &WorkspacePackages,
     crate_exports: &PackageExportMap,
+    include_tests: bool,
 ) -> Vec<RootReExports> {
     let crate_name = normalize_crate_name(&crate_info.name);
 
@@ -54,9 +57,12 @@ pub(crate) fn collect_crate_reexports(
                 crate_exports,
                 extern_crates: &extern_crates,
             };
+            let (modules, test_build_modules) =
+                collect_root_reexports(&ctx, &entry.file, include_tests);
             RootReExports {
                 kind: entry.kind,
-                modules: collect_root_reexports(&ctx, &entry.file),
+                modules,
+                test_build_modules,
             }
         })
         .collect()
@@ -96,33 +102,78 @@ pub(crate) fn root_extern_crates(
     names
 }
 
+/// The modules of a root's build without `test`, and with `include_tests` those
+/// of its test build where it loads other files.
 fn collect_root_reexports(
     ctx: &CollectContext,
     root_file: &Path,
-) -> HashMap<String, ModuleExportInfo> {
-    let mut result = HashMap::new();
-    let mut out_of_module_impls = Vec::new();
+    include_tests: bool,
+) -> (
+    HashMap<String, ModuleExportInfo>,
+    Option<HashMap<String, ModuleExportInfo>>,
+) {
+    let mut production = CollectedModules::default();
+    let mut test_build = include_tests.then(CollectedModules::default);
     let root = ModuleFile {
         path: root_file.to_path_buf(),
         owns_directory: true,
     };
-    walk_collect_reexports(ctx, &root, "", &mut result, &mut out_of_module_impls);
-    result.retain(|_, info| !info.is_empty());
+    let mut builds_differ = false;
+    walk_collect_reexports(
+        ctx,
+        &root,
+        "",
+        Builds {
+            without_test: true,
+            test: include_tests,
+        },
+        &mut production,
+        test_build.as_mut(),
+        &mut builds_differ,
+    );
+    let test_build = test_build
+        .filter(|_| builds_differ)
+        .map(CollectedModules::finish);
+    (production.finish(), test_build)
+}
 
-    for block in out_of_module_impls {
-        result
-            .entry(block.module)
-            .or_default()
-            .associated
-            .entry(block.type_name)
-            .or_default()
-            .merge(block.items);
+/// The modules one build of a root loads, while the walk collects them.
+#[derive(Default)]
+struct CollectedModules {
+    modules: HashMap<String, ModuleExportInfo>,
+    out_of_module_impls: Vec<OutOfModuleImpl>,
+}
+
+impl CollectedModules {
+    /// Drop the modules that hold nothing a resolution reads, then add each
+    /// `impl` block to the module that defines its type.
+    fn finish(self) -> HashMap<String, ModuleExportInfo> {
+        let mut modules = self.modules;
+        modules.retain(|_, info| !info.is_empty());
+        for block in self.out_of_module_impls {
+            modules
+                .entry(block.module)
+                .or_default()
+                .associated
+                .entry(block.type_name)
+                .or_default()
+                .merge(block.items);
+        }
+        modules
     }
+}
 
-    result
+/// Which builds of a root load a file, as far as the `cfg` and `cfg_attr`
+/// predicates on the way to it tell. The test build counts only where its
+/// modules are collected.
+#[derive(Clone, Copy)]
+struct Builds {
+    without_test: bool,
+    test: bool,
 }
 
 /// An `impl` block written in another module than the one defining its type.
+#[derive(Clone)]
 struct OutOfModuleImpl {
     /// The module that defines the type.
     module: String,
@@ -511,12 +562,18 @@ fn root_item_name<'p>(ctx: &CollectContext, path: &'p str) -> Option<(String, &'
     is_item.then_some((crate_name, name))
 }
 
+/// Read `file` and its descendants once, each into the modules of the builds
+/// that load it: `production` for the build without `test`, `test_build`,
+/// where given, for the test build. `builds_differ` turns true at a file
+/// only one of the two loads.
 fn walk_collect_reexports(
     ctx: &CollectContext,
     file: &ModuleFile,
     module_path: &str,
-    result: &mut HashMap<String, ModuleExportInfo>,
-    out_of_module_impls: &mut Vec<OutOfModuleImpl>,
+    builds: Builds,
+    production: &mut CollectedModules,
+    mut test_build: Option<&mut CollectedModules>,
+    builds_differ: &mut bool,
 ) {
     let file_path = file.path.as_path();
     let source = match std::fs::read_to_string(file_path) {
@@ -538,16 +595,40 @@ fn walk_collect_reexports(
         .strip_prefix(ctx.workspace_root)
         .map_or_else(|_| file_path.to_path_buf(), Path::to_path_buf);
 
+    let mut out_of_module_impls = Vec::new();
+    let info = collect_module_info(
+        ctx,
+        &syntax,
+        &source_file,
+        module_path,
+        &mut out_of_module_impls,
+    );
+    if builds.without_test != builds.test {
+        *builds_differ = true;
+    }
     // Merged even when empty: a public declaration widens what an alternative
     // file of the module declares narrower.
-    let info = collect_module_info(ctx, &syntax, &source_file, module_path, out_of_module_impls);
-    result
-        .entry(module_path.to_string())
-        .or_default()
-        .merge(info);
+    if let Some(test_build) = test_build.as_deref_mut().filter(|_| builds.test) {
+        test_build
+            .modules
+            .entry(module_path.to_string())
+            .or_default()
+            .merge(info.clone());
+        test_build
+            .out_of_module_impls
+            .extend(out_of_module_impls.iter().cloned());
+    }
+    if builds.without_test {
+        production
+            .modules
+            .entry(module_path.to_string())
+            .or_default()
+            .merge(info);
+        production.out_of_module_impls.extend(out_of_module_impls);
+    }
 
     // Recurse into child modules
-    let decls = extract_mod_declarations(&syntax, false);
+    let decls = extract_mod_declarations(&syntax, test_build.is_some());
 
     for decl in decls {
         let child_module_path = if module_path.is_empty() {
@@ -557,12 +638,21 @@ fn walk_collect_reexports(
         };
 
         for child in declared_files(file_path, file.owns_directory, &decl) {
+            let child_builds = Builds {
+                without_test: builds.without_test && !decl.cfg_test && !child.cfg_test,
+                test: builds.test && decl.test_build_may_load && child.test_build_may_load,
+            };
+            if !child_builds.without_test && !child_builds.test {
+                continue;
+            }
             walk_collect_reexports(
                 ctx,
                 &child.file,
                 &child_module_path,
-                result,
-                out_of_module_impls,
+                child_builds,
+                production,
+                test_build.as_deref_mut(),
+                builds_differ,
             );
         }
     }
@@ -609,6 +699,7 @@ mod tests {
             all_module_paths,
             workspace_crates,
             crate_exports,
+            false,
         );
         assert_eq!(roots.len(), 1, "expected one crate root");
         roots.remove(0).modules
@@ -1815,5 +1906,91 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
             Some(("test_crate", "backend", "custom")),
             "{result:?}"
         );
+    }
+
+    // With test code, a root whose test build loads other files than its
+    // build without `test` gets the modules of its test build beside them.
+    #[test]
+    fn test_build_modules_hold_the_files_a_test_build_loads() {
+        let tmp = test_crate(&[
+            (
+                "src/lib.rs",
+                "pub mod other;\n#[cfg(test)]\nmod fake;\npub mod alt;\n",
+            ),
+            ("src/other.rs", "pub fn helper() {}"),
+            ("src/fake.rs", "pub use crate::other::helper;"),
+            (
+                "src/alt.rs",
+                "#[cfg_attr(test, path = \"alt_test.rs\")]\npub mod inner;",
+            ),
+            ("src/alt/inner.rs", "pub fn real() {}"),
+            ("src/alt_test.rs", "pub fn mock() {}"),
+        ]);
+        let crate_info = make_crate_info(&tmp, "test_crate");
+        let mp: ModulePathMap = [(
+            "test_crate".to_string(),
+            HashSet::from([
+                "other".into(),
+                "fake".into(),
+                "alt".into(),
+                "alt::inner".into(),
+            ]),
+        )]
+        .into_iter()
+        .collect();
+        let collect = |include_tests| {
+            let mut roots = collect_crate_reexports(
+                &crate_info,
+                &mp,
+                &WorkspacePackages::default(),
+                &PackageExportMap::default(),
+                include_tests,
+            );
+            roots.remove(0)
+        };
+        let shape = |modules: &HashMap<String, ModuleExportInfo>| {
+            let mut shape: Vec<(String, Vec<String>)> = modules
+                .iter()
+                .map(|(path, info)| {
+                    let mut names: Vec<String> = info
+                        .definitions
+                        .keys()
+                        .chain(info.explicit_reexports.keys())
+                        .cloned()
+                        .collect();
+                    names.sort();
+                    (path.clone(), names)
+                })
+                .collect();
+            shape.sort();
+            shape
+        };
+        let owned = |path: &str, names: &[&str]| {
+            (
+                path.to_string(),
+                names.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            )
+        };
+
+        let with_tests = collect(true);
+        let without_tests = collect(false);
+
+        assert_eq!(
+            with_tests.test_build_modules.as_ref().map(shape),
+            Some(vec![
+                owned("", &[]),
+                owned("alt::inner", &["mock"]),
+                owned("fake", &["helper"]),
+                owned("other", &["helper"]),
+            ])
+        );
+        let production = vec![
+            owned("", &[]),
+            owned("alt::inner", &["real"]),
+            owned("other", &["helper"]),
+        ];
+        assert_eq!(shape(&with_tests.modules), production);
+        assert_eq!(shape(&without_tests.modules), production);
+        assert!(without_tests.test_build_modules.is_none());
     }
 }
