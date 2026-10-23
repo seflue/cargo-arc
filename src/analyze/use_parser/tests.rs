@@ -3584,6 +3584,119 @@ mod reexport_resolution_tests {
     }
 }
 
+mod binding_tests {
+    use super::*;
+
+    fn target(module: &str, visibility: Visibility) -> ReExportTarget {
+        ReExportTarget {
+            crate_name: "my_crate".to_string(),
+            module: module.to_string(),
+            original_name: "Name".to_string(),
+            visibility,
+            in_every_build: true,
+        }
+    }
+
+    #[test]
+    fn the_bindings_of_a_name_come_definition_first_and_child_module_last() {
+        let private = Visibility::Restricted("holder".to_string());
+        let mut info = ModuleExportInfo::default();
+        info.explicit_reexports
+            .insert("Name".to_string(), target("a", Visibility::Public));
+        info.private_uses
+            .insert("Name".to_string(), target("b", private.clone()));
+        info.elsewhere.insert("Name".to_string(), private.clone());
+        info.module_visibility
+            .insert("Name".to_string(), Visibility::Public);
+        define(&mut info, "Name", DefKind::Struct);
+        define(&mut info, "Other", DefKind::Fn);
+        let map: ReExportMap = [(
+            "my_crate".to_string(),
+            HashMap::from([("holder".to_string(), info.clone())]),
+        )]
+        .into_iter()
+        .collect();
+
+        let bindings = map
+            .bindings_in(CrateModule {
+                crate_name: "my_crate",
+                path: "holder",
+            })
+            .expect("the map holds the module");
+
+        assert_eq!(
+            bindings.named("Name").collect::<Vec<_>>(),
+            [
+                NameBinding::Definition {
+                    item: &info.definitions["Name"],
+                    visibility_differs: false,
+                },
+                NameBinding::ReExport(&info.explicit_reexports["Name"]),
+                NameBinding::PrivateUse {
+                    target: &info.private_uses["Name"],
+                    targets_differ: false,
+                },
+                NameBinding::Elsewhere(&private),
+                NameBinding::Module(&Visibility::Public),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_binding_merged_from_alternative_files_says_where_they_differ() {
+        let restricted = Visibility::Restricted("holder".to_string());
+        let mut first = ModuleExportInfo::default();
+        define(&mut first, "Item", DefKind::Struct);
+        first.bind_privately("Name".to_string(), target("a", restricted.clone()));
+        let mut second = ModuleExportInfo::default();
+        second.definitions.insert(
+            "Item".to_string(),
+            DefinedItem {
+                definition: Definition {
+                    kind: DefKind::Struct,
+                    line: 1,
+                },
+                visibility: restricted.clone(),
+            },
+        );
+        second.bind_privately("Name".to_string(), target("b", restricted));
+        first.merge(second);
+        let map: ReExportMap = [(
+            "my_crate".to_string(),
+            HashMap::from([("holder".to_string(), first.clone())]),
+        )]
+        .into_iter()
+        .collect();
+        let bindings = map
+            .bindings_in(CrateModule {
+                crate_name: "my_crate",
+                path: "holder",
+            })
+            .expect("the map holds the module");
+
+        // The bindings outlive the names they were looked up by.
+        let (item, name) = {
+            let (item, name) = (String::from("Item"), String::from("Name"));
+            (bindings.named(&item), bindings.named(&name))
+        };
+
+        assert_eq!(
+            item.clone().chain(item).collect::<Vec<_>>(),
+            [NameBinding::Definition {
+                item: &first.definitions["Item"],
+                visibility_differs: true,
+            }; 2]
+        );
+        assert_eq!(
+            name.collect::<Vec<_>>(),
+            [NameBinding::PrivateUse {
+                target: &first.private_uses["Name"],
+                targets_differ: true,
+            }]
+        );
+    }
+}
+
 mod resolve_reexport_tests {
     use super::super::{
         GlobSource, ModuleExportInfo, ModulePathMap, PassedThrough, ReExportMap, ReExportTarget,
