@@ -3015,6 +3015,16 @@ fn name_resolution_glob_brings_in_no_trait_its_holder_does_not_see() {
     assert_no_name_resolution_arc("m::gth", "m::gts");
 }
 
+/// Cell 78g: `gvh` globs `gvd::inner`, which has `pub fn f` and re-exports
+/// a trait by `pub(super) use`, visible in `gvd` only. `gvh::kid` calls
+/// `super::f()`, so `gvh` only passes `f` on, and its glob brings in no trait
+/// that keeps the arc.
+#[test]
+fn name_resolution_glob_brings_in_no_reexported_trait_its_holder_does_not_see() {
+    assert_name_resolution_arc("m::gvh::kid", "m::gvd::inner", "production", &["f"]);
+    assert_no_name_resolution_arc("m::gvh", "m::gvd::inner");
+}
+
 /// Cell 78d: `use lv::*;` in a bin module binds the lib's child module `gm`.
 /// The bin root has a `gm` of its own, which re-exports `bcli::G`; `gm::G`
 /// in the bin module is the lib's `G`.
