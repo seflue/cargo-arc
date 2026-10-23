@@ -2451,6 +2451,108 @@ fn name_resolution_production_path_passes_over_a_test_private_use() {
     );
 }
 
+/// Cell GP23: a `#[cfg(not(test))]` private `use` of the parent is in no test
+/// build, so a glob of it in a test fn block brings test code nothing; the
+/// outer glob takes the name.
+#[test]
+fn name_resolution_private_use_outside_test_brings_nothing_to_test_code() {
+    assert_gp_cell_arcs(
+        &["g23"],
+        false,
+        &[
+            ("g23", "c", "production", &["f"]),
+            ("g23::k", "d", "production", &["*"]),
+        ],
+    );
+    assert_gp_cell_arcs(
+        &["g23"],
+        true,
+        &[
+            ("g23", "c", "production", &["f"]),
+            ("g23::k", "d", "production", &["*", "f"]),
+            ("g23::k", "g23", "test", &["*"]),
+        ],
+    );
+}
+
+/// Cell GP24: the parent binds a name by a `#[cfg(not(test))]` and, read
+/// after it, a `#[cfg(test)]` private `use` to different targets. A
+/// production reference through the child's glob names no definer and does
+/// not fall through to the parent's private glob.
+#[test]
+fn name_resolution_test_private_use_read_last_still_marks_differing_targets() {
+    assert_gp_cell_arcs(
+        &["g24"],
+        false,
+        &[
+            ("g24", "d", "production", &["f"]),
+            ("g24", "e", "production", &["*"]),
+            ("g24::k", "g24", "production", &["*"]),
+        ],
+    );
+    assert_gp_cell_arcs(
+        &["g24"],
+        true,
+        &[
+            ("g24", "c", "test", &["f"]),
+            ("g24", "d", "production", &["f"]),
+            ("g24", "e", "production", &["*"]),
+            ("g24::k", "g24", "production", &["*"]),
+        ],
+    );
+}
+
+/// Cell GP25: GP24 with the two `use` items swapped: the outcome does not
+/// depend on which one is read last.
+#[test]
+fn name_resolution_private_uses_of_differing_targets_in_either_order() {
+    assert_gp_cell_arcs(
+        &["g25"],
+        false,
+        &[
+            ("g25", "d", "production", &["f"]),
+            ("g25", "e", "production", &["*"]),
+            ("g25::k", "g25", "production", &["*"]),
+        ],
+    );
+    assert_gp_cell_arcs(
+        &["g25"],
+        true,
+        &[
+            ("g25", "c", "test", &["f"]),
+            ("g25", "d", "production", &["f"]),
+            ("g25", "e", "production", &["*"]),
+            ("g25::k", "g25", "production", &["*"]),
+        ],
+    );
+}
+
+/// Cell GP26: GP24 with the child's glob of the parent in a fn block and a
+/// glob of another module outside it. The inner glob takes the name, which
+/// names no definer, so the outer glob does not either.
+#[test]
+fn name_resolution_block_glob_of_private_uses_of_differing_targets_takes_the_name() {
+    assert_gp_cell_arcs(
+        &["g26"],
+        false,
+        &[
+            ("g26", "d", "production", &["f"]),
+            ("g26::k", "e", "production", &["*"]),
+            ("g26::k", "g26", "production", &["*"]),
+        ],
+    );
+    assert_gp_cell_arcs(
+        &["g26"],
+        true,
+        &[
+            ("g26", "c", "test", &["f"]),
+            ("g26", "d", "production", &["f"]),
+            ("g26::k", "e", "production", &["*"]),
+            ("g26::k", "g26", "production", &["*"]),
+        ],
+    );
+}
+
 /// Cell 45: two `#[path]` modules `imp` under `cfg`, one with `pub use
 /// crate::u::open;`, the other with `pub use crate::w::open;`. A user of
 /// `crate::cfgimp::imp::open()` reaches `w` only. The cell expects

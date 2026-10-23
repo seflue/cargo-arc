@@ -1,5 +1,6 @@
 pub mod c;
 pub mod d;
+pub mod e;
 pub mod tr;
 pub mod g1;
 pub mod g2;
@@ -23,4 +24,8 @@ pub mod g19;
 pub mod g20;
 pub mod g21;
 pub mod g22;
+pub mod g23;
+pub mod g24;
+pub mod g25;
+pub mod g26;
 pub mod g9o;
