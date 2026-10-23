@@ -78,8 +78,7 @@ impl Visibility {
     }
 
     /// The narrowest visibility that reaches everywhere both `self` and
-    /// `other` do. Two restrictions to modules apart from each other widen to
-    /// their nearest common ancestor, which also reaches modules neither does.
+    /// `other` do, two visibilities of one name in one module.
     #[must_use]
     pub(crate) fn wider(self, other: Self) -> Self {
         match (self, other) {
@@ -161,17 +160,22 @@ impl AssociatedItems {
     }
 }
 
+/// An item a module defines: its kind and line at the definition site, and
+/// where it is visible.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct DefinedItem {
+    pub(crate) definition: Definition,
+    pub(crate) visibility: Visibility,
+}
+
 /// Export and re-export information for a single module.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct ModuleExportInfo {
-    /// Own definitions, whatever their visibility: name → kind and line at
-    /// the definition site
-    pub(crate) definitions: HashMap<String, Definition>,
-    /// Where each item defined here is visible, by name. In the root, every
-    /// module of the crate can name a private item through `crate::`.
-    pub(crate) item_visibility: HashMap<String, Visibility>,
+    /// Own definitions, whatever their visibility, by name. In the root,
+    /// every module of the crate can name a private item through `crate::`.
+    pub(crate) definitions: HashMap<String, DefinedItem>,
     /// The items alternative files of the module declare with different
-    /// visibilities. `item_visibility` holds the wider one, which the file a
+    /// visibilities. `definitions` holds the wider one, which the file a
     /// build reads may not grant.
     pub(crate) items_of_differing_visibility: HashSet<String>,
     /// Where each child module declared here is visible, by name. A glob or
@@ -221,7 +225,6 @@ impl ModuleExportInfo {
     pub(crate) fn is_empty(&self) -> bool {
         let public = |visibility: &Visibility| *visibility == Visibility::Public;
         self.definitions.is_empty()
-            && self.item_visibility.values().all(public)
             && self.items_of_differing_visibility.is_empty()
             && self.module_visibility.values().all(public)
             && self.associated.is_empty()
@@ -239,21 +242,23 @@ impl ModuleExportInfo {
     /// or child module both declare keeps the wider of the two visibilities;
     /// an item both declare differently is noted as such.
     pub(crate) fn merge(&mut self, other: Self) {
-        self.definitions.extend(other.definitions);
-        let differing: Vec<String> = other
-            .item_visibility
-            .iter()
-            .filter(|(name, visibility)| {
-                self.item_visibility
-                    .get(*name)
-                    .is_some_and(|known| known != *visibility)
-            })
-            .map(|(name, _)| name.clone())
-            .collect();
-        self.items_of_differing_visibility.extend(differing);
+        for (name, item) in other.definitions {
+            let merged = match self.definitions.remove(&name) {
+                Some(known) => {
+                    if known.visibility != item.visibility {
+                        self.items_of_differing_visibility.insert(name.clone());
+                    }
+                    DefinedItem {
+                        definition: item.definition,
+                        visibility: known.visibility.wider(item.visibility),
+                    }
+                }
+                None => item,
+            };
+            self.definitions.insert(name, merged);
+        }
         self.items_of_differing_visibility
             .extend(other.items_of_differing_visibility);
-        widen_visibilities(&mut self.item_visibility, other.item_visibility);
         widen_visibilities(&mut self.module_visibility, other.module_visibility);
         for (name, items) in other.associated {
             self.associated.entry(name).or_default().merge(items);
@@ -425,6 +430,34 @@ pub(crate) fn resolve_reexport(
 /// A module holding a private `use` or glob, by crate and module path.
 type Holder = (String, String);
 
+/// A module of a workspace crate, by crate name and module path, borrowed.
+#[derive(Debug, Clone, Copy)]
+struct CrateModule<'a> {
+    crate_name: &'a str,
+    path: &'a str,
+}
+
+impl<'a> CrateModule<'a> {
+    /// The module `dep` points at.
+    fn of(dep: &'a DependencyRef) -> Self {
+        Self {
+            crate_name: &dep.target_package,
+            path: &dep.target_module,
+        }
+    }
+
+    /// Whether this module sees what `crate_name` declares with `visibility`.
+    /// A restricted visibility stays in its crate.
+    fn sees(self, crate_name: &str, visibility: &Visibility) -> bool {
+        match visibility {
+            Visibility::Public => true,
+            Visibility::Restricted(ancestor) => {
+                self.crate_name == crate_name && is_descendant(self.path, ancestor)
+            }
+        }
+    }
+}
+
 /// Where a name is defined: crate, module path and the name there.
 type DefinedAt = (String, String, String);
 
@@ -505,7 +538,10 @@ impl PassedOn {
                 && covers(self.globs.borrow().get(&noted), dep)
                 && !glob_may_bring_a_trait(
                     dep,
-                    (crate_name, holder),
+                    CrateModule {
+                        crate_name,
+                        path: holder,
+                    },
                     reexport_map,
                     module_paths,
                     &mut HashSet::new(),
@@ -545,13 +581,12 @@ fn is_import_only(dep: &DependencyRef) -> bool {
     )
 }
 
-/// Whether the glob `dep` brings a trait into `holder`, by crate and module
-/// path, or a name whose kind the map does not know at its definer. A module
-/// the map does not hold counts as unknown, and so does a name the chain
-/// follows out of the map.
+/// Whether the glob `dep` brings a trait into `holder`, or a name whose kind
+/// the map does not know at its definer. A module the map does not hold
+/// counts as unknown, and so does a name the chain follows out of the map.
 fn glob_may_bring_a_trait(
     dep: &DependencyRef,
-    holder: (&str, &str),
+    holder: CrateModule,
     reexport_map: &ReExportMap,
     module_paths: &ModulePathMap,
     visited: &mut HashSet<(String, String)>,
@@ -562,17 +597,12 @@ fn glob_may_bring_a_trait(
     let Some(info) = reexport_map.module_info(dep) else {
         return true;
     };
-    let defines_a_trait = info.definitions.iter().any(|(name, definition)| {
-        definition.kind == DefKind::Trait
-            && info
-                .item_visibility
-                .get(name)
-                .is_some_and(|visibility| holder_sees(holder, &dep.target_package, visibility))
+    let defines_a_trait = info.definitions.values().any(|item| {
+        item.definition.kind == DefKind::Trait && holder.sees(&dep.target_package, &item.visibility)
     });
-    let reexports_a_trait = info
-        .explicit_reexports
-        .keys()
-        .any(|name| reexports_a_trait_or_unknown(dep, name, holder.1, reexport_map, module_paths));
+    let reexports_a_trait = info.explicit_reexports.keys().any(|name| {
+        reexports_a_trait_or_unknown(dep, name, holder.path, reexport_map, module_paths)
+    });
     let local_globs = info
         .glob_sources
         .iter()
@@ -624,7 +654,7 @@ fn reexports_a_trait_or_unknown(
     reexport_map
         .module_info(&named)
         .and_then(|info| info.definitions.get(item))
-        .is_none_or(|definition| definition.kind == DefKind::Trait)
+        .is_none_or(|item| item.definition.kind == DefKind::Trait)
 }
 
 /// Resolve re-exports in a [`DependencyRef`]: follow the re-export chain
@@ -709,7 +739,7 @@ fn follow_reexports(
             break;
         };
 
-        if module_info.item_visibility.contains_key(item) {
+        if module_info.definitions.contains_key(item) {
             break;
         }
 
@@ -868,7 +898,7 @@ fn follow_private_glob<'m>(
 ) -> Option<&'m HashMap<String, ModuleExportInfo>> {
     if let Some(glob_src) = private_glob_holding(
         reexport_map,
-        (&dep.target_package, &dep.target_module),
+        CrateModule::of(dep),
         module_info,
         symbol,
         importer_module,
@@ -889,17 +919,16 @@ fn follow_private_glob<'m>(
     )
 }
 
-/// The module a private glob of `module_info`, the module `holder` by crate
-/// and module path, imports from that brings `symbol` into the scope of
-/// `importer_module`.
+/// The module a private glob of `module_info`, the module `holder`, imports
+/// from that brings `symbol` into the scope of `importer_module`.
 fn private_glob_holding<'m>(
     reexport_map: &ReExportMap,
-    holder: (&str, &str),
+    holder: CrateModule,
     module_info: &'m ModuleExportInfo,
     symbol: &str,
     importer_module: &str,
 ) -> Option<&'m String> {
-    let crate_name = holder.0;
+    let crate_name = holder.crate_name;
     module_info
         .private_glob_sources
         .iter()
@@ -910,8 +939,10 @@ fn private_glob_holding<'m>(
         .find(|glob_src| {
             module_scope_holds_symbol(
                 reexport_map,
-                crate_name,
-                glob_src,
+                CrateModule {
+                    crate_name,
+                    path: glob_src,
+                },
                 symbol,
                 importer_module,
                 &[holder],
@@ -948,11 +979,13 @@ fn follow_local_glob(
         .find(|glob_src| {
             module_exports_symbol(
                 reexport_map,
-                &dep.target_package,
-                glob_src,
+                CrateModule {
+                    crate_name: &dep.target_package,
+                    path: glob_src,
+                },
                 symbol,
                 importer_module,
-                &[(&dep.target_package, &dep.target_module)],
+                &[CrateModule::of(dep)],
                 &mut passed.clone(),
             )
         })
@@ -992,11 +1025,13 @@ fn follow_foreign_glob<'m>(
             importer_module,
         ) || !module_exports_symbol(
             reexport_map,
-            crate_name,
-            &glob.module,
+            CrateModule {
+                crate_name,
+                path: &glob.module,
+            },
             symbol,
             importer_module,
-            &[(&dep.target_package, &dep.target_module)],
+            &[CrateModule::of(dep)],
             &mut passed.clone(),
         ) {
             return None;
@@ -1064,7 +1099,9 @@ fn holds_an_item_named(
     let visible = |visibility: &Visibility| {
         reexport_map.is_visible(crate_name, in_lib_view, visibility, importer_module)
     };
-    info.item_visibility.get(name).is_some_and(visible)
+    info.definitions
+        .get(name)
+        .is_some_and(|item| visible(&item.visibility))
         || visible_binding(info, name, visible)
             .is_some_and(|(target, _)| !binds_a_module(target, module_paths))
 }
@@ -1100,39 +1137,27 @@ fn module_is_visible(
         })
 }
 
-/// Whether the module `holder`, by crate and module path, sees what `crate_name`
-/// declares with `visibility`. A restricted visibility stays in its crate.
-fn holder_sees(holder: (&str, &str), crate_name: &str, visibility: &Visibility) -> bool {
-    match visibility {
-        Visibility::Public => true,
-        Visibility::Restricted(ancestor) => {
-            holder.0 == crate_name && is_descendant(holder.1, ancestor)
-        }
-    }
-}
-
-/// Check whether a module of `crate_name` exports a symbol to
-/// `importer_module` (own definition OR re-export) through the chain of globs
-/// held by `holders`, by crate and module path, following glob re-exports into
-/// other workspace crates. A glob brings in only what its holder sees, so a
-/// chain only what every holder on it sees, and what `importer_module` does
-/// not see, it does not export there. A module in `visited`, by crate and
-/// module path, exports nothing more.
+/// Check whether `module` exports a symbol to `importer_module` (own
+/// definition OR re-export) through the chain of globs held by `holders`,
+/// following glob re-exports into other workspace crates. A glob brings in
+/// only what its holder sees, so a chain only what every holder on it sees,
+/// and what `importer_module` does not see, it does not export there. A
+/// module in `visited`, by crate and module path, exports nothing more.
 fn module_exports_symbol(
     reexport_map: &ReExportMap,
-    crate_name: &str,
-    module_path: &str,
+    module: CrateModule,
     symbol: &str,
     importer_module: &str,
-    holders: &[(&str, &str)],
+    holders: &[CrateModule],
     visited: &mut HashSet<(String, String)>,
 ) -> bool {
-    if !visited.insert((crate_name.to_string(), module_path.to_string())) {
+    let crate_name = module.crate_name;
+    if !visited.insert((crate_name.to_string(), module.path.to_string())) {
         return false;
     }
     let Some(info) = reexport_map
         .get(crate_name)
-        .and_then(|crate_exports| crate_exports.get(module_path))
+        .and_then(|crate_exports| crate_exports.get(module.path))
     else {
         return false;
     };
@@ -1140,9 +1165,13 @@ fn module_exports_symbol(
         reexport_map.is_visible(crate_name, false, visibility, importer_module)
             && holders
                 .iter()
-                .all(|&holder| holder_sees(holder, crate_name, visibility))
+                .all(|holder| holder.sees(crate_name, visibility))
     };
-    if info.item_visibility.get(symbol).is_some_and(visible) {
+    if info
+        .definitions
+        .get(symbol)
+        .is_some_and(|item| visible(&item.visibility))
+    {
         return true;
     }
     if info
@@ -1157,15 +1186,17 @@ fn module_exports_symbol(
         .foreign_glob_sources
         .iter()
         .map(|(glob_crate, glob)| (glob_crate.as_str(), glob));
-    let holders = [holders, &[(crate_name, module_path)]].concat();
+    let holders = [holders, &[module]].concat();
     local_globs
         .chain(foreign_globs)
         .filter(|(_, glob)| visible(&glob.visibility))
         .any(|(glob_crate, glob)| {
             module_exports_symbol(
                 reexport_map,
-                glob_crate,
-                &glob.module,
+                CrateModule {
+                    crate_name: glob_crate,
+                    path: &glob.module,
+                },
                 symbol,
                 importer_module,
                 &holders,
@@ -1197,11 +1228,16 @@ fn root_reexports(
                 .any(|glob| {
                     module_exports_symbol(
                         reexport_map,
-                        crate_name,
-                        &glob.module,
+                        CrateModule {
+                            crate_name,
+                            path: &glob.module,
+                        },
                         symbol,
                         importer_module,
-                        &[(crate_name, "")],
+                        &[CrateModule {
+                            crate_name,
+                            path: "",
+                        }],
                         &mut HashSet::new(),
                     )
                 })
@@ -1213,7 +1249,7 @@ fn root_defines(reexport_map: &ReExportMap, crate_name: &str, symbol: &str) -> b
     reexport_map
         .get(crate_name)
         .and_then(|crate_exports| crate_exports.get(""))
-        .is_some_and(|root| root.item_visibility.contains_key(symbol))
+        .is_some_and(|root| root.definitions.contains_key(symbol))
 }
 
 /// The module a `pub use` in the root of `crate_name` brings in as `name`, by
@@ -1329,27 +1365,25 @@ fn glob_child_module(
         })
 }
 
-/// Whether `importer_module` can name `symbol` through `module_path`, a
-/// module the chain of globs held by `holders` imports from: what the module
+/// Whether `importer_module` can name `symbol` through `module`, a module
+/// the chain of globs held by `holders` imports from: what the module
 /// exports, plus what its private globs forward to a module that sees them. A private glob is
 /// followed on direct hops only; a `pub use m::*` on the way republishes
 /// `m`'s public items, none of `m`'s private imports.
 fn module_scope_holds_symbol(
     reexport_map: &ReExportMap,
-    crate_name: &str,
-    module_path: &str,
+    module: CrateModule,
     symbol: &str,
     importer_module: &str,
-    holders: &[(&str, &str)],
+    holders: &[CrateModule],
     visited: &mut HashSet<String>,
 ) -> bool {
-    if !visited.insert(module_path.to_string()) {
+    if !visited.insert(module.path.to_string()) {
         return false;
     }
     if module_exports_symbol(
         reexport_map,
-        crate_name,
-        module_path,
+        module,
         symbol,
         importer_module,
         holders,
@@ -1357,9 +1391,10 @@ fn module_scope_holds_symbol(
     ) {
         return true;
     }
+    let crate_name = module.crate_name;
     let Some(info) = reexport_map
         .get(crate_name)
-        .and_then(|crate_exports| crate_exports.get(module_path))
+        .and_then(|crate_exports| crate_exports.get(module.path))
     else {
         return false;
     };
@@ -1369,16 +1404,18 @@ fn module_scope_holds_symbol(
             reexport_map.is_visible(crate_name, false, &glob.visibility, importer_module)
                 && holders
                     .iter()
-                    .all(|&holder| holder_sees(holder, crate_name, &glob.visibility))
+                    .all(|holder| holder.sees(crate_name, &glob.visibility))
         })
         .any(|glob| {
             module_scope_holds_symbol(
                 reexport_map,
-                crate_name,
-                &glob.module,
+                CrateModule {
+                    crate_name,
+                    path: &glob.module,
+                },
                 symbol,
                 importer_module,
-                &[holders, &[(crate_name, module_path)]].concat(),
+                &[holders, &[module]].concat(),
                 visited,
             )
         })
@@ -2891,9 +2928,9 @@ fn glob_payload(
         )
     };
     let definitions = module_info
-        .item_visibility
+        .definitions
         .iter()
-        .filter(|(_, visibility)| visible(visibility))
+        .filter(|(_, item)| visible(&item.visibility))
         .map(|(name, _)| name);
     let reexports = module_info
         .explicit_reexports
@@ -3623,14 +3660,13 @@ fn glob_exports(ctx: &ResolutionContext, glob: &DependencyRef, name: &str) -> bo
     };
     module_scope_holds_symbol(
         reexport_map,
-        &glob.target_package,
-        &glob.target_module,
+        CrateModule::of(glob),
         name,
         ctx.current_module_path,
-        &[(
-            &normalize_crate_name(ctx.current_crate),
-            ctx.current_module_path,
-        )],
+        &[CrateModule {
+            crate_name: &normalize_crate_name(ctx.current_crate),
+            path: ctx.current_module_path,
+        }],
         &mut HashSet::new(),
     )
 }
@@ -3647,7 +3683,7 @@ fn definition_kind(ctx: &ResolutionContext, dep: &DependencyRef, item: &str) -> 
     ctx.reexport_map
         .module_info(dep)
         .and_then(|info| info.definitions.get(item))
-        .map(|definition| definition.kind)
+        .map(|item| item.definition.kind)
 }
 
 /// Whether a bare identifier pattern naming `dep` declares a variable, which

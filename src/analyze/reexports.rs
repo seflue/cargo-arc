@@ -1,6 +1,6 @@
 //! Re-export collection for accurate dependency edges.
 //!
-//! Collects `pub use` re-exports and public definitions per module so that
+//! Collects `pub use` re-exports and own definitions per module so that
 //! downstream resolution can follow re-export chains to the original definition.
 
 use std::collections::HashMap;
@@ -13,9 +13,9 @@ use crate::model::{DefKind, Definition, EdgeContext, PackageInfo};
 
 use super::mod_resolver::{ModuleFile, declared_files, extract_mod_declarations};
 use super::use_parser::{
-    AssociatedItems, GlobSource, Meaning, ModuleExportInfo, ReExportMap, ReExportTarget,
-    ResolutionContext, RootReExports, Visibility, is_reexport_visibility, resolve_single_path,
-    resolve_use_tree,
+    AssociatedItems, DefinedItem, GlobSource, Meaning, ModuleExportInfo, ReExportMap,
+    ReExportTarget, ResolutionContext, RootReExports, Visibility, is_reexport_visibility,
+    resolve_single_path, resolve_use_tree,
 };
 
 /// Invariant parameters shared across the recursive re-export walk.
@@ -28,7 +28,7 @@ struct CollectContext<'a> {
     extern_crates: &'a HashMap<String, String>,
 }
 
-/// Collect re-exports and public definitions for all modules of a package,
+/// Collect re-exports and own definitions for all modules of a package,
 /// one map per entry file, in `entry_files` order.
 pub(crate) fn collect_crate_reexports(
     crate_info: &PackageInfo,
@@ -178,10 +178,11 @@ fn collect_module_info(
         };
         if let Some((vis, ident, kind)) = defined {
             let line = item.span().start().line;
-            info.definitions
-                .insert(ident.to_string(), Definition { kind, line });
-            info.item_visibility
-                .insert(ident.to_string(), Visibility::of(vis, module_path));
+            let item = DefinedItem {
+                definition: Definition { kind, line },
+                visibility: Visibility::of(vis, module_path),
+            };
+            info.definitions.insert(ident.to_string(), item);
         }
     }
     // Second pass, once every `use` of the file is known: an `impl` block may
@@ -299,7 +300,7 @@ fn impl_owner(
 ) -> Option<(ImplOwner, String)> {
     let name = path.segments.last()?.ident.to_string();
     if path.segments.len() == 1 {
-        if info.item_visibility.contains_key(&name) {
+        if info.definitions.contains_key(&name) {
             return Some((ImplOwner::ThisModule, name));
         }
         let bound = info
@@ -558,14 +559,23 @@ mod tests {
     use tempfile::TempDir;
 
     /// The names whose visibility stops short of the public, sorted.
-    fn restricted_names(visibility: &HashMap<String, Visibility>) -> Vec<&str> {
-        let mut names: Vec<&str> = visibility
-            .iter()
+    fn restricted_names<'a>(
+        visibilities: impl IntoIterator<Item = (&'a String, &'a Visibility)>,
+    ) -> Vec<&'a str> {
+        let mut names: Vec<&str> = visibilities
+            .into_iter()
             .filter(|(_, vis)| **vis != Visibility::Public)
             .map(|(name, _)| name.as_str())
             .collect();
         names.sort_unstable();
         names
+    }
+
+    /// Each item `info` defines, by name, with its visibility.
+    fn item_visibilities(info: &ModuleExportInfo) -> impl Iterator<Item = (&String, &Visibility)> {
+        info.definitions
+            .iter()
+            .map(|(name, item)| (name, &item.visibility))
     }
 
     /// The re-exports of a package with a single crate root.
@@ -994,7 +1004,7 @@ impl AStruct { pub fn method(&self) {} }
             ("InPathStruct", DefKind::Struct),
         ] {
             assert_eq!(
-                defs.get(name).map(|d| d.kind),
+                defs.get(name).map(|d| d.definition.kind),
                 Some(kind),
                 "wrong kind for {name}"
             );
@@ -1031,7 +1041,7 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
         let defs = &result.get("").expect("root info").definitions;
         for name in ["Widget", "make", "wrap"] {
             assert_eq!(
-                defs.get(name).map(|d| d.kind),
+                defs.get(name).map(|d| d.definition.kind),
                 Some(DefKind::Macro),
                 "wrong kind for {name}"
             );
@@ -1068,10 +1078,13 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
 
         let root = result.get("").expect("root info");
         assert_eq!(
-            restricted_names(&root.item_visibility),
+            restricted_names(item_visibilities(root)),
             ["Hidden", "helper"]
         );
-        assert_eq!(root.item_visibility.get("Shown"), Some(&Visibility::Public));
+        assert_eq!(
+            root.definitions.get("Shown").map(|item| &item.visibility),
+            Some(&Visibility::Public)
+        );
     }
 
     /// `pub(in …) use name;` passes on the module's own `macro_rules! name`:
@@ -1221,7 +1234,7 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
 
         let root = result.get("").expect("root info");
         assert_eq!(
-            restricted_names(&root.item_visibility),
+            restricted_names(item_visibilities(root)),
             ["SelfScoped", "in_crate"]
         );
     }
@@ -1250,8 +1263,8 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
         );
 
         let defs = &result.get("module").expect("module info").definitions;
-        assert_eq!(defs.get("a_fn").map(|d| d.line), Some(3));
-        assert_eq!(defs.get("AStruct").map(|d| d.line), Some(5));
+        assert_eq!(defs.get("a_fn").map(|d| d.definition.line), Some(3));
+        assert_eq!(defs.get("AStruct").map(|d| d.definition.line), Some(5));
     }
 
     /// Characterization: `definitions` is top-level only — items inside an
