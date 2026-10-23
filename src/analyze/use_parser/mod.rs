@@ -402,9 +402,14 @@ impl ReExportMap {
         }
     }
 
-    /// The same map, seen from outside every package: each sees its lib root.
-    /// A bin root that names its own package by name names the lib.
+    /// The same map, as a path through a package's name sees it: each package
+    /// shows its lib root. The lib that names its own package sees itself as
+    /// this map does, its `pub(crate)` items and its test build included;
+    /// every other root sees its lib from outside.
     pub(crate) fn lib_view(&self) -> Self {
+        if self.own_root_is_lib() {
+            return self.clone();
+        }
         Self {
             packages: Arc::clone(&self.packages),
             own_root: None,
@@ -477,7 +482,7 @@ impl ReExportMap {
     ) -> Option<&HashMap<String, ModuleExportInfo>> {
         let roots = self.packages.get(crate_name)?;
         match &self.own_root {
-            Some((own, index)) if !in_lib_view && own == crate_name => {
+            Some((own, index)) if self.is_own_root(crate_name, in_lib_view) => {
                 let root = roots.get(*index)?;
                 let test_build_modules =
                     root.test_build_modules.as_ref().filter(|_| self.test_build);
@@ -519,16 +524,20 @@ impl ReExportMap {
     /// Whether the modules of `crate_name`, reached in the lib view or not,
     /// are those of the root this map is seen from.
     fn is_own_root(&self, crate_name: &str, in_lib_view: bool) -> bool {
-        let Some((own, index)) = &self.own_root else {
+        let Some((own, _)) = &self.own_root else {
             return false;
         };
-        own == crate_name
-            && (!in_lib_view
-                || self
-                    .packages
-                    .get(own)
-                    .and_then(|roots| roots.get(*index))
-                    .is_some_and(|root| root.kind == EntryKind::Lib))
+        own == crate_name && (!in_lib_view || self.own_root_is_lib())
+    }
+
+    /// Whether the root this map is seen from is its package's lib root.
+    fn own_root_is_lib(&self) -> bool {
+        self.own_root.as_ref().is_some_and(|(own, index)| {
+            self.packages
+                .get(own)
+                .and_then(|roots| roots.get(*index))
+                .is_some_and(|root| root.kind == EntryKind::Lib)
+        })
     }
 }
 

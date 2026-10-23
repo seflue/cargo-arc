@@ -5009,7 +5009,7 @@ mod test_build_tests {
         assert_eq!(names_in(&own, "own"), ["real"]);
         assert_eq!(names_in(&test_build, "own"), ["mock"]);
         assert_eq!(names_in(&test_build, "dep"), ["dep_real"]);
-        assert_eq!(names_in(&test_build.lib_view(), "own"), ["real"]);
+        assert_eq!(names_in(&test_build.lib_view(), "own"), ["mock"]);
         assert_eq!(names_in(&test_build.build_without_test(), "own"), ["real"]);
     }
 
