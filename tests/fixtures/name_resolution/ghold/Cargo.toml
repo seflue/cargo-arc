@@ -1,0 +1,7 @@
+[package]
+name = "ghold"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+gsrc = { path = "../gsrc" }
