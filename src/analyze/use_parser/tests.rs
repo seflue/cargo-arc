@@ -558,6 +558,7 @@ mod submodule_tests {
                 module: "backend".to_string(),
                 original_name: "custom".to_string(),
                 visibility: Visibility::Public,
+                in_every_build: true,
             },
         );
         let mut custom_info = ModuleExportInfo::default();
@@ -568,6 +569,7 @@ mod submodule_tests {
                 module: "dispatch".to_string(),
                 original_name: "Interface".to_string(),
                 visibility: Visibility::Public,
+                in_every_build: true,
             },
         );
         let mut dispatch_info = ModuleExportInfo::default();
@@ -720,6 +722,7 @@ mod submodule_tests {
                 module: "eval".to_string(),
                 original_name: "eval_call".to_string(),
                 visibility: Visibility::Public,
+                in_every_build: true,
             },
         );
         let mut eval_info = ModuleExportInfo::default();
@@ -767,6 +770,7 @@ mod submodule_tests {
                 module: String::new(),
                 original_name: "leaf".to_string(),
                 visibility: Visibility::Public,
+                in_every_build: true,
             },
         );
         let mut mid_root = ModuleExportInfo::default();
@@ -777,6 +781,7 @@ mod submodule_tests {
                 module: String::new(),
                 original_name: String::new(),
                 visibility: Visibility::Public,
+                in_every_build: true,
             },
         );
         let map: ReExportMap = [
@@ -830,6 +835,7 @@ mod submodule_tests {
                 module: String::new(),
                 original_name: String::new(),
                 visibility: Visibility::Public,
+                in_every_build: true,
             },
         );
         let map: ReExportMap = [(
@@ -1224,6 +1230,7 @@ use crate::graph;
                 module: "origin".to_string(),
                 original_name: "Widget".to_string(),
                 visibility: Visibility::Public,
+                in_every_build: true,
             },
         );
         let mut origin_info = ModuleExportInfo::default();
@@ -3036,6 +3043,7 @@ mod reexport_resolution_tests {
                 module: "parent::sibling".to_string(),
                 original_name: "Item".to_string(),
                 visibility: Visibility::Public,
+                in_every_build: true,
             },
         );
         let mut sibling_info = ModuleExportInfo::default();
@@ -3078,6 +3086,7 @@ mod reexport_resolution_tests {
                 module: "parent::child".to_string(),
                 original_name: "Config".to_string(),
                 visibility: Visibility::Public,
+                in_every_build: true,
             },
         );
         let mut child_info = ModuleExportInfo::default();
@@ -3119,6 +3128,7 @@ mod reexport_resolution_tests {
                 module: "parent::child".to_string(),
                 original_name: "Config".to_string(),
                 visibility: Visibility::Public,
+                in_every_build: true,
             },
         );
         let mut child_info = ModuleExportInfo::default();
@@ -3171,6 +3181,7 @@ mod reexport_resolution_tests {
                 module: "util::helper".to_string(),
                 original_name: "helper".to_string(),
                 visibility: Visibility::Public,
+                in_every_build: true,
             },
         );
         let mut helper_info = ModuleExportInfo::default();
@@ -3234,6 +3245,7 @@ mod reexport_resolution_tests {
             } else {
                 Visibility::Public
             },
+            in_every_build: true,
         };
         let mut holder_info = ModuleExportInfo::default();
         if private {
@@ -3251,6 +3263,7 @@ mod reexport_resolution_tests {
                 module: "store::set".to_string(),
                 original_name: "Set".to_string(),
                 visibility: Visibility::Public,
+                in_every_build: true,
             },
         );
         let mut set_info = ModuleExportInfo::default();
@@ -3357,6 +3370,7 @@ mod resolve_reexport_tests {
                 module: "backend".to_string(),
                 original_name: "custom".to_string(),
                 visibility: Visibility::Public,
+                in_every_build: true,
             },
         );
         root.explicit_reexports.insert(
@@ -3366,6 +3380,7 @@ mod resolve_reexport_tests {
                 module: String::new(),
                 original_name: String::new(),
                 visibility: Visibility::Public,
+                in_every_build: true,
             },
         );
         let mut custom = ModuleExportInfo::default();
@@ -3432,6 +3447,7 @@ mod resolve_reexport_tests {
                 module: String::new(),
                 original_name: "arena".to_string(),
                 visibility: Visibility::Restricted("compact".to_string()),
+                in_every_build: true,
             },
         );
         let mut arena = ModuleExportInfo::default();
@@ -3505,6 +3521,7 @@ mod resolve_reexport_tests {
                 module: "render::elements".to_string(),
                 original_name: "Widget".to_string(),
                 visibility: Visibility::Public,
+                in_every_build: true,
             },
         );
         let mut n_info = ModuleExportInfo::default();
@@ -3534,6 +3551,7 @@ mod resolve_reexport_tests {
                 module: "middle".to_string(),
                 original_name: "Widget".to_string(),
                 visibility: Visibility::Public,
+                in_every_build: true,
             },
         );
         let mut n_info = ModuleExportInfo::default();
@@ -3544,6 +3562,7 @@ mod resolve_reexport_tests {
                 module: "origin".to_string(),
                 original_name: "Widget".to_string(),
                 visibility: Visibility::Public,
+                in_every_build: true,
             },
         );
         let mut o_info = ModuleExportInfo::default();
@@ -3574,6 +3593,7 @@ mod resolve_reexport_tests {
                 module: "origin".to_string(),
                 original_name: "Original".to_string(),
                 visibility: Visibility::Public,
+                in_every_build: true,
             },
         );
         let mut o_info = ModuleExportInfo::default();
@@ -3632,6 +3652,7 @@ mod resolve_reexport_tests {
                 module: "origin".to_string(),
                 original_name: "Widget".to_string(),
                 visibility: Visibility::Public,
+                in_every_build: true,
             },
         );
         let mut o_info = ModuleExportInfo::default();
@@ -3662,6 +3683,7 @@ mod resolve_reexport_tests {
                 module: "b".to_string(),
                 original_name: "Widget".to_string(),
                 visibility: Visibility::Public,
+                in_every_build: true,
             },
         );
         let mut b_info = ModuleExportInfo::default();
@@ -3672,6 +3694,7 @@ mod resolve_reexport_tests {
                 module: "a".to_string(),
                 original_name: "Widget".to_string(),
                 visibility: Visibility::Public,
+                in_every_build: true,
             },
         );
 
@@ -3700,6 +3723,7 @@ mod resolve_reexport_tests {
                 module: "settings".to_string(),
                 original_name: "Config".to_string(),
                 visibility: Visibility::Public,
+                in_every_build: true,
             },
         );
         let mut settings_info = ModuleExportInfo::default();
@@ -3731,6 +3755,7 @@ mod resolve_reexport_tests {
                 module: "front::wgsl::error".to_string(),
                 original_name: "Error".to_string(),
                 visibility: Visibility::Restricted("front::wgsl".to_string()),
+                in_every_build: true,
             },
         );
         let mut error_info = ModuleExportInfo::default();
@@ -3766,6 +3791,7 @@ mod resolve_reexport_tests {
                 module: "front::wgsl::error".to_string(),
                 original_name: "Error".to_string(),
                 visibility: Visibility::Restricted("front::wgsl".to_string()),
+                in_every_build: true,
             },
         );
         let mut crate_exports = HashMap::new();
@@ -4369,6 +4395,7 @@ mod file_binding_tests {
             } else {
                 Visibility::Restricted(glob_module.to_string())
             },
+            in_every_build: true,
         };
         let mut render_info = ModuleExportInfo::default();
         if public {
@@ -4694,9 +4721,9 @@ mod use_category_tests {
         assert_eq!(
             contexts,
             [
+                (Some("*"), EdgeContext::production()),
                 (Some("Config"), test.clone()),
                 (Some("Mode"), test),
-                (Some("*"), EdgeContext::production()),
             ]
         );
     }

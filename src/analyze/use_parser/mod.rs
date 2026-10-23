@@ -123,6 +123,9 @@ pub(crate) struct ReExportTarget {
     pub(crate) original_name: String,
     /// Where the `use` that binds the name is visible.
     pub(crate) visibility: Visibility,
+    /// Whether the `use` is in every build of the map that holds it, or only
+    /// where a `#[cfg]` syn cannot decide holds.
+    pub(crate) in_every_build: bool,
 }
 
 /// A glob `use` a module holds: the module it imports from and where the
@@ -168,8 +171,9 @@ pub(crate) struct DefinedItem {
     pub(crate) visibility: Visibility,
 }
 
-/// Export and re-export information for a single module.
-#[derive(Debug, Default, Clone)]
+/// Export and re-export information for a single module, in one build: what
+/// a `#[cfg]` keeps out of the build is not here.
+#[derive(Debug, Default, Clone, PartialEq)]
 pub(crate) struct ModuleExportInfo {
     /// Own definitions, whatever their visibility, by name. In the root,
     /// every module of the crate can name a private item through `crate::`.
@@ -198,9 +202,6 @@ pub(crate) struct ModuleExportInfo {
     /// targets, alternatives under `cfg` in one file or in alternative files.
     /// `private_uses` holds the last one read, which the build may not.
     pub(crate) private_uses_of_differing_targets: HashSet<String>,
-    /// The builds a private `use` under `#[cfg]` is in, by the name in
-    /// `private_uses` it binds. A name missing here is bound in every build.
-    pub(crate) private_uses_under_cfg: HashMap<String, UseCondition>,
     /// Glob re-export sources (module paths from `pub use *`, `pub(crate)`
     /// and `pub(super)` included)
     pub(crate) glob_sources: Vec<GlobSource>,
@@ -238,7 +239,6 @@ impl ModuleExportInfo {
             && self.explicit_reexports.is_empty()
             && self.private_uses.is_empty()
             && self.private_uses_of_differing_targets.is_empty()
-            && self.private_uses_under_cfg.is_empty()
             && self.glob_sources.is_empty()
             && self.foreign_glob_sources.is_empty()
             && self.private_glob_sources.is_empty()
@@ -274,8 +274,7 @@ impl ModuleExportInfo {
         }
         self.explicit_reexports.extend(other.explicit_reexports);
         for (name, target) in other.private_uses {
-            let condition = other.private_uses_under_cfg.get(&name).copied();
-            self.bind_privately(name, target, condition);
+            self.bind_privately(name, target);
         }
         self.private_uses_of_differing_targets
             .extend(other.private_uses_of_differing_targets);
@@ -287,15 +286,9 @@ impl ModuleExportInfo {
         self.elsewhere.extend(other.elsewhere);
     }
 
-    /// Bind `name` to `target` by a private `use`, in the builds `condition`
-    /// names or in every build, noting the name where it replaces a binding
-    /// to another target.
-    pub(crate) fn bind_privately(
-        &mut self,
-        name: String,
-        target: ReExportTarget,
-        condition: Option<UseCondition>,
-    ) {
+    /// Bind `name` to `target` by a private `use`, noting the name where it
+    /// replaces a binding to another target.
+    pub(crate) fn bind_privately(&mut self, name: String, target: ReExportTarget) {
         let same_target = |known: &ReExportTarget| {
             (&known.crate_name, &known.module, &known.original_name)
                 == (&target.crate_name, &target.module, &target.original_name)
@@ -307,59 +300,18 @@ impl ModuleExportInfo {
         {
             self.private_uses_of_differing_targets.insert(name.clone());
         }
-        match condition {
-            Some(condition) => self.private_uses_under_cfg.insert(name.clone(), condition),
-            None => self.private_uses_under_cfg.remove(&name),
-        };
         self.private_uses.insert(name, target);
     }
 }
 
-/// The builds a `use` under `#[cfg]` is in.
+/// The builds of a map in which a module brings a name into a scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum UseCondition {
-    /// Test builds only, as `is_cfg_test` decides.
-    TestBuilds,
-    /// No test build, as `holds_in_no_test_build` decides.
-    NoTestBuild,
-    /// Some builds, which syn cannot name.
-    SomeBuilds,
-}
-
-/// The private `use` items under `#[cfg]` that bring a name in a resolution.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CountedUses {
-    /// Every one, whatever the build.
-    Every,
-    /// All but those of no test build, as for a reference in test code.
-    InTest,
-    /// All but those of test builds only, as for a reference in production
-    /// code.
-    OutsideTest,
-    /// None: only the bindings of every build.
-    Unconditional,
-}
-
-impl CountedUses {
-    /// The uses a reference in `context` sees.
-    fn for_reference(context: &EdgeContext) -> CountedUses {
-        if context.kind == UsageKind::Production {
-            CountedUses::OutsideTest
-        } else {
-            CountedUses::InTest
-        }
-    }
-
-    /// Whether a `use` in the builds `condition` names, or in every build,
-    /// counts.
-    fn count(self, condition: Option<&UseCondition>) -> bool {
-        match (self, condition) {
-            (_, None) | (CountedUses::Every, _) => true,
-            (CountedUses::InTest, Some(condition)) => *condition != UseCondition::NoTestBuild,
-            (CountedUses::OutsideTest, Some(condition)) => *condition != UseCondition::TestBuilds,
-            (CountedUses::Unconditional, Some(_)) => false,
-        }
-    }
+enum Brought {
+    /// Every build of the map.
+    InEveryBuild,
+    /// Only where a `#[cfg]` on a `use` on the way holds, which syn cannot
+    /// decide.
+    InSomeBuilds,
 }
 
 /// What one crate root's module tree exports: module path → export info.
@@ -370,8 +322,9 @@ pub(crate) struct RootReExports {
     pub(crate) kind: EntryKind,
     /// The modules the root's build without `test` loads.
     pub(crate) modules: HashMap<String, ModuleExportInfo>,
-    /// The modules the root's test build loads, where it loads other files
-    /// than the build without `test`. Collected only when test code is read.
+    /// The modules the root's test build loads, where they hold other files
+    /// or other bindings than those of the build without `test`. Collected
+    /// only when test code is read.
     pub(crate) test_build_modules: Option<HashMap<String, ModuleExportInfo>>,
 }
 
@@ -418,8 +371,8 @@ impl ReExportMap {
     }
 
     /// The same map, seen from the test build of the own root, or `None`
-    /// where the root has no modules of its test build: it then loads the
-    /// files its build without `test` does, or test code is not read.
+    /// where the root has no modules of its test build: they are then those
+    /// of its build without `test`, or test code is not read.
     pub(crate) fn test_build(&self) -> Option<Self> {
         let (own, index) = self.own_root.as_ref()?;
         self.packages
@@ -900,7 +853,6 @@ fn follow_reexports(
     let mut lookup_name = dep.target_item.clone();
     let mut use_holders: Vec<Holder> = Vec::new();
     let in_lib_view = dep.in_lib_view;
-    let counted = CountedUses::for_reference(&dep.context);
     let visible = |map: &ReExportMap, crate_name: &str, visibility: &Visibility| {
         map.is_visible(crate_name, in_lib_view, visibility, importer_module)
     };
@@ -928,11 +880,9 @@ fn follow_reexports(
         // module that holds it, or of the module `pub(in …)` names, in the
         // same crate. A descendant naming the symbol through this ancestor
         // really depends on the definer, in the same crate or another
-        // workspace crate. A private `use` of test builds only binds nothing
-        // for a reference in production code, one of no test build nothing
-        // for a reference in test code.
+        // workspace crate.
         // Tier 1c: Bound elsewhere, visible only to descendants like Tier 1b.
-        let binding = visible_binding(module_info, item, counted, |visibility| {
+        let binding = visible_binding(module_info, item, |visibility| {
             visible(reexport_map, &dep.target_package, visibility)
         });
         if places_no_definer(module_info, item, binding, |visibility| {
@@ -1053,11 +1003,10 @@ fn binds_to_differing_targets(
 }
 
 /// The binding of `item` in `module_info` that `visible` lets through: a
-/// `pub use` first, then a private `use` that `counted` counts, marked `true`.
+/// `pub use` first, then a private `use`, marked `true`.
 fn visible_binding<'a>(
     module_info: &'a ModuleExportInfo,
     item: &str,
-    counted: CountedUses,
     visible: impl Fn(&Visibility) -> bool,
 ) -> Option<(&'a ReExportTarget, bool)> {
     let visible_target = |target: &&ReExportTarget| visible(&target.visibility);
@@ -1071,7 +1020,6 @@ fn visible_binding<'a>(
                 .private_uses
                 .get(item)
                 .filter(visible_target)
-                .filter(|_| counted.count(module_info.private_uses_under_cfg.get(item)))
                 .map(|target| (target, true))
         })
 }
@@ -1128,7 +1076,6 @@ fn follow_private_glob<'m>(
         module_info,
         symbol,
         importer_module,
-        CountedUses::for_reference(&dep.context),
     ) {
         if let Some(passed_on) = passed_on.filter(|_| importer_module != dep.target_module) {
             passed_on.note_glob(dep, glob_src);
@@ -1147,15 +1094,13 @@ fn follow_private_glob<'m>(
 }
 
 /// The module a private glob of `module_info`, the module `holder`, imports
-/// from that brings `symbol` into the scope of `importer_module`, counting the
-/// `use` items under `#[cfg]` that `counted` counts.
+/// from that brings `symbol` into the scope of `importer_module`.
 fn private_glob_holding<'m>(
     reexport_map: &ReExportMap,
     holder: CrateModule,
     module_info: &'m ModuleExportInfo,
     symbol: &str,
     importer_module: &str,
-    counted: CountedUses,
 ) -> Option<&'m String> {
     let crate_name = holder.crate_name;
     module_info
@@ -1176,8 +1121,8 @@ fn private_glob_holding<'m>(
                 importer_module,
                 &[holder],
                 &mut HashSet::new(),
-                counted,
             )
+            .is_some()
         })
 }
 
@@ -1217,8 +1162,8 @@ fn follow_local_glob(
                 importer_module,
                 &[CrateModule::of(dep)],
                 &mut passed.clone(),
-                CountedUses::for_reference(&dep.context),
             )
+            .is_some()
         })
     else {
         return false;
@@ -1254,7 +1199,7 @@ fn follow_foreign_glob<'m>(
             false,
             &glob.visibility,
             importer_module,
-        ) || !module_exports_symbol(
+        ) || module_exports_symbol(
             reexport_map,
             CrateModule {
                 crate_name,
@@ -1264,8 +1209,9 @@ fn follow_foreign_glob<'m>(
             importer_module,
             &[CrateModule::of(dep)],
             &mut passed.clone(),
-            CountedUses::for_reference(&dep.context),
-        ) {
+        )
+        .is_none()
+        {
             return None;
         }
         dep.target_package.clone_from(crate_name);
@@ -1334,7 +1280,7 @@ fn holds_an_item_named(
     info.definitions
         .get(name)
         .is_some_and(|item| visible(&item.visibility))
-        || visible_binding(info, name, CountedUses::Every, visible)
+        || visible_binding(info, name, visible)
             .is_some_and(|(target, _)| !binds_a_module(target, module_paths))
 }
 
@@ -1374,12 +1320,13 @@ fn module_is_visible(
 /// `use` of any visibility, a name a `use` binds outside the crate, or a glob
 /// of any visibility, followed into other workspace crates. A glob brings in
 /// only what its holder sees, so a chain only what every holder on it sees,
-/// and what `importer_module` does not see, it does not bring there. Of the
-/// private `use` items under `#[cfg]`, only those `counted` counts bring a
-/// symbol, except where they bind it to different targets: the module holds
-/// it then in whichever build, and a glob of the module does not go on to
-/// another. A module in `visited`, by crate and module path, brings nothing
-/// more.
+/// and what `importer_module` does not see, it does not bring there. Private
+/// `use` items that bind the symbol to different targets bring it in every
+/// build: the module holds it then in whichever, and a glob of the module
+/// does not go on to another. A `use` under a `#[cfg]` syn cannot decide
+/// brings it in some builds only, unless a glob of the module brings it in
+/// every one. A module in `visited`, by crate and module path, brings nothing
+/// more. `None` where the module does not bring the symbol.
 fn module_exports_symbol(
     reexport_map: &ReExportMap,
     module: CrateModule,
@@ -1387,8 +1334,7 @@ fn module_exports_symbol(
     importer_module: &str,
     holders: &[CrateModule],
     visited: &mut HashSet<(String, String)>,
-    counted: CountedUses,
-) -> bool {
+) -> Option<Brought> {
     let crate_name = module.crate_name;
     if reexport_map.leaves_test_build_at(crate_name) {
         return module_exports_symbol(
@@ -1398,18 +1344,14 @@ fn module_exports_symbol(
             importer_module,
             holders,
             visited,
-            counted,
         );
     }
     if !visited.insert((crate_name.to_string(), module.path.to_string())) {
-        return false;
+        return None;
     }
-    let Some(info) = reexport_map
+    let info = reexport_map
         .get(crate_name)
-        .and_then(|crate_exports| crate_exports.get(module.path))
-    else {
-        return false;
-    };
+        .and_then(|crate_exports| crate_exports.get(module.path))?;
     let visible = |visibility: &Visibility| {
         reexport_map.is_visible(crate_name, false, visibility, importer_module)
             && holders
@@ -1421,14 +1363,16 @@ fn module_exports_symbol(
         .get(symbol)
         .is_some_and(|item| visible(&item.visibility))
     {
-        return true;
+        return Some(Brought::InEveryBuild);
     }
-    let bound = visible_binding(info, symbol, counted, visible).is_some()
+    let binding = visible_binding(info, symbol, visible);
+    let bound_in_every_build = binding.is_some_and(|(target, _)| target.in_every_build)
         || binds_to_differing_targets(info, symbol, visible)
         || info.elsewhere.get(symbol).is_some_and(visible);
-    if bound {
-        return true;
+    if bound_in_every_build {
+        return Some(Brought::InEveryBuild);
     }
+    let mut brought = binding.map(|_| Brought::InSomeBuilds);
     let local_globs = info
         .glob_sources
         .iter()
@@ -1440,23 +1384,28 @@ fn module_exports_symbol(
         .chain(&info.foreign_private_glob_sources)
         .map(|(glob_crate, glob)| (glob_crate.as_str(), glob));
     let holders = [holders, &[module]].concat();
-    local_globs
+    let globs = local_globs
         .chain(foreign_globs)
-        .filter(|(_, glob)| visible(&glob.visibility))
-        .any(|(glob_crate, glob)| {
-            module_exports_symbol(
-                reexport_map,
-                CrateModule {
-                    crate_name: glob_crate,
-                    path: &glob.module,
-                },
-                symbol,
-                importer_module,
-                &holders,
-                visited,
-                counted,
-            )
-        })
+        .filter(|(_, glob)| visible(&glob.visibility));
+    for (glob_crate, glob) in globs {
+        let source = CrateModule {
+            crate_name: glob_crate,
+            path: &glob.module,
+        };
+        match module_exports_symbol(
+            reexport_map,
+            source,
+            symbol,
+            importer_module,
+            &holders,
+            visited,
+        ) {
+            Some(Brought::InEveryBuild) => return Some(Brought::InEveryBuild),
+            Some(Brought::InSomeBuilds) => brought = Some(Brought::InSomeBuilds),
+            None => {}
+        }
+    }
+    brought
 }
 
 /// Whether a `pub use` in the root of `crate_name` brings `symbol` into the
@@ -1493,8 +1442,8 @@ fn root_reexports(
                             path: "",
                         }],
                         &mut HashSet::new(),
-                        CountedUses::Every,
                     )
+                    .is_some()
                 })
     })
 }
@@ -1730,7 +1679,7 @@ fn is_test_fn(attrs: &[syn::Attribute]) -> bool {
 }
 
 /// The outer attributes of an item; none for tokens syn could not parse.
-fn item_attrs(item: &syn::Item) -> &[syn::Attribute] {
+pub(crate) fn item_attrs(item: &syn::Item) -> &[syn::Attribute] {
     match item {
         syn::Item::Const(i) => &i.attrs,
         syn::Item::Enum(i) => &i.attrs,
@@ -3139,8 +3088,7 @@ pub(crate) fn parse_workspace_dependencies(
 
 /// The names `use <module>::*` in `holder_module` brings into scope: the
 /// module's own definitions plus what any of its `use` items binds under a
-/// name, as far as `holder_module` sees them. A private `use` of test builds
-/// only brings nothing to a glob in production code.
+/// name, as far as `holder_module` sees them.
 ///
 /// `None` when the module is absent from the map or exports nothing under a name
 /// `holder_module` sees. Sorted, because the map iterates in arbitrary order and
@@ -3164,15 +3112,10 @@ fn glob_payload(
         .iter()
         .filter(|(_, item)| visible(&item.visibility))
         .map(|(name, _)| name);
-    let counted = CountedUses::for_reference(&dep.context);
-    let private_uses = module_info
-        .private_uses
-        .iter()
-        .filter(|(name, _)| counted.count(module_info.private_uses_under_cfg.get(*name)));
     let reexports = module_info
         .explicit_reexports
         .iter()
-        .chain(private_uses)
+        .chain(&module_info.private_uses)
         .filter(|(_, target)| visible(&target.visibility))
         .map(|(name, _)| name);
     let mut names: Vec<String> = definitions.chain(reexports).cloned().collect();
@@ -3769,9 +3712,7 @@ pub(crate) fn parse_path_ref_dependencies(
                         let associated = associated_segment(&path_ref.path, &dep);
                         (dep, associated, None)
                     } else {
-                        let Some(glob) =
-                            glob_taking(ctx, bindings, name, path_ref.region, &path_ref.context)
-                        else {
+                        let Some(glob) = glob_taking(ctx, bindings, name, path_ref.region) else {
                             continue;
                         };
                         let dep = DependencyRef {
@@ -3865,28 +3806,24 @@ fn context_of_use(reference: &EdgeContext, binding: &EdgeContext) -> EdgeContext
     }
 }
 
-/// The glob import of `bindings` that brings `name`, standing in `region` in
-/// code of the context `reference`, into scope: the innermost that brings it.
-/// A glob that brings it only through a private `use` under `#[cfg]` gives
-/// way to a glob of the same scope that brings it in every build: where the
-/// `use` is in the build, the name is ambiguous, so valid code names it only
-/// where the `use` is not. `None` where a glob of another module brings it
-/// too and the module of one of them declares `name` with different
-/// visibilities in its alternative files: the file a build reads may hold it
-/// privately, leaving it to another glob.
+/// The glob import of `bindings` that brings `name`, standing in `region`,
+/// into scope: the innermost that brings it. A glob that brings it only
+/// through a `use` under a `#[cfg]` syn cannot decide gives way to a glob of
+/// the same scope that brings it in every build: where the `use` is in the
+/// build, the name is ambiguous, so valid code names it only where the `use`
+/// is not. `None` where a glob of another module brings it too and the module
+/// of one of them declares `name` with different visibilities in its
+/// alternative files: the file a build reads may hold it privately, leaving
+/// it to another glob.
 fn glob_taking<'b>(
     ctx: &ResolutionContext,
     bindings: &'b FileBindings,
     name: &str,
     region: RegionId,
-    reference: &EdgeContext,
 ) -> Option<&'b DependencyRef> {
-    let brings = |glob: &DependencyRef| {
-        let counted = CountedUses::for_reference(&context_of_use(reference, &glob.context));
-        glob_exports(ctx, glob, name, counted)
-    };
+    let brings = |glob: &DependencyRef| glob_exports(ctx, glob, name).is_some();
     let brings_in_every_build =
-        |glob: &DependencyRef| glob_exports(ctx, glob, name, CountedUses::Unconditional);
+        |glob: &DependencyRef| glob_exports(ctx, glob, name) == Some(Brought::InEveryBuild);
     let (scope, first) = bindings
         .glob_scopes_for(name, region)
         .find_map(|scope| Some((scope, scope.iter().find(|glob| brings(glob))?)))?;
@@ -3913,14 +3850,9 @@ fn glob_taking<'b>(
 }
 
 /// Whether the module a glob imports from brings `name` into this file's
-/// scope, as [`module_exports_symbol`] decides for the file's module and the
-/// `use` items under `#[cfg]` that `counted` counts.
-fn glob_exports(
-    ctx: &ResolutionContext,
-    glob: &DependencyRef,
-    name: &str,
-    counted: CountedUses,
-) -> bool {
+/// scope, and in which builds, as [`module_exports_symbol`] decides for the
+/// file's module.
+fn glob_exports(ctx: &ResolutionContext, glob: &DependencyRef, name: &str) -> Option<Brought> {
     let lib_view;
     let reexport_map = if glob.in_lib_view {
         lib_view = ctx.reexport_map.lib_view();
@@ -3938,7 +3870,6 @@ fn glob_exports(
             path: ctx.current_module_path,
         }],
         &mut HashSet::new(),
-        counted,
     )
 }
 
@@ -4074,16 +4005,14 @@ pub(crate) fn parse_file_dependencies(
         || path_refs
             .iter()
             .any(|path_ref| !is_production(&path_ref.context));
-    let test_build = (!ctx.reexport_map.is_test_build() && holds_test_code)
-        .then(|| ctx.reexport_map.test_build())
-        .flatten();
-    let Some(test_build) = test_build else {
+    if ctx.reexport_map.is_test_build() || !holds_test_code {
         return resolve_file_dependencies(syntax, ctx, ctx, &use_items, &use_items, &path_refs);
-    };
-    // Test code of the file is compiled in the root's test build, which loads
-    // other files: its references resolve there, and the production code's
-    // in the build without `test`. Each pass notes in `passed_on` only what
-    // it keeps.
+    }
+    let test_build = ctx.reexport_map.test_build();
+    // Test code of the file is compiled in the root's test build: its
+    // references resolve there, and the production code's in the build
+    // without `test`, which binds none of the test code's `use` items. Each
+    // pass notes in `passed_on` only what it keeps.
     let production_uses = use_items.retaining(is_production);
     let mut deps = resolve_file_dependencies(
         syntax,
@@ -4094,7 +4023,7 @@ pub(crate) fn parse_file_dependencies(
         &path_refs.retaining(is_production),
     );
     let test_ctx = ResolutionContext {
-        reexport_map: &test_build,
+        reexport_map: test_build.as_ref().unwrap_or(ctx.reexport_map),
         ..*ctx
     };
     let bindings_ctx = ResolutionContext {

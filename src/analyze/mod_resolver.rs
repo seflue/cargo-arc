@@ -58,7 +58,7 @@ impl CfgCondition {
     /// Combine the `#[cfg]`s among `attrs` as `all(…)` does, since an item
     /// needs each to hold. A `#[cfg]` that does not parse is open in every
     /// build.
-    fn of_attrs(attrs: &[syn::Attribute]) -> Self {
+    pub(crate) fn of_attrs(attrs: &[syn::Attribute]) -> Self {
         let evaluate = |test| {
             all_of(
                 attrs
@@ -88,6 +88,12 @@ impl CfgCondition {
             without_test: any_of(without_test),
             test: any_of(test),
         }
+    }
+
+    /// Evaluate the condition in the test builds where `test` is set, in the
+    /// builds without `test` otherwise, as [`evaluate_cfg`] answers.
+    pub(crate) fn in_builds(self, test: bool) -> Option<bool> {
+        if test { self.test } else { self.without_test }
     }
 
     /// Check whether the condition admits test builds only: it holds in no
@@ -166,12 +172,6 @@ fn any_of(values: impl IntoIterator<Item = Option<bool>>) -> Option<bool> {
 /// Check whether a `#[cfg]` admits the item into test builds only.
 pub(crate) fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
     CfgCondition::of_attrs(attrs).test_builds_only()
-}
-
-/// Check whether a `#[cfg]` keeps the item out of every test build:
-/// `not(test)` and whatever holds only where `test` does not.
-pub(crate) fn holds_in_no_test_build(attrs: &[syn::Attribute]) -> bool {
-    !CfgCondition::of_attrs(attrs).may_hold_in_test_build()
 }
 
 /// Extract the value of a `#[path = "..."]` attribute, if present.
@@ -493,11 +493,11 @@ mod tests {
         fn test_is_cfg_test_where_a_double_negation_admits_test_builds_only() {
             let attrs = parse_attrs("#[cfg(not(not(test)))] mod x;");
             assert!(is_cfg_test(&attrs));
-            assert!(!holds_in_no_test_build(&attrs));
+            assert!(CfgCondition::of_attrs(&attrs).may_hold_in_test_build());
         }
 
         #[test]
-        fn test_holds_in_no_test_build() {
+        fn test_condition_holds_in_no_test_build() {
             let cases = [
                 ("#[cfg(test)] mod x;", false),
                 ("#[cfg(not(test))] mod x;", true),
@@ -511,7 +511,7 @@ mod tests {
             ];
             for (code, expected) in cases {
                 assert_eq!(
-                    holds_in_no_test_build(&parse_attrs(code)),
+                    !CfgCondition::of_attrs(&parse_attrs(code)).may_hold_in_test_build(),
                     expected,
                     "{code}"
                 );

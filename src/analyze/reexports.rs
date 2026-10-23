@@ -11,13 +11,11 @@ use syn::spanned::Spanned;
 use super::packages::{ModulePathMap, PackageExportMap, WorkspacePackages, normalize_crate_name};
 use crate::model::{DefKind, Definition, EdgeContext, PackageInfo};
 
-use super::mod_resolver::{
-    ModuleFile, declared_files, extract_mod_declarations, holds_in_no_test_build, is_cfg_test,
-};
+use super::mod_resolver::{CfgCondition, ModuleFile, declared_files, extract_mod_declarations};
 use super::use_parser::{
     AssociatedItems, DefinedItem, GlobSource, Meaning, ModuleExportInfo, ReExportMap,
-    ReExportTarget, ResolutionContext, RootReExports, UseCondition, Visibility,
-    is_reexport_visibility, resolve_single_path, resolve_use_tree,
+    ReExportTarget, ResolutionContext, RootReExports, Visibility, is_reexport_visibility,
+    item_attrs, resolve_single_path, resolve_use_tree,
 };
 
 /// Invariant parameters shared across the recursive re-export walk.
@@ -103,7 +101,7 @@ pub(crate) fn root_extern_crates(
 }
 
 /// The modules of a root's build without `test`, and with `include_tests` those
-/// of its test build where it loads other files.
+/// of its test build where they differ.
 fn collect_root_reexports(
     ctx: &CollectContext,
     root_file: &Path,
@@ -118,7 +116,6 @@ fn collect_root_reexports(
         path: root_file.to_path_buf(),
         owns_directory: true,
     };
-    let mut builds_differ = false;
     walk_collect_reexports(
         ctx,
         &root,
@@ -129,12 +126,12 @@ fn collect_root_reexports(
         },
         &mut production,
         test_build.as_mut(),
-        &mut builds_differ,
     );
+    let production = production.finish();
     let test_build = test_build
-        .filter(|_| builds_differ)
-        .map(CollectedModules::finish);
-    (production.finish(), test_build)
+        .map(CollectedModules::finish)
+        .filter(|test_build| *test_build != production);
+    (production, test_build)
 }
 
 /// The modules one build of a root loads, while the walk collects them.
@@ -188,29 +185,31 @@ enum ImplOwner {
 }
 
 /// Extract re-exports, definitions and associated items from a single parsed
-/// module file. An `impl` block whose type lives in another module goes to
-/// `out_of_module_impls` for that module.
+/// module file, as the test builds read it where `test` is set and as the
+/// builds without `test` read it otherwise: an item under a `#[cfg]` that
+/// holds in none of them is left out. An `impl` block whose type lives in
+/// another module goes to `out_of_module_impls` for that module.
 fn collect_module_info(
     ctx: &CollectContext,
     syntax: &syn::File,
     source_file: &Path,
     module_path: &str,
+    test: bool,
     out_of_module_impls: &mut Vec<OutOfModuleImpl>,
 ) -> ModuleExportInfo {
     let mut info = ModuleExportInfo::default();
-    let macros: Vec<String> = syntax
-        .items
+    let items = items_in_builds(syntax, test);
+    let macros: Vec<String> = items
         .iter()
-        .filter_map(|item| match item {
+        .filter_map(|(item, _)| match item {
             syn::Item::Macro(i) => i.ident.as_ref().map(ToString::to_string),
             _ => None,
         })
         .collect();
 
-    for item in &syntax.items {
+    for &(item, in_every_build) in &items {
         let defined = match item {
             syn::Item::Use(use_item) => {
-                let private = !is_reexport_visibility(&use_item.vis);
                 collect_use_reexports(
                     ctx,
                     use_item,
@@ -218,7 +217,7 @@ fn collect_module_info(
                     module_path,
                     &macros,
                     &mut info,
-                    private,
+                    in_every_build,
                 );
                 None
             }
@@ -240,7 +239,7 @@ fn collect_module_info(
     }
     // Second pass, once every `use` of the file is known: an `impl` block may
     // precede the `use` that names its type.
-    for item in &syntax.items {
+    for &(item, _) in &items {
         match item {
             syn::Item::Enum(e) => {
                 let items = info.associated.entry(e.ident.to_string()).or_default();
@@ -295,6 +294,22 @@ fn collect_module_info(
     }
 
     info
+}
+
+/// Select the items of `syntax` the test builds read where `test` is set, and
+/// the builds without `test` otherwise, each with whether every one of those
+/// builds reads it.
+fn items_in_builds(syntax: &syn::File, test: bool) -> Vec<(&syn::Item, bool)> {
+    syntax
+        .items
+        .iter()
+        .filter_map(
+            |item| match CfgCondition::of_attrs(item_attrs(item)).in_builds(test) {
+                Some(false) => None,
+                in_builds => Some((item, in_builds == Some(true))),
+            },
+        )
+        .collect()
 }
 
 /// The visibility, name and kind of an item that defines a symbol, or `None`
@@ -417,7 +432,7 @@ fn resolution_context<'a>(
 /// Resolve a single `use` item into re-export entries, each with the
 /// visibility of the `use`.
 ///
-/// `private` selects where named targets land: a `pub`/`pub(crate)`/`pub(super)`
+/// Its visibility selects where named targets land: a `pub`/`pub(crate)`/`pub(super)`
 /// re-export fills `explicit_reexports`, a private, `pub(self)` or `pub(in …)`
 /// `use` fills `private_uses` (a binding descendants can still name through
 /// this module). A glob lands in
@@ -429,7 +444,8 @@ fn resolution_context<'a>(
 /// reference to it from resolving to this module. A `use name;` of one of
 /// `macros`, the file's own `macro_rules!`, binds that macro here and stays
 /// out. Renamed, it may also bind what another `use` brought in under `name`,
-/// so it stays in.
+/// so it stays in. A named target is in every build of the map where
+/// `in_every_build` says so.
 fn collect_use_reexports(
     ctx: &CollectContext,
     use_item: &syn::ItemUse,
@@ -437,14 +453,14 @@ fn collect_use_reexports(
     module_path: &str,
     macros: &[String],
     info: &mut ModuleExportInfo,
-    private: bool,
+    in_every_build: bool,
 ) {
     let alias_paths = resolve_use_tree(&use_item.tree, "", true);
     let original_paths = resolve_use_tree(&use_item.tree, "", false);
 
     let res_ctx = resolution_context(ctx, source_file, module_path);
     let visibility = Visibility::of(&use_item.vis, module_path);
-    let condition = use_condition(&use_item.attrs);
+    let private = !is_reexport_visibility(&use_item.vis);
 
     for (alias_path, original_path) in alias_paths.iter().zip(original_paths.iter()) {
         let Some(mut dep) = resolve_single_path(
@@ -511,30 +527,15 @@ fn collect_use_reexports(
                 module: dep.target_module.clone(),
                 original_name: original_name.clone(),
                 visibility: visibility.clone(),
+                in_every_build,
             };
             if private {
-                info.bind_privately(alias_name.to_string(), target, condition);
+                info.bind_privately(alias_name.to_string(), target);
             } else {
                 info.explicit_reexports
                     .insert(alias_name.to_string(), target);
             }
         }
-    }
-}
-
-/// The builds a `use` with the attributes `attrs` is in, or `None` for every
-/// build: test builds only under a `#[cfg]` that admits nothing else, no test
-/// build under a `#[cfg]` that keeps it out of all, some builds under any
-/// other `#[cfg]`.
-fn use_condition(attrs: &[syn::Attribute]) -> Option<UseCondition> {
-    if is_cfg_test(attrs) {
-        Some(UseCondition::TestBuilds)
-    } else if holds_in_no_test_build(attrs) {
-        Some(UseCondition::NoTestBuild)
-    } else if attrs.iter().any(|attr| attr.path().is_ident("cfg")) {
-        Some(UseCondition::SomeBuilds)
-    } else {
-        None
     }
 }
 
@@ -564,8 +565,8 @@ fn root_item_name<'p>(ctx: &CollectContext, path: &'p str) -> Option<(String, &'
 
 /// Read `file` and its descendants once, each into the modules of the builds
 /// that load it: `production` for the build without `test`, `test_build`,
-/// where given, for the test build. `builds_differ` turns true at a file
-/// only one of the two loads.
+/// where given, for the test build. Each build takes the items of the file
+/// that its `#[cfg]`s admit.
 fn walk_collect_reexports(
     ctx: &CollectContext,
     file: &ModuleFile,
@@ -573,7 +574,6 @@ fn walk_collect_reexports(
     builds: Builds,
     production: &mut CollectedModules,
     mut test_build: Option<&mut CollectedModules>,
-    builds_differ: &mut bool,
 ) {
     let file_path = file.path.as_path();
     let source = match std::fs::read_to_string(file_path) {
@@ -595,36 +595,28 @@ fn walk_collect_reexports(
         .strip_prefix(ctx.workspace_root)
         .map_or_else(|_| file_path.to_path_buf(), Path::to_path_buf);
 
-    let mut out_of_module_impls = Vec::new();
-    let info = collect_module_info(
-        ctx,
-        &syntax,
-        &source_file,
-        module_path,
-        &mut out_of_module_impls,
-    );
-    if builds.without_test != builds.test {
-        *builds_differ = true;
-    }
-    // Merged even when empty: a public declaration widens what an alternative
-    // file of the module declares narrower.
-    if let Some(test_build) = test_build.as_deref_mut().filter(|_| builds.test) {
-        test_build
-            .modules
-            .entry(module_path.to_string())
-            .or_default()
-            .merge(info.clone());
-        test_build
-            .out_of_module_impls
-            .extend(out_of_module_impls.iter().cloned());
-    }
-    if builds.without_test {
-        production
+    let collect_into = |modules: &mut CollectedModules, test: bool| {
+        let info = collect_module_info(
+            ctx,
+            &syntax,
+            &source_file,
+            module_path,
+            test,
+            &mut modules.out_of_module_impls,
+        );
+        // Merged even when empty: a public declaration widens what an
+        // alternative file of the module declares narrower.
+        modules
             .modules
             .entry(module_path.to_string())
             .or_default()
             .merge(info);
-        production.out_of_module_impls.extend(out_of_module_impls);
+    };
+    if let Some(test_build) = test_build.as_deref_mut().filter(|_| builds.test) {
+        collect_into(test_build, true);
+    }
+    if builds.without_test {
+        collect_into(production, false);
     }
 
     // Recurse into child modules
@@ -656,7 +648,6 @@ fn walk_collect_reexports(
                 child_builds,
                 production,
                 test_build.as_deref_mut(),
-                builds_differ,
             );
         }
     }
@@ -1988,11 +1979,9 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
                 owned("other", &["helper"]),
             ])
         );
-        let production = vec![
-            owned("", &[]),
-            owned("alt::inner", &["real"]),
-            owned("other", &["helper"]),
-        ];
+        // The root of the build without `test` declares no restricted module,
+        // so it holds nothing a resolution reads.
+        let production = vec![owned("alt::inner", &["real"]), owned("other", &["helper"])];
         assert_eq!(shape(&with_tests.modules), production);
         assert_eq!(shape(&without_tests.modules), production);
         assert!(without_tests.test_build_modules.is_none());
