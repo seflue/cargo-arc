@@ -94,11 +94,13 @@ impl<'a> ResolutionContextBuilder<'a> {
 
 /// Define the public item `name` of `kind` in `info`.
 fn define(info: &mut ModuleExportInfo, name: &str, kind: DefKind) {
-    let item = DefinedItem {
-        definition: Definition { kind, line: 1 },
-        visibility: Visibility::Public,
-    };
-    info.definitions.insert(name.to_string(), item);
+    define_with(info, name, kind, Visibility::Public);
+}
+
+/// Define the item `name` of `kind` with `visibility` in `info`.
+fn define_with(info: &mut ModuleExportInfo, name: &str, kind: DefKind, visibility: Visibility) {
+    let definition = BindingKind::Definition(Definition { kind, line: 1 });
+    info.bind(name.to_string(), NameBinding::new(definition, visibility));
 }
 
 fn parse_test_uses(source: &str) -> CollectedUses {
@@ -205,28 +207,6 @@ mod reexport_visibility_tests {
     fn pub_in_path_is_not_reexport() {
         let vis = parse_visibility("pub(in crate::parent) use foo::Bar;");
         assert!(!is_reexport_visibility(&vis));
-    }
-}
-
-mod wider_visibility_tests {
-    use super::*;
-    use rstest::rstest;
-
-    fn restricted(module: &str) -> Visibility {
-        Visibility::Restricted(module.to_string())
-    }
-
-    #[rstest]
-    #[case::public_over_restricted(Visibility::Public, restricted("a"), Visibility::Public)]
-    #[case::restricted_under_public(restricted("a"), Visibility::Public, Visibility::Public)]
-    #[case::ancestor_over_descendant(restricted("a::b"), restricted("a"), restricted("a"))]
-    #[case::crate_over_module(restricted("a"), restricted(""), restricted(""))]
-    fn wider_reaches_where_both_do(
-        #[case] left: Visibility,
-        #[case] right: Visibility,
-        #[case] expected: Visibility,
-    ) {
-        assert_eq!(left.wider(right), expected);
     }
 }
 
@@ -621,26 +601,28 @@ mod submodule_tests {
         .into_iter()
         .collect();
         let mut root_info = ModuleExportInfo::default();
-        root_info.explicit_reexports.insert(
+        root_info.bind(
             "custom".to_string(),
-            ReExportTarget {
-                crate_name: "other_crate".to_string(),
-                module: "backend".to_string(),
-                original_name: "custom".to_string(),
-                visibility: Visibility::Public,
-                in_every_build: true,
-            },
+            NameBinding::new(
+                BindingKind::ReExport(ReExportTarget {
+                    crate_name: "other_crate".to_string(),
+                    module: "backend".to_string(),
+                    original_name: "custom".to_string(),
+                }),
+                Visibility::Public,
+            ),
         );
         let mut custom_info = ModuleExportInfo::default();
-        custom_info.explicit_reexports.insert(
+        custom_info.bind(
             "Interface".to_string(),
-            ReExportTarget {
-                crate_name: "other_crate".to_string(),
-                module: "dispatch".to_string(),
-                original_name: "Interface".to_string(),
-                visibility: Visibility::Public,
-                in_every_build: true,
-            },
+            NameBinding::new(
+                BindingKind::ReExport(ReExportTarget {
+                    crate_name: "other_crate".to_string(),
+                    module: "dispatch".to_string(),
+                    original_name: "Interface".to_string(),
+                }),
+                Visibility::Public,
+            ),
         );
         let mut dispatch_info = ModuleExportInfo::default();
         define(&mut dispatch_info, "Interface", DefKind::Trait);
@@ -805,15 +787,16 @@ mod submodule_tests {
         .into_iter()
         .collect();
         let mut root_info = ModuleExportInfo::default();
-        root_info.explicit_reexports.insert(
+        root_info.bind(
             "eval_call".to_string(),
-            ReExportTarget {
-                crate_name: "my_crate".to_string(),
-                module: "eval".to_string(),
-                original_name: "eval_call".to_string(),
-                visibility: Visibility::Public,
-                in_every_build: true,
-            },
+            NameBinding::new(
+                BindingKind::ReExport(ReExportTarget {
+                    crate_name: "my_crate".to_string(),
+                    module: "eval".to_string(),
+                    original_name: "eval_call".to_string(),
+                }),
+                Visibility::Public,
+            ),
         );
         let mut eval_info = ModuleExportInfo::default();
         define(&mut eval_info, "eval_call", DefKind::Fn);
@@ -858,26 +841,28 @@ mod submodule_tests {
         .into_iter()
         .collect();
         let mut my_root = ModuleExportInfo::default();
-        my_root.explicit_reexports.insert(
+        my_root.bind(
             "leaf".to_string(),
-            ReExportTarget {
-                crate_name: "mid_crate".to_string(),
-                module: String::new(),
-                original_name: "leaf".to_string(),
-                visibility: Visibility::Public,
-                in_every_build: true,
-            },
+            NameBinding::new(
+                BindingKind::ReExport(ReExportTarget {
+                    crate_name: "mid_crate".to_string(),
+                    module: String::new(),
+                    original_name: "leaf".to_string(),
+                }),
+                Visibility::Public,
+            ),
         );
         let mut mid_root = ModuleExportInfo::default();
-        mid_root.explicit_reexports.insert(
+        mid_root.bind(
             "leaf".to_string(),
-            ReExportTarget {
-                crate_name: "leaf_crate".to_string(),
-                module: String::new(),
-                original_name: String::new(),
-                visibility: Visibility::Public,
-                in_every_build: true,
-            },
+            NameBinding::new(
+                BindingKind::ReExport(ReExportTarget {
+                    crate_name: "leaf_crate".to_string(),
+                    module: String::new(),
+                    original_name: String::new(),
+                }),
+                Visibility::Public,
+            ),
         );
         let map: ReExportMap = [
             (
@@ -928,15 +913,16 @@ mod submodule_tests {
         .into_iter()
         .collect();
         let mut mid_root = ModuleExportInfo::default();
-        mid_root.explicit_reexports.insert(
+        mid_root.bind(
             "leaf_crate".to_string(),
-            ReExportTarget {
-                crate_name: "leaf_crate".to_string(),
-                module: String::new(),
-                original_name: String::new(),
-                visibility: Visibility::Public,
-                in_every_build: true,
-            },
+            NameBinding::new(
+                BindingKind::ReExport(ReExportTarget {
+                    crate_name: "leaf_crate".to_string(),
+                    module: String::new(),
+                    original_name: String::new(),
+                }),
+                Visibility::Public,
+            ),
         );
         let map: ReExportMap = [(
             "mid_crate".to_string(),
@@ -1012,14 +998,12 @@ mod submodule_tests {
             .into_iter()
             .collect();
         let mut root_info = ModuleExportInfo::default();
-        let item = DefinedItem {
-            definition: Definition {
-                kind: DefKind::Fn,
-                line: 1,
-            },
-            visibility: Visibility::Restricted(String::new()),
-        };
-        root_info.definitions.insert("helper".to_string(), item);
+        define_with(
+            &mut root_info,
+            "helper",
+            DefKind::Fn,
+            Visibility::Restricted(String::new()),
+        );
         let map: ReExportMap = [(
             "my_crate".to_string(),
             HashMap::from([(String::new(), root_info)]),
@@ -1370,15 +1354,16 @@ use crate::graph;
     #[test]
     fn test_process_use_glob_expands_through_reexport() {
         let mut facade_info = ModuleExportInfo::default();
-        facade_info.explicit_reexports.insert(
+        facade_info.bind(
             "Widget".to_string(),
-            ReExportTarget {
-                crate_name: "my_crate".to_string(),
-                module: "origin".to_string(),
-                original_name: "Widget".to_string(),
-                visibility: Visibility::Public,
-                in_every_build: true,
-            },
+            NameBinding::new(
+                BindingKind::ReExport(ReExportTarget {
+                    crate_name: "my_crate".to_string(),
+                    module: "origin".to_string(),
+                    original_name: "Widget".to_string(),
+                }),
+                Visibility::Public,
+            ),
         );
         let mut origin_info = ModuleExportInfo::default();
         define(&mut origin_info, "Widget", DefKind::Struct);
@@ -3247,7 +3232,9 @@ mod context_aware_dedup_tests {
 }
 
 mod reexport_resolution_tests {
-    use super::super::{ModuleExportInfo, ReExportMap, ReExportTarget, Visibility};
+    use super::super::{
+        BindingKind, ModuleExportInfo, NameBinding, ReExportMap, ReExportTarget, Visibility,
+    };
     use super::*;
 
     #[test]
@@ -3283,15 +3270,16 @@ mod reexport_resolution_tests {
         .collect();
 
         let mut parent_info = ModuleExportInfo::default();
-        parent_info.explicit_reexports.insert(
+        parent_info.bind(
             "Item".to_string(),
-            ReExportTarget {
-                crate_name: "my_crate".to_string(),
-                module: "parent::sibling".to_string(),
-                original_name: "Item".to_string(),
-                visibility: Visibility::Public,
-                in_every_build: true,
-            },
+            NameBinding::new(
+                BindingKind::ReExport(ReExportTarget {
+                    crate_name: "my_crate".to_string(),
+                    module: "parent::sibling".to_string(),
+                    original_name: "Item".to_string(),
+                }),
+                Visibility::Public,
+            ),
         );
         let mut sibling_info = ModuleExportInfo::default();
         define(&mut sibling_info, "Item", DefKind::Struct);
@@ -3331,15 +3319,16 @@ mod reexport_resolution_tests {
         .collect();
 
         let mut parent_info = ModuleExportInfo::default();
-        parent_info.explicit_reexports.insert(
+        parent_info.bind(
             "Config".to_string(),
-            ReExportTarget {
-                crate_name: "my_crate".to_string(),
-                module: "parent::child".to_string(),
-                original_name: "Config".to_string(),
-                visibility: Visibility::Public,
-                in_every_build: true,
-            },
+            NameBinding::new(
+                BindingKind::ReExport(ReExportTarget {
+                    crate_name: "my_crate".to_string(),
+                    module: "parent::child".to_string(),
+                    original_name: "Config".to_string(),
+                }),
+                Visibility::Public,
+            ),
         );
         let mut child_info = ModuleExportInfo::default();
         define(&mut child_info, "Config", DefKind::Struct);
@@ -3378,15 +3367,16 @@ mod reexport_resolution_tests {
         .collect();
 
         let mut parent_info = ModuleExportInfo::default();
-        parent_info.explicit_reexports.insert(
+        parent_info.bind(
             "Config".to_string(),
-            ReExportTarget {
-                crate_name: "my_crate".to_string(),
-                module: "parent::child".to_string(),
-                original_name: "Config".to_string(),
-                visibility: Visibility::Public,
-                in_every_build: true,
-            },
+            NameBinding::new(
+                BindingKind::ReExport(ReExportTarget {
+                    crate_name: "my_crate".to_string(),
+                    module: "parent::child".to_string(),
+                    original_name: "Config".to_string(),
+                }),
+                Visibility::Public,
+            ),
         );
         let mut child_info = ModuleExportInfo::default();
         define(&mut child_info, "Config", DefKind::Struct);
@@ -3427,19 +3417,23 @@ mod reexport_resolution_tests {
         .into_iter()
         .collect();
         let mut util_info = ModuleExportInfo::default();
-        util_info.module_visibility.insert(
+        util_info.bind(
             "helper".to_string(),
-            Visibility::Restricted("util".to_string()),
+            NameBinding::new(
+                BindingKind::Module,
+                Visibility::Restricted("util".to_string()),
+            ),
         );
-        util_info.explicit_reexports.insert(
+        util_info.bind(
             "helper".to_string(),
-            ReExportTarget {
-                crate_name: "core_crate".to_string(),
-                module: "util::helper".to_string(),
-                original_name: "helper".to_string(),
-                visibility: Visibility::Public,
-                in_every_build: true,
-            },
+            NameBinding::new(
+                BindingKind::ReExport(ReExportTarget {
+                    crate_name: "core_crate".to_string(),
+                    module: "util::helper".to_string(),
+                    original_name: "helper".to_string(),
+                }),
+                Visibility::Public,
+            ),
         );
         let mut helper_info = ModuleExportInfo::default();
         define(&mut helper_info, "helper", DefKind::Fn);
@@ -3499,31 +3493,28 @@ mod reexport_resolution_tests {
             crate_name: "my_crate".to_string(),
             module: String::new(),
             original_name: "store".to_string(),
-            visibility: if private {
-                Visibility::Restricted("holder".to_string())
-            } else {
-                Visibility::Public
-            },
-            in_every_build: true,
+        };
+        let bound = if private {
+            NameBinding::new(
+                BindingKind::PrivateUse(bound),
+                Visibility::Restricted("holder".to_string()),
+            )
+        } else {
+            NameBinding::new(BindingKind::ReExport(bound), Visibility::Public)
         };
         let mut holder_info = ModuleExportInfo::default();
-        if private {
-            holder_info.private_uses.insert("bound".to_string(), bound);
-        } else {
-            holder_info
-                .explicit_reexports
-                .insert("bound".to_string(), bound);
-        }
+        holder_info.bind("bound".to_string(), bound);
         let mut store_info = ModuleExportInfo::default();
-        store_info.explicit_reexports.insert(
+        store_info.bind(
             "Set".to_string(),
-            ReExportTarget {
-                crate_name: "my_crate".to_string(),
-                module: "store::set".to_string(),
-                original_name: "Set".to_string(),
-                visibility: Visibility::Public,
-                in_every_build: true,
-            },
+            NameBinding::new(
+                BindingKind::ReExport(ReExportTarget {
+                    crate_name: "my_crate".to_string(),
+                    module: "store::set".to_string(),
+                    original_name: "Set".to_string(),
+                }),
+                Visibility::Public,
+            ),
         );
         let mut set_info = ModuleExportInfo::default();
         define(&mut set_info, "Set", DefKind::Struct);
@@ -3590,94 +3581,79 @@ mod reexport_resolution_tests {
 mod binding_tests {
     use super::*;
 
-    fn target(module: &str, visibility: Visibility) -> ReExportTarget {
+    fn target(module: &str) -> ReExportTarget {
         ReExportTarget {
             crate_name: "my_crate".to_string(),
             module: module.to_string(),
             original_name: "Name".to_string(),
-            visibility,
-            in_every_build: true,
         }
+    }
+
+    fn definition(line: usize) -> BindingKind {
+        BindingKind::Definition(Definition {
+            kind: DefKind::Struct,
+            line,
+        })
+    }
+
+    /// The bindings of `holder` in a map that holds `info` there.
+    fn holder_map(info: ModuleExportInfo) -> ReExportMap {
+        [(
+            "my_crate".to_string(),
+            HashMap::from([("holder".to_string(), info)]),
+        )]
+        .into_iter()
+        .collect()
+    }
+
+    fn holder(map: &ReExportMap) -> ModuleBindings<'_> {
+        map.viewer(TargetRoot::AsSeen, "")
+            .bindings_in(CrateModule {
+                crate_name: "my_crate",
+                path: "holder",
+            })
+            .expect("the map holds the module")
     }
 
     #[test]
     fn the_bindings_of_a_name_come_definition_first_and_child_module_last() {
         let private = Visibility::Restricted("holder".to_string());
+        let reexport = NameBinding::new(BindingKind::ReExport(target("a")), Visibility::Public);
+        let private_use = NameBinding::new(BindingKind::PrivateUse(target("b")), private.clone());
+        let elsewhere = NameBinding::new(BindingKind::Elsewhere, private);
+        let module = NameBinding::new(BindingKind::Module, Visibility::Public);
+        let defined = NameBinding::new(definition(1), Visibility::Public);
         let mut info = ModuleExportInfo::default();
-        info.explicit_reexports
-            .insert("Name".to_string(), target("a", Visibility::Public));
-        info.private_uses
-            .insert("Name".to_string(), target("b", private.clone()));
-        info.elsewhere.insert("Name".to_string(), private.clone());
-        info.module_visibility
-            .insert("Name".to_string(), Visibility::Public);
-        define(&mut info, "Name", DefKind::Struct);
+        for binding in [&module, &private_use, &reexport, &elsewhere, &defined] {
+            info.bind("Name".to_string(), binding.clone());
+        }
         define(&mut info, "Other", DefKind::Fn);
-        let map: ReExportMap = [(
-            "my_crate".to_string(),
-            HashMap::from([("holder".to_string(), info.clone())]),
-        )]
-        .into_iter()
-        .collect();
-
-        let bindings = map
-            .viewer(TargetRoot::AsSeen, "")
-            .bindings_in(CrateModule {
-                crate_name: "my_crate",
-                path: "holder",
-            })
-            .expect("the map holds the module");
+        let map = holder_map(info);
 
         assert_eq!(
-            bindings.named("Name").collect::<Vec<_>>(),
-            [
-                NameBinding::Definition {
-                    item: &info.definitions["Name"],
-                    visibility_differs: false,
-                },
-                NameBinding::ReExport(&info.explicit_reexports["Name"]),
-                NameBinding::PrivateUse {
-                    target: &info.private_uses["Name"],
-                    targets_differ: false,
-                },
-                NameBinding::Elsewhere(&private),
-                NameBinding::Module(&Visibility::Public),
-            ]
+            holder(&map).named("Name").collect::<Vec<_>>(),
+            [&defined, &reexport, &private_use, &elsewhere, &module]
         );
     }
 
     #[test]
-    fn a_binding_merged_from_alternative_files_says_where_they_differ() {
+    fn bindings_merged_from_alternative_files_both_stay_the_later_first() {
         let restricted = Visibility::Restricted("holder".to_string());
+        let public_definition = NameBinding::new(definition(1), Visibility::Public);
+        let restricted_definition = NameBinding::new(definition(2), restricted.clone());
+        let use_of_a = NameBinding::new(BindingKind::PrivateUse(target("a")), restricted.clone());
+        let use_of_b = NameBinding::new(BindingKind::PrivateUse(target("b")), restricted);
         let mut first = ModuleExportInfo::default();
-        define(&mut first, "Item", DefKind::Struct);
-        first.bind_privately("Name".to_string(), target("a", restricted.clone()));
+        first.bind("Item".to_string(), public_definition.clone());
+        first.bind("Name".to_string(), use_of_a.clone());
         let mut second = ModuleExportInfo::default();
-        second.definitions.insert(
-            "Item".to_string(),
-            DefinedItem {
-                definition: Definition {
-                    kind: DefKind::Struct,
-                    line: 1,
-                },
-                visibility: restricted.clone(),
-            },
-        );
-        second.bind_privately("Name".to_string(), target("b", restricted));
+        second.bind("Item".to_string(), restricted_definition.clone());
+        second.bind("Name".to_string(), use_of_b.clone());
+        // Read in both files, the same binding stays one.
+        second.bind("Name".to_string(), use_of_a.clone());
         first.merge(second);
-        let map: ReExportMap = [(
-            "my_crate".to_string(),
-            HashMap::from([("holder".to_string(), first.clone())]),
-        )]
-        .into_iter()
-        .collect();
-        let bindings = map
-            .viewer(TargetRoot::AsSeen, "")
-            .bindings_in(CrateModule {
-                crate_name: "my_crate",
-                path: "holder",
-            })
-            .expect("the map holds the module");
+        let map = holder_map(first);
+        let bindings = holder(&map);
 
         // The bindings outlive the names they were looked up by.
         let (item, name) = {
@@ -3686,26 +3662,19 @@ mod binding_tests {
         };
 
         assert_eq!(
-            item.clone().chain(item).collect::<Vec<_>>(),
-            [NameBinding::Definition {
-                item: &first.definitions["Item"],
-                visibility_differs: true,
-            }; 2]
+            item.clone().collect::<Vec<_>>(),
+            [&restricted_definition, &public_definition]
         );
-        assert_eq!(
-            name.collect::<Vec<_>>(),
-            [NameBinding::PrivateUse {
-                target: &first.private_uses["Name"],
-                targets_differ: true,
-            }]
-        );
+        assert!(definition_visibilities_differ(item));
+        assert_eq!(name.clone().collect::<Vec<_>>(), [&use_of_b, &use_of_a]);
+        assert!(private_targets_differ(name));
     }
 }
 
 mod resolve_reexport_tests {
     use super::super::{
-        GlobSource, ModuleExportInfo, ModulePathMap, PassedThrough, ReExportMap, ReExportTarget,
-        Visibility, resolve_reexport,
+        BindingKind, GlobSource, ModuleExportInfo, ModulePathMap, NameBinding, PassedThrough,
+        ReExportMap, ReExportTarget, Visibility, resolve_reexport,
     };
     use super::{DEFAULT_MP, define};
     use crate::model::{DefKind, DependencyRef, EdgeContext, TargetRoot};
@@ -3739,25 +3708,27 @@ mod resolve_reexport_tests {
     #[test]
     fn resolve_reexport_of_a_module_ends_on_the_module() {
         let mut root = ModuleExportInfo::default();
-        root.explicit_reexports.insert(
+        root.bind(
             "custom".to_string(),
-            ReExportTarget {
-                crate_name: "my_crate".to_string(),
-                module: "backend".to_string(),
-                original_name: "custom".to_string(),
-                visibility: Visibility::Public,
-                in_every_build: true,
-            },
+            NameBinding::new(
+                BindingKind::ReExport(ReExportTarget {
+                    crate_name: "my_crate".to_string(),
+                    module: "backend".to_string(),
+                    original_name: "custom".to_string(),
+                }),
+                Visibility::Public,
+            ),
         );
-        root.explicit_reexports.insert(
+        root.bind(
             "leaf".to_string(),
-            ReExportTarget {
-                crate_name: "leaf_crate".to_string(),
-                module: String::new(),
-                original_name: String::new(),
-                visibility: Visibility::Public,
-                in_every_build: true,
-            },
+            NameBinding::new(
+                BindingKind::ReExport(ReExportTarget {
+                    crate_name: "leaf_crate".to_string(),
+                    module: String::new(),
+                    original_name: String::new(),
+                }),
+                Visibility::Public,
+            ),
         );
         let mut custom = ModuleExportInfo::default();
         custom.glob_sources.push(GlobSource {
@@ -3816,15 +3787,16 @@ mod resolve_reexport_tests {
     #[test]
     fn resolve_private_use_of_a_module_ends_on_the_module() {
         let mut parent = ModuleExportInfo::default();
-        parent.private_uses.insert(
+        parent.bind(
             "arena".to_string(),
-            ReExportTarget {
-                crate_name: "my_crate".to_string(),
-                module: String::new(),
-                original_name: "arena".to_string(),
-                visibility: Visibility::Restricted("compact".to_string()),
-                in_every_build: true,
-            },
+            NameBinding::new(
+                BindingKind::PrivateUse(ReExportTarget {
+                    crate_name: "my_crate".to_string(),
+                    module: String::new(),
+                    original_name: "arena".to_string(),
+                }),
+                Visibility::Restricted("compact".to_string()),
+            ),
         );
         let mut arena = ModuleExportInfo::default();
         define(&mut arena, "HandleSet", DefKind::Struct);
@@ -3861,15 +3833,16 @@ mod resolve_reexport_tests {
     #[test]
     fn a_resolution_returns_the_ancestor_whose_private_use_it_passed() {
         let mut holder = ModuleExportInfo::default();
-        holder.private_uses.insert(
+        holder.bind(
             "Thing".to_string(),
-            ReExportTarget {
-                crate_name: "my_crate".to_string(),
-                module: "defs".to_string(),
-                original_name: "Thing".to_string(),
-                visibility: Visibility::Restricted("holder".to_string()),
-                in_every_build: true,
-            },
+            NameBinding::new(
+                BindingKind::PrivateUse(ReExportTarget {
+                    crate_name: "my_crate".to_string(),
+                    module: "defs".to_string(),
+                    original_name: "Thing".to_string(),
+                }),
+                Visibility::Restricted("holder".to_string()),
+            ),
         );
         let mut defs = ModuleExportInfo::default();
         define(&mut defs, "Thing", DefKind::Struct);
@@ -3926,15 +3899,16 @@ mod resolve_reexport_tests {
     #[test]
     fn resolve_explicit_reexport() {
         let mut m_info = ModuleExportInfo::default();
-        m_info.explicit_reexports.insert(
+        m_info.bind(
             "Widget".to_string(),
-            ReExportTarget {
-                crate_name: "my_crate".to_string(),
-                module: "render::elements".to_string(),
-                original_name: "Widget".to_string(),
-                visibility: Visibility::Public,
-                in_every_build: true,
-            },
+            NameBinding::new(
+                BindingKind::ReExport(ReExportTarget {
+                    crate_name: "my_crate".to_string(),
+                    module: "render::elements".to_string(),
+                    original_name: "Widget".to_string(),
+                }),
+                Visibility::Public,
+            ),
         );
         let mut n_info = ModuleExportInfo::default();
         define(&mut n_info, "Widget", DefKind::Struct);
@@ -3956,26 +3930,28 @@ mod resolve_reexport_tests {
     #[test]
     fn resolve_transitive_chain() {
         let mut m_info = ModuleExportInfo::default();
-        m_info.explicit_reexports.insert(
+        m_info.bind(
             "Widget".to_string(),
-            ReExportTarget {
-                crate_name: "my_crate".to_string(),
-                module: "middle".to_string(),
-                original_name: "Widget".to_string(),
-                visibility: Visibility::Public,
-                in_every_build: true,
-            },
+            NameBinding::new(
+                BindingKind::ReExport(ReExportTarget {
+                    crate_name: "my_crate".to_string(),
+                    module: "middle".to_string(),
+                    original_name: "Widget".to_string(),
+                }),
+                Visibility::Public,
+            ),
         );
         let mut n_info = ModuleExportInfo::default();
-        n_info.explicit_reexports.insert(
+        n_info.bind(
             "Widget".to_string(),
-            ReExportTarget {
-                crate_name: "my_crate".to_string(),
-                module: "origin".to_string(),
-                original_name: "Widget".to_string(),
-                visibility: Visibility::Public,
-                in_every_build: true,
-            },
+            NameBinding::new(
+                BindingKind::ReExport(ReExportTarget {
+                    crate_name: "my_crate".to_string(),
+                    module: "origin".to_string(),
+                    original_name: "Widget".to_string(),
+                }),
+                Visibility::Public,
+            ),
         );
         let mut o_info = ModuleExportInfo::default();
         define(&mut o_info, "Widget", DefKind::Struct);
@@ -3998,15 +3974,16 @@ mod resolve_reexport_tests {
     #[test]
     fn resolve_rename_chain() {
         let mut m_info = ModuleExportInfo::default();
-        m_info.explicit_reexports.insert(
+        m_info.bind(
             "Alias".to_string(),
-            ReExportTarget {
-                crate_name: "my_crate".to_string(),
-                module: "origin".to_string(),
-                original_name: "Original".to_string(),
-                visibility: Visibility::Public,
-                in_every_build: true,
-            },
+            NameBinding::new(
+                BindingKind::ReExport(ReExportTarget {
+                    crate_name: "my_crate".to_string(),
+                    module: "origin".to_string(),
+                    original_name: "Original".to_string(),
+                }),
+                Visibility::Public,
+            ),
         );
         let mut o_info = ModuleExportInfo::default();
         define(&mut o_info, "Original", DefKind::Struct);
@@ -4057,15 +4034,16 @@ mod resolve_reexport_tests {
             visibility: Visibility::Public,
         });
         let mut n_info = ModuleExportInfo::default();
-        n_info.explicit_reexports.insert(
+        n_info.bind(
             "Widget".to_string(),
-            ReExportTarget {
-                crate_name: "my_crate".to_string(),
-                module: "origin".to_string(),
-                original_name: "Widget".to_string(),
-                visibility: Visibility::Public,
-                in_every_build: true,
-            },
+            NameBinding::new(
+                BindingKind::ReExport(ReExportTarget {
+                    crate_name: "my_crate".to_string(),
+                    module: "origin".to_string(),
+                    original_name: "Widget".to_string(),
+                }),
+                Visibility::Public,
+            ),
         );
         let mut o_info = ModuleExportInfo::default();
         define(&mut o_info, "Widget", DefKind::Struct);
@@ -4088,26 +4066,28 @@ mod resolve_reexport_tests {
     #[test]
     fn resolve_cycle_guard() {
         let mut a_info = ModuleExportInfo::default();
-        a_info.explicit_reexports.insert(
+        a_info.bind(
             "Widget".to_string(),
-            ReExportTarget {
-                crate_name: "my_crate".to_string(),
-                module: "b".to_string(),
-                original_name: "Widget".to_string(),
-                visibility: Visibility::Public,
-                in_every_build: true,
-            },
+            NameBinding::new(
+                BindingKind::ReExport(ReExportTarget {
+                    crate_name: "my_crate".to_string(),
+                    module: "b".to_string(),
+                    original_name: "Widget".to_string(),
+                }),
+                Visibility::Public,
+            ),
         );
         let mut b_info = ModuleExportInfo::default();
-        b_info.explicit_reexports.insert(
+        b_info.bind(
             "Widget".to_string(),
-            ReExportTarget {
-                crate_name: "my_crate".to_string(),
-                module: "a".to_string(),
-                original_name: "Widget".to_string(),
-                visibility: Visibility::Public,
-                in_every_build: true,
-            },
+            NameBinding::new(
+                BindingKind::ReExport(ReExportTarget {
+                    crate_name: "my_crate".to_string(),
+                    module: "a".to_string(),
+                    original_name: "Widget".to_string(),
+                }),
+                Visibility::Public,
+            ),
         );
 
         let mut crate_exports = HashMap::new();
@@ -4128,15 +4108,16 @@ mod resolve_reexport_tests {
     #[test]
     fn resolve_cross_crate() {
         let mut root_info = ModuleExportInfo::default();
-        root_info.explicit_reexports.insert(
+        root_info.bind(
             "Config".to_string(),
-            ReExportTarget {
-                crate_name: "other_crate".to_string(),
-                module: "settings".to_string(),
-                original_name: "Config".to_string(),
-                visibility: Visibility::Public,
-                in_every_build: true,
-            },
+            NameBinding::new(
+                BindingKind::ReExport(ReExportTarget {
+                    crate_name: "other_crate".to_string(),
+                    module: "settings".to_string(),
+                    original_name: "Config".to_string(),
+                }),
+                Visibility::Public,
+            ),
         );
         let mut settings_info = ModuleExportInfo::default();
         define(&mut settings_info, "Config", DefKind::Struct);
@@ -4160,15 +4141,16 @@ mod resolve_reexport_tests {
         // front::wgsl holds a private `use ...::error::Error`; a descendant
         // module names it through the ancestor. The edge belongs to the definer.
         let mut wgsl_info = ModuleExportInfo::default();
-        wgsl_info.private_uses.insert(
+        wgsl_info.bind(
             "Error".to_string(),
-            ReExportTarget {
-                crate_name: "my_crate".to_string(),
-                module: "front::wgsl::error".to_string(),
-                original_name: "Error".to_string(),
-                visibility: Visibility::Restricted("front::wgsl".to_string()),
-                in_every_build: true,
-            },
+            NameBinding::new(
+                BindingKind::PrivateUse(ReExportTarget {
+                    crate_name: "my_crate".to_string(),
+                    module: "front::wgsl::error".to_string(),
+                    original_name: "Error".to_string(),
+                }),
+                Visibility::Restricted("front::wgsl".to_string()),
+            ),
         );
         let mut error_info = ModuleExportInfo::default();
         define(&mut error_info, "Error", DefKind::Enum);
@@ -4196,15 +4178,16 @@ mod resolve_reexport_tests {
         // A module outside front::wgsl cannot see its private `use`; without a
         // visible binding the edge stays on the ancestor.
         let mut wgsl_info = ModuleExportInfo::default();
-        wgsl_info.private_uses.insert(
+        wgsl_info.bind(
             "Error".to_string(),
-            ReExportTarget {
-                crate_name: "my_crate".to_string(),
-                module: "front::wgsl::error".to_string(),
-                original_name: "Error".to_string(),
-                visibility: Visibility::Restricted("front::wgsl".to_string()),
-                in_every_build: true,
-            },
+            NameBinding::new(
+                BindingKind::PrivateUse(ReExportTarget {
+                    crate_name: "my_crate".to_string(),
+                    module: "front::wgsl::error".to_string(),
+                    original_name: "Error".to_string(),
+                }),
+                Visibility::Restricted("front::wgsl".to_string()),
+            ),
         );
         let mut crate_exports = HashMap::new();
         crate_exports.insert("front::wgsl".to_string(), wgsl_info);
@@ -4775,14 +4758,12 @@ mod file_binding_tests {
         .into_iter()
         .collect();
         let mut root_info = ModuleExportInfo::default();
-        let item = DefinedItem {
-            definition: Definition {
-                kind: DefKind::Struct,
-                line: 1,
-            },
-            visibility: Visibility::Restricted(String::new()),
-        };
-        root_info.definitions.insert("Config".to_string(), item);
+        define_with(
+            &mut root_info,
+            "Config",
+            DefKind::Struct,
+            Visibility::Restricted(String::new()),
+        );
         let map: ReExportMap = [(
             "my_crate".to_string(),
             HashMap::from([(String::new(), root_info)]),
@@ -4832,27 +4813,21 @@ mod file_binding_tests {
         )]
         .into_iter()
         .collect();
-        let binding = ReExportTarget {
+        let target = ReExportTarget {
             crate_name: "my_crate".to_string(),
             module: String::new(),
             original_name: "shared".to_string(),
-            visibility: if public {
-                Visibility::Public
-            } else {
-                Visibility::Restricted(glob_module.to_string())
-            },
-            in_every_build: true,
+        };
+        let binding = if public {
+            NameBinding::new(BindingKind::ReExport(target), Visibility::Public)
+        } else {
+            NameBinding::new(
+                BindingKind::PrivateUse(target),
+                Visibility::Restricted(glob_module.to_string()),
+            )
         };
         let mut render_info = ModuleExportInfo::default();
-        if public {
-            render_info
-                .explicit_reexports
-                .insert("shared".to_string(), binding);
-        } else {
-            render_info
-                .private_uses
-                .insert("shared".to_string(), binding);
-        }
+        render_info.bind("shared".to_string(), binding);
         let map: ReExportMap = [(
             "my_crate".to_string(),
             HashMap::from([(glob_module.to_string(), render_info)]),
@@ -5165,7 +5140,7 @@ mod use_category_tests {
                 })
                 .is_some_and(|root| {
                     root.named("Shared")
-                        .any(|binding| matches!(binding, NameBinding::Definition { .. }))
+                        .any(|binding| binding.definition().is_some())
                 })
         };
 
@@ -5566,7 +5541,7 @@ mod test_build_tests {
             .map(|bindings| {
                 bindings
                     .all()
-                    .filter(|(_, binding)| matches!(binding, NameBinding::Definition { .. }))
+                    .filter(|(_, binding)| binding.definition().is_some())
                     .map(|(name, _)| name.to_string())
                     .collect()
             })

@@ -13,7 +13,7 @@ use crate::model::{DefKind, Definition, EdgeContext, PackageInfo};
 
 use super::mod_resolver::{CfgCondition, ModuleFile, declared_files, extract_mod_declarations};
 use super::use_parser::{
-    AssociatedItems, DefinedItem, GlobSource, Meaning, ModuleBindings, ModuleExportInfo,
+    AssociatedItems, BindingKind, Brought, GlobSource, Meaning, ModuleBindings, ModuleExportInfo,
     NameBinding, ReExportMap, ReExportTarget, ResolutionContext, RootReExports, Visibility,
     is_reexport_visibility, item_attrs, resolve_single_path, resolve_use_tree,
 };
@@ -207,7 +207,7 @@ fn collect_module_info(
         })
         .collect();
 
-    for &(item, in_every_build) in &items {
+    for &(item, builds) in &items {
         let defined = match item {
             syn::Item::Use(use_item) => {
                 collect_use_reexports(
@@ -217,24 +217,27 @@ fn collect_module_info(
                     module_path,
                     &macros,
                     &mut info,
-                    in_every_build,
+                    builds,
                 );
                 None
             }
-            syn::Item::Mod(i) => {
-                info.module_visibility
-                    .insert(i.ident.to_string(), Visibility::of(&i.vis, module_path));
-                None
-            }
-            _ => defined_item(item),
+            syn::Item::Mod(i) => Some((&i.vis, i.ident.clone(), BindingKind::Module)),
+            _ => defined_item(item).map(|(vis, ident, kind)| {
+                let line = item.span().start().line;
+                (
+                    vis,
+                    ident,
+                    BindingKind::Definition(Definition { kind, line }),
+                )
+            }),
         };
         if let Some((vis, ident, kind)) = defined {
-            let line = item.span().start().line;
-            let item = DefinedItem {
-                definition: Definition { kind, line },
+            let binding = NameBinding {
+                kind,
                 visibility: Visibility::of(vis, module_path),
+                builds,
             };
-            info.definitions.insert(ident.to_string(), item);
+            info.bind(ident.to_string(), binding);
         }
     }
     // Second pass, once every `use` of the file is known: an `impl` block may
@@ -299,14 +302,15 @@ fn collect_module_info(
 /// Select the items of `syntax` the test builds read where `test` is set, and
 /// the builds without `test` otherwise, each with whether every one of those
 /// builds reads it.
-fn items_in_builds(syntax: &syn::File, test: bool) -> Vec<(&syn::Item, bool)> {
+fn items_in_builds(syntax: &syn::File, test: bool) -> Vec<(&syn::Item, Brought)> {
     syntax
         .items
         .iter()
         .filter_map(
             |item| match CfgCondition::of_attrs(item_attrs(item)).in_builds(test) {
                 Some(false) => None,
-                in_builds => Some((item, in_builds == Some(true))),
+                Some(true) => Some((item, Brought::InEveryBuild)),
+                None => Some((item, Brought::InSomeBuilds)),
             },
         )
         .collect()
@@ -371,17 +375,17 @@ fn impl_owner(
         let named = ModuleBindings::new(ctx.crate_name, info).named(&name);
         if named
             .clone()
-            .any(|binding| matches!(binding, NameBinding::Definition { .. }))
+            .any(|binding| matches!(binding.kind, BindingKind::Definition(_)))
         {
             return Some((ImplOwner::ThisModule, name));
         }
-        let private_use = named.clone().find_map(|binding| match binding {
-            NameBinding::PrivateUse { target, .. } => Some(target),
+        let private_use = named.clone().find_map(|binding| match &binding.kind {
+            BindingKind::PrivateUse(target) => Some(target),
             _ => None,
         });
         let bound = private_use.or_else(|| {
-            named.clone().find_map(|binding| match binding {
-                NameBinding::ReExport(target) => Some(target),
+            named.clone().find_map(|binding| match &binding.kind {
+                BindingKind::ReExport(target) => Some(target),
                 _ => None,
             })
         })?;
@@ -441,20 +445,21 @@ fn resolution_context<'a>(
 /// Resolve a single `use` item into re-export entries, each with the
 /// visibility of the `use`.
 ///
-/// Its visibility selects where named targets land: a `pub`/`pub(crate)`/`pub(super)`
-/// re-export fills `explicit_reexports`, a private, `pub(self)` or `pub(in …)`
-/// `use` fills `private_uses` (a binding descendants can still name through
+/// Its visibility selects the kind of binding a named target gets: a
+/// `pub`/`pub(crate)`/`pub(super)` re-export binds by
+/// [`BindingKind::ReExport`], a private, `pub(self)` or `pub(in …)` `use` by
+/// [`BindingKind::PrivateUse`] (a binding descendants can still name through
 /// this module). A glob lands in
 /// `glob_sources` or `private_glob_sources` by the same split, one from a module
 /// of another workspace crate in `foreign_glob_sources` or
 /// `foreign_private_glob_sources`. A private,
 /// non-glob leaf the resolution chain cannot place at all names something
-/// outside this crate; recording it in `elsewhere` keeps a descendant's
-/// reference to it from resolving to this module. A `use name;` of one of
-/// `macros`, the file's own `macro_rules!`, binds that macro here and stays
-/// out. Renamed, it may also bind what another `use` brought in under `name`,
-/// so it stays in. A named target is in every build of the map where
-/// `in_every_build` says so.
+/// outside this crate; binding it by [`BindingKind::Elsewhere`] keeps a
+/// descendant's reference to it from resolving to this module. A `use name;`
+/// of one of `macros`, the file's own `macro_rules!`, binds that macro here
+/// and stays out. Renamed, it may also bind what another `use` brought in
+/// under `name`, so it stays in. Each binding is in the `builds` of the map
+/// the `use` is in.
 fn collect_use_reexports(
     ctx: &CollectContext,
     use_item: &syn::ItemUse,
@@ -462,7 +467,7 @@ fn collect_use_reexports(
     module_path: &str,
     macros: &[String],
     info: &mut ModuleExportInfo,
-    in_every_build: bool,
+    builds: Brought,
 ) {
     let alias_paths = resolve_use_tree(&use_item.tree, "", true);
     let original_paths = resolve_use_tree(&use_item.tree, "", false);
@@ -483,8 +488,12 @@ fn collect_use_reexports(
             let alias_name = alias_path.rsplit("::").next().unwrap_or(alias_path);
             let own_macro = alias_path == original_path && macros.contains(original_path);
             if private && alias_name != "*" && !own_macro {
-                info.elsewhere
-                    .insert(alias_name.to_string(), visibility.clone());
+                let binding = NameBinding {
+                    kind: BindingKind::Elsewhere,
+                    visibility: visibility.clone(),
+                    builds,
+                };
+                info.bind(alias_name.to_string(), binding);
             }
             continue;
         };
@@ -535,15 +544,18 @@ fn collect_use_reexports(
                 crate_name: dep.target_package.clone(),
                 module: dep.target_module.clone(),
                 original_name: original_name.clone(),
-                visibility: visibility.clone(),
-                in_every_build,
             };
-            if private {
-                info.bind_privately(alias_name.to_string(), target);
+            let kind = if private {
+                BindingKind::PrivateUse(target)
             } else {
-                info.explicit_reexports
-                    .insert(alias_name.to_string(), target);
-            }
+                BindingKind::ReExport(target)
+            };
+            let binding = NameBinding {
+                kind,
+                visibility: visibility.clone(),
+                builds,
+            };
+            info.bind(alias_name.to_string(), binding);
         }
     }
 }
@@ -673,22 +685,62 @@ mod tests {
 
     /// The names whose visibility stops short of the public, sorted.
     fn restricted_names<'a>(
-        visibilities: impl IntoIterator<Item = (&'a String, &'a Visibility)>,
+        visibilities: impl IntoIterator<Item = (&'a str, &'a Visibility)>,
     ) -> Vec<&'a str> {
         let mut names: Vec<&str> = visibilities
             .into_iter()
             .filter(|(_, vis)| **vis != Visibility::Public)
-            .map(|(name, _)| name.as_str())
+            .map(|(name, _)| name)
             .collect();
         names.sort_unstable();
         names
     }
 
+    /// Each binding of `kind` in `info`, by name, with its visibility.
+    fn visibilities_of(
+        info: &ModuleExportInfo,
+        kind: fn(&BindingKind) -> bool,
+    ) -> impl Iterator<Item = (&str, &Visibility)> {
+        ModuleBindings::new("test_crate", info)
+            .all()
+            .filter(move |(_, binding)| kind(&binding.kind))
+            .map(|(name, binding)| (name, &binding.visibility))
+    }
+
     /// Each item `info` defines, by name, with its visibility.
-    fn item_visibilities(info: &ModuleExportInfo) -> impl Iterator<Item = (&String, &Visibility)> {
-        info.definitions
-            .iter()
-            .map(|(name, item)| (name, &item.visibility))
+    fn item_visibilities(info: &ModuleExportInfo) -> impl Iterator<Item = (&str, &Visibility)> {
+        visibilities_of(info, |kind| matches!(kind, BindingKind::Definition(_)))
+    }
+
+    /// Each child module `info` declares, by name, with its visibility.
+    fn module_visibilities(info: &ModuleExportInfo) -> impl Iterator<Item = (&str, &Visibility)> {
+        visibilities_of(info, |kind| *kind == BindingKind::Module)
+    }
+
+    /// The bindings of `name` in `info`.
+    fn named<'a>(info: &'a ModuleExportInfo, name: &str) -> impl Iterator<Item = &'a NameBinding> {
+        ModuleBindings::new("test_crate", info).named(name)
+    }
+
+    /// The definition of `name` in `info`, the one read last.
+    fn definition<'a>(info: &'a ModuleExportInfo, name: &str) -> Option<&'a NameBinding> {
+        named(info, name).find(|binding| binding.definition().is_some())
+    }
+
+    /// The target of the `pub use` of `name` in `info`, the one read last.
+    fn reexport<'a>(info: &'a ModuleExportInfo, name: &str) -> Option<&'a ReExportTarget> {
+        named(info, name).find_map(|binding| match &binding.kind {
+            BindingKind::ReExport(target) => Some(target),
+            _ => None,
+        })
+    }
+
+    /// The target of the private `use` of `name` in `info`, the one read last.
+    fn private_use<'a>(info: &'a ModuleExportInfo, name: &str) -> Option<&'a ReExportTarget> {
+        named(info, name).find_map(|binding| match &binding.kind {
+            BindingKind::PrivateUse(target) => Some(target),
+            _ => None,
+        })
     }
 
     /// The re-exports of a package with a single crate root.
@@ -754,10 +806,7 @@ mod tests {
         );
 
         let parent_info = result.get("parent").expect("parent should have exports");
-        let reexport = parent_info
-            .explicit_reexports
-            .get("Item")
-            .expect("Item should be re-exported");
+        let reexport = reexport(parent_info, "Item").expect("Item should be re-exported");
         assert_eq!(reexport.module, "parent::sibling");
         assert_eq!(reexport.original_name, "Item");
     }
@@ -785,10 +834,7 @@ mod tests {
         );
 
         let root_info = result.get("").expect("root should have exports");
-        let reexport = root_info
-            .explicit_reexports
-            .get("Config")
-            .expect("Config should be re-exported");
+        let reexport = reexport(root_info, "Config").expect("Config should be re-exported");
         assert_eq!(reexport.module, "model");
         assert_eq!(reexport.original_name, "Config");
     }
@@ -824,10 +870,7 @@ mod tests {
         let child_info = result
             .get("parent::child")
             .expect("child should have exports");
-        let reexport = child_info
-            .explicit_reexports
-            .get("Item")
-            .expect("Item should be re-exported");
+        let reexport = reexport(child_info, "Item").expect("Item should be re-exported");
         assert_eq!(reexport.module, "parent::sibling");
         assert_eq!(reexport.original_name, "Item");
     }
@@ -899,20 +942,14 @@ mod tests {
         );
 
         let parent_info = result.get("parent").expect("parent should have exports");
-        assert!(
-            parent_info.explicit_reexports.contains_key("Alpha"),
-            "missing Alpha"
-        );
-        assert!(
-            parent_info.explicit_reexports.contains_key("Beta"),
-            "missing Beta"
-        );
+        assert!(reexport(parent_info, "Alpha").is_some(), "missing Alpha");
+        assert!(reexport(parent_info, "Beta").is_some(), "missing Beta");
         assert_eq!(
-            parent_info.explicit_reexports["Alpha"].module,
+            reexport(parent_info, "Alpha").unwrap().module,
             "parent::sibling"
         );
         assert_eq!(
-            parent_info.explicit_reexports["Beta"].module,
+            reexport(parent_info, "Beta").unwrap().module,
             "parent::sibling"
         );
     }
@@ -948,18 +985,18 @@ mod tests {
 
         let parent_info = result.get("parent").expect("parent should have exports");
         assert!(
-            parent_info.explicit_reexports.contains_key("Public"),
+            reexport(parent_info, "Public").is_some(),
             "pub(crate) use should be captured"
         );
         assert!(
-            !parent_info.explicit_reexports.contains_key("Private"),
+            reexport(parent_info, "Private").is_none(),
             "private use should NOT be captured"
         );
     }
 
-    // A private use lands in private_uses, where a descendant can still resolve it
+    // A private use binds as such, where a descendant can still resolve it
     #[test]
-    fn private_use_captured_in_private_uses() {
+    fn private_use_captured_as_a_private_use() {
         let tmp = test_crate(&[
             ("src/lib.rs", "pub mod parent;"),
             (
@@ -984,15 +1021,13 @@ mod tests {
         );
 
         let parent_info = result.get("parent").expect("parent should have exports");
-        let target = parent_info
-            .private_uses
-            .get("Private")
-            .expect("private use should be captured in private_uses");
+        let target = private_use(parent_info, "Private")
+            .expect("private use should be captured as a private use");
         assert_eq!(target.module, "parent::sibling");
         assert_eq!(target.original_name, "Private");
         assert!(
-            !parent_info.explicit_reexports.contains_key("Private"),
-            "private use must not leak into explicit_reexports"
+            reexport(parent_info, "Private").is_none(),
+            "private use must not leak into the re-exports"
         );
     }
 
@@ -1055,16 +1090,16 @@ mod tests {
 
         let module_info = result.get("module").expect("module should have exports");
         assert!(
-            module_info.definitions.contains_key("Foo"),
+            definition(module_info, "Foo").is_some(),
             "should contain Foo"
         );
         assert!(
-            module_info.definitions.contains_key("helper"),
+            definition(module_info, "helper").is_some(),
             "should contain helper"
         );
     }
 
-    /// Characterization: which item kinds reach `definitions`, whatever their
+    /// Characterization: which item kinds bind as definitions, whatever their
     /// visibility.
     #[test]
     fn definitions_cover_all_matched_item_kinds() {
@@ -1102,7 +1137,7 @@ impl AStruct { pub fn method(&self) {} }
             &PackageExportMap::default(),
         );
 
-        let defs = &result.get("module").expect("module info").definitions;
+        let module = result.get("module").expect("module info");
         for (name, kind) in [
             ("a_fn", DefKind::Fn),
             ("AStruct", DefKind::Struct),
@@ -1118,13 +1153,16 @@ impl AStruct { pub fn method(&self) {} }
             ("InPathStruct", DefKind::Struct),
         ] {
             assert_eq!(
-                defs.get(name).map(|d| d.definition.kind),
+                definition(module, name).and_then(|binding| Some(binding.definition()?.kind)),
                 Some(kind),
                 "wrong kind for {name}"
             );
         }
         for name in ["AUnion", "method", "V"] {
-            assert!(!defs.contains_key(name), "unexpected {name} in {defs:?}");
+            assert!(
+                definition(module, name).is_none(),
+                "unexpected {name} in {module:?}"
+            );
         }
     }
 
@@ -1152,15 +1190,15 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
             &PackageExportMap::default(),
         );
 
-        let defs = &result.get("").expect("root info").definitions;
+        let root = result.get("").expect("root info");
         for name in ["Widget", "make", "wrap"] {
             assert_eq!(
-                defs.get(name).map(|d| d.definition.kind),
+                definition(root, name).and_then(|binding| Some(binding.definition()?.kind)),
                 Some(DefKind::Macro),
                 "wrong kind for {name}"
             );
         }
-        assert!(!defs.contains_key("derive_widget"), "{defs:?}");
+        assert!(definition(root, "derive_widget").is_none(), "{root:?}");
         assert_eq!(
             super::super::syn_walker::collect_crate_exports(&crate_info),
             HashSet::from(["Widget".to_string(), "make".to_string(), "wrap".to_string()])
@@ -1196,7 +1234,7 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
             ["Hidden", "helper"]
         );
         assert_eq!(
-            root.definitions.get("Shown").map(|item| &item.visibility),
+            definition(root, "Shown").map(|binding| &binding.visibility),
             Some(&Visibility::Public)
         );
     }
@@ -1283,11 +1321,13 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
 
         let root = result.get("").expect("root info");
         assert_eq!(
-            restricted_names(&root.module_visibility),
+            restricted_names(module_visibilities(root)),
             ["hidden", "inner", "scoped"]
         );
         assert_eq!(
-            root.module_visibility.get("shown"),
+            module_visibilities(root)
+                .find(|(name, _)| *name == "shown")
+                .map(|(_, visibility)| visibility),
             Some(&Visibility::Public)
         );
     }
@@ -1309,9 +1349,7 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
         let result =
             collect_single_root_reexports(&crate_info, &mp, &ws, &PackageExportMap::default());
 
-        let target = result
-            .get("")
-            .and_then(|root| root.explicit_reexports.get("Thing"));
+        let target = result.get("").and_then(|root| reexport(root, "Thing"));
         assert_eq!(
             target.map(|t| (
                 t.crate_name.as_str(),
@@ -1376,12 +1414,14 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
             &PackageExportMap::default(),
         );
 
-        let defs = &result.get("module").expect("module info").definitions;
-        assert_eq!(defs.get("a_fn").map(|d| d.definition.line), Some(3));
-        assert_eq!(defs.get("AStruct").map(|d| d.definition.line), Some(5));
+        let module = result.get("module").expect("module info");
+        let line =
+            |name| definition(module, name).and_then(|binding| Some(binding.definition()?.line));
+        assert_eq!(line("a_fn"), Some(3));
+        assert_eq!(line("AStruct"), Some(5));
     }
 
-    /// Characterization: `definitions` is top-level only — items inside an
+    /// Characterization: definitions are top-level only — items inside an
     /// inline `mod { … }` body are not collected for any module path.
     #[test]
     fn definitions_skip_inline_mod_bodies() {
@@ -1408,8 +1448,8 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
         );
 
         let module_info = result.get("module").expect("module info");
-        assert!(module_info.definitions.contains_key("Outer"));
-        assert!(!module_info.definitions.contains_key("Inner"));
+        assert!(definition(module_info, "Outer").is_some());
+        assert!(definition(module_info, "Inner").is_none());
         assert!(
             !result.contains_key("module::inner"),
             "inline mod produces no entry, found: {:?}",
@@ -1445,13 +1485,10 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
 
         let parent_info = result.get("parent").expect("parent should have exports");
         assert!(
-            !parent_info.explicit_reexports.contains_key("Item"),
+            reexport(parent_info, "Item").is_none(),
             "should NOT have original name as key"
         );
-        let reexport = parent_info
-            .explicit_reexports
-            .get("Widget")
-            .expect("Widget should be the re-export key");
+        let reexport = reexport(parent_info, "Widget").expect("Widget should be the re-export key");
         assert_eq!(reexport.module, "parent::sibling");
         assert_eq!(reexport.original_name, "Item");
     }
@@ -1555,13 +1592,13 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
 
         let private = result
             .get("front::glsl")
-            .and_then(|info| info.private_uses.get("Span"))
+            .and_then(|info| private_use(info, "Span"))
             .expect("the private use of a root re-export is recorded");
         assert_eq!(private.module, "");
         assert_eq!(private.original_name, "Span");
         let public = result
             .get("front::prelude")
-            .and_then(|info| info.explicit_reexports.get("Value"))
+            .and_then(|info| reexport(info, "Value"))
             .expect("the re-export of a root glob name is recorded");
         assert_eq!(public.module, "");
         assert_eq!(public.original_name, "Value");
@@ -1583,7 +1620,7 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
 
         let target = result
             .get("")
-            .and_then(|root| root.explicit_reexports.get("other_crate"));
+            .and_then(|root| reexport(root, "other_crate"));
         assert_eq!(
             target.map(|t| (
                 t.crate_name.as_str(),
@@ -1617,7 +1654,7 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
 
         let prelude = result.get("prelude").expect("prelude is collected");
         let target = |name: &str| {
-            prelude.explicit_reexports.get(name).map(|t| {
+            reexport(prelude, name).map(|t| {
                 (
                     t.crate_name.as_str(),
                     t.module.as_str(),
@@ -1651,7 +1688,7 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
 
         let root = result.get("").expect("root is collected");
         let target = |name: &str| {
-            root.explicit_reexports.get(name).map(|t| {
+            reexport(root, name).map(|t| {
                 (
                     t.crate_name.as_str(),
                     t.module.as_str(),
@@ -1692,7 +1729,7 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
 
         let target = result
             .get("cmds")
-            .and_then(|info| info.explicit_reexports.get("Cmd"))
+            .and_then(|info| reexport(info, "Cmd"))
             .map(|t| {
                 (
                     t.crate_name.as_str(),
@@ -1898,9 +1935,7 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
             &PackageExportMap::default(),
         );
 
-        let target = result
-            .get("")
-            .and_then(|root| root.explicit_reexports.get("custom"));
+        let target = result.get("").and_then(|root| reexport(root, "custom"));
         assert_eq!(
             target.map(|t| (
                 t.crate_name.as_str(),
@@ -1956,13 +1991,18 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
             let mut shape: Vec<(String, Vec<String>)> = modules
                 .iter()
                 .map(|(path, info)| {
-                    let mut names: Vec<String> = info
-                        .definitions
-                        .keys()
-                        .chain(info.explicit_reexports.keys())
-                        .cloned()
+                    let mut names: Vec<String> = ModuleBindings::new("test_crate", info)
+                        .all()
+                        .filter(|(_, binding)| {
+                            matches!(
+                                binding.kind,
+                                BindingKind::Definition(_) | BindingKind::ReExport(_)
+                            )
+                        })
+                        .map(|(name, _)| name.to_string())
                         .collect();
                     names.sort();
+                    names.dedup();
                     (path.clone(), names)
                 })
                 .collect();
@@ -1994,5 +2034,43 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
         assert_eq!(shape(&with_tests.modules), production);
         assert_eq!(shape(&without_tests.modules), production);
         assert!(without_tests.test_build_modules.is_none());
+    }
+
+    // Two bindings of one name, each in builds of its own `cfg` or in a
+    // namespace of its own, both stay: neither replaces the other.
+    #[test]
+    fn two_bindings_of_one_name_both_stay() {
+        let tmp = test_crate(&[
+            (
+                "src/lib.rs",
+                "mod x;\nmod y;\n\
+                 #[cfg(feature = \"a\")]\nuse crate::x::f;\n\
+                 #[cfg(not(feature = \"a\"))]\nuse crate::y::f;\n\
+                 #[cfg(feature = \"a\")]\npub use crate::x::g;\n\
+                 #[cfg(not(feature = \"a\"))]\npub use crate::y::g;\n\
+                 pub struct S {}\n\
+                 #[allow(non_snake_case)]\npub fn S() {}\n",
+            ),
+            ("src/x.rs", "pub fn f() {}\npub fn g() {}\n"),
+            ("src/y.rs", "pub fn f() {}\npub fn g() {}\n"),
+        ]);
+        let crate_info = make_crate_info(&tmp, "test_crate");
+        let mp: ModulePathMap = [(
+            "test_crate".to_string(),
+            HashSet::from(["x".into(), "y".into()]),
+        )]
+        .into_iter()
+        .collect();
+
+        let result = collect_single_root_reexports(
+            &crate_info,
+            &mp,
+            &WorkspacePackages::default(),
+            &PackageExportMap::default(),
+        );
+
+        let root = ModuleBindings::new("test_crate", &result[""]);
+        let counts = ["f", "g", "S"].map(|name| (name, root.named(name).count()));
+        assert_eq!(counts, [("f", 2), ("g", 2), ("S", 2)], "{result:?}");
     }
 }

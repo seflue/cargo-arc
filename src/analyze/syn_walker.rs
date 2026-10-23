@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use super::mod_resolver::{ModDecl, ModuleFile, declared_files, extract_mod_declarations};
 use super::packages::{ModulePathMap, PackageExportMap, WorkspacePackages, normalize_crate_name};
 use super::reexports::{name_a_fn_defines, root_extern_crates};
-use super::use_parser::ReExportMap;
+use super::use_parser::{ModuleBindings, ReExportMap};
 use super::use_parser::{PassedOn, ResolutionContext, parse_file_dependencies, promote_to_test};
 use crate::model::{
     EdgeContext, EntryKind, ModuleInfo, ModuleTree, PackageInfo, TestKind, UsageKind,
@@ -402,7 +402,8 @@ fn walk_module_syn(
     dependencies.retain(|dep| !only_passes_on(ctx, &walked.passed_on, current_module_path, dep));
 
     // Take the definitions of both builds: a `#[cfg(test)]` item is in the
-    // test build's map only.
+    // test build's map only. Of alternatives in one build, the one read last
+    // comes first.
     let mut definitions = HashMap::new();
     for reexport_map in std::iter::once(ctx.reexport_map).chain(ctx.test_build_map) {
         let Some(info) = reexport_map
@@ -411,8 +412,10 @@ fn walk_module_syn(
         else {
             continue;
         };
-        for (name, item) in &info.definitions {
-            definitions.entry(name.clone()).or_insert(item.definition);
+        for (name, binding) in ModuleBindings::new(ctx.crate_name, info).all() {
+            if let Some(definition) = binding.definition() {
+                definitions.entry(name.to_string()).or_insert(*definition);
+            }
         }
     }
 
@@ -542,7 +545,7 @@ pub(crate) fn analyze_modules_syn(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analyze::use_parser::{DefinedItem, ModuleExportInfo, Visibility};
+    use crate::analyze::use_parser::{BindingKind, ModuleExportInfo, NameBinding, Visibility};
     use crate::model::{DefKind, Definition};
     use crate::test_support::conventional_package;
     use tempfile::TempDir;
@@ -1006,11 +1009,11 @@ mod tests {
             };
             let module_info = |name: &str, line| {
                 let mut info = ModuleExportInfo::default();
-                let item = DefinedItem {
-                    definition: definition(line),
-                    visibility: Visibility::Public,
-                };
-                info.definitions.insert(name.to_string(), item);
+                let item = NameBinding::new(
+                    BindingKind::Definition(definition(line)),
+                    Visibility::Public,
+                );
+                info.bind(name.to_string(), item);
                 info
             };
             let reexport_map: ReExportMap = [(
