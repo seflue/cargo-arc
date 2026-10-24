@@ -569,18 +569,24 @@ impl ReExportMap {
     /// Point each `use` of another workspace crate whose target holds the path
     /// as written, where [`UseScope::place`] left it, at what that path
     /// reaches through the crate's root. A path whose first name the root
-    /// binds nothing under names that name in the root. Rounds repeat while
-    /// one settles a path, since a path may run through a root binding that is
-    /// itself written.
+    /// binds nothing under names that name in the root. A path that runs
+    /// through a binding still written waits for a later round, and rounds
+    /// repeat while one settles a path.
     pub(crate) fn settle_written_paths(mut self, module_paths: &ModulePathMap) -> Self {
         loop {
             let lookup = NameLookup {
                 viewer: self.viewer_from_outside(),
                 module_paths,
             };
+            let unsettled: HashSet<(String, String)> = self
+                .written_targets(module_paths)
+                .map(|(_, target)| (target.crate_name.clone(), target.module.clone()))
+                .collect();
             let reached: Vec<_> = self
                 .written_targets(module_paths)
-                .filter_map(|(place, target)| Some((place, reached_target(lookup, target)?)))
+                .filter_map(|(place, target)| {
+                    Some((place, reached_target(lookup, target, &unsettled)?))
+                })
                 .collect();
             if reached.is_empty() {
                 break;
@@ -707,8 +713,14 @@ struct BindingPlace {
 /// its crate, as `lookup` sees it: each name but the last carries the path
 /// into the module it stands for, and the name that stands for no module
 /// ends it, as an item whose associated item the rest names. `None` where
-/// the root binds nothing under the first name.
-fn reached_target(lookup: NameLookup, target: &ReExportTarget) -> Option<ReExportTarget> {
+/// the root binds nothing under the first name, or where a name's lookup
+/// enters a module of `unsettled`, the modules that paths still written
+/// hold: what the name stands for is known once those paths are settled.
+fn reached_target(
+    lookup: NameLookup,
+    target: &ReExportTarget,
+    unsettled: &HashSet<(String, String)>,
+) -> Option<ReExportTarget> {
     let written: Vec<&str> = target
         .module
         .split("::")
@@ -722,7 +734,12 @@ fn reached_target(lookup: NameLookup, target: &ReExportTarget) -> Option<ReExpor
             crate_name: &crate_name,
             path: &module,
         };
-        match lookup.name(holder, name, AfterName::PathGoesOn) {
+        let mut visited = Visited::default();
+        let named = lookup.name_passing(holder, name, AfterName::PathGoesOn, &mut visited);
+        if visited.entered_any(unsettled) {
+            return None;
+        }
+        match named {
             Some(NameTarget::Module {
                 crate_name: reached_crate,
                 path,
@@ -1069,6 +1086,14 @@ impl Visited {
             module.path.to_string(),
             name.to_string(),
         ))
+    }
+
+    /// Whether the walk entered one of `modules`, given by crate and module
+    /// path.
+    fn entered_any(&self, modules: &HashSet<(String, String)>) -> bool {
+        self.0
+            .iter()
+            .any(|(crate_name, path, _)| modules.contains(&(crate_name.clone(), path.clone())))
     }
 }
 
