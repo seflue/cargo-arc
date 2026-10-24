@@ -1752,6 +1752,14 @@ impl<'a> ResolutionContext<'a> {
         self.lookup(dep.target_root)
     }
 
+    /// Whether the module of this file has a child module `name` in the
+    /// module tree.
+    fn has_child_module(&self, name: &str) -> bool {
+        self.all_module_paths
+            .get_or_empty(&normalize_crate_name(self.current_crate))
+            .contains(&append_to_path(self.current_module_path, name))
+    }
+
     /// The bindings of the module `dep` points at, as this file sees it.
     fn target_bindings(&self, dep: &DependencyRef) -> Option<SeenBindings<'a>> {
         self.viewer_for(dep).bindings_in(CrateModule::of(dep))
@@ -2630,304 +2638,6 @@ pub(crate) fn resolve_use_tree(tree: &UseTree, prefix: &str, use_alias: bool) ->
     }
 }
 
-/// Find the longest module path prefix from `parts` that exists in `module_paths`.
-///
-/// Tries from longest to shortest: `["analyze", "use_parser", "normalize"]`
-/// checks `"analyze::use_parser"`, then `"analyze"`.
-/// Returns `(matched_path, segment_count)`.
-/// Fallback: first segment with count 1.
-fn find_longest_module_prefix(parts: &[&str], module_paths: &HashSet<String>) -> (String, usize) {
-    for end in (1..=parts.len()).rev() {
-        let candidate: String = parts[..end].join("::");
-        if module_paths.contains(&candidate) {
-            return (candidate, end);
-        }
-    }
-    // Fallback: first segment
-    (parts[0].to_string(), 1)
-}
-
-/// The module and item `parts` name in the own crate `crate_name`. A name
-/// after the longest module prefix that stands for another module of the
-/// crate there, as [`NameLookup::name`] finds it from the file's module, carries
-/// the rest of the path into that module: beside
-/// `use crate::store::{self as bound};` in `holder`, `holder::bound::Set`
-/// names `Set` in `store`.
-fn module_and_item(
-    ctx: &ResolutionContext,
-    crate_name: &str,
-    parts: &[&str],
-    module_paths: &HashSet<String>,
-) -> (String, Option<String>) {
-    let mut parts: Vec<String> = parts.iter().map(ToString::to_string).collect();
-    let mut visited = HashSet::new();
-    loop {
-        let segments: Vec<&str> = parts.iter().map(String::as_str).collect();
-        let (module, prefix_len) = find_longest_module_prefix(&segments, module_paths);
-        let item = extract_item_from_parts(&segments, prefix_len);
-        let bound = item
-            .as_deref()
-            .filter(|_| segments.len() > prefix_len + 1 && module_paths.contains(&module))
-            .filter(|name| visited.insert((module.clone(), (*name).to_string())))
-            .and_then(|name| {
-                let holder = CrateModule {
-                    crate_name,
-                    path: &module,
-                };
-                let lookup = ctx.lookup(TargetRoot::AsSeen);
-                match lookup.name(holder, name, AfterName::PathGoesOn)? {
-                    NameTarget::Module {
-                        crate_name: bound_crate,
-                        path,
-                    } if bound_crate == crate_name && !path.is_empty() => Some(path),
-                    NameTarget::Module { .. } | NameTarget::Item => None,
-                }
-            });
-        let Some(bound) = bound else {
-            return (module, item);
-        };
-        parts = bound
-            .split("::")
-            .map(ToString::to_string)
-            .chain(parts[prefix_len + 1..].iter().cloned())
-            .collect();
-    }
-}
-
-/// The path that starts at `crate_name`, runs to its module `module` (`""`
-/// for the root) and goes on with `rest`.
-fn path_from_crate(crate_name: &str, module: &str, rest: &[&str]) -> String {
-    std::iter::once(crate_name)
-        .chain((!module.is_empty()).then_some(module))
-        .chain(rest.iter().copied())
-        .collect::<Vec<_>>()
-        .join("::")
-}
-
-/// Extract an item from path parts at given index, handling trailing `{` and empty strings.
-fn extract_item_from_parts(parts: &[&str], index: usize) -> Option<String> {
-    let part = parts
-        .get(index)?
-        .trim_end_matches('{')
-        .trim_end_matches(';')
-        .trim();
-    if part.is_empty() || part.starts_with('{') {
-        None
-    } else {
-        Some(part.to_string())
-    }
-}
-
-/// Parse crate-local imports: `use crate::module[::item]`
-fn parse_crate_local_import(
-    ctx: &ResolutionContext,
-    path: &str,
-    line_num: usize,
-    context: &EdgeContext,
-) -> Option<DependencyRef> {
-    let after_crate = path.strip_prefix("crate::")?;
-    let parts: Vec<&str> = after_crate.split("::").collect();
-
-    let first = parts.first()?.trim_end_matches('{').trim();
-    if first.is_empty() {
-        return None;
-    }
-
-    let crate_name = normalize_crate_name(ctx.current_crate);
-    let module_paths = ctx.all_module_paths.get_or_empty(&crate_name);
-    let rest = &parts[1..];
-    let root = CrateModule {
-        crate_name: &crate_name,
-        path: "",
-    };
-    let named = ctx
-        .lookup(TargetRoot::AsSeen)
-        .name(root, first, AfterName::followed_by(rest));
-    let (target_module, target_item) = match named {
-        Some(NameTarget::Module {
-            crate_name: other,
-            path,
-        }) if other != crate_name => {
-            if rest.is_empty() {
-                (String::new(), Some(first.to_string()))
-            } else {
-                let in_other = path_from_crate(&other, &path, rest);
-                return parse_workspace_import(ctx, &in_other, line_num, context);
-            }
-        }
-        Some(NameTarget::Module { path, .. }) => {
-            let in_crate: Vec<&str> = path
-                .split("::")
-                .filter(|segment| !segment.is_empty())
-                .chain(rest.iter().copied())
-                .collect();
-            if in_crate.is_empty() {
-                (String::new(), Some(first.to_string()))
-            } else {
-                module_and_item(ctx, &crate_name, &in_crate, module_paths)
-            }
-        }
-        Some(NameTarget::Item) => (String::new(), Some(first.to_string())),
-        None => module_and_item(ctx, &crate_name, &parts, module_paths),
-    };
-
-    Some(DependencyRef {
-        target_package: crate_name,
-        target_module,
-        target_item,
-        source_file: ctx.source_file.to_path_buf(),
-        line: line_num,
-        context: context.clone(),
-        via_reexport: false,
-        uses: Vec::new(),
-        target_root: TargetRoot::AsSeen,
-    })
-}
-
-/// Parse bare module imports: `use cli::Args` where `cli` is a module in scope
-/// of the file.
-///
-/// `ctx.current_module_path` is the relative module path of the file containing
-/// this import (e.g. `"render"` for `render/mod.rs`, `""` for crate root). A
-/// bare first segment names a child of that module: `use css::X` in
-/// `render/mod.rs` is `render::css`, `use cli::X` in the root is `cli`. A
-/// top-level module is a child of the root only; from any other file its bare
-/// name is not in scope, and what stands there is an extern crate or a name a
-/// `use` bound.
-fn parse_bare_module_import(
-    ctx: &ResolutionContext,
-    path: &str,
-    line_num: usize,
-    context: &EdgeContext,
-) -> Option<DependencyRef> {
-    let parts: Vec<&str> = path.split("::").collect();
-    let first = parts.first()?.trim_end_matches('{').trim();
-    if first.is_empty() {
-        return None;
-    }
-
-    let module_paths = ctx
-        .all_module_paths
-        .get_or_empty(&normalize_crate_name(ctx.current_crate));
-
-    let effective_parts: Vec<&str> = if ctx.current_module_path.is_empty() {
-        if !module_paths.contains(first) {
-            return None;
-        }
-        parts
-    } else if module_paths.contains(&format!("{}::{first}", ctx.current_module_path)) {
-        ctx.current_module_path
-            .split("::")
-            .chain(parts.iter().copied())
-            .collect()
-    } else {
-        return None;
-    };
-
-    let crate_name = normalize_crate_name(ctx.current_crate);
-    let (target_module, target_item) =
-        module_and_item(ctx, &crate_name, &effective_parts, module_paths);
-
-    Some(DependencyRef {
-        target_package: crate_name,
-        target_module,
-        target_item,
-        source_file: ctx.source_file.to_path_buf(),
-        line: line_num,
-        context: context.clone(),
-        via_reexport: false,
-        uses: Vec::new(),
-        target_root: TargetRoot::AsSeen,
-    })
-}
-
-/// Parse workspace crate imports: `use other_crate::module[::item]`
-fn parse_workspace_import(
-    ctx: &ResolutionContext,
-    path: &str,
-    line_num: usize,
-    context: &EdgeContext,
-) -> Option<DependencyRef> {
-    let parts: Vec<&str> = path.split("::").collect();
-    let crate_name = parts.first()?.trim();
-
-    if !ctx.workspace_crates.contains(crate_name) || parts.len() < 2 {
-        return None;
-    }
-
-    let module_segment = parts[1].trim_end_matches('{').trim_end_matches(';').trim();
-    if module_segment.is_empty() {
-        return None;
-    }
-
-    let target_crate_name = normalize_crate_name(crate_name);
-    let target_root = root_named_by(ctx, &target_crate_name);
-    let module_paths = ctx.all_module_paths.get_or_empty(&target_crate_name);
-    let rest = &parts[2..];
-    let root = CrateModule {
-        crate_name: &target_crate_name,
-        path: "",
-    };
-    let named = ctx
-        .lookup(target_root)
-        .name(root, module_segment, AfterName::followed_by(rest));
-    let in_crate: Vec<&str> = match &named {
-        Some(NameTarget::Module {
-            crate_name: other,
-            path,
-        }) if *other != target_crate_name && !rest.is_empty() => {
-            let in_other = path_from_crate(other, path, rest);
-            return parse_workspace_import(ctx, &in_other, line_num, context);
-        }
-        Some(NameTarget::Module {
-            crate_name: other,
-            path,
-        }) if *other == target_crate_name && !path.is_empty() => {
-            path.split("::").chain(rest.iter().copied()).collect()
-        }
-        _ => parts[1..].to_vec(),
-    };
-    let (target_module, prefix_len) = find_longest_module_prefix(&in_crate, module_paths);
-
-    // Entry-point detection: if the resolved target_module is not a known module
-    // and the first segment after the crate name is a known export, treat it as
-    // an entry-point dependency (target_module = ""). `crate_exports` reads only
-    // the root file, so a name a `use` or a glob binds in the root is looked up
-    // in the map.
-    let bound_in_root = match &named {
-        Some(NameTarget::Item) => true,
-        Some(NameTarget::Module { crate_name, .. }) => *crate_name != target_crate_name,
-        None => false,
-    };
-    let is_entry_point = !module_paths.contains(&target_module)
-        && (bound_in_root
-            || ctx
-                .crate_exports
-                .get(&target_crate_name)
-                .is_some_and(|e| e.contains(module_segment)));
-
-    let (target_module, target_item) = if is_entry_point {
-        (String::new(), Some(module_segment.to_string()))
-    } else {
-        (
-            target_module,
-            extract_item_from_parts(&in_crate, prefix_len),
-        )
-    };
-
-    Some(DependencyRef {
-        target_package: crate_name.to_string(),
-        target_module,
-        target_item,
-        source_file: ctx.source_file.to_path_buf(),
-        line: line_num,
-        context: context.clone(),
-        via_reexport: false,
-        uses: Vec::new(),
-        target_root,
-    })
-}
-
 /// Resolve `super::` and `self::` relative paths to absolute crate-local paths.
 ///
 /// Returns `None` when the path is not relative, when `super::`/`self::` is absorbed
@@ -2964,9 +2674,10 @@ fn join_module_segments(base_path: &str, levels_up: usize, suffix: &[&str]) -> O
     Some(base.join("::"))
 }
 
-/// Resolve a single use path through the resolution chain: crate-local → bare module → workspace.
-/// Handles glob paths (`crate::module::*`) by stripping the glob and setting `target_item` = "*".
-/// `meaning` is what the reference asks of the path's last segment.
+/// Resolve a single path written in the file of `ctx`: where it leads
+/// ([`PathEnd::of_path`]), and whether it means the module it may end on or
+/// the item of that name beside it. `meaning` is what the reference asks of
+/// the path's last segment.
 pub(crate) fn resolve_single_path(
     ctx: &ResolutionContext,
     path: &str,
@@ -2975,180 +2686,384 @@ pub(crate) fn resolve_single_path(
     inline_depth: usize,
     meaning: Meaning,
 ) -> Option<DependencyRef> {
-    let mut dep = resolve_path_in_chain(ctx, path, line_num, context, inline_depth)?;
-    take_item_the_parent_reexports(ctx, &mut dep, meaning);
-    Some(dep)
+    let end = PathEnd::of_path(ctx, path, inline_depth)?;
+    Some(
+        end.module_or_item(ctx, meaning)
+            .dependency(ctx, line_num, context),
+    )
 }
 
-/// Point a dependency on a module at the item of the same name in the
-/// module's parent, where the reference does not mean the module. Beside
-/// `mod helper; pub use helper::helper;` the path `parent::helper` names the
-/// module and the fn. A call or a value means the fn, where the parent holds
-/// one; an item the parent does not show keeps the module. Otherwise only the
-/// fn is visible outside `parent`: a file that sees the module, as its
-/// declaration says from the file's crate, root and module, keeps its
-/// dependency on the module. A re-export of a module under that name keeps the
-/// dependency on the module, and so does a public module, which is visible
-/// wherever the item is.
-fn take_item_the_parent_reexports(
-    ctx: &ResolutionContext,
-    dep: &mut DependencyRef,
-    meaning: Meaning,
-) {
-    if dep.target_item.is_some() || dep.target_module.is_empty() {
-        return;
-    }
-    let (parent, name) = dep
-        .target_module
-        .rsplit_once("::")
-        .unwrap_or(("", dep.target_module.as_str()));
-    let lookup = ctx.lookup_for(dep);
-    let parent_module = CrateModule {
-        crate_name: &dep.target_package,
-        path: parent,
-    };
-    if !meaning.admits_a_module() && lookup.holds_an_item_named(parent_module, name) {
-        let (parent, name) = (parent.to_string(), name.to_string());
-        dep.target_module = parent;
-        dep.target_item = Some(name);
-        return;
-    }
-    let Some(target) = lookup
-        .viewer
-        .bindings_in(parent_module)
-        .filter(|bindings| !sees_the_module(*bindings, name))
-        .and_then(|bindings| bindings.named(name).find_map(NameBinding::reexported))
-    else {
-        return;
-    };
-    if !lookup.binds_a_module(target) {
-        let (parent, name) = (parent.to_string(), name.to_string());
-        dep.target_module = parent;
-        dep.target_item = Some(name);
-    }
+/// The segments of the module path `path`, none for the crate root (`""`).
+fn module_segments(path: &str) -> impl Iterator<Item = &str> {
+    path.split("::").filter(|segment| !segment.is_empty())
 }
 
-/// The resolution chain of [`resolve_single_path`].
-fn resolve_path_in_chain(
-    ctx: &ResolutionContext,
-    path: &str,
-    line_num: usize,
-    context: &EdgeContext,
-    inline_depth: usize,
-) -> Option<DependencyRef> {
-    // Resolve super::/self:: to absolute crate-local path, then route to crate:: handler
-    if let Some(resolved) = resolve_relative_path(path, ctx.current_module_path, inline_depth) {
-        let as_crate_path = format!("crate::{resolved}");
-        return parse_crate_local_import(ctx, &as_crate_path, line_num, context);
+/// Where a path leads: the package, the module in it (`""` for its root),
+/// the item the path names there, and the root the package is read through.
+/// No item where the path names the module itself.
+#[derive(Debug)]
+struct PathEnd {
+    package: String,
+    module: String,
+    item: Option<String>,
+    target_root: TargetRoot,
+}
+
+impl PathEnd {
+    /// The root of the crate of `ctx`, as `crate::` names it.
+    fn own_root(ctx: &ResolutionContext) -> Self {
+        PathStart::own_crate(ctx).end((String::new(), None))
     }
 
-    // Handle glob: `crate::module::*` → resolve base, set target_item = "*".
-    // `crate::*` has no module to resolve and is the root's glob.
-    if let Some(base) = path.strip_suffix("::*") {
-        let mut dep = if base == "crate" {
-            DependencyRef {
-                target_package: normalize_crate_name(ctx.current_crate),
-                target_module: String::new(),
-                target_item: None,
-                source_file: ctx.source_file.to_path_buf(),
-                line: line_num,
-                context: context.clone(),
-                via_reexport: false,
-                uses: Vec::new(),
-                target_root: TargetRoot::AsSeen,
+    /// Where `path`, written in the file of `ctx` at `inline_depth` inline
+    /// modules, leads. The first segments pick the start: `super::` and
+    /// `self::` an ancestor of the file's module, `crate::` the crate root, a
+    /// child module of the file's module, a workspace crate by any name the
+    /// crate gives it, an external crate. From there [`PathStart::follow`]
+    /// walks the rest. A glob `base::*` leads where `base` does, with `*` as
+    /// the item. `None` where no start fits, or where the walk enters a crate
+    /// outside the workspace.
+    fn of_path(ctx: &ResolutionContext, path: &str, inline_depth: usize) -> Option<Self> {
+        if let Some(resolved) = resolve_relative_path(path, ctx.current_module_path, inline_depth) {
+            let segments: Vec<&str> = resolved.split("::").collect();
+            return PathStart::own_crate(ctx).follow(ctx, &segments);
+        }
+
+        // `crate::*` has no module to resolve and is the root's glob.
+        if let Some(base) = path.strip_suffix("::*") {
+            let base = if base == "crate" {
+                Self::own_root(ctx)
+            } else {
+                Self::of_path(ctx, base, inline_depth)?
+            };
+            return Some(base.glob());
+        }
+
+        // As many `super::` as inline modules leave them all and land in the file's
+        // module, where the rest is a bare path: `super::child::X` names a child.
+        if inline_depth > 0 {
+            let supers = vec!["super"; inline_depth].join("::");
+            if let Some(rest) = path
+                .strip_prefix(supers.as_str())
+                .and_then(|tail| tail.strip_prefix("::"))
+            {
+                return Self::beside_the_file(ctx, rest);
             }
-        } else {
-            resolve_path_in_chain(ctx, base, line_num, context, inline_depth)?
-        };
-        // The base resolved as a module — push "*" as the item
-        dep.target_item = Some("*".to_string());
-        return Some(dep);
+        }
+
+        if let Some(after_crate) = path.strip_prefix("crate::") {
+            let segments: Vec<&str> = after_crate.split("::").collect();
+            return PathStart::own_crate(ctx).follow(ctx, &segments);
+        }
+
+        // A name the crate writes for a workspace crate other than its key names
+        // that crate, even where the name is another workspace crate's key.
+        let dealiased = dealias_extern_crate(ctx, path);
+        let in_workspace = dealiased.as_deref().unwrap_or(path);
+        Self::beside_the_file(ctx, path)
+            .or_else(|| Self::in_workspace_crate(ctx, in_workspace))
+            .or_else(|| Self::in_external_crate(ctx, path))
     }
 
-    // As many `super::` as inline modules leave them all and land in the file's
-    // module, where the rest is a bare path: `super::child::X` names a child.
-    if inline_depth > 0 {
-        let supers = vec!["super"; inline_depth].join("::");
-        if let Some(rest) = path
-            .strip_prefix(supers.as_str())
-            .and_then(|tail| tail.strip_prefix("::"))
+    /// Where `path`, written from the root of `package`, a workspace crate
+    /// other than this one or an external crate, leads. No name of this crate
+    /// is asked: the package is known. A glob keeps its `*` as the item.
+    fn in_package(ctx: &ResolutionContext, package: &str, path: &str) -> Option<Self> {
+        if let Some(base) = path
+            .strip_suffix("::*")
+            .or_else(|| (path == "*").then_some(""))
         {
-            return parse_bare_module_import(ctx, rest, line_num, context);
+            return Some(Self::in_package(ctx, package, base)?.glob());
+        }
+        let full = if path.is_empty() {
+            package.to_string()
+        } else {
+            format!("{package}::{path}")
+        };
+        Self::in_workspace_crate(ctx, &full).or_else(|| Self::in_external_crate(ctx, &full))
+    }
+
+    /// Where a bare path leads whose first segment names a child module of
+    /// the file's module: `use css::X` in `render/mod.rs` is `render::css`,
+    /// `use cli::X` in the root is `cli`. A top-level module is a child of the
+    /// root only; from any other file its bare name is not in scope, and what
+    /// stands there is an extern crate or a name a `use` bound.
+    fn beside_the_file(ctx: &ResolutionContext, path: &str) -> Option<Self> {
+        let segments: Vec<&str> = path.split("::").collect();
+        let first = *segments.first()?;
+        if first.is_empty() || !ctx.has_child_module(first) {
+            return None;
+        }
+        let start = PathStart::own_crate(ctx);
+        let in_crate: Vec<&str> = module_segments(ctx.current_module_path)
+            .chain(segments.iter().copied())
+            .collect();
+        Some(start.end(start.walk(ctx, &in_crate)))
+    }
+
+    /// Where a path through a workspace crate leads, `other_crate::module`
+    /// or `other_crate` alone for its root.
+    fn in_workspace_crate(ctx: &ResolutionContext, path: &str) -> Option<Self> {
+        let segments: Vec<&str> = path.split("::").collect();
+        let (crate_name, rest) = segments.split_first()?;
+        if !ctx.workspace_crates.contains(crate_name) {
+            return None;
+        }
+        let start = PathStart::named_crate(ctx, crate_name);
+        if rest.is_empty() {
+            return Some(start.end((String::new(), None)));
+        }
+        start.follow(ctx, rest)
+    }
+
+    /// Where a path through an external crate leads: `use serde::Deserialize`
+    /// names `Deserialize` of `serde`. What the crate holds is unknown, so
+    /// everything after its name is the item.
+    fn in_external_crate(ctx: &ResolutionContext, path: &str) -> Option<Self> {
+        let (first, rest) = path
+            .split_once("::")
+            .map_or((path, None), |(first, rest)| (first, Some(rest)));
+        if first.is_empty() || !ctx.external_crate_names.contains_key(first) {
+            return None;
+        }
+        Some(Self {
+            package: first.to_string(),
+            module: String::new(),
+            item: rest.map(ToString::to_string),
+            target_root: TargetRoot::AsSeen,
+        })
+    }
+
+    /// The glob of the module this end names, or of the module holding its
+    /// item.
+    fn glob(self) -> Self {
+        Self {
+            item: Some("*".to_string()),
+            ..self
         }
     }
 
-    // A name the crate writes for a workspace crate other than its key names
-    // that crate, even where the name is another workspace crate's key.
-    let dealiased = dealias_extern_crate(ctx, path);
-    let in_workspace = dealiased.as_deref().unwrap_or(path);
-    parse_crate_local_import(ctx, path, line_num, context)
-        .or_else(|| parse_bare_module_import(ctx, path, line_num, context))
-        .or_else(|| parse_workspace_import(ctx, in_workspace, line_num, context))
-        .or_else(|| workspace_crate_root(ctx, in_workspace, line_num, context))
-        .or_else(|| parse_external_crate_import(ctx, path, line_num, context))
+    /// Decide whether a path that ends on a module means the module or the
+    /// item of the same name in the module's parent. Beside `mod helper; pub
+    /// use helper::helper;` the path `parent::helper` names the module and
+    /// the fn. A call or a value means the fn, where the parent holds one; an
+    /// item the parent does not show keeps the module. Otherwise only the fn
+    /// is visible outside `parent`: a file that sees the module, as its
+    /// declaration says from the file's crate, root and module, keeps the
+    /// module. A re-export of a module under that name keeps the module, and
+    /// so does a public module, which is visible wherever the item is.
+    fn module_or_item(self, ctx: &ResolutionContext, meaning: Meaning) -> Self {
+        if self.item.is_some() || self.module.is_empty() {
+            return self;
+        }
+        let (parent, name) = self
+            .module
+            .rsplit_once("::")
+            .unwrap_or(("", self.module.as_str()));
+        let lookup = ctx.lookup(self.target_root);
+        let parent_module = CrateModule {
+            crate_name: &self.package,
+            path: parent,
+        };
+        let item_asked =
+            !meaning.admits_a_module() && lookup.holds_an_item_named(parent_module, name);
+        let item_meant = item_asked
+            || lookup
+                .viewer
+                .bindings_in(parent_module)
+                .filter(|bindings| !sees_the_module(*bindings, name))
+                .and_then(|bindings| bindings.named(name).find_map(NameBinding::reexported))
+                .is_some_and(|target| !lookup.binds_a_module(target));
+        if !item_meant {
+            return self;
+        }
+        let (parent, name) = (parent.to_string(), name.to_string());
+        Self {
+            module: parent,
+            item: Some(name),
+            ..self
+        }
+    }
+
+    /// The dependency of the reference at `line_num` in the file of `ctx` on
+    /// this end.
+    fn dependency(
+        self,
+        ctx: &ResolutionContext,
+        line_num: usize,
+        context: &EdgeContext,
+    ) -> DependencyRef {
+        DependencyRef {
+            target_package: self.package,
+            target_module: self.module,
+            target_item: self.item,
+            source_file: ctx.source_file.to_path_buf(),
+            line: line_num,
+            context: context.clone(),
+            via_reexport: false,
+            uses: Vec::new(),
+            target_root: self.target_root,
+        }
+    }
 }
 
-/// The root of the workspace crate `path` names bare, as `use other_crate::{Foo}`
-/// leaves `other_crate`.
-fn workspace_crate_root(
-    ctx: &ResolutionContext,
-    path: &str,
-    line_num: usize,
-    context: &EdgeContext,
-) -> Option<DependencyRef> {
-    if path.contains("::") || !ctx.workspace_crates.contains(path) {
-        return None;
-    }
-    Some(DependencyRef {
-        target_package: path.to_string(),
-        target_module: String::new(),
-        target_item: None,
-        source_file: ctx.source_file.to_path_buf(),
-        line: line_num,
-        context: context.clone(),
-        via_reexport: false,
-        uses: Vec::new(),
-        target_root: root_named_by(ctx, &normalize_crate_name(path)),
-    })
+/// The root of a workspace crate a path starts at, and the root of the
+/// crate's build it is read through.
+struct PathStart {
+    crate_name: String,
+    target_root: TargetRoot,
+    /// Whether the path names the crate, rather than writing `crate::` or a
+    /// relative path in it. Its root's names then also come from
+    /// `crate_exports`, which reads the root file alone.
+    by_name: bool,
 }
 
-/// The root a path through the name of the workspace crate `crate_name`
-/// resolves against: the own package by name is its lib, also from a file of
-/// the bin tree.
-fn root_named_by(ctx: &ResolutionContext, crate_name: &str) -> TargetRoot {
-    if crate_name == normalize_crate_name(ctx.current_crate) {
-        TargetRoot::Lib
-    } else {
-        TargetRoot::AsSeen
+impl PathStart {
+    /// The root of the crate of `ctx`, as `crate::` names it.
+    fn own_crate(ctx: &ResolutionContext) -> Self {
+        Self {
+            crate_name: normalize_crate_name(ctx.current_crate),
+            target_root: TargetRoot::AsSeen,
+            by_name: false,
+        }
     }
-}
 
-/// Resolve `path`, written from the root of `package`, a workspace crate other
-/// than this one or an external crate. No name of this crate is asked: the
-/// package is known. A glob keeps its `*` as the item.
-fn resolve_in_package(
-    ctx: &ResolutionContext,
-    package: &str,
-    path: &str,
-    line_num: usize,
-    context: &EdgeContext,
-) -> Option<DependencyRef> {
-    if let Some(base) = path
-        .strip_suffix("::*")
-        .or_else(|| (path == "*").then_some(""))
-    {
-        let mut dep = resolve_in_package(ctx, package, base, line_num, context)?;
-        dep.target_item = Some("*".to_string());
-        return Some(dep);
+    /// The root of the workspace crate `crate_name` names. The own package by
+    /// name is its lib, also from a file of the bin tree.
+    fn named_crate(ctx: &ResolutionContext, crate_name: &str) -> Self {
+        let crate_name = normalize_crate_name(crate_name);
+        let target_root = if crate_name == normalize_crate_name(ctx.current_crate) {
+            TargetRoot::Lib
+        } else {
+            TargetRoot::AsSeen
+        };
+        Self {
+            crate_name,
+            target_root,
+            by_name: true,
+        }
     }
-    let full = if path.is_empty() {
-        package.to_string()
-    } else {
-        format!("{package}::{path}")
-    };
-    parse_workspace_import(ctx, &full, line_num, context)
-        .or_else(|| workspace_crate_root(ctx, &full, line_num, context))
-        .or_else(|| parse_external_crate_import(ctx, &full, line_num, context))
+
+    /// Where `segments`, written from this root, lead. The first is asked of
+    /// the root's names ([`NameLookup::name`]): a module carries the rest of
+    /// the path into it, also in another workspace crate; an item, or a module
+    /// of another crate the path ends on, is the item of the root. A name the
+    /// root does not bind starts down the module tree ([`PathStart::walk`]),
+    /// unless the path names the crate and its root file names the name.
+    fn follow(&self, ctx: &ResolutionContext, segments: &[&str]) -> Option<PathEnd> {
+        let (&first, rest) = segments.split_first()?;
+        if first.is_empty() {
+            return None;
+        }
+        let root = CrateModule {
+            crate_name: &self.crate_name,
+            path: "",
+        };
+        let named = ctx
+            .lookup(self.target_root)
+            .name(root, first, AfterName::followed_by(rest));
+        let item_in_root = (String::new(), Some(first.to_string()));
+        let reached = match named {
+            Some(NameTarget::Module { crate_name, path }) if crate_name != self.crate_name => {
+                if rest.is_empty() {
+                    item_in_root
+                } else {
+                    let in_other: Vec<&str> = std::iter::once(crate_name.as_str())
+                        .chain(module_segments(&path))
+                        .chain(rest.iter().copied())
+                        .collect();
+                    return PathEnd::in_workspace_crate(ctx, &in_other.join("::"));
+                }
+            }
+            Some(NameTarget::Module { path, .. }) => {
+                let in_crate: Vec<&str> =
+                    module_segments(&path).chain(rest.iter().copied()).collect();
+                if in_crate.is_empty() {
+                    item_in_root
+                } else {
+                    self.walk(ctx, &in_crate)
+                }
+            }
+            Some(NameTarget::Item) => item_in_root,
+            None if self.by_name && self.root_file_names(ctx, first) => item_in_root,
+            None => self.walk(ctx, segments),
+        };
+        Some(self.end(reached))
+    }
+
+    /// Whether the root file of this crate names `name`, as `crate_exports`
+    /// has it.
+    fn root_file_names(&self, ctx: &ResolutionContext, name: &str) -> bool {
+        ctx.crate_exports
+            .get(&self.crate_name)
+            .is_some_and(|exports| exports.contains(name))
+    }
+
+    /// The module and item `segments` reach from this root, one segment at a
+    /// time. A segment that names a child module of the module reached so far
+    /// enters it. Another segment the path goes on past is asked of the
+    /// module's names, and a module below this crate's root it stands for
+    /// carries the rest: beside `use crate::store::{self as bound};` in `holder`,
+    /// `holder::bound::Set` names `Set` in `store`. The first segment that
+    /// carries the path no further is the item. A first segment that names no
+    /// child of the root is taken for a module of that name, and the next
+    /// segment for its item.
+    fn walk(&self, ctx: &ResolutionContext, segments: &[&str]) -> (String, Option<String>) {
+        let module_paths = ctx.all_module_paths.get_or_empty(&self.crate_name);
+        let lookup = ctx.lookup(self.target_root);
+        let mut visited = Visited::default();
+        let mut module = String::new();
+        let mut rest = segments;
+        loop {
+            while let Some((first, tail)) = rest.split_first() {
+                let child = append_to_path(&module, first);
+                if !module_paths.contains(&child) {
+                    break;
+                }
+                module = child;
+                rest = tail;
+            }
+            let Some((&name, tail)) = rest.split_first() else {
+                return (module, None);
+            };
+            let item = (!name.is_empty()).then(|| name.to_string());
+            if module.is_empty() {
+                let item = tail
+                    .first()
+                    .filter(|next| !next.is_empty())
+                    .map(ToString::to_string);
+                return (name.to_string(), item);
+            }
+            if tail.is_empty() {
+                return (module, item);
+            }
+            let holder = CrateModule {
+                crate_name: &self.crate_name,
+                path: &module,
+            };
+            match lookup.name_passing(holder, name, AfterName::PathGoesOn, &mut visited) {
+                Some(NameTarget::Module { crate_name, path })
+                    if crate_name == self.crate_name && !path.is_empty() =>
+                {
+                    module = path;
+                    rest = tail;
+                }
+                Some(NameTarget::Module { .. } | NameTarget::Item) | None => {
+                    return (module, item);
+                }
+            }
+        }
+    }
+
+    /// The end at `reached`, a module of this crate and the item there.
+    fn end(&self, (module, item): (String, Option<String>)) -> PathEnd {
+        PathEnd {
+            package: self.crate_name.clone(),
+            module,
+            item,
+            target_root: self.target_root,
+        }
+    }
 }
 
 /// `path` with a leading name from `extern_crates` replaced by the crate it
@@ -3162,44 +3077,6 @@ fn dealias_extern_crate(ctx: &ResolutionContext, path: &str) -> Option<String> {
         || crate_name.clone(),
         |rest| format!("{crate_name}::{rest}"),
     ))
-}
-
-/// Parse external crate imports: `use serde::Deserialize` where `serde` is a known external crate.
-/// Fallback at the end of the resolution chain — only matches if no workspace resolution succeeded.
-fn parse_external_crate_import(
-    ctx: &ResolutionContext,
-    path: &str,
-    line_num: usize,
-    context: &EdgeContext,
-) -> Option<DependencyRef> {
-    let parts: Vec<&str> = path.split("::").collect();
-    let first = parts.first()?.trim();
-    if first.is_empty() {
-        return None;
-    }
-
-    // Check if the first path segment is a known external crate name
-    if !ctx.external_crate_names.contains_key(first) {
-        return None;
-    }
-
-    let target_item = if parts.len() > 1 {
-        Some(parts[1..].join("::"))
-    } else {
-        None
-    };
-
-    Some(DependencyRef {
-        target_package: first.to_string(),
-        target_module: String::new(),
-        target_item,
-        source_file: ctx.source_file.to_path_buf(),
-        line: line_num,
-        context: context.clone(),
-        via_reexport: false,
-        uses: Vec::new(),
-        target_root: TargetRoot::AsSeen,
-    })
 }
 
 /// Parse syn-based use items, extracting workspace-relevant dependencies.
@@ -3672,15 +3549,15 @@ enum Binding {
 ///
 /// A path the parser cannot place is a path out of this crate: every form that
 /// stays inside resolves. Its name is therefore bound elsewhere, and that is what
-/// keeps `parse_bare_module_import` off it.
+/// keeps a path from starting at a child module of that name.
 ///
 /// A binding to a module, or to the root of another crate, is a module binding:
 /// what follows the name resolves under that module.
 ///
 /// A binding from another crate to an item needs an entry only where its name
 /// also names a module of this crate. Without one, the reference lands on that
-/// module. Whether it would is asked of `parse_bare_module_import` rather than
-/// restated here, so the two cannot drift apart.
+/// module. Whether it would is asked of [`ResolutionContext::has_child_module`],
+/// which decides where a bare path starts, so the two cannot drift apart.
 fn classify_binding(
     ctx: &ResolutionContext,
     dep: Option<&DependencyRef>,
@@ -3695,7 +3572,7 @@ fn classify_binding(
     if dep.target_package == normalize_crate_name(ctx.current_crate) {
         return Binding::OwnItem;
     }
-    if parse_bare_module_import(ctx, binding, 0, &EdgeContext::production()).is_some() {
+    if !binding.is_empty() && ctx.has_child_module(binding) {
         return Binding::Module(BoundModule::of(dep));
     }
     Binding::Elsewhere
@@ -3771,9 +3648,11 @@ impl BoundModule {
             let path = format!("crate::{path}");
             return resolve_single_path(ctx, &path, line_num, context, inline_depth, meaning);
         }
-        let mut dep = resolve_in_package(ctx, &self.package, &path, line_num, context)?;
-        take_item_the_parent_reexports(ctx, &mut dep, meaning);
-        Some(dep)
+        let end = PathEnd::in_package(ctx, &self.package, &path)?;
+        Some(
+            end.module_or_item(ctx, meaning)
+                .dependency(ctx, line_num, context),
+        )
     }
 }
 
