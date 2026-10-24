@@ -232,6 +232,28 @@ mod submodule_tests {
     }
 
     #[test]
+    fn test_workspace_import_through_a_module_another_module_reexports() {
+        let ws = TestWorkspace::new()
+            .package(
+                "other_crate",
+                &[
+                    ("src/lib.rs", "pub mod a;\npub mod store;"),
+                    ("src/a.rs", "pub use crate::store as bound;"),
+                    ("src/store.rs", "pub struct Set;"),
+                ],
+            )
+            .package(
+                "my_crate",
+                &[("src/lib.rs", "use other_crate::a::bound::Set;")],
+            )
+            .analyze();
+        assert_eq!(
+            ws.targets("my_crate"),
+            [("other_crate", "store", Some("Set"))]
+        );
+    }
+
+    #[test]
     fn test_workspace_import_through_root_glob_reexport() {
         // The root file names `Type` nowhere, only the glob brings it in.
         let ws = TestWorkspace::new()
