@@ -10,6 +10,8 @@ pub(crate) mod packages;
 mod reexports;
 pub(crate) mod rust;
 mod syn_walker;
+#[cfg(test)]
+mod test_workspace;
 mod use_parser;
 mod workspace;
 

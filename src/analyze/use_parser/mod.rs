@@ -305,12 +305,6 @@ impl ModuleExportInfo {
         self.globs.insert(at, glob);
     }
 
-    /// The globs the module holds, in the order of [`ModuleBindings::globs`].
-    #[cfg(test)]
-    pub(crate) fn held_globs(&self) -> &[GlobBinding] {
-        &self.globs
-    }
-
     /// Bind `name` by `binding`, read after the bindings the module already
     /// holds. A binding equal to one of them adds nothing.
     pub(crate) fn bind(&mut self, name: String, binding: NameBinding) {
@@ -942,23 +936,6 @@ impl<'a> Viewer<'a> {
     }
 }
 
-/// [`resolve_reexport_as`] for a reference that asks any meaning.
-#[cfg(test)]
-pub(crate) fn resolve_reexport(
-    dep: &mut DependencyRef,
-    reexport_map: &ReExportMap,
-    module_paths: &ModulePathMap,
-    importer_module: &str,
-) -> Resolution {
-    resolve_reexport_as(
-        dep,
-        reexport_map,
-        module_paths,
-        importer_module,
-        Meaning::Any,
-    )
-}
-
 /// A module holding a private `use` or glob, by crate and module path.
 type Holder = (String, String);
 
@@ -1015,12 +992,6 @@ impl Resolution {
     /// then produces no edge.
     pub(crate) fn places_no_definer(&self) -> bool {
         self.ends_on_no_definer
-    }
-
-    /// The private bindings the chain passed through, in order.
-    #[cfg(test)]
-    pub(crate) fn passed_through(&self) -> &[PassedThrough] {
-        &self.passed
     }
 }
 
@@ -3504,27 +3475,6 @@ impl FileBindings {
 
         bindings.define_locally(syntax);
         bindings
-    }
-
-    /// The module a name is bound to as seen from `region`, where it is bound
-    /// to one, written from the package's root: `crate::a::b` for the current
-    /// crate, `other_crate::b` for another.
-    #[cfg(test)]
-    fn target(&self, region: RegionId, name: &str, ctx: &ResolutionContext) -> Option<String> {
-        let module = self
-            .regions
-            .enclosing(region)
-            .find_map(|enclosing| self.modules.get(&enclosing)?.get(name))?;
-        let package = if module.package == normalize_crate_name(ctx.current_crate) {
-            "crate"
-        } else {
-            &module.package
-        };
-        Some(if module.path.is_empty() {
-            package.to_string()
-        } else {
-            format!("{package}::{}", module.path)
-        })
     }
 
     /// Look up what a reference standing in `region` stands for.

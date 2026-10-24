@@ -691,361 +691,201 @@ fn walk_collect_reexports(
 
 #[cfg(test)]
 mod tests {
-    use super::super::use_parser::resolve_reexport;
+    use super::super::test_workspace::{Analyzed, TestWorkspace};
     use super::*;
-    use crate::model::{DependencyRef, PackageInfo, TargetRoot};
+    use crate::model::{DependencyRef, SymbolUse, UseCategory};
     use crate::test_support::conventional_package;
     use std::collections::HashSet;
     use tempfile::TempDir;
 
-    /// The names whose visibility stops short of the public, sorted.
-    fn restricted_names<'a>(
-        visibilities: impl IntoIterator<Item = (&'a str, &'a Visibility)>,
-    ) -> Vec<&'a str> {
-        let mut names: Vec<&str> = visibilities
-            .into_iter()
-            .filter(|(_, vis)| **vis != Visibility::Public)
-            .map(|(name, _)| name)
-            .collect();
-        names.sort_unstable();
+    /// Analyze `test_crate` whose root is `root`, beside the further `files`.
+    fn test_crate(root: &str, files: &[(&str, &str)]) -> Analyzed {
+        let mut all = vec![("src/lib.rs", root)];
+        all.extend_from_slice(files);
+        TestWorkspace::new().package("test_crate", &all).analyze()
+    }
+
+    /// The names the module at `path` defines, sorted.
+    fn defined_names(ws: &Analyzed, path: &str) -> Vec<String> {
+        let mut names: Vec<String> = ws.module(path).definitions.keys().cloned().collect();
+        names.sort();
         names
     }
 
-    /// Each binding of `kind` in `info`, by name, with its visibility.
-    fn visibilities_of(
-        info: &ModuleExportInfo,
-        kind: fn(&BindingKind) -> bool,
-    ) -> impl Iterator<Item = (&str, &Visibility)> {
-        ModuleBindings::new("test_crate", info)
-            .all()
-            .filter(move |(_, binding)| kind(&binding.kind))
-            .map(|(name, binding)| (name, &binding.visibility))
+    /// The items `user`, a crate of its own that globs every name of
+    /// `test_crate`'s root, takes from `test_crate`, sorted, without the
+    /// glob's own arc.
+    fn globbed_from(test_crate_root: &str, files: &[(&str, &str)], user: &str) -> Vec<String> {
+        let mut all = vec![("src/lib.rs", test_crate_root)];
+        all.extend_from_slice(files);
+        let ws = TestWorkspace::new()
+            .package("test_crate", &all)
+            .package("user", &[("src/lib.rs", user)])
+            .analyze();
+        let mut items: Vec<String> = ws
+            .deps("user")
+            .iter()
+            .filter(|dep| dep.target_package == "test_crate")
+            .filter(|dep| dep.target_item.as_deref() != Some("*"))
+            .map(DependencyRef::full_target)
+            .collect();
+        items.sort();
+        items
     }
-
-    /// Each item `info` defines, by name, with its visibility.
-    fn item_visibilities(info: &ModuleExportInfo) -> impl Iterator<Item = (&str, &Visibility)> {
-        visibilities_of(info, |kind| matches!(kind, BindingKind::Definition(_)))
-    }
-
-    /// Each child module `info` declares, by name, with its visibility.
-    fn module_visibilities(info: &ModuleExportInfo) -> impl Iterator<Item = (&str, &Visibility)> {
-        visibilities_of(info, |kind| *kind == BindingKind::Module)
-    }
-
-    /// The bindings of `name` in `info`.
-    fn named<'a>(info: &'a ModuleExportInfo, name: &str) -> impl Iterator<Item = &'a NameBinding> {
-        ModuleBindings::new("test_crate", info).named(name)
-    }
-
-    /// The definition of `name` in `info`, the one read last.
-    fn definition<'a>(info: &'a ModuleExportInfo, name: &str) -> Option<&'a NameBinding> {
-        named(info, name).find(|binding| binding.definition().is_some())
-    }
-
-    /// The target of the `pub use` of `name` in `info`, the one read last.
-    fn reexport<'a>(info: &'a ModuleExportInfo, name: &str) -> Option<&'a ReExportTarget> {
-        named(info, name).find_map(|binding| match &binding.kind {
-            BindingKind::ReExport(target) => Some(target),
-            _ => None,
-        })
-    }
-
-    /// The target of the private `use` of `name` in `info`, the one read last.
-    fn private_use<'a>(info: &'a ModuleExportInfo, name: &str) -> Option<&'a ReExportTarget> {
-        named(info, name).find_map(|binding| match &binding.kind {
-            BindingKind::PrivateUse(target) => Some(target),
-            _ => None,
-        })
-    }
-
-    /// The re-exports of a package with a single crate root.
-    fn collect_single_root_reexports(
-        crate_info: &PackageInfo,
-        all_module_paths: &ModulePathMap,
-        workspace_crates: &WorkspacePackages,
-        crate_exports: &PackageExportMap,
-    ) -> HashMap<String, ModuleExportInfo> {
-        let mut roots = collect_crate_reexports(
-            crate_info,
-            all_module_paths,
-            workspace_crates,
-            crate_exports,
-            false,
-        );
-        assert_eq!(roots.len(), 1, "expected one crate root");
-        roots.remove(0).modules
-    }
-
-    fn test_crate(files: &[(&str, &str)]) -> TempDir {
-        let tmp = TempDir::new().unwrap();
-        for (path, content) in files {
-            let full = tmp.path().join(path);
-            if let Some(parent) = full.parent() {
-                std::fs::create_dir_all(parent).unwrap();
-            }
-            std::fs::write(&full, content).unwrap();
-        }
-        tmp
-    }
-
-    fn make_crate_info(tmp: &TempDir, name: &str) -> PackageInfo {
-        conventional_package(name, tmp.path())
-    }
-
-    // --- Cycles 5-12: collect_crate_reexports ---
 
     // Cycle 5: pub use sibling::Item
     #[test]
     fn collects_pub_use_sibling_item() {
-        let tmp = test_crate(&[
-            ("src/lib.rs", "pub mod parent;"),
-            (
-                "src/parent/mod.rs",
-                "pub mod sibling;\npub use sibling::Item;",
-            ),
-            ("src/parent/sibling.rs", "pub struct Item;"),
-        ]);
-        let crate_info = make_crate_info(&tmp, "test_crate");
-        let mp: ModulePathMap = [(
-            "test_crate".to_string(),
-            HashSet::from(["parent".into(), "parent::sibling".into()]),
-        )]
-        .into_iter()
-        .collect();
-
-        let result = collect_single_root_reexports(
-            &crate_info,
-            &mp,
-            &WorkspacePackages::default(),
-            &PackageExportMap::default(),
+        let ws = test_crate(
+            "pub mod parent;\nmod user;",
+            &[
+                (
+                    "src/parent/mod.rs",
+                    "pub mod sibling;\npub use sibling::Item;",
+                ),
+                ("src/parent/sibling.rs", "pub struct Item;"),
+                ("src/user.rs", "use crate::parent::Item;"),
+            ],
         );
-
-        let parent_info = result.get("parent").expect("parent should have exports");
-        let reexport = reexport(parent_info, "Item").expect("Item should be re-exported");
-        assert_eq!(reexport.module, "parent::sibling");
-        assert_eq!(reexport.original_name, "Item");
+        assert_eq!(
+            ws.targets("test_crate::user"),
+            [("test_crate", "parent::sibling", Some("Item"))]
+        );
     }
 
     // Cycle 6: pub use crate::model::Config
     #[test]
     fn collects_pub_use_crate_module_item() {
-        let tmp = test_crate(&[
-            (
-                "src/lib.rs",
-                "pub mod model;\npub use crate::model::Config;",
-            ),
-            ("src/model.rs", "pub struct Config;"),
-        ]);
-        let crate_info = make_crate_info(&tmp, "test_crate");
-        let mp: ModulePathMap = [("test_crate".to_string(), HashSet::from(["model".into()]))]
-            .into_iter()
-            .collect();
-
-        let result = collect_single_root_reexports(
-            &crate_info,
-            &mp,
-            &WorkspacePackages::default(),
-            &PackageExportMap::default(),
+        let ws = test_crate(
+            "pub mod model;\nmod user;\npub use crate::model::Config;",
+            &[
+                ("src/model.rs", "pub struct Config;"),
+                ("src/user.rs", "use crate::Config;"),
+            ],
         );
-
-        let root_info = result.get("").expect("root should have exports");
-        let reexport = reexport(root_info, "Config").expect("Config should be re-exported");
-        assert_eq!(reexport.module, "model");
-        assert_eq!(reexport.original_name, "Config");
+        assert_eq!(
+            ws.targets("test_crate::user"),
+            [("test_crate", "model", Some("Config"))]
+        );
     }
 
     // Cycle 7: pub use super::sibling::Item
     #[test]
     fn collects_pub_use_super_sibling_item() {
-        let tmp = test_crate(&[
-            ("src/lib.rs", "pub mod parent;"),
-            ("src/parent/mod.rs", "pub mod sibling;\npub mod child;"),
-            ("src/parent/sibling.rs", "pub struct Item;"),
-            ("src/parent/child.rs", "pub use super::sibling::Item;"),
-        ]);
-        let crate_info = make_crate_info(&tmp, "test_crate");
-        let mp: ModulePathMap = [(
-            "test_crate".to_string(),
-            HashSet::from([
-                "parent".into(),
-                "parent::sibling".into(),
-                "parent::child".into(),
-            ]),
-        )]
-        .into_iter()
-        .collect();
-
-        let result = collect_single_root_reexports(
-            &crate_info,
-            &mp,
-            &WorkspacePackages::default(),
-            &PackageExportMap::default(),
+        let ws = test_crate(
+            "pub mod parent;\nmod user;",
+            &[
+                ("src/parent/mod.rs", "pub mod sibling;\npub mod child;"),
+                ("src/parent/sibling.rs", "pub struct Item;"),
+                ("src/parent/child.rs", "pub use super::sibling::Item;"),
+                ("src/user.rs", "use crate::parent::child::Item;"),
+            ],
         );
-
-        let child_info = result
-            .get("parent::child")
-            .expect("child should have exports");
-        let reexport = reexport(child_info, "Item").expect("Item should be re-exported");
-        assert_eq!(reexport.module, "parent::sibling");
-        assert_eq!(reexport.original_name, "Item");
+        assert_eq!(
+            ws.targets("test_crate::user"),
+            [("test_crate", "parent::sibling", Some("Item"))]
+        );
     }
 
     // Cycle 8: pub use elements::*
     #[test]
     fn collects_pub_use_glob() {
-        let tmp = test_crate(&[
-            ("src/lib.rs", "pub mod render;"),
-            (
-                "src/render/mod.rs",
-                "pub mod elements;\npub use elements::*;",
-            ),
-            ("src/render/elements.rs", "pub struct Widget;"),
-        ]);
-        let crate_info = make_crate_info(&tmp, "test_crate");
-        let mp: ModulePathMap = [(
-            "test_crate".to_string(),
-            HashSet::from(["render".into(), "render::elements".into()]),
-        )]
-        .into_iter()
-        .collect();
-
-        let result = collect_single_root_reexports(
-            &crate_info,
-            &mp,
-            &WorkspacePackages::default(),
-            &PackageExportMap::default(),
+        let ws = test_crate(
+            "pub mod render;\nmod user;",
+            &[
+                (
+                    "src/render/mod.rs",
+                    "pub mod elements;\npub use elements::*;",
+                ),
+                ("src/render/elements.rs", "pub struct Widget;"),
+                ("src/user.rs", "use crate::render::Widget;"),
+            ],
         );
-
-        let render_info = result.get("render").expect("render should have exports");
-        assert!(
-            render_info.held_globs().contains(&GlobBinding {
-                reach: GlobReach::ReExport,
-                foreign_crate: None,
-                source: GlobSource {
-                    module: "render::elements".to_string(),
-                    visibility: Visibility::Public,
-                },
-            }),
-            "the globs should hold render::elements, found: {:?}",
-            render_info.held_globs()
+        assert_eq!(
+            ws.targets("test_crate::user"),
+            [("test_crate", "render::elements", Some("Widget"))]
         );
     }
 
     // Cycle 9: pub use sibling::{A, B}
     #[test]
     fn collects_pub_use_group_import() {
-        let tmp = test_crate(&[
-            ("src/lib.rs", "pub mod parent;"),
-            (
-                "src/parent/mod.rs",
-                "pub mod sibling;\npub use sibling::{Alpha, Beta};",
-            ),
-            (
-                "src/parent/sibling.rs",
-                "pub struct Alpha;\npub struct Beta;",
-            ),
-        ]);
-        let crate_info = make_crate_info(&tmp, "test_crate");
-        let mp: ModulePathMap = [(
-            "test_crate".to_string(),
-            HashSet::from(["parent".into(), "parent::sibling".into()]),
-        )]
-        .into_iter()
-        .collect();
-
-        let result = collect_single_root_reexports(
-            &crate_info,
-            &mp,
-            &WorkspacePackages::default(),
-            &PackageExportMap::default(),
-        );
-
-        let parent_info = result.get("parent").expect("parent should have exports");
-        assert!(reexport(parent_info, "Alpha").is_some(), "missing Alpha");
-        assert!(reexport(parent_info, "Beta").is_some(), "missing Beta");
-        assert_eq!(
-            reexport(parent_info, "Alpha").unwrap().module,
-            "parent::sibling"
+        let ws = test_crate(
+            "pub mod parent;\nmod user;",
+            &[
+                (
+                    "src/parent/mod.rs",
+                    "pub mod sibling;\npub use sibling::{Alpha, Beta};",
+                ),
+                (
+                    "src/parent/sibling.rs",
+                    "pub struct Alpha;\npub struct Beta;",
+                ),
+                ("src/user.rs", "use crate::parent::{Alpha, Beta};"),
+            ],
         );
         assert_eq!(
-            reexport(parent_info, "Beta").unwrap().module,
-            "parent::sibling"
+            ws.sorted_targets("test_crate::user"),
+            [
+                ("test_crate", "parent::sibling", Some("Alpha")),
+                ("test_crate", "parent::sibling", Some("Beta")),
+            ]
         );
+    }
+
+    /// `parent` binds `Private` with a private `use` from its child `sibling`,
+    /// `parent::kid` is `kid` and the module `user` outside `parent` is `user`.
+    fn with_private_binding_in_parent(parent_use: &str, kid: &str, user: &str) -> Analyzed {
+        test_crate(
+            "pub mod parent;\nmod user;",
+            &[
+                (
+                    "src/parent/mod.rs",
+                    &format!("pub mod sibling;\nmod kid;\n{parent_use}"),
+                ),
+                (
+                    "src/parent/sibling.rs",
+                    "pub struct Public;\npub struct Private;",
+                ),
+                ("src/parent/kid.rs", kid),
+                ("src/user.rs", user),
+            ],
+        )
     }
 
     // Cycle 10: pub(crate) use captured, private use NOT
     #[test]
     fn pub_crate_use_captured_private_not() {
-        let tmp = test_crate(&[
-            ("src/lib.rs", "pub mod parent;"),
-            (
-                "src/parent/mod.rs",
-                "pub mod sibling;\npub(crate) use sibling::Public;\nuse sibling::Private;",
-            ),
-            (
-                "src/parent/sibling.rs",
-                "pub struct Public;\npub struct Private;",
-            ),
-        ]);
-        let crate_info = make_crate_info(&tmp, "test_crate");
-        let mp: ModulePathMap = [(
-            "test_crate".to_string(),
-            HashSet::from(["parent".into(), "parent::sibling".into()]),
-        )]
-        .into_iter()
-        .collect();
-
-        let result = collect_single_root_reexports(
-            &crate_info,
-            &mp,
-            &WorkspacePackages::default(),
-            &PackageExportMap::default(),
+        let ws = with_private_binding_in_parent(
+            "pub(crate) use sibling::Public;\nuse sibling::Private;",
+            "",
+            "use crate::parent::{Public, Private};",
         );
-
-        let parent_info = result.get("parent").expect("parent should have exports");
-        assert!(
-            reexport(parent_info, "Public").is_some(),
-            "pub(crate) use should be captured"
-        );
-        assert!(
-            reexport(parent_info, "Private").is_none(),
-            "private use should NOT be captured"
+        assert_eq!(
+            ws.sorted_targets("test_crate::user"),
+            [
+                ("test_crate", "parent", Some("Private")),
+                ("test_crate", "parent::sibling", Some("Public")),
+            ],
+            "a pub(crate) use passes the name on, a private use not beyond its module"
         );
     }
 
     // A private use binds as such, where a descendant can still resolve it
     #[test]
     fn private_use_captured_as_a_private_use() {
-        let tmp = test_crate(&[
-            ("src/lib.rs", "pub mod parent;"),
-            (
-                "src/parent/mod.rs",
-                "pub mod sibling;\nuse sibling::Private;",
-            ),
-            ("src/parent/sibling.rs", "pub struct Private;"),
-        ]);
-        let crate_info = make_crate_info(&tmp, "test_crate");
-        let mp: ModulePathMap = [(
-            "test_crate".to_string(),
-            HashSet::from(["parent".into(), "parent::sibling".into()]),
-        )]
-        .into_iter()
-        .collect();
-
-        let result = collect_single_root_reexports(
-            &crate_info,
-            &mp,
-            &WorkspacePackages::default(),
-            &PackageExportMap::default(),
+        let ws = with_private_binding_in_parent(
+            "use sibling::Private;",
+            "use super::Private;",
+            "use crate::parent::Private;",
         );
-
-        let parent_info = result.get("parent").expect("parent should have exports");
-        let target = private_use(parent_info, "Private")
-            .expect("private use should be captured as a private use");
-        assert_eq!(target.module, "parent::sibling");
-        assert_eq!(target.original_name, "Private");
-        assert!(
-            reexport(parent_info, "Private").is_none(),
+        assert_eq!(
+            ws.targets("test_crate::parent::kid"),
+            [("test_crate", "parent::sibling", Some("Private"))]
+        );
+        assert_eq!(
+            ws.targets("test_crate::user"),
+            [("test_crate", "parent", Some("Private"))],
             "private use must not leak into the re-exports"
         );
     }
@@ -1054,78 +894,39 @@ mod tests {
     // the names it forwards
     #[test]
     fn private_glob_held_as_private() {
-        let tmp = test_crate(&[
-            ("src/lib.rs", "pub mod parent;"),
-            ("src/parent/mod.rs", "pub mod sibling;\nuse sibling::*;"),
-            ("src/parent/sibling.rs", "pub struct Private;"),
-        ]);
-        let crate_info = make_crate_info(&tmp, "test_crate");
-        let mp: ModulePathMap = [(
-            "test_crate".to_string(),
-            HashSet::from(["parent".into(), "parent::sibling".into()]),
-        )]
-        .into_iter()
-        .collect();
-
-        let result = collect_single_root_reexports(
-            &crate_info,
-            &mp,
-            &WorkspacePackages::default(),
-            &PackageExportMap::default(),
+        let ws = with_private_binding_in_parent(
+            "use sibling::*;",
+            "use super::Private;",
+            "use crate::parent::Private;",
         );
-
-        let parent_info = result.get("parent").expect("parent should have exports");
         assert_eq!(
-            parent_info.held_globs(),
-            [GlobBinding {
-                reach: GlobReach::Private,
-                foreign_crate: None,
-                source: GlobSource {
-                    module: "parent::sibling".to_string(),
-                    visibility: Visibility::Restricted("parent".to_string()),
-                },
-            }],
-            "the private glob is the only one, not a re-export"
+            ws.targets("test_crate::parent::kid"),
+            [("test_crate", "parent::sibling", Some("Private"))]
+        );
+        assert_eq!(
+            ws.targets("test_crate::user"),
+            [("test_crate", "parent", Some("Private"))],
+            "the private glob is no re-export"
         );
     }
 
     // Cycle 11: pub struct Foo → definitions
     #[test]
     fn collects_pub_struct_as_definition() {
-        let tmp = test_crate(&[
-            ("src/lib.rs", "pub mod module;"),
-            ("src/module.rs", "pub struct Foo;\npub fn helper() {}"),
-        ]);
-        let crate_info = make_crate_info(&tmp, "test_crate");
-        let mp: ModulePathMap = [("test_crate".to_string(), HashSet::from(["module".into()]))]
-            .into_iter()
-            .collect();
-
-        let result = collect_single_root_reexports(
-            &crate_info,
-            &mp,
-            &WorkspacePackages::default(),
-            &PackageExportMap::default(),
+        let ws = test_crate(
+            "pub mod module;",
+            &[("src/module.rs", "pub struct Foo;\npub fn helper() {}")],
         );
-
-        let module_info = result.get("module").expect("module should have exports");
-        assert!(
-            definition(module_info, "Foo").is_some(),
-            "should contain Foo"
-        );
-        assert!(
-            definition(module_info, "helper").is_some(),
-            "should contain helper"
-        );
+        assert_eq!(defined_names(&ws, "test_crate::module"), ["Foo", "helper"]);
     }
 
     /// Characterization: which item kinds bind as definitions, whatever their
     /// visibility.
     #[test]
     fn definitions_cover_all_matched_item_kinds() {
-        let tmp = test_crate(&[
-            ("src/lib.rs", "pub mod module;"),
-            (
+        let ws = test_crate(
+            "pub mod module;",
+            &[(
                 "src/module.rs",
                 r"
 pub fn a_fn() {}
@@ -1143,85 +944,73 @@ pub(super) struct SuperStruct;
 pub(in crate::module) struct InPathStruct;
 impl AStruct { pub fn method(&self) {} }
 ",
-            ),
-        ]);
-        let crate_info = make_crate_info(&tmp, "test_crate");
-        let mp: ModulePathMap = [("test_crate".to_string(), HashSet::from(["module".into()]))]
-            .into_iter()
-            .collect();
-
-        let result = collect_single_root_reexports(
-            &crate_info,
-            &mp,
-            &WorkspacePackages::default(),
-            &PackageExportMap::default(),
+            )],
         );
-
-        let module = result.get("module").expect("module info");
-        for (name, kind) in [
-            ("a_fn", DefKind::Fn),
-            ("AStruct", DefKind::Struct),
-            ("AnEnum", DefKind::Enum),
-            ("ATrait", DefKind::Trait),
-            ("A_CONST", DefKind::Const),
-            ("A_STATIC", DefKind::Static),
-            ("AnAlias", DefKind::Type),
-            ("CrateStruct", DefKind::Struct),
-            ("SuperStruct", DefKind::Struct),
-            ("private_fn", DefKind::Fn),
-            ("PrivateStruct", DefKind::Struct),
-            ("InPathStruct", DefKind::Struct),
-        ] {
-            assert_eq!(
-                definition(module, name).and_then(|binding| Some(binding.definition()?.kind)),
-                Some(kind),
-                "wrong kind for {name}"
-            );
-        }
-        for name in ["AUnion", "method", "V"] {
-            assert!(
-                definition(module, name).is_none(),
-                "unexpected {name} in {module:?}"
-            );
-        }
+        let definitions = &ws.module("test_crate::module").definitions;
+        let mut kinds: Vec<(&str, DefKind)> = definitions
+            .iter()
+            .map(|(name, definition)| (name.as_str(), definition.kind))
+            .collect();
+        kinds.sort_by_key(|(name, _)| *name);
+        assert_eq!(
+            kinds,
+            [
+                ("AStruct", DefKind::Struct),
+                ("ATrait", DefKind::Trait),
+                ("A_CONST", DefKind::Const),
+                ("A_STATIC", DefKind::Static),
+                ("AnAlias", DefKind::Type),
+                ("AnEnum", DefKind::Enum),
+                ("CrateStruct", DefKind::Struct),
+                ("InPathStruct", DefKind::Struct),
+                ("PrivateStruct", DefKind::Struct),
+                ("SuperStruct", DefKind::Struct),
+                ("a_fn", DefKind::Fn),
+                ("private_fn", DefKind::Fn),
+            ],
+            "no AUnion, method or V"
+        );
     }
 
     /// A function of a proc-macro crate defines a macro: a derive under the
     /// name its attribute gives, the others under the function's own name.
     #[test]
     fn proc_macro_functions_define_macros() {
-        let tmp = test_crate(&[(
-            "src/lib.rs",
-            r"
+        let source = r"
 #[proc_macro_derive(Widget, attributes(widget))]
 pub fn derive_widget(input: TokenStream) -> TokenStream { input }
 #[proc_macro]
 pub fn make(input: TokenStream) -> TokenStream { input }
 #[proc_macro_attribute]
 pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
-",
-        )]);
-        let crate_info = make_crate_info(&tmp, "test_crate");
-
-        let result = collect_single_root_reexports(
-            &crate_info,
-            &ModulePathMap::default(),
-            &WorkspacePackages::default(),
-            &PackageExportMap::default(),
-        );
-
-        let root = result.get("").expect("root info");
+";
+        let ws = TestWorkspace::new()
+            .package("test_crate", &[("src/lib.rs", source)])
+            .package(
+                "user",
+                &[("src/lib.rs", "use test_crate::{Widget, make, wrap};")],
+            )
+            .analyze();
+        let definitions = &ws.module("test_crate").definitions;
         for name in ["Widget", "make", "wrap"] {
             assert_eq!(
-                definition(root, name).and_then(|binding| Some(binding.definition()?.kind)),
+                definitions.get(name).map(|definition| definition.kind),
                 Some(DefKind::Macro),
                 "wrong kind for {name}"
             );
         }
-        assert!(definition(root, "derive_widget").is_none(), "{root:?}");
+        assert!(
+            !definitions.contains_key("derive_widget"),
+            "{definitions:?}"
+        );
         assert_eq!(
-            super::super::syn_walker::collect_crate_exports(&crate_info),
-            HashSet::from(["Widget".to_string(), "make".to_string(), "wrap".to_string()])
+            ws.sorted_targets("user"),
+            [
+                ("test_crate", "", Some("Widget")),
+                ("test_crate", "", Some("make")),
+                ("test_crate", "", Some("wrap")),
+            ],
+            "the macros are the crate's entry points"
         );
     }
 
@@ -1229,33 +1018,24 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
     /// but not to other crates.
     #[test]
     fn private_root_items_are_recorded_as_restricted() {
-        let tmp = test_crate(&[
-            (
-                "src/lib.rs",
-                "pub mod module;\nstruct Hidden;\nfn helper() {}\npub struct Shown;\n",
-            ),
-            ("src/module.rs", ""),
-        ]);
-        let crate_info = make_crate_info(&tmp, "test_crate");
-        let mp: ModulePathMap = [("test_crate".to_string(), HashSet::from(["module".into()]))]
-            .into_iter()
-            .collect();
-
-        let result = collect_single_root_reexports(
-            &crate_info,
-            &mp,
-            &WorkspacePackages::default(),
-            &PackageExportMap::default(),
+        let root = "pub mod module;\nstruct Hidden;\nfn helper() {}\npub struct Shown;\n";
+        let files = [(
+            "src/module.rs",
+            "fn f(_: crate::Hidden) { crate::helper(); }",
+        )];
+        let from_outside = globbed_from(
+            root,
+            &files,
+            "use test_crate::*;\nfn f(_: Hidden, _: Shown) { helper(); }",
         );
-
-        let root = result.get("").expect("root info");
+        assert_eq!(from_outside, ["test_crate::Shown"]);
+        let ws = test_crate(root, &files);
         assert_eq!(
-            restricted_names(item_visibilities(root)),
-            ["Hidden", "helper"]
-        );
-        assert_eq!(
-            definition(root, "Shown").map(|binding| &binding.visibility),
-            Some(&Visibility::Public)
+            ws.sorted_targets("test_crate::module"),
+            [
+                ("test_crate", "", Some("Hidden")),
+                ("test_crate", "", Some("helper")),
+            ]
         );
     }
 
@@ -1263,121 +1043,64 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
     /// a sibling naming the macro through the module depends on that module.
     #[test]
     fn restricted_use_of_the_modules_own_macro_keeps_the_edge() {
-        let tmp = test_crate(&[
-            ("src/lib.rs", "pub mod tools;\n"),
-            ("src/tools/mod.rs", "mod expand;\nmod user;\n"),
-            (
-                "src/tools/expand.rs",
-                "macro_rules! expand { () => {} }\npub(in crate::tools) use expand;\n",
-            ),
-            ("src/tools/user.rs", ""),
-        ]);
-        let crate_info = make_crate_info(&tmp, "test_crate");
-        let mp: ModulePathMap = [(
-            "test_crate".to_string(),
-            HashSet::from(["tools".into(), "tools::expand".into(), "tools::user".into()]),
-        )]
-        .into_iter()
-        .collect();
-        let modules = collect_single_root_reexports(
-            &crate_info,
-            &mp,
-            &WorkspacePackages::default(),
-            &PackageExportMap::default(),
+        let ws = test_crate(
+            "pub mod tools;\n",
+            &[
+                ("src/tools/mod.rs", "mod expand;\nmod user;\n"),
+                (
+                    "src/tools/expand.rs",
+                    "macro_rules! expand { () => {} }\npub(in crate::tools) use expand;\n",
+                ),
+                ("src/tools/user.rs", "use super::expand::expand;"),
+            ],
         );
-        let map = [("test_crate".to_string(), modules)]
-            .into_iter()
-            .collect::<ReExportMap>()
-            .for_root("test_crate", 0);
-
-        let mut dep = DependencyRef {
-            target_package: "test_crate".to_string(),
-            target_module: "tools::expand".to_string(),
-            target_item: Some("expand".to_string()),
-            source_file: "src/tools/user.rs".into(),
-            line: 1,
-            context: EdgeContext::production(),
-            via_reexport: false,
-            uses: Vec::new(),
-            target_root: TargetRoot::AsSeen,
-        };
-        let keeps_edge = !resolve_reexport(&mut dep, &map, &mp, "tools::user").places_no_definer();
-
-        assert!(keeps_edge, "{dep:?}");
-        assert_eq!(dep.target_module, "tools::expand");
+        assert_eq!(
+            ws.targets("test_crate::tools::user"),
+            [("test_crate", "tools::expand", Some("expand"))]
+        );
     }
 
     #[test]
     fn private_child_modules_are_recorded() {
-        let tmp = test_crate(&[
-            (
-                "src/lib.rs",
-                "pub mod shown;\npub(crate) mod inner;\nmod hidden;\npub(self) mod scoped;\n",
-            ),
-            ("src/shown.rs", ""),
-            ("src/inner.rs", ""),
-            ("src/hidden.rs", ""),
-            ("src/scoped.rs", ""),
-        ]);
-        let crate_info = make_crate_info(&tmp, "test_crate");
-        let mp: ModulePathMap = [(
-            "test_crate".to_string(),
-            HashSet::from([
-                "shown".into(),
-                "inner".into(),
-                "hidden".into(),
-                "scoped".into(),
-            ]),
-        )]
-        .into_iter()
-        .collect();
-
-        let result = collect_single_root_reexports(
-            &crate_info,
-            &mp,
-            &WorkspacePackages::default(),
-            &PackageExportMap::default(),
+        let found = globbed_from(
+            "pub mod shown;\npub(crate) mod inner;\nmod hidden;\npub(self) mod scoped;\n",
+            &[
+                ("src/shown.rs", "pub struct X;"),
+                ("src/inner.rs", "pub struct X;"),
+                ("src/hidden.rs", "pub struct X;"),
+                ("src/scoped.rs", "pub struct X;"),
+            ],
+            "use test_crate::*;\nfn f(_: shown::X, _: inner::X, _: hidden::X, _: scoped::X) {}",
         );
-
-        let root = result.get("").expect("root info");
-        assert_eq!(
-            restricted_names(module_visibilities(root)),
-            ["hidden", "inner", "scoped"]
-        );
-        assert_eq!(
-            module_visibilities(root)
-                .find(|(name, _)| *name == "shown")
-                .map(|(_, visibility)| visibility),
-            Some(&Visibility::Public)
-        );
+        assert_eq!(found, ["test_crate::shown::X"]);
     }
 
     /// `extern crate other_crate as oc;` in the root lets the root re-export
     /// from `oc`, which names `other_crate`.
     #[test]
     fn root_reexport_through_extern_crate_alias() {
-        let tmp = test_crate(&[(
-            "src/lib.rs",
-            "extern crate other_crate as oc;\npub use oc::thing::Thing;\n",
-        )]);
-        let crate_info = make_crate_info(&tmp, "test_crate");
-        let ws: WorkspacePackages = ["test_crate", "other_crate"].into_iter().collect();
-        let mp: ModulePathMap = [("other_crate".to_string(), HashSet::from(["thing".into()]))]
-            .into_iter()
-            .collect();
-
-        let result =
-            collect_single_root_reexports(&crate_info, &mp, &ws, &PackageExportMap::default());
-
-        let target = result.get("").and_then(|root| reexport(root, "Thing"));
+        let ws = TestWorkspace::new()
+            .package(
+                "other_crate",
+                &[
+                    ("src/lib.rs", "pub mod thing;"),
+                    ("src/thing.rs", "pub struct Thing;"),
+                ],
+            )
+            .package(
+                "test_crate",
+                &[
+                    (
+                        "src/lib.rs",
+                        "extern crate other_crate as oc;\nmod user;\npub use oc::thing::Thing;\n",
+                    ),
+                    ("src/user.rs", "use crate::Thing;"),
+                ],
+            )
+            .analyze();
         assert_eq!(
-            target.map(|t| (
-                t.crate_name.as_str(),
-                t.module.as_str(),
-                t.original_name.as_str()
-            )),
-            Some(("other_crate", "thing", "Thing")),
-            "{result:?}"
+            ws.targets("test_crate::user"),
+            [("other_crate", "thing", Some("Thing"))]
         );
     }
 
@@ -1385,58 +1108,27 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
     /// crate, like a private item.
     #[test]
     fn restricted_root_items_are_recorded_as_private() {
-        let tmp = test_crate(&[
-            (
-                "src/lib.rs",
-                "pub mod module;\npub(self) struct SelfScoped;\npub(in crate) fn in_crate() {}\n",
-            ),
-            ("src/module.rs", ""),
-        ]);
-        let crate_info = make_crate_info(&tmp, "test_crate");
-        let mp: ModulePathMap = [("test_crate".to_string(), HashSet::from(["module".into()]))]
-            .into_iter()
-            .collect();
-
-        let result = collect_single_root_reexports(
-            &crate_info,
-            &mp,
-            &WorkspacePackages::default(),
-            &PackageExportMap::default(),
+        let found = globbed_from(
+            "pub mod module;\npub(self) struct SelfScoped;\npub(in crate) fn in_crate() {}\n",
+            &[("src/module.rs", "")],
+            "use test_crate::*;\nfn f(_: SelfScoped) { in_crate(); }",
         );
-
-        let root = result.get("").expect("root info");
-        assert_eq!(
-            restricted_names(item_visibilities(root)),
-            ["SelfScoped", "in_crate"]
-        );
+        assert!(found.is_empty(), "{found:?}");
     }
 
     /// Each definition records the line its item starts on, attributes
     /// included, so a jump lands on the item as the reader sees it.
     #[test]
     fn definitions_carry_the_line_of_the_defining_item() {
-        let tmp = test_crate(&[
-            ("src/lib.rs", "pub mod module;"),
-            (
+        let ws = test_crate(
+            "pub mod module;",
+            &[(
                 "src/module.rs",
                 "//! Module doc\n\npub fn a_fn() {}\n\n#[derive(Debug)]\npub struct AStruct;\n",
-            ),
-        ]);
-        let crate_info = make_crate_info(&tmp, "test_crate");
-        let mp: ModulePathMap = [("test_crate".to_string(), HashSet::from(["module".into()]))]
-            .into_iter()
-            .collect();
-
-        let result = collect_single_root_reexports(
-            &crate_info,
-            &mp,
-            &WorkspacePackages::default(),
-            &PackageExportMap::default(),
+            )],
         );
-
-        let module = result.get("module").expect("module info");
-        let line =
-            |name| definition(module, name).and_then(|binding| Some(binding.definition()?.line));
+        let definitions = &ws.module("test_crate::module").definitions;
+        let line = |name| definitions.get(name).map(|definition| definition.line);
         assert_eq!(line("a_fn"), Some(3));
         assert_eq!(line("AStruct"), Some(5));
     }
@@ -1445,130 +1137,118 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
     /// inline `mod { … }` body are not collected for any module path.
     #[test]
     fn definitions_skip_inline_mod_bodies() {
-        let tmp = test_crate(&[
-            ("src/lib.rs", "pub mod module;"),
-            (
+        let ws = test_crate(
+            "pub mod module;",
+            &[(
                 "src/module.rs",
                 "pub struct Outer;\npub mod inner { pub struct Inner; }",
-            ),
-        ]);
-        let crate_info = make_crate_info(&tmp, "test_crate");
-        let mp: ModulePathMap = [(
-            "test_crate".to_string(),
-            HashSet::from(["module".into(), "module::inner".into()]),
-        )]
-        .into_iter()
-        .collect();
-
-        let result = collect_single_root_reexports(
-            &crate_info,
-            &mp,
-            &WorkspacePackages::default(),
-            &PackageExportMap::default(),
+            )],
         );
-
-        let module_info = result.get("module").expect("module info");
-        assert!(definition(module_info, "Outer").is_some());
-        assert!(definition(module_info, "Inner").is_none());
-        assert!(
-            !result.contains_key("module::inner"),
-            "inline mod produces no entry, found: {:?}",
-            result.get("module::inner")
-        );
+        assert_eq!(defined_names(&ws, "test_crate::module"), ["Outer"]);
     }
 
     // Cycle 12: pub use sibling::Item as Widget (rename)
     #[test]
     fn collects_pub_use_rename() {
-        let tmp = test_crate(&[
-            ("src/lib.rs", "pub mod parent;"),
-            (
-                "src/parent/mod.rs",
-                "pub mod sibling;\npub use sibling::Item as Widget;",
-            ),
-            ("src/parent/sibling.rs", "pub struct Item;"),
-        ]);
-        let crate_info = make_crate_info(&tmp, "test_crate");
-        let mp: ModulePathMap = [(
-            "test_crate".to_string(),
-            HashSet::from(["parent".into(), "parent::sibling".into()]),
-        )]
-        .into_iter()
-        .collect();
-
-        let result = collect_single_root_reexports(
-            &crate_info,
-            &mp,
-            &WorkspacePackages::default(),
-            &PackageExportMap::default(),
+        let ws = test_crate(
+            "pub mod parent;\nmod user;",
+            &[
+                (
+                    "src/parent/mod.rs",
+                    "pub mod sibling;\npub use sibling::Item as Widget;",
+                ),
+                ("src/parent/sibling.rs", "pub struct Item;"),
+                ("src/user.rs", "use crate::parent::{Item, Widget};"),
+            ],
         );
-
-        let parent_info = result.get("parent").expect("parent should have exports");
-        assert!(
-            reexport(parent_info, "Item").is_none(),
-            "should NOT have original name as key"
+        assert_eq!(
+            ws.sorted_targets("test_crate::user"),
+            [
+                ("test_crate", "parent", Some("Item")),
+                ("test_crate", "parent::sibling", Some("Item")),
+            ],
+            "the re-export goes by its new name, the original name is not bound"
         );
-        let reexport = reexport(parent_info, "Widget").expect("Widget should be the re-export key");
-        assert_eq!(reexport.module, "parent::sibling");
-        assert_eq!(reexport.original_name, "Item");
+    }
+
+    fn use_at(line: usize, category: UseCategory) -> SymbolUse {
+        SymbolUse {
+            line,
+            category,
+            imported_for_methods: false,
+        }
+    }
+
+    /// The uses of `item` in the dependencies of the module at `path`.
+    fn uses_of<'a>(ws: &'a Analyzed, path: &str, item: &str) -> &'a [SymbolUse] {
+        &ws.dep_on(path, item).uses
     }
 
     /// Variants, `impl` fns and consts, and trait fns are recorded on the module
     /// that defines the type. An `impl` block in a sibling file lands there too.
+    /// A read of an associated item the module records takes the category of
+    /// its kind; one it does not record goes by its spelling. The names here
+    /// go against the spelling, so that only the record decides.
     #[test]
     fn collects_associated_items_on_the_defining_module() {
-        let tmp = test_crate(&[
-            ("src/lib.rs", "pub mod back;"),
-            ("src/back/mod.rs", "pub mod writer;\npub mod features;"),
-            (
-                "src/back/writer.rs",
-                "pub enum Mode { Fast, Slow(u8) }\n\
-                 pub struct Writer;\n\
-                 impl Writer { pub fn new() -> Self { Writer } pub const MAX: u8 = 1; }\n\
-                 pub trait Step { fn run(&self); }\n\
-                 impl Step for Writer { fn run(&self) {} }",
-            ),
-            (
-                "src/back/features.rs",
-                "use super::writer::Writer;\nimpl Writer { pub fn write_feature(&self) {} }",
-            ),
-        ]);
-        let crate_info = make_crate_info(&tmp, "test_crate");
-        let mp: ModulePathMap = [(
-            "test_crate".to_string(),
-            HashSet::from([
-                "back".into(),
-                "back::writer".into(),
-                "back::features".into(),
-            ]),
-        )]
-        .into_iter()
-        .collect();
-
-        let result = collect_single_root_reexports(
-            &crate_info,
-            &mp,
-            &WorkspacePackages::default(),
-            &PackageExportMap::default(),
+        let ws = test_crate(
+            "pub mod back;\nmod user;",
+            &[
+                ("src/back/mod.rs", "pub mod writer;\npub mod features;"),
+                (
+                    "src/back/writer.rs",
+                    "pub enum Mode { FAST, SLOW(u8) }\n\
+                     pub struct Writer;\n\
+                     impl Writer { pub fn New() -> Self { Writer } pub const max: u8 = 1; }\n\
+                     pub trait Step { fn Run(&self); }\n\
+                     impl Step for Writer { fn Run(&self) {} }",
+                ),
+                (
+                    "src/back/features.rs",
+                    "use super::writer::Writer;\nimpl Writer { pub fn WriteFeature(&self) {} }",
+                ),
+                (
+                    "src/user.rs",
+                    "use crate::back::writer::{Mode, Step, Writer};\n\
+                     fn f() {\n\
+                     let a = Writer::New;\n\
+                     let b = Writer::Run;\n\
+                     let c = Writer::WriteFeature;\n\
+                     let d = Writer::max;\n\
+                     let e = Writer::Unknown;\n\
+                     let g = Step::Run;\n\
+                     let h = Mode::FAST;\n\
+                     let i = Mode::SLOW;\n\
+                     }",
+                ),
+            ],
         );
-
-        let writer = &result["back::writer"].associated;
+        let user = "test_crate::user";
         assert_eq!(
-            writer["Mode"].variants,
-            HashSet::from(["Fast".into(), "Slow".into()])
+            uses_of(&ws, user, "Writer"),
+            [
+                use_at(3, UseCategory::Fns),
+                use_at(4, UseCategory::Fns),
+                use_at(5, UseCategory::Fns),
+                use_at(6, UseCategory::Values),
+                use_at(7, UseCategory::Types),
+            ],
+            "own impl, trait impl and the sibling file's impl; `Unknown` by spelling"
         );
+        assert_eq!(uses_of(&ws, user, "Step"), [use_at(8, UseCategory::Fns)]);
         assert_eq!(
-            writer["Writer"].fns,
-            HashSet::from(["new".into(), "run".into(), "write_feature".into()]),
-            "own impl, trait impl and the sibling file's impl"
+            uses_of(&ws, user, "Mode"),
+            [
+                use_at(9, UseCategory::Types),
+                use_at(10, UseCategory::Types)
+            ]
         );
-        assert_eq!(writer["Writer"].consts, HashSet::from(["MAX".into()]));
-        assert_eq!(writer["Step"].fns, HashSet::from(["run".into()]));
         assert!(
-            !result
-                .get("back::features")
-                .is_some_and(|f| f.associated.contains_key("Writer")),
-            "the impl in features is Writer's, not a type of features"
+            ws.deps(user)
+                .iter()
+                .all(|dep| dep.target_module == "back::writer"),
+            "the impl in features is Writer's, not a type of features: {:?}",
+            ws.deps(user)
         );
     }
 
@@ -1577,38 +1257,37 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
     /// which every lookup reads the bindings of a name.
     #[test]
     fn associated_items_of_a_name_bound_twice_land_where_the_pub_use_points() {
-        let tmp = test_crate(&[
-            ("src/lib.rs", "pub mod a;\npub mod b;\npub mod user;"),
-            ("src/a.rs", "pub struct S;"),
-            ("src/b.rs", "pub struct S;"),
-            (
-                "src/user.rs",
-                "#[cfg(feature = \"x\")]\npub use crate::a::S;\n\
-                 #[cfg(not(feature = \"x\"))]\nuse crate::b::S;\n\
-                 impl S { pub fn made() {} }",
-            ),
-        ]);
-        let crate_info = make_crate_info(&tmp, "test_crate");
-        let mp: ModulePathMap = [(
-            "test_crate".to_string(),
-            HashSet::from(["a".into(), "b".into(), "user".into()]),
-        )]
-        .into_iter()
-        .collect();
-
-        let result = collect_single_root_reexports(
-            &crate_info,
-            &mp,
-            &WorkspacePackages::default(),
-            &PackageExportMap::default(),
+        let ws = test_crate(
+            "pub mod a;\npub mod b;\npub mod user;\nmod reader;",
+            &[
+                ("src/a.rs", "pub struct S;"),
+                ("src/b.rs", "pub struct S;"),
+                (
+                    "src/user.rs",
+                    "#[cfg(feature = \"x\")]\npub use crate::a::S;\n\
+                     #[cfg(not(feature = \"x\"))]\nuse crate::b::S;\n\
+                     impl S { pub fn Made() {} }",
+                ),
+                (
+                    "src/reader.rs",
+                    "fn f() {\nlet a = crate::a::S::Made;\nlet b = crate::b::S::Made;\n}",
+                ),
+            ],
         );
-
-        let associated_in = |module: &str| {
-            result
-                .get(module)
-                .is_some_and(|info| info.associated.contains_key("S"))
+        let uses_in = |module: &str| {
+            ws.deps("test_crate::reader")
+                .iter()
+                .find(|dep| dep.target_module == module)
+                .map(|dep| dep.uses.clone())
         };
-        assert_eq!((associated_in("a"), associated_in("b")), (true, false));
+        assert_eq!(
+            (uses_in("a"), uses_in("b")),
+            (
+                Some(vec![use_at(2, UseCategory::Fns)]),
+                Some(vec![use_at(3, UseCategory::Types)])
+            ),
+            "`Made` is recorded on `a::S` only, `b::S::Made` goes by its spelling"
+        );
     }
 
     // A name the root only re-exports is not known while the map is built, so
@@ -1616,190 +1295,102 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
     // follows the root's re-export later.
     #[test]
     fn use_of_a_name_the_root_reexports_targets_the_root() {
-        let tmp = test_crate(&[
-            (
-                "src/lib.rs",
-                "pub mod span;\npub mod value;\npub mod front;\n\
-                 pub use crate::span::Span;\npub use value::*;",
-            ),
-            ("src/span.rs", "pub struct Span;"),
-            ("src/value.rs", "pub struct Value;"),
-            ("src/front/mod.rs", "pub mod glsl;\npub mod prelude;"),
-            ("src/front/glsl/mod.rs", "use crate::Span;"),
-            ("src/front/prelude.rs", "pub use crate::Value;"),
-        ]);
-        let crate_info = make_crate_info(&tmp, "test_crate");
-        let mp: ModulePathMap = [(
-            "test_crate".to_string(),
-            HashSet::from([
-                "span".into(),
-                "value".into(),
-                "front".into(),
-                "front::glsl".into(),
-                "front::prelude".into(),
-            ]),
-        )]
-        .into_iter()
-        .collect();
-
-        let result = collect_single_root_reexports(
-            &crate_info,
-            &mp,
-            &WorkspacePackages::default(),
-            &PackageExportMap::default(),
+        let ws = test_crate(
+            "pub mod span;\npub mod value;\npub mod front;\n\
+             pub use crate::span::Span;\npub use value::*;",
+            &[
+                ("src/span.rs", "pub struct Span;"),
+                ("src/value.rs", "pub struct Value;"),
+                ("src/front/mod.rs", "pub mod glsl;\npub mod prelude;"),
+                ("src/front/glsl/mod.rs", "use crate::Span;"),
+                ("src/front/prelude.rs", "pub use crate::Value;"),
+            ],
         );
-
-        let private = result
-            .get("front::glsl")
-            .and_then(|info| private_use(info, "Span"))
-            .expect("the private use of a root re-export is recorded");
-        assert_eq!(private.module, "");
-        assert_eq!(private.original_name, "Span");
-        let public = result
-            .get("front::prelude")
-            .and_then(|info| reexport(info, "Value"))
-            .expect("the re-export of a root glob name is recorded");
-        assert_eq!(public.module, "");
-        assert_eq!(public.original_name, "Value");
+        assert_eq!(
+            ws.targets("test_crate::front::glsl"),
+            [("test_crate", "span", Some("Span"))]
+        );
+        assert_eq!(
+            ws.targets("test_crate::front::prelude"),
+            [("test_crate", "value", Some("Value"))]
+        );
     }
 
-    // A `pub use` of a whole workspace crate re-exports that crate's root.
-    #[test]
-    fn reexport_of_a_workspace_crate_targets_its_root() {
-        let tmp = test_crate(&[("src/lib.rs", "pub use other_crate;\n")]);
-        let crate_info = make_crate_info(&tmp, "test_crate");
-        let ws: WorkspacePackages = ["test_crate", "other_crate"].into_iter().collect();
-
-        let result = collect_single_root_reexports(
-            &crate_info,
-            &ModulePathMap::default(),
-            &ws,
-            &PackageExportMap::default(),
-        );
-
-        let target = result
-            .get("")
-            .and_then(|root| reexport(root, "other_crate"));
-        assert_eq!(
-            target.map(|t| (
-                t.crate_name.as_str(),
-                t.module.as_str(),
-                t.original_name.as_str()
-            )),
-            Some(("other_crate", "", "")),
-            "{result:?}"
-        );
+    /// `other_crate`'s root brings `Type` in only through `pub use ty::*`;
+    /// `test_crate` is `test_crate_root` beside the further `files`, and its
+    /// module `user` is `user`.
+    fn with_other_root_glob(test_crate_root: &str, files: &[(&str, &str)]) -> Analyzed {
+        let mut all = vec![("src/lib.rs", test_crate_root)];
+        all.extend_from_slice(files);
+        TestWorkspace::new()
+            .package(
+                "other_crate",
+                &[
+                    ("src/lib.rs", "pub mod ty;\npub use ty::*;"),
+                    ("src/ty.rs", "pub struct Type;"),
+                ],
+            )
+            .package("test_crate", &all)
+            .analyze()
     }
 
     // A name another crate's root only brings in through a glob is unknown
     // while the map is built; the re-export records that root as its target.
     #[test]
     fn reexport_of_a_name_another_root_reexports_targets_that_root() {
-        let tmp = test_crate(&[
-            ("src/lib.rs", "pub mod prelude;\n"),
-            ("src/prelude.rs", "pub use other_crate::{Type, ty};\n"),
-        ]);
-        let crate_info = make_crate_info(&tmp, "test_crate");
-        let ws: WorkspacePackages = ["test_crate", "other_crate"].into_iter().collect();
-        let mp: ModulePathMap = [
-            ("test_crate".to_string(), HashSet::from(["prelude".into()])),
-            ("other_crate".to_string(), HashSet::from(["ty".into()])),
-        ]
-        .into_iter()
-        .collect();
-
-        let result =
-            collect_single_root_reexports(&crate_info, &mp, &ws, &PackageExportMap::default());
-
-        let prelude = result.get("prelude").expect("prelude is collected");
-        let target = |name: &str| {
-            reexport(prelude, name).map(|t| {
-                (
-                    t.crate_name.as_str(),
-                    t.module.as_str(),
-                    t.original_name.as_str(),
-                )
-            })
-        };
-        assert_eq!(
-            target("Type"),
-            Some(("other_crate", "", "Type")),
-            "{result:?}"
+        let ws = with_other_root_glob(
+            "pub mod prelude;\nmod user;\n",
+            &[
+                ("src/prelude.rs", "pub use other_crate::{Type, ty};\n"),
+                ("src/user.rs", "use crate::prelude::{Type, ty};"),
+            ],
         );
-        assert_eq!(target("ty"), Some(("other_crate", "", "ty")), "{result:?}");
+        assert_eq!(
+            ws.sorted_targets("test_crate::user"),
+            [
+                ("other_crate", "ty", None),
+                ("other_crate", "ty", Some("Type"))
+            ]
+        );
     }
 
     // The same through `extern crate other_crate as oc;` in the root.
     #[test]
     fn reexport_through_an_extern_crate_alias_targets_the_other_root() {
-        let tmp = test_crate(&[(
-            "src/lib.rs",
-            "extern crate other_crate as oc;\npub use oc::{Type, ty};\n",
-        )]);
-        let crate_info = make_crate_info(&tmp, "test_crate");
-        let ws: WorkspacePackages = ["test_crate", "other_crate"].into_iter().collect();
-        let mp: ModulePathMap = [("other_crate".to_string(), HashSet::from(["ty".into()]))]
-            .into_iter()
-            .collect();
-
-        let result =
-            collect_single_root_reexports(&crate_info, &mp, &ws, &PackageExportMap::default());
-
-        let root = result.get("").expect("root is collected");
-        let target = |name: &str| {
-            reexport(root, name).map(|t| {
-                (
-                    t.crate_name.as_str(),
-                    t.module.as_str(),
-                    t.original_name.as_str(),
-                )
-            })
-        };
-        assert_eq!(
-            target("Type"),
-            Some(("other_crate", "", "Type")),
-            "{result:?}"
+        let ws = with_other_root_glob(
+            "extern crate other_crate as oc;\nmod user;\npub use oc::{Type, ty};\n",
+            &[("src/user.rs", "use crate::{Type, ty};")],
         );
-        assert_eq!(target("ty"), Some(("other_crate", "", "ty")), "{result:?}");
+        assert_eq!(
+            ws.sorted_targets("test_crate::user"),
+            [
+                ("other_crate", "ty", None),
+                ("other_crate", "ty", Some("Type"))
+            ]
+        );
     }
 
     // A child module named like a workspace crate shadows that crate's root.
     #[test]
     fn reexport_through_a_child_module_named_like_a_crate_stays_local() {
-        let tmp = test_crate(&[
-            ("src/lib.rs", "pub mod cmds;\n"),
-            (
-                "src/cmds/mod.rs",
-                "mod other_crate;\npub use other_crate::Cmd;\n",
-            ),
-            ("src/cmds/other_crate.rs", "pub struct Cmd;\n"),
-        ]);
-        let crate_info = make_crate_info(&tmp, "test_crate");
-        let ws: WorkspacePackages = ["test_crate", "other_crate"].into_iter().collect();
-        let mp: ModulePathMap = [(
-            "test_crate".to_string(),
-            HashSet::from(["cmds".into(), "cmds::other_crate".into()]),
-        )]
-        .into_iter()
-        .collect();
-
-        let result =
-            collect_single_root_reexports(&crate_info, &mp, &ws, &PackageExportMap::default());
-
-        let target = result
-            .get("cmds")
-            .and_then(|info| reexport(info, "Cmd"))
-            .map(|t| {
-                (
-                    t.crate_name.as_str(),
-                    t.module.as_str(),
-                    t.original_name.as_str(),
-                )
-            });
+        let ws = TestWorkspace::new()
+            .package("other_crate", &[("src/lib.rs", "pub struct Cmd;")])
+            .package(
+                "test_crate",
+                &[
+                    ("src/lib.rs", "pub mod cmds;\nmod user;\n"),
+                    (
+                        "src/cmds/mod.rs",
+                        "mod other_crate;\npub use other_crate::Cmd;\n",
+                    ),
+                    ("src/cmds/other_crate.rs", "pub struct Cmd;\n"),
+                    ("src/user.rs", "use crate::cmds::Cmd;"),
+                ],
+            )
+            .analyze();
         assert_eq!(
-            target,
-            Some(("test_crate", "cmds::other_crate", "Cmd")),
-            "{result:?}"
+            ws.targets("test_crate::user"),
+            [("test_crate", "cmds::other_crate", Some("Cmd"))]
         );
     }
 
@@ -1807,48 +1398,26 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
     // the module of the other crate that defines it.
     #[test]
     fn glob_reexport_from_a_module_of_another_crate_reaches_that_module() {
-        let ws: WorkspacePackages = ["test_crate", "other_crate"].into_iter().collect();
-        let mp: ModulePathMap = [
-            ("test_crate".to_string(), HashSet::from(["util".into()])),
-            ("other_crate".to_string(), HashSet::from(["math".into()])),
-        ]
-        .into_iter()
-        .collect();
-        let user = test_crate(&[
-            ("src/lib.rs", "pub mod util;\n"),
-            ("src/util.rs", "pub use other_crate::math::*;\n"),
-        ]);
-        let other = test_crate(&[
-            ("src/lib.rs", "pub mod math;\n"),
-            ("src/math.rs", "pub fn align_to() {}\n"),
-        ]);
-        let collect = |tmp: &TempDir, name: &str| {
-            let info = make_crate_info(tmp, name);
-            collect_single_root_reexports(&info, &mp, &ws, &PackageExportMap::default())
-        };
-        let map: ReExportMap = [
-            ("test_crate".to_string(), collect(&user, "test_crate")),
-            ("other_crate".to_string(), collect(&other, "other_crate")),
-        ]
-        .into_iter()
-        .collect();
-
-        let mut dep = DependencyRef {
-            target_package: "test_crate".to_string(),
-            target_module: "util".to_string(),
-            target_item: Some("align_to".to_string()),
-            source_file: "src/main.rs".into(),
-            line: 1,
-            context: EdgeContext::production(),
-            via_reexport: false,
-            uses: Vec::new(),
-            target_root: TargetRoot::AsSeen,
-        };
-        resolve_reexport(&mut dep, &map, &mp, "");
-
+        let ws = TestWorkspace::new()
+            .package(
+                "other_crate",
+                &[
+                    ("src/lib.rs", "pub mod math;\n"),
+                    ("src/math.rs", "pub fn align_to() {}\n"),
+                ],
+            )
+            .package(
+                "test_crate",
+                &[
+                    ("src/lib.rs", "pub mod util;\nmod user;\n"),
+                    ("src/util.rs", "pub use other_crate::math::*;\n"),
+                    ("src/user.rs", "use crate::util::align_to;"),
+                ],
+            )
+            .analyze();
         assert_eq!(
-            (dep.target_package.as_str(), dep.target_module.as_str()),
-            ("other_crate", "math")
+            ws.targets("test_crate::user"),
+            [("other_crate", "math", Some("align_to"))]
         );
     }
 
@@ -1856,62 +1425,33 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
     // the cycle is still found, and a name nobody defines ends the chain.
     #[test]
     fn globs_republishing_each_other_across_crates_end() {
-        let ws: WorkspacePackages = ["test_crate", "other_crate"].into_iter().collect();
-        let mp: ModulePathMap = [
-            (
-                "test_crate".to_string(),
-                HashSet::from(["front".into(), "defs".into()]),
-            ),
-            ("other_crate".to_string(), HashSet::from(["back".into()])),
-        ]
-        .into_iter()
-        .collect();
-        let user = test_crate(&[
-            ("src/lib.rs", "pub mod defs;\npub mod front;\n"),
-            ("src/front.rs", "pub use other_crate::back::*;\n"),
-            ("src/defs.rs", "pub fn deep() {}\n"),
-        ]);
-        let other = test_crate(&[
-            ("src/lib.rs", "pub mod back;\n"),
-            (
-                "src/back.rs",
-                "pub use test_crate::front::*;\npub use test_crate::defs::*;\n",
-            ),
-        ]);
-        let collect = |tmp: &TempDir, name: &str| {
-            let info = make_crate_info(tmp, name);
-            collect_single_root_reexports(&info, &mp, &ws, &PackageExportMap::default())
-        };
-        let map: ReExportMap = [
-            ("test_crate".to_string(), collect(&user, "test_crate")),
-            ("other_crate".to_string(), collect(&other, "other_crate")),
-        ]
-        .into_iter()
-        .collect();
-
-        let resolved = |item: &str| {
-            let mut dep = DependencyRef {
-                target_package: "test_crate".to_string(),
-                target_module: "front".to_string(),
-                target_item: Some(item.to_string()),
-                source_file: "src/main.rs".into(),
-                line: 1,
-                context: EdgeContext::production(),
-                via_reexport: false,
-                uses: Vec::new(),
-                target_root: TargetRoot::AsSeen,
-            };
-            resolve_reexport(&mut dep, &map, &mp, "");
-            (dep.target_package, dep.target_module)
-        };
-
+        let ws = TestWorkspace::new()
+            .package(
+                "test_crate",
+                &[
+                    ("src/lib.rs", "pub mod defs;\npub mod front;\nmod user;\n"),
+                    ("src/front.rs", "pub use other_crate::back::*;\n"),
+                    ("src/defs.rs", "pub fn deep() {}\n"),
+                    ("src/user.rs", "use crate::front::{deep, missing};"),
+                ],
+            )
+            .package(
+                "other_crate",
+                &[
+                    ("src/lib.rs", "pub mod back;\n"),
+                    (
+                        "src/back.rs",
+                        "pub use test_crate::front::*;\npub use test_crate::defs::*;\n",
+                    ),
+                ],
+            )
+            .analyze();
         assert_eq!(
-            resolved("deep"),
-            ("test_crate".to_string(), "defs".to_string())
-        );
-        assert_eq!(
-            resolved("missing"),
-            ("test_crate".to_string(), "front".to_string())
+            ws.sorted_targets("test_crate::user"),
+            [
+                ("test_crate", "defs", Some("deep")),
+                ("test_crate", "front", Some("missing")),
+            ]
         );
     }
 
@@ -1920,89 +1460,27 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
     // the same name in its own crate.
     #[test]
     fn private_glob_from_a_module_of_another_crate_reaches_that_module() {
-        let ws: WorkspacePackages = ["test_crate", "other_crate"].into_iter().collect();
-        let mp: ModulePathMap = [
-            (
-                "test_crate".to_string(),
-                HashSet::from(["math".into(), "util".into(), "util::child".into()]),
-            ),
-            ("other_crate".to_string(), HashSet::from(["math".into()])),
-        ]
-        .into_iter()
-        .collect();
-        let user = test_crate(&[
-            ("src/lib.rs", "pub mod math;\npub mod util;\n"),
-            ("src/math.rs", "pub fn align_to() {}\n"),
-            ("src/util/mod.rs", "mod child;\nuse other_crate::math::*;\n"),
-            ("src/util/child.rs", ""),
-        ]);
-        let other = test_crate(&[
-            ("src/lib.rs", "pub mod math;\n"),
-            ("src/math.rs", "pub fn align_to() {}\n"),
-        ]);
-        let collect = |tmp: &TempDir, name: &str| {
-            let info = make_crate_info(tmp, name);
-            collect_single_root_reexports(&info, &mp, &ws, &PackageExportMap::default())
-        };
-        let map = [
-            ("test_crate".to_string(), collect(&user, "test_crate")),
-            ("other_crate".to_string(), collect(&other, "other_crate")),
-        ]
-        .into_iter()
-        .collect::<ReExportMap>()
-        .for_root("test_crate", 0);
-
-        let mut dep = DependencyRef {
-            target_package: "test_crate".to_string(),
-            target_module: "util".to_string(),
-            target_item: Some("align_to".to_string()),
-            source_file: "src/util/child.rs".into(),
-            line: 1,
-            context: EdgeContext::production(),
-            via_reexport: false,
-            uses: Vec::new(),
-            target_root: TargetRoot::AsSeen,
-        };
-        resolve_reexport(&mut dep, &map, &mp, "util::child");
-
+        let ws = TestWorkspace::new()
+            .package(
+                "other_crate",
+                &[
+                    ("src/lib.rs", "pub mod math;\n"),
+                    ("src/math.rs", "pub fn align_to() {}\n"),
+                ],
+            )
+            .package(
+                "test_crate",
+                &[
+                    ("src/lib.rs", "pub mod math;\npub mod util;\n"),
+                    ("src/math.rs", "pub fn align_to() {}\n"),
+                    ("src/util/mod.rs", "mod child;\nuse other_crate::math::*;\n"),
+                    ("src/util/child.rs", "use super::align_to;"),
+                ],
+            )
+            .analyze();
         assert_eq!(
-            (dep.target_package.as_str(), dep.target_module.as_str()),
-            ("other_crate", "math")
-        );
-    }
-
-    // A `pub use` of a module re-exports it by its parent and its name.
-    #[test]
-    fn reexport_of_a_module_targets_it_in_its_parent() {
-        let tmp = test_crate(&[
-            ("src/lib.rs", "mod backend;\npub use backend::custom;\n"),
-            ("src/backend/mod.rs", "pub mod custom;"),
-            ("src/backend/custom.rs", ""),
-        ]);
-        let crate_info = make_crate_info(&tmp, "test_crate");
-        let mp: ModulePathMap = [(
-            "test_crate".to_string(),
-            HashSet::from(["backend".into(), "backend::custom".into()]),
-        )]
-        .into_iter()
-        .collect();
-
-        let result = collect_single_root_reexports(
-            &crate_info,
-            &mp,
-            &WorkspacePackages::default(),
-            &PackageExportMap::default(),
-        );
-
-        let target = result.get("").and_then(|root| reexport(root, "custom"));
-        assert_eq!(
-            target.map(|t| (
-                t.crate_name.as_str(),
-                t.module.as_str(),
-                t.original_name.as_str()
-            )),
-            Some(("test_crate", "backend", "custom")),
-            "{result:?}"
+            ws.targets("test_crate::util::child"),
+            [("other_crate", "math", Some("align_to"))]
         );
     }
 
@@ -2010,10 +1488,10 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
     // build without `test` gets the modules of its test build beside them.
     #[test]
     fn test_build_modules_hold_the_files_a_test_build_loads() {
-        let tmp = test_crate(&[
+        let files = [
             (
                 "src/lib.rs",
-                "pub mod other;\n#[cfg(test)]\nmod fake;\npub mod alt;\n",
+                "pub mod other;\n#[cfg(test)]\nmod fake;\npub mod alt;\nmod user;\n",
             ),
             ("src/other.rs", "pub fn helper() {}"),
             ("src/fake.rs", "pub use crate::other::helper;"),
@@ -2023,83 +1501,40 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
             ),
             ("src/alt/inner.rs", "pub fn real() {}"),
             ("src/alt_test.rs", "pub fn mock() {}"),
-        ]);
-        let crate_info = make_crate_info(&tmp, "test_crate");
-        let mp: ModulePathMap = [(
-            "test_crate".to_string(),
-            HashSet::from([
-                "other".into(),
-                "fake".into(),
-                "alt".into(),
-                "alt::inner".into(),
-            ]),
-        )]
-        .into_iter()
-        .collect();
-        let collect = |include_tests| {
-            let mut roots = collect_crate_reexports(
-                &crate_info,
-                &mp,
-                &WorkspacePackages::default(),
-                &PackageExportMap::default(),
-                include_tests,
-            );
-            roots.remove(0)
-        };
-        let shape = |modules: &HashMap<String, ModuleExportInfo>| {
-            let mut shape: Vec<(String, Vec<String>)> = modules
-                .iter()
-                .map(|(path, info)| {
-                    let mut names: Vec<String> = ModuleBindings::new("test_crate", info)
-                        .all()
-                        .filter(|(_, binding)| {
-                            matches!(
-                                binding.kind,
-                                BindingKind::Definition(_) | BindingKind::ReExport(_)
-                            )
-                        })
-                        .map(|(name, _)| name.to_string())
-                        .collect();
-                    names.sort();
-                    names.dedup();
-                    (path.clone(), names)
-                })
-                .collect();
-            shape.sort();
-            shape
-        };
-        let owned = |path: &str, names: &[&str]| {
             (
-                path.to_string(),
-                names.iter().map(ToString::to_string).collect::<Vec<_>>(),
-            )
-        };
-
-        let with_tests = collect(true);
-        let without_tests = collect(false);
+                "src/user.rs",
+                "#[cfg(test)]\nfn t() { crate::fake::helper(); crate::alt::inner::mock(); }",
+            ),
+        ];
+        let with_tests = TestWorkspace::new()
+            .package("test_crate", &files)
+            .analyze_with_tests();
+        let without_tests = TestWorkspace::new().package("test_crate", &files).analyze();
 
         assert_eq!(
-            with_tests.test_build_modules.as_ref().map(shape),
-            Some(vec![
-                owned("", &[]),
-                owned("alt::inner", &["mock"]),
-                owned("fake", &["helper"]),
-                owned("other", &["helper"]),
-            ])
+            with_tests.sorted_targets("test_crate::user"),
+            [
+                ("test_crate", "alt::inner", Some("mock")),
+                ("test_crate", "other", Some("helper")),
+            ]
         );
-        // The root of the build without `test` declares no restricted module,
-        // so it holds nothing a resolution reads.
-        let production = vec![owned("alt::inner", &["real"]), owned("other", &["helper"])];
-        assert_eq!(shape(&with_tests.modules), production);
-        assert_eq!(shape(&without_tests.modules), production);
-        assert!(without_tests.test_build_modules.is_none());
+        assert_eq!(
+            defined_names(&with_tests, "test_crate::alt::inner"),
+            ["mock", "real"]
+        );
+        assert_eq!(
+            defined_names(&without_tests, "test_crate::alt::inner"),
+            ["real"]
+        );
+        assert!(without_tests.deps("test_crate::user").is_empty());
     }
 
     // Two bindings of one name, each in builds of its own `cfg` or in a
     // namespace of its own, both stay: neither replaces the other.
     #[test]
     fn two_bindings_of_one_name_both_stay() {
-        let tmp = test_crate(&[
+        let tmp = TempDir::new().unwrap();
+        for (path, content) in [
             (
                 "src/lib.rs",
                 "mod x;\nmod y;\n\
@@ -2112,8 +1547,12 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
             ),
             ("src/x.rs", "pub fn f() {}\npub fn g() {}\n"),
             ("src/y.rs", "pub fn f() {}\npub fn g() {}\n"),
-        ]);
-        let crate_info = make_crate_info(&tmp, "test_crate");
+        ] {
+            let full = tmp.path().join(path);
+            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+            std::fs::write(&full, content).unwrap();
+        }
+        let crate_info = conventional_package("test_crate", tmp.path());
         let mp: ModulePathMap = [(
             "test_crate".to_string(),
             HashSet::from(["x".into(), "y".into()]),
@@ -2121,12 +1560,15 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
         .into_iter()
         .collect();
 
-        let result = collect_single_root_reexports(
+        let mut roots = collect_crate_reexports(
             &crate_info,
             &mp,
             &WorkspacePackages::default(),
             &PackageExportMap::default(),
+            false,
         );
+        assert_eq!(roots.len(), 1, "expected one crate root");
+        let result = roots.remove(0).modules;
 
         let root = ModuleBindings::new("test_crate", &result[""]);
         let counts = ["f", "g", "S"].map(|name| (name, root.named(name).count()));
