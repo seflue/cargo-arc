@@ -63,7 +63,7 @@ impl LanguageAdapter for Rust {
             .collect();
         tracing::debug!("phase: crate exports collected");
 
-        let reexport_map: ReExportMap = packages
+        let reexport_map = packages
             .iter()
             .map(|krate| {
                 let exports = collect_crate_reexports(
@@ -75,7 +75,8 @@ impl LanguageAdapter for Rust {
                 );
                 (krate.key.clone(), exports)
             })
-            .collect();
+            .collect::<ReExportMap>()
+            .settle_written_paths(&all_module_paths);
         tracing::debug!("phase: reexport map collected");
 
         // Run externals analysis before module analysis so crate_name_map

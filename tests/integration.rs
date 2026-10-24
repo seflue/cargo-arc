@@ -5445,6 +5445,56 @@ fn chain_over_two_globs_into_another_crate_reaches_the_definer() {
     }
 }
 
+/// The `provider` root republishes its module `defs::kind` with `pub use
+/// crate::{defs::kind, ..};`, and the `consumer` root takes `Mode`, an enum
+/// of that module, with a private `use provider::{kind::{Marker, Mode}, ..};`.
+/// Its descendant `infer::expr` writes `use crate::Mode;` and matches on
+/// `Mode::Shared` and `Mode::Owned`. `Mode` there is the enum, not a module,
+/// so the arc to `kind` carries `Mode`, not the variants.
+#[test]
+fn private_root_use_through_a_republished_module_names_the_item() {
+    for include_tests in [false, true] {
+        let (temp, cmd) = fixture_args("module_reexport_through_root", include_tests);
+        run(cmd).expect("run() should succeed");
+        let svg = std::fs::read_to_string(temp.path()).unwrap();
+        let symbols = extract_arc_symbols(&svg);
+
+        assert_eq!(
+            symbols
+                .get(&("expr".to_string(), "kind".to_string()))
+                .map(Vec::as_slice),
+            Some(["Mode".to_string()].as_slice()),
+            "expr -> kind should carry `Mode` (include_tests {include_tests}), \
+             found: {symbols:?}"
+        );
+    }
+}
+
+/// The `provider` root brings its private module `faults` in with `pub use
+/// faults::*;`, so `report`, a public child of `faults`, is a name of the
+/// root. The `consumer` root takes `Failure` with a private `use
+/// provider::{report::detail::Failure, ..};`, and its child `check` writes
+/// `use crate::Failure;`. The arc of `check` lands on `report::detail`, which
+/// defines `Failure`.
+#[test]
+fn private_root_use_through_a_root_glob_names_the_item() {
+    for include_tests in [false, true] {
+        let (temp, cmd) = fixture_args("module_reexport_through_root", include_tests);
+        run(cmd).expect("run() should succeed");
+        let svg = std::fs::read_to_string(temp.path()).unwrap();
+        let symbols = extract_arc_symbols(&svg);
+
+        assert_eq!(
+            symbols
+                .get(&("check".to_string(), "detail".to_string()))
+                .map(Vec::as_slice),
+            Some(["Failure".to_string()].as_slice()),
+            "check -> detail should carry `Failure` (include_tests {include_tests}), \
+             found: {symbols:?}"
+        );
+    }
+}
+
 /// `net` holds a private `use external_lib::Client;` to a package outside the
 /// workspace, and its child `net::endpoint` names the symbol through it with
 /// `use super::Client;`. Re-export collection resolves without external

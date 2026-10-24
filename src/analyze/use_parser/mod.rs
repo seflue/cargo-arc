@@ -342,6 +342,20 @@ impl ModuleExportInfo {
             self.hold_glob(glob);
         }
     }
+
+    /// The target of each `use` binding, with its name and its place among
+    /// the bindings of the name.
+    fn use_targets(&self) -> impl Iterator<Item = (&str, usize, &ReExportTarget)> {
+        self.bindings.iter().flat_map(|(name, bindings)| {
+            bindings
+                .iter()
+                .enumerate()
+                .filter_map(move |(index, binding)| {
+                    let (target, _) = binding.use_target()?;
+                    Some((name.as_str(), index, target))
+                })
+        })
+    }
 }
 
 /// Whether a glob's names reach outside its module, as a `pub use *`,
@@ -516,6 +530,18 @@ pub(crate) struct RootReExports {
     pub(crate) test_build_modules: Option<HashMap<String, ModuleExportInfo>>,
 }
 
+impl RootReExports {
+    /// The modules of each build the root holds, marked `true` for its test
+    /// build.
+    fn builds(&self) -> impl Iterator<Item = (bool, &HashMap<String, ModuleExportInfo>)> {
+        std::iter::once((false, &self.modules)).chain(
+            self.test_build_modules
+                .iter()
+                .map(|modules| (true, modules)),
+        )
+    }
+}
+
 /// Crate name → one [`RootReExports`] per entry file, in `entry_files` order.
 ///
 /// A lib and a bin root of one package share the module tree but not their
@@ -590,6 +616,113 @@ impl ReExportMap {
         })
     }
 
+    /// Point each `use` of another workspace crate whose target holds the path
+    /// as written, where the empty map of collection left it, at what that
+    /// path reaches through the crate's root. A path whose first name the root
+    /// binds nothing under names that name in the root. Rounds repeat while
+    /// one settles a path, since a path may run through a root binding that is
+    /// itself written.
+    pub(crate) fn settle_written_paths(mut self, module_paths: &ModulePathMap) -> Self {
+        loop {
+            let viewer = self.viewer_from_outside();
+            let reached: Vec<_> = self
+                .written_targets(module_paths)
+                .filter_map(|(place, target)| {
+                    Some((place, reached_target(viewer, target, module_paths)?))
+                })
+                .collect();
+            if reached.is_empty() {
+                break;
+            }
+            self.rebind(reached);
+        }
+        let unreached: Vec<_> = self
+            .written_targets(module_paths)
+            .map(|(place, target)| (place, root_name_of(target)))
+            .collect();
+        self.rebind(unreached);
+        self
+    }
+
+    /// The viewer from outside every package: it sees each package's lib root,
+    /// built without `test`, and only what is public there.
+    fn viewer_from_outside(&self) -> Viewer<'_> {
+        Viewer {
+            packages: &self.packages,
+            own_root: None,
+            test_build: false,
+            module: None,
+        }
+    }
+
+    /// Each `use` binding whose target, in another workspace crate than its
+    /// holder's, lies in no module of that crate: the path as written.
+    fn written_targets<'a>(
+        &'a self,
+        module_paths: &'a ModulePathMap,
+    ) -> impl Iterator<Item = (BindingPlace, &'a ReExportTarget)> + 'a {
+        self.use_targets().filter(move |(place, target)| {
+            target.crate_name != place.package
+                && !target.module.is_empty()
+                && !module_paths
+                    .get_or_empty(&target.crate_name)
+                    .contains(&target.module)
+        })
+    }
+
+    /// Each `use` binding of the map, in every root and build, with its place.
+    fn use_targets(&self) -> impl Iterator<Item = (BindingPlace, &ReExportTarget)> {
+        let builds = self.packages.iter().flat_map(|(package, roots)| {
+            roots.iter().enumerate().flat_map(move |(root, exports)| {
+                exports
+                    .builds()
+                    .map(move |(test_build, modules)| (package, root, test_build, modules))
+            })
+        });
+        builds.flat_map(|(package, root, test_build, modules)| {
+            modules.iter().flat_map(move |(module, info)| {
+                info.use_targets().map(move |(name, index, target)| {
+                    let place = BindingPlace {
+                        package: package.clone(),
+                        root,
+                        test_build,
+                        module: module.clone(),
+                        name: name.to_string(),
+                        index,
+                    };
+                    (place, target)
+                })
+            })
+        })
+    }
+
+    /// Replace the target of the `use` binding at each place.
+    fn rebind(&mut self, targets: Vec<(BindingPlace, ReExportTarget)>) {
+        let packages = Arc::make_mut(&mut self.packages);
+        for (place, target) in targets {
+            let binding = packages
+                .get_mut(&place.package)
+                .and_then(|roots| roots.get_mut(place.root))
+                .and_then(|exports| {
+                    if place.test_build {
+                        exports.test_build_modules.as_mut()
+                    } else {
+                        Some(&mut exports.modules)
+                    }
+                })
+                .and_then(|modules| modules.get_mut(&place.module))
+                .and_then(|info| info.bindings.get_mut(&place.name))
+                .and_then(|bindings| bindings.get_mut(place.index));
+            if let Some(NameBinding {
+                kind: BindingKind::ReExport(held) | BindingKind::PrivateUse(held),
+                ..
+            }) = binding
+            {
+                *held = target;
+            }
+        }
+    }
+
     /// Whether the own root is seen as its test build loads it.
     pub(crate) fn is_test_build(&self) -> bool {
         self.test_build
@@ -610,6 +743,75 @@ impl ReExportMap {
                 .and_then(|roots| roots.get(*index))
                 .is_some_and(|root| root.kind == EntryKind::Lib)
         })
+    }
+}
+
+/// Where a binding sits in a [`ReExportMap`]: package, root, build, module,
+/// name, and place among the bindings of the name.
+struct BindingPlace {
+    package: String,
+    root: usize,
+    test_build: bool,
+    module: String,
+    name: String,
+    index: usize,
+}
+
+/// The target the path `target` holds as written reaches from the root of
+/// its crate, as `viewer` sees it: each name but the last carries the path
+/// into the module it stands for, and the name that stands for no module
+/// ends it, as an item whose associated item the rest names. `None` where
+/// the root binds nothing under the first name.
+fn reached_target(
+    viewer: Viewer,
+    target: &ReExportTarget,
+    module_paths: &ModulePathMap,
+) -> Option<ReExportTarget> {
+    let written: Vec<&str> = target
+        .module
+        .split("::")
+        .chain(std::iter::once(target.original_name.as_str()))
+        .collect();
+    let (last, through) = written.split_last()?;
+    let mut crate_name = target.crate_name.clone();
+    let mut module = String::new();
+    for (index, name) in through.iter().enumerate() {
+        let holder = CrateModule {
+            crate_name: &crate_name,
+            path: &module,
+        };
+        match name_in_module(viewer, holder, name, module_paths, true) {
+            Some(NameTarget::Module {
+                crate_name: reached_crate,
+                path,
+            }) => {
+                crate_name = reached_crate;
+                module = path;
+            }
+            None if index == 0 => return None,
+            Some(NameTarget::Item) | None => return Some(target_in(crate_name, module, name)),
+        }
+    }
+    Some(target_in(crate_name, module, last))
+}
+
+/// The target `name` in the module `module` of `crate_name`.
+fn target_in(crate_name: String, module: String, name: &str) -> ReExportTarget {
+    ReExportTarget {
+        crate_name,
+        module,
+        original_name: name.to_string(),
+    }
+}
+
+/// The first name of the path `target` holds as written, in the root of its
+/// crate.
+fn root_name_of(target: &ReExportTarget) -> ReExportTarget {
+    let first = target.module.split("::").next().unwrap_or(&target.module);
+    ReExportTarget {
+        crate_name: target.crate_name.clone(),
+        module: String::new(),
+        original_name: first.to_string(),
     }
 }
 

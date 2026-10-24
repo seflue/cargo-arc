@@ -9,7 +9,7 @@ use std::sync::LazyLock;
 use syn::spanned::Spanned;
 
 use super::packages::{ModulePathMap, PackageExportMap, WorkspacePackages, normalize_crate_name};
-use crate::model::{DefKind, Definition, EdgeContext, PackageInfo};
+use crate::model::{DefKind, Definition, DependencyRef, EdgeContext, PackageInfo};
 
 use super::mod_resolver::{CfgCondition, ModuleFile, declared_files, extract_mod_declarations};
 use super::use_parser::{
@@ -494,6 +494,7 @@ fn collect_use_reexports(
             dep.target_module = String::new();
             dep.target_item = Some(name.to_string());
         }
+        keep_written_path(ctx, original_path, &mut dep);
         // A module: its parent and its name. A whole workspace crate: its root,
         // which has neither. Without an item the resolution may also have
         // fallen back to a module that does not exist.
@@ -546,6 +547,31 @@ fn collect_use_reexports(
             };
             info.bind(alias_name.to_string(), binding);
         }
+    }
+}
+
+/// Point `dep` at the path `path` writes, where `dep` lies in another
+/// workspace crate and stops short of the path's last name. The empty map
+/// cannot follow a name that crate republishes: in `other_crate::kind::Mode`,
+/// `kind` may be a module its root republishes, and `Mode` the name meant.
+/// [`ReExportMap::settle_written_paths`] resolves the path once the map is
+/// whole. A glob keeps the module it resolved to.
+fn keep_written_path(ctx: &CollectContext, path: &str, dep: &mut DependencyRef) {
+    let segments: Vec<&str> = path.split("::").collect();
+    let [_, in_crate @ .., last] = segments.as_slice() else {
+        return;
+    };
+    if in_crate.is_empty() || *last == "*" || dep.target_package == ctx.crate_name {
+        return;
+    }
+    let names_covered = if dep.target_module.is_empty() {
+        1
+    } else {
+        dep.target_module.split("::").count() + 1
+    };
+    if names_covered <= in_crate.len() {
+        dep.target_module = in_crate.join("::");
+        dep.target_item = Some((*last).to_string());
     }
 }
 
