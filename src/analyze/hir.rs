@@ -16,7 +16,9 @@ pub struct FeatureConfig {
 #[cfg(feature = "hir")]
 use {
     super::packages::{ModulePathMap, PackageExportMap, WorkspacePackages, normalize_crate_name},
-    super::use_parser::{ResolutionContext, parse_workspace_dependencies_from_source},
+    super::use_parser::{
+        CrateView, ResolutionContext, RootBuilds, parse_workspace_dependencies_from_source,
+    },
     crate::model::{DependencyRef, ModuleInfo, ModuleTree, PackageInfo},
     anyhow::{Context, Result},
     ra_ap_cfg::{CfgAtom, CfgDiff},
@@ -338,18 +340,17 @@ fn extract_module_dependencies(
         .map(|p| p.to_path_buf())
         .unwrap_or(abs_path_buf);
 
-    let empty_reexport_map = super::use_parser::ReExportMap::default();
-    let res_ctx = ResolutionContext {
-        current_crate: ctx.crate_name,
+    let no_extern_crates = std::collections::HashMap::new();
+    let crate_view = CrateView {
+        crate_name: ctx.crate_name,
         workspace_crates: ctx.workspace_crates,
-        source_file: &source_file,
-        all_module_paths: ctx.all_module_paths,
+        module_paths: ctx.all_module_paths,
         crate_exports: ctx.crate_exports,
-        current_module_path,
-        reexport_map: &empty_reexport_map,
         external_crate_names: ctx.external_crate_names,
-        extern_crates: &std::collections::HashMap::new(),
+        extern_crates: &no_extern_crates,
+        builds: RootBuilds::of(super::use_parser::ReExportMap::default()),
     };
+    let res_ctx = ResolutionContext::new(&crate_view, &source_file, current_module_path);
     parse_workspace_dependencies_from_source(&source_text, &res_ctx)
 }
 
