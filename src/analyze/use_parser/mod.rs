@@ -155,8 +155,8 @@ pub(crate) enum BindingKind {
     /// even though it defines nothing. Resolving through it attributes the
     /// edge to the definer, not to this ancestor.
     PrivateUse(ReExportTarget),
-    /// A private `use` of a path the resolution chain cannot place: an
-    /// external crate, invisible while re-exports are collected. Nothing here
+    /// A private `use` of a path [`UseScope::place`] finds no start for: an
+    /// external crate, which the placement does not know. Nothing here
     /// names a definer, so a descendant's reference through this module
     /// produces no edge rather than staying on the ancestor.
     Elsewhere,
@@ -567,8 +567,8 @@ impl ReExportMap {
     }
 
     /// Point each `use` of another workspace crate whose target holds the path
-    /// as written, where the empty map of collection left it, at what that
-    /// path reaches through the crate's root. A path whose first name the root
+    /// as written, where [`UseScope::place`] left it, at what that path
+    /// reaches through the crate's root. A path whose first name the root
     /// binds nothing under names that name in the root. Rounds repeat while
     /// one settles a path, since a path may run through a root binding that is
     /// itself written.
@@ -2758,7 +2758,7 @@ impl PathEnd {
 
         // A name the crate writes for a workspace crate other than its key names
         // that crate, even where the name is another workspace crate's key.
-        let dealiased = dealias_extern_crate(ctx, path);
+        let dealiased = dealias_extern_crate(ctx.extern_crates, path);
         let in_workspace = dealiased.as_deref().unwrap_or(path);
         Self::beside_the_file(ctx, path)
             .or_else(|| Self::in_workspace_crate(ctx, in_workspace))
@@ -3068,15 +3068,154 @@ impl PathStart {
 
 /// `path` with a leading name from `extern_crates` replaced by the crate it
 /// names, also when the name is all of `path`.
-fn dealias_extern_crate(ctx: &ResolutionContext, path: &str) -> Option<String> {
+fn dealias_extern_crate(extern_crates: &HashMap<String, String>, path: &str) -> Option<String> {
     let (first, rest) = path
         .split_once("::")
         .map_or((path, None), |(first, rest)| (first, Some(rest)));
-    let crate_name = ctx.extern_crates.get(first)?;
+    let crate_name = extern_crates.get(first)?;
     Some(rest.map_or_else(
         || crate_name.clone(),
         |rest| format!("{crate_name}::{rest}"),
     ))
+}
+
+/// The module of a workspace crate a `use` is written in, with what places
+/// its paths while the binding table is collected: the module tree of every
+/// workspace crate and the names that stand for one.
+pub(crate) struct UseScope<'a> {
+    /// The crate of the module, normalized.
+    pub(crate) crate_name: &'a str,
+    pub(crate) module_path: &'a str,
+    pub(crate) module_paths: &'a ModulePathMap,
+    pub(crate) workspace_crates: &'a WorkspacePackages,
+    /// Name -> workspace crate name, as [`ResolutionContext::extern_crates`].
+    pub(crate) extern_crates: &'a HashMap<String, String>,
+}
+
+/// What a `use` path binds, placed by the module tree alone.
+#[derive(Debug)]
+pub(crate) enum UsePlace {
+    /// A name in a module of a workspace crate, or a crate root as the name
+    /// `""` in its own root.
+    Name(ReExportTarget),
+    /// The names a glob takes from a module.
+    Glob { crate_name: String, module: String },
+    /// Nothing: the path names its own crate alone, or is a glob of an item
+    /// in a module, such as the variants of an enum.
+    Nothing,
+}
+
+impl UseScope<'_> {
+    /// Place the `use` path `path` by the module tree. Which names the
+    /// modules bind is not asked, since the table that holds them is what
+    /// is being collected. From the start [`UseScope::start`] picks, each
+    /// segment that names a child module enters it, and the next segment is
+    /// the name. A path that ends on a module binds it as a name in its
+    /// parent; a whole workspace crate binds its root. A path into another
+    /// workspace crate that goes on past the name keeps the path as written,
+    /// with its last segment as the name, for
+    /// [`ReExportMap::settle_written_paths`] to follow once the table is
+    /// whole. In this crate, a first segment that names no child of the root
+    /// and that the path goes on past is taken for a module, and the next
+    /// segment for the name: the module tree holds no inline module. A glob
+    /// takes the names of the module its path ends on, or of the first
+    /// segment taken for a module. `None` where no start fits.
+    pub(crate) fn place(&self, path: &str) -> Option<UsePlace> {
+        let (crate_name, segments) = self.start(path)?;
+        if segments.first().is_some_and(String::is_empty) {
+            return None;
+        }
+        let foreign = crate_name != self.crate_name;
+        if let Some((last, base)) = segments.split_last()
+            && last == "*"
+        {
+            let (module, rest) = self.enter_modules(&crate_name, base);
+            let module = match rest {
+                [] => module,
+                [first] if module.is_empty() => first.clone(),
+                _ => return Some(UsePlace::Nothing),
+            };
+            return Some(UsePlace::Glob { crate_name, module });
+        }
+        let (module, rest) = self.enter_modules(&crate_name, &segments);
+        let (module, name) = match rest {
+            [] if module.is_empty() && !foreign => return Some(UsePlace::Nothing),
+            [] => {
+                let (parent, name) = module.rsplit_once("::").unwrap_or(("", module.as_str()));
+                (parent.to_string(), name.to_string())
+            }
+            [name] => (module, name.clone()),
+            [.., last] if foreign => {
+                let written = &segments[..segments.len() - 1];
+                (written.join("::"), last.clone())
+            }
+            [first, next, ..] if module.is_empty() => (first.clone(), next.clone()),
+            [name, ..] => (module, name.clone()),
+        };
+        Some(UsePlace::Name(ReExportTarget {
+            crate_name,
+            module,
+            original_name: name,
+        }))
+    }
+
+    /// The crate a `use` path starts in and its segments from that crate's
+    /// root: `super::` and `self::` an ancestor of this module, `crate::`
+    /// the root, a child module of this module, a workspace crate by any
+    /// name this crate gives it.
+    fn start(&self, path: &str) -> Option<(String, Vec<String>)> {
+        let own = |in_crate: &str| {
+            let segments = in_crate.split("::").map(ToString::to_string);
+            Some((self.crate_name.to_string(), segments.collect()))
+        };
+        if let Some(resolved) = resolve_relative_path(path, self.module_path, 0) {
+            return own(&resolved);
+        }
+        if let Some(after_crate) = path.strip_prefix("crate::") {
+            return own(after_crate);
+        }
+        let (first, rest) = path.split_once("::").unwrap_or((path, ""));
+        let child = append_to_path(self.module_path, first);
+        if !first.is_empty()
+            && self
+                .module_paths
+                .get_or_empty(self.crate_name)
+                .contains(&child)
+        {
+            return own(&append_to_path(self.module_path, path));
+        }
+        let dealiased = dealias_extern_crate(self.extern_crates, path);
+        let (crate_name, rest) = match &dealiased {
+            Some(dealiased) => dealiased.split_once("::").unwrap_or((dealiased, "")),
+            None => (first, rest),
+        };
+        if !self.workspace_crates.contains(crate_name) {
+            return None;
+        }
+        let segments = module_segments(rest).map(ToString::to_string).collect();
+        Some((normalize_crate_name(crate_name), segments))
+    }
+
+    /// Enter each of `segments` that names a child module, from the root of
+    /// `crate_name`: the module reached and the segments after it.
+    fn enter_modules<'s>(
+        &self,
+        crate_name: &str,
+        segments: &'s [String],
+    ) -> (String, &'s [String]) {
+        let module_paths = self.module_paths.get_or_empty(crate_name);
+        let mut module = String::new();
+        let mut rest = segments;
+        while let Some((first, tail)) = rest.split_first() {
+            let child = append_to_path(&module, first);
+            if !module_paths.contains(&child) {
+                break;
+            }
+            module = child;
+            rest = tail;
+        }
+        (module, rest)
+    }
 }
 
 /// Parse syn-based use items, extracting workspace-relevant dependencies.

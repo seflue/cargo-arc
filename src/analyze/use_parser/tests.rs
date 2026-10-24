@@ -254,6 +254,29 @@ mod submodule_tests {
     }
 
     #[test]
+    fn a_glob_of_variants_of_another_crate_brings_no_name_of_its_root() {
+        let ws = TestWorkspace::new()
+            .package(
+                "other_crate",
+                &[("src/lib.rs", "pub enum Mode { Fast }\npub struct Other;")],
+            )
+            .package(
+                "my_crate",
+                &[
+                    ("src/lib.rs", "mod holder;"),
+                    ("src/holder.rs", "use other_crate::Mode::*;\nmod child;"),
+                    ("src/holder/child.rs", "use super::Other;"),
+                ],
+            )
+            .analyze();
+        let child_targets = ws.targets("my_crate::holder::child");
+        assert!(
+            !child_targets.contains(&("other_crate", "", Some("Other"))),
+            "{child_targets:?}"
+        );
+    }
+
+    #[test]
     fn test_workspace_import_through_root_glob_reexport() {
         // The root file names `Type` nowhere, only the glob brings it in.
         let ws = TestWorkspace::new()

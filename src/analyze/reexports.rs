@@ -5,26 +5,23 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::LazyLock;
 use syn::spanned::Spanned;
 
-use super::packages::{ModulePathMap, PackageExportMap, WorkspacePackages, normalize_crate_name};
-use crate::model::{DefKind, Definition, DependencyRef, EdgeContext, PackageInfo};
+use super::packages::{ModulePathMap, WorkspacePackages, normalize_crate_name};
+use crate::model::{DefKind, Definition, PackageInfo};
 
 use super::mod_resolver::{CfgCondition, ModuleFile, declared_files, extract_mod_declarations};
 use super::use_parser::{
-    AssociatedItems, BindingKind, Brought, GlobBinding, GlobReach, Meaning, ModuleExportInfo,
-    NameBinding, ReExportMap, ReExportTarget, ResolutionContext, RootReExports, Visibility,
-    is_reexport_visibility, item_attrs, resolve_single_path, resolve_use_tree,
+    AssociatedItems, BindingKind, Brought, GlobBinding, GlobReach, ModuleExportInfo, NameBinding,
+    RootReExports, UsePlace, UseScope, Visibility, is_reexport_visibility, item_attrs,
+    resolve_use_tree,
 };
 
 /// Invariant parameters shared across the recursive re-export walk.
 struct CollectContext<'a> {
     crate_name: &'a str,
-    workspace_root: &'a Path,
     all_module_paths: &'a ModulePathMap,
     workspace_crates: &'a WorkspacePackages,
-    crate_exports: &'a PackageExportMap,
     extern_crates: &'a HashMap<String, String>,
 }
 
@@ -36,7 +33,6 @@ pub(crate) fn collect_crate_reexports(
     crate_info: &PackageInfo,
     all_module_paths: &ModulePathMap,
     workspace_crates: &WorkspacePackages,
-    crate_exports: &PackageExportMap,
     include_tests: bool,
 ) -> Vec<RootReExports> {
     let crate_name = normalize_crate_name(&crate_info.name);
@@ -49,10 +45,8 @@ pub(crate) fn collect_crate_reexports(
                 root_extern_crates(&entry.file, workspace_crates, &crate_info.code_names);
             let ctx = CollectContext {
                 crate_name: &crate_name,
-                workspace_root: &crate_info.workspace_root,
                 all_module_paths,
                 workspace_crates,
-                crate_exports,
                 extern_crates: &extern_crates,
             };
             let (modules, test_build_modules) =
@@ -192,7 +186,6 @@ enum ImplOwner {
 fn collect_module_info(
     ctx: &CollectContext,
     syntax: &syn::File,
-    source_file: &Path,
     module_path: &str,
     test: bool,
     out_of_module_impls: &mut Vec<OutOfModuleImpl>,
@@ -210,15 +203,7 @@ fn collect_module_info(
     for &(item, builds) in &items {
         let defined = match item {
             syn::Item::Use(use_item) => {
-                collect_use_reexports(
-                    ctx,
-                    use_item,
-                    source_file,
-                    module_path,
-                    &macros,
-                    &mut info,
-                    builds,
-                );
+                collect_use_reexports(ctx, use_item, module_path, &macros, &mut info, builds);
                 None
             }
             syn::Item::Mod(i) => Some((&i.vis, i.ident.clone(), BindingKind::Module)),
@@ -268,8 +253,7 @@ fn collect_module_info(
                 let syn::Type::Path(self_type) = &*i.self_ty else {
                     continue;
                 };
-                let Some((owner, type_name)) =
-                    impl_owner(ctx, &self_type.path, source_file, module_path, &info)
+                let Some((owner, type_name)) = impl_owner(ctx, &self_type.path, module_path, &info)
                 else {
                     continue;
                 };
@@ -361,12 +345,11 @@ pub(crate) fn name_a_fn_defines(item: &syn::ItemFn) -> (syn::Ident, DefKind) {
 /// Find the module that defines the type an `impl` block is for, and the
 /// type's name there. A bare name is this module's when it defines the name,
 /// and otherwise whatever a `use` of this file binds it to; a qualified path
-/// resolves like any other. What resolves to neither is no type of this crate,
-/// and its `impl` is skipped.
+/// is placed like the path of a `use`. What resolves to neither is no type of
+/// this crate, and its `impl` is skipped.
 fn impl_owner(
     ctx: &CollectContext,
     path: &syn::Path,
-    source_file: &Path,
     module_path: &str,
     info: &ModuleExportInfo,
 ) -> Option<(ImplOwner, String)> {
@@ -391,50 +374,35 @@ fn impl_owner(
         .map(|s| s.ident.to_string())
         .collect::<Vec<_>>()
         .join("::");
-    let dep = resolve_single_path(
-        &resolution_context(ctx, source_file, module_path),
-        &path_str,
-        0,
-        &EdgeContext::production(),
-        0,
-        Meaning::Type,
-    )?;
-    if dep.target_package != ctx.crate_name {
+    let Some(UsePlace::Name(target)) = use_scope(ctx, module_path).place(&path_str) else {
+        return None;
+    };
+    if target.crate_name != ctx.crate_name {
         return None;
     }
-    let item = dep.target_item?;
-    let owner = if dep.target_module == module_path {
+    let owner = if target.module == module_path {
         ImplOwner::ThisModule
     } else {
-        ImplOwner::Other(dep.target_module)
+        ImplOwner::Other(target.module)
     };
-    Some((owner, item))
+    Some((owner, target.original_name))
 }
 
-/// Build the resolution context of this phase: the re-export map is what is
-/// being built, so it is empty here, and no external crate is known.
-fn resolution_context<'a>(
-    ctx: &'a CollectContext,
-    source_file: &'a Path,
-    module_path: &'a str,
-) -> ResolutionContext<'a> {
-    static EMPTY_REEXPORT_MAP: LazyLock<ReExportMap> = LazyLock::new(ReExportMap::default);
-    static EMPTY_EXT_NAMES: LazyLock<HashMap<String, String>> = LazyLock::new(HashMap::new);
-    ResolutionContext {
-        current_crate: ctx.crate_name,
+/// The scope that places the paths written in `module_path`.
+fn use_scope<'a>(ctx: &'a CollectContext, module_path: &'a str) -> UseScope<'a> {
+    UseScope {
+        crate_name: ctx.crate_name,
+        module_path,
+        module_paths: ctx.all_module_paths,
         workspace_crates: ctx.workspace_crates,
-        source_file,
-        all_module_paths: ctx.all_module_paths,
-        crate_exports: ctx.crate_exports,
-        current_module_path: module_path,
-        reexport_map: &EMPTY_REEXPORT_MAP,
-        external_crate_names: &EMPTY_EXT_NAMES,
         extern_crates: ctx.extern_crates,
     }
 }
 
-/// Resolve a single `use` item into re-export entries, each with the
-/// visibility of the `use`.
+/// Place a single `use` item into re-export entries, each with the
+/// visibility of the `use`. Each path is placed by the module tree alone
+/// ([`UseScope::place`]); no binding of the table is read while the table is
+/// collected.
 ///
 /// Its visibility selects the kind of binding a named target gets: a
 /// `pub`/`pub(crate)`/`pub(super)` re-export binds by
@@ -442,18 +410,16 @@ fn resolution_context<'a>(
 /// [`BindingKind::PrivateUse`] (a binding descendants can still name through
 /// this module). A glob is held with [`GlobReach::ReExport`] or
 /// [`GlobReach::Private`] by the same split, with the crate of its module
-/// where that is another workspace crate. A private,
-/// non-glob leaf the resolution chain cannot place at all names something
-/// outside this crate; binding it by [`BindingKind::Elsewhere`] keeps a
-/// descendant's reference to it from resolving to this module. A `use name;`
-/// of one of `macros`, the file's own `macro_rules!`, binds that macro here
-/// and stays out. Renamed, it may also bind what another `use` brought in
-/// under `name`, so it stays in. Each binding is in the `builds` of the map
-/// the `use` is in.
+/// where that is another workspace crate. A private, non-glob leaf that no
+/// start places names something outside the workspace; binding it by
+/// [`BindingKind::Elsewhere`] keeps a descendant's reference to it from
+/// resolving to this module. A `use name;` of one of `macros`, the file's own
+/// `macro_rules!`, binds that macro here and stays out. Renamed, it may also
+/// bind what another `use` brought in under `name`, so it stays in. Each
+/// binding is in the `builds` of the map the `use` is in.
 fn collect_use_reexports(
     ctx: &CollectContext,
     use_item: &syn::ItemUse,
-    source_file: &Path,
     module_path: &str,
     macros: &[String],
     info: &mut ModuleExportInfo,
@@ -462,139 +428,46 @@ fn collect_use_reexports(
     let alias_paths = resolve_use_tree(&use_item.tree, "", true);
     let original_paths = resolve_use_tree(&use_item.tree, "", false);
 
-    let res_ctx = resolution_context(ctx, source_file, module_path);
+    let scope = use_scope(ctx, module_path);
     let visibility = Visibility::of(&use_item.vis, module_path);
     let private = !is_reexport_visibility(&use_item.vis);
 
     for (alias_path, original_path) in alias_paths.iter().zip(original_paths.iter()) {
-        let Some(mut dep) = resolve_single_path(
-            &res_ctx,
-            original_path,
-            0,
-            &EdgeContext::production(),
-            0,
-            Meaning::Any,
-        ) else {
-            let alias_name = alias_path.rsplit("::").next().unwrap_or(alias_path);
-            let own_macro = alias_path == original_path && macros.contains(original_path);
-            if private && alias_name != "*" && !own_macro {
-                let binding = NameBinding {
-                    kind: BindingKind::Elsewhere,
-                    visibility: visibility.clone(),
-                    builds,
-                };
-                info.bind(alias_name.to_string(), binding);
+        let alias_name = alias_path.rsplit("::").next().unwrap_or(alias_path);
+        let kind = match scope.place(original_path) {
+            None => {
+                let own_macro = alias_path == original_path && macros.contains(original_path);
+                if !private || alias_name == "*" || own_macro {
+                    continue;
+                }
+                BindingKind::Elsewhere
             }
-            continue;
+            Some(UsePlace::Glob { crate_name, module }) => {
+                let foreign = crate_name != ctx.crate_name;
+                info.hold_glob(GlobBinding {
+                    reach: if private {
+                        GlobReach::Private
+                    } else {
+                        GlobReach::ReExport
+                    },
+                    crate_name,
+                    module,
+                    foreign,
+                    visibility: visibility.clone(),
+                });
+                continue;
+            }
+            Some(UsePlace::Name(target)) if private => BindingKind::PrivateUse(target),
+            Some(UsePlace::Name(target)) => BindingKind::ReExport(target),
+            Some(UsePlace::Nothing) => continue,
         };
-        if let Some((crate_name, name)) = root_item_name(ctx, original_path)
-            && dep.target_package == crate_name
-        {
-            dep.target_module = String::new();
-            dep.target_item = Some(name.to_string());
-        }
-        keep_written_path(ctx, original_path, &mut dep);
-        // A module: its parent and its name. A whole workspace crate: its root,
-        // which has neither. Without an item the resolution may also have
-        // fallen back to a module that does not exist.
-        let names_module = if dep.target_module.is_empty() {
-            dep.target_package != ctx.crate_name
-        } else {
-            ctx.all_module_paths
-                .get_or_empty(&dep.target_package)
-                .contains(&dep.target_module)
+        let binding = NameBinding {
+            kind,
+            visibility: visibility.clone(),
+            builds,
         };
-        if dep.target_item.is_none() && names_module {
-            let (parent, name) = match dep.target_module.rsplit_once("::") {
-                Some((parent, name)) => (parent.to_string(), name.to_string()),
-                None => (String::new(), dep.target_module.clone()),
-            };
-            dep.target_module = parent;
-            dep.target_item = Some(name);
-        }
-
-        if dep.target_item.as_deref() == Some("*") {
-            let foreign = dep.target_package != ctx.crate_name;
-            info.hold_glob(GlobBinding {
-                reach: if private {
-                    GlobReach::Private
-                } else {
-                    GlobReach::ReExport
-                },
-                crate_name: dep.target_package.clone(),
-                module: dep.target_module.clone(),
-                foreign,
-                visibility: visibility.clone(),
-            });
-        } else if let Some(original_name) = &dep.target_item {
-            let alias_name = alias_path.rsplit("::").next().unwrap_or(alias_path);
-            let target = ReExportTarget {
-                crate_name: dep.target_package.clone(),
-                module: dep.target_module.clone(),
-                original_name: original_name.clone(),
-            };
-            let kind = if private {
-                BindingKind::PrivateUse(target)
-            } else {
-                BindingKind::ReExport(target)
-            };
-            let binding = NameBinding {
-                kind,
-                visibility: visibility.clone(),
-                builds,
-            };
-            info.bind(alias_name.to_string(), binding);
-        }
+        info.bind(alias_name.to_string(), binding);
     }
-}
-
-/// Point `dep` at the path `path` writes, where `dep` lies in another
-/// workspace crate and stops short of the path's last name. The empty map
-/// cannot follow a name that crate republishes: in `other_crate::kind::Mode`,
-/// `kind` may be a module its root republishes, and `Mode` the name meant.
-/// [`ReExportMap::settle_written_paths`] resolves the path once the map is
-/// whole. A glob keeps the module it resolved to.
-fn keep_written_path(ctx: &CollectContext, path: &str, dep: &mut DependencyRef) {
-    let segments: Vec<&str> = path.split("::").collect();
-    let [_, in_crate @ .., last] = segments.as_slice() else {
-        return;
-    };
-    if in_crate.is_empty() || *last == "*" || dep.target_package == ctx.crate_name {
-        return;
-    }
-    let names_covered = if dep.target_module.is_empty() {
-        1
-    } else {
-        dep.target_module.split("::").count() + 1
-    };
-    if names_covered <= in_crate.len() {
-        dep.target_module = in_crate.join("::");
-        dep.target_item = Some((*last).to_string());
-    }
-}
-
-/// The crate and item that `crate::Name`, `other_crate::Name` or `alias::Name`
-/// (`extern crate other_crate as alias;`) names in a crate root, when `Name` is
-/// no module. The resolution cannot tell while the
-/// map is built: a name the root only re-exports is not in it yet.
-fn root_item_name<'p>(ctx: &CollectContext, path: &'p str) -> Option<(String, &'p str)> {
-    let (first, name) = path.split_once("::")?;
-    let crate_name = if first == "crate" {
-        ctx.crate_name.to_string()
-    } else if let Some(crate_name) = ctx.extern_crates.get(first) {
-        crate_name.clone()
-    } else if ctx.workspace_crates.contains(first) {
-        normalize_crate_name(first)
-    } else {
-        return None;
-    };
-    let is_item = !name.contains("::")
-        && name != "*"
-        && !ctx
-            .all_module_paths
-            .get_or_empty(&crate_name)
-            .contains(name);
-    is_item.then_some((crate_name, name))
 }
 
 /// Read `file` and its descendants once, each into the modules of the builds
@@ -625,15 +498,10 @@ fn walk_collect_reexports(
         }
     };
 
-    let source_file = file_path
-        .strip_prefix(ctx.workspace_root)
-        .map_or_else(|_| file_path.to_path_buf(), Path::to_path_buf);
-
     let collect_into = |modules: &mut CollectedModules, test: bool| {
         let info = collect_module_info(
             ctx,
             &syntax,
-            &source_file,
             module_path,
             test,
             &mut modules.out_of_module_impls,
@@ -1250,6 +1118,59 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
         );
     }
 
+    /// A private `use super::Name` of a root item passes the name on to the
+    /// descendants of its module.
+    #[test]
+    fn a_use_of_a_root_item_through_super_passes_it_on() {
+        let ws = test_crate(
+            "pub struct Gauge;\nmod meter;",
+            &[
+                ("src/meter.rs", "use super::Gauge;\nmod dial;"),
+                ("src/meter/dial.rs", "use super::Gauge;"),
+            ],
+        );
+        assert_eq!(
+            ws.targets("test_crate::meter::dial"),
+            [("test_crate", "", Some("Gauge"))]
+        );
+    }
+
+    /// A glob of the variants of an enum brings in no other name of the
+    /// enum's module.
+    #[test]
+    fn a_glob_of_variants_brings_no_name_of_their_module() {
+        let ws = test_crate(
+            "mod kinds;\nmod holder;",
+            &[
+                ("src/kinds.rs", "pub enum Mode { Fast }\npub struct Other;"),
+                ("src/holder.rs", "use crate::kinds::Mode::*;\nmod child;"),
+                ("src/holder/child.rs", "use super::Other;"),
+            ],
+        );
+        let child_targets = ws.targets("test_crate::holder::child");
+        assert!(
+            !child_targets.contains(&("test_crate", "kinds", Some("Other"))),
+            "{child_targets:?}"
+        );
+    }
+
+    /// An `impl` block that names its type as `crate::Name` from another
+    /// module adds to the items of the root's `Name`.
+    #[test]
+    fn an_impl_of_a_root_type_through_crate_lands_on_the_root() {
+        let ws = test_crate(
+            "pub struct Gauge;\nmod ext;\nmod user;",
+            &[
+                ("src/ext.rs", "impl crate::Gauge { pub fn Read() {} }"),
+                ("src/user.rs", "fn f() { let a = crate::Gauge::Read; }"),
+            ],
+        );
+        assert_eq!(
+            uses_of(&ws, "test_crate::user", "Gauge"),
+            [use_at(1, UseCategory::Fns)]
+        );
+    }
+
     /// An `impl` of a name that a `pub use` and a private `use` bind under
     /// alternative `cfg`s lands where the `pub use` points, the order in
     /// which every lookup reads the bindings of a name.
@@ -1558,13 +1479,8 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
         .into_iter()
         .collect();
 
-        let mut roots = collect_crate_reexports(
-            &crate_info,
-            &mp,
-            &WorkspacePackages::default(),
-            &PackageExportMap::default(),
-            false,
-        );
+        let mut roots =
+            collect_crate_reexports(&crate_info, &mp, &WorkspacePackages::default(), false);
         assert_eq!(roots.len(), 1, "expected one crate root");
         let result = roots.remove(0).modules;
 

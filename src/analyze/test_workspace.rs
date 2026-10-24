@@ -75,8 +75,7 @@ impl TestWorkspace {
         let reexport_map = packages
             .iter()
             .map(|p| {
-                let roots =
-                    collect_crate_reexports(p, &module_paths, &workspace, &exports, include_tests);
+                let roots = collect_crate_reexports(p, &module_paths, &workspace, include_tests);
                 (p.key.clone(), roots)
             })
             .collect::<ReExportMap>()
