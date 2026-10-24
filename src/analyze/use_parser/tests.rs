@@ -232,6 +232,33 @@ mod submodule_tests {
     }
 
     #[test]
+    fn a_descendant_takes_the_item_of_a_path_written_through_a_written_path() {
+        let ws = TestWorkspace::new()
+            .package(
+                "base",
+                &[
+                    ("src/lib.rs", "pub mod deep;\npub use deep::outer;"),
+                    ("src/deep.rs", "pub mod outer;"),
+                    ("src/deep/outer.rs", "pub mod inner;"),
+                    ("src/deep/outer/inner.rs", "pub struct Thing;"),
+                ],
+            )
+            .package("middle", &[("src/lib.rs", "pub use base::outer::inner;")])
+            .package(
+                "top",
+                &[
+                    ("src/lib.rs", "use middle::inner::Thing;\nmod user;"),
+                    ("src/user.rs", "use crate::Thing;\npub fn f(_: Thing) {}"),
+                ],
+            )
+            .analyze();
+        assert_eq!(
+            ws.targets("top::user"),
+            [("base", "deep::outer::inner", Some("Thing"))]
+        );
+    }
+
+    #[test]
     fn test_workspace_import_through_a_module_another_module_reexports() {
         let ws = TestWorkspace::new()
             .package(
