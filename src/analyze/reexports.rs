@@ -13,10 +13,9 @@ use crate::model::{DefKind, Definition, DependencyRef, EdgeContext, PackageInfo}
 
 use super::mod_resolver::{CfgCondition, ModuleFile, declared_files, extract_mod_declarations};
 use super::use_parser::{
-    AssociatedItems, BindingKind, Brought, GlobBinding, GlobReach, GlobSource, Meaning,
-    ModuleBindings, ModuleExportInfo, NameBinding, ReExportMap, ReExportTarget, ResolutionContext,
-    RootReExports, Visibility, is_reexport_visibility, item_attrs, resolve_single_path,
-    resolve_use_tree,
+    AssociatedItems, BindingKind, Brought, GlobBinding, GlobReach, Meaning, ModuleExportInfo,
+    NameBinding, ReExportMap, ReExportTarget, ResolutionContext, RootReExports, Visibility,
+    is_reexport_visibility, item_attrs, resolve_single_path, resolve_use_tree,
 };
 
 /// Invariant parameters shared across the recursive re-export walk.
@@ -373,14 +372,14 @@ fn impl_owner(
 ) -> Option<(ImplOwner, String)> {
     let name = path.segments.last()?.ident.to_string();
     if path.segments.len() == 1 {
-        let named = ModuleBindings::new(ctx.crate_name, info).named(&name);
+        let named = info.named(&name);
         if named
             .clone()
             .any(|binding| matches!(binding.kind, BindingKind::Definition(_)))
         {
             return Some((ImplOwner::ThisModule, name));
         }
-        let (bound, _) = named.clone().find_map(NameBinding::use_target)?;
+        let bound = named.clone().find_map(NameBinding::use_target)?;
         return Some((
             ImplOwner::Other(bound.module.clone()),
             bound.original_name.clone(),
@@ -522,11 +521,10 @@ fn collect_use_reexports(
                 } else {
                     GlobReach::ReExport
                 },
-                foreign_crate: foreign.then(|| dep.target_package.clone()),
-                source: GlobSource {
-                    module: dep.target_module.clone(),
-                    visibility: visibility.clone(),
-                },
+                crate_name: dep.target_package.clone(),
+                module: dep.target_module.clone(),
+                foreign,
+                visibility: visibility.clone(),
             });
         } else if let Some(original_name) = &dep.target_item {
             let alias_name = alias_path.rsplit("::").next().unwrap_or(alias_path);
@@ -1570,7 +1568,7 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
         assert_eq!(roots.len(), 1, "expected one crate root");
         let result = roots.remove(0).modules;
 
-        let root = ModuleBindings::new("test_crate", &result[""]);
+        let root = &result[""];
         let counts = ["f", "g", "S"].map(|name| (name, root.named(name).count()));
         assert_eq!(counts, [("f", 2), ("g", 2), ("S", 2)], "{result:?}");
     }
