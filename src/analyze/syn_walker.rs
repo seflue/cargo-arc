@@ -8,7 +8,9 @@ use super::mod_resolver::{ModDecl, ModuleFile, declared_files, extract_mod_decla
 use super::packages::{ModulePathMap, PackageExportMap, WorkspacePackages, normalize_crate_name};
 use super::reexports::{name_a_fn_defines, root_extern_crates};
 use super::use_parser::ReExportMap;
-use super::use_parser::{PassedOn, ResolutionContext, parse_file_dependencies, promote_to_test};
+use super::use_parser::{
+    CrateView, PassedOn, ResolutionContext, RootBuilds, parse_file_dependencies, promote_to_test,
+};
 use crate::model::{
     EdgeContext, EntryKind, ModuleInfo, ModuleTree, PackageInfo, TestKind, UsageKind,
 };
@@ -195,18 +197,11 @@ pub(crate) fn collect_crate_exports(crate_info: &PackageInfo) -> HashSet<String>
 /// Invariant parameters shared across the recursive module walk.
 #[derive(Clone)]
 struct WalkContext<'a> {
-    crate_name: &'a str,
+    crate_view: &'a CrateView<'a>,
     workspace_root: &'a Path,
-    workspace_crates: &'a WorkspacePackages,
-    all_module_paths: &'a ModulePathMap,
-    crate_exports: &'a PackageExportMap,
-    reexport_map: &'a ReExportMap,
-    /// The map as the root's test build sees it, where the root has one: the
-    /// map of a file only test builds load.
-    test_build_map: Option<&'a ReExportMap>,
-    external_crate_names: &'a std::collections::HashMap<String, String>,
-    extern_crates: &'a std::collections::HashMap<String, String>,
     include_tests: bool,
+    /// The context of the code the walk enters: test code for a module only
+    /// test builds load, with all it holds.
     base_context: EdgeContext,
 }
 
@@ -219,16 +214,13 @@ fn only_passes_on(
     module_path: &str,
     dep: &crate::model::DependencyRef,
 ) -> bool {
-    let reexport_map = match ctx.test_build_map {
-        Some(test_build_map) if dep.context.kind != UsageKind::Production => test_build_map,
-        _ => ctx.reexport_map,
-    };
+    let view = ctx.crate_view;
     passed_on.passes_on(
-        ctx.crate_name,
+        view.crate_name,
         module_path,
         dep,
-        reexport_map,
-        ctx.all_module_paths,
+        view.builds.reading(dep.context.kind),
+        view.module_paths,
     )
 }
 
@@ -262,11 +254,9 @@ fn walk_declared_module(
     walked: &mut Walked,
 ) -> Option<ModuleInfo> {
     // A module declared under `#[cfg(test)]`, or a file only a test-only
-    // `#[cfg_attr]` path loads, is test code with all it holds, and resolves
-    // in the root's test build
+    // `#[cfg_attr]` path loads, is test code with all it holds
     let test_ctx = WalkContext {
         base_context: promote_to_test(&ctx.base_context),
-        reexport_map: ctx.test_build_map.unwrap_or(ctx.reexport_map),
         ..ctx.clone()
     };
     let mut alternatives = declared_files(&parent.path, parent.owns_directory, decl)
@@ -358,20 +348,10 @@ fn walk_module_syn(
 
     // Relative module path within the crate (e.g. "render" for render/mod.rs, "" for root)
     let current_module_path = full_path
-        .strip_prefix(&format!("{}::", ctx.crate_name))
+        .strip_prefix(&format!("{}::", ctx.crate_view.crate_name))
         .unwrap_or("");
 
-    let res_ctx = ResolutionContext {
-        current_crate: ctx.crate_name,
-        workspace_crates: ctx.workspace_crates,
-        source_file: &source_file,
-        all_module_paths: ctx.all_module_paths,
-        crate_exports: ctx.crate_exports,
-        current_module_path,
-        reexport_map: ctx.reexport_map,
-        external_crate_names: ctx.external_crate_names,
-        extern_crates: ctx.extern_crates,
-    };
+    let res_ctx = ResolutionContext::new(ctx.crate_view, &source_file, current_module_path);
     let mut dependencies = parse_file_dependencies(
         &syntax,
         &res_ctx,
@@ -401,23 +381,11 @@ fn walk_module_syn(
     // passes the names on, which is no dependency of this module.
     dependencies.retain(|dep| !only_passes_on(ctx, &walked.passed_on, current_module_path, dep));
 
-    // Take the definitions of both builds: a `#[cfg(test)]` item is in the
-    // test build's map only. Of alternatives in one build, the one read last
-    // comes first.
-    let mut definitions = HashMap::new();
-    for reexport_map in std::iter::once(ctx.reexport_map).chain(ctx.test_build_map) {
-        let Some(info) = reexport_map
-            .get(ctx.crate_name)
-            .and_then(|modules| modules.get(current_module_path))
-        else {
-            continue;
-        };
-        for (name, binding) in info.all() {
-            if let Some(definition) = binding.definition() {
-                definitions.entry(name.to_string()).or_insert(*definition);
-            }
-        }
-    }
+    let definitions = ctx.crate_view.builds.definitions(
+        ctx.crate_view.crate_name,
+        current_module_path,
+        ctx.base_context.kind,
+    );
 
     ModuleInfo {
         name: module_name.to_string(),
@@ -442,33 +410,32 @@ pub(crate) fn analyze_modules_syn(
 ) -> ModuleTree {
     let normalized = normalize_crate_name(&crate_info.name);
     let no_extern_crates = std::collections::HashMap::new();
-
-    let ctx = WalkContext {
+    // Seen from no root: what integration tests see.
+    let unrooted_view = CrateView {
         crate_name: &normalized,
-        workspace_root: &crate_info.workspace_root,
         workspace_crates,
-        all_module_paths,
+        module_paths: all_module_paths,
         crate_exports,
-        reexport_map,
-        test_build_map: None,
         external_crate_names,
         extern_crates: &no_extern_crates,
-        include_tests,
-        base_context: EdgeContext::production(),
+        builds: RootBuilds::of(reexport_map.clone()),
     };
 
     let mut walked = Walked::default();
     let mut root: Option<ModuleInfo> = None;
     for (index, entry) in crate_info.entry_files.iter().enumerate() {
-        let root_reexports = reexport_map.for_root(&normalized, index);
-        let root_test_build = root_reexports.test_build();
         let extern_crates =
             root_extern_crates(&entry.file, workspace_crates, &crate_info.code_names);
-        let root_ctx = WalkContext {
-            reexport_map: &root_reexports,
-            test_build_map: root_test_build.as_ref(),
+        let root_view = CrateView {
             extern_crates: &extern_crates,
-            ..ctx.clone()
+            builds: RootBuilds::of(reexport_map.for_root(&normalized, index)),
+            ..unrooted_view
+        };
+        let root_ctx = WalkContext {
+            crate_view: &root_view,
+            workspace_root: &crate_info.workspace_root,
+            include_tests,
+            base_context: EdgeContext::production(),
         };
         let tree = walk_module_syn(
             &root_ctx,
@@ -513,8 +480,10 @@ pub(crate) fn analyze_modules_syn(
     // Walk integration test files (tests/*.rs) when --include-tests is active
     if include_tests {
         let test_ctx = WalkContext {
+            crate_view: &unrooted_view,
+            workspace_root: &crate_info.workspace_root,
+            include_tests,
             base_context: EdgeContext::test(TestKind::Integration),
-            ..ctx.clone()
         };
         let test_files = find_integration_test_files(&crate_info.path);
         let root = root.as_mut().unwrap();

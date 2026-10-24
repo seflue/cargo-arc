@@ -674,11 +674,6 @@ impl ReExportMap {
         }
     }
 
-    /// Whether the own root is seen as its test build loads it.
-    pub(crate) fn is_test_build(&self) -> bool {
-        self.test_build
-    }
-
     /// The export info of `crate_name`'s modules, as this map sees them.
     pub(crate) fn get(&self, crate_name: &str) -> Option<&HashMap<String, ModuleExportInfo>> {
         self.viewer(TargetRoot::AsSeen, "")
@@ -1707,27 +1702,120 @@ fn common_ancestor<'a>(module: &'a str, other: &str) -> &'a str {
     &module[..chars + "::".len() * segments.saturating_sub(1)]
 }
 
-/// Invariant context for dependency resolution within a single source file.
-pub(crate) struct ResolutionContext<'a> {
-    pub(crate) current_crate: &'a str,
+/// The map as each build of a crate root sees it: the build without `test`
+/// and, where the root has one, its test build. Which of the two reads a
+/// piece of code follows from the code's context alone.
+pub(crate) struct RootBuilds {
+    production: ReExportMap,
+    /// The map as the root's test build sees it, where the root has modules
+    /// of its test build: the map of a file only test builds load.
+    test_build: Option<ReExportMap>,
+}
+
+impl RootBuilds {
+    /// The builds of the root `map` is seen from. A map seen from no root,
+    /// or from one without modules of its test build, reads test code as
+    /// built without `test`.
+    pub(crate) fn of(map: ReExportMap) -> Self {
+        Self {
+            test_build: map.test_build(),
+            production: map,
+        }
+    }
+
+    /// The map that reads code of `kind`: test code in the root's test
+    /// build, where it has one, production code in the build without `test`.
+    pub(crate) fn reading(&self, kind: UsageKind) -> &ReExportMap {
+        self.reading_first(kind).0
+    }
+
+    /// The map that reads code of `kind`, and the other build where the root
+    /// has two.
+    fn reading_first(&self, kind: UsageKind) -> (&ReExportMap, Option<&ReExportMap>) {
+        match (&self.test_build, kind) {
+            (Some(test_build), UsageKind::Test(_)) => (test_build, Some(&self.production)),
+            _ => (&self.production, self.test_build.as_ref()),
+        }
+    }
+
+    /// The definitions of `module` in `crate_name`, from both builds: a
+    /// `#[cfg(test)]` item is in the test build only. The build that reads
+    /// code of `kind` comes first, and of alternatives in one build the one
+    /// read last.
+    pub(crate) fn definitions(
+        &self,
+        crate_name: &str,
+        module: &str,
+        kind: UsageKind,
+    ) -> HashMap<String, Definition> {
+        let (first, other) = self.reading_first(kind);
+        let mut definitions = HashMap::new();
+        for map in std::iter::once(first).chain(other) {
+            let Some(info) = map.get(crate_name).and_then(|modules| modules.get(module)) else {
+                continue;
+            };
+            for (name, binding) in info.all() {
+                if let Some(definition) = binding.definition() {
+                    definitions.entry(name.to_string()).or_insert(*definition);
+                }
+            }
+        }
+        definitions
+    }
+}
+
+/// One crate as its code resolves names: the crate, the workspace around it,
+/// the module tree, and the builds of the root whose files are read.
+pub(crate) struct CrateView<'a> {
+    pub(crate) crate_name: &'a str,
     pub(crate) workspace_crates: &'a WorkspacePackages,
-    pub(crate) source_file: &'a Path,
-    pub(crate) all_module_paths: &'a ModulePathMap,
+    pub(crate) module_paths: &'a ModulePathMap,
     pub(crate) crate_exports: &'a PackageExportMap,
-    pub(crate) current_module_path: &'a str,
-    pub(crate) reexport_map: &'a ReExportMap,
     /// Code-side crate name -> `package_id` for external crates visible to
-    /// the current workspace crate. Populated from `crate_name_map[current_crate]`.
+    /// the crate. Populated from `crate_name_map[crate_name]`.
     pub(crate) external_crate_names: &'a HashMap<String, String>,
     /// Name -> workspace crate name, for the names the package's manifest
     /// gives its workspace crates (`PackageInfo::code_names`) and from
-    /// `extern crate X as Y;` in the root the current file belongs to. Both
-    /// put the name in the extern prelude, so it names the crate in every
-    /// module of the crate.
+    /// `extern crate X as Y;` in the root whose files are read. Both put the
+    /// name in the extern prelude, so it names the crate in every module of
+    /// the crate.
     pub(crate) extern_crates: &'a HashMap<String, String>,
+    pub(crate) builds: RootBuilds,
+}
+
+/// Invariant context for dependency resolution within a single source file,
+/// in one build of its root.
+pub(crate) struct ResolutionContext<'a> {
+    crate_view: &'a CrateView<'a>,
+    source_file: &'a Path,
+    current_module_path: &'a str,
+    reexport_map: &'a ReExportMap,
 }
 
 impl<'a> ResolutionContext<'a> {
+    /// The context of `source_file`, the file of `current_module_path` in
+    /// the crate of `crate_view`, reading production code.
+    pub(crate) fn new(
+        crate_view: &'a CrateView<'a>,
+        source_file: &'a Path,
+        current_module_path: &'a str,
+    ) -> Self {
+        Self {
+            crate_view,
+            source_file,
+            current_module_path,
+            reexport_map: crate_view.builds.reading(UsageKind::Production),
+        }
+    }
+
+    /// The same file, reading code of `kind`.
+    fn reading(&self, kind: UsageKind) -> Self {
+        Self {
+            reexport_map: self.crate_view.builds.reading(kind),
+            ..*self
+        }
+    }
+
     /// The viewer from this file's module, looking through `root`.
     fn viewer(&self, root: TargetRoot) -> Viewer<'a> {
         self.reexport_map.viewer(root, self.current_module_path)
@@ -1742,7 +1830,7 @@ impl<'a> ResolutionContext<'a> {
     fn lookup(&self, root: TargetRoot) -> NameLookup<'a> {
         NameLookup {
             viewer: self.viewer(root),
-            module_paths: self.all_module_paths,
+            module_paths: self.crate_view.module_paths,
         }
     }
 
@@ -1755,8 +1843,9 @@ impl<'a> ResolutionContext<'a> {
     /// Whether the module of this file has a child module `name` in the
     /// module tree.
     fn has_child_module(&self, name: &str) -> bool {
-        self.all_module_paths
-            .get_or_empty(&normalize_crate_name(self.current_crate))
+        self.crate_view
+            .module_paths
+            .get_or_empty(&normalize_crate_name(self.crate_view.crate_name))
             .contains(&append_to_path(self.current_module_path, name))
     }
 
@@ -2758,7 +2847,7 @@ impl PathEnd {
 
         // A name the crate writes for a workspace crate other than its key names
         // that crate, even where the name is another workspace crate's key.
-        let dealiased = dealias_extern_crate(ctx.extern_crates, path);
+        let dealiased = dealias_extern_crate(ctx.crate_view.extern_crates, path);
         let in_workspace = dealiased.as_deref().unwrap_or(path);
         Self::beside_the_file(ctx, path)
             .or_else(|| Self::in_workspace_crate(ctx, in_workspace))
@@ -2806,7 +2895,7 @@ impl PathEnd {
     fn in_workspace_crate(ctx: &ResolutionContext, path: &str) -> Option<Self> {
         let segments: Vec<&str> = path.split("::").collect();
         let (crate_name, rest) = segments.split_first()?;
-        if !ctx.workspace_crates.contains(crate_name) {
+        if !ctx.crate_view.workspace_crates.contains(crate_name) {
             return None;
         }
         let start = PathStart::named_crate(ctx, crate_name);
@@ -2823,7 +2912,7 @@ impl PathEnd {
         let (first, rest) = path
             .split_once("::")
             .map_or((path, None), |(first, rest)| (first, Some(rest)));
-        if first.is_empty() || !ctx.external_crate_names.contains_key(first) {
+        if first.is_empty() || !ctx.crate_view.external_crate_names.contains_key(first) {
             return None;
         }
         Some(Self {
@@ -2922,7 +3011,7 @@ impl PathStart {
     /// The root of the crate of `ctx`, as `crate::` names it.
     fn own_crate(ctx: &ResolutionContext) -> Self {
         Self {
-            crate_name: normalize_crate_name(ctx.current_crate),
+            crate_name: normalize_crate_name(ctx.crate_view.crate_name),
             target_root: TargetRoot::AsSeen,
             by_name: false,
         }
@@ -2932,7 +3021,7 @@ impl PathStart {
     /// name is its lib, also from a file of the bin tree.
     fn named_crate(ctx: &ResolutionContext, crate_name: &str) -> Self {
         let crate_name = normalize_crate_name(crate_name);
-        let target_root = if crate_name == normalize_crate_name(ctx.current_crate) {
+        let target_root = if crate_name == normalize_crate_name(ctx.crate_view.crate_name) {
             TargetRoot::Lib
         } else {
             TargetRoot::AsSeen
@@ -2994,7 +3083,8 @@ impl PathStart {
     /// Whether the root file of this crate names `name`, as `crate_exports`
     /// has it.
     fn root_file_names(&self, ctx: &ResolutionContext, name: &str) -> bool {
-        ctx.crate_exports
+        ctx.crate_view
+            .crate_exports
             .get(&self.crate_name)
             .is_some_and(|exports| exports.contains(name))
     }
@@ -3009,7 +3099,7 @@ impl PathStart {
     /// child of the root is taken for a module of that name, and the next
     /// segment for its item.
     fn walk(&self, ctx: &ResolutionContext, segments: &[&str]) -> (String, Option<String>) {
-        let module_paths = ctx.all_module_paths.get_or_empty(&self.crate_name);
+        let module_paths = ctx.crate_view.module_paths.get_or_empty(&self.crate_name);
         let lookup = ctx.lookup(self.target_root);
         let mut visited = Visited::default();
         let mut module = String::new();
@@ -3576,7 +3666,10 @@ impl FileBindings {
         let lookup = ctx.lookup_for(dep);
         let module = CrateModule::of(dep);
         let bindings = lookup.viewer.bindings_in(module);
-        let module_paths = ctx.all_module_paths.get_or_empty(&dep.target_package);
+        let module_paths = ctx
+            .crate_view
+            .module_paths
+            .get_or_empty(&dep.target_package);
         let children = module_paths.iter().filter_map(|path| {
             let (parent, name) = path.rsplit_once("::").unwrap_or(("", path));
             if parent != dep.target_module {
@@ -3604,7 +3697,8 @@ impl FileBindings {
                     import: None,
                 };
                 if !ctx
-                    .all_module_paths
+                    .crate_view
+                    .module_paths
                     .get_or_empty(&bound.package)
                     .contains(&bound.path)
                 {
@@ -3708,7 +3802,7 @@ fn classify_binding(
     if dep.target_item.is_none() {
         return Binding::Module(BoundModule::of(dep));
     }
-    if dep.target_package == normalize_crate_name(ctx.current_crate) {
+    if dep.target_package == normalize_crate_name(ctx.crate_view.crate_name) {
         return Binding::OwnItem;
     }
     if !binding.is_empty() && ctx.has_child_module(binding) {
@@ -3782,7 +3876,7 @@ impl BoundModule {
     ) -> Option<DependencyRef> {
         let path = append_to_path(&self.path, rest);
         if self.target_root == TargetRoot::AsSeen
-            && self.package == normalize_crate_name(ctx.current_crate)
+            && self.package == normalize_crate_name(ctx.crate_view.crate_name)
         {
             let path = format!("crate::{path}");
             return resolve_single_path(ctx, &path, line_num, context, inline_depth, meaning);
@@ -4124,9 +4218,12 @@ fn category_of_unknown_call(name: &str) -> UseCategory {
 /// re-export chains of the dependencies pass through is noted in
 /// `passed_on`. Without `include_tests`, the file's test code is not
 /// resolved and yields no dependency.
+///
+/// Each piece of code resolves in the build its context reads
+/// ([`RootBuilds::reading`]), whatever build `file` reads.
 pub(crate) fn parse_file_dependencies(
     syntax: &syn::File,
-    ctx: &ResolutionContext,
+    file: &ResolutionContext,
     base_context: EdgeContext,
     include_tests: bool,
     passed_on: &mut PassedOn,
@@ -4140,32 +4237,43 @@ pub(crate) fn parse_file_dependencies(
         || path_refs
             .iter()
             .any(|path_ref| !is_production(&path_ref.context));
-    if ctx.reexport_map.is_test_build() || !holds_test_code {
+    let production_ctx = file.reading(UsageKind::Production);
+    if !holds_test_code {
         return resolve_file_dependencies(
-            syntax, ctx, &use_items, &use_items, &path_refs, passed_on,
+            syntax,
+            &production_ctx,
+            &use_items,
+            &use_items,
+            &path_refs,
+            passed_on,
         );
     }
-    // Test code of the file is compiled in the root's test build: its
-    // references resolve there, and the production code's in the build
-    // without `test`, which binds none of the test code's `use` items. Each
-    // pass notes in `passed_on` only what it keeps.
+    // Production code resolves in the build without `test`, which binds
+    // none of the test code's `use` items, and test code in the build its
+    // context reads. Each pass notes in `passed_on` only what it keeps. A
+    // file of test code alone, such as one only test builds load, has no
+    // production pass.
     let production_uses = use_items.retaining(is_production);
-    let mut deps = resolve_file_dependencies(
-        syntax,
-        ctx,
-        &production_uses,
-        &production_uses,
-        &path_refs.retaining(is_production),
-        passed_on,
-    );
+    let production_refs = path_refs.retaining(is_production);
+    let holds_production_code =
+        production_uses.iter().next().is_some() || production_refs.iter().next().is_some();
+    let mut deps = if holds_production_code {
+        resolve_file_dependencies(
+            syntax,
+            &production_ctx,
+            &production_uses,
+            &production_uses,
+            &production_refs,
+            passed_on,
+        )
+    } else {
+        Vec::new()
+    };
     if !include_tests {
         return deps;
     }
-    let test_build = ctx.reexport_map.test_build();
-    let test_ctx = ResolutionContext {
-        reexport_map: test_build.as_ref().unwrap_or(ctx.reexport_map),
-        ..*ctx
-    };
+    // Every kind of test code reads the same build.
+    let test_ctx = file.reading(UsageKind::Test(TestKind::Unit));
     let test_deps = resolve_file_dependencies(
         syntax,
         &test_ctx,
