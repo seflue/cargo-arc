@@ -7,11 +7,13 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use syn::spanned::Spanned;
 
-use super::packages::{ModulePathMap, normalize_crate_name};
+use super::super::packages::{ModulePathMap, normalize_crate_name};
 use crate::model::{DefKind, Definition, EntryFile, EntryKind, PackageInfo};
 
-use super::mod_resolver::{CfgCondition, ModuleFile, declared_files, extract_mod_declarations};
-use super::use_parser::{
+use super::super::mod_resolver::{
+    CfgCondition, ModuleFile, declared_files, extract_mod_declarations,
+};
+use super::super::use_parser::{
     AssociatedItems, BindingKind, Brought, ExternPrelude, GlobBinding, GlobReach, ModuleExportInfo,
     NameBinding, Namespace, ReExportMap, RootReExports, UsePlace, UseScope, Visibility,
     attributes_expand, is_reexport_visibility, item_attrs, resolve_use_tree,
@@ -28,7 +30,7 @@ struct CollectContext<'a> {
 /// `packages`, by package key, and settle each `use` of another workspace
 /// crate ([`ReExportMap::settle_written_paths`]), so no target in the map
 /// still holds a path as written.
-pub(crate) fn collect_reexport_map(
+pub(super) fn collect_reexport_map(
     packages: &[PackageInfo],
     all_module_paths: &ModulePathMap,
     include_tests: bool,
@@ -82,7 +84,7 @@ fn collect_crate_reexports(
 /// integration test also name the package's lib; the test build adds the
 /// dev-dependencies. `extern crate X as Y;` in the root adds `Y` for `X`,
 /// `extern crate self as Y;` adds `Y` for the package itself.
-pub(crate) fn root_extern_prelude(
+pub(super) fn root_extern_prelude(
     package: &PackageInfo,
     entry: Option<&EntryFile>,
 ) -> ExternPrelude {
@@ -532,7 +534,7 @@ fn defined_item(item: &syn::Item) -> Option<(&syn::Visibility, syn::Ident, DefKi
 /// defines the derive macro `Name`, not a function under its own name; a
 /// `#[proc_macro]` or `#[proc_macro_attribute]` defines a macro under its own
 /// name.
-pub(crate) fn name_a_fn_defines(item: &syn::ItemFn) -> (syn::Ident, DefKind) {
+pub(super) fn name_a_fn_defines(item: &syn::ItemFn) -> (syn::Ident, DefKind) {
     for attr in &item.attrs {
         let path = attr.path();
         if path.is_ident("proc_macro_derive") {
@@ -845,7 +847,7 @@ fn walk_collect_reexports(
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_workspace::{Analyzed, TestWorkspace};
+    use super::super::super::test_workspace::{Analyzed, TestWorkspace};
     use super::*;
     use crate::model::{DependencyRef, SymbolUse, UseCategory};
     use crate::test_support::conventional_package;
