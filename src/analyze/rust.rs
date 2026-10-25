@@ -8,9 +8,9 @@ use super::LanguageAdapter;
 use super::backend::AnalysisBackend;
 use super::externals::analyze_externals;
 use super::hir::FeatureConfig;
+use super::name_resolution::collect_crate_exports;
 use super::packages::{ModulePathMap, PackageExportMap, WorkspacePackages};
 use super::reexports::collect_reexport_map;
-use super::syn_walker::collect_crate_exports;
 use super::workspace::analyze_workspace;
 use crate::model::{Analysis, LanguageProfile, Wording};
 

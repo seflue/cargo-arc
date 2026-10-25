@@ -7,9 +7,10 @@ use std::path::Path;
 
 use tempfile::TempDir;
 
+use super::name_resolution::collect_crate_exports;
 use super::packages::{ModulePathMap, PackageExportMap, WorkspacePackages};
 use super::reexports::collect_reexport_map;
-use super::syn_walker::{analyze_modules_syn, collect_crate_exports, collect_syn_module_paths};
+use super::syn_walker::{analyze_modules_syn, collect_syn_module_paths};
 use crate::model::{DependencyRef, ModuleInfo, ModuleTree, PackageInfo};
 use crate::test_support::conventional_package;
 
