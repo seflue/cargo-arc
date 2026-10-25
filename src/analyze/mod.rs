@@ -6,6 +6,15 @@ mod filtering;
 mod hir;
 pub(crate) mod lua;
 mod mod_resolver;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        unused_imports,
+        reason = "outside the tests only collect_crate_exports has a caller"
+    )
+)]
+mod name_resolution;
 pub(crate) mod packages;
 mod reexports;
 pub(crate) mod rust;

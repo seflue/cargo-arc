@@ -1,7 +1,7 @@
 //! Module discovery via syn + filesystem walk.
 
 use anyhow::{Context, Result};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use super::mod_resolver::{
@@ -10,14 +10,14 @@ use super::mod_resolver::{
 use super::packages::{
     ModulePathMap, ModulePaths, PackageExportMap, WorkspacePackages, normalize_crate_name,
 };
-use super::reexports::{name_a_fn_defines, root_extern_prelude};
+use super::reexports::root_extern_prelude;
 use super::use_parser::ReExportMap;
 use super::use_parser::{
     CrateView, ModulesBound, PassedOn, ResolutionContext, RootBuilds, parse_file_dependencies,
     promote_to_test,
 };
 use crate::model::{
-    EdgeContext, EntryKind, ModuleInfo, ModuleTree, PackageInfo, TargetRoot, TestKind, UsageKind,
+    EdgeContext, ModuleInfo, ModuleTree, PackageInfo, TargetRoot, TestKind, UsageKind,
 };
 
 /// Find integration test files in `tests/*.rs`.
@@ -159,98 +159,6 @@ pub(crate) fn collect_syn_module_paths(
         walk_modules_for_paths(&root, "", &mut modules, include_tests);
     }
     modules
-}
-
-// ---------------------------------------------------------------------------
-// Public API: collect_crate_exports
-// ---------------------------------------------------------------------------
-
-/// Extract the leaf name(s) from a `UseTree`.
-/// Handles simple paths, aliases, and groups — but NOT globs.
-fn collect_use_tree_names(tree: &syn::UseTree, names: &mut HashSet<String>) {
-    match tree {
-        syn::UseTree::Path(p) => collect_use_tree_names(&p.tree, names),
-        syn::UseTree::Name(n) => {
-            names.insert(n.ident.to_string());
-        }
-        syn::UseTree::Rename(r) => {
-            names.insert(r.rename.to_string());
-        }
-        syn::UseTree::Group(g) => {
-            for item in &g.items {
-                collect_use_tree_names(item, names);
-            }
-        }
-        syn::UseTree::Glob(_) => {} // out of scope
-    }
-}
-
-/// Returns whether a `syn::Visibility` is `pub` (not `pub(crate)`, `pub(super)`, etc.).
-fn is_pub(vis: &syn::Visibility) -> bool {
-    matches!(vis, syn::Visibility::Public(_))
-}
-
-/// Collect publicly exported symbol names from a crate's library target.
-///
-/// Includes:
-/// - `pub fn`, `pub struct`, `pub enum`, `pub trait`, `pub const`, `pub static`, `pub type`
-/// - a `#[proc_macro_derive(Name)]` fn under `Name`
-/// - `pub use` re-exports (simple, aliased, grouped — NOT glob)
-///
-/// Ignores `pub mod` declarations (module structure, not exports).
-/// Returns an empty set on any error (no library target, parse failure).
-pub(crate) fn collect_crate_exports(crate_info: &PackageInfo) -> HashSet<String> {
-    // Binary targets export nothing.
-    let Some(root_file) = crate_info
-        .entry_files
-        .iter()
-        .find(|entry| entry.kind == EntryKind::Lib)
-        .map(|entry| &entry.file)
-    else {
-        return HashSet::new();
-    };
-
-    let Ok(source) = std::fs::read_to_string(root_file) else {
-        return HashSet::new();
-    };
-
-    let Ok(syntax) = syn::parse_file(&source) else {
-        return HashSet::new();
-    };
-
-    let mut exports = HashSet::new();
-
-    for item in &syntax.items {
-        match item {
-            syn::Item::Fn(i) if is_pub(&i.vis) => {
-                exports.insert(name_a_fn_defines(i).0.to_string());
-            }
-            syn::Item::Struct(i) if is_pub(&i.vis) => {
-                exports.insert(i.ident.to_string());
-            }
-            syn::Item::Enum(i) if is_pub(&i.vis) => {
-                exports.insert(i.ident.to_string());
-            }
-            syn::Item::Trait(i) if is_pub(&i.vis) => {
-                exports.insert(i.ident.to_string());
-            }
-            syn::Item::Const(i) if is_pub(&i.vis) => {
-                exports.insert(i.ident.to_string());
-            }
-            syn::Item::Static(i) if is_pub(&i.vis) => {
-                exports.insert(i.ident.to_string());
-            }
-            syn::Item::Type(i) if is_pub(&i.vis) => {
-                exports.insert(i.ident.to_string());
-            }
-            syn::Item::Use(i) if is_pub(&i.vis) => {
-                collect_use_tree_names(&i.tree, &mut exports);
-            }
-            _ => {}
-        }
-    }
-
-    exports
 }
 
 // ---------------------------------------------------------------------------
@@ -628,6 +536,9 @@ pub(crate) fn analyze_modules_syn(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
+
+    use crate::analyze::name_resolution::collect_crate_exports;
     use crate::analyze::use_parser::{BindingKind, ModuleExportInfo, NameBinding, Visibility};
     use crate::model::{DefKind, Definition};
     use crate::test_support::conventional_package;
@@ -827,135 +738,6 @@ mod tests {
             assert!(paths.contains("a"), "should contain 'a', found: {paths:?}");
             assert!(paths.contains("b"), "should contain 'b', found: {paths:?}");
             assert_eq!(paths.len(), 2);
-        }
-    }
-
-    mod collect_exports {
-        use super::*;
-
-        #[test]
-        fn test_collect_exports_pub_items() {
-            let tmp = TestProject::new()
-                .file(
-                    "src/lib.rs",
-                    r"
-                    pub fn helper() {}
-                    pub struct MyStruct;
-                    pub enum MyEnum { A, B }
-                    pub trait MyTrait {}
-                    pub const MAX: usize = 10;
-                    pub static GLOBAL: i32 = 0;
-                    pub type Alias = i32;
-                ",
-                )
-                .build();
-
-            let exports = collect_crate_exports(&conventional_package("fixture", tmp.path()));
-            for name in [
-                "helper", "MyStruct", "MyEnum", "MyTrait", "MAX", "GLOBAL", "Alias",
-            ] {
-                assert!(
-                    exports.contains(name),
-                    "should contain '{name}', found: {exports:?}"
-                );
-            }
-            assert_eq!(exports.len(), 7);
-        }
-
-        #[test]
-        fn test_collect_exports_reexports() {
-            let tmp = TestProject::new()
-                .file("src/lib.rs", "pub use some_crate::Widget;\n")
-                .build();
-
-            let exports = collect_crate_exports(&conventional_package("fixture", tmp.path()));
-            assert!(exports.contains("Widget"), "found: {exports:?}");
-            assert_eq!(exports.len(), 1);
-        }
-
-        #[test]
-        fn test_collect_exports_alias_reexport() {
-            let tmp = TestProject::new()
-                .file("src/lib.rs", "pub use some_crate::Original as Alias;\n")
-                .build();
-
-            let exports = collect_crate_exports(&conventional_package("fixture", tmp.path()));
-            assert!(exports.contains("Alias"), "found: {exports:?}");
-            assert!(!exports.contains("Original"), "should not contain Original");
-            assert_eq!(exports.len(), 1);
-        }
-
-        #[test]
-        fn test_collect_exports_multi_reexport() {
-            let tmp = TestProject::new()
-                .file("src/lib.rs", "pub use some_crate::{Alpha, Beta};\n")
-                .build();
-
-            let exports = collect_crate_exports(&conventional_package("fixture", tmp.path()));
-            assert!(exports.contains("Alpha"), "found: {exports:?}");
-            assert!(exports.contains("Beta"), "found: {exports:?}");
-            assert_eq!(exports.len(), 2);
-        }
-
-        #[test]
-        fn test_collect_exports_non_pub_ignored() {
-            let tmp = TestProject::new()
-                .file(
-                    "src/lib.rs",
-                    r"
-                    fn private_fn() {}
-                    struct PrivateStruct;
-                    pub fn public_fn() {}
-                    pub(crate) fn crate_fn() {}
-                ",
-                )
-                .build();
-
-            let exports = collect_crate_exports(&conventional_package("fixture", tmp.path()));
-            assert!(exports.contains("public_fn"), "found: {exports:?}");
-            assert!(!exports.contains("private_fn"));
-            assert!(!exports.contains("PrivateStruct"));
-            assert!(!exports.contains("crate_fn"));
-            assert_eq!(exports.len(), 1);
-        }
-
-        #[test]
-        fn test_collect_exports_mod_ignored() {
-            let tmp = TestProject::new()
-                .file("src/lib.rs", "pub mod foo;\npub fn real_export() {}\n")
-                .build();
-
-            let exports = collect_crate_exports(&conventional_package("fixture", tmp.path()));
-            assert!(exports.contains("real_export"), "found: {exports:?}");
-            assert!(!exports.contains("foo"), "pub mod should not be an export");
-            assert_eq!(exports.len(), 1);
-        }
-
-        #[test]
-        fn test_collect_exports_no_entry_file() {
-            let tmp = TestProject::new().build();
-
-            let exports = collect_crate_exports(&conventional_package("fixture", tmp.path()));
-            assert!(exports.is_empty(), "found: {exports:?}");
-        }
-
-        #[test]
-        fn test_mixed_crate_exports_only_lib() {
-            let tmp = TestProject::new()
-                .file("src/lib.rs", "pub fn from_lib() {}")
-                .file("src/main.rs", "pub fn from_main() {}")
-                .build();
-
-            let exports = collect_crate_exports(&conventional_package("fixture", tmp.path()));
-            assert!(
-                exports.contains("from_lib"),
-                "should contain 'from_lib', found: {exports:?}"
-            );
-            assert!(
-                !exports.contains("from_main"),
-                "should NOT contain 'from_main', found: {exports:?}"
-            );
-            assert_eq!(exports.len(), 1);
         }
     }
 

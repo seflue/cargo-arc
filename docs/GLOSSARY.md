@@ -14,7 +14,9 @@ See also [RULES.md](RULES.md), [ARC_DIAGRAM.md](ARC_DIAGRAM.md), [HOTSPOT_MAP.md
 | **<a id="edge">Edge</a>** | The directed connection from one [node](#node) to another that the first depends on directly. A transitive dependency runs through other nodes and is not an edge. |
 | **<a id="qualified-node-name">Qualified node name</a>** | A [node](#node)'s path starting at its package: `storage` is the package, `storage::pool` a module in it. `check` writes both ends of a `layers` or `forbidden-dependency` [violation](#violation) as qualified node names. |
 | **<a id="manifest-edge">Manifest edge</a>** | The [edge](#edge) from one package to another that the first declares in its manifest, such as a `Cargo.toml`. No import in the source code creates it. |
-| **<a id="bare-import">Bare import</a>** | An import of a module itself instead of an item in it, such as `use storage::pool;`. |
+| **<a id="item">Item</a>** | A declaration in a module that a path can name: a function, a type, a trait, a constant, a static, a macro, or a module. The term and its scope come from the [Rust Reference](https://doc.rust-lang.org/reference/items.html), so a module is an item too. |
+| **<a id="name-resolution">Name resolution</a>** | Finding the [item](#item) a path in the source code names, through `use` declarations and re-exports up to the module that defines it. The term comes from the Rust Reference and rustc. |
+| **<a id="bare-import">Bare import</a>** | An import of a module itself instead of an [item](#item) in it, such as `use storage::pool;`. |
 
 Rust calls the library or binary that a [package](#package) builds a *crate*, and in everyday use often the package itself.
 Lakos uses *package* for a smaller unit (see [Module roles](#module-roles)).
