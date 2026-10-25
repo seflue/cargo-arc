@@ -166,6 +166,16 @@ impl EdgeContext {
             kind: UsageKind::Test(kind),
         }
     }
+
+    /// This context as test code sees it: production code becomes unit test
+    /// code, test code keeps its kind.
+    #[must_use]
+    pub(crate) fn promoted_to_test(&self) -> Self {
+        match self.kind {
+            UsageKind::Production => Self::test(TestKind::Unit),
+            UsageKind::Test(_) => self.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -556,6 +566,24 @@ mod tests {
         assert_ne!(ctx, test_ctx);
         let cloned = ctx.clone();
         assert_eq!(ctx, cloned);
+    }
+
+    #[test]
+    fn production_code_promoted_to_test_is_unit_test_code() {
+        assert_eq!(
+            EdgeContext::production().promoted_to_test(),
+            EdgeContext::test(TestKind::Unit)
+        );
+    }
+
+    #[test]
+    fn test_code_promoted_to_test_keeps_its_kind() {
+        for kind in [TestKind::Unit, TestKind::Integration] {
+            assert_eq!(
+                EdgeContext::test(kind).promoted_to_test(),
+                EdgeContext::test(kind)
+            );
+        }
     }
 
     #[test]
