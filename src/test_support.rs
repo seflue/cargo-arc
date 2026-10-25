@@ -5,7 +5,7 @@ use crate::graph::Node;
 use crate::model::{EntryFile, LanguageProfile, PackageInfo, Wording};
 use petgraph::graph::NodeIndex;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// A made-up language whose packages are widgets, declared in `widgets.cfg`.
 pub(crate) static WIDGETS: LanguageProfile = LanguageProfile {
@@ -68,6 +68,28 @@ pub(crate) fn module_node_with_file(
         file: Some(file.into()),
         definitions: HashMap::new(),
     }
+}
+
+/// Run `git` in `dir` and return its trimmed stdout, failing the test on a
+/// non-zero exit. It is cut off from any repository the environment points
+/// at, so a test run under `git rebase --exec` never writes into that one.
+pub(crate) fn git(dir: &Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+        .args(["-c", "commit.gpgsign=false"])
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("git should be on PATH");
+    assert!(
+        output.status.success(),
+        "git {args:?} failed in {}",
+        dir.display()
+    );
+    String::from_utf8(output.stdout).unwrap().trim().to_string()
 }
 
 /// A package laid out by Cargo's default convention, with its roots probed from

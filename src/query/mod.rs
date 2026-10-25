@@ -208,6 +208,7 @@ pub(super) fn utc_date(seconds: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::git;
     use serde_json::{Value, json};
 
     fn header() -> Header {
@@ -222,23 +223,6 @@ mod tests {
             flags,
             subcommand_fields: vec![("top", json!(5)), ("ranking", json!("by size"))],
         }
-    }
-
-    /// Run `git` in `dir`, cut off from any repository the environment
-    /// points at, so the test never writes into another one.
-    fn git(dir: &std::path::Path, args: &[&str]) -> String {
-        let output = std::process::Command::new("git")
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_INDEX_FILE")
-            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
-            .args(["-c", "commit.gpgsign=false"])
-            .args(args)
-            .current_dir(dir)
-            .output()
-            .expect("git should be on PATH");
-        assert!(output.status.success(), "git {args:?}");
-        String::from_utf8(output.stdout).unwrap().trim().to_string()
     }
 
     #[test]
