@@ -2202,6 +2202,101 @@ mod relative_import_e2e_tests {
     }
 }
 
+/// A file under `tests/` is a crate of its own, whose root is that file. The
+/// lib declares `support`, `cases` and `cases::harness` as well, so a path
+/// read against the lib lands on a lib module instead of failing.
+mod integration_test_crate_tests {
+    use super::*;
+
+    fn suite(case: &str) -> Analyzed {
+        TestWorkspace::new()
+            .package(
+                "app",
+                &[
+                    ("src/lib.rs", "pub mod support;\npub mod cases;"),
+                    ("src/support.rs", "pub fn helper() {}"),
+                    ("src/cases.rs", "pub mod harness;"),
+                    ("src/cases/harness.rs", "pub struct Probe;"),
+                    ("tests/suite.rs", "mod support;\nmod cases;"),
+                    ("tests/support/mod.rs", "pub fn helper() {}"),
+                    ("tests/cases/mod.rs", "mod harness;\nmod user;"),
+                    ("tests/cases/harness.rs", "pub struct Probe;"),
+                    ("tests/cases/user.rs", case),
+                ],
+            )
+            .analyze_with_tests()
+    }
+
+    /// The module each dependency of the module at `path` lands on, with its
+    /// item.
+    fn landings<'a>(ws: &'a Analyzed, path: &str) -> Vec<(String, Option<&'a str>)> {
+        ws.deps(path)
+            .iter()
+            .map(|dep| (dep.module_target(), dep.target_item.as_deref()))
+            .collect()
+    }
+
+    #[test]
+    fn crate_path_names_the_test_crate() {
+        let ws = suite("use crate::support::helper;");
+        assert_eq!(
+            landings(&ws, "app::tests::suite::cases::user"),
+            [("app::tests::suite::support".to_string(), Some("helper"))]
+        );
+    }
+
+    #[test]
+    fn super_path_stays_in_the_test_crate() {
+        let ws = suite("use super::harness::Probe;");
+        assert_eq!(
+            landings(&ws, "app::tests::suite::cases::user"),
+            [(
+                "app::tests::suite::cases::harness".to_string(),
+                Some("Probe")
+            )]
+        );
+    }
+
+    #[test]
+    fn package_name_names_the_lib() {
+        let ws = suite("use app::support::helper;");
+        assert_eq!(
+            landings(&ws, "app::tests::suite::cases::user"),
+            [("app::support".to_string(), Some("helper"))]
+        );
+    }
+
+    /// Cargo names the crate of `tests/my-test.rs` `my_test`, and its
+    /// modules keep the file name in the tree.
+    #[test]
+    fn crate_path_in_a_hyphenated_test_file_lands_on_its_module() {
+        let ws = TestWorkspace::new()
+            .package(
+                "app",
+                &[
+                    ("src/lib.rs", ""),
+                    (
+                        "tests/my-test.rs",
+                        "mod helpers;\nuse crate::helpers::helper;",
+                    ),
+                    ("tests/helpers/mod.rs", "pub fn helper() {}"),
+                ],
+            )
+            .analyze_with_tests();
+        let test_crate = ws
+            .module("app")
+            .children
+            .iter()
+            .find(|module| module.name == "my-test")
+            .expect("the test crate keeps its file name");
+        let helpers = &test_crate.children[0];
+        assert_eq!(
+            landings(&ws, &test_crate.full_path),
+            [(helpers.full_path.clone(), Some("helper"))]
+        );
+    }
+}
+
 mod inline_module_depth_tests {
     use super::*;
 
