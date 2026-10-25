@@ -1730,6 +1730,7 @@ fn common_ancestor<'a>(module: &'a str, other: &str) -> &'a str {
 /// The map as each build of a crate root sees it: the build without `test`
 /// and, where the root has one, its test build. Which of the two reads a
 /// piece of code follows from the code's context alone.
+#[derive(Clone)]
 pub(crate) struct RootBuilds {
     production: ReExportMap,
     /// The map as the root's test build sees it, where the root has modules
@@ -1792,6 +1793,8 @@ impl RootBuilds {
 /// One crate as its code resolves names: the crate, the workspace around it,
 /// the module tree, and the builds of the root whose files are read.
 pub(crate) struct CrateView<'a> {
+    /// The crate's key in `module_paths`: a package key, or for an
+    /// integration test the full path of its root module.
     pub(crate) crate_name: &'a str,
     pub(crate) workspace_crates: &'a WorkspacePackages,
     pub(crate) module_paths: &'a ModulePathMap,

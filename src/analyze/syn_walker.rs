@@ -81,6 +81,27 @@ fn walk_modules_for_paths(
     }
 }
 
+/// Copy `all_module_paths` and add the module paths of the integration test
+/// whose root is `test_file`, under the key `test_crate`.
+fn with_test_crate(
+    all_module_paths: &ModulePathMap,
+    test_crate: &str,
+    test_file: &Path,
+    include_tests: bool,
+) -> ModulePathMap {
+    let root = ModuleFile {
+        path: test_file.to_path_buf(),
+        owns_directory: true,
+    };
+    let mut paths = HashSet::new();
+    walk_modules_for_paths(&root, "", &mut paths, include_tests);
+    all_module_paths
+        .iter()
+        .map(|(key, paths)| (key.clone(), paths.clone()))
+        .chain(std::iter::once((test_crate.to_string(), paths)))
+        .collect()
+}
+
 /// Collect all module paths reachable from the crate's targets via filesystem walk.
 /// Returns relative paths without crate prefix, e.g. `{"analyze", "analyze::hir"}`.
 pub(crate) fn collect_syn_module_paths(
@@ -397,6 +418,39 @@ fn walk_module_syn(
     }
 }
 
+/// Walk the integration test whose root is `test_file` as a crate of its own,
+/// keyed by the full path of its root module under `tests_path`. Cargo names
+/// the crate as the file, `-` as `_`; the node shows the file's name.
+fn walk_integration_test(
+    ctx: &WalkContext,
+    tests_path: &str,
+    test_file: &Path,
+    walked: &mut Walked,
+) -> ModuleInfo {
+    let test_name = test_file
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unknown");
+    let crate_name = normalize_crate_name(test_name);
+    let test_crate = format!("{tests_path}::{crate_name}");
+    let view = ctx.crate_view;
+    let module_paths =
+        with_test_crate(view.module_paths, &test_crate, test_file, ctx.include_tests);
+    let test_crate_view = CrateView {
+        crate_name: &test_crate,
+        module_paths: &module_paths,
+        builds: view.builds.clone(),
+        ..*view
+    };
+    let test_ctx = WalkContext {
+        crate_view: &test_crate_view,
+        ..ctx.clone()
+    };
+    let mut tree = walk_module_syn(&test_ctx, test_file, &crate_name, tests_path, true, walked);
+    tree.name = test_name.to_string();
+    tree
+}
+
 /// Analyze module hierarchy via syn + filesystem walk (no rust-analyzer needed).
 /// Drop-in replacement for `hir::analyze_modules()`.
 pub(crate) fn analyze_modules_syn(
@@ -487,19 +541,9 @@ pub(crate) fn analyze_modules_syn(
         };
         let test_files = find_integration_test_files(&crate_info.path);
         let root = root.as_mut().unwrap();
+        let tests_path = format!("{normalized}::tests");
         for test_file in test_files {
-            let test_name = test_file
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("unknown");
-            let tree = walk_module_syn(
-                &test_ctx,
-                &test_file,
-                test_name,
-                &format!("{normalized}::tests"),
-                true,
-                &mut walked,
-            );
+            let tree = walk_integration_test(&test_ctx, &tests_path, &test_file, &mut walked);
             root.children.push(tree);
         }
     }
