@@ -1,11 +1,10 @@
 //! Analysis backend abstraction (syn vs HIR).
 
 use anyhow::Result;
-use std::collections::HashSet;
 use std::path::Path;
 
 use super::hir::FeatureConfig;
-use super::packages::{ModulePathMap, PackageExportMap, WorkspacePackages};
+use super::packages::{ModulePathMap, ModulePaths, PackageExportMap, WorkspacePackages};
 use super::syn_walker::{analyze_modules_syn, collect_syn_module_paths};
 use super::use_parser::ReExportMap;
 use crate::model::{ModuleTree, PackageInfo};
@@ -53,17 +52,20 @@ impl AnalysisBackend {
 
     /// Collect all module paths for a crate (lightweight).
     #[must_use]
-    pub fn collect_module_paths(&self, crate_info: &PackageInfo) -> HashSet<String> {
+    pub fn collect_module_paths(&self, crate_info: &PackageInfo) -> ModulePaths {
         match self {
             Self::Syn { include_tests } => collect_syn_module_paths(crate_info, *include_tests),
             #[cfg(feature = "hir")]
             Self::Hir { host, vfs } => {
                 let Ok(krate) = find_crate_in_workspace(crate_info, host, vfs) else {
-                    return HashSet::new();
+                    return ModulePaths::default();
                 };
                 let db = host.raw_database();
                 let name = normalize_crate_name(&crate_info.name);
-                collect_hir_module_paths(krate.root_module(db), db, &name, &name)
+                ModulePaths {
+                    paths: collect_hir_module_paths(krate.root_module(db), db, &name, &name),
+                    ..ModulePaths::default()
+                }
             }
         }
     }

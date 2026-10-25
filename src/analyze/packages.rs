@@ -38,29 +38,79 @@ pub(crate) fn normalize_crate_name(name: &str) -> String {
     name.replace('-', "_")
 }
 
-/// Package name → set of module paths (e.g. `{"analyze", "analyze::hir"}`).
+/// The module paths of one package (e.g. `{"analyze", "analyze::hir"}`), and
+/// which of them a `mod` with a body declares inside the file of its parent.
 #[derive(Debug, Default, Clone)]
-pub struct ModulePathMap(HashMap<String, HashSet<String>>);
+pub struct ModulePaths {
+    pub paths: HashSet<String>,
+    pub inline: HashSet<String>,
+}
+
+/// Package name → set of module paths (e.g. `{"analyze", "analyze::hir"}`),
+/// inline modules among them.
+#[derive(Debug, Default, Clone)]
+pub struct ModulePathMap {
+    paths: HashMap<String, HashSet<String>>,
+    inline: HashMap<String, HashSet<String>>,
+}
 
 impl ModulePathMap {
     /// Return the module paths for a package, or an empty set if unknown.
     #[must_use]
     pub fn get_or_empty(&self, key: &str) -> &HashSet<String> {
         static EMPTY: std::sync::LazyLock<HashSet<String>> = std::sync::LazyLock::new(HashSet::new);
-        self.0.get(key).unwrap_or(&EMPTY)
+        self.paths.get(key).unwrap_or(&EMPTY)
+    }
+
+    /// The module of package `key` whose file holds `module`: `module` itself
+    /// unless it is declared inline, otherwise the nearest ancestor that is
+    /// not.
+    #[must_use]
+    pub fn file_module<'m>(&self, key: &str, module: &'m str) -> &'m str {
+        let Some(inline) = self.inline.get(key) else {
+            return module;
+        };
+        let mut module = module;
+        while inline.contains(module) {
+            module = module.rsplit_once("::").map_or("", |(parent, _)| parent);
+        }
+        module
+    }
+
+    /// Copy this map with the module paths of `key` set to `modules`.
+    #[must_use]
+    pub fn with(&self, key: &str, modules: ModulePaths) -> Self {
+        let mut map = self.clone();
+        map.paths.insert(key.to_string(), modules.paths);
+        map.inline.insert(key.to_string(), modules.inline);
+        map
     }
 }
 
 impl Deref for ModulePathMap {
     type Target = HashMap<String, HashSet<String>>;
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.paths
     }
 }
 
 impl FromIterator<(String, HashSet<String>)> for ModulePathMap {
     fn from_iter<I: IntoIterator<Item = (String, HashSet<String>)>>(iter: I) -> Self {
-        Self(iter.into_iter().collect())
+        Self {
+            paths: iter.into_iter().collect(),
+            inline: HashMap::new(),
+        }
+    }
+}
+
+impl FromIterator<(String, ModulePaths)> for ModulePathMap {
+    fn from_iter<I: IntoIterator<Item = (String, ModulePaths)>>(iter: I) -> Self {
+        let mut map = Self::default();
+        for (key, modules) in iter {
+            map.paths.insert(key.clone(), modules.paths);
+            map.inline.insert(key, modules.inline);
+        }
+        map
     }
 }
 

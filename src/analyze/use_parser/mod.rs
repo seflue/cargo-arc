@@ -5,11 +5,14 @@ use crate::model::{
     DefKind, Definition, DependencyRef, EdgeContext, EntryKind, SymbolUse, TargetRoot, TestKind,
     UsageKind, UseCategory,
 };
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::ops::{ControlFlow, Deref};
 use std::path::Path;
 use std::sync::Arc;
+use syn::Token;
 use syn::UseTree;
+use syn::punctuated::Punctuated;
 use syn::visit::Visit;
 
 use super::mod_resolver::is_cfg_test;
@@ -150,6 +153,12 @@ pub(crate) enum BindingKind {
     Definition(Definition),
     /// A `pub use`, `pub(crate) use` or `pub(super) use`.
     ReExport(ReExportTarget),
+    /// A `pub use`, `pub(crate) use` or `pub(super) use` of a path that names
+    /// something outside the workspace, as [`BindingKind::Elsewhere`] does
+    /// for a private `use`. The module is the last of the workspace on the
+    /// way to the item, so a reference through it ends on it. It holds the
+    /// path as the `use` writes it.
+    ReExportFromOutside(String),
     /// A private, `pub(self)` or `pub(in …)` `use`. Rust makes it visible to
     /// descendant modules, which may then name the symbol through this module
     /// even though it defines nothing. Resolving through it attributes the
@@ -171,9 +180,10 @@ impl BindingKind {
         match self {
             Self::Definition(_) => 0,
             Self::ReExport(_) => 1,
-            Self::PrivateUse(_) => 2,
-            Self::Elsewhere => 3,
-            Self::Module => 4,
+            Self::ReExportFromOutside(_) => 2,
+            Self::PrivateUse(_) => 3,
+            Self::Elsewhere => 4,
+            Self::Module => 5,
         }
     }
 }
@@ -205,7 +215,10 @@ impl NameBinding {
         match &self.kind {
             BindingKind::Definition(definition) => Some(Namespace::of(definition.kind)),
             BindingKind::Module => Some(Namespace::Type),
-            BindingKind::ReExport(_) | BindingKind::PrivateUse(_) | BindingKind::Elsewhere => None,
+            BindingKind::ReExport(_)
+            | BindingKind::ReExportFromOutside(_)
+            | BindingKind::PrivateUse(_)
+            | BindingKind::Elsewhere => None,
         }
     }
 
@@ -217,11 +230,36 @@ impl NameBinding {
         }
     }
 
+    /// Whether a re-export chain that reaches the binding ends on its module:
+    /// the module defines the name, or passes on an item from outside the
+    /// workspace. A macro ends only a chain that asks for one, so a call of
+    /// a fn of the same name goes on to the glob that brings it.
+    fn ends_the_chain(&self, meaning: Meaning) -> bool {
+        self.answers(meaning)
+            && matches!(
+                self.kind,
+                BindingKind::Definition(_) | BindingKind::ReExportFromOutside(_)
+            )
+    }
+
+    /// Whether the binding may be what a reference of `meaning` names: a
+    /// macro answers only a reference that may name one.
+    fn answers(&self, meaning: Meaning) -> bool {
+        !matches!(
+            &self.kind,
+            BindingKind::Definition(definition)
+                if definition.kind == DefKind::Macro && !meaning.admits(Namespace::Macro)
+        )
+    }
+
     /// The target of a `use`, public or private.
     pub(crate) fn use_target(&self) -> Option<&ReExportTarget> {
         match &self.kind {
             BindingKind::ReExport(target) | BindingKind::PrivateUse(target) => Some(target),
-            BindingKind::Definition(_) | BindingKind::Elsewhere | BindingKind::Module => None,
+            BindingKind::Definition(_)
+            | BindingKind::ReExportFromOutside(_)
+            | BindingKind::Elsewhere
+            | BindingKind::Module => None,
         }
     }
 
@@ -249,6 +287,17 @@ pub(crate) struct ModuleExportInfo {
     /// The globs of the module: `pub use` globs of its own crate, of other
     /// workspace crates, then private globs of its own crate and of others.
     globs: Vec<GlobBinding>,
+    /// Whether an item of the module calls a macro, or carries an attribute
+    /// or derive macro rustc does not build in. What the macro expands to
+    /// may define names no binding lists.
+    pub(crate) expands_macros: bool,
+    /// The visibility of each glob of the module whose path the module tree
+    /// does not place, such as a glob of an external crate. Which names it
+    /// brings, the map does not know.
+    pub(crate) unplaced_globs: Vec<Visibility>,
+    /// The names the module binds by an item no binding lists: a union, an
+    /// `extern crate`, and in the crate root a `#[macro_export]` macro.
+    pub(crate) unlisted: HashSet<String>,
 }
 
 /// A glob `use` as a module holds it: how far its names reach, the module it
@@ -294,6 +343,9 @@ impl ModuleExportInfo {
         self.bindings.values().flatten().all(public_module)
             && self.associated.is_empty()
             && self.globs.is_empty()
+            && !self.expands_macros
+            && self.unplaced_globs.is_empty()
+            && self.unlisted.is_empty()
     }
 
     /// Hold `glob`, read after the globs the module already holds.
@@ -337,10 +389,14 @@ impl ModuleExportInfo {
         for glob in other.globs {
             self.hold_glob(glob);
         }
+        self.expands_macros |= other.expands_macros;
+        self.unplaced_globs.extend(other.unplaced_globs);
+        self.unlisted.extend(other.unlisted);
     }
 
-    /// The bindings of `name`: definitions, `pub use` items, private `use`
-    /// items, `use` items of something unplaced, child modules, in this
+    /// The bindings of `name`: definitions, `pub use` items, `pub use` items
+    /// of something outside the workspace, private `use` items, `use` items
+    /// of something unplaced, child modules, in this
     /// order. Of one kind, the binding read last comes first, so a caller
     /// that takes one of several alternatives takes the one read last. The
     /// map is read once; a caller that asks several things of the bindings
@@ -1097,8 +1153,16 @@ impl Visited {
     }
 }
 
-/// What a path does after the name it asks of a module.
+/// What a name lookup asks: what the name stands for, or only the module
+/// it stands for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Asked {
+    Everything,
+    Modules,
+}
+
+/// What a path does after the name it asks of a module.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum AfterName {
     /// The name is the last segment of the path.
     PathEnds,
@@ -1223,7 +1287,7 @@ impl<'a> NameLookup<'a> {
             };
 
             let named = bindings.named(item);
-            if named.clone().any(|binding| binding.definition().is_some()) {
+            if named.clone().any(|binding| binding.ends_the_chain(meaning)) {
                 break;
             }
 
@@ -1264,10 +1328,17 @@ impl<'a> NameLookup<'a> {
                 continue;
             }
 
-            if lookup.follow_glob(dep, bindings, item, &visited, &mut passed) {
+            if lookup.follow_glob(dep, bindings, item, meaning, &visited, &mut passed) {
                 continue;
             }
 
+            // Tier 3: A name no binding lists, which only a macro can define.
+            if let Some((crate_name, module)) =
+                lookup.sole_macro_expander(CrateModule::of(dep), item)
+            {
+                dep.target_package = crate_name;
+                dep.target_module = module;
+            }
             break;
         }
         // A rename on the way leaves the written name behind: the symbol is the
@@ -1288,12 +1359,13 @@ impl<'a> NameLookup<'a> {
     /// descendants only. A private glob of this crate is pushed onto
     /// `passed`. A `pub use` glob does not lead back into a module in
     /// `chain`, the modules the chain entered. Returns whether a glob brings
-    /// the symbol.
+    /// the symbol as `meaning` asks for it.
     fn follow_glob(
         self,
         dep: &mut DependencyRef,
         bindings: SeenBindings,
         symbol: &str,
+        meaning: Meaning,
         chain: &Visited,
         passed: &mut Vec<PassedThrough>,
     ) -> bool {
@@ -1301,7 +1373,8 @@ impl<'a> NameLookup<'a> {
         // workspace crate.
         let holder = CrateModule::of(dep);
         let globs = |reach: GlobReach| bindings.globs().filter(move |glob| glob.reach == reach);
-        if let Some(glob) = self.glob_bringing(holder, globs(GlobReach::ReExport), symbol, chain) {
+        let reexports = globs(GlobReach::ReExport);
+        if let Some(glob) = self.glob_bringing(holder, reexports, symbol, meaning, chain) {
             tracing::debug!(
                 "re-export resolved: {} -> {} (via glob re-export in {})",
                 dep.target_module,
@@ -1316,7 +1389,9 @@ impl<'a> NameLookup<'a> {
         // Tier 2b: Private glob, visible only to descendants of the module
         // that holds it, like Tier 1b. One of this crate is passed through.
         let private = globs(GlobReach::Private);
-        if let Some(glob) = self.glob_bringing(holder, private, symbol, &Visited::default()) {
+        if let Some(glob) =
+            self.glob_bringing(holder, private, symbol, meaning, &Visited::default())
+        {
             if !glob.foreign {
                 passed.push(PassedThrough::PrivateGlob {
                     holder: (dep.target_package.clone(), dep.target_module.clone()),
@@ -1330,20 +1405,70 @@ impl<'a> NameLookup<'a> {
         false
     }
 
+    /// The module, by crate and path, that defines `name` by a macro, where
+    /// `module` binds `name` by nothing the map lists and no glob brings it:
+    /// of `module` and the modules its globs import from, as the viewer sees
+    /// them, the only one whose items expand a macro. `None` where none or
+    /// several do, where one of them holds a glob whose names the map does
+    /// not know or binds `name` by an item no binding lists, and where a glob
+    /// imports from a module the module tree does not hold.
+    fn sole_macro_expander(self, module: CrateModule, name: &str) -> Option<(String, String)> {
+        let mut expander = None;
+        let walk = self.walk_globs(
+            module,
+            None,
+            &mut Visited::default(),
+            &mut |_, module, bindings| {
+                let Some(bindings) = bindings else {
+                    let known = module.path.is_empty()
+                        || self
+                            .module_paths
+                            .get_or_empty(module.crate_name)
+                            .contains(module.path);
+                    return if known {
+                        ControlFlow::Continue(())
+                    } else {
+                        ControlFlow::Break(())
+                    };
+                };
+                let unknown_glob = bindings
+                    .info
+                    .unplaced_globs
+                    .iter()
+                    .any(|visibility| bindings.sees(visibility));
+                if unknown_glob || bindings.info.unlisted.contains(name) {
+                    return ControlFlow::Break(());
+                }
+                if bindings.info.expands_macros {
+                    if expander.is_some() {
+                        return ControlFlow::Break(());
+                    }
+                    expander = Some((module.crate_name.to_string(), module.path.to_string()));
+                }
+                ControlFlow::Continue(())
+            },
+        );
+        if walk.is_break() {
+            return None;
+        }
+        expander
+    }
+
     /// The first of `globs`, globs held by `holder` that the viewer sees,
-    /// whose source brings `symbol` through `holder` without entering a
-    /// module in `passed`: a source that reaches it only through a module the
-    /// chain already passed leads back, not on.
+    /// whose source brings `symbol`, as `meaning` asks for it, through
+    /// `holder` without entering a module in `passed`: a source that reaches
+    /// it only through a module the chain already passed leads back, not on.
     fn glob_bringing<'g>(
         self,
         holder: CrateModule,
         mut globs: impl Iterator<Item = &'g GlobBinding>,
         symbol: &str,
+        meaning: Meaning,
         passed: &Visited,
     ) -> Option<&'g GlobBinding> {
         globs.find(|glob| {
             self.through(holder)
-                .brings_passing(glob.source_module(), symbol, passed.clone())
+                .brings_passing(glob.source_module(), symbol, meaning, passed.clone())
                 .is_some()
         })
     }
@@ -1359,14 +1484,16 @@ impl<'a> NameLookup<'a> {
     /// unless a glob of the module brings it in every one. `None` where the
     /// module does not bring the symbol.
     fn brings(self, module: CrateModule, symbol: &str) -> Option<Brought> {
-        self.brings_passing(module, symbol, Visited::default())
+        self.brings_passing(module, symbol, Meaning::Any, Visited::default())
     }
 
-    /// [`NameLookup::brings`], with the modules in `visited` bringing nothing.
+    /// [`NameLookup::brings`] for a reference of `meaning`, with the modules
+    /// in `visited` bringing nothing.
     fn brings_passing(
         self,
         module: CrateModule,
         symbol: &str,
+        meaning: Meaning,
         mut visited: Visited,
     ) -> Option<Brought> {
         let mut brought = None;
@@ -1374,8 +1501,10 @@ impl<'a> NameLookup<'a> {
             let Some(bindings) = bindings else {
                 return ControlFlow::Continue(());
             };
-            let named = bindings.named(symbol);
-            if named.clone().any(|binding| binding.definition().is_some()) {
+            let named = bindings
+                .named(symbol)
+                .filter(|binding| binding.answers(meaning));
+            if named.clone().any(|binding| binding.ends_the_chain(meaning)) {
                 return ControlFlow::Break(Brought::InEveryBuild);
             }
             let binding = visible_binding(named.clone());
@@ -1408,6 +1537,14 @@ impl<'a> NameLookup<'a> {
         self.name_passing(module, name, after, &mut Visited::default())
     }
 
+    /// The module `name` in `module` stands for, as [`NameLookup::name`] has
+    /// it, without asking which item a glob brings under the name where no
+    /// module stands for it.
+    fn module_named(self, module: CrateModule, name: &str, after: AfterName) -> Option<NameTarget> {
+        self.name_asking(module, name, after, &mut Visited::default(), Asked::Modules)
+            .filter(|named| *named != NameTarget::Item)
+    }
+
     /// [`NameLookup::name`], with the modules and names a chain of `use` items
     /// already passed in `visited`.
     fn name_passing(
@@ -1416,6 +1553,19 @@ impl<'a> NameLookup<'a> {
         name: &str,
         after: AfterName,
         visited: &mut Visited,
+    ) -> Option<NameTarget> {
+        self.name_asking(module, name, after, visited, Asked::Everything)
+    }
+
+    /// [`NameLookup::name_passing`], asking the globs for an item only where
+    /// `asked` is [`Asked::Everything`].
+    fn name_asking(
+        self,
+        module: CrateModule,
+        name: &str,
+        after: AfterName,
+        visited: &mut Visited,
+        asked: Asked,
     ) -> Option<NameTarget> {
         let (lookup, bindings) = self.enter(module, Some(name), visited)?;
         let child = append_to_path(module.path, name);
@@ -1443,7 +1593,8 @@ impl<'a> NameLookup<'a> {
                     crate_name: &target.crate_name,
                     path: &target.module,
                 };
-                let bound = lookup.name_passing(holder, &target.original_name, after, visited);
+                let bound =
+                    lookup.name_asking(holder, &target.original_name, after, visited, asked);
                 if let Some(module) = bound.filter(|bound| *bound != NameTarget::Item) {
                     return Some(module);
                 }
@@ -1453,7 +1604,10 @@ impl<'a> NameLookup<'a> {
             BindingKind::Definition(_) => {
                 after == AfterName::PathEnds || binding.namespace() == Some(Namespace::Type)
             }
-            BindingKind::ReExport(_) | BindingKind::PrivateUse(_) | BindingKind::Elsewhere => true,
+            BindingKind::ReExport(_)
+            | BindingKind::ReExportFromOutside(_)
+            | BindingKind::PrivateUse(_)
+            | BindingKind::Elsewhere => true,
             BindingKind::Module => false,
         });
         if item_here {
@@ -1467,8 +1621,17 @@ impl<'a> NameLookup<'a> {
         if let Some(module) = glob_module {
             return Some(module);
         }
+        if asked == Asked::Modules {
+            return None;
+        }
         let brought = lookup
-            .glob_bringing(module, bindings.globs(), name, &Visited::default())
+            .glob_bringing(
+                module,
+                bindings.globs(),
+                name,
+                Meaning::Any,
+                &Visited::default(),
+            )
             .is_some()
             || named
                 .into_iter()
@@ -1476,18 +1639,30 @@ impl<'a> NameLookup<'a> {
         brought.then_some(NameTarget::Item)
     }
 
-    /// The child module `name` of `module`, or of a module its `pub use` globs
-    /// republish, where the viewer sees its declaration and each glob on the
-    /// way.
+    /// The module `name` stands for in `module`, or in a module its globs
+    /// import from: a child module whose declaration the viewer sees, or a
+    /// module or crate root a `use` the viewer sees binds under the name. A
+    /// private glob brings its names to the module's descendants too.
     fn glob_child_module(self, module: CrateModule, name: &str) -> Option<NameTarget> {
-        let reach = Some(GlobReach::ReExport);
         let walk = self.walk_globs(
             module,
-            reach,
+            None,
             &mut Visited::default(),
-            &mut |lookup, module, bindings| match lookup.declared_child(module, bindings, name) {
-                Some(child) => ControlFlow::Break(child),
-                None => ControlFlow::Continue(()),
+            &mut |lookup, module, bindings| {
+                let bound = || {
+                    let target = bindings?
+                        .named(name)
+                        .filter_map(NameBinding::use_target)
+                        .find(|target| lookup.binds_a_module(target))?;
+                    Some(NameTarget::Module {
+                        crate_name: target.crate_name.clone(),
+                        path: append_to_path(&target.module, &target.original_name),
+                    })
+                };
+                match lookup.declared_child(module, bindings, name).or_else(bound) {
+                    Some(module) => ControlFlow::Break(module),
+                    None => ControlFlow::Continue(()),
+                }
             },
         );
         walk.break_value()
@@ -1802,14 +1977,23 @@ pub(crate) struct CrateView<'a> {
     /// Code-side crate name -> `package_id` for external crates visible to
     /// the crate. Populated from `crate_name_map[crate_name]`.
     pub(crate) external_crate_names: &'a HashMap<String, String>,
-    /// Name -> workspace crate name, for the names the package's manifest
-    /// gives its workspace crates (`PackageInfo::code_names`) and from
-    /// `extern crate X as Y;` in the root whose files are read. Both put the
-    /// name in the extern prelude, so it names the crate in every module of
-    /// the crate.
-    pub(crate) extern_crates: &'a HashMap<String, String>,
+    /// The workspace crates the extern prelude of the root whose files are
+    /// read names, in every module of the crate.
+    pub(crate) extern_prelude: &'a ExternPrelude,
     pub(crate) builds: RootBuilds,
+    pub(crate) modules_bound: ModulesBound,
 }
+
+/// The module each module of a crate binds under a name, as
+/// [`PathEnd::of_path`] asks it, kept once it is looked up. Every path of a
+/// module that starts with the same name asks the same question, and the
+/// answer walks the module's globs.
+#[derive(Default)]
+pub(crate) struct ModulesBound(RefCell<HashMap<BoundQuestion, Option<NameTarget>>>);
+
+/// What [`ModulesBound`] is asked: whether the build is the test build, the
+/// module, the name, and whether the path goes on after it.
+type BoundQuestion = (bool, String, String, AfterName);
 
 /// Invariant context for dependency resolution within a single source file,
 /// in one build of its root.
@@ -1818,6 +2002,8 @@ pub(crate) struct ResolutionContext<'a> {
     source_file: &'a Path,
     current_module_path: &'a str,
     reexport_map: &'a ReExportMap,
+    /// Whether the code read is the root's test build.
+    test_build: bool,
 }
 
 impl<'a> ResolutionContext<'a> {
@@ -1833,6 +2019,15 @@ impl<'a> ResolutionContext<'a> {
             source_file,
             current_module_path,
             reexport_map: crate_view.builds.reading(UsageKind::Production),
+            test_build: false,
+        }
+    }
+
+    /// The same file, read from `module`, an inline module in it.
+    fn in_module<'m>(&'m self, module: &'m str) -> ResolutionContext<'m> {
+        ResolutionContext {
+            current_module_path: module,
+            ..*self
         }
     }
 
@@ -1840,6 +2035,7 @@ impl<'a> ResolutionContext<'a> {
     fn reading(&self, kind: UsageKind) -> Self {
         Self {
             reexport_map: self.crate_view.builds.reading(kind),
+            test_build: kind != UsageKind::Production,
             ..*self
         }
     }
@@ -1922,7 +2118,11 @@ pub(crate) type RegionId = usize;
 ///
 /// A `use` is an item and binds in its enclosing module or block only. A later
 /// reference therefore sees a binding when the binding's region is the
-/// reference's own region or one enclosing it.
+/// reference's own region or one enclosing it. A block sees the region
+/// around it. An inline module sees the module around it only where it
+/// writes `use super::*`, which brings every name in scope there: the file or
+/// the next inline module out, past the blocks in between. An item a region
+/// declares hides every name of the same spelling from around it.
 ///
 /// Both collectors number the regions of the same file, and a reference from one
 /// walk is looked up against bindings from the other. The two numberings have to
@@ -1931,6 +2131,14 @@ pub(crate) type RegionId = usize;
 #[derive(Debug, Clone)]
 pub(crate) struct BindingRegions {
     parents: Vec<Option<RegionId>>,
+    /// The regions of inline modules that do not see the region around them.
+    closed: HashSet<RegionId>,
+    /// For each region, the module it belongs to: itself for the file and an
+    /// inline module, the module around it for a block.
+    modules: Vec<RegionId>,
+    /// The names of the items each region declares. Only the `use` collector
+    /// records them.
+    declared: HashMap<RegionId, HashSet<String>>,
 }
 
 impl BindingRegions {
@@ -1939,7 +2147,37 @@ impl BindingRegions {
 
     fn open(&mut self, parent: RegionId) -> RegionId {
         self.parents.push(Some(parent));
+        self.modules.push(self.modules[parent]);
         self.parents.len() - 1
+    }
+
+    /// A region an inline module opens, closed to the region around it
+    /// until [`BindingRegions::see_around`] opens it.
+    fn open_module(&mut self, parent: RegionId) -> RegionId {
+        let region = self.open(parent);
+        self.modules[region] = region;
+        self.closed.insert(region);
+        region
+    }
+
+    /// Let the inline module of `region` see the module around it, as its
+    /// `use super::*` does. A block sees the region around it already.
+    fn see_around(&mut self, region: RegionId) {
+        self.closed.remove(&region);
+        if let Some(parent) = self.parents[region] {
+            self.parents[region] = Some(self.modules[parent]);
+        }
+    }
+
+    fn declare(&mut self, region: RegionId, name: String) {
+        self.declared.entry(region).or_default().insert(name);
+    }
+
+    /// Whether `region` declares an item named `name`.
+    fn declares(&self, region: RegionId, name: &str) -> bool {
+        self.declared
+            .get(&region)
+            .is_some_and(|names| names.contains(name))
     }
 
     #[cfg(test)]
@@ -1950,6 +2188,9 @@ impl BindingRegions {
     /// A region and everything enclosing it, innermost first.
     fn enclosing(&self, region: RegionId) -> impl Iterator<Item = RegionId> + '_ {
         std::iter::successors(Some(region), move |&inner| {
+            if self.closed.contains(&inner) {
+                return None;
+            }
             self.parents.get(inner).copied().flatten()
         })
     }
@@ -1959,6 +2200,9 @@ impl Default for BindingRegions {
     fn default() -> Self {
         Self {
             parents: vec![None],
+            closed: HashSet::new(),
+            modules: vec![Self::ROOT],
+            declared: HashMap::new(),
         }
     }
 }
@@ -2004,22 +2248,23 @@ fn item_context(item: &syn::Item, outer: &EdgeContext) -> EdgeContext {
 /// Shared `visit_item_mod`, `visit_item_fn` and `visit_block` for both collectors.
 ///
 /// `visit_item_mod` and `visit_block` open a binding region. `visit_item_mod`
-/// also carries the inline module depth, which counts modules only:
+/// also carries the path of the inline module, which counts modules only:
 /// `use super::X` in a function body still means the parent module.
 /// `visit_item_fn` carries the test context of a fn with `#[test]`; each
 /// collector's `visit_item` carries the one of any item with `#[cfg(test)]`.
 macro_rules! impl_binding_region_visits {
     () => {
         fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
-            let prev_depth = self.inline_depth;
+            let prev_inline_path = Arc::clone(&self.inline_path);
             let prev_region = self.region;
-            // Inline modules (with body) add nesting depth; `mod foo;` (external) does not
+            // Inline modules (with body) extend the path; `mod foo;` (external) does not
             if node.content.is_some() {
-                self.inline_depth += 1;
-                self.region = self.regions.open(prev_region);
+                self.inline_path =
+                    append_to_path(&prev_inline_path, &node.ident.to_string()).into();
+                self.region = self.regions.open_module(prev_region);
             }
             syn::visit::visit_item_mod(self, node);
-            self.inline_depth = prev_depth;
+            self.inline_path = prev_inline_path;
             self.region = prev_region;
         }
 
@@ -2046,7 +2291,9 @@ macro_rules! impl_binding_region_visits {
 pub(crate) struct CollectedUse {
     pub(crate) item: syn::ItemUse,
     pub(crate) context: EdgeContext,
-    pub(crate) inline_depth: usize,
+    /// The inline modules around the item, as a path below the file's
+    /// module: `a::b` inside `mod a { mod b { … } }`, empty outside any.
+    pub(crate) inline_path: Arc<str>,
     pub(crate) region: RegionId,
 }
 
@@ -2093,7 +2340,7 @@ pub(crate) fn collect_all_use_items(
     struct UseCollector {
         uses: Vec<CollectedUse>,
         context: EdgeContext,
-        inline_depth: usize,
+        inline_path: Arc<str>,
         regions: BindingRegions,
         region: RegionId,
     }
@@ -2101,15 +2348,30 @@ pub(crate) fn collect_all_use_items(
         fn visit_item(&mut self, node: &'ast syn::Item) {
             let prev_context = self.context.clone();
             self.context = item_context(node, &prev_context);
+            if let Some(ident) = item_ident(node) {
+                self.regions.declare(self.region, ident.to_string());
+            }
             syn::visit::visit_item(self, node);
             self.context = prev_context;
+        }
+
+        fn visit_item_foreign_mod(&mut self, node: &'ast syn::ItemForeignMod) {
+            if !attributes_expand(&node.attrs) {
+                syn::visit::visit_item_foreign_mod(self, node);
+            }
+        }
+
+        fn visit_foreign_item(&mut self, node: &'ast syn::ForeignItem) {
+            if let Some(ident) = foreign_item_ident(node) {
+                self.regions.declare(self.region, ident.to_string());
+            }
         }
 
         fn visit_item_use(&mut self, node: &'ast syn::ItemUse) {
             self.uses.push(CollectedUse {
                 item: node.clone(),
                 context: self.context.clone(),
-                inline_depth: self.inline_depth,
+                inline_path: Arc::clone(&self.inline_path),
                 region: self.region,
             });
         }
@@ -2128,7 +2390,7 @@ pub(crate) fn collect_all_use_items(
     let mut collector = UseCollector {
         uses: Vec::new(),
         context: base_context,
-        inline_depth: 0,
+        inline_path: Arc::from(""),
         regions: BindingRegions::default(),
         region: BindingRegions::ROOT,
     };
@@ -2207,7 +2469,8 @@ pub(crate) struct PathRef {
     pub(crate) path: String,
     pub(crate) line: usize,
     pub(crate) context: EdgeContext,
-    pub(crate) inline_depth: usize,
+    /// As [`CollectedUse::inline_path`].
+    pub(crate) inline_path: Arc<str>,
     pub(crate) region: RegionId,
     pub(crate) position: PathPosition,
     /// What the position asks the last segment to mean: the namespace of its
@@ -2222,9 +2485,160 @@ pub(crate) struct PathRef {
     /// The local variable a bare name in an expression may refer to: the
     /// innermost one of that name in scope where the path is written.
     pub(crate) local: Option<LocalBinding>,
+    /// Written in an attribute whose path starts with a registered tool
+    /// ([`TOOL_NAMES`]), such as `#[rustfmt::skip]`.
+    pub(crate) in_tool_attribute: bool,
+}
+
+/// The tools whose name starts an attribute path rustc reads as the tool's,
+/// unless a crate of the extern prelude has the name.
+const TOOL_NAMES: [&str; 5] = ["clippy", "diagnostic", "miri", "rust_analyzer", "rustfmt"];
+
+/// The attributes rustc builds in that may stand on an item and expand to no
+/// item, from the Rust Reference's index of built-in attributes.
+const BUILT_IN_ATTRIBUTES: [&str; 39] = [
+    "allow",
+    "automatically_derived",
+    "cold",
+    "collapse_debuginfo",
+    "coverage",
+    "debugger_visualizer",
+    "deny",
+    "deprecated",
+    "doc",
+    "expect",
+    "export_name",
+    "forbid",
+    "global_allocator",
+    "ignore",
+    "inline",
+    "instruction_set",
+    "link",
+    "link_name",
+    "link_ordinal",
+    "link_section",
+    "macro_export",
+    "macro_use",
+    "must_use",
+    "naked",
+    "no_link",
+    "no_mangle",
+    "non_exhaustive",
+    "panic_handler",
+    "path",
+    "proc_macro",
+    "proc_macro_attribute",
+    "proc_macro_derive",
+    "repr",
+    "should_panic",
+    "target_feature",
+    "test",
+    "track_caller",
+    "used",
+    "warn",
+];
+
+/// The derives rustc builds in, which implement a trait and define no name.
+const BUILT_IN_DERIVES: [&str; 9] = [
+    "Clone",
+    "Copy",
+    "Debug",
+    "Default",
+    "Eq",
+    "Hash",
+    "Ord",
+    "PartialEq",
+    "PartialOrd",
+];
+
+/// Whether one of `attrs` is an attribute or derive macro rustc does not
+/// build in, inside a `cfg_attr` too.
+pub(crate) fn attributes_expand(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| meta_expands(&attr.meta))
+}
+
+/// Whether the attribute `meta` is a macro rustc does not build in, or
+/// derives one.
+fn meta_expands(meta: &syn::Meta) -> bool {
+    let path = meta.path();
+    let first = path
+        .segments
+        .first()
+        .map(|segment| segment.ident.to_string());
+    if first
+        .as_deref()
+        .is_some_and(|tool| TOOL_NAMES.contains(&tool))
+    {
+        return false;
+    }
+    let Some(name) = path.get_ident().map(ToString::to_string) else {
+        return true;
+    };
+    let nested = || {
+        meta.require_list().ok().and_then(|list| {
+            list.parse_args_with(Punctuated::<syn::Meta, Token![,]>::parse_terminated)
+                .ok()
+        })
+    };
+    match name.as_str() {
+        "cfg" => false,
+        // `cfg_attr(predicate, attributes…)`: the predicate is no macro.
+        "cfg_attr" => nested().is_none_or(|metas| metas.iter().skip(1).any(meta_expands)),
+        "derive" => {
+            nested().is_none_or(|metas| metas.iter().any(|meta| !is_built_in_derive(meta.path())))
+        }
+        "unsafe" => nested().is_none_or(|metas| metas.iter().any(meta_expands)),
+        _ => !BUILT_IN_ATTRIBUTES.contains(&name.as_str()),
+    }
+}
+
+/// Whether the attribute `meta` derives a macro rustc does not build in,
+/// inside a `cfg_attr` too: a derive macro may declare helper attributes.
+fn derives_a_macro(meta: &syn::Meta) -> bool {
+    let nested = || {
+        meta.require_list().ok().and_then(|list| {
+            list.parse_args_with(Punctuated::<syn::Meta, Token![,]>::parse_terminated)
+                .ok()
+        })
+    };
+    if meta.path().is_ident("derive") {
+        meta_expands(meta)
+    } else if meta.path().is_ident("cfg_attr") {
+        nested().is_none_or(|metas| metas.iter().skip(1).any(derives_a_macro))
+    } else {
+        false
+    }
+}
+
+/// Whether the derive `path` names is one rustc builds in, written bare or
+/// from `std` or `core`.
+fn is_built_in_derive(path: &syn::Path) -> bool {
+    let segments: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
+    let from_std = match segments.as_slice() {
+        [_] => true,
+        [first, ..] => first == "std" || first == "core",
+        [] => false,
+    };
+    from_std
+        && segments
+            .last()
+            .is_some_and(|name| BUILT_IN_DERIVES.contains(&name.as_str()))
 }
 
 impl PathRef {
+    /// Whether this path names a tool rather than a crate: written in a tool
+    /// attribute whose tool no crate of the extern prelude of `ctx`'s build
+    /// shadows. rustc reads a crate of the tool's name first.
+    fn names_a_tool(&self, ctx: &ResolutionContext) -> bool {
+        let first = self.path.split("::").next().unwrap_or_default();
+        self.in_tool_attribute
+            && !ctx
+                .crate_view
+                .extern_prelude
+                .names(ctx.test_build)
+                .contains_key(first)
+    }
+
     /// Resolve this reference through the resolution chain. A path written
     /// in macro input resolves through a binding only.
     fn resolve(&self, ctx: &ResolutionContext) -> Option<DependencyRef> {
@@ -2236,7 +2650,7 @@ impl PathRef {
             &self.path,
             self.line,
             &self.context,
-            self.inline_depth,
+            &self.inline_path,
             self.meaning,
         )
     }
@@ -2258,7 +2672,7 @@ impl PathRef {
             rest,
             self.line,
             &self.context,
-            self.inline_depth,
+            &self.inline_path,
             self.meaning,
         )
     }
@@ -2335,7 +2749,7 @@ impl CollectedPathRefs {
 struct PathRefCollector {
     paths: Vec<PathRef>,
     context: EdgeContext,
-    inline_depth: usize,
+    inline_path: Arc<str>,
     regions: BindingRegions,
     region: RegionId,
     position: PathPosition,
@@ -2347,8 +2761,34 @@ struct PathRefCollector {
     declared_later: Option<Vec<ScopedLocal>>,
     /// Inside the name of a macro, which no variable can hide.
     naming_macro: bool,
+    /// Inside an attribute whose path starts with a tool name.
+    in_tool_attribute: bool,
+    /// Inside an item that derives a macro rustc does not build in, whose
+    /// helper attributes a bare attribute path may name.
+    in_derive_helpers_reach: bool,
 }
 impl PathRefCollector {
+    /// Visit an item that may carry derives with `attrs`, its fields and
+    /// variants by `visit`, as [`PathRefCollector::in_derive_helpers_reach`]
+    /// tells.
+    fn under_derives(&mut self, attrs: &[syn::Attribute], visit: impl FnOnce(&mut Self)) {
+        let prev = self.in_derive_helpers_reach;
+        self.in_derive_helpers_reach = attrs.iter().any(|attr| derives_a_macro(&attr.meta));
+        visit(self);
+        self.in_derive_helpers_reach = prev;
+    }
+
+    /// Record the paths in the tokens of the attribute list `node`: a name in
+    /// `#[derive(…)]` is a derive macro.
+    fn record_meta_list_tokens(&mut self, node: &syn::MetaList) {
+        let meaning = if node.path.is_ident("derive") {
+            Meaning::Macro
+        } else {
+            Meaning::Any
+        };
+        self.record_token_paths(&node.tokens, meaning);
+    }
+
     fn in_position(&mut self, position: PathPosition, visit: impl FnOnce(&mut Self)) {
         let prev = self.position;
         self.position = position;
@@ -2420,12 +2860,13 @@ impl PathRefCollector {
             path,
             line,
             context: self.context.clone(),
-            inline_depth: self.inline_depth,
+            inline_path: Arc::clone(&self.inline_path),
             region: self.region,
             position: self.position,
             meaning,
             in_macro,
             local,
+            in_tool_attribute: self.in_tool_attribute,
         });
     }
 
@@ -2440,8 +2881,12 @@ impl PathRefCollector {
         while index < tokens.len() {
             match &tokens[index] {
                 TokenTree::Group(group) => self.record_token_paths(&group.stream(), meaning),
-                // A lifetime is a `'` followed by an identifier, not a name.
-                TokenTree::Ident(ident) if !is_lifetime_tick(tokens.get(index.wrapping_sub(1))) => {
+                // A lifetime is a `'` followed by an identifier, and a field
+                // or method follows a `.`; neither is a name.
+                TokenTree::Ident(ident)
+                    if !is_lifetime_tick(tokens.get(index.wrapping_sub(1)))
+                        && !follows_a_field_dot(&tokens[..index]) =>
+                {
                     let line = ident.span().start().line;
                     let mut path = vec![ident.to_string()];
                     while is_path_separator(&tokens[index + 1..])
@@ -2474,6 +2919,17 @@ fn is_path_separator(tokens: &[proc_macro2::TokenTree]) -> bool {
 
 fn is_lifetime_tick(token: Option<&proc_macro2::TokenTree>) -> bool {
     matches!(token, Some(proc_macro2::TokenTree::Punct(punct)) if punct.as_char() == '\'')
+}
+
+/// Whether the tokens before an identifier end with the `.` of a field or
+/// method access. Two dots are a range, and a path may follow them.
+fn follows_a_field_dot(before: &[proc_macro2::TokenTree]) -> bool {
+    let is_dot = |token: &proc_macro2::TokenTree| matches!(token, proc_macro2::TokenTree::Punct(punct) if punct.as_char() == '.');
+    match before {
+        [.., previous, dot] => is_dot(dot) && !is_dot(previous),
+        [dot] => is_dot(dot),
+        [] => false,
+    }
 }
 impl<'ast> Visit<'ast> for PathRefCollector {
     fn visit_path(&mut self, node: &'ast syn::Path) {
@@ -2656,17 +3112,54 @@ impl<'ast> Visit<'ast> for PathRefCollector {
     // A name in `#[derive(…)]` is a derive macro.
     fn visit_meta_list(&mut self, node: &'ast syn::MetaList) {
         syn::visit::visit_meta_list(self, node);
-        let meaning = if node.path.is_ident("derive") {
-            Meaning::Macro
-        } else {
-            Meaning::Any
-        };
-        self.record_token_paths(&node.tokens, meaning);
+        self.record_meta_list_tokens(node);
+    }
+
+    fn visit_item_struct(&mut self, node: &'ast syn::ItemStruct) {
+        self.under_derives(&node.attrs, |s| syn::visit::visit_item_struct(s, node));
+    }
+
+    fn visit_item_enum(&mut self, node: &'ast syn::ItemEnum) {
+        self.under_derives(&node.attrs, |s| syn::visit::visit_item_enum(s, node));
+    }
+
+    fn visit_item_union(&mut self, node: &'ast syn::ItemUnion) {
+        self.under_derives(&node.attrs, |s| syn::visit::visit_item_union(s, node));
     }
 
     // `pub(in path)` names the scope that may see the item; nothing is used
     // from that module, so its path is no dependency.
     fn visit_vis_restricted(&mut self, _node: &'ast syn::VisRestricted) {}
+
+    fn visit_attribute(&mut self, node: &'ast syn::Attribute) {
+        let segments = &node.path().segments;
+        self.in_tool_attribute = segments.len() > 1
+            && segments
+                .first()
+                .is_some_and(|tool| TOOL_NAMES.iter().any(|name| tool.ident == name));
+        // The attribute's own path names a macro; the value of `name = value`
+        // is an expression. A bare path where a derive macro may declare
+        // helper attributes may name a helper, which is no macro.
+        let helper = self.in_derive_helpers_reach && segments.len() == 1;
+        match &node.meta {
+            syn::Meta::NameValue(name_value) => {
+                if !helper {
+                    self.naming_macro = true;
+                    self.visit_path(&name_value.path);
+                    self.naming_macro = false;
+                }
+                self.visit_expr(&name_value.value);
+            }
+            syn::Meta::List(list) if helper => self.record_meta_list_tokens(list),
+            syn::Meta::Path(_) if helper => {}
+            meta => {
+                self.naming_macro = true;
+                self.visit_meta(meta);
+                self.naming_macro = false;
+            }
+        }
+        self.in_tool_attribute = false;
+    }
 
     impl_binding_region_visits!();
 }
@@ -2687,13 +3180,15 @@ pub(crate) fn collect_all_path_refs(
     let mut collector = PathRefCollector {
         paths: Vec::new(),
         context: base_context,
-        inline_depth: 0,
+        inline_path: Arc::from(""),
         regions: BindingRegions::default(),
         region: BindingRegions::ROOT,
         position: PathPosition::Value,
         locals: Vec::new(),
         declared_later: None,
         naming_macro: false,
+        in_tool_attribute: false,
+        in_derive_helpers_reach: false,
     };
     collector.visit_file(syntax);
     CollectedPathRefs {
@@ -2757,22 +3252,17 @@ pub(crate) fn resolve_use_tree(tree: &UseTree, prefix: &str, use_alias: bool) ->
 
 /// Resolve `super::` and `self::` relative paths to absolute crate-local paths.
 ///
-/// Returns `None` when the path is not relative, when `super::`/`self::` is absorbed
-/// by inline module depth, or when too many `super::` would go above crate root.
-fn resolve_relative_path(
-    path: &str,
-    current_module_path: &str,
-    inline_depth: usize,
-) -> Option<String> {
+/// Returns `None` when the path is not relative, or when too many `super::`
+/// would go above crate root.
+fn resolve_relative_path(path: &str, current_module_path: &str) -> Option<String> {
     let segments: Vec<&str> = path.split("::").collect();
     let super_count = segments.iter().take_while(|&&s| s == "super").count();
 
-    if super_count > inline_depth {
-        let levels_up = super_count - inline_depth;
-        return join_module_segments(current_module_path, levels_up, &segments[super_count..]);
+    if super_count > 0 {
+        return join_module_segments(current_module_path, super_count, &segments[super_count..]);
     }
 
-    if segments.first() == Some(&"self") && inline_depth == 0 {
+    if segments.first() == Some(&"self") {
         return join_module_segments(current_module_path, 0, &segments[1..]);
     }
 
@@ -2800,10 +3290,10 @@ pub(crate) fn resolve_single_path(
     path: &str,
     line_num: usize,
     context: &EdgeContext,
-    inline_depth: usize,
+    inline_path: &str,
     meaning: Meaning,
 ) -> Option<DependencyRef> {
-    let end = PathEnd::of_path(ctx, path, inline_depth)?;
+    let end = PathEnd::of_path(ctx, path, inline_path)?;
     Some(
         end.module_or_item(ctx, meaning)
             .dependency(ctx, line_num, context),
@@ -2832,18 +3322,28 @@ impl PathEnd {
         PathStart::own_crate(ctx).end((String::new(), None))
     }
 
-    /// Where `path`, written in the file of `ctx` at `inline_depth` inline
-    /// modules, leads. The first segments pick the start: `super::` and
-    /// `self::` an ancestor of the file's module, `crate::` the crate root, a
-    /// child module of the file's module, a workspace crate by any name the
-    /// crate gives it, an external crate. From there [`PathStart::follow`]
-    /// walks the rest. A glob `base::*` leads where `base` does, with `*` as
-    /// the item. `None` where no start fits, or where the walk enters a crate
-    /// outside the workspace.
-    fn of_path(ctx: &ResolutionContext, path: &str, inline_depth: usize) -> Option<Self> {
-        if let Some(resolved) = resolve_relative_path(path, ctx.current_module_path, inline_depth) {
+    /// Where `path`, written in the file of `ctx` inside the inline modules
+    /// `inline_path`, leads. Inside an inline module the path is read from
+    /// that module, as from a file of its own. The first segments pick the
+    /// start: `super::` and `self::` an ancestor of the module, `crate::` the
+    /// crate root, a child module of the module, a module the module binds, a
+    /// crate of the extern prelude. From there [`PathStart::follow`] walks the
+    /// rest. A glob `base::*` leads where `base` does, with `*` as the item.
+    /// `None` where no start fits, or where the walk enters a crate outside
+    /// the workspace.
+    fn of_path(ctx: &ResolutionContext, path: &str, inline_path: &str) -> Option<Self> {
+        if !inline_path.is_empty() {
+            let module = append_to_path(ctx.current_module_path, inline_path);
+            return Self::of_path(&ctx.in_module(&module), path, "");
+        }
+        if let Some(resolved) = resolve_relative_path(path, ctx.current_module_path) {
             let segments: Vec<&str> = resolved.split("::").collect();
             return PathStart::own_crate(ctx).follow(ctx, &segments);
+        }
+
+        // `crate` alone, as in `use crate as name;`, is the root.
+        if path == "crate" {
+            return Some(Self::own_root(ctx));
         }
 
         // `crate::*` has no module to resolve and is the root's glob.
@@ -2851,21 +3351,9 @@ impl PathEnd {
             let base = if base == "crate" {
                 Self::own_root(ctx)
             } else {
-                Self::of_path(ctx, base, inline_depth)?
+                Self::of_path(ctx, base, inline_path)?
             };
             return Some(base.glob());
-        }
-
-        // As many `super::` as inline modules leave them all and land in the file's
-        // module, where the rest is a bare path: `super::child::X` names a child.
-        if inline_depth > 0 {
-            let supers = vec!["super"; inline_depth].join("::");
-            if let Some(rest) = path
-                .strip_prefix(supers.as_str())
-                .and_then(|tail| tail.strip_prefix("::"))
-            {
-                return Self::beside_the_file(ctx, rest);
-            }
         }
 
         if let Some(after_crate) = path.strip_prefix("crate::") {
@@ -2873,13 +3361,66 @@ impl PathEnd {
             return PathStart::own_crate(ctx).follow(ctx, &segments);
         }
 
-        // A name the crate writes for a workspace crate other than its key names
-        // that crate, even where the name is another workspace crate's key.
-        let dealiased = dealias_extern_crate(ctx.crate_view.extern_crates, path);
-        let in_workspace = dealiased.as_deref().unwrap_or(path);
-        Self::beside_the_file(ctx, path)
-            .or_else(|| Self::in_workspace_crate(ctx, in_workspace))
-            .or_else(|| Self::in_external_crate(ctx, path))
+        if let Some(end) = Self::beside_the_file(ctx, path) {
+            return Some(end);
+        }
+        if let Some(end) = Self::module_bound_in_the_module(ctx, path) {
+            return Some(end);
+        }
+        // Only a name of the extern prelude names a workspace crate, and it
+        // names the crate it stands for there, whatever crate has that key.
+        let crate_names = ctx.crate_view.extern_prelude.names(ctx.test_build);
+        match dealias_extern_crate(crate_names, path) {
+            Some(in_workspace) => Self::in_workspace_crate(ctx, &in_workspace),
+            None => Self::in_external_crate(ctx, path),
+        }
+    }
+
+    /// Where a bare path leads whose first segment the file's module binds
+    /// to a module, through a `use` or a glob, as the binding table has it.
+    /// `None` where the module binds no module of that name, or where the
+    /// path leaves the workspace.
+    fn module_bound_in_the_module(ctx: &ResolutionContext, path: &str) -> Option<Self> {
+        let segments: Vec<&str> = path.split("::").collect();
+        let (&first, rest) = segments.split_first()?;
+        if first.is_empty() {
+            return None;
+        }
+        let start = PathStart::own_crate(ctx);
+        let module = CrateModule {
+            crate_name: &start.crate_name,
+            path: ctx.current_module_path,
+        };
+        let after = AfterName::followed_by(rest);
+        let key = (
+            ctx.test_build,
+            ctx.current_module_path.to_string(),
+            first.to_string(),
+            after,
+        );
+        let cached = ctx.crate_view.modules_bound.0.borrow().get(&key).cloned();
+        let named = cached.unwrap_or_else(|| {
+            let named = ctx
+                .lookup(start.target_root)
+                .module_named(module, first, after);
+            ctx.crate_view
+                .modules_bound
+                .0
+                .borrow_mut()
+                .insert(key, named.clone());
+            named
+        })?;
+        let NameTarget::Module { crate_name, path } = named else {
+            return None;
+        };
+        let in_module: Vec<&str> = module_segments(&path).chain(rest.iter().copied()).collect();
+        if crate_name != start.crate_name {
+            let in_other: Vec<&str> = std::iter::once(crate_name.as_str())
+                .chain(in_module.iter().copied())
+                .collect();
+            return Self::in_workspace_crate(ctx, &in_other.join("::"));
+        }
+        Some(start.walk(ctx, &in_module))
     }
 
     /// Where `path`, written from the root of `package`, a workspace crate
@@ -2915,7 +3456,7 @@ impl PathEnd {
         let in_crate: Vec<&str> = module_segments(ctx.current_module_path)
             .chain(segments.iter().copied())
             .collect();
-        Some(start.end(start.walk(ctx, &in_crate)))
+        Some(start.walk(ctx, &in_crate))
     }
 
     /// Where a path through a workspace crate leads, `other_crate::module`
@@ -3098,12 +3639,12 @@ impl PathStart {
                 if in_crate.is_empty() {
                     item_in_root
                 } else {
-                    self.walk(ctx, &in_crate)
+                    return Some(self.walk(ctx, &in_crate));
                 }
             }
             Some(NameTarget::Item) => item_in_root,
             None if self.by_name && self.root_file_names(ctx, first) => item_in_root,
-            None => self.walk(ctx, segments),
+            None => return Some(self.walk(ctx, segments)),
         };
         Some(self.end(reached))
     }
@@ -3117,16 +3658,15 @@ impl PathStart {
             .is_some_and(|exports| exports.contains(name))
     }
 
-    /// The module and item `segments` reach from this root, one segment at a
-    /// time. A segment that names a child module of the module reached so far
-    /// enters it. Another segment the path goes on past is asked of the
-    /// module's names, and a module below this crate's root it stands for
-    /// carries the rest: beside `use crate::store::{self as bound};` in `holder`,
-    /// `holder::bound::Set` names `Set` in `store`. The first segment that
-    /// carries the path no further is the item. A first segment that names no
-    /// child of the root is taken for a module of that name, and the next
-    /// segment for its item.
-    fn walk(&self, ctx: &ResolutionContext, segments: &[&str]) -> (String, Option<String>) {
+    /// Where `segments` lead from this root, one segment at a time. A segment
+    /// that names a child module of the module reached so far enters it.
+    /// Another segment the path goes on past is asked of the module's names,
+    /// and a module below this crate's root it stands for carries the rest:
+    /// beside `use crate::store::{self as bound};` in `holder`,
+    /// `holder::bound::Set` names `Set` in `store`. A module of another
+    /// workspace crate carries the rest into that crate. The first segment
+    /// that carries the path no further is the item.
+    fn walk(&self, ctx: &ResolutionContext, segments: &[&str]) -> PathEnd {
         let module_paths = ctx.crate_view.module_paths.get_or_empty(&self.crate_name);
         let lookup = ctx.lookup(self.target_root);
         let mut visited = Visited::default();
@@ -3142,18 +3682,11 @@ impl PathStart {
                 rest = tail;
             }
             let Some((&name, tail)) = rest.split_first() else {
-                return (module, None);
+                return self.end((module, None));
             };
             let item = (!name.is_empty()).then(|| name.to_string());
-            if module.is_empty() {
-                let item = tail
-                    .first()
-                    .filter(|next| !next.is_empty())
-                    .map(ToString::to_string);
-                return (name.to_string(), item);
-            }
             if tail.is_empty() {
-                return (module, item);
+                return self.end((module, item));
             }
             let holder = CrateModule {
                 crate_name: &self.crate_name,
@@ -3166,8 +3699,16 @@ impl PathStart {
                     module = path;
                     rest = tail;
                 }
+                Some(NameTarget::Module { crate_name, path }) if crate_name != self.crate_name => {
+                    let in_other: Vec<&str> = std::iter::once(crate_name.as_str())
+                        .chain(module_segments(&path))
+                        .chain(tail.iter().copied())
+                        .collect();
+                    return PathEnd::in_workspace_crate(ctx, &in_other.join("::"))
+                        .unwrap_or_else(|| self.end((module, item)));
+                }
                 Some(NameTarget::Module { .. } | NameTarget::Item) | None => {
-                    return (module, item);
+                    return self.end((module, item));
                 }
             }
         }
@@ -3184,17 +3725,42 @@ impl PathStart {
     }
 }
 
-/// `path` with a leading name from `extern_crates` replaced by the crate it
+/// `path` with a leading name of the extern prelude replaced by the crate it
 /// names, also when the name is all of `path`.
-fn dealias_extern_crate(extern_crates: &HashMap<String, String>, path: &str) -> Option<String> {
+fn dealias_extern_crate(crate_names: &HashMap<String, String>, path: &str) -> Option<String> {
     let (first, rest) = path
         .split_once("::")
         .map_or((path, None), |(first, rest)| (first, Some(rest)));
-    let crate_name = extern_crates.get(first)?;
+    let crate_name = crate_names.get(first)?;
     Some(rest.map_or_else(
         || crate_name.clone(),
         |rest| format!("{crate_name}::{rest}"),
     ))
+}
+
+/// The workspace crates in the extern prelude of one crate root: name in
+/// the code -> key of the crate named, in the root's build without `test`
+/// and in its test build. Only these names start a path at a workspace
+/// crate.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ExternPrelude {
+    without_test: HashMap<String, String>,
+    test: HashMap<String, String>,
+}
+
+impl ExternPrelude {
+    pub(crate) fn new(
+        without_test: HashMap<String, String>,
+        test: HashMap<String, String>,
+    ) -> Self {
+        Self { without_test, test }
+    }
+
+    /// The names of the test build where `test` is set, otherwise of the
+    /// build without `test`.
+    pub(crate) fn names(&self, test: bool) -> &HashMap<String, String> {
+        if test { &self.test } else { &self.without_test }
+    }
 }
 
 /// The module of a workspace crate a `use` is written in, with what places
@@ -3205,9 +3771,9 @@ pub(crate) struct UseScope<'a> {
     pub(crate) crate_name: &'a str,
     pub(crate) module_path: &'a str,
     pub(crate) module_paths: &'a ModulePathMap,
-    pub(crate) workspace_crates: &'a WorkspacePackages,
-    /// Name -> workspace crate name, as [`ResolutionContext::extern_crates`].
-    pub(crate) extern_crates: &'a HashMap<String, String>,
+    /// The workspace crates of the extern prelude, by name, in the build the
+    /// `use` is read in ([`ExternPrelude::names`]).
+    pub(crate) crate_names: &'a HashMap<String, String>,
 }
 
 /// What a `use` path binds, placed by the module tree alone.
@@ -3235,9 +3801,9 @@ impl UseScope<'_> {
     /// [`ReExportMap::settle_written_paths`] to follow once the table is
     /// whole. In this crate, a first segment that names no child of the root
     /// and that the path goes on past is taken for a module, and the next
-    /// segment for the name: the module tree holds no inline module. A glob
-    /// takes the names of the module its path ends on, or of the first
-    /// segment taken for a module. `None` where no start fits.
+    /// segment for the name. A glob takes the names of the module its path
+    /// ends on, or of the first segment taken for a module. `None` where no
+    /// start fits.
     pub(crate) fn place(&self, path: &str) -> Option<UsePlace> {
         let (crate_name, segments) = self.start(path)?;
         if segments.first().is_some_and(String::is_empty) {
@@ -3279,14 +3845,16 @@ impl UseScope<'_> {
 
     /// The crate a `use` path starts in and its segments from that crate's
     /// root: `super::` and `self::` an ancestor of this module, `crate::`
-    /// the root, a child module of this module, a workspace crate by any
-    /// name this crate gives it.
+    /// the root, a child module of this module, a workspace crate by the
+    /// name the extern prelude gives it. No other binding of this module is
+    /// asked: a name that is both a binding and a crate is ambiguous in a
+    /// `use` path, which rustc rejects.
     fn start(&self, path: &str) -> Option<(String, Vec<String>)> {
         let own = |in_crate: &str| {
             let segments = in_crate.split("::").map(ToString::to_string);
             Some((self.crate_name.to_string(), segments.collect()))
         };
-        if let Some(resolved) = resolve_relative_path(path, self.module_path, 0) {
+        if let Some(resolved) = resolve_relative_path(path, self.module_path) {
             return own(&resolved);
         }
         if let Some(after_crate) = path.strip_prefix("crate::") {
@@ -3302,16 +3870,9 @@ impl UseScope<'_> {
         {
             return own(&append_to_path(self.module_path, path));
         }
-        let dealiased = dealias_extern_crate(self.extern_crates, path);
-        let (crate_name, rest) = match &dealiased {
-            Some(dealiased) => dealiased.split_once("::").unwrap_or((dealiased, "")),
-            None => (first, rest),
-        };
-        if !self.workspace_crates.contains(crate_name) {
-            return None;
-        }
+        let crate_name = self.crate_names.get(first)?;
         let segments = module_segments(rest).map(ToString::to_string).collect();
-        Some((normalize_crate_name(crate_name), segments))
+        Some((crate_name.clone(), segments))
     }
 
     /// Enter each of `segments` that names a child module, from the root of
@@ -3360,8 +3921,9 @@ pub(crate) fn parse_workspace_dependencies(
         // re-exports.
         let via_reexport = is_reexport_visibility(&item.vis);
 
-        // A `use` binds every meaning of its target.
-        for path in paths {
+        // A `use` binds every meaning of its target. `use crate as name;`
+        // only names the crate's own root for the paths through `name`.
+        for path in paths.into_iter().filter(|path| path != "crate") {
             if let Some(mut dep) = bindings.resolve_use_path(ctx, &path, collected) {
                 // A private glob whose target the map knows is resolved into
                 // the names the file uses, by `parse_path_ref_dependencies`.
@@ -3470,7 +4032,7 @@ fn glob_payload_known(dep: &DependencyRef, ctx: &ResolutionContext) -> bool {
 ///
 /// `glob_modules` holds, by name and like `modules`, the
 /// child modules of a glob's module and the names that module binds to a
-/// module by `pub use` or, where the file sits below it in the same crate, by
+/// module or a crate root by `pub use` or, where the file sits below it in the same crate, by
 /// a private `use`. A glob brings them in like any other name, so a path may
 /// start with one.
 #[derive(Debug, Default)]
@@ -3520,6 +4082,11 @@ impl FileBindings {
             regions: use_items.regions.clone(),
             ..FileBindings::default()
         };
+        for (collected, binding, original_path) in use_bindings(use_items) {
+            if binding == "*" && original_path == "super::*" {
+                bindings.regions.see_around(collected.region);
+            }
+        }
 
         // A `use` path may start with a module another `use` or a glob binds,
         // written before or after it. Those bindings come first; a chain
@@ -3530,7 +4097,7 @@ impl FileBindings {
                 &original_path,
                 collected.item.use_token.span.start().line,
                 &collected.context,
-                collected.inline_depth,
+                &collected.inline_path,
                 Meaning::Any,
             );
             if binding == "*" {
@@ -3620,6 +4187,9 @@ impl FileBindings {
             {
                 return PathBinding::Elsewhere;
             }
+            if self.regions.declares(enclosing, first) {
+                break;
+            }
             if let Some(module) = self.glob_modules.get(&enclosing).and_then(|m| m.get(first))
                 && let Some(rest) = rest
                 && !self.local_definitions.contains(first)
@@ -3639,12 +4209,12 @@ impl FileBindings {
         collected: &CollectedUse,
     ) -> Option<DependencyRef> {
         let line = collected.item.use_token.span.start().line;
-        let (context, inline_depth) = (&collected.context, collected.inline_depth);
+        let (context, inline_path) = (&collected.context, &*collected.inline_path);
         match self.binding_of(path, collected.region) {
             PathBinding::Module(module, rest) => {
-                module.resolve(ctx, rest, line, context, inline_depth, Meaning::Any)
+                module.resolve(ctx, rest, line, context, inline_path, Meaning::Any)
             }
-            _ => resolve_single_path(ctx, path, line, context, inline_depth, Meaning::Any),
+            _ => resolve_single_path(ctx, path, line, context, inline_path, Meaning::Any),
         }
     }
 
@@ -3683,8 +4253,8 @@ impl FileBindings {
     }
 
     /// Bind the child modules of the module the glob `dep` imports from, and
-    /// the names that module binds to a module by `use`, each where the file
-    /// sees it from its crate, root and module.
+    /// the names that module binds to a module or a crate root by `use`, each
+    /// where the file sees it from its crate, root and module.
     fn bind_glob_modules(
         &mut self,
         region: RegionId,
@@ -3716,23 +4286,15 @@ impl FileBindings {
             .into_iter()
             .flat_map(SeenBindings::all)
             .filter_map(|(name, binding)| Some((name, binding.use_target()?)))
-            .filter(|(_, target)| lookup.module_is_visible(target))
-            .filter_map(|(name, target)| {
+            .filter(|(_, target)| lookup.module_is_visible(target) && lookup.binds_a_module(target))
+            .map(|(name, target)| {
                 let bound = BoundModule {
                     package: target.crate_name.clone(),
                     path: append_to_path(&target.module, &target.original_name),
                     target_root: dep.target_root,
                     import: None,
                 };
-                if !ctx
-                    .crate_view
-                    .module_paths
-                    .get_or_empty(&bound.package)
-                    .contains(&bound.path)
-                {
-                    return None;
-                }
-                Some((name.to_string(), bound))
+                (name.to_string(), bound)
             });
         self.glob_modules
             .entry(region)
@@ -3745,23 +4307,22 @@ impl FileBindings {
         struct DefinedNames(HashSet<String>);
         impl<'ast> Visit<'ast> for DefinedNames {
             fn visit_item(&mut self, node: &'ast syn::Item) {
-                let ident = match node {
-                    syn::Item::Fn(i) => Some(&i.sig.ident),
-                    syn::Item::Struct(i) => Some(&i.ident),
-                    syn::Item::Enum(i) => Some(&i.ident),
-                    syn::Item::Union(i) => Some(&i.ident),
-                    syn::Item::Trait(i) => Some(&i.ident),
-                    syn::Item::Type(i) => Some(&i.ident),
-                    syn::Item::Const(i) => Some(&i.ident),
-                    syn::Item::Static(i) => Some(&i.ident),
-                    syn::Item::Mod(i) => Some(&i.ident),
-                    syn::Item::Macro(i) => i.ident.as_ref(),
-                    _ => None,
-                };
-                if let Some(ident) = ident {
+                if let Some(ident) = item_ident(node) {
                     self.0.insert(ident.to_string());
                 }
                 syn::visit::visit_item(self, node);
+            }
+
+            fn visit_item_foreign_mod(&mut self, node: &'ast syn::ItemForeignMod) {
+                if !attributes_expand(&node.attrs) {
+                    syn::visit::visit_item_foreign_mod(self, node);
+                }
+            }
+
+            fn visit_foreign_item(&mut self, node: &'ast syn::ForeignItem) {
+                if let Some(ident) = foreign_item_ident(node) {
+                    self.0.insert(ident.to_string());
+                }
             }
         }
         let mut names = DefinedNames(HashSet::new());
@@ -3775,6 +4336,36 @@ impl FileBindings {
             .or_default()
             .insert(name.to_string());
     }
+}
+
+/// The name an item declares; none for `use`, `impl` and the like.
+fn item_ident(item: &syn::Item) -> Option<&syn::Ident> {
+    match item {
+        syn::Item::Fn(i) => Some(&i.sig.ident),
+        syn::Item::Struct(i) => Some(&i.ident),
+        syn::Item::Enum(i) => Some(&i.ident),
+        syn::Item::Union(i) => Some(&i.ident),
+        syn::Item::Trait(i) => Some(&i.ident),
+        syn::Item::Type(i) => Some(&i.ident),
+        syn::Item::Const(i) => Some(&i.ident),
+        syn::Item::Static(i) => Some(&i.ident),
+        syn::Item::Mod(i) => Some(&i.ident),
+        syn::Item::Macro(i) => i.ident.as_ref(),
+        _ => None,
+    }
+}
+
+/// The name an item of an `extern` block declares in the module holding the
+/// block; none for a macro call and for an item under an attribute macro,
+/// which may remove or rewrite it.
+fn foreign_item_ident(item: &syn::ForeignItem) -> Option<&syn::Ident> {
+    let (attrs, ident) = match item {
+        syn::ForeignItem::Fn(i) => (&i.attrs, &i.sig.ident),
+        syn::ForeignItem::Static(i) => (&i.attrs, &i.ident),
+        syn::ForeignItem::Type(i) => (&i.attrs, &i.ident),
+        _ => return None,
+    };
+    (!attributes_expand(attrs)).then_some(ident)
 }
 
 /// Each name the `use` items bind, with the `use` and the path it imports. A
@@ -3899,7 +4490,7 @@ impl BoundModule {
         rest: &str,
         line_num: usize,
         context: &EdgeContext,
-        inline_depth: usize,
+        inline_path: &str,
         meaning: Meaning,
     ) -> Option<DependencyRef> {
         let path = append_to_path(&self.path, rest);
@@ -3907,7 +4498,7 @@ impl BoundModule {
             && self.package == normalize_crate_name(ctx.crate_view.crate_name)
         {
             let path = format!("crate::{path}");
-            return resolve_single_path(ctx, &path, line_num, context, inline_depth, meaning);
+            return resolve_single_path(ctx, &path, line_num, context, inline_path, meaning);
         }
         let end = PathEnd::in_package(ctx, &self.package, &path)?;
         Some(
@@ -3946,6 +4537,9 @@ pub(crate) fn parse_path_ref_dependencies(
     let mut matching_patterns: HashSet<usize> = HashSet::new();
 
     for (index, path_ref) in paths.iter().enumerate() {
+        if path_ref.names_a_tool(ctx) {
+            continue;
+        }
         let names_a_variable = match path_ref.local {
             None => false,
             Some(LocalBinding::Variable) => true,
@@ -3973,6 +4567,9 @@ pub(crate) fn parse_path_ref_dependencies(
                             context: context_of_use(&path_ref.context, &glob.context),
                             ..glob.clone()
                         };
+                        if associated.is_some() && ends_on_an_item_named_like_its_crate(ctx, &dep) {
+                            continue;
+                        }
                         let taken_from = (glob.full_target(), dep.context.kind);
                         (dep, associated, Some(taken_from))
                     }
@@ -4098,6 +4695,25 @@ fn glob_taking<'b>(
     (!contested).then_some(taken)
 }
 
+/// Whether the re-export chain of `dep` ends on a `pub use` of an item of an
+/// external crate named like the item, such as `pub use helper::helper;`.
+/// rustc reads a path that goes on past a glob's name through the glob only
+/// where the glob brings the name as a module or a type, and from the crate
+/// of that name otherwise; which one the item is, the map does not know.
+fn ends_on_an_item_named_like_its_crate(ctx: &ResolutionContext, dep: &DependencyRef) -> bool {
+    let mut end = dep.clone();
+    ctx.resolve_reexport(&mut end, Meaning::Type);
+    let (Some(item), Some(bindings)) = (&end.target_item, ctx.target_bindings(&end)) else {
+        return false;
+    };
+    bindings.named(item).any(|binding| match &binding.kind {
+        BindingKind::ReExportFromOutside(path) => path
+            .split_once("::")
+            .is_some_and(|(crate_name, _)| crate_name == item),
+        _ => false,
+    })
+}
+
 /// Take the segment a path writes after the item it resolved to:
 /// `crate::a::S::new` on a dependency on `S` leaves `new`. A path ending in the
 /// item leaves nothing.
@@ -4145,12 +4761,12 @@ fn definition_kind(
 /// Whether a bare identifier pattern naming `dep` declares a variable, which
 /// takes no name through an ancestor. The chain of the probe goes unnoted, so
 /// only a pattern that matches an item notes it. The pattern asks `meaning`
-/// of the name.
+/// of the name. A name that reaches a module or a crate root declares one
+/// too: no pattern matches a module.
 fn declares_a_variable(ctx: &ResolutionContext, dep: &DependencyRef, meaning: Meaning) -> bool {
     let mut probed = dep.clone();
     !ctx.resolve_reexport(&mut probed, meaning)
         .places_no_definer()
-        && probed.target_item.is_some()
         && !is_matched_by_a_bare_pattern(ctx, &probed)
 }
 

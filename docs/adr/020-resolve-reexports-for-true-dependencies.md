@@ -3,6 +3,7 @@
 - **Status:** Active
 - **Decided:** 2026-02-23
 - Corrected 2026-10-13: an import is traced to the module that defines the item it names, not only to an original `pub` item. This includes names a module reaches through a private `use` in one of its ancestors.
+- Corrected 2026-10-25: a `use` inside a module declared inline with a `mod` body is followed. An edge to such a module, or to an item in it, goes to the file that contains it.
 
 ## Context
 
@@ -35,5 +36,5 @@ Such an import is traced to the defining module as well.
 ### Negative
 - Resolving re-export chains adds complexity to the analysis step
 - When a descendant names an item that the ancestor's private `use` takes from an external crate, the reference produces no edge
-- A `use` with `pub(in path)` visibility is not followed, and neither is a `use` inside a module declared inline with a `mod` body
+- A `use` with `pub(in path)` visibility is not followed
 

@@ -65,7 +65,6 @@ impl LanguageAdapter for Rust {
         let reexport_map = collect_reexport_map(
             &packages,
             &all_module_paths,
-            &workspace_packages,
             self.feature_config.include_tests,
         );
         tracing::debug!("phase: reexport map collected");

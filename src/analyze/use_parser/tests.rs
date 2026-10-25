@@ -556,38 +556,45 @@ mod submodule_tests {
         );
     }
 
+    /// A root that defines the enum `Kind` with the variant `One` through a
+    /// macro, so that no binding of the root names `Kind`.
+    const ROOT_WITH_A_MACRO_ENUM: &str = r"
+macro_rules! make_enum {
+    ($name:ident) => {
+        pub enum $name {
+            One,
+        }
+    };
+}
+make_enum!(Kind);
+";
+
     #[test]
-    fn test_cross_crate_no_paths_fallback() {
-        // other_crate declares no module `foo`: the path keeps its first name
-        // as module and the next as item.
+    fn test_cross_crate_path_through_an_item_a_macro_defines_ends_on_it() {
+        // other_crate binds no `Kind`: the name is an item of its root.
         let ws = TestWorkspace::new()
-            .package("other_crate", &[("src/lib.rs", "")])
-            .package(
-                "my_crate",
-                &[("src/lib.rs", "use other_crate::foo::bar::Baz;")],
-            )
+            .package("other_crate", &[("src/lib.rs", ROOT_WITH_A_MACRO_ENUM)])
+            .package("my_crate", &[("src/lib.rs", "use other_crate::Kind::One;")])
             .analyze();
-        assert_eq!(
-            ws.targets("my_crate"),
-            [("other_crate", "foo", Some("bar"))]
-        );
+        assert_eq!(ws.targets("my_crate"), [("other_crate", "", Some("Kind"))]);
     }
 
     #[test]
-    fn test_crate_local_path_through_an_unknown_module_falls_back_to_its_first_name() {
+    fn test_crate_local_path_through_an_item_a_macro_defines_ends_on_it() {
+        let root = format!("mod analyze;\nmod cli;\n{ROOT_WITH_A_MACRO_ENUM}");
         let ws = TestWorkspace::new()
             .package(
                 "my_crate",
                 &[
-                    ("src/lib.rs", "mod analyze;\nmod cli;"),
+                    ("src/lib.rs", &root),
                     ("src/analyze.rs", ""),
-                    ("src/cli.rs", "use crate::unknown::item;"),
+                    ("src/cli.rs", "use crate::Kind::One;"),
                 ],
             )
             .analyze();
         assert_eq!(
             ws.targets("my_crate::cli"),
-            [("my_crate", "unknown", Some("item"))]
+            [("my_crate", "", Some("Kind"))]
         );
     }
 
@@ -885,22 +892,32 @@ use crate::graph;
         );
     }
 
-    /// An unknown payload keeps the `*`: one unnamed symbol, not zero.
+    /// An unknown payload keeps the `*`: one unnamed symbol, not zero. A
+    /// macro declares `analyze`, so the module tree does not hold it and the
+    /// glob stays on the root.
     #[test]
     fn test_process_use_glob_unknown_payload_keeps_marker() {
+        let root = r"
+mod cli;
+macro_rules! make_mod {
+    () => {
+        pub mod analyze {
+            pub struct Walker;
+        }
+    };
+}
+make_mod!();
+";
         let ws = TestWorkspace::new()
             .package(
                 "my_crate",
                 &[
-                    ("src/lib.rs", "mod cli;"),
+                    ("src/lib.rs", root),
                     ("src/cli.rs", "use crate::analyze::*;\nfn f(w: Walker) {}"),
                 ],
             )
             .analyze();
-        assert_eq!(
-            ws.targets("my_crate::cli"),
-            [("my_crate", "analyze", Some("*"))]
-        );
+        assert_eq!(ws.targets("my_crate::cli"), [("my_crate", "", Some("*"))]);
     }
 }
 
@@ -1252,10 +1269,23 @@ mod entry_point_tests {
         );
     }
 
+    /// A root that defines the unit structs `Foo` and `Bar` through a macro,
+    /// so that no binding of the root names them.
+    const ROOT_WITH_MACRO_ITEMS: &str = r"
+macro_rules! make {
+    ($name:ident) => {
+        pub struct $name;
+    };
+}
+make!(Foo);
+make!(Bar);
+";
+
     #[test]
-    fn test_non_export_stays_fallback() {
-        let ws = importing("pub mod sub_mod;", "use other_crate::Unknown;");
-        assert_eq!(ws.targets("my_crate"), [("other_crate", "Unknown", None)]);
+    fn test_item_a_macro_defines_is_an_item_of_the_root() {
+        let root = format!("pub mod sub_mod;\n{ROOT_WITH_MACRO_ITEMS}");
+        let ws = importing(&root, "use other_crate::Foo;");
+        assert_eq!(ws.targets("my_crate"), [("other_crate", "", Some("Foo"))]);
     }
 
     #[test]
@@ -1269,13 +1299,14 @@ mod entry_point_tests {
 
     #[test]
     fn test_entry_point_multi_import() {
-        // other_crate defines neither name, so each resolves as a module-level
-        // fallback (target_module="Foo", no target_item). The dependency on
-        // other_crate is still detected.
-        let ws = importing("", "use other_crate::{Foo, Bar};");
+        // No binding of other_crate names either, so each is an item of its root.
+        let ws = importing(ROOT_WITH_MACRO_ITEMS, "use other_crate::{Foo, Bar};");
         assert_eq!(
             ws.sorted_targets("my_crate"),
-            [("other_crate", "Bar", None), ("other_crate", "Foo", None)]
+            [
+                ("other_crate", "", Some("Bar")),
+                ("other_crate", "", Some("Foo"))
+            ]
         );
     }
 
@@ -2038,65 +2069,43 @@ mod relative_path_tests {
     #[test]
     fn test_super_basic() {
         // super::foo from module "a::b", depth 0 → "a::foo"
-        let result = resolve_relative_path("super::foo", "a::b", 0);
+        let result = resolve_relative_path("super::foo", "a::b");
         assert_eq!(result, Some("a::foo".to_string()));
     }
 
     #[test]
     fn test_super_from_root() {
         // super::foo from crate root (empty path) → None (no parent)
-        let result = resolve_relative_path("super::foo", "", 0);
+        let result = resolve_relative_path("super::foo", "");
         assert_eq!(result, None);
     }
 
     #[test]
     fn test_super_super() {
         // super::super::foo from "a::b::c" → "a::foo"
-        let result = resolve_relative_path("super::super::foo", "a::b::c", 0);
+        let result = resolve_relative_path("super::super::foo", "a::b::c");
         assert_eq!(result, Some("a::foo".to_string()));
     }
 
     #[test]
     fn test_super_too_many() {
         // super::super::foo from "a" → None (can't go above root)
-        let result = resolve_relative_path("super::super::foo", "a", 0);
+        let result = resolve_relative_path("super::super::foo", "a");
         assert_eq!(result, None);
     }
 
     #[test]
     fn test_self_basic() {
         // self::child from "render", depth 0 → "render::child"
-        let result = resolve_relative_path("self::child", "render", 0);
+        let result = resolve_relative_path("self::child", "render");
         assert_eq!(result, Some("render::child".to_string()));
     }
 
     #[test]
     fn test_self_from_root() {
         // self::foo from crate root → "foo"
-        let result = resolve_relative_path("self::foo", "", 0);
+        let result = resolve_relative_path("self::foo", "");
         assert_eq!(result, Some("foo".to_string()));
-    }
-
-    #[test]
-    fn test_super_inside_inline_mod_ignored() {
-        // `use super::*` inside mod tests {} (depth=1) → None (self-reference)
-        let result = resolve_relative_path("super::*", "analyze::filtering", 1);
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_super_super_from_inline_mod() {
-        // `use super::super::sibling` inside mod tests {} (depth=1)
-        // first super exits inline mod, second strips from current_module_path
-        let result = resolve_relative_path("super::super::sibling", "analyze::filtering", 1);
-        assert_eq!(result, Some("analyze::sibling".to_string()));
-    }
-
-    #[test]
-    fn test_self_inside_inline_mod_ignored() {
-        // `use self::helper` inside mod tests {} (depth=1) → None (inline scope)
-        let result = resolve_relative_path("self::helper", "analyze::filtering", 1);
-        assert_eq!(result, None);
     }
 }
 
@@ -2365,7 +2374,35 @@ pub mod api {
     }
 
     #[test]
-    fn test_collect_use_items_tracks_inline_depth() {
+    fn an_inline_module_does_not_see_an_item_a_use_of_its_file_binds() {
+        // `Result` in `inner` is std's: the root's `use` binds it in the
+        // root only.
+        let source = "mod types;
+use types::Res as Result;
+
+mod inner {
+    pub fn z() -> Result<(), ()> {
+        Ok(())
+    }
+}
+";
+        let ws = TestWorkspace::new()
+            .package(
+                "my_crate",
+                &[("src/lib.rs", source), ("src/types.rs", "pub struct Res;")],
+            )
+            .analyze();
+        let lines: Vec<usize> = ws
+            .deps("my_crate")
+            .iter()
+            .filter(|dep| dep.target_module == "types")
+            .flat_map(|dep| dep.uses.iter().map(|symbol_use| symbol_use.line))
+            .collect();
+        assert!(!lines.contains(&5), "uses of types at lines {lines:?}");
+    }
+
+    #[test]
+    fn test_collect_use_items_tracks_inline_path() {
         let source = r"
 use crate::top;
 mod inner {
@@ -2378,18 +2415,9 @@ mod inner {
         let syntax = syn::parse_file(source).unwrap();
         let uses = collect_all_use_items(&syntax, EdgeContext::production());
         assert_eq!(uses.len(), 3);
-        // top-level use: depth 0
-        assert_eq!(uses[0].inline_depth, 0, "top-level use should have depth 0");
-        // use inside mod inner: depth 1
-        assert_eq!(
-            uses[1].inline_depth, 1,
-            "use in mod inner should have depth 1"
-        );
-        // use inside mod inner::deep: depth 2
-        assert_eq!(
-            uses[2].inline_depth, 2,
-            "use in mod deep should have depth 2"
-        );
+        assert_eq!(&*uses[0].inline_path, "");
+        assert_eq!(&*uses[1].inline_path, "inner");
+        assert_eq!(&*uses[2].inline_path, "inner::deep");
     }
 }
 
@@ -2823,6 +2851,7 @@ mod binding_tests {
 mod resolve_reexport_tests {
     use super::super::{ModuleExportInfo, ReExportMap};
     use super::*;
+    use rstest::rstest;
     use std::collections::HashMap;
 
     /// Analyze `my_crate` whose root is `root`, beside the further `files`.
@@ -3006,6 +3035,498 @@ mod resolve_reexport_tests {
         assert_eq!(
             ws.targets("my_crate::user"),
             [("my_crate", "origin", Some("Widget"))]
+        );
+    }
+
+    #[test]
+    fn an_item_of_an_extern_block_behind_a_glob_lands_on_its_module() {
+        // rustc: `crate::ext_call` is `my_crate::ffi::{{extern}}::ext_call`.
+        let ws = my_crate(
+            "mod ffi;\nmod user;\npub use ffi::*;",
+            &[
+                (
+                    "src/ffi.rs",
+                    "unsafe extern \"C\" {\n    pub fn ext_call();\n}",
+                ),
+                ("src/user.rs", "use crate::ext_call;"),
+            ],
+        );
+        assert_eq!(
+            ws.targets("my_crate::user"),
+            [("my_crate", "ffi", Some("ext_call"))]
+        );
+    }
+
+    #[test]
+    fn an_item_of_an_extern_block_hides_a_glob_name_in_its_file() {
+        // rustc: `ext_call` in user is `my_crate::user::{{extern}}::ext_call`.
+        let ws = my_crate(
+            "mod other;\nmod user;",
+            &[
+                ("src/other.rs", "pub fn ext_call() {}"),
+                (
+                    "src/user.rs",
+                    "use crate::other::*;\nunsafe extern \"C\" {\n    fn ext_call();\n}\nfn f() { unsafe { ext_call() } }",
+                ),
+            ],
+        );
+        let items: Vec<_> = ws
+            .targets("my_crate::user")
+            .into_iter()
+            .map(|(_, _, item)| item)
+            .collect();
+        assert!(!items.contains(&Some("ext_call")), "{items:?}");
+    }
+
+    /// An attribute macro on an `extern` block may remove or rewrite its
+    /// items, so they bind nothing and the glob's name stays visible; a
+    /// built-in attribute leaves the items in place. `m` holds
+    /// `pub use other::*;` and the block under `attribute`.
+    // rustc, with `drop_item` expanding to nothing: `crate::m::get` is
+    // `my_crate::m::other::get`.
+    #[rstest]
+    #[case::an_attribute_macro("#[drop_item]", "m::other")]
+    #[case::a_built_in_attribute("#[link(name = \"c\")]", "m")]
+    #[case::an_attribute_macro_under_cfg_attr(
+        "#[cfg_attr(target_arch = \"wasm32\", drop_item)]",
+        "m::other"
+    )]
+    #[case::an_attribute_macro_under_nested_cfg_attr(
+        "#[cfg_attr(unix, cfg_attr(target_arch = \"wasm32\", doc = \"x\", drop_item))]",
+        "m::other"
+    )]
+    #[case::only_built_in_attributes_under_cfg_attr(
+        "#[cfg_attr(unix, link(name = \"c\"), doc = \"x\", allow(dead_code))]",
+        "m"
+    )]
+    #[case::only_built_in_attributes_under_nested_cfg_attr(
+        "#[cfg_attr(unix, cfg_attr(windows, link(name = \"c\")), allow(dead_code))]",
+        "m"
+    )]
+    fn an_extern_block_binds_its_items_unless_an_attribute_macro_stands_on_it(
+        #[case] attribute: &str,
+        #[case] expected: &str,
+    ) {
+        let m = format!(
+            "mod other;\npub use other::*;\n{attribute}\nunsafe extern \"C\" {{\n    pub fn get() -> i32;\n}}"
+        );
+        let ws = my_crate(
+            "pub mod m;\npub mod user;",
+            &[
+                ("src/m.rs", &m),
+                ("src/m/other.rs", "pub fn get() -> i32 { 1 }"),
+                ("src/user.rs", "pub fn f() -> i32 { crate::m::get() }"),
+            ],
+        );
+        assert_eq!(
+            ws.targets("my_crate::user"),
+            [("my_crate", expected, Some("get"))]
+        );
+    }
+
+    /// An attribute macro on one item of an `extern` block may remove or
+    /// rewrite that item, so it binds nothing; a built-in attribute leaves it.
+    // rustc, with `drop_item` expanding to nothing: `crate::m::get` is
+    // `my_crate::m::other::get`.
+    #[rstest]
+    #[case::an_attribute_macro("#[drop_item]", "m::other")]
+    #[case::an_attribute_macro_under_cfg_attr("#[cfg_attr(unix, drop_item)]", "m::other")]
+    #[case::a_built_in_attribute("#[link_name = \"c_get\"]", "m")]
+    fn an_extern_item_binds_unless_an_attribute_macro_stands_on_it(
+        #[case] attribute: &str,
+        #[case] expected: &str,
+    ) {
+        let m = format!(
+            "mod other;\npub use other::*;\nunsafe extern \"C\" {{\n    {attribute}\n    pub fn get() -> i32;\n}}"
+        );
+        let ws = my_crate(
+            "pub mod m;\npub mod user;",
+            &[
+                ("src/m.rs", &m),
+                ("src/m/other.rs", "pub fn get() -> i32 { 1 }"),
+                ("src/user.rs", "pub fn f() -> i32 { crate::m::get() }"),
+            ],
+        );
+        assert_eq!(
+            ws.targets("my_crate::user"),
+            [("my_crate", expected, Some("get"))]
+        );
+    }
+
+    #[test]
+    fn an_extern_item_under_an_attribute_macro_leaves_a_glob_name_in_its_file() {
+        let ws = my_crate(
+            "mod other;\nmod user;",
+            &[
+                ("src/other.rs", "pub fn ext_call() {}"),
+                (
+                    "src/user.rs",
+                    "use crate::other::*;\nunsafe extern \"C\" {\n    #[drop_item]\n    fn ext_call();\n}\nfn f() { ext_call() }",
+                ),
+            ],
+        );
+        assert!(
+            ws.targets("my_crate::user")
+                .contains(&("my_crate", "other", Some("ext_call"))),
+            "{:?}",
+            ws.targets("my_crate::user")
+        );
+    }
+
+    #[test]
+    fn an_extern_block_under_an_attribute_macro_leaves_a_glob_name_in_its_file() {
+        let ws = my_crate(
+            "mod other;\nmod user;",
+            &[
+                ("src/other.rs", "pub fn ext_call() {}"),
+                (
+                    "src/user.rs",
+                    "use crate::other::*;\n#[drop_item]\nunsafe extern \"C\" {\n    fn ext_call();\n}\nfn f() { ext_call() }",
+                ),
+            ],
+        );
+        assert!(
+            ws.targets("my_crate::user")
+                .contains(&("my_crate", "other", Some("ext_call"))),
+            "{:?}",
+            ws.targets("my_crate::user")
+        );
+    }
+
+    #[test]
+    fn an_external_item_passed_on_behind_a_glob_lands_on_the_module_passing_it_on() {
+        // rustc: `crate::Error` is `core::fmt::Error`, reached through
+        // `error`, the last module of the crate on the way.
+        let ws = my_crate(
+            "mod error;\nmod viafile;\nmod viaroot;\npub(crate) use error::*;",
+            &[
+                ("src/error.rs", "pub use std::fmt::Error;"),
+                ("src/viafile.rs", "use crate::error::Error;"),
+                ("src/viaroot.rs", "use crate::Error;"),
+            ],
+        );
+        assert_eq!(
+            ws.targets("my_crate::viafile"),
+            [("my_crate", "error", Some("Error"))]
+        );
+        assert_eq!(
+            ws.targets("my_crate::viaroot"),
+            [("my_crate", "error", Some("Error"))]
+        );
+    }
+
+    #[test]
+    fn a_path_from_a_name_a_glob_brings_from_outside_may_name_a_crate() {
+        // rustc: a glob that brings `helper` only as a macro leaves the path
+        // `helper::Thing` to the crate `helper` (probe: a glob bringing `core`
+        // as a macro leaves `core::fmt::Error` to the crate). Which namespace
+        // `helper::helper` is in, the map does not know.
+        let ws = TestWorkspace::new()
+            .package(
+                "my_crate",
+                &[
+                    (
+                        "src/lib.rs",
+                        "mod reexports;\nmod user;\npub use reexports::*;",
+                    ),
+                    ("src/reexports.rs", "pub use helper::helper;"),
+                    ("src/user.rs", "use crate::*;\nfn f(_: helper::Thing) {}"),
+                ],
+            )
+            .analyze();
+        let items: Vec<_> = ws
+            .targets("my_crate::user")
+            .into_iter()
+            .map(|(_, _, item)| item)
+            .collect();
+        assert!(!items.contains(&Some("helper")), "{items:?}");
+    }
+
+    #[test]
+    fn a_path_from_a_crate_a_glob_brings_goes_through_the_glob() {
+        // rustc: where a glob brings a module `core`, `core::Marker` is read
+        // through it, not from the extern prelude's crate `core` (probe). A
+        // `pub use` of a lone crate name binds a crate, which is a module.
+        let ws = my_crate(
+            "mod user;\npub use helper;",
+            &[("src/user.rs", "use crate::*;\nfn f(_: helper::Thing) {}")],
+        );
+        assert_eq!(
+            ws.targets("my_crate::user"),
+            [("my_crate", "", Some("helper"))]
+        );
+    }
+
+    /// `make_flags!` defines a unit struct of the name it is given.
+    const MAKE_FLAGS: &str = "macro_rules! make_flags { ($n:ident) => { pub struct $n; } }";
+
+    #[test]
+    fn a_name_only_a_macro_defines_lands_on_the_one_glob_source_calling_a_macro() {
+        // rustc: `kinds::Caps` is `kinds::flags::Caps`.
+        let flags = format!("{MAKE_FLAGS}\nmake_flags!(Caps);\npub struct Plain;");
+        let ws = TestWorkspace::new()
+            .package(
+                "kinds",
+                &[
+                    ("src/lib.rs", "mod flags;\npub use flags::*;"),
+                    ("src/flags.rs", &flags),
+                ],
+            )
+            .package(
+                "reader",
+                &[
+                    ("src/lib.rs", "mod user;"),
+                    ("src/user.rs", "use kinds::{Caps, Plain};"),
+                ],
+            )
+            .analyze();
+        assert_eq!(
+            ws.sorted_targets("reader::user"),
+            [
+                ("kinds", "flags", Some("Caps")),
+                ("kinds", "flags", Some("Plain"))
+            ]
+        );
+    }
+
+    #[test]
+    fn a_name_only_a_macro_defines_lands_on_the_macro_caller_down_a_chain_of_globs() {
+        // rustc: `crate::outer::Deeper` is `my_crate::outer::middle::deep::Deeper`.
+        let deep = format!("{MAKE_FLAGS}\nmake_flags!(Deeper);");
+        let ws = my_crate(
+            "mod outer;\nmod user;",
+            &[
+                ("src/outer/mod.rs", "mod middle;\npub use middle::*;"),
+                ("src/outer/middle/mod.rs", "pub mod deep;\npub use deep::*;"),
+                ("src/outer/middle/deep.rs", &deep),
+                ("src/user.rs", "use crate::outer::Deeper;"),
+            ],
+        );
+        assert_eq!(
+            ws.targets("my_crate::user"),
+            [("my_crate", "outer::middle::deep", Some("Deeper"))]
+        );
+    }
+
+    /// A name no binding lists, `Caps`, goes to the one module that may define
+    /// it by a macro, and stays on the root where another module may define
+    /// it too. `a` calls `make_flags!` with `a_makes`; the root holds `root`
+    /// beside `pub use a::*;` and `pub use b::*;`, and `b` holds `b`.
+    #[rstest]
+    #[case::b_calls_a_macro_too("", "Caps", "make_flags!(Other);", "")]
+    #[case::the_root_calls_a_macro_too(
+        &format!("{MAKE_FLAGS}\nmake_flags!(Other);"),
+        "Caps",
+        "",
+        ""
+    )]
+    #[case::b_carries_a_derive_macro("", "Caps", "#[derive(Widget)]\npub struct Other;", "")]
+    #[case::b_carries_an_attribute_macro("", "Caps", "#[make_more]\npub fn other() {}", "")]
+    #[case::b_carries_only_built_in_attributes(
+        "",
+        "Caps",
+        "#[derive(Debug, Clone)]\n#[cfg_attr(test, derive(Default))]\npub struct Other;\n#[inline]\npub fn other() {}",
+        "a"
+    )]
+    #[case::the_root_holds_a_glob_of_another_crate("pub use std::collections::*;", "Caps", "", "")]
+    #[case::b_defines_a_union_of_the_name("", "Other", "pub union Caps { f: u8 }", "")]
+    #[case::the_root_binds_the_name_to_a_crate("extern crate alloc as Caps;", "Caps", "", "")]
+    #[case::b_exports_a_macro_of_the_name(
+        "",
+        "Other",
+        "#[macro_export]\nmacro_rules! Caps { () => {} }",
+        ""
+    )]
+    fn a_name_only_a_macro_defines_goes_to_the_one_module_that_may_define_it(
+        #[case] root: &str,
+        #[case] a_makes: &str,
+        #[case] b: &str,
+        #[case] expected: &str,
+    ) {
+        let a = format!("{MAKE_FLAGS}\nmake_flags!({a_makes});");
+        let b = format!("{MAKE_FLAGS}\n{b}");
+        let ws = my_crate(
+            &format!("mod a;\nmod b;\nmod user;\npub use a::*;\npub use b::*;\n{root}"),
+            &[
+                ("src/a.rs", &a),
+                ("src/b.rs", &b),
+                ("src/user.rs", "use crate::Caps;"),
+            ],
+        );
+        assert_eq!(
+            ws.targets("my_crate::user"),
+            [("my_crate", expected, Some("Caps"))]
+        );
+    }
+
+    #[test]
+    fn a_macro_passed_on_by_its_own_module_behind_a_glob_lands_on_that_module() {
+        // rustc: `crate::shout` is the `macro_rules! shout` of `my_crate::mac`.
+        let ws = my_crate(
+            "mod a;\nmod mac;\nmod user;\npub(crate) use a::*;\npub(crate) use mac::*;",
+            &[
+                ("src/a.rs", "#[derive(Widget)]\npub struct Other;"),
+                (
+                    "src/mac.rs",
+                    "macro_rules! shout { () => { 1 } }\npub(crate) use shout;",
+                ),
+                ("src/user.rs", "use crate::shout;"),
+            ],
+        );
+        assert_eq!(
+            ws.targets("my_crate::user"),
+            [("my_crate", "mac", Some("shout"))]
+        );
+    }
+
+    #[test]
+    fn a_call_of_a_name_its_module_binds_to_its_own_macro_goes_on_through_the_glob() {
+        // rustc: `crate::m::shout()` is the fn `my_crate::m::other::shout`,
+        // `crate::m::shout!()` the `macro_rules! shout` of `my_crate::m`.
+        let ws = my_crate(
+            "pub mod m;\npub mod user;",
+            &[
+                (
+                    "src/m.rs",
+                    "mod other;\npub(crate) use other::*;\nmacro_rules! shout { () => { 1 } }\npub(crate) use shout;",
+                ),
+                ("src/m/other.rs", "pub fn shout() -> i32 { 2 }"),
+                (
+                    "src/user.rs",
+                    "pub fn f() -> i32 { crate::m::shout() }\npub fn g() -> i32 { crate::m::shout!() }",
+                ),
+            ],
+        );
+        assert_eq!(
+            ws.sorted_targets("my_crate::user"),
+            [
+                ("my_crate", "m", Some("shout")),
+                ("my_crate", "m::other", Some("shout"))
+            ]
+        );
+    }
+
+    /// `mac` binds `shout` to its own macro, `fns` defines the fn `shout`,
+    /// both behind globs in that order, `depth` modules below `m`.
+    // rustc: `crate::m::shout()` is the fn of `fns`.
+    #[rstest]
+    #[case::one_glob_down("m")]
+    #[case::two_globs_down("m::mid")]
+    fn a_call_through_globs_passes_a_glob_source_with_only_a_macro_of_the_name(
+        #[case] holder: &str,
+    ) {
+        let globs = "mod mac;\nmod fns;\npub(crate) use mac::*;\npub(crate) use fns::*;";
+        let mac = format!("src/{}/mac.rs", holder.replace("::", "/"));
+        let fns = format!("src/{}/fns.rs", holder.replace("::", "/"));
+        let mut files = vec![
+            (
+                mac.as_str(),
+                "macro_rules! shout { () => { 1 } }\npub(crate) use shout;",
+            ),
+            (fns.as_str(), "pub fn shout() -> i32 { 2 }"),
+            ("src/user.rs", "pub fn f() -> i32 { crate::m::shout() }"),
+        ];
+        if holder == "m" {
+            files.push(("src/m.rs", globs));
+        } else {
+            files.push(("src/m.rs", "mod mid;\npub(crate) use mid::*;"));
+            files.push(("src/m/mid.rs", globs));
+        }
+        let ws = my_crate("pub mod m;\npub mod user;", &files);
+        let expected = format!("{holder}::fns");
+        assert_eq!(
+            ws.targets("my_crate::user"),
+            [("my_crate", expected.as_str(), Some("shout"))]
+        );
+    }
+
+    #[test]
+    fn an_attribute_names_a_macro_through_globs() {
+        // rustc: `#[make]` in `parts::piece` is the attribute macro of `macros`.
+        let ws = TestWorkspace::new()
+            .package(
+                "macros",
+                &[(
+                    "src/lib.rs",
+                    "#[proc_macro_attribute]\npub fn make(_: TokenStream, input: TokenStream) -> TokenStream { input }",
+                )],
+            )
+            .package(
+                "app",
+                &[
+                    ("src/lib.rs", "mod parts;"),
+                    ("src/parts/mod.rs", "use macros::*;\nmod piece;\npub use piece::*;"),
+                    ("src/parts/piece.rs", "use super::*;\n#[make]\npub fn piece() {}"),
+                ],
+            )
+            .analyze();
+        assert!(
+            ws.targets("app::parts::piece")
+                .contains(&("macros", "", Some("make"))),
+            "{:?}",
+            ws.targets("app::parts::piece")
+        );
+    }
+
+    /// A derive macro may declare helper attributes, which name no macro: a
+    /// bare attribute on an item that derives a macro, or on its fields and
+    /// variants, is not read. `m` binds `shout` to its own macro behind a glob.
+    // rustc: `#[shout]` under `#[derive(Helped)]` is the derive's helper.
+    #[rstest]
+    #[case::on_a_field("#[derive(Helped)]\npub struct S {\n    #[shout]\n    pub x: u8,\n}")]
+    #[case::on_a_variant("#[derive(Helped)]\npub enum E {\n    #[shout]\n    A,\n}")]
+    #[case::on_the_item("#[derive(Helped)]\n#[shout]\npub struct S;")]
+    #[case::under_cfg_attr(
+        "#[cfg_attr(unix, derive(Helped))]\npub struct S {\n    #[shout]\n    pub x: u8,\n}"
+    )]
+    fn a_bare_attribute_under_a_derive_macro_names_nothing(#[case] item: &str) {
+        let user = format!("use crate::m::*;\n{item}");
+        let ws = my_crate(
+            "pub mod m;\npub mod user;",
+            &[
+                ("src/m.rs", "mod mac;\npub(crate) use mac::*;"),
+                (
+                    "src/m/mac.rs",
+                    "macro_rules! shout { () => { 1 } }\npub(crate) use shout;",
+                ),
+                ("src/user.rs", &user),
+            ],
+        );
+        let items: Vec<_> = ws
+            .targets("my_crate::user")
+            .into_iter()
+            .map(|(_, _, item)| item)
+            .collect();
+        assert!(!items.contains(&Some("shout")), "{items:?}");
+    }
+
+    /// Under built-in derives only, and with more than one segment, an
+    /// attribute still names a macro.
+    #[rstest]
+    #[case::built_in_derives_only(
+        "#[derive(Debug, Clone)]\npub struct S {\n    #[shout]\n    pub x: u8,\n}"
+    )]
+    #[case::a_path_under_a_derive_macro(
+        "#[derive(Helped)]\npub struct S {\n    #[crate::m::shout]\n    pub x: u8,\n}"
+    )]
+    fn an_attribute_outside_a_derive_helpers_reach_names_a_macro(#[case] item: &str) {
+        let user = format!("use crate::m::*;\n{item}");
+        let ws = my_crate(
+            "pub mod m;\npub mod user;",
+            &[
+                ("src/m.rs", "mod mac;\npub(crate) use mac::*;"),
+                (
+                    "src/m/mac.rs",
+                    "macro_rules! shout { () => { 1 } }\npub(crate) use shout;",
+                ),
+                ("src/user.rs", &user),
+            ],
+        );
+        assert!(
+            ws.targets("my_crate::user")
+                .contains(&("my_crate", "m::mac", Some("shout"))),
+            "{:?}",
+            ws.targets("my_crate::user")
         );
     }
 
@@ -4342,14 +4863,39 @@ mod first_segment_tests {
 
     #[test]
     fn a_restricted_use_in_another_crates_root_is_no_entry_point() {
-        let found = with_other_crate(
-            "mod inner;\npub(crate) use self::inner::Thing;",
-            "use other_crate::Thing;",
-        );
-        assert!(
-            !found.contains(&target("other_crate", "", "Thing")),
-            "{found:?}"
-        );
+        // The `use` binds the fn `Thing` of `inner` for the crate alone; the
+        // struct a macro defines in the root is what `other_crate::Thing` names.
+        let other_root = r"
+mod inner;
+pub(crate) use self::inner::Thing;
+macro_rules! make {
+    ($name:ident) => {
+        pub struct $name {}
+    };
+}
+make!(Thing);
+";
+        let found = own(TestWorkspace::new()
+            .package(
+                "other_crate",
+                &[
+                    ("src/lib.rs", other_root),
+                    ("src/inner.rs", "pub fn Thing() {}"),
+                ],
+            )
+            .package(
+                "my_crate",
+                &[
+                    ("src/lib.rs", "mod user;"),
+                    (
+                        "src/user.rs",
+                        "use other_crate::Thing;\npub fn f(_: Thing) {}",
+                    ),
+                ],
+            )
+            .analyze()
+            .targets("my_crate::user"));
+        assert_eq!(found, [target("other_crate", "", "Thing")]);
     }
 
     #[test]
