@@ -30,14 +30,36 @@ name = "bl"
 version = "0.1.0"
 
 [[package]]
+name = "diagnostic"
+version = "0.1.0"
+
+[[package]]
 name = "extra"
 version = "0.1.0"
+
+[[package]]
+name = "fb"
+version = "0.1.0"
+dependencies = [
+ "segs",
+]
 
 [[package]]
 name = "ghold"
 version = "0.1.0"
 dependencies = [
  "gsrc",
+]
+
+[[package]]
+name = "gm"
+version = "0.1.0"
+
+[[package]]
+name = "gmd"
+version = "0.1.0"
+dependencies = [
+ "segs",
 ]
 
 [[package]]
@@ -59,10 +81,56 @@ dependencies = [
 ]
 
 [[package]]
+name = "gu"
+version = "0.1.0"
+dependencies = [
+ "pre",
+]
+
+[[package]]
 name = "hub"
 version = "0.1.0"
 dependencies = [
  "types",
+]
+
+[[package]]
+name = "ib"
+version = "0.1.0"
+dependencies = [
+ "segs",
+]
+
+[[package]]
+name = "ifn"
+version = "0.1.0"
+dependencies = [
+ "segs",
+]
+
+[[package]]
+name = "ig"
+version = "0.1.0"
+dependencies = [
+ "segs",
+]
+
+[[package]]
+name = "il"
+version = "0.1.0"
+
+[[package]]
+name = "iluser"
+version = "0.1.0"
+dependencies = [
+ "il",
+]
+
+[[package]]
+name = "iown"
+version = "0.1.0"
+dependencies = [
+ "segs",
 ]
 
 [[package]]
@@ -84,6 +152,13 @@ version = "0.1.0"
 [[package]]
 name = "pm"
 version = "0.1.0"
+
+[[package]]
+name = "pre"
+version = "0.1.0"
+dependencies = [
+ "segs",
+]
 
 [[package]]
 name = "probe"
@@ -110,6 +185,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "rk"
+version = "0.1.0"
+dependencies = [
+ "segs",
+]
+
+[[package]]
+name = "sa"
+version = "0.1.0"
+
+[[package]]
+name = "segs"
+version = "0.1.0"
+
+[[package]]
 name = "t5"
 version = "0.1.0"
 
@@ -120,6 +210,17 @@ version = "0.1.0"
 [[package]]
 name = "t7"
 version = "0.1.0"
+
+[[package]]
+name = "tau"
+version = "0.1.0"
+
+[[package]]
+name = "taudep"
+version = "0.1.0"
+dependencies = [
+ "diagnostic",
+]
 
 [[package]]
 name = "types"

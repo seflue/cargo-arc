@@ -4,15 +4,20 @@ use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use super::mod_resolver::{ModDecl, ModuleFile, declared_files, extract_mod_declarations};
-use super::packages::{ModulePathMap, PackageExportMap, WorkspacePackages, normalize_crate_name};
-use super::reexports::{name_a_fn_defines, root_extern_crates};
+use super::mod_resolver::{
+    CfgCondition, ModDecl, ModuleFile, declared_files, extract_mod_declarations,
+};
+use super::packages::{
+    ModulePathMap, ModulePaths, PackageExportMap, WorkspacePackages, normalize_crate_name,
+};
+use super::reexports::{name_a_fn_defines, root_extern_prelude};
 use super::use_parser::ReExportMap;
 use super::use_parser::{
-    CrateView, PassedOn, ResolutionContext, RootBuilds, parse_file_dependencies, promote_to_test,
+    CrateView, ModulesBound, PassedOn, ResolutionContext, RootBuilds, parse_file_dependencies,
+    promote_to_test,
 };
 use crate::model::{
-    EdgeContext, EntryKind, ModuleInfo, ModuleTree, PackageInfo, TestKind, UsageKind,
+    EdgeContext, EntryKind, ModuleInfo, ModuleTree, PackageInfo, TargetRoot, TestKind, UsageKind,
 };
 
 /// Find integration test files in `tests/*.rs`.
@@ -37,14 +42,21 @@ fn find_integration_test_files(crate_path: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// Parse a Rust source file and return all external `mod` declarations.
-/// Convenience wrapper around `extract_mod_declarations` for callers with a file path.
-fn parse_mod_declarations(file_path: &Path, include_tests: bool) -> Result<Vec<ModDecl>> {
+/// Read and parse the Rust source file at `file_path`.
+fn parse_source(file_path: &Path) -> Result<syn::File> {
     let source = std::fs::read_to_string(file_path)
         .with_context(|| format!("reading {}", file_path.display()))?;
-    let syntax =
-        syn::parse_file(&source).with_context(|| format!("parsing {}", file_path.display()))?;
-    Ok(extract_mod_declarations(&syntax, include_tests))
+    syn::parse_file(&source).with_context(|| format!("parsing {}", file_path.display()))
+}
+
+/// Parse a Rust source file and return all external `mod` declarations.
+/// Convenience wrapper around `extract_mod_declarations` for callers with a file path.
+#[cfg(test)]
+fn parse_mod_declarations(file_path: &Path, include_tests: bool) -> Result<Vec<ModDecl>> {
+    Ok(extract_mod_declarations(
+        &parse_source(file_path)?,
+        include_tests,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -52,32 +64,65 @@ fn parse_mod_declarations(file_path: &Path, include_tests: bool) -> Result<Vec<M
 // ---------------------------------------------------------------------------
 
 /// Recursively walk `mod` declarations starting from `module`,
-/// collecting relative module paths (e.g. `"foo"`, `"foo::bar"`).
+/// collecting relative module paths (e.g. `"foo"`, `"foo::bar"`), those
+/// declared inline with a body among them.
 fn walk_modules_for_paths(
     module: &ModuleFile,
     parent_path: &str,
-    paths: &mut HashSet<String>,
+    modules: &mut ModulePaths,
     include_tests: bool,
 ) {
-    let decls = match parse_mod_declarations(&module.path, include_tests) {
-        Ok(d) => d,
+    let syntax = match parse_source(&module.path) {
+        Ok(syntax) => syntax,
         Err(e) => {
             tracing::warn!("skipping {}: {e:#}", module.path.display());
             return;
         }
     };
+    insert_inline_modules(&syntax.items, parent_path, modules, include_tests);
 
-    for decl in decls {
+    for decl in extract_mod_declarations(&syntax, include_tests) {
         let child_full = if parent_path.is_empty() {
             decl.name.clone()
         } else {
             format!("{parent_path}::{}", decl.name)
         };
-        paths.insert(child_full.clone());
+        modules.paths.insert(child_full.clone());
 
         for child in declared_files(&module.path, module.owns_directory, &decl) {
-            walk_modules_for_paths(&child.file, &child_full, paths, include_tests);
+            walk_modules_for_paths(&child.file, &child_full, modules, include_tests);
         }
+    }
+}
+
+/// Add the modules that `items`, written in the module at `parent_path`,
+/// declare inline with a body, and the ones these declare in turn. A
+/// `#[cfg(test)]` module only counts where test code is included, as for
+/// `mod name;`.
+fn insert_inline_modules(
+    items: &[syn::Item],
+    parent_path: &str,
+    modules: &mut ModulePaths,
+    include_tests: bool,
+) {
+    for item in items {
+        let syn::Item::Mod(item_mod) = item else {
+            continue;
+        };
+        let Some((_, content)) = &item_mod.content else {
+            continue;
+        };
+        if !include_tests && CfgCondition::of_attrs(&item_mod.attrs).test_builds_only() {
+            continue;
+        }
+        let path = if parent_path.is_empty() {
+            item_mod.ident.to_string()
+        } else {
+            format!("{parent_path}::{}", item_mod.ident)
+        };
+        insert_inline_modules(content, &path, modules, include_tests);
+        modules.paths.insert(path.clone());
+        modules.inline.insert(path);
     }
 }
 
@@ -93,30 +138,27 @@ fn with_test_crate(
         path: test_file.to_path_buf(),
         owns_directory: true,
     };
-    let mut paths = HashSet::new();
-    walk_modules_for_paths(&root, "", &mut paths, include_tests);
-    all_module_paths
-        .iter()
-        .map(|(key, paths)| (key.clone(), paths.clone()))
-        .chain(std::iter::once((test_crate.to_string(), paths)))
-        .collect()
+    let mut modules = ModulePaths::default();
+    walk_modules_for_paths(&root, "", &mut modules, include_tests);
+    all_module_paths.with(test_crate, modules)
 }
 
 /// Collect all module paths reachable from the crate's targets via filesystem walk.
-/// Returns relative paths without crate prefix, e.g. `{"analyze", "analyze::hir"}`.
+/// Returns relative paths without crate prefix, e.g. `{"analyze", "analyze::hir"}`,
+/// with the inline modules among them.
 pub(crate) fn collect_syn_module_paths(
     crate_info: &PackageInfo,
     include_tests: bool,
-) -> HashSet<String> {
-    let mut paths = HashSet::new();
+) -> ModulePaths {
+    let mut modules = ModulePaths::default();
     for entry in &crate_info.entry_files {
         let root = ModuleFile {
             path: entry.file.clone(),
             owns_directory: true,
         };
-        walk_modules_for_paths(&root, "", &mut paths, include_tests);
+        walk_modules_for_paths(&root, "", &mut modules, include_tests);
     }
-    paths
+    modules
 }
 
 // ---------------------------------------------------------------------------
@@ -402,6 +444,32 @@ fn walk_module_syn(
     // passes the names on, which is no dependency of this module.
     dependencies.retain(|dep| !only_passes_on(ctx, &walked.passed_on, current_module_path, dep));
 
+    // A module declared inline is no node; the module of its file is, with
+    // the inline module as the item where the path ends on it.
+    for dep in &mut dependencies {
+        let file_module = ctx
+            .crate_view
+            .module_paths
+            .file_module(&dep.target_package, &dep.target_module);
+        if file_module.len() < dep.target_module.len() {
+            let file_module = file_module.to_string();
+            if dep.target_item.is_none() {
+                let module = dep.target_module.as_str();
+                let name = module.rsplit_once("::").map_or(module, |(_, name)| name);
+                dep.target_item = Some(name.to_string());
+            }
+            dep.target_module = file_module;
+        }
+    }
+    // A path that stays in this file, as `use super::*` in an inline module,
+    // depends on nothing outside it.
+    let own_package = normalize_crate_name(ctx.crate_view.crate_name);
+    dependencies.retain(|dep| {
+        dep.target_root != TargetRoot::AsSeen
+            || dep.target_package != own_package
+            || dep.target_module != current_module_path
+    });
+
     let definitions = ctx.crate_view.builds.definitions(
         ctx.crate_view.crate_name,
         current_module_path,
@@ -440,6 +508,7 @@ fn walk_integration_test(
         crate_name: &test_crate,
         module_paths: &module_paths,
         builds: view.builds.clone(),
+        modules_bound: ModulesBound::default(),
         ..*view
     };
     let test_ctx = WalkContext {
@@ -463,7 +532,7 @@ pub(crate) fn analyze_modules_syn(
     include_tests: bool,
 ) -> ModuleTree {
     let normalized = normalize_crate_name(&crate_info.name);
-    let no_extern_crates = std::collections::HashMap::new();
+    let test_prelude = root_extern_prelude(crate_info, None);
     // Seen from no root: what integration tests see.
     let unrooted_view = CrateView {
         crate_name: &normalized,
@@ -471,18 +540,19 @@ pub(crate) fn analyze_modules_syn(
         module_paths: all_module_paths,
         crate_exports,
         external_crate_names,
-        extern_crates: &no_extern_crates,
+        extern_prelude: &test_prelude,
         builds: RootBuilds::of(reexport_map.clone()),
+        modules_bound: ModulesBound::default(),
     };
 
     let mut walked = Walked::default();
     let mut root: Option<ModuleInfo> = None;
     for (index, entry) in crate_info.entry_files.iter().enumerate() {
-        let extern_crates =
-            root_extern_crates(&entry.file, workspace_crates, &crate_info.code_names);
+        let extern_prelude = root_extern_prelude(crate_info, Some(entry));
         let root_view = CrateView {
-            extern_crates: &extern_crates,
+            extern_prelude: &extern_prelude,
             builds: RootBuilds::of(reexport_map.for_root(&normalized, index)),
+            modules_bound: ModulesBound::default(),
             ..unrooted_view
         };
         let root_ctx = WalkContext {
@@ -692,7 +762,8 @@ mod tests {
                 .file("src/foo/bar.rs", "")
                 .build();
 
-            let paths = collect_syn_module_paths(&conventional_package("synth", tmp.path()), false);
+            let paths =
+                collect_syn_module_paths(&conventional_package("synth", tmp.path()), false).paths;
             assert!(
                 paths.contains("foo"),
                 "should contain 'foo', found: {paths:?}"
@@ -708,7 +779,8 @@ mod tests {
         fn test_collect_paths_own_crate() {
             let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
             let paths =
-                collect_syn_module_paths(&conventional_package("cargo_arc", crate_root), false);
+                collect_syn_module_paths(&conventional_package("cargo_arc", crate_root), false)
+                    .paths;
 
             for expected in [
                 "analyze",
@@ -736,7 +808,8 @@ mod tests {
                 .file("src/lib.rs", "// empty crate")
                 .build();
 
-            let paths = collect_syn_module_paths(&conventional_package("empty", tmp.path()), false);
+            let paths =
+                collect_syn_module_paths(&conventional_package("empty", tmp.path()), false).paths;
             assert!(paths.is_empty(), "expected empty set, found: {paths:?}");
         }
 
@@ -749,7 +822,8 @@ mod tests {
                 .file("src/b.rs", "")
                 .build();
 
-            let paths = collect_syn_module_paths(&conventional_package("mixed", tmp.path()), false);
+            let paths =
+                collect_syn_module_paths(&conventional_package("mixed", tmp.path()), false).paths;
             assert!(paths.contains("a"), "should contain 'a', found: {paths:?}");
             assert!(paths.contains("b"), "should contain 'b', found: {paths:?}");
             assert_eq!(paths.len(), 2);
@@ -1075,7 +1149,7 @@ mod tests {
 
             // collect_syn_module_paths finds "cli"
             let paths =
-                collect_syn_module_paths(&conventional_package("binonly", tmp.path()), false);
+                collect_syn_module_paths(&conventional_package("binonly", tmp.path()), false).paths;
             assert!(
                 paths.contains("cli"),
                 "should contain 'cli', found: {paths:?}"
@@ -1154,7 +1228,10 @@ fn main() {
             let mp: ModulePathMap = [("other_crate".to_string(), HashSet::from(["module".into()]))]
                 .into_iter()
                 .collect();
-            let crate_info = conventional_package("app", tmp.path());
+            let crate_info = PackageInfo {
+                dependencies: vec!["other_crate".to_string()],
+                ..conventional_package("app", tmp.path())
+            };
             let tree = analyze_modules_syn(
                 &crate_info,
                 &ws,
@@ -1193,7 +1270,10 @@ fn main() {
             ]
             .into_iter()
             .collect();
-            let crate_info = conventional_package("app", tmp.path());
+            let crate_info = PackageInfo {
+                dependencies: vec!["other_crate".to_string()],
+                ..conventional_package("app", tmp.path())
+            };
             let tree = analyze_modules_syn(
                 &crate_info,
                 &ws,
@@ -1237,7 +1317,10 @@ fn main() {
             let mp: ModulePathMap = [("other_crate".to_string(), HashSet::from(["module".into()]))]
                 .into_iter()
                 .collect();
-            let crate_info = conventional_package("app", tmp.path());
+            let crate_info = PackageInfo {
+                dependencies: vec!["other_crate".to_string()],
+                ..conventional_package("app", tmp.path())
+            };
             let tree = analyze_modules_syn(
                 &crate_info,
                 &ws,

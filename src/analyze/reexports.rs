@@ -3,26 +3,25 @@
 //! Collects `pub use` re-exports and own definitions per module so that
 //! downstream resolution can follow re-export chains to the original definition.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use syn::spanned::Spanned;
 
-use super::packages::{ModulePathMap, WorkspacePackages, normalize_crate_name};
-use crate::model::{DefKind, Definition, PackageInfo};
+use super::packages::{ModulePathMap, normalize_crate_name};
+use crate::model::{DefKind, Definition, EntryFile, EntryKind, PackageInfo};
 
 use super::mod_resolver::{CfgCondition, ModuleFile, declared_files, extract_mod_declarations};
 use super::use_parser::{
-    AssociatedItems, BindingKind, Brought, GlobBinding, GlobReach, ModuleExportInfo, NameBinding,
-    ReExportMap, RootReExports, UsePlace, UseScope, Visibility, is_reexport_visibility, item_attrs,
-    resolve_use_tree,
+    AssociatedItems, BindingKind, Brought, ExternPrelude, GlobBinding, GlobReach, ModuleExportInfo,
+    NameBinding, ReExportMap, RootReExports, UsePlace, UseScope, Visibility, attributes_expand,
+    is_reexport_visibility, item_attrs, resolve_use_tree,
 };
 
 /// Invariant parameters shared across the recursive re-export walk.
 struct CollectContext<'a> {
     crate_name: &'a str,
     all_module_paths: &'a ModulePathMap,
-    workspace_crates: &'a WorkspacePackages,
-    extern_crates: &'a HashMap<String, String>,
+    extern_prelude: &'a ExternPrelude,
 }
 
 /// Collect the re-exports and own definitions of every package in
@@ -32,14 +31,12 @@ struct CollectContext<'a> {
 pub(crate) fn collect_reexport_map(
     packages: &[PackageInfo],
     all_module_paths: &ModulePathMap,
-    workspace_crates: &WorkspacePackages,
     include_tests: bool,
 ) -> ReExportMap {
     packages
         .iter()
         .map(|krate| {
-            let roots =
-                collect_crate_reexports(krate, all_module_paths, workspace_crates, include_tests);
+            let roots = collect_crate_reexports(krate, all_module_paths, include_tests);
             (krate.key.clone(), roots)
         })
         .collect::<ReExportMap>()
@@ -53,7 +50,6 @@ pub(crate) fn collect_reexport_map(
 fn collect_crate_reexports(
     crate_info: &PackageInfo,
     all_module_paths: &ModulePathMap,
-    workspace_crates: &WorkspacePackages,
     include_tests: bool,
 ) -> Vec<RootReExports> {
     let crate_name = normalize_crate_name(&crate_info.name);
@@ -62,13 +58,11 @@ fn collect_crate_reexports(
         .entry_files
         .iter()
         .map(|entry| {
-            let extern_crates =
-                root_extern_crates(&entry.file, workspace_crates, &crate_info.code_names);
+            let extern_prelude = root_extern_prelude(crate_info, Some(entry));
             let ctx = CollectContext {
                 crate_name: &crate_name,
                 all_module_paths,
-                workspace_crates,
-                extern_crates: &extern_crates,
+                extern_prelude: &extern_prelude,
             };
             let (modules, test_build_modules) =
                 collect_root_reexports(&ctx, &entry.file, include_tests);
@@ -81,38 +75,83 @@ fn collect_crate_reexports(
         .collect()
 }
 
-/// Name -> workspace crate name for each name a crate root's code writes for a
-/// workspace crate other than the crate's key: the package's `code_names` from
-/// the manifest, and the alias of each `extern crate X as Y;` in the root,
-/// where `X` names a workspace crate. Only the `code_names` when the file does
-/// not parse.
-pub(crate) fn root_extern_crates(
-    root_file: &Path,
-    workspace_crates: &WorkspacePackages,
-    code_names: &HashMap<String, String>,
-) -> HashMap<String, String> {
-    let mut names = code_names.clone();
-    let Ok(source) = std::fs::read_to_string(root_file) else {
-        return names;
-    };
-    let Ok(syntax) = syn::parse_file(&source) else {
-        return names;
-    };
-    let aliases = syntax.items.iter().filter_map(|item| match item {
-        syn::Item::ExternCrate(extern_crate) => {
-            let (_, alias) = extern_crate.rename.as_ref()?;
-            let name = extern_crate.ident.to_string();
-            let crate_name = code_names.get(&name).cloned().or_else(|| {
-                workspace_crates
-                    .contains(&name)
-                    .then(|| normalize_crate_name(&name))
-            })?;
-            Some((alias.to_string(), crate_name))
+/// The workspace crates in the extern prelude of the root `entry` of
+/// `package`, or of an integration test where `entry` is `None`, in each
+/// build. Each dependency stands under the name the manifest gives it
+/// (`code_names`), never under its key where that differs. A bin and an
+/// integration test also name the package's lib; the test build adds the
+/// dev-dependencies. `extern crate X as Y;` in the root adds `Y` for `X`,
+/// `extern crate self as Y;` adds `Y` for the package itself.
+pub(crate) fn root_extern_prelude(
+    package: &PackageInfo,
+    entry: Option<&EntryFile>,
+) -> ExternPrelude {
+    let key = package.key.as_str();
+    let names_of = |dependency: &str| -> Vec<(String, String)> {
+        let renamed: Vec<_> = package
+            .code_names
+            .iter()
+            .filter(|(_, named)| named.as_str() == dependency)
+            .map(|(name, named)| (name.clone(), named.clone()))
+            .collect();
+        if renamed.is_empty() {
+            vec![(dependency.to_string(), dependency.to_string())]
+        } else {
+            renamed
         }
-        _ => None,
-    });
-    names.extend(aliases);
-    names
+    };
+    let mut without_test: HashMap<String, String> = package
+        .dependencies
+        .iter()
+        .flat_map(|dependency| names_of(dependency))
+        .collect();
+    if entry.is_none_or(|entry| entry.kind == EntryKind::Bin) {
+        without_test.extend(names_of(key));
+    }
+    if let Some(entry) = entry {
+        without_test.extend(extern_crate_aliases(&entry.file, key, &without_test));
+    }
+    let mut test = without_test.clone();
+    test.extend(
+        package
+            .dev_dependencies
+            .iter()
+            .flat_map(|dependency| names_of(dependency)),
+    );
+    ExternPrelude::new(without_test, test)
+}
+
+/// The alias and crate of each `extern crate X as Y;` in `root_file` whose
+/// `X` is in `names` or is `self`, the package `key`. Empty when the file
+/// cannot be read or does not parse.
+fn extern_crate_aliases(
+    root_file: &Path,
+    key: &str,
+    names: &HashMap<String, String>,
+) -> Vec<(String, String)> {
+    let Some(syntax) = std::fs::read_to_string(root_file)
+        .ok()
+        .and_then(|source| syn::parse_file(&source).ok())
+    else {
+        return Vec::new();
+    };
+    syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::ExternCrate(extern_crate) => {
+                let (_, alias) = extern_crate.rename.as_ref()?;
+                let name = extern_crate.ident.to_string();
+                let crate_name = if name == "self" {
+                    key.to_string()
+                } else {
+                    names.get(&name)?.clone()
+                };
+                Some((alias.to_string(), crate_name))
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// The modules of a root's build without `test`, and with `include_tests` those
@@ -154,13 +193,24 @@ fn collect_root_reexports(
 struct CollectedModules {
     modules: HashMap<String, ModuleExportInfo>,
     out_of_module_impls: Vec<OutOfModuleImpl>,
+    /// The `#[macro_export]` macros of every module, which rustc places in
+    /// the crate root.
+    exported_macros: HashSet<String>,
 }
 
 impl CollectedModules {
-    /// Drop the modules that hold nothing a resolution reads, then add each
-    /// `impl` block to the module that defines its type.
+    /// Hold the exported macros as names of the crate root, drop the modules
+    /// that hold nothing a resolution reads, then add each `impl` block to
+    /// the module that defines its type.
     fn finish(self) -> HashMap<String, ModuleExportInfo> {
         let mut modules = self.modules;
+        if !self.exported_macros.is_empty() {
+            modules
+                .entry(String::new())
+                .or_default()
+                .unlisted
+                .extend(self.exported_macros);
+        }
         modules.retain(|_, info| !info.is_empty());
         for block in self.out_of_module_impls {
             modules
@@ -199,35 +249,37 @@ enum ImplOwner {
     Other(String),
 }
 
-/// Extract re-exports, definitions and associated items from a single parsed
-/// module file, as the test builds read it where `test` is set and as the
+/// Extract re-exports, definitions and associated items from the items of a
+/// single module, as the test builds read it where `test` is set and as the
 /// builds without `test` read it otherwise: an item under a `#[cfg]` that
 /// holds in none of them is left out. An `impl` block whose type lives in
 /// another module goes to `out_of_module_impls` for that module.
 fn collect_module_info(
     ctx: &CollectContext,
-    syntax: &syn::File,
+    items: &[syn::Item],
     module_path: &str,
     test: bool,
     out_of_module_impls: &mut Vec<OutOfModuleImpl>,
 ) -> ModuleExportInfo {
     let mut info = ModuleExportInfo::default();
-    let items = items_in_builds(syntax, test);
-    let macros: Vec<String> = items
-        .iter()
-        .filter_map(|(item, _)| match item {
-            syn::Item::Macro(i) => i.ident.as_ref().map(ToString::to_string),
-            _ => None,
-        })
-        .collect();
+    let items = items_in_builds(items, test);
+    info.expands_macros = items.iter().any(|(item, _)| expands_a_macro(item));
+    info.unlisted = unlisted_names(&items);
+    let macros = macro_rules_names(&items);
 
     for &(item, builds) in &items {
         let defined = match item {
             syn::Item::Use(use_item) => {
-                collect_use_reexports(ctx, use_item, module_path, &macros, &mut info, builds);
+                collect_use_reexports(ctx, use_item, module_path, test, &macros, &mut info, builds);
                 None
             }
             syn::Item::Mod(i) => Some((&i.vis, i.ident.clone(), BindingKind::Module)),
+            // An attribute macro on the block may remove or rewrite its items.
+            syn::Item::ForeignMod(block) if attributes_expand(&block.attrs) => None,
+            syn::Item::ForeignMod(block) => {
+                bind_foreign_items(&mut info, block, module_path, builds, test);
+                None
+            }
             _ => defined_item(item).map(|(vis, ident, kind)| {
                 let line = item.span().start().line;
                 (
@@ -274,7 +326,8 @@ fn collect_module_info(
                 let syn::Type::Path(self_type) = &*i.self_ty else {
                     continue;
                 };
-                let Some((owner, type_name)) = impl_owner(ctx, &self_type.path, module_path, &info)
+                let Some((owner, type_name)) =
+                    impl_owner(ctx, &self_type.path, module_path, test, &info)
                 else {
                     continue;
                 };
@@ -304,12 +357,11 @@ fn collect_module_info(
     info
 }
 
-/// Select the items of `syntax` the test builds read where `test` is set, and
-/// the builds without `test` otherwise, each with whether every one of those
+/// Select the `items` the test builds read where `test` is set, and the
+/// builds without `test` otherwise, each with whether every one of those
 /// builds reads it.
-fn items_in_builds(syntax: &syn::File, test: bool) -> Vec<(&syn::Item, Brought)> {
-    syntax
-        .items
+fn items_in_builds(items: &[syn::Item], test: bool) -> Vec<(&syn::Item, Brought)> {
+    items
         .iter()
         .filter_map(
             |item| match CfgCondition::of_attrs(item_attrs(item)).in_builds(test) {
@@ -319,6 +371,122 @@ fn items_in_builds(syntax: &syn::File, test: bool) -> Vec<(&syn::Item, Brought)>
             },
         )
         .collect()
+}
+
+/// The names of the `macro_rules!` among `items`, each with the line its item
+/// starts on.
+fn macro_rules_names(items: &[(&syn::Item, Brought)]) -> HashMap<String, usize> {
+    items
+        .iter()
+        .filter_map(|(item, _)| match item {
+            syn::Item::Macro(i) => i
+                .ident
+                .as_ref()
+                .map(|ident| (ident.to_string(), item.span().start().line)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The names `items` bind by an item no binding lists: a union, and the name
+/// an `extern crate` binds.
+fn unlisted_names(items: &[(&syn::Item, Brought)]) -> HashSet<String> {
+    items
+        .iter()
+        .filter_map(|(item, _)| match item {
+            syn::Item::Union(i) => Some(i.ident.to_string()),
+            syn::Item::ExternCrate(i) => Some(
+                i.rename
+                    .as_ref()
+                    .map_or(&i.ident, |(_, name)| name)
+                    .to_string(),
+            ),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Bind each item the `extern` block `block` in `module_path` declares as a
+/// definition of the module, in the builds of the map that read it, where
+/// `block_builds` of them read the block.
+fn bind_foreign_items(
+    info: &mut ModuleExportInfo,
+    block: &syn::ItemForeignMod,
+    module_path: &str,
+    block_builds: Brought,
+    test: bool,
+) {
+    for (foreign, builds) in foreign_items_in_builds(block, block_builds, test) {
+        let Some((vis, ident, kind)) = declared_foreign_item(foreign) else {
+            continue;
+        };
+        let line = foreign.span().start().line;
+        let binding = NameBinding {
+            kind: BindingKind::Definition(Definition { kind, line }),
+            visibility: Visibility::of(vis, module_path),
+            builds,
+        };
+        info.bind(ident.to_string(), binding);
+    }
+}
+
+/// Select the items of the `extern` block `block`, which `block_builds` of
+/// the builds `test` selects read, that a build reads, each with whether
+/// every one of those builds reads it.
+fn foreign_items_in_builds(
+    block: &syn::ItemForeignMod,
+    block_builds: Brought,
+    test: bool,
+) -> impl Iterator<Item = (&syn::ForeignItem, Brought)> {
+    block.items.iter().filter_map(move |item| {
+        let attrs = match item {
+            syn::ForeignItem::Fn(i) => &i.attrs,
+            syn::ForeignItem::Static(i) => &i.attrs,
+            syn::ForeignItem::Type(i) => &i.attrs,
+            syn::ForeignItem::Macro(i) => &i.attrs,
+            _ => return Some((item, block_builds)),
+        };
+        match CfgCondition::of_attrs(attrs).in_builds(test) {
+            Some(false) => None,
+            Some(true) => Some((item, block_builds)),
+            None => Some((item, Brought::InSomeBuilds)),
+        }
+    })
+}
+
+/// The visibility, name and kind of an item an `extern` block declares, which
+/// rustc places in the module that holds the block; `None` for a macro call
+/// and for an item under an attribute macro, which may remove or rewrite it.
+fn declared_foreign_item(
+    item: &syn::ForeignItem,
+) -> Option<(&syn::Visibility, &syn::Ident, DefKind)> {
+    let (attrs, declared) = match item {
+        syn::ForeignItem::Fn(i) => (&i.attrs, (&i.vis, &i.sig.ident, DefKind::Fn)),
+        syn::ForeignItem::Static(i) => (&i.attrs, (&i.vis, &i.ident, DefKind::Static)),
+        syn::ForeignItem::Type(i) => (&i.attrs, (&i.vis, &i.ident, DefKind::Type)),
+        _ => return None,
+    };
+    (!attributes_expand(attrs)).then_some(declared)
+}
+
+/// Whether `item` calls a macro, carries an attribute or a derive macro that
+/// rustc does not build in, or is code syn does not parse: the expansion may
+/// define names in the module.
+fn expands_a_macro(item: &syn::Item) -> bool {
+    let foreign_expands = |block: &syn::ItemForeignMod| {
+        block.items.iter().any(|item| match item {
+            syn::ForeignItem::Fn(i) => attributes_expand(&i.attrs),
+            syn::ForeignItem::Static(i) => attributes_expand(&i.attrs),
+            syn::ForeignItem::Type(i) => attributes_expand(&i.attrs),
+            _ => true,
+        })
+    };
+    match item {
+        syn::Item::Macro(i) => i.ident.is_none() || attributes_expand(&i.attrs),
+        syn::Item::Verbatim(_) => true,
+        syn::Item::ForeignMod(block) => attributes_expand(&block.attrs) || foreign_expands(block),
+        _ => attributes_expand(item_attrs(item)),
+    }
 }
 
 /// The visibility, name and kind of an item that defines a symbol, or `None`
@@ -366,12 +534,14 @@ pub(crate) fn name_a_fn_defines(item: &syn::ItemFn) -> (syn::Ident, DefKind) {
 /// Find the module that defines the type an `impl` block is for, and the
 /// type's name there. A bare name is this module's when it defines the name,
 /// and otherwise whatever a `use` of this file binds it to; a qualified path
-/// is placed like the path of a `use`. What resolves to neither is no type of
-/// this crate, and its `impl` is skipped.
+/// is placed like the path of a `use`, in the test build where `test` is
+/// set. What resolves to neither is no type of this crate, and its `impl` is
+/// skipped.
 fn impl_owner(
     ctx: &CollectContext,
     path: &syn::Path,
     module_path: &str,
+    test: bool,
     info: &ModuleExportInfo,
 ) -> Option<(ImplOwner, String)> {
     let name = path.segments.last()?.ident.to_string();
@@ -395,7 +565,7 @@ fn impl_owner(
         .map(|s| s.ident.to_string())
         .collect::<Vec<_>>()
         .join("::");
-    let Some(UsePlace::Name(target)) = use_scope(ctx, module_path).place(&path_str) else {
+    let Some(UsePlace::Name(target)) = use_scope(ctx, module_path, test).place(&path_str) else {
         return None;
     };
     if target.crate_name != ctx.crate_name {
@@ -409,14 +579,14 @@ fn impl_owner(
     Some((owner, target.original_name))
 }
 
-/// The scope that places the paths written in `module_path`.
-fn use_scope<'a>(ctx: &'a CollectContext, module_path: &'a str) -> UseScope<'a> {
+/// The scope that places the paths written in `module_path`, in the test
+/// build where `test` is set.
+fn use_scope<'a>(ctx: &'a CollectContext, module_path: &'a str, test: bool) -> UseScope<'a> {
     UseScope {
         crate_name: ctx.crate_name,
         module_path,
         module_paths: ctx.all_module_paths,
-        workspace_crates: ctx.workspace_crates,
-        extern_crates: ctx.extern_crates,
+        crate_names: ctx.extern_prelude.names(test),
     }
 }
 
@@ -431,25 +601,29 @@ fn use_scope<'a>(ctx: &'a CollectContext, module_path: &'a str) -> UseScope<'a> 
 /// [`BindingKind::PrivateUse`] (a binding descendants can still name through
 /// this module). A glob is held with [`GlobReach::ReExport`] or
 /// [`GlobReach::Private`] by the same split, with the crate of its module
-/// where that is another workspace crate. A private, non-glob leaf that no
-/// start places names something outside the workspace; binding it by
-/// [`BindingKind::Elsewhere`] keeps a descendant's reference to it from
-/// resolving to this module. A `use name;` of one of `macros`, the file's own
-/// `macro_rules!`, binds that macro here and stays out. Renamed, it may also
+/// where that is another workspace crate, and a glob no start places, or
+/// one of an item, as one of the module's unplaced globs. A non-glob leaf that no start places
+/// names something outside the workspace. Private, it binds by
+/// [`BindingKind::Elsewhere`], which keeps a descendant's reference to it
+/// from resolving to this module; public, by
+/// [`BindingKind::ReExportFromOutside`]. A `use name;` of one of `macros`, the file's own
+/// `macro_rules!`, binds that macro here as a definition. Renamed, it may also
 /// bind what another `use` brought in under `name`, so it stays in. Each
-/// binding is in the `builds` of the map the `use` is in.
+/// binding is in the `builds` of the map the `use` is in, the test build's
+/// map where `test` is set.
 fn collect_use_reexports(
     ctx: &CollectContext,
     use_item: &syn::ItemUse,
     module_path: &str,
-    macros: &[String],
+    test: bool,
+    macros: &HashMap<String, usize>,
     info: &mut ModuleExportInfo,
     builds: Brought,
 ) {
     let alias_paths = resolve_use_tree(&use_item.tree, "", true);
     let original_paths = resolve_use_tree(&use_item.tree, "", false);
 
-    let scope = use_scope(ctx, module_path);
+    let scope = use_scope(ctx, module_path, test);
     let visibility = Visibility::of(&use_item.vis, module_path);
     let private = !is_reexport_visibility(&use_item.vis);
 
@@ -457,11 +631,23 @@ fn collect_use_reexports(
         let alias_name = alias_path.rsplit("::").next().unwrap_or(alias_path);
         let kind = match scope.place(original_path) {
             None => {
-                let own_macro = alias_path == original_path && macros.contains(original_path);
-                if !private || alias_name == "*" || own_macro {
+                if alias_name == "*" {
+                    info.unplaced_globs.push(visibility.clone());
                     continue;
                 }
-                BindingKind::Elsewhere
+                let own_macro = macros
+                    .get(original_path)
+                    .filter(|_| alias_path == original_path);
+                if let Some(&line) = own_macro {
+                    BindingKind::Definition(Definition {
+                        kind: DefKind::Macro,
+                        line,
+                    })
+                } else if private {
+                    BindingKind::Elsewhere
+                } else {
+                    BindingKind::ReExportFromOutside(original_path.clone())
+                }
             }
             Some(UsePlace::Glob { crate_name, module }) => {
                 let foreign = crate_name != ctx.crate_name;
@@ -480,7 +666,12 @@ fn collect_use_reexports(
             }
             Some(UsePlace::Name(target)) if private => BindingKind::PrivateUse(target),
             Some(UsePlace::Name(target)) => BindingKind::ReExport(target),
-            Some(UsePlace::Nothing) => continue,
+            Some(UsePlace::Nothing) => {
+                if alias_name == "*" {
+                    info.unplaced_globs.push(visibility.clone());
+                }
+                continue;
+            }
         };
         let binding = NameBinding {
             kind,
@@ -488,6 +679,58 @@ fn collect_use_reexports(
             builds,
         };
         info.bind(alias_name.to_string(), binding);
+    }
+}
+
+/// Collect the module at `module_path`, whose items are `items`, into
+/// `modules`, and each module these declare inline with a body, under its
+/// path below `module_path`.
+fn collect_module(
+    ctx: &CollectContext,
+    items: &[syn::Item],
+    module_path: &str,
+    test: bool,
+    modules: &mut CollectedModules,
+) {
+    let info = collect_module_info(
+        ctx,
+        items,
+        module_path,
+        test,
+        &mut modules.out_of_module_impls,
+    );
+    let exported = items_in_builds(items, test)
+        .into_iter()
+        .filter_map(|(item, _)| match item {
+            syn::Item::Macro(i)
+                if i.attrs
+                    .iter()
+                    .any(|attr| attr.path().is_ident("macro_export")) =>
+            {
+                i.ident.as_ref().map(ToString::to_string)
+            }
+            _ => None,
+        });
+    modules.exported_macros.extend(exported);
+    // Merged even when empty: a public declaration widens what an
+    // alternative file of the module declares narrower.
+    modules
+        .modules
+        .entry(module_path.to_string())
+        .or_default()
+        .merge(info);
+    for item in items {
+        if let syn::Item::Mod(item_mod) = item
+            && let Some((_, content)) = &item_mod.content
+            && CfgCondition::of_attrs(&item_mod.attrs).in_builds(test) != Some(false)
+        {
+            let inline_path = if module_path.is_empty() {
+                item_mod.ident.to_string()
+            } else {
+                format!("{module_path}::{}", item_mod.ident)
+            };
+            collect_module(ctx, content, &inline_path, test, modules);
+        }
     }
 }
 
@@ -520,20 +763,7 @@ fn walk_collect_reexports(
     };
 
     let collect_into = |modules: &mut CollectedModules, test: bool| {
-        let info = collect_module_info(
-            ctx,
-            &syntax,
-            module_path,
-            test,
-            &mut modules.out_of_module_impls,
-        );
-        // Merged even when empty: a public declaration widens what an
-        // alternative file of the module declares narrower.
-        modules
-            .modules
-            .entry(module_path.to_string())
-            .or_default()
-            .merge(info);
+        collect_module(ctx, &syntax.items, module_path, test, modules);
     };
     if let Some(test_build) = test_build.as_deref_mut().filter(|_| builds.test) {
         collect_into(test_build, true);
@@ -1500,8 +1730,7 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
         .into_iter()
         .collect();
 
-        let mut roots =
-            collect_crate_reexports(&crate_info, &mp, &WorkspacePackages::default(), false);
+        let mut roots = collect_crate_reexports(&crate_info, &mp, false);
         assert_eq!(roots.len(), 1, "expected one crate root");
         let result = roots.remove(0).modules;
 

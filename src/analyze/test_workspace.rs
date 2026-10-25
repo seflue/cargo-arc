@@ -57,11 +57,20 @@ impl TestWorkspace {
 
     fn analyze_with(self, include_tests: bool) -> Analyzed {
         let dir = TempDir::new().expect("a temporary directory");
-        let packages: Vec<PackageInfo> = self
+        let mut packages: Vec<PackageInfo> = self
             .packages
             .iter()
             .map(|(name, files)| write_package(dir.path(), name, files))
             .collect();
+        // Each package depends on every other one, so each names the others.
+        let keys: Vec<String> = packages.iter().map(|p| p.key.clone()).collect();
+        for package in &mut packages {
+            package.dependencies = keys
+                .iter()
+                .filter(|key| **key != package.key)
+                .cloned()
+                .collect();
+        }
         let workspace: WorkspacePackages = packages.iter().map(|p| p.name.clone()).collect();
         let module_paths: ModulePathMap = packages
             .iter()
@@ -71,8 +80,7 @@ impl TestWorkspace {
             .iter()
             .map(|p| (p.key.clone(), collect_crate_exports(p)))
             .collect();
-        let reexport_map =
-            collect_reexport_map(&packages, &module_paths, &workspace, include_tests);
+        let reexport_map = collect_reexport_map(&packages, &module_paths, include_tests);
         let no_externals = HashMap::new();
         let trees = packages
             .iter()

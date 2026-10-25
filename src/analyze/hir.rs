@@ -16,8 +16,10 @@ pub struct FeatureConfig {
 #[cfg(feature = "hir")]
 use {
     super::packages::{ModulePathMap, PackageExportMap, WorkspacePackages, normalize_crate_name},
+    super::reexports::root_extern_prelude,
     super::use_parser::{
-        CrateView, ResolutionContext, RootBuilds, parse_workspace_dependencies_from_source,
+        CrateView, ExternPrelude, ModulesBound, ResolutionContext, RootBuilds,
+        parse_workspace_dependencies_from_source,
     },
     crate::model::{DependencyRef, ModuleInfo, ModuleTree, PackageInfo},
     anyhow::{Context, Result},
@@ -238,6 +240,7 @@ pub fn analyze_modules(
     let crate_name = &crate_info.name;
     // Use actual crate name (normalized) as root path for inter-crate dependency resolution
     let normalized_crate_name = normalize_crate_name(crate_name);
+    let extern_prelude = root_extern_prelude(crate_info, crate_info.entry_files.first());
     let ctx = HirWalkContext {
         db,
         vfs,
@@ -247,6 +250,7 @@ pub fn analyze_modules(
         all_module_paths,
         crate_exports,
         external_crate_names,
+        extern_prelude: &extern_prelude,
     };
     let root = walk_module(root_module, &normalized_crate_name, &ctx);
 
@@ -267,6 +271,8 @@ struct HirWalkContext<'a> {
     all_module_paths: &'a ModulePathMap,
     crate_exports: &'a PackageExportMap,
     external_crate_names: &'a std::collections::HashMap<String, String>,
+    /// The extern prelude of the crate's first root, without `test`.
+    extern_prelude: &'a ExternPrelude,
 }
 
 #[cfg(feature = "hir")]
@@ -340,15 +346,15 @@ fn extract_module_dependencies(
         .map(|p| p.to_path_buf())
         .unwrap_or(abs_path_buf);
 
-    let no_extern_crates = std::collections::HashMap::new();
     let crate_view = CrateView {
         crate_name: ctx.crate_name,
         workspace_crates: ctx.workspace_crates,
         module_paths: ctx.all_module_paths,
         crate_exports: ctx.crate_exports,
         external_crate_names: ctx.external_crate_names,
-        extern_crates: &no_extern_crates,
+        extern_prelude: ctx.extern_prelude,
         builds: RootBuilds::of(super::use_parser::ReExportMap::default()),
+        modules_bound: ModulesBound::default(),
     };
     let res_ctx = ResolutionContext::new(&crate_view, &source_file, current_module_path);
     parse_workspace_dependencies_from_source(&source_text, &res_ctx)

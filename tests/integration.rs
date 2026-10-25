@@ -2853,9 +2853,16 @@ fn name_resolution_cfg_path_alternatives_reexport_the_same_name() {
 
 /// Cell 54: paths in a `macro_rules!` body, in macro arguments and in a file
 /// `include!` reads give no arc to a wrong target. An arc to `a`, where every
-/// path points, is allowed.
+/// path points, is allowed, and so is the arc of the macro calls in
+/// `m_dollar_use` to the root, where `#[macro_export]` puts both macros.
 #[test]
 fn name_resolution_paths_in_macros_give_no_wrong_arc() {
+    assert_name_resolution_arc(
+        "probe::m_dollar_use",
+        "probe",
+        "production",
+        &["call_dollar", "call_plain"],
+    );
     for include_tests in [false, true] {
         for (from, to) in name_resolution_arcs(include_tests).keys() {
             let in_cell = [
@@ -2865,8 +2872,9 @@ fn name_resolution_paths_in_macros_give_no_wrong_arc() {
                 "probe::m_include",
             ]
             .contains(&from.as_str());
+            let macro_calls = from == "probe::m_dollar_use" && to == "probe";
             assert!(
-                !in_cell || to == "probe::a",
+                !in_cell || to == "probe::a" || macro_calls,
                 "{from} -> {to} should not exist (include_tests {include_tests})"
             );
         }
@@ -3049,6 +3057,168 @@ fn name_resolution_module_a_glob_on_the_own_lib_binds_by_use_is_the_libs() {
 fn name_resolution_integration_test_binds_the_lib_module_beside_a_same_named_one() {
     assert_name_resolution_arc("lv::itm::tuser", "lv::gm", "test", &["G"]);
     assert_no_name_resolution_arc("lv::itm::tuser", "lv::itm::tother");
+}
+
+/// Cell 79a: the root of `il` declares `inner` inline, with a glob on
+/// `scopes`, an item `Local` and a module `deep` of its own. A path through
+/// `inner` lands on the item it reaches: the glob's item in `scopes`, an
+/// item of `inner` on the root file that holds it.
+#[test]
+fn name_resolution_path_through_an_inline_module_lands_on_its_item() {
+    assert_name_resolution_arc("il::user", "il::scopes", "production", &["ScopeId"]);
+    assert_name_resolution_arc("il::user", "il", "production", &["Deep", "Local", "Made"]);
+}
+
+/// Cell 79b: another crate names `ScopeId` through the root's
+/// `pub use crate::inner::ScopeId;`.
+#[test]
+fn name_resolution_reexport_through_an_inline_module_reaches_the_definer() {
+    assert_name_resolution_arc("iluser", "il::scopes", "production", &["ScopeId"]);
+}
+
+/// Cell 79c: `holder` declares `inl` inline; `crate::holder::inl::X` is
+/// `holder`'s with the symbol `X`.
+#[test]
+fn name_resolution_inline_module_below_the_root_counts_to_its_file() {
+    assert_name_resolution_arc("il::deep_user", "il::holder", "production", &["X"]);
+}
+
+/// Cell 79d: the root re-exports the inline module `holder::inl` itself; the
+/// arc to `holder` carries the module's name.
+#[test]
+fn name_resolution_path_ending_on_an_inline_module_carries_its_name() {
+    assert_name_resolution_arc("il", "il::holder", "production", &["inl"]);
+}
+
+/// Cell 80a: `#[diagnostic::on_unimplemented]` in a crate that has no
+/// dependency named `diagnostic` names the tool, not the workspace crate.
+#[test]
+fn name_resolution_tool_attribute_names_no_crate() {
+    assert_no_name_resolution_arc("tau::user", "diagnostic");
+}
+
+/// Cell 80b: a dependency named like the tool is what the attribute names,
+/// as rustc reads it.
+#[test]
+fn name_resolution_tool_attribute_names_a_dependency_of_its_name() {
+    assert_name_resolution_arc(
+        "taudep::user",
+        "diagnostic",
+        "production",
+        &["on_unimplemented"],
+    );
+}
+
+/// Cell 81: `segs::is_start` in `atom` reaches the module `grammar::segs`
+/// through two `use super::*`, ahead of the workspace crate `segs`, whether
+/// the crate is a dependency (`gmd`) or not (`gm`).
+#[test]
+fn name_resolution_module_a_glob_brings_comes_before_a_crate() {
+    for krate in ["gm", "gmd"] {
+        let atom = format!("{krate}::grammar::expressions::atom");
+        let segs = format!("{krate}::grammar::segs");
+        assert_name_resolution_arc(&atom, &segs, "production", &["is_start"]);
+        assert_no_name_resolution_arc(&atom, "segs");
+    }
+}
+
+/// Cell 82: `rk` depends on `segs` renamed to `alias`. `segs` is no crate
+/// name there; `segs::is_start` names the module a macro declares.
+#[test]
+fn name_resolution_renamed_dependency_is_not_named_by_its_package() {
+    assert_name_resolution_arc("rk", "segs", "production", &["other"]);
+}
+
+/// Cell 83: `gu` depends on `pre` alone, whose `prelude` holds `pub use
+/// segs;`. The glob of the prelude brings the name `segs`, so a `use` and a
+/// path through it reach the crate `segs`.
+#[test]
+fn name_resolution_crate_a_glob_brings_is_named_without_a_dependency() {
+    assert_name_resolution_arc("gu", "segs", "production", &["is_start", "other"]);
+}
+
+/// Cell 84: `use crate::{self as named};` binds the crate's own root, which
+/// a lib cannot name by its package. The test module reaches it through
+/// `use super::*`; the `use` itself names no item.
+#[test]
+fn name_resolution_own_root_bound_by_a_use_is_named_through_it() {
+    assert_name_resolution_arc_in(true, "sa::user", "sa::conf", "test", &["Settings"]);
+    assert_no_name_resolution_arc("sa::user", "sa");
+}
+
+/// Cell 85: the glob of `pre::prelude` brings the crate root `segs`, and
+/// `gu::shadow` declares a parameter `segs` and a variable `other`. A
+/// variable shadows the glob's name, and a pattern never names a module, so
+/// rustc sees no use of the glob.
+#[test]
+fn name_resolution_variable_shadows_a_crate_a_glob_brings() {
+    assert_no_name_resolution_arc("gu::shadow", "segs");
+}
+
+/// Cell 86a: in `atom`, the inline module `inner` takes `segs` through its
+/// own `use super::*`, which reaches `grammar::segs` through two more globs.
+/// The module comes before the crate `segs` of the same name.
+#[test]
+fn name_resolution_inline_module_asks_its_own_bindings_first() {
+    let atom = "ig::grammar::expressions::atom";
+    assert_name_resolution_arc(atom, "ig::grammar::segs", "production", &["is_start"]);
+    assert_no_name_resolution_arc(atom, "segs");
+}
+
+/// Cell 86b: the root of `ib` declares `mod segs;`, its inline module `inner`
+/// binds nothing. The root's child is not in scope there, so `segs` in
+/// `inner` names the crate.
+#[test]
+fn name_resolution_inline_module_does_not_see_the_children_of_its_file() {
+    assert_name_resolution_arc("ib", "segs", "production", &["is_start"]);
+    assert_name_resolution_arc("ib", "ib::segs", "production", &["is_start"]);
+}
+
+/// Cell 87: `pre::prelude::segs::is_start` runs past `pub use segs;` in
+/// the inline module `prelude` and reaches the fn of the crate `segs`.
+#[test]
+fn name_resolution_path_past_a_crate_an_inline_use_binds_carries_its_item() {
+    assert_name_resolution_arc("gu::through", "segs", "production", &["is_start"]);
+}
+
+/// Cell 88: `holder.segs` in macro input reads a field, beside a glob that
+/// brings the crate root `segs`. A name after `.` starts no path.
+#[test]
+fn name_resolution_field_in_macro_input_names_no_glob_name() {
+    assert_no_name_resolution_arc("gu::field", "segs");
+}
+
+/// Cell 89: the root of `fb` binds `segs` to its module `seg_impl` by a
+/// `use`; the inline module `inner` does not see that `use`, so `segs` there
+/// names the crate.
+#[test]
+fn name_resolution_inline_module_does_not_see_a_use_of_its_file() {
+    assert_name_resolution_arc("fb", "segs", "production", &["other"]);
+    assert_name_resolution_arc("fb", "fb::seg_impl", "production", &["is_start"]);
+}
+
+/// Cell 89b: in the integration test `viaglob`, the inline module `inner`
+/// takes `other` through its own `use super::*` from the glob `segs::*` of
+/// the test crate's root.
+#[test]
+fn name_resolution_use_super_glob_brings_the_names_of_the_file() {
+    assert_name_resolution_arc_in(true, "fb::viaglob", "segs", "test", &["other"]);
+}
+
+/// Cell 90a: `inner` takes the root's names through `use super::*` and
+/// declares a module `segs` of its own, which hides the root's
+/// `use seg_impl as segs;`. `segs::own_only` stays in the file.
+#[test]
+fn name_resolution_own_module_of_an_inline_module_hides_a_name_its_glob_brings() {
+    assert_name_resolution_arc("iown", "iown::seg_impl", "production", &["seg_only"]);
+}
+
+/// Cell 90b: `m`, declared in the body of `run`, takes through `use super::*`
+/// the names of the root, not the `use` in the body. `segs` there is the
+/// crate.
+#[test]
+fn name_resolution_use_super_glob_in_a_fn_body_skips_the_block() {
+    assert_name_resolution_arc("ifn", "segs", "production", &["is_start", "other"]);
 }
 
 /// Every use on an edge, with its category, goes to stderr under `--debug`,
