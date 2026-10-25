@@ -103,6 +103,15 @@ impl Ord for Commit {
     }
 }
 
+/// The span of commit times a run counts, as Unix timestamps: from
+/// `--volatility-months` before the run's time to the run's time, both as git
+/// resolves them, so `GIT_TEST_DATE_NOW` moves the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Window {
+    pub start: i64,
+    pub end: i64,
+}
+
 /// Volatility analyzer using git history.
 ///
 /// Holds, per file, the dated set of commits that touched it, keyed by
@@ -115,6 +124,9 @@ pub struct VolatilityAnalyzer {
     /// Source file extensions of the language the last `analyze` read.
     extensions: &'static [&'static str],
     commits: HashMap<PathBuf, BTreeSet<Commit>>,
+    /// The window the last `analyze` counted; `None` until one succeeds, and
+    /// again after one fails past the repository check.
+    window: Option<Window>,
 }
 
 impl VolatilityAnalyzer {
@@ -126,6 +138,7 @@ impl VolatilityAnalyzer {
             repo_root: PathBuf::new(),
             extensions: &[],
             commits: HashMap::new(),
+            window: None,
         }
     }
 
@@ -135,7 +148,9 @@ impl VolatilityAnalyzer {
     /// changed source files of `profile`'s language, and resolves `repo_path`
     /// to the repository's top-level directory via
     /// `git rev-parse --show-toplevel`. Uses `--diff-filter=AMRC` to skip
-    /// deleted files and a 64KB buffered reader.
+    /// deleted files and a 64KB buffered reader. The window is resolved once
+    /// and passed to `git log` as timestamps, so [`Self::window`] names the
+    /// span the log counted.
     #[allow(clippy::missing_errors_doc)]
     pub fn analyze(
         &mut self,
@@ -154,6 +169,8 @@ impl VolatilityAnalyzer {
         self.repo_root = PathBuf::from(String::from_utf8_lossy(&toplevel.stdout).trim());
         self.extensions = profile.extensions;
         self.commits.clear();
+        self.window = None;
+        let window = resolve_window(repo_path, self.config.months)?;
 
         // Stream git log output; a null-prefixed header line starts each commit,
         // carrying its hash and commit time ahead of --name-only's file list.
@@ -164,7 +181,8 @@ impl VolatilityAnalyzer {
                 "--pretty=format:%x00%H%x09%ct",
                 "--name-only",
                 "--diff-filter=AMRC",
-                &format!("--since={} months ago", self.config.months),
+                &format!("--max-age={}", window.start),
+                &format!("--min-age={}", window.end),
                 "--",
             ])
             .args(pathspecs)
@@ -203,8 +221,16 @@ impl VolatilityAnalyzer {
         }
 
         child.wait()?;
+        self.window = Some(window);
 
         Ok(())
+    }
+
+    /// Return the window the last `analyze` counted commits in, `None` when
+    /// it failed past the repository check or none has run.
+    #[must_use]
+    pub fn window(&self) -> Option<Window> {
+        self.window
     }
 
     /// The commits that touched `file`, keyed by its absolute path.
@@ -352,6 +378,31 @@ impl VolatilityAnalyzer {
             high_volatility_count: high_count,
         }
     }
+}
+
+/// Ask git for the window of `months` ending now: `git rev-parse` turns
+/// `--since` and `--until` into the timestamps `git log` would filter by.
+fn resolve_window(repo_path: &Path, months: usize) -> Result<Window, VolatilityError> {
+    let output = Command::new("git")
+        .args([
+            "rev-parse",
+            &format!("--since={months} months ago"),
+            "--until=now",
+        ])
+        .current_dir(repo_path)
+        .stderr(Stdio::null())
+        .output()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let timestamp_of = |option: &str| {
+        text.lines()
+            .find_map(|line| line.strip_prefix(option))
+            .and_then(|value| value.parse::<i64>().ok())
+            .ok_or_else(|| VolatilityError::Parse(format!("no {option} in git rev-parse output")))
+    };
+    Ok(Window {
+        start: timestamp_of("--max-age=")?,
+        end: timestamp_of("--min-age=")?,
+    })
 }
 
 /// Aggregate statistics about volatility across a project.
