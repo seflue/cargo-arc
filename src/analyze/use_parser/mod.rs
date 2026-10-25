@@ -5584,25 +5584,5 @@ fn import_only_use(ctx: &ResolutionContext, dep: &DependencyRef, item: &str) -> 
     }
 }
 
-/// Convenience wrapper: parse source text and extract dependencies.
-/// Used by hir.rs which has source text but no pre-parsed AST.
-#[cfg(feature = "hir")]
-pub(crate) fn parse_workspace_dependencies_from_source(
-    source: &str,
-    ctx: &ResolutionContext,
-) -> Vec<DependencyRef> {
-    let syntax = match syn::parse_file(source) {
-        Ok(f) => f,
-        Err(_) => return Vec::new(),
-    };
-    parse_file_dependencies(
-        &syntax,
-        ctx,
-        EdgeContext::production(),
-        true,
-        &mut PassedOn::default(),
-    )
-}
-
 #[cfg(test)]
 mod tests;

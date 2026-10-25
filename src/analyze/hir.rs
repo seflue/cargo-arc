@@ -15,13 +15,9 @@ pub struct FeatureConfig {
 
 #[cfg(feature = "hir")]
 use {
-    super::packages::{ModulePathMap, PackageExportMap, WorkspacePackages, normalize_crate_name},
-    super::reexports::root_extern_prelude,
-    super::use_parser::{
-        CrateView, ExternPrelude, ModulesBound, ResolutionContext, RootBuilds,
-        parse_workspace_dependencies_from_source,
-    },
-    crate::model::{DependencyRef, ModuleInfo, ModuleTree, PackageInfo},
+    super::name_resolution::{FileInModule, NameResolution, PackageResolver, Root},
+    super::packages::normalize_crate_name,
+    crate::model::{DependencyRef, EdgeContext, ModuleInfo, ModuleTree, PackageInfo},
     anyhow::{Context, Result},
     ra_ap_cfg::{CfgAtom, CfgDiff},
     ra_ap_hir as hir, ra_ap_ide as ide, ra_ap_load_cargo as load_cargo, ra_ap_paths as paths,
@@ -220,15 +216,13 @@ fn collect_module_paths_recursive(
 
 /// Analyzes the module hierarchy of a crate using rust-analyzer's HIR.
 /// The `host` and `vfs` should be obtained from `load_workspace_hir()`.
-/// `workspace_crates` should contain all workspace crate names for inter-crate dependency detection.
+/// `resolution` resolves the paths of each module's file.
 #[cfg(feature = "hir")]
-pub fn analyze_modules(
+pub(crate) fn analyze_modules(
     crate_info: &PackageInfo,
     host: &ide::AnalysisHost,
     vfs: &ra_ap_vfs::Vfs,
-    workspace_crates: &WorkspacePackages,
-    all_module_paths: &ModulePathMap,
-    crate_exports: &PackageExportMap,
+    resolution: &NameResolution,
     external_crate_names: &std::collections::HashMap<String, String>,
 ) -> Result<ModuleTree> {
     // Find crate in already-loaded workspace
@@ -238,21 +232,15 @@ pub fn analyze_modules(
     // Walk module tree starting from crate root
     let root_module = krate.root_module(db);
     let crate_name = &crate_info.name;
-    // Use actual crate name (normalized) as root path for inter-crate dependency resolution
+    // The normalized name heads each module's full path.
     let normalized_crate_name = normalize_crate_name(crate_name);
-    let extern_prelude = root_extern_prelude(crate_info, crate_info.entry_files.first());
     let ctx = HirWalkContext {
         db,
         vfs,
-        workspace_root: &crate_info.workspace_root,
         crate_name,
-        workspace_crates,
-        all_module_paths,
-        crate_exports,
-        external_crate_names,
-        extern_prelude: &extern_prelude,
     };
-    let root = walk_module(root_module, &normalized_crate_name, &ctx);
+    let mut resolver = resolution.package(crate_info, external_crate_names);
+    let root = walk_module(root_module, &normalized_crate_name, &ctx, &mut resolver);
 
     Ok(ModuleTree {
         root,
@@ -265,18 +253,16 @@ pub fn analyze_modules(
 struct HirWalkContext<'a> {
     db: &'a ide::RootDatabase,
     vfs: &'a ra_ap_vfs::Vfs,
-    workspace_root: &'a Path,
     crate_name: &'a str,
-    workspace_crates: &'a WorkspacePackages,
-    all_module_paths: &'a ModulePathMap,
-    crate_exports: &'a PackageExportMap,
-    external_crate_names: &'a std::collections::HashMap<String, String>,
-    /// The extern prelude of the crate's first root, without `test`.
-    extern_prelude: &'a ExternPrelude,
 }
 
 #[cfg(feature = "hir")]
-fn walk_module(module: hir::Module, parent_path: &str, ctx: &HirWalkContext) -> ModuleInfo {
+fn walk_module(
+    module: hir::Module,
+    parent_path: &str,
+    ctx: &HirWalkContext,
+    resolver: &mut PackageResolver,
+) -> ModuleInfo {
     let (name, full_path) = resolve_module_name_and_path(module, ctx.db, parent_path);
 
     // Relative module path within the crate (e.g. "render" for render/mod.rs, "" for root)
@@ -284,7 +270,7 @@ fn walk_module(module: hir::Module, parent_path: &str, ctx: &HirWalkContext) -> 
         .strip_prefix(&format!("{}::", ctx.crate_name))
         .unwrap_or("");
 
-    let dependencies = extract_module_dependencies(module, current_module_path, ctx);
+    let dependencies = extract_module_dependencies(module, current_module_path, ctx, resolver);
     let file = module_file(module, ctx);
 
     let children: Vec<ModuleInfo> = module
@@ -292,7 +278,7 @@ fn walk_module(module: hir::Module, parent_path: &str, ctx: &HirWalkContext) -> 
         .into_iter()
         .filter_map(|decl| {
             if let hir::ModuleDef::Module(child_module) = decl {
-                Some(walk_module(child_module, &full_path, ctx))
+                Some(walk_module(child_module, &full_path, ctx, resolver))
             } else {
                 None
             }
@@ -324,12 +310,14 @@ fn module_file(module: hir::Module, ctx: &HirWalkContext) -> Option<PathBuf> {
         .map(|abs_path| PathBuf::from(abs_path.as_str()))
 }
 
-/// Extract module-level dependencies by parsing use statements from source
+/// The dependencies of `module`: every path its file writes, resolved by
+/// `resolver`.
 #[cfg(feature = "hir")]
 fn extract_module_dependencies(
     module: hir::Module,
     current_module_path: &str,
     ctx: &HirWalkContext,
+    resolver: &mut PackageResolver,
 ) -> Vec<DependencyRef> {
     let Some(abs_path_buf) = module_file(module, ctx) else {
         return Vec::new();
@@ -341,23 +329,16 @@ fn extract_module_dependencies(
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
-    let source_file = abs_path_buf
-        .strip_prefix(ctx.workspace_root)
-        .map(|p| p.to_path_buf())
-        .unwrap_or(abs_path_buf);
-
-    let crate_view = CrateView {
-        crate_name: ctx.crate_name,
-        workspace_crates: ctx.workspace_crates,
-        module_paths: ctx.all_module_paths,
-        crate_exports: ctx.crate_exports,
-        external_crate_names: ctx.external_crate_names,
-        extern_prelude: ctx.extern_prelude,
-        builds: RootBuilds::of(super::use_parser::ReExportMap::default()),
-        modules_bound: ModulesBound::default(),
+    let Ok(syntax) = syn::parse_file(&source_text) else {
+        return Vec::new();
     };
-    let res_ctx = ResolutionContext::new(&crate_view, &source_file, current_module_path);
-    parse_workspace_dependencies_from_source(&source_text, &res_ctx)
+    let file = FileInModule {
+        file: &abs_path_buf,
+        module_path: current_module_path,
+        context: EdgeContext::production(),
+    };
+    let pending = resolver.dependencies(Root::entry(0), file, &syntax);
+    resolver.finish(pending)
 }
 
 #[cfg(test)]
@@ -472,6 +453,7 @@ mod hir_tests {
 
     mod smoke_tests {
         use super::*;
+        use crate::analyze::packages::ModulePathMap;
         use crate::analyze::workspace::analyze_workspace;
 
         #[test]
@@ -519,8 +501,6 @@ mod hir_tests {
             let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
             let crates = analyze_workspace(&manifest, &FeatureConfig::default())
                 .expect("should analyze workspace");
-            let workspace_crates: WorkspacePackages =
-                crates.iter().map(|c| c.name.clone()).collect();
             let cargo_arc = crates.iter().find(|c| c.name == "cargo-arc").unwrap();
 
             let (host, vfs) = load_workspace_hir(&manifest, &FeatureConfig::default())
@@ -529,9 +509,7 @@ mod hir_tests {
                 cargo_arc,
                 &host,
                 &vfs,
-                &workspace_crates,
-                &ModulePathMap::default(),
-                &PackageExportMap::default(),
+                &NameResolution::without_table(&crates, &ModulePathMap::default()),
                 &HashMap::new(),
             )
             .expect("should analyze modules");
@@ -567,8 +545,6 @@ mod hir_tests {
             let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
             let crates = analyze_workspace(&manifest, &FeatureConfig::default())
                 .expect("should analyze workspace");
-            let workspace_crates: WorkspacePackages =
-                crates.iter().map(|c| c.name.clone()).collect();
             let cargo_arc = crates.iter().find(|c| c.name == "cargo-arc").unwrap();
 
             let (host, vfs) = load_workspace_hir(&manifest, &FeatureConfig::default())
@@ -577,9 +553,7 @@ mod hir_tests {
                 cargo_arc,
                 &host,
                 &vfs,
-                &workspace_crates,
-                &ModulePathMap::default(),
-                &PackageExportMap::default(),
+                &NameResolution::without_table(&crates, &ModulePathMap::default()),
                 &HashMap::new(),
             )
             .expect("should analyze modules");
@@ -601,8 +575,6 @@ mod hir_tests {
             let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
             let crates = analyze_workspace(&manifest, &FeatureConfig::default())
                 .expect("should analyze workspace");
-            let workspace_crates: WorkspacePackages =
-                crates.iter().map(|c| c.name.clone()).collect();
             let cargo_arc = crates.iter().find(|c| c.name == "cargo-arc").unwrap();
 
             let (host, vfs) = load_workspace_hir(&manifest, &FeatureConfig::default())
@@ -611,9 +583,7 @@ mod hir_tests {
                 cargo_arc,
                 &host,
                 &vfs,
-                &workspace_crates,
-                &ModulePathMap::default(),
-                &PackageExportMap::default(),
+                &NameResolution::without_table(&crates, &ModulePathMap::default()),
                 &HashMap::new(),
             )
             .expect("should analyze modules");

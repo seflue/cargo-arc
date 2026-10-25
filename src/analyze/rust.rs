@@ -8,8 +8,7 @@ use super::LanguageAdapter;
 use super::backend::AnalysisBackend;
 use super::externals::analyze_externals;
 use super::hir::FeatureConfig;
-use super::name_resolution::NameResolution;
-use super::packages::{ModulePathMap, WorkspacePackages};
+use super::packages::ModulePathMap;
 use super::workspace::analyze_workspace;
 use crate::model::{Analysis, LanguageProfile, Wording};
 
@@ -45,8 +44,6 @@ impl LanguageAdapter for Rust {
         let manifest_path = self.manifest_path.as_path();
         let packages = analyze_workspace(manifest_path, &self.feature_config)?;
         tracing::debug!("phase: workspace analyzed ({} crates)", packages.len());
-        let workspace_packages: WorkspacePackages =
-            packages.iter().map(|krate| krate.name.clone()).collect();
         let backend = AnalysisBackend::new(manifest_path, &self.feature_config, self.use_hir)?;
 
         let all_module_paths: ModulePathMap = packages
@@ -55,12 +52,8 @@ impl LanguageAdapter for Rust {
             .collect();
         tracing::debug!("phase: module paths collected");
 
-        let resolution = NameResolution::new(
-            &packages,
-            &all_module_paths,
-            self.feature_config.include_tests,
-        );
-        tracing::debug!("phase: reexport map collected");
+        let resolution = backend.name_resolution(&packages, &all_module_paths);
+        tracing::debug!("phase: name resolution built");
 
         // Run externals analysis before module analysis so crate_name_map
         // is available for use-parser resolution of external package imports.
@@ -79,14 +72,7 @@ impl LanguageAdapter for Rust {
             .filter_map(|krate| {
                 tracing::debug!("analyzing crate: {}", krate.key);
                 let ext_names = crate_name_map.get(&krate.key).unwrap_or(&empty_name_map);
-                match backend.analyze_modules(
-                    krate,
-                    &workspace_packages,
-                    &all_module_paths,
-                    resolution.crate_exports(),
-                    &resolution,
-                    ext_names,
-                ) {
+                match backend.analyze_modules(krate, &resolution, ext_names) {
                     Ok(tree) => Some(tree),
                     Err(err) => {
                         tracing::warn!("Skipping crate {}: {err}", krate.name);
