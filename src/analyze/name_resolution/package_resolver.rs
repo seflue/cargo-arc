@@ -7,11 +7,11 @@ use std::path::Path;
 use super::super::packages::{
     ModulePathMap, ModulePaths, PackageExportMap, WorkspacePackages, normalize_crate_name,
 };
-use super::super::reexports::root_extern_prelude;
 use super::super::use_parser::{
     CrateView, ExternPrelude, ModulesBound, PassedOn, ReExportMap, ResolutionContext, RootBuilds,
 };
 use super::dependencies::parse_file_dependencies;
+use super::table::root_extern_prelude;
 use crate::model::{Definition, DependencyRef, EdgeContext, PackageInfo, TargetRoot, UsageKind};
 
 /// The workspace as the code of each of its packages resolves names: what

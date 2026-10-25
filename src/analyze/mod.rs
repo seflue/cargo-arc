@@ -8,7 +8,6 @@ pub(crate) mod lua;
 mod mod_resolver;
 mod name_resolution;
 pub(crate) mod packages;
-mod reexports;
 pub(crate) mod rust;
 mod syn_walker;
 #[cfg(test)]

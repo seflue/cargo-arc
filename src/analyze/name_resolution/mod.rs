@@ -3,6 +3,7 @@
 mod dependencies;
 mod package_resolver;
 mod path;
+mod table;
 mod workspace;
 
 #[cfg(test)]

@@ -6,9 +6,9 @@ use std::collections::{HashMap, HashSet};
 use super::super::packages::ModulePathMap;
 #[cfg(test)]
 use super::super::packages::{PackageExportMap, WorkspacePackages};
-use super::super::reexports::{collect_reexport_map, name_a_fn_defines};
 use super::super::use_parser::ReExportMap;
 use super::package_resolver::{Backend, PackageResolver, WorkspaceView};
+use super::table::{collect_reexport_map, name_a_fn_defines};
 use crate::model::{EntryKind, PackageInfo};
 
 /// The name resolution of a workspace: pass 1 runs when it is built, pass 2
