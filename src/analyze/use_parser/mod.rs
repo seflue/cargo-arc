@@ -441,16 +441,17 @@ impl ModuleExportInfo {
         self.globs.iter()
     }
 
-    /// The target of each `use` binding, with its name and its place among
-    /// the bindings of the name.
-    fn use_targets(&self) -> impl Iterator<Item = (&str, usize, &ReExportTarget)> {
+    /// The target of each `use` binding, with its name, its place among the
+    /// bindings of the name, and whether it is a `pub use`.
+    fn use_targets(&self) -> impl Iterator<Item = (&str, usize, bool, &ReExportTarget)> {
         self.bindings.iter().flat_map(|(name, bindings)| {
             bindings
                 .iter()
                 .enumerate()
                 .filter_map(move |(index, binding)| {
                     let target = binding.use_target()?;
-                    Some((name.as_str(), index, target))
+                    let re_export = binding.reexported().is_some();
+                    Some((name.as_str(), index, re_export, target))
                 })
         })
     }
@@ -636,172 +637,6 @@ impl ReExportMap {
         })
     }
 
-    /// Point each `use` whose target holds the path as written, where
-    /// [`UseScope::place`] left it, at what that path reaches, and each glob
-    /// whose module is written at the module it reaches. Each path is read
-    /// from the root of its crate: into another workspace crate as seen from
-    /// outside, in the own crate as the module holding the `use` sees it. A
-    /// path that runs through a binding or glob still written waits for a
-    /// later round, and rounds repeat while one settles a path. A path whose
-    /// first name the root binds nothing under names that name in the root.
-    /// A path from a name in scope ([`UsePlace::Name`]) whose first
-    /// name stands for no module in the holding module names an external
-    /// crate: a private `use` of it binds [`BindingKind::Elsewhere`], a
-    /// `pub use` [`BindingKind::ReExportFromOutside`]. A glob whose path does not reach a module
-    /// imports nothing.
-    pub(crate) fn settle_written_paths(mut self, module_paths: &ModulePathMap) -> Self {
-        loop {
-            let unsettled = self.unsettled(module_paths);
-            let targets = self.settled_targets(module_paths, &unsettled);
-            let globs = self.settled_globs(module_paths, &unsettled);
-            if targets.is_empty() && globs.is_empty() {
-                break;
-            }
-            self.rebind(targets);
-            self.reglob(globs);
-        }
-        let unreached: Vec<_> = self
-            .written_targets(module_paths)
-            .filter(|(place, _)| !place.from_scope)
-            .map(|(place, target)| (place, Settled::Target(root_name_of(target))))
-            .collect();
-        self.rebind(unreached);
-        let nothing_waits = HashSet::new();
-        let targets = self.settled_targets(module_paths, &nothing_waits);
-        self.rebind(targets);
-        let globs = self.settled_globs(module_paths, &nothing_waits);
-        self.reglob(globs);
-        self
-    }
-
-    /// The modules that paths still written hold, by crate and path: of
-    /// `use` targets and of globs.
-    fn unsettled(&self, module_paths: &ModulePathMap) -> HashSet<(String, String)> {
-        let targets = self
-            .written_targets(module_paths)
-            .map(|(_, target)| (target.crate_name.clone(), target.module.clone()));
-        let globs = self
-            .written_globs(module_paths)
-            .map(|(_, glob)| (glob.crate_name.clone(), glob.module.clone()));
-        targets.chain(globs).collect()
-    }
-
-    /// What each written `use` target reaches, where its path waits on none
-    /// of `unsettled`. A path not from a name in scope whose first name the
-    /// root binds nothing under stays written.
-    fn settled_targets(
-        &self,
-        module_paths: &ModulePathMap,
-        unsettled: &HashSet<(String, String)>,
-    ) -> Vec<(BindingPlace, Settled)> {
-        self.written_targets(module_paths)
-            .filter_map(|(place, target)| {
-                let own = target.crate_name == place.package;
-                let own_root = (place.package.clone(), place.root);
-                let lookup = NameLookup {
-                    viewer: self.viewer_of_written(own, &own_root, place.test_build, &place.module),
-                    module_paths,
-                };
-                let from = if place.from_scope {
-                    WrittenFrom::Scope(&place.module)
-                } else {
-                    WrittenFrom::CrateRoot
-                };
-                let settled = match reached_target(lookup, target, from, unsettled) {
-                    Reached::Target(target) => Settled::Target(target),
-                    Reached::Unbound if place.from_scope => Settled::Outside,
-                    Reached::Unbound | Reached::Waits => return None,
-                };
-                Some((place, settled))
-            })
-            .collect()
-    }
-
-    /// The module each written glob reaches, [`NameTarget::Item`] where its
-    /// path reaches no module, where the path waits on none of `unsettled`.
-    fn settled_globs(
-        &self,
-        module_paths: &ModulePathMap,
-        unsettled: &HashSet<(String, String)>,
-    ) -> Vec<(GlobPlace, NameTarget)> {
-        self.written_globs(module_paths)
-            .filter_map(|(place, glob)| {
-                let own = glob.crate_name == place.package;
-                let own_root = (place.package.clone(), place.root);
-                let lookup = NameLookup {
-                    viewer: self.viewer_of_written(own, &own_root, place.test_build, &place.module),
-                    module_paths,
-                };
-                let reached = reached_module(lookup, glob, unsettled)?;
-                Some((place, reached))
-            })
-            .collect()
-    }
-
-    /// The viewer that reads a path written in `module` of `own_root`, in
-    /// its test build where `test_build` is set: from that module where the
-    /// path stays in the own crate (`own`), else from outside every package.
-    fn viewer_of_written<'a>(
-        &'a self,
-        own: bool,
-        own_root: &'a (String, usize),
-        test_build: bool,
-        module: &'a str,
-    ) -> Viewer<'a> {
-        if !own {
-            return self.viewer_from_outside();
-        }
-        Viewer {
-            packages: &self.packages,
-            own_root: Some(own_root),
-            test_build,
-            module: Some(module),
-        }
-    }
-
-    /// The viewer from outside every package: it sees each package's lib root,
-    /// built without `test`, and only what is public there.
-    fn viewer_from_outside(&self) -> Viewer<'_> {
-        Viewer {
-            packages: &self.packages,
-            own_root: None,
-            test_build: false,
-            module: None,
-        }
-    }
-
-    /// Each `use` binding whose target lies in no module of its crate: the
-    /// path as written.
-    fn written_targets<'a>(
-        &'a self,
-        module_paths: &'a ModulePathMap,
-    ) -> impl Iterator<Item = (BindingPlace, &'a ReExportTarget)> + 'a {
-        self.use_targets()
-            .filter(move |(_, target)| !module_paths.holds(&target.crate_name, &target.module))
-    }
-
-    /// Each glob whose module lies in no module of its crate: the path as
-    /// written.
-    fn written_globs<'a>(
-        &'a self,
-        module_paths: &'a ModulePathMap,
-    ) -> impl Iterator<Item = (GlobPlace, &'a GlobBinding)> + 'a {
-        self.module_infos()
-            .flat_map(|(package, root, test_build, module, info)| {
-                info.globs.iter().enumerate().map(move |(index, glob)| {
-                    let place = GlobPlace {
-                        package: package.clone(),
-                        root,
-                        test_build,
-                        module: module.clone(),
-                        index,
-                    };
-                    (place, glob)
-                })
-            })
-            .filter(move |(_, glob)| !module_paths.holds(&glob.crate_name, &glob.module))
-    }
-
     /// Each module of the map, in every root and build, with its package,
     /// root, build and path.
     fn module_infos(
@@ -822,18 +657,20 @@ impl ReExportMap {
     fn use_targets(&self) -> impl Iterator<Item = (BindingPlace, &ReExportTarget)> {
         self.module_infos()
             .flat_map(|(package, root, test_build, module, info)| {
-                info.use_targets().map(move |(name, index, target)| {
-                    let place = BindingPlace {
-                        package: package.clone(),
-                        root,
-                        test_build,
-                        module: module.clone(),
-                        name: name.to_string(),
-                        index,
-                        from_scope: info.from_scope.contains(name),
-                    };
-                    (place, target)
-                })
+                info.use_targets()
+                    .map(move |(name, index, re_export, target)| {
+                        let place = BindingPlace {
+                            package: package.clone(),
+                            root,
+                            test_build,
+                            module: module.clone(),
+                            name: name.to_string(),
+                            index,
+                            re_export,
+                            from_scope: info.from_scope.contains(name),
+                        };
+                        (place, target)
+                    })
             })
     }
 
@@ -862,36 +699,33 @@ impl ReExportMap {
     /// [`BindingKind::Elsewhere`] and a `pub use`
     /// [`BindingKind::ReExportFromOutside`].
     fn rebind(&mut self, settled: Vec<(BindingPlace, Settled)>) {
-        let mut outside: HashMap<(String, usize, bool, String, String), HashSet<usize>> =
-            HashMap::new();
+        let mut outside: HashMap<(ModuleKey, String), HashMap<usize, BindingKind>> = HashMap::new();
         for (place, settled) in settled {
-            let target = match settled {
-                Settled::Target(target) => target,
-                Settled::Outside => {
-                    let key = (
-                        place.package,
-                        place.root,
-                        place.test_build,
-                        place.module,
-                        place.name,
-                    );
-                    outside.entry(key).or_default().insert(place.index);
+            let kind = match settled {
+                Settled::Target(target) => {
+                    let binding = self
+                        .module_mut(&place.package, place.root, place.test_build, &place.module)
+                        .and_then(|info| info.bindings.get_mut(&place.name))
+                        .and_then(|bindings| bindings.get_mut(place.index));
+                    if let Some(NameBinding {
+                        kind: BindingKind::ReExport(held) | BindingKind::PrivateUse(held),
+                        ..
+                    }) = binding
+                    {
+                        *held = target;
+                    }
                     continue;
                 }
+                Settled::Elsewhere => BindingKind::Elsewhere,
+                Settled::ReExportFromOutside(path) => BindingKind::ReExportFromOutside(path),
             };
-            let binding = self
-                .module_mut(&place.package, place.root, place.test_build, &place.module)
-                .and_then(|info| info.bindings.get_mut(&place.name))
-                .and_then(|bindings| bindings.get_mut(place.index));
-            if let Some(NameBinding {
-                kind: BindingKind::ReExport(held) | BindingKind::PrivateUse(held),
-                ..
-            }) = binding
-            {
-                *held = target;
-            }
+            let module = (place.package, place.root, place.test_build, place.module);
+            outside
+                .entry((module, place.name))
+                .or_default()
+                .insert(place.index, kind);
         }
-        for ((package, root, test_build, module, name), indices) in outside {
+        for (((package, root, test_build, module), name), mut kinds) in outside {
             let Some(info) = self.module_mut(&package, root, test_build, &module) else {
                 continue;
             };
@@ -900,19 +734,8 @@ impl ReExportMap {
             };
             // Bound again oldest first, so the order of the kinds holds.
             for (index, mut binding) in bindings.into_iter().enumerate().rev() {
-                if indices.contains(&index) {
-                    binding.kind = match binding.kind {
-                        BindingKind::ReExport(written) => {
-                            // Written from a name in scope, the path starts
-                            // with the module that holds it.
-                            let path = append_to_path(&written.module, &written.original_name);
-                            let from_holder = path
-                                .strip_prefix(&format!("{module}::"))
-                                .map_or(path.clone(), ToString::to_string);
-                            BindingKind::ReExportFromOutside(from_holder)
-                        }
-                        _ => BindingKind::Elsewhere,
-                    };
+                if let Some(kind) = kinds.remove(&index) {
+                    binding.kind = kind;
                 }
                 info.bind(name.clone(), binding);
             }
@@ -980,6 +803,8 @@ struct BindingPlace {
     module: String,
     name: String,
     index: usize,
+    /// Whether the binding is a `pub use`.
+    re_export: bool,
     /// Whether the `use` path of the binding starts from a name in scope.
     from_scope: bool,
 }
@@ -997,11 +822,27 @@ struct GlobPlace {
     index: usize,
 }
 
-/// What a written `use` path settles to: a target, or something outside the
-/// workspace.
+/// What a written `use` path settles to: the target it reaches, or, where a
+/// path from a name in scope reaches nothing in the workspace, what its
+/// binding becomes.
 enum Settled {
     Target(ReExportTarget),
-    Outside,
+    /// A private `use` of something outside the workspace.
+    Elsewhere,
+    /// A `pub use` of something outside the workspace, with the path written
+    /// from the module that holds it.
+    ReExportFromOutside(String),
+}
+
+/// What a name in a module stands for, as a viewer sees it.
+#[derive(Debug, Clone, PartialEq)]
+enum NameTarget {
+    /// A module of a workspace crate, to which a path carries its rest. Its
+    /// path is `""` for the crate root.
+    Module { crate_name: String, path: String },
+    /// An item the module binds under the name, its own or through a `use`
+    /// or a glob.
+    Item,
 }
 
 /// What a written path reaches as far as the map tells now.
@@ -1213,6 +1054,188 @@ fn root_name_of(target: &ReExportTarget) -> ReExportTarget {
         crate_name: target.crate_name.clone(),
         module: String::new(),
         original_name: first.to_string(),
+    }
+}
+
+impl ReExportMap {
+    /// Point each `use` whose target holds the path as written, where
+    /// [`UseScope::place`] left it, at what that path reaches, and each glob
+    /// whose module is written at the module it reaches. Each path is read
+    /// from the root of its crate: into another workspace crate as seen from
+    /// outside, in the own crate as the module holding the `use` sees it. A
+    /// path that runs through a binding or glob still written waits for a
+    /// later round, and rounds repeat while one settles a path. A path whose
+    /// first name the root binds nothing under names that name in the root.
+    /// A path from a name in scope ([`UsePlace::Name`]) whose first
+    /// name stands for no module in the holding module names an external
+    /// crate: a private `use` of it binds [`BindingKind::Elsewhere`], a
+    /// `pub use` [`BindingKind::ReExportFromOutside`]. A glob whose path does not reach a module
+    /// imports nothing.
+    pub(crate) fn settle_written_paths(mut self, module_paths: &ModulePathMap) -> Self {
+        loop {
+            let unsettled = self.unsettled(module_paths);
+            let targets = self.settled_targets(module_paths, &unsettled);
+            let globs = self.settled_globs(module_paths, &unsettled);
+            if targets.is_empty() && globs.is_empty() {
+                break;
+            }
+            self.rebind(targets);
+            self.reglob(globs);
+        }
+        let unreached: Vec<_> = self
+            .written_targets(module_paths)
+            .filter(|(place, _)| !place.from_scope)
+            .map(|(place, target)| (place, Settled::Target(root_name_of(target))))
+            .collect();
+        self.rebind(unreached);
+        let nothing_waits = HashSet::new();
+        let targets = self.settled_targets(module_paths, &nothing_waits);
+        self.rebind(targets);
+        let globs = self.settled_globs(module_paths, &nothing_waits);
+        self.reglob(globs);
+        self
+    }
+
+    /// The modules that paths still written hold, by crate and path: of
+    /// `use` targets and of globs.
+    fn unsettled(&self, module_paths: &ModulePathMap) -> HashSet<(String, String)> {
+        let targets = self
+            .written_targets(module_paths)
+            .map(|(_, target)| (target.crate_name.clone(), target.module.clone()));
+        let globs = self
+            .written_globs(module_paths)
+            .map(|(_, glob)| (glob.crate_name.clone(), glob.module.clone()));
+        targets.chain(globs).collect()
+    }
+
+    /// What each written `use` target settles to, where its path waits on
+    /// none of `unsettled`: the target it reaches, or, for a path from a name
+    /// in scope that reaches nothing, [`Settled::Elsewhere`] for a private
+    /// `use` and [`Settled::ReExportFromOutside`] for a `pub use`. A path not
+    /// from a name in scope whose first name the root binds nothing under
+    /// stays written.
+    fn settled_targets(
+        &self,
+        module_paths: &ModulePathMap,
+        unsettled: &HashSet<(String, String)>,
+    ) -> Vec<(BindingPlace, Settled)> {
+        self.written_targets(module_paths)
+            .filter_map(|(place, target)| {
+                let own = target.crate_name == place.package;
+                let own_root = (place.package.clone(), place.root);
+                let lookup = NameLookup {
+                    viewer: self.viewer_of_written(own, &own_root, place.test_build, &place.module),
+                    module_paths,
+                };
+                let from = if place.from_scope {
+                    WrittenFrom::Scope(&place.module)
+                } else {
+                    WrittenFrom::CrateRoot
+                };
+                let settled = match reached_target(lookup, target, from, unsettled) {
+                    Reached::Target(target) => Settled::Target(target),
+                    Reached::Unbound if place.from_scope => {
+                        // Written from a name in scope, the path starts with
+                        // the module that holds it.
+                        if !place.re_export {
+                            return Some((place, Settled::Elsewhere));
+                        }
+                        let path = append_to_path(&target.module, &target.original_name);
+                        let from_holder = path
+                            .strip_prefix(&format!("{}::", place.module))
+                            .map_or(path.clone(), ToString::to_string);
+                        Settled::ReExportFromOutside(from_holder)
+                    }
+                    Reached::Unbound | Reached::Waits => return None,
+                };
+                Some((place, settled))
+            })
+            .collect()
+    }
+
+    /// The module each written glob reaches, [`NameTarget::Item`] where its
+    /// path reaches no module, where the path waits on none of `unsettled`.
+    fn settled_globs(
+        &self,
+        module_paths: &ModulePathMap,
+        unsettled: &HashSet<(String, String)>,
+    ) -> Vec<(GlobPlace, NameTarget)> {
+        self.written_globs(module_paths)
+            .filter_map(|(place, glob)| {
+                let own = glob.crate_name == place.package;
+                let own_root = (place.package.clone(), place.root);
+                let lookup = NameLookup {
+                    viewer: self.viewer_of_written(own, &own_root, place.test_build, &place.module),
+                    module_paths,
+                };
+                let reached = reached_module(lookup, glob, unsettled)?;
+                Some((place, reached))
+            })
+            .collect()
+    }
+
+    /// The viewer that reads a path written in `module` of `own_root`, in
+    /// its test build where `test_build` is set: from that module where the
+    /// path stays in the own crate (`own`), else from outside every package.
+    fn viewer_of_written<'a>(
+        &'a self,
+        own: bool,
+        own_root: &'a (String, usize),
+        test_build: bool,
+        module: &'a str,
+    ) -> Viewer<'a> {
+        if !own {
+            return self.viewer_from_outside();
+        }
+        Viewer {
+            packages: &self.packages,
+            own_root: Some(own_root),
+            test_build,
+            module: Some(module),
+        }
+    }
+
+    /// The viewer from outside every package: it sees each package's lib root,
+    /// built without `test`, and only what is public there.
+    fn viewer_from_outside(&self) -> Viewer<'_> {
+        Viewer {
+            packages: &self.packages,
+            own_root: None,
+            test_build: false,
+            module: None,
+        }
+    }
+
+    /// Each `use` binding whose target lies in no module of its crate: the
+    /// path as written.
+    fn written_targets<'a>(
+        &'a self,
+        module_paths: &'a ModulePathMap,
+    ) -> impl Iterator<Item = (BindingPlace, &'a ReExportTarget)> + 'a {
+        self.use_targets()
+            .filter(move |(_, target)| !module_paths.holds(&target.crate_name, &target.module))
+    }
+
+    /// Each glob whose module lies in no module of its crate: the path as
+    /// written.
+    fn written_globs<'a>(
+        &'a self,
+        module_paths: &'a ModulePathMap,
+    ) -> impl Iterator<Item = (GlobPlace, &'a GlobBinding)> + 'a {
+        self.module_infos()
+            .flat_map(|(package, root, test_build, module, info)| {
+                info.globs.iter().enumerate().map(move |(index, glob)| {
+                    let place = GlobPlace {
+                        package: package.clone(),
+                        root,
+                        test_build,
+                        module: module.clone(),
+                        index,
+                    };
+                    (place, glob)
+                })
+            })
+            .filter(move |(_, glob)| !module_paths.holds(&glob.crate_name, &glob.module))
     }
 }
 
@@ -1565,17 +1588,6 @@ impl AfterName {
             Self::PathGoesOn
         }
     }
-}
-
-/// What a name in a module stands for, as a viewer sees it.
-#[derive(Debug, Clone, PartialEq)]
-enum NameTarget {
-    /// A module of a workspace crate, to which a path carries its rest. Its
-    /// path is `""` for the crate root.
-    Module { crate_name: String, path: String },
-    /// An item the module binds under the name, its own or through a `use`
-    /// or a glob.
-    Item,
 }
 
 /// The lookup of "what is name N in module M for viewer V": a viewer and the
@@ -3081,57 +3093,6 @@ fn is_built_in_derive(path: &syn::Path) -> bool {
 }
 
 impl PathRef {
-    /// Whether this path names a tool rather than a crate: written in a tool
-    /// attribute whose tool no crate of the extern prelude of `ctx`'s build
-    /// shadows. rustc reads a crate of the tool's name first.
-    fn names_a_tool(&self, ctx: &ResolutionContext) -> bool {
-        let first = self.path.split("::").next().unwrap_or_default();
-        self.in_tool_attribute
-            && !ctx
-                .crate_view
-                .extern_prelude
-                .names(ctx.test_build)
-                .contains_key(first)
-    }
-
-    /// Resolve this reference through the resolution chain. A path written
-    /// in macro input resolves through a binding only.
-    fn resolve(&self, ctx: &ResolutionContext) -> Option<DependencyRef> {
-        if self.in_macro {
-            return None;
-        }
-        resolve_single_path(
-            ctx,
-            &self.path,
-            self.line,
-            &self.context,
-            &self.inline_path,
-            self.meaning,
-        )
-    }
-
-    /// Resolve `rest`, what this reference writes after a name bound to
-    /// `module`, under that module. Not for a path written in macro input, as
-    /// [`PathRef::resolve`].
-    fn resolve_under(
-        &self,
-        ctx: &ResolutionContext,
-        module: &BoundModule,
-        rest: &str,
-    ) -> Option<DependencyRef> {
-        if self.in_macro {
-            return None;
-        }
-        module.resolve(
-            ctx,
-            rest,
-            self.line,
-            &self.context,
-            &self.inline_path,
-            self.meaning,
-        )
-    }
-
     /// The meaning the path asks of the item it resolved to, with `associated`
     /// the segment it writes after the item: an item the path goes on past is
     /// a type.
@@ -5085,6 +5046,59 @@ impl BoundModule {
         Some(
             end.module_or_item(ctx, meaning)
                 .dependency(ctx, line_num, context),
+        )
+    }
+}
+
+impl PathRef {
+    /// Whether this path names a tool rather than a crate: written in a tool
+    /// attribute whose tool no crate of the extern prelude of `ctx`'s build
+    /// shadows. rustc reads a crate of the tool's name first.
+    fn names_a_tool(&self, ctx: &ResolutionContext) -> bool {
+        let first = self.path.split("::").next().unwrap_or_default();
+        self.in_tool_attribute
+            && !ctx
+                .crate_view
+                .extern_prelude
+                .names(ctx.test_build)
+                .contains_key(first)
+    }
+
+    /// Resolve this reference through the resolution chain. A path written
+    /// in macro input resolves through a binding only.
+    fn resolve(&self, ctx: &ResolutionContext) -> Option<DependencyRef> {
+        if self.in_macro {
+            return None;
+        }
+        resolve_single_path(
+            ctx,
+            &self.path,
+            self.line,
+            &self.context,
+            &self.inline_path,
+            self.meaning,
+        )
+    }
+
+    /// Resolve `rest`, what this reference writes after a name bound to
+    /// `module`, under that module. Not for a path written in macro input, as
+    /// [`PathRef::resolve`].
+    fn resolve_under(
+        &self,
+        ctx: &ResolutionContext,
+        module: &BoundModule,
+        rest: &str,
+    ) -> Option<DependencyRef> {
+        if self.in_macro {
+            return None;
+        }
+        module.resolve(
+            ctx,
+            rest,
+            self.line,
+            &self.context,
+            &self.inline_path,
+            self.meaning,
         )
     }
 }
