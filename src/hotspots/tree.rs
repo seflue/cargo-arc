@@ -85,6 +85,13 @@ impl HotspotTree {
             .position(|hotspot| hotspot.file == node.file)
             .map(|index| index + 1)
     }
+
+    /// Return every file leaf in ranking order, those scoring zero included:
+    /// the order `hotspots` is the positive-score head of.
+    #[must_use]
+    pub fn ranking(&self) -> Vec<&HotspotNode> {
+        ranked_leaves(&self.root)
+    }
 }
 
 /// Return `node`'s children by lines descending, ties by name: the order
@@ -150,20 +157,28 @@ fn max_file_commits(node: &HotspotNode) -> usize {
         .unwrap_or(0)
 }
 
-/// Return the first `n` file leaves under `root` with positive score, by
-/// descending score, ties by name.
+/// Return the first `n` file leaves under `root` with positive score, in
+/// the order of [`ranked_leaves`].
 fn rank_leaves(root: &HotspotNode, n: usize) -> Vec<HotspotNode> {
+    ranked_leaves(root)
+        .into_iter()
+        .filter(|leaf| hotspot_score(leaf) > 0)
+        .take(n)
+        .cloned()
+        .collect()
+}
+
+/// Return every file leaf under `root` by descending score, ties by name,
+/// then in tree order: the sort is stable.
+fn ranked_leaves(root: &HotspotNode) -> Vec<&HotspotNode> {
     let mut leaves: Vec<&HotspotNode> = Vec::new();
     collect_leaves(root, &mut leaves);
-
-    leaves.retain(|leaf| hotspot_score(leaf) > 0);
     leaves.sort_by(|a, b| {
         hotspot_score(b)
             .cmp(&hotspot_score(a))
             .then_with(|| a.name.cmp(&b.name))
     });
-    leaves.truncate(n);
-    leaves.into_iter().cloned().collect()
+    leaves
 }
 
 /// Wrap `packages` in a workspace root, sorted by name, whose commits are the

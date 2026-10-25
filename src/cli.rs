@@ -15,6 +15,7 @@ use crate::graph::{ArcGraph, Reexports};
 use crate::hotspots;
 use crate::layout::{JumpTable, LayoutIR, LocationId, build_layout};
 use crate::model::{LanguageProfile, PackageInfo};
+use crate::query;
 use crate::render::{
     AnalysisSwitches, Appearance, Document, RenderConfig, THEMES, Theme, html_page, project_name,
     render, render_hotspots,
@@ -24,7 +25,7 @@ use crate::rules::config::{ArcConfig, ConfigError};
 use crate::rules::engine::{CheckRun, check_rules};
 use crate::rules::format::{format_status, format_violations, plural};
 use crate::ui;
-use crate::volatility::{VolatilityAnalyzer, VolatilityConfig};
+use crate::volatility::{VolatilityAnalyzer, VolatilityConfig, Window};
 use std::path::Path;
 
 /// Cargo subcommand wrapper for `cargo arc`
@@ -102,6 +103,76 @@ pub enum Command {
     Ui(UiArgs),
     /// Render the circle-packed hotspot map (lines × commits) to `-o` or stdout
     Hotspots(HotspotsArgs),
+    /// Print analysis data on stdout, one record per line, for scripts and
+    /// agents
+    Query(QueryArgs),
+}
+
+#[derive(Parser)]
+#[command(
+    override_usage = "cargo arc [SHARED OPTIONS] query [OPTIONS] <COMMAND>",
+    after_help = "The header lines and the columns of each subcommand are described in \
+                       docs/QUERY.md in the cargo-arc repository."
+)]
+pub struct QueryArgs {
+    /// Print JSON Lines instead of TSV: a header object, then one object per
+    /// record
+    #[arg(long, global = true)]
+    pub json: bool,
+
+    #[command(subcommand)]
+    pub command: QueryCommand,
+}
+
+/// What `query` prints.
+#[derive(Subcommand)]
+pub enum QueryCommand {
+    /// List the top N hotspots, or the named files with their rank among all
+    /// files
+    Hotspots(HotspotsQueryArgs),
+    /// A name that is no subcommand, kept to answer it with the valid ones;
+    /// clap's own error would not list them.
+    #[command(external_subcommand)]
+    Unknown(Vec<String>),
+}
+
+#[derive(Parser)]
+#[command(override_usage = "cargo arc [SHARED OPTIONS] query hotspots [OPTIONS] [PATH]...")]
+pub struct HotspotsQueryArgs {
+    /// Number of hotspots to list
+    #[arg(
+        short = 'n',
+        long,
+        value_name = "N",
+        default_value_t = 5,
+        conflicts_with = "paths"
+    )]
+    pub top: usize,
+
+    /// Files to list instead of the top N, relative to the workspace root
+    #[arg(value_name = "PATH")]
+    pub paths: Vec<PathBuf>,
+}
+
+impl QueryArgs {
+    /// Write `records` under `header` and `columns` in the format `--json`
+    /// selects.
+    ///
+    /// # Errors
+    /// Fails when `out` fails.
+    pub(crate) fn write(
+        &self,
+        out: &mut impl Write,
+        header: &query::Header,
+        columns: &[&str],
+        records: &[Vec<serde_json::Value>],
+    ) -> io::Result<()> {
+        if self.json {
+            query::write_json_lines(out, header, columns, records)
+        } else {
+            query::write_tsv(out, header, columns, records)
+        }
+    }
 }
 
 #[derive(Parser)]
@@ -260,6 +331,10 @@ pub fn run(args: ArcCommand) -> Result<Judgment> {
         return run_hotspots(&args, hotspots_args);
     }
 
+    if let Some(Command::Query(ref query_args)) = args.command {
+        return run_query(&args, query_args);
+    }
+
     let vol_config = VolatilityConfig {
         months: args.volatility_months,
         low_threshold: args.volatility_low,
@@ -321,6 +396,108 @@ impl ArcCommand {
             tests: self.common.include_tests,
         }
     }
+
+    /// Return the flags that shape the analysis, keyed by their long name
+    /// without dashes, each with the value in effect, defaults included; the
+    /// language is the one the run resolves to.
+    ///
+    /// # Errors
+    /// Fails when no language can be resolved for `--manifest-path`.
+    pub(crate) fn query_flags(&self) -> Result<serde_json::Map<String, serde_json::Value>> {
+        let common = &self.common;
+        let language = clap::ValueEnum::to_possible_value(&language_of(common)?)
+            .expect("no Language variant is skipped")
+            .get_name()
+            .to_string();
+        let flags = [
+            ("language", language.into()),
+            ("features", common.features.clone().into()),
+            ("all-features", common.all_features.into()),
+            ("no-default-features", common.no_default_features.into()),
+            ("include-tests", common.include_tests.into()),
+            ("include-reexports", common.include_reexports.into()),
+            ("externals", self.externals.into()),
+            ("transitive-deps", self.transitive_deps.into()),
+            ("no-volatility", self.no_volatility.into()),
+            ("volatility-months", self.volatility_months.into()),
+            #[cfg(feature = "hir")]
+            ("hir", self.hir.into()),
+        ];
+        Ok(flags
+            .into_iter()
+            .map(|(name, value): (&str, serde_json::Value)| (name.to_string(), value))
+            .collect())
+    }
+}
+
+/// Run the `query` subcommand: analyze as the diagram does, then write the
+/// records under a header built from `args`.
+fn run_query(args: &ArcCommand, query_args: &QueryArgs) -> Result<Judgment> {
+    let output = match &query_args.command {
+        QueryCommand::Hotspots(hotspots_args) => query_hotspots(args, hotspots_args)?,
+        QueryCommand::Unknown(words) => {
+            let given = words.first().map_or("", String::as_str);
+            let valid: Vec<String> = <QueryArgs as clap::CommandFactory>::command()
+                .get_subcommands()
+                .map(|subcommand| subcommand.get_name().to_string())
+                .collect();
+            anyhow::bail!(
+                "'{given}' is no subcommand of query; its subcommands: {}",
+                valid.join(", ")
+            )
+        }
+    };
+    query_args.write(
+        &mut io::stdout().lock(),
+        &output.header,
+        output.columns,
+        &output.records,
+    )?;
+    Ok(Judgment::Clean)
+}
+
+/// What a `query` subcommand prints: the header, the column names and one
+/// record per line.
+struct QueryOutput {
+    header: query::Header,
+    columns: &'static [&'static str],
+    records: Vec<Vec<serde_json::Value>>,
+}
+
+/// The output of `query hotspots`: the ranking of the hotspot map that
+/// `arc hotspots` draws, over the same dependency graph.
+fn query_hotspots(args: &ArcCommand, hotspots_args: &HotspotsQueryArgs) -> Result<QueryOutput> {
+    use query::hotspots::{COLUMNS, Selection, header_fields, records};
+
+    let adapter = adapter_for(args, args.switches())?;
+    let (graph, workspace_root, _unparsed) =
+        build_dependency_graph(adapter.as_ref(), args.common.include_tests)?;
+    let workspace_root = workspace_root.with_context(|| {
+        format!(
+            "workspace has no {} to rank hotspots in",
+            adapter.profile().wording.packages
+        )
+    })?;
+    let selection = if hotspots_args.paths.is_empty() {
+        Selection::Top(hotspots_args.top)
+    } else {
+        Selection::Paths(&hotspots_args.paths)
+    };
+    let (tree, _volatility, window) = build_hotspot_tree(
+        args,
+        &graph,
+        adapter.profile(),
+        &workspace_root,
+        hotspots_args.top,
+    );
+
+    let mut header = query::Header::for_workspace(&workspace_root, args.query_flags()?);
+    header.subcommand_fields = header_fields(&selection, window);
+    Ok(QueryOutput {
+        header,
+        columns: &COLUMNS,
+        records: records(&tree, &selection)?,
+    })
 }
 
 /// The language adapter `args` ask for, with `switches` in place of the
@@ -481,7 +658,7 @@ fn run_ui(args: &ArcCommand, ui_args: &UiArgs) -> Result<Judgment> {
         };
         let arc_svg = render(&analysis.layout, &arc_config);
 
-        let (tree, volatility) = build_hotspot_tree(
+        let (tree, volatility, _window) = build_hotspot_tree(
             args,
             &analysis.graph,
             analysis.profile,
@@ -538,15 +715,20 @@ fn run_ui(args: &ArcCommand, ui_args: &UiArgs) -> Result<Judgment> {
 
 /// Build the hotspot tree over `graph` with lines from `hotspots::code_lines`
 /// and commits from the repository holding `--manifest-path`, over the
-/// shared `--volatility-months` window. The map is grey on `--no-volatility`,
-/// without usable git, or with no commit in the window.
+/// shared `--volatility-months` window, and return the window the commits
+/// were counted in. The map is grey on `--no-volatility`, without usable
+/// git, or with no commit in the window; only the first two have no window.
 fn build_hotspot_tree(
     args: &ArcCommand,
     graph: &ArcGraph,
     profile: &LanguageProfile,
     workspace_root: &Path,
     hotspots_n: usize,
-) -> (hotspots::HotspotTree, hotspots::MapVolatility) {
+) -> (
+    hotspots::HotspotTree,
+    hotspots::MapVolatility,
+    Option<Window>,
+) {
     let months = args.volatility_months;
     let volatility = if args.no_volatility {
         Err(hotspots::GreyCause::Flag)
@@ -578,6 +760,10 @@ fn build_hotspot_tree(
         },
         hotspots_n,
     );
+    let window = volatility
+        .as_ref()
+        .ok()
+        .and_then(VolatilityAnalyzer::window);
     let map_volatility = match volatility {
         Err(cause) => hotspots::MapVolatility::Grey(cause),
         Ok(_) if tree.total_commits == 0 => {
@@ -585,7 +771,7 @@ fn build_hotspot_tree(
         }
         Ok(_) => hotspots::MapVolatility::Window { months },
     };
-    (tree, map_volatility)
+    (tree, map_volatility, window)
 }
 
 /// Add a line-1 jump target to `table` for every leaf of `tree`, and return
@@ -622,7 +808,7 @@ fn run_hotspots(args: &ArcCommand, hotspots_args: &HotspotsArgs) -> Result<Judgm
         .workspace_root
         .context("workspace has no crates to build a hotspot map from")?;
 
-    let (tree, volatility) = build_hotspot_tree(
+    let (tree, volatility, _window) = build_hotspot_tree(
         args,
         &analysis.graph,
         analysis.profile,
@@ -1072,6 +1258,170 @@ mod tests {
         let cmd = parse_args(&["cargo", "arc", "--features", "web", "check"]);
         assert!(matches!(cmd.command, Some(Command::Check(..))));
         assert_eq!(cmd.common.features, vec!["web"]);
+    }
+
+    // ===== query =====
+
+    fn query_help() -> String {
+        use clap::CommandFactory;
+        let mut cargo = Cargo::command();
+        let arc = cargo.find_subcommand_mut("arc").expect("arc subcommand");
+        let query = arc.find_subcommand_mut("query").expect("query subcommand");
+        query.render_long_help().to_string()
+    }
+
+    #[test]
+    fn query_help_points_to_where_the_columns_are_documented() {
+        let help = query_help();
+        assert!(help.contains("docs/QUERY.md"), "{help}");
+    }
+
+    #[test]
+    fn query_help_lists_hotspots_as_a_subcommand() {
+        let help = query_help();
+        assert!(help.contains("Commands:"), "{help}");
+        assert!(help.contains("hotspots"), "{help}");
+    }
+
+    #[test]
+    fn query_help_and_errors_never_say_kind() {
+        let help = query_help().to_lowercase();
+        assert!(!help.contains("kind"), "{help}");
+
+        let cmd = parse_args(&["cargo", "arc", "query", "bogus"]);
+        let err = run(cmd).expect_err("bogus is no subcommand").to_string();
+        assert!(!err.to_lowercase().contains("kind"), "{err}");
+    }
+
+    #[test]
+    fn an_unknown_query_subcommand_fails_naming_the_valid_ones() {
+        let cmd = parse_args(&["cargo", "arc", "query", "bogus"]);
+
+        let err = run(cmd)
+            .expect_err("an unknown subcommand is an error")
+            .to_string();
+
+        assert_eq!(
+            err,
+            "'bogus' is no subcommand of query; its subcommands: hotspots"
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::before_the_subcommand(&["cargo", "arc", "query", "--json", "hotspots"])]
+    #[case::after_the_subcommand(&["cargo", "arc", "query", "hotspots", "--json"])]
+    fn query_json_is_accepted_on_either_side_of_the_subcommand(#[case] args: &[&str]) {
+        let Some(Command::Query(query)) = parse_args(args).command else {
+            panic!("expected Command::Query");
+        };
+        assert!(query.json);
+        assert!(matches!(query.command, QueryCommand::Hotspots(_)));
+    }
+
+    #[test]
+    fn query_hotspots_lists_five_without_top() {
+        let Some(Command::Query(query)) =
+            parse_args(&["cargo", "arc", "query", "hotspots"]).command
+        else {
+            panic!("expected Command::Query");
+        };
+        let QueryCommand::Hotspots(hotspots) = query.command else {
+            panic!("expected hotspots");
+        };
+        assert_eq!(hotspots.top, 5);
+        assert!(hotspots.paths.is_empty());
+    }
+
+    #[rstest::rstest]
+    #[case::short(&["cargo", "arc", "query", "hotspots", "-n", "3", "src/a.rs"])]
+    #[case::long(&["cargo", "arc", "query", "hotspots", "src/a.rs", "--top", "3"])]
+    fn query_hotspots_top_together_with_paths_is_a_usage_error(#[case] args: &[&str]) {
+        let err = Cargo::try_parse_from(args)
+            .err()
+            .expect("-n with paths is refused");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn query_writes_tsv_by_default_and_json_lines_with_json() {
+        use crate::query::Header;
+        let header = Header::for_workspace(Path::new("/nonexistent"), serde_json::Map::new());
+        let written = |json: bool| {
+            let args = QueryArgs {
+                json,
+                command: QueryCommand::Unknown(vec![]),
+            };
+            let mut out = Vec::new();
+            args.write(&mut out, &header, &["path"], &[]).unwrap();
+            String::from_utf8(out).unwrap()
+        };
+
+        assert!(written(false).starts_with("# cargo-arc-version: "));
+        assert!(written(false).ends_with("\npath\n"));
+        let json: serde_json::Value = serde_json::from_str(written(true).trim()).unwrap();
+        assert_eq!(json["columns"], serde_json::json!(["path"]));
+    }
+
+    #[test]
+    fn query_flags_name_each_flag_that_shapes_the_data() {
+        let manifest =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multi_crate/Cargo.toml");
+        let cmd = parse_args(&[
+            "cargo",
+            "arc",
+            "--manifest-path",
+            manifest.to_str().unwrap(),
+            "--features",
+            "a,b",
+            "--all-features",
+            "--no-default-features",
+            "--include-tests",
+            "--include-reexports",
+            "--externals",
+            "--transitive-deps",
+            "--no-volatility",
+            "--volatility-months",
+            "3",
+        ]);
+
+        let flags = serde_json::Value::Object(cmd.query_flags().unwrap());
+
+        #[allow(unused_mut)]
+        let mut expected = serde_json::json!({
+            "language": "rust",
+            "features": ["a", "b"],
+            "all-features": true,
+            "no-default-features": true,
+            "include-tests": true,
+            "include-reexports": true,
+            "externals": true,
+            "transitive-deps": true,
+            "no-volatility": true,
+            "volatility-months": 3,
+        });
+        #[cfg(feature = "hir")]
+        {
+            expected["hir"] = serde_json::json!(false);
+        }
+        assert_eq!(flags, expected);
+    }
+
+    #[test]
+    fn query_flags_keep_their_defaults_when_not_given() {
+        let manifest =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multi_crate/Cargo.toml");
+        let cmd = parse_args(&[
+            "cargo",
+            "arc",
+            "--manifest-path",
+            manifest.to_str().unwrap(),
+        ]);
+
+        let flags = cmd.query_flags().unwrap();
+
+        assert_eq!(flags["features"], serde_json::json!([]));
+        assert_eq!(flags["include-tests"], serde_json::json!(false));
+        assert_eq!(flags["volatility-months"], serde_json::json!(6));
     }
 
     // ===== Legacy CLI parsing tests (adapted from old Args) =====
@@ -1533,7 +1883,7 @@ mod tests {
             "--no-volatility",
         ]);
 
-        let (_tree, cause) = build_hotspot_tree(
+        let (_tree, cause, _window) = build_hotspot_tree(
             &cmd,
             &graph,
             &RUST_PROFILE,
@@ -1562,7 +1912,7 @@ mod tests {
             manifest.to_str().unwrap(),
         ]);
 
-        let (_tree, cause) = build_hotspot_tree(
+        let (_tree, cause, _window) = build_hotspot_tree(
             &cmd,
             &graph,
             &RUST_PROFILE,
@@ -1600,7 +1950,7 @@ mod tests {
             "3",
         ]);
 
-        let (_tree, cause) = build_hotspot_tree(
+        let (_tree, cause, _window) = build_hotspot_tree(
             &cmd,
             &graph,
             &RUST_PROFILE,
