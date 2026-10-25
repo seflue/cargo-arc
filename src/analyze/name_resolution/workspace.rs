@@ -3,9 +3,9 @@
 
 use std::collections::{HashMap, HashSet};
 
+use super::super::packages::ModulePathMap;
 #[cfg(test)]
-use super::super::packages::WorkspacePackages;
-use super::super::packages::{ModulePathMap, PackageExportMap};
+use super::super::packages::{PackageExportMap, WorkspacePackages};
 use super::super::reexports::{collect_reexport_map, name_a_fn_defines};
 use super::super::use_parser::ReExportMap;
 use super::package_resolver::{Backend, PackageResolver, WorkspaceView};
@@ -73,11 +73,6 @@ impl<'m> NameResolution<'m> {
     /// Whether test code is resolved too.
     pub(crate) fn include_tests(&self) -> bool {
         self.0.include_tests
-    }
-
-    /// The names each package's library exports, by package key.
-    pub(crate) fn crate_exports(&self) -> &PackageExportMap {
-        &self.0.crate_exports
     }
 
     /// The resolution of `package`, which reaches external crates under the

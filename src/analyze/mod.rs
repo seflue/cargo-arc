@@ -19,7 +19,7 @@ mod workspace;
 pub use backend::AnalysisBackend;
 pub use hir::FeatureConfig;
 #[cfg(feature = "hir")]
-pub use hir::{analyze_modules, cargo_config_with_features, load_workspace_hir};
+pub use hir::{cargo_config_with_features, load_workspace_hir};
 pub(crate) use lua::Lua;
 pub(crate) use rust::Rust;
 pub use workspace::analyze_workspace;

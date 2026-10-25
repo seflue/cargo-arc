@@ -5,7 +5,7 @@ use std::path::Path;
 
 use super::hir::FeatureConfig;
 use super::name_resolution::NameResolution;
-use super::packages::{ModulePathMap, ModulePaths, PackageExportMap, WorkspacePackages};
+use super::packages::{ModulePathMap, ModulePaths};
 use super::syn_walker::{analyze_modules_syn, collect_syn_module_paths};
 use crate::model::{ModuleTree, PackageInfo};
 use std::collections::HashMap;
@@ -70,6 +70,22 @@ impl AnalysisBackend {
         }
     }
 
+    /// The name resolution of `packages`, whose modules are `module_paths`,
+    /// as this backend's walk resolves names.
+    pub(crate) fn name_resolution<'m>(
+        &self,
+        packages: &[PackageInfo],
+        module_paths: &'m ModulePathMap,
+    ) -> NameResolution<'m> {
+        match self {
+            Self::Syn { include_tests } => {
+                NameResolution::new(packages, module_paths, *include_tests)
+            }
+            #[cfg(feature = "hir")]
+            Self::Hir { .. } => NameResolution::without_table(packages, module_paths),
+        }
+    }
+
     /// Full module analysis with dependency extraction.
     #[allow(clippy::missing_errors_doc)]
     // Only the HIR arm is fallible, so without that feature nothing can fail.
@@ -77,34 +93,18 @@ impl AnalysisBackend {
     pub(crate) fn analyze_modules(
         &self,
         crate_info: &PackageInfo,
-        workspace_crates: &WorkspacePackages,
-        all_module_paths: &ModulePathMap,
-        crate_exports: &PackageExportMap,
         resolution: &NameResolution,
         external_crate_names: &HashMap<String, String>,
     ) -> Result<ModuleTree> {
         match self {
-            Self::Syn { .. } => {
-                // The HIR walk reads these; the syn walk has them in `resolution`.
-                let _ = (workspace_crates, all_module_paths, crate_exports);
-                Ok(analyze_modules_syn(
-                    crate_info,
-                    resolution,
-                    external_crate_names,
-                ))
-            }
+            Self::Syn { .. } => Ok(analyze_modules_syn(
+                crate_info,
+                resolution,
+                external_crate_names,
+            )),
             #[cfg(feature = "hir")]
             Self::Hir { host, vfs } => {
-                let _ = resolution;
-                super::hir::analyze_modules(
-                    crate_info,
-                    host,
-                    vfs,
-                    workspace_crates,
-                    all_module_paths,
-                    crate_exports,
-                    external_crate_names,
-                )
+                super::hir::analyze_modules(crate_info, host, vfs, resolution, external_crate_names)
             }
         }
     }
@@ -119,6 +119,16 @@ mod tests {
         let backend = AnalysisBackend::new(Path::new("."), &FeatureConfig::default(), false)
             .expect("should create backend");
         assert!(matches!(backend, AnalysisBackend::Syn { .. }));
+    }
+
+    #[test]
+    fn the_syn_backend_resolves_test_code_as_configured() {
+        let module_paths = ModulePathMap::default();
+        for include_tests in [false, true] {
+            let backend = AnalysisBackend::Syn { include_tests };
+            let resolution = backend.name_resolution(&[], &module_paths);
+            assert_eq!(resolution.include_tests(), include_tests);
+        }
     }
 
     #[cfg(feature = "hir")]
