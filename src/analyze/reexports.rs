@@ -13,7 +13,7 @@ use crate::model::{DefKind, Definition, PackageInfo};
 use super::mod_resolver::{CfgCondition, ModuleFile, declared_files, extract_mod_declarations};
 use super::use_parser::{
     AssociatedItems, BindingKind, Brought, GlobBinding, GlobReach, ModuleExportInfo, NameBinding,
-    RootReExports, UsePlace, UseScope, Visibility, is_reexport_visibility, item_attrs,
+    ReExportMap, RootReExports, UsePlace, UseScope, Visibility, is_reexport_visibility, item_attrs,
     resolve_use_tree,
 };
 
@@ -25,11 +25,32 @@ struct CollectContext<'a> {
     extern_crates: &'a HashMap<String, String>,
 }
 
+/// Collect the re-exports and own definitions of every package in
+/// `packages`, by package key, and settle each `use` of another workspace
+/// crate ([`ReExportMap::settle_written_paths`]), so no target in the map
+/// still holds a path as written.
+pub(crate) fn collect_reexport_map(
+    packages: &[PackageInfo],
+    all_module_paths: &ModulePathMap,
+    workspace_crates: &WorkspacePackages,
+    include_tests: bool,
+) -> ReExportMap {
+    packages
+        .iter()
+        .map(|krate| {
+            let roots =
+                collect_crate_reexports(krate, all_module_paths, workspace_crates, include_tests);
+            (krate.key.clone(), roots)
+        })
+        .collect::<ReExportMap>()
+        .settle_written_paths(all_module_paths)
+}
+
 /// Collect re-exports and own definitions for all modules of a package,
 /// one map per entry file, in `entry_files` order. With `include_tests`, a
 /// root whose test build loads other files than its build without `test`
 /// also gets the modules of its test build.
-pub(crate) fn collect_crate_reexports(
+fn collect_crate_reexports(
     crate_info: &PackageInfo,
     all_module_paths: &ModulePathMap,
     workspace_crates: &WorkspacePackages,

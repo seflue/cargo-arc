@@ -9,9 +9,8 @@ use super::backend::AnalysisBackend;
 use super::externals::analyze_externals;
 use super::hir::FeatureConfig;
 use super::packages::{ModulePathMap, PackageExportMap, WorkspacePackages};
-use super::reexports::collect_crate_reexports;
+use super::reexports::collect_reexport_map;
 use super::syn_walker::collect_crate_exports;
-use super::use_parser::ReExportMap;
 use super::workspace::analyze_workspace;
 use crate::model::{Analysis, LanguageProfile, Wording};
 
@@ -63,19 +62,12 @@ impl LanguageAdapter for Rust {
             .collect();
         tracing::debug!("phase: crate exports collected");
 
-        let reexport_map = packages
-            .iter()
-            .map(|krate| {
-                let exports = collect_crate_reexports(
-                    krate,
-                    &all_module_paths,
-                    &workspace_packages,
-                    self.feature_config.include_tests,
-                );
-                (krate.key.clone(), exports)
-            })
-            .collect::<ReExportMap>()
-            .settle_written_paths(&all_module_paths);
+        let reexport_map = collect_reexport_map(
+            &packages,
+            &all_module_paths,
+            &workspace_packages,
+            self.feature_config.include_tests,
+        );
         tracing::debug!("phase: reexport map collected");
 
         // Run externals analysis before module analysis so crate_name_map
