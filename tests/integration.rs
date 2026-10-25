@@ -3221,6 +3221,78 @@ fn name_resolution_use_super_glob_in_a_fn_body_skips_the_block() {
     assert_name_resolution_arc("ifn", "segs", "production", &["is_start", "other"]);
 }
 
+/// Cell 91a: the root of `pb` takes `link` through `pub(crate) use cli::*;`
+/// and globs it by `pub(crate) use link::*;`. `crate::LinkerFlavor` in
+/// `user` reaches the enum in `cli::link`, not the root.
+#[test]
+fn name_resolution_glob_of_a_module_another_glob_brings_reaches_its_items() {
+    assert_name_resolution_arc("pb::user", "pb::cli::link", "production", &["LinkerFlavor"]);
+    assert_name_resolution_arc("pb::user", "pb", "production", &["Mode"]);
+}
+
+/// Cell 91b: `cli` binds `use crate::po::Cwpo;`, where the root takes `po`
+/// through its glob on `cli`. `cli::build` reads `Cwpo` through
+/// `use crate::cli::*;` and reaches `cli::po`.
+#[test]
+fn name_resolution_use_through_a_module_a_root_glob_brings_reaches_the_definer() {
+    assert_name_resolution_arc("pb::cli::build", "pb::cli::po", "production", &["Cwpo"]);
+}
+
+/// Cell 91c: `user` binds the variant `B` of the root's `Mode` by
+/// `pub use crate::Mode::B;`. `crate::user::B` in `other` names the root's
+/// `Mode`.
+#[test]
+fn name_resolution_use_of_a_variant_binds_the_item_that_holds_it() {
+    assert_name_resolution_arc("pb::other", "pb", "production", &["Mode"]);
+    assert_no_name_resolution_arc("pb::other", "pb::user");
+}
+
+/// Cell 91d: `modes` binds its own variant by `use self::Shape::Round;`.
+/// `super::Round` in `modes::kid` names `Shape` in `modes`: a path written
+/// from `self` reaches an item, not an external crate.
+#[test]
+fn name_resolution_use_of_an_own_variant_through_self_names_its_enum() {
+    assert_name_resolution_arc("pb::modes::kid", "pb::modes", "production", &["Shape"]);
+}
+
+/// Cell 91e: `ext` writes `use core::fmt::Write;` beside a `fn core` of its
+/// own. A path goes on only through a module, so `core` is the external
+/// crate, and `super::Write` in `ext::kid` gives no arc to `ext`.
+#[test]
+fn name_resolution_use_from_scope_skips_an_item_of_the_same_name() {
+    assert_no_name_resolution_arc("pb::ext::kid", "pb::ext");
+}
+
+/// Cell 92a: `lock_last` binds `chosen` three times, each under `#[cfg]`,
+/// `use vanilla as chosen;` last, and re-exports `pub use chosen::Mutex;`.
+/// Which alternative a build takes, the bindings do not tell, so `Mutex`
+/// in `locker` names `lock_last`.
+#[test]
+fn name_resolution_use_through_cfg_alternatives_names_the_binding_module() {
+    assert_arc_on_the_module_binding_chosen("pb::lock_last");
+}
+
+/// Cell 92b: as 92a, with `use vanilla as chosen;` first in `lock_first`.
+#[test]
+fn name_resolution_use_through_cfg_alternatives_ignores_their_order() {
+    assert_arc_on_the_module_binding_chosen("pb::lock_first");
+}
+
+/// Cell 92c: as 92a, with `pub use chosen::*;` in `lock_glob` and
+/// `use vanilla as chosen;` last.
+#[test]
+fn name_resolution_glob_through_cfg_alternatives_names_the_binding_module() {
+    assert_arc_on_the_module_binding_chosen("pb::lock_glob");
+}
+
+/// The arc of cell 92 from `locker` to `lock`, and none to an alternative.
+fn assert_arc_on_the_module_binding_chosen(lock: &str) {
+    assert_name_resolution_arc("pb::locker", lock, "production", &["Mutex"]);
+    for alternative in ["ranked", "observing", "vanilla"] {
+        assert_no_name_resolution_arc("pb::locker", &format!("{lock}::{alternative}"));
+    }
+}
+
 /// Every use on an edge, with its category, goes to stderr under `--debug`,
 /// so the walker's result can be read without a rule that consumes it.
 /// A subprocess, because `run` installs the debug log on the process's own
