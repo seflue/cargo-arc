@@ -6,6 +6,7 @@ pub(crate) mod hotspots;
 mod js_bundle;
 pub mod layout;
 pub mod model;
+pub(crate) mod query;
 pub mod render;
 pub mod rules;
 mod ui;
