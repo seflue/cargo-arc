@@ -40,10 +40,7 @@ pub(crate) fn header_fields(
              the top N"
                 .into(),
         ),
-        (
-            "ties",
-            "by file name, then by position in the module tree".into(),
-        ),
+        ("ties", "by path, relative to the workspace root".into()),
         (
             "code-lines",
             "tokei's code count: source lines without comments and blank lines".into(),

@@ -59,7 +59,7 @@ The header adds these fields after `flags`:
 |-----|-------|
 | `top` | N, or `none` when files are named. |
 | `ranking` | The ranking rule: code lines times commits, highest first. A file scoring zero is no hotspot and never among the top N, but has a rank when named. |
-| `ties` | How equal scores are ordered: by file name (`mod.rs`, not the path), then by the file's position in the module tree. |
+| `ties` | How equal scores are ordered: by the file's path relative to the workspace root. |
 | `code-lines` | What a code line is: tokei's code count, without comments and blank lines. |
 | `commits` | Which commits count: distinct commits whose commit time lies in the window and that add, modify, rename or copy the file (`git log --diff-filter=AMRC`). Merge commits and the deletion of a file do not count. |
 | `window-start` | The UTC date the window starts on, `--volatility-months` before the run. The window starts at the run's time of day on that date. |

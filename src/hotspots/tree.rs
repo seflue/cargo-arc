@@ -168,15 +168,15 @@ fn rank_leaves(root: &HotspotNode, n: usize) -> Vec<HotspotNode> {
         .collect()
 }
 
-/// Return every file leaf under `root` by descending score, ties by name,
-/// then in tree order: the sort is stable.
+/// Return every file leaf under `root` by descending score, ties by
+/// workspace-relative path.
 fn ranked_leaves(root: &HotspotNode) -> Vec<&HotspotNode> {
     let mut leaves: Vec<&HotspotNode> = Vec::new();
     collect_leaves(root, &mut leaves);
     leaves.sort_by(|a, b| {
         hotspot_score(b)
             .cmp(&hotspot_score(a))
-            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| a.file.cmp(&b.file))
     });
     leaves
 }
@@ -556,7 +556,7 @@ mod tests {
     }
 
     #[test]
-    fn leaves_rank_by_lines_times_commits_ties_by_name() {
+    fn leaves_rank_by_lines_times_commits() {
         let mut graph = ArcGraph::new();
         let package_idx = graph.add_node(package_node_with_targets(
             "app",
@@ -613,6 +613,55 @@ mod tests {
             .unwrap();
         assert_eq!(quiet.commits, 0);
         assert_eq!(tree.rank_of(quiet), None);
+    }
+
+    #[rstest::rstest]
+    #[case::a_declared_first(["a", "b"])]
+    #[case::b_declared_first(["b", "a"])]
+    fn equal_scores_rank_by_path(#[case] declared: [&str; 2]) {
+        let mut graph = ArcGraph::new();
+        let package_idx = graph.add_node(package_node_with_targets(
+            "app",
+            vec![],
+            Some("/ws/app/Cargo.toml"),
+        ));
+        for name in declared {
+            let file = format!("/ws/app/src/{name}/mod.rs");
+            let idx = graph.add_node(module_node_with_file(name, package_idx, file));
+            graph.add_edge(package_idx, idx, crate::graph::EdgeWeight::Contains);
+        }
+
+        let mut commits = std::collections::HashMap::new();
+        commits.insert(
+            PathBuf::from("/ws/app/src/a/mod.rs"),
+            BTreeSet::from([commit("x"), commit("y")]),
+        );
+        commits.insert(
+            PathBuf::from("/ws/app/src/b/mod.rs"),
+            BTreeSet::from([commit("x")]),
+        );
+        // b holds twice the lines at half the commits: the same score.
+        let tree = build(
+            &graph,
+            Path::new("/ws"),
+            |f| {
+                if f.starts_with("/ws/app/src/b") {
+                    20
+                } else {
+                    10
+                }
+            },
+            commits_from(commits),
+            10,
+        );
+
+        let files: Vec<&Path> = tree.ranking().iter().map(|f| f.file.as_path()).collect();
+        assert_eq!(
+            files,
+            [Path::new("app/src/a/mod.rs"), Path::new("app/src/b/mod.rs")]
+        );
+        let hotspots: Vec<&Path> = tree.hotspots.iter().map(|f| f.file.as_path()).collect();
+        assert_eq!(hotspots, files);
     }
 
     #[test]
