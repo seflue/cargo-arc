@@ -2566,17 +2566,6 @@ impl<'a> ResolutionContext<'a> {
     }
 }
 
-/// Promote any context to a test context. Production becomes Unit test;
-/// already-test contexts are preserved (idempotent for test contexts).
-pub(crate) fn promote_to_test(base: &EdgeContext) -> EdgeContext {
-    EdgeContext {
-        kind: match base.kind {
-            UsageKind::Production => UsageKind::Test(TestKind::Unit),
-            already_test @ UsageKind::Test(_) => already_test,
-        },
-    }
-}
-
 /// Where a `use` binds: an inline module body, a block, or the file itself.
 pub(crate) type RegionId = usize;
 
@@ -2705,7 +2694,7 @@ pub(crate) fn item_attrs(item: &syn::Item) -> &[syn::Attribute] {
 /// `#[cfg(test)]`, the surrounding context otherwise.
 fn item_context(item: &syn::Item, outer: &EdgeContext) -> EdgeContext {
     if is_cfg_test(item_attrs(item)) {
-        promote_to_test(outer)
+        outer.promoted_to_test()
     } else {
         outer.clone()
     }
@@ -2737,7 +2726,7 @@ macro_rules! impl_binding_region_visits {
         fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
             let prev_context = self.context.clone();
             if is_test_fn(&node.attrs) {
-                self.context = promote_to_test(&self.context);
+                self.context = self.context.promoted_to_test();
             }
             syn::visit::visit_item_fn(self, node);
             self.context = prev_context;
@@ -2845,7 +2834,7 @@ pub(crate) fn collect_all_use_items(
         fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
             let prev_context = self.context.clone();
             if is_cfg_test(&node.attrs) {
-                self.context = promote_to_test(&self.context);
+                self.context = self.context.promoted_to_test();
             }
             syn::visit::visit_impl_item_fn(self, node);
             self.context = prev_context;
@@ -3446,7 +3435,7 @@ impl<'ast> Visit<'ast> for PathRefCollector {
     fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
         let prev_context = self.context.clone();
         if is_cfg_test(&node.attrs) {
-            self.context = promote_to_test(&self.context);
+            self.context = self.context.promoted_to_test();
         }
         self.in_scope(|s| syn::visit::visit_impl_item_fn(s, node));
         self.context = prev_context;

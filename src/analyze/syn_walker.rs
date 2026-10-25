@@ -9,7 +9,6 @@ use super::mod_resolver::{
 };
 use super::name_resolution::{FileInModule, NameResolution, PackageResolver, Root};
 use super::packages::{ModulePaths, normalize_crate_name};
-use super::use_parser::promote_to_test;
 use crate::model::{EdgeContext, ModuleInfo, ModuleTree, PackageInfo, TestKind};
 
 /// Find integration test files in `tests/*.rs`.
@@ -197,7 +196,7 @@ fn walk_declared_module(
     // A module declared under `#[cfg(test)]`, or a file only a test-only
     // `#[cfg_attr]` path loads, is test code with all it holds
     let test_ctx = WalkContext {
-        base_context: promote_to_test(&ctx.base_context),
+        base_context: ctx.base_context.promoted_to_test(),
         ..ctx.clone()
     };
     let mut alternatives = declared_files(&parent.path, parent.owns_directory, decl)
