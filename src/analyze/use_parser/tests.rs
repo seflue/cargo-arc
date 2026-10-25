@@ -1,6 +1,6 @@
 use super::*;
 use crate::analyze::test_workspace::{Analyzed, TestWorkspace};
-use crate::model::{DefKind, Definition};
+use crate::model::{DefKind, Definition, SymbolUse, UseCategory};
 use std::path::Path;
 
 /// Define the public item `name` of `kind` in `info`.
@@ -2839,12 +2839,28 @@ mod binding_tests {
         };
 
         assert_eq!(
-            item.clone().collect::<Vec<_>>(),
+            item.collect::<Vec<_>>(),
             [&restricted_definition, &public_definition]
         );
-        assert!(definition_visibilities_differ(item));
-        assert_eq!(name.clone().collect::<Vec<_>>(), [&use_of_b, &use_of_a]);
-        assert!(private_targets_differ(name));
+        assert_eq!(name.collect::<Vec<_>>(), [&use_of_b, &use_of_a]);
+    }
+}
+
+mod lookup_tests {
+    use super::*;
+
+    #[test]
+    fn private_uses_of_one_name_to_different_targets_differ() {
+        let target = |module: &str| ReExportTarget {
+            crate_name: "my_crate".to_string(),
+            module: module.to_string(),
+            original_name: "Name".to_string(),
+        };
+        let restricted = Visibility::Restricted("holder".to_string());
+        let use_of_a = NameBinding::new(BindingKind::PrivateUse(target("a")), restricted.clone());
+        let use_of_b = NameBinding::new(BindingKind::PrivateUse(target("b")), restricted);
+
+        assert!(private_targets_differ([&use_of_b, &use_of_a].into_iter()));
     }
 }
 

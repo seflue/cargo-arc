@@ -1,5 +1,6 @@
 //! Name resolution: the item each path in the workspace's source names.
 
+mod dependencies;
 mod package_resolver;
 mod workspace;
 
