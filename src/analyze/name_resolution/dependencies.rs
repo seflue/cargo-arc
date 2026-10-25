@@ -4,12 +4,12 @@
 use super::super::packages::normalize_crate_name;
 use super::super::use_parser::{
     BindingKind, BindingRegions, Brought, CollectedPathRefs, CollectedUse, CollectedUses,
-    CrateModule, FromProduction, LocalBinding, Meaning, NameBinding, PassedOn, PathEnd,
-    PathPosition, PathRef, PathStart, RegionId, ResolutionContext, SeenBindings, Visited,
-    append_to_path, attributes_expand, collect_all_path_refs, collect_all_use_items, covers,
-    foreign_item_ident, is_glob, is_reexport_visibility, item_ident, resolve_single_path,
-    resolve_use_tree,
+    CrateModule, FromProduction, LocalBinding, Meaning, NameBinding, PassedOn, PathPosition,
+    PathRef, RegionId, ResolutionContext, SeenBindings, Visited, append_to_path, attributes_expand,
+    collect_all_path_refs, collect_all_use_items, covers, foreign_item_ident, is_glob,
+    is_reexport_visibility, item_ident, resolve_use_tree,
 };
+use super::path::{PathEnd, PathStart, resolve_single_path};
 use crate::model::{
     DefKind, DependencyRef, EdgeContext, SymbolUse, TargetRoot, TestKind, UsageKind, UseCategory,
 };

@@ -2,6 +2,7 @@
 
 mod dependencies;
 mod package_resolver;
+mod path;
 mod workspace;
 
 #[cfg(test)]
