@@ -1,5 +1,5 @@
 use crate::analyze::test_workspace::{Analyzed, TestWorkspace};
-use crate::model::{DefKind, Definition, DependencyRef, EdgeContext, SymbolUse, UseCategory};
+use crate::model::{DefKind, Definition, DependencyRef, EdgeContext, SymbolUse, UsageCategory};
 
 mod normalize_tests {
     use super::*;
@@ -703,11 +703,11 @@ use crate::graph;
             deps[0].uses,
             [SymbolUse {
                 line: 2,
-                category: UseCategory::Types,
+                category: UsageCategory::Types,
                 imported_for_methods: false,
             }]
         );
-        assert_eq!(deps[1].uses[0].category, UseCategory::Fns);
+        assert_eq!(deps[1].uses[0].category, UsageCategory::Functions);
     }
 
     /// A `pub use` glob republishes every name and uses none, so it carries
@@ -3063,7 +3063,7 @@ mod use_self_tests {
 /// definition give it.
 mod use_category_tests {
     use super::*;
-    use crate::model::{SymbolUse, UseCategory};
+    use crate::model::{SymbolUse, UsageCategory};
 
     /// The module `vocab` with one item of each kind.
     const VOCAB: &str = "pub struct Config { pub x: u8 }
@@ -3106,7 +3106,7 @@ pub trait Step { fn run(&self); }
         &dep.uses
     }
 
-    fn use_at(line: usize, category: UseCategory) -> SymbolUse {
+    fn use_at(line: usize, category: UsageCategory) -> SymbolUse {
         SymbolUse {
             line,
             category,
@@ -3139,7 +3139,10 @@ pub trait Step { fn run(&self); }
             bin_tree_deps_of("use my_crate::Shared;\nfn show(x: Shared) {\n    let Shared = x;\n}");
         assert_eq!(
             uses_of(&deps, "Shared"),
-            [use_at(2, UseCategory::Types), use_at(3, UseCategory::Types)]
+            [
+                use_at(2, UsageCategory::Types),
+                use_at(3, UsageCategory::Types)
+            ]
         );
     }
 
@@ -3148,7 +3151,7 @@ pub trait Step { fn run(&self); }
     #[test]
     fn a_bin_file_globbing_its_package_takes_a_lib_root_name() {
         let deps = bin_tree_deps_of("use my_crate::*;\nfn show(_: Shared) {}");
-        assert_eq!(uses_of(&deps, "Shared"), [use_at(2, UseCategory::Types)]);
+        assert_eq!(uses_of(&deps, "Shared"), [use_at(2, UsageCategory::Types)]);
     }
 
     /// The `use` binds the name; the occurrences are the uses, the import line
@@ -3158,7 +3161,10 @@ pub trait Step { fn run(&self); }
         let deps = deps_of("use crate::vocab::Config;\nfn f(x: Config) -> Option<Config> {}");
         assert_eq!(
             uses_of(&deps, "Config"),
-            [use_at(2, UseCategory::Types), use_at(2, UseCategory::Types)]
+            [
+                use_at(2, UsageCategory::Types),
+                use_at(2, UsageCategory::Types)
+            ]
         );
         assert_eq!(deps.len(), 1, "one dependency, at the import: {deps:?}");
         assert_eq!(deps[0].line, 1);
@@ -3197,7 +3203,7 @@ pub trait Step { fn run(&self); }
             .iter()
             .find(|d| d.context == test)
             .unwrap_or_else(|| panic!("no test dependency: {deps:?}"));
-        assert_eq!(test_dep.uses, [use_at(3, UseCategory::Types)]);
+        assert_eq!(test_dep.uses, [use_at(3, UsageCategory::Types)]);
         let production = deps
             .iter()
             .find(|d| d.context == EdgeContext::production())
@@ -3227,7 +3233,10 @@ pub trait Step { fn run(&self); }
         let deps = deps_of("use crate::vocab::build;\nfn f() { build(); crate::vocab::build(); }");
         assert_eq!(
             uses_of(&deps, "build"),
-            [use_at(2, UseCategory::Fns), use_at(2, UseCategory::Fns)]
+            [
+                use_at(2, UsageCategory::Functions),
+                use_at(2, UsageCategory::Functions)
+            ]
         );
     }
 
@@ -3235,7 +3244,10 @@ pub trait Step { fn run(&self); }
     #[test]
     fn a_free_fn_passed_as_a_value_is_a_fns_use() {
         let deps = deps_of("fn f() { let g = crate::vocab::build; }");
-        assert_eq!(uses_of(&deps, "build"), [use_at(1, UseCategory::Fns)]);
+        assert_eq!(
+            uses_of(&deps, "build"),
+            [use_at(1, UsageCategory::Functions)]
+        );
     }
 
     #[test]
@@ -3248,15 +3260,15 @@ pub trait Step { fn run(&self); }
         assert_eq!(
             uses_of(&deps, "LIMIT"),
             [
-                use_at(2, UseCategory::Values),
-                use_at(2, UseCategory::Values)
+                use_at(2, UsageCategory::Values),
+                use_at(2, UsageCategory::Values)
             ]
         );
         assert_eq!(
             uses_of(&deps, "TABLE"),
             [
-                use_at(3, UseCategory::Values),
-                use_at(3, UseCategory::Values)
+                use_at(3, UsageCategory::Values),
+                use_at(3, UsageCategory::Values)
             ]
         );
     }
@@ -3270,8 +3282,11 @@ pub trait Step { fn run(&self); }
             "use crate::vocab::{build, Config};\n\
              fn f(build: usize) { let build = 1; let Config = 2; }",
         );
-        assert_eq!(uses_of(&deps, "build"), [use_at(1, UseCategory::Fns)]);
-        assert_eq!(uses_of(&deps, "Config"), [use_at(2, UseCategory::Types)]);
+        assert_eq!(
+            uses_of(&deps, "build"),
+            [use_at(1, UsageCategory::Functions)]
+        );
+        assert_eq!(uses_of(&deps, "Config"), [use_at(2, UsageCategory::Types)]);
     }
 
     /// A pattern that matches a const declares no variable, so the const
@@ -3285,8 +3300,8 @@ pub trait Step { fn run(&self); }
         assert_eq!(
             uses_of(&deps, "LIMIT"),
             [
-                use_at(2, UseCategory::Values),
-                use_at(2, UseCategory::Values)
+                use_at(2, UsageCategory::Values),
+                use_at(2, UsageCategory::Values)
             ]
         );
     }
@@ -3318,9 +3333,9 @@ pub trait Step { fn run(&self); }
             )
             .analyze();
         let deps = ws.deps("my_crate::user");
-        assert_eq!(uses_of(deps, "Wrapper"), [use_at(1, UseCategory::Types)]);
-        assert_eq!(uses_of(deps, "make"), [use_at(1, UseCategory::Fns)]);
-        assert_eq!(uses_of(deps, "Kind"), [use_at(1, UseCategory::Types)]);
+        assert_eq!(uses_of(deps, "Wrapper"), [use_at(1, UsageCategory::Types)]);
+        assert_eq!(uses_of(deps, "make"), [use_at(1, UsageCategory::Functions)]);
+        assert_eq!(uses_of(deps, "Kind"), [use_at(1, UsageCategory::Types)]);
     }
 
     /// A struct literal, a tuple-struct call, a variant with and without
@@ -3335,16 +3350,19 @@ pub trait Step { fn run(&self); }
         );
         assert_eq!(
             uses_of(&deps, "Config"),
-            [use_at(2, UseCategory::Types), use_at(2, UseCategory::Types)]
+            [
+                use_at(2, UsageCategory::Types),
+                use_at(2, UsageCategory::Types)
+            ]
         );
         assert_eq!(
             uses_of(&deps, "Mode"),
             [
-                use_at(2, UseCategory::Types),
-                use_at(2, UseCategory::Types),
-                use_at(3, UseCategory::Types),
-                use_at(3, UseCategory::Types),
-                use_at(3, UseCategory::Types),
+                use_at(2, UsageCategory::Types),
+                use_at(2, UsageCategory::Types),
+                use_at(3, UsageCategory::Types),
+                use_at(3, UsageCategory::Types),
+                use_at(3, UsageCategory::Types),
             ],
             "the return type, the constructed variant, the parameter type, the variant inside \
              `matches!`, the matched variant"
@@ -3362,12 +3380,15 @@ pub trait Step { fn run(&self); }
         assert_eq!(
             uses_of(&deps, "Config"),
             [
-                use_at(2, UseCategory::Fns),
-                use_at(2, UseCategory::Values),
-                use_at(2, UseCategory::Fns),
+                use_at(2, UsageCategory::Functions),
+                use_at(2, UsageCategory::Values),
+                use_at(2, UsageCategory::Functions),
             ]
         );
-        assert_eq!(uses_of(&deps, "Step"), [use_at(2, UseCategory::Fns)]);
+        assert_eq!(
+            uses_of(&deps, "Step"),
+            [use_at(2, UsageCategory::Functions)]
+        );
     }
 
     /// An associated item the defining module does not hold: a call is
@@ -3381,9 +3402,9 @@ pub trait Step { fn run(&self); }
         assert_eq!(
             uses_of(&deps, "Config"),
             [
-                use_at(2, UseCategory::Fns),
-                use_at(2, UseCategory::Values),
-                use_at(2, UseCategory::Types),
+                use_at(2, UsageCategory::Functions),
+                use_at(2, UsageCategory::Values),
+                use_at(2, UsageCategory::Types),
             ]
         );
     }
@@ -3397,7 +3418,7 @@ pub trait Step { fn run(&self); }
             uses_of(&deps, "Step"),
             [SymbolUse {
                 line: 1,
-                category: UseCategory::Fns,
+                category: UsageCategory::Functions,
                 imported_for_methods: true,
             }]
         );
@@ -3406,7 +3427,7 @@ pub trait Step { fn run(&self); }
     #[test]
     fn a_trait_named_is_a_types_use_and_nothing_is_inferred() {
         let deps = deps_of("use crate::vocab::Step;\nimpl Step for Writer {}");
-        assert_eq!(uses_of(&deps, "Step"), [use_at(2, UseCategory::Types)]);
+        assert_eq!(uses_of(&deps, "Step"), [use_at(2, UsageCategory::Types)]);
     }
 
     /// A struct, const or fn never named is a dead import; the use it leaves
@@ -3414,9 +3435,12 @@ pub trait Step { fn run(&self); }
     #[test]
     fn an_import_never_named_is_a_use_by_its_definition() {
         let deps = deps_of("use crate::vocab::{Config, LIMIT, build};");
-        assert_eq!(uses_of(&deps, "Config"), [use_at(1, UseCategory::Types)]);
-        assert_eq!(uses_of(&deps, "LIMIT"), [use_at(1, UseCategory::Values)]);
-        assert_eq!(uses_of(&deps, "build"), [use_at(1, UseCategory::Fns)]);
+        assert_eq!(uses_of(&deps, "Config"), [use_at(1, UsageCategory::Types)]);
+        assert_eq!(uses_of(&deps, "LIMIT"), [use_at(1, UsageCategory::Values)]);
+        assert_eq!(
+            uses_of(&deps, "build"),
+            [use_at(1, UsageCategory::Functions)]
+        );
     }
 
     /// syn does not parse macro input, so the names in it are read off the
@@ -3429,8 +3453,11 @@ pub trait Step { fn run(&self); }
             "use crate::vocab::{Config, build};\n\
              fn f() { println!(\"{} {}\", build(), Config::MAX); assert!(crate::vocab::LIMIT > 1); }",
         );
-        assert_eq!(uses_of(&deps, "build"), [use_at(2, UseCategory::Fns)]);
-        assert_eq!(uses_of(&deps, "Config"), [use_at(2, UseCategory::Values)]);
+        assert_eq!(
+            uses_of(&deps, "build"),
+            [use_at(2, UsageCategory::Functions)]
+        );
+        assert_eq!(uses_of(&deps, "Config"), [use_at(2, UsageCategory::Values)]);
         assert!(
             !deps
                 .iter()
@@ -3446,7 +3473,7 @@ pub trait Step { fn run(&self); }
             uses_of(&deps, "Config"),
             [SymbolUse {
                 line: 1,
-                category: UseCategory::Types,
+                category: UsageCategory::Types,
                 imported_for_methods: false,
             }]
         );

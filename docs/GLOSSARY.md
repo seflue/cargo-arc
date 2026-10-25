@@ -228,12 +228,16 @@ cargo-arc tried one and draws nested circles instead, which show the nesting dep
 | **<a id="consumer">Consumer</a>** | A module that imports a symbol from a [provider](#provider) in production code. A module that imports a symbol only by `pub use` republishes it and is not its consumer. |
 | **<a id="consumer-group">Consumer group</a>** | The symbols of one [provider](#provider) that have exactly the same [consumers](#consumer). |
 | **<a id="consumer-locality">Consumer locality</a>** | How close the [consumers](#consumer) of a [consumer group](#consumer-group) sit to each other in the module tree. It has three cases: a single consumer, several consumers under a common ancestor module that does not contain the [provider](#provider), or consumers spread across the package. |
+| **<a id="usage">Usage</a>** | One place where a module uses a symbol of another module, whether imported or named by its full path: a call, a trait bound, a type in a signature, a struct literal. A trait whose methods are called counts as a usage at its import, because cargo-arc does not resolve method calls. |
+| **<a id="usage-category">Usage category</a>** | What a [usage](#usage) takes from its symbol: `types` (a type, or a value built from a struct or an enum variant), `values` (a const or a static), `functions` (a function called, or a trait used for its methods). Every usage has exactly one usage category. |
 
 [Consumer locality](#consumer-locality) shows whether the symbols of a group could move closer to the modules that use them.
 [ARC_DIAGRAM.md](ARC_DIAGRAM.md#the-sidebar-for-an-arc) gives the sidebar's wording for each case.
 
 A [consumer group](#consumer-group) is the unit that can move.
 Its symbols share one set of [consumers](#consumer), so the group's locality holds for each of them.
+
+*Use* means the `use` declaration, which this glossary calls an import, and never one [usage](#usage).
 
 In this file, a [cluster](#cluster) is a strongly connected component, and a [scope](#scope) is the [pattern](#module-path-pattern) a `no-cycles` [rule](#rule) searches inside.
 

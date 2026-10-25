@@ -670,8 +670,8 @@ fn build_source_locations(target_deps: &[&DependencyRef], target: &str) -> Vec<S
         "" => target.to_owned(),
         path => path.to_owned(),
     };
-    // Per (file, line): collect symbols and whether every ref there is a
-    // re-export. `via_reexport` starts true and clears on the first non-re-export
+    // Per (file, line): collect symbols, their usage categories, and whether
+    // every ref there is a re-export. `via_reexport` starts true and clears on the first non-re-export
     // ref, so a location is a pure re-export only if all its refs are.
     let mut by_line: BTreeMap<(PathBuf, usize), (Vec<String>, bool)> = BTreeMap::new();
     for dep in target_deps {

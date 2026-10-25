@@ -771,7 +771,7 @@ fn walk_collect_reexports(
 mod tests {
     use super::super::super::test_workspace::{Analyzed, TestWorkspace};
     use super::*;
-    use crate::model::{DependencyRef, SymbolUse, UseCategory};
+    use crate::model::{DependencyRef, SymbolUse, UsageCategory};
     use crate::test_support::conventional_package;
     use std::collections::HashSet;
     use tempfile::TempDir;
@@ -1249,7 +1249,7 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
         );
     }
 
-    fn use_at(line: usize, category: UseCategory) -> SymbolUse {
+    fn use_at(line: usize, category: UsageCategory) -> SymbolUse {
         SymbolUse {
             line,
             category,
@@ -1305,20 +1305,23 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
         assert_eq!(
             uses_of(&ws, user, "Writer"),
             [
-                use_at(3, UseCategory::Fns),
-                use_at(4, UseCategory::Fns),
-                use_at(5, UseCategory::Fns),
-                use_at(6, UseCategory::Values),
-                use_at(7, UseCategory::Types),
+                use_at(3, UsageCategory::Functions),
+                use_at(4, UsageCategory::Functions),
+                use_at(5, UsageCategory::Functions),
+                use_at(6, UsageCategory::Values),
+                use_at(7, UsageCategory::Types),
             ],
             "own impl, trait impl and the sibling file's impl; `Unknown` by spelling"
         );
-        assert_eq!(uses_of(&ws, user, "Step"), [use_at(8, UseCategory::Fns)]);
+        assert_eq!(
+            uses_of(&ws, user, "Step"),
+            [use_at(8, UsageCategory::Functions)]
+        );
         assert_eq!(
             uses_of(&ws, user, "Mode"),
             [
-                use_at(9, UseCategory::Types),
-                use_at(10, UseCategory::Types)
+                use_at(9, UsageCategory::Types),
+                use_at(10, UsageCategory::Types)
             ]
         );
         assert!(
@@ -1379,7 +1382,7 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
         );
         assert_eq!(
             uses_of(&ws, "test_crate::user", "Gauge"),
-            [use_at(1, UseCategory::Fns)]
+            [use_at(1, UsageCategory::Functions)]
         );
     }
 
@@ -1414,8 +1417,8 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
         assert_eq!(
             (uses_in("a"), uses_in("b")),
             (
-                Some(vec![use_at(2, UseCategory::Fns)]),
-                Some(vec![use_at(3, UseCategory::Types)])
+                Some(vec![use_at(2, UsageCategory::Functions)]),
+                Some(vec![use_at(3, UsageCategory::Types)])
             ),
             "`Made` is recorded on `a::S` only, `b::S::Made` goes by its spelling"
         );
