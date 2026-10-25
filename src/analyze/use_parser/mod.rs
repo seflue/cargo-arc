@@ -2371,7 +2371,7 @@ fn common_ancestor<'a>(module: &'a str, other: &str) -> &'a str {
 /// The map as each build of a crate root sees it: the build without `test`
 /// and, where the root has one, its test build. Which of the two reads a
 /// piece of code follows from the code's context alone.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub(crate) struct RootBuilds {
     production: ReExportMap,
     /// The map as the root's test build sees it, where the root has modules

@@ -3,7 +3,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::super::packages::ModulePathMap;
+#[cfg(test)]
+use super::super::packages::WorkspacePackages;
+use super::super::packages::{ModulePathMap, PackageExportMap};
 use super::super::reexports::{collect_reexport_map, name_a_fn_defines};
 use super::super::use_parser::ReExportMap;
 use super::package_resolver::{Backend, PackageResolver, WorkspaceView};
@@ -46,6 +48,36 @@ impl<'m> NameResolution<'m> {
             include_tests: true,
             backend: Backend::Hir,
         })
+    }
+
+    /// A syn walk over the workspace crates `workspace_crates` with neither a
+    /// table nor package exports, for tests of what the walk does without
+    /// resolving re-exports. Unlike [`NameResolution::without_table`], it
+    /// resolves as the syn backend does and takes `include_tests`.
+    #[cfg(test)]
+    pub(crate) fn syn_walk_only(
+        workspace_crates: WorkspacePackages,
+        module_paths: &'m ModulePathMap,
+        include_tests: bool,
+    ) -> Self {
+        Self(WorkspaceView {
+            workspace_crates,
+            module_paths,
+            crate_exports: PackageExportMap::default(),
+            table: ReExportMap::default(),
+            include_tests,
+            backend: Backend::Syn,
+        })
+    }
+
+    /// Whether test code is resolved too.
+    pub(crate) fn include_tests(&self) -> bool {
+        self.0.include_tests
+    }
+
+    /// The names each package's library exports, by package key.
+    pub(crate) fn crate_exports(&self) -> &PackageExportMap {
+        &self.0.crate_exports
     }
 
     /// The resolution of `package`, which reaches external crates under the

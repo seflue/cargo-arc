@@ -4,9 +4,9 @@ use anyhow::Result;
 use std::path::Path;
 
 use super::hir::FeatureConfig;
+use super::name_resolution::NameResolution;
 use super::packages::{ModulePathMap, ModulePaths, PackageExportMap, WorkspacePackages};
 use super::syn_walker::{analyze_modules_syn, collect_syn_module_paths};
-use super::use_parser::ReExportMap;
 use crate::model::{ModuleTree, PackageInfo};
 use std::collections::HashMap;
 
@@ -80,22 +80,22 @@ impl AnalysisBackend {
         workspace_crates: &WorkspacePackages,
         all_module_paths: &ModulePathMap,
         crate_exports: &PackageExportMap,
-        reexport_map: &ReExportMap,
+        resolution: &NameResolution,
         external_crate_names: &HashMap<String, String>,
     ) -> Result<ModuleTree> {
         match self {
-            Self::Syn { include_tests } => Ok(analyze_modules_syn(
-                crate_info,
-                workspace_crates,
-                all_module_paths,
-                crate_exports,
-                reexport_map,
-                external_crate_names,
-                *include_tests,
-            )),
+            Self::Syn { .. } => {
+                // The HIR walk reads these; the syn walk has them in `resolution`.
+                let _ = (workspace_crates, all_module_paths, crate_exports);
+                Ok(analyze_modules_syn(
+                    crate_info,
+                    resolution,
+                    external_crate_names,
+                ))
+            }
             #[cfg(feature = "hir")]
             Self::Hir { host, vfs } => {
-                let _ = reexport_map;
+                let _ = resolution;
                 super::hir::analyze_modules(
                     crate_info,
                     host,
