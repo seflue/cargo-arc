@@ -7,9 +7,8 @@ use std::path::Path;
 
 use tempfile::TempDir;
 
-use super::name_resolution::collect_crate_exports;
-use super::packages::{ModulePathMap, PackageExportMap, WorkspacePackages};
-use super::reexports::collect_reexport_map;
+use super::name_resolution::NameResolution;
+use super::packages::ModulePathMap;
 use super::syn_walker::{analyze_modules_syn, collect_syn_module_paths};
 use crate::model::{DependencyRef, ModuleInfo, ModuleTree, PackageInfo};
 use crate::test_support::conventional_package;
@@ -72,30 +71,17 @@ impl TestWorkspace {
                 .cloned()
                 .collect();
         }
-        let workspace: WorkspacePackages = packages.iter().map(|p| p.name.clone()).collect();
         let module_paths: ModulePathMap = packages
             .iter()
             .map(|p| (p.key.clone(), collect_syn_module_paths(p, include_tests)))
             .collect();
-        let exports: PackageExportMap = packages
-            .iter()
-            .map(|p| (p.key.clone(), collect_crate_exports(p)))
-            .collect();
-        let reexport_map = collect_reexport_map(&packages, &module_paths, include_tests);
+        let resolution = NameResolution::new(&packages, &module_paths, include_tests);
         let no_externals = HashMap::new();
         let trees = packages
             .iter()
             .map(|p| {
                 let externals = self.external_crates.get(&p.name).unwrap_or(&no_externals);
-                let tree = analyze_modules_syn(
-                    p,
-                    &workspace,
-                    &module_paths,
-                    &exports,
-                    &reexport_map,
-                    externals,
-                    include_tests,
-                );
+                let tree = analyze_modules_syn(p, &resolution, externals);
                 (p.key.clone(), tree)
             })
             .collect();

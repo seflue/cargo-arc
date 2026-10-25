@@ -4910,3 +4910,37 @@ make!(Thing);
         );
     }
 }
+
+mod definition_tests {
+    use super::*;
+
+    /// A module takes its definitions from the table at its own
+    /// crate-relative path; the crate root reads the `""` entry.
+    #[test]
+    fn a_module_carries_the_definitions_at_its_own_path() {
+        let ws = TestWorkspace::new()
+            .package(
+                "my_crate",
+                &[
+                    ("src/lib.rs", "mod graph;\nmod model;\npub struct Root;"),
+                    ("src/graph.rs", "\npub struct ArcGraph;"),
+                    ("src/model.rs", "use crate::Root;"),
+                ],
+            )
+            .analyze();
+        let definition = |line| Definition {
+            kind: DefKind::Struct,
+            line,
+        };
+
+        assert_eq!(
+            ws.module("my_crate").definitions.get("Root"),
+            Some(&definition(3))
+        );
+        assert_eq!(
+            ws.module("my_crate::graph").definitions.get("ArcGraph"),
+            Some(&definition(2))
+        );
+        assert!(ws.module("my_crate::model").definitions.is_empty());
+    }
+}

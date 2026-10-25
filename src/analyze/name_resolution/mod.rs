@@ -7,4 +7,4 @@ mod workspace;
 mod tests;
 
 pub(crate) use package_resolver::{FileInModule, PackageResolver, Root};
-pub(crate) use workspace::{NameResolution, collect_crate_exports};
+pub(crate) use workspace::NameResolution;

@@ -8,9 +8,8 @@ use super::LanguageAdapter;
 use super::backend::AnalysisBackend;
 use super::externals::analyze_externals;
 use super::hir::FeatureConfig;
-use super::name_resolution::collect_crate_exports;
-use super::packages::{ModulePathMap, PackageExportMap, WorkspacePackages};
-use super::reexports::collect_reexport_map;
+use super::name_resolution::NameResolution;
+use super::packages::{ModulePathMap, WorkspacePackages};
 use super::workspace::analyze_workspace;
 use crate::model::{Analysis, LanguageProfile, Wording};
 
@@ -56,13 +55,7 @@ impl LanguageAdapter for Rust {
             .collect();
         tracing::debug!("phase: module paths collected");
 
-        let package_exports: PackageExportMap = packages
-            .iter()
-            .map(|krate| (krate.key.clone(), collect_crate_exports(krate)))
-            .collect();
-        tracing::debug!("phase: crate exports collected");
-
-        let reexport_map = collect_reexport_map(
+        let resolution = NameResolution::new(
             &packages,
             &all_module_paths,
             self.feature_config.include_tests,
@@ -90,8 +83,8 @@ impl LanguageAdapter for Rust {
                     krate,
                     &workspace_packages,
                     &all_module_paths,
-                    &package_exports,
-                    &reexport_map,
+                    resolution.crate_exports(),
+                    &resolution,
                     ext_names,
                 ) {
                     Ok(tree) => Some(tree),

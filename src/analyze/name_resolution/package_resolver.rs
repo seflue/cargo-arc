@@ -193,10 +193,11 @@ impl<'w> PackageResolver<'w> {
             .file
             .strip_prefix(&self.roots.package.workspace_root)
             .map_or_else(|_| file.file.to_path_buf(), Path::to_path_buf);
-        // The view owns the answers it keeps; they go back to the root for
-        // the next file.
+        // The view owns the root's builds and the answers it keeps; both go
+        // back to the root for the next file.
         let modules_bound = std::mem::take(self.roots.modules_bound_mut(root));
-        let view = self.roots.view(root, modules_bound);
+        let builds = std::mem::take(self.roots.builds_mut(root));
+        let view = self.roots.view(root, builds, modules_bound);
         let res_ctx = ResolutionContext::new(&view, &source_file, file.module_path);
         let dependencies = parse_file_dependencies(
             syntax,
@@ -205,7 +206,12 @@ impl<'w> PackageResolver<'w> {
             self.roots.workspace.include_tests,
             &mut self.passed_on,
         );
-        let CrateView { modules_bound, .. } = view;
+        let CrateView {
+            builds,
+            modules_bound,
+            ..
+        } = view;
+        *self.roots.builds_mut(root) = builds;
         *self.roots.modules_bound_mut(root) = modules_bound;
         Pending {
             root,
@@ -327,6 +333,13 @@ impl Roots<'_> {
         }
     }
 
+    fn builds_mut(&mut self, root: Root) -> &mut RootBuilds {
+        match root.0 {
+            RootKind::Entry(index) => &mut self.entries[index].builds,
+            RootKind::IntegrationTest(index) => &mut self.integration_tests[index].builds,
+        }
+    }
+
     fn modules_bound_mut(&mut self, root: Root) -> &mut ModulesBound {
         match root.0 {
             RootKind::Entry(index) => &mut self.entries[index].modules_bound,
@@ -334,9 +347,9 @@ impl Roots<'_> {
         }
     }
 
-    /// The crate of `root` as its code resolves names, with the answers
-    /// `modules_bound` keeps.
-    fn view(&self, root: Root, modules_bound: ModulesBound) -> CrateView<'_> {
+    /// The crate of `root` as its code resolves names, through `builds` and
+    /// with the answers `modules_bound` keeps.
+    fn view(&self, root: Root, builds: RootBuilds, modules_bound: ModulesBound) -> CrateView<'_> {
         CrateView {
             crate_name: self.crate_name(root),
             workspace_crates: &self.workspace.workspace_crates,
@@ -344,7 +357,7 @@ impl Roots<'_> {
             crate_exports: &self.workspace.crate_exports,
             external_crate_names: self.external_crate_names,
             extern_prelude: self.extern_prelude(root),
-            builds: self.builds(root).clone(),
+            builds,
             modules_bound,
         }
     }

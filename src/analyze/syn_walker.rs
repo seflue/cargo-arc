@@ -7,18 +7,10 @@ use std::path::{Path, PathBuf};
 use super::mod_resolver::{
     CfgCondition, ModDecl, ModuleFile, declared_files, extract_mod_declarations,
 };
-use super::packages::{
-    ModulePathMap, ModulePaths, PackageExportMap, WorkspacePackages, normalize_crate_name,
-};
-use super::reexports::root_extern_prelude;
-use super::use_parser::ReExportMap;
-use super::use_parser::{
-    CrateView, ModulesBound, PassedOn, ResolutionContext, RootBuilds, parse_file_dependencies,
-    promote_to_test,
-};
-use crate::model::{
-    EdgeContext, ModuleInfo, ModuleTree, PackageInfo, TargetRoot, TestKind, UsageKind,
-};
+use super::name_resolution::{FileInModule, NameResolution, PackageResolver, Root};
+use super::packages::{ModulePaths, normalize_crate_name};
+use super::use_parser::promote_to_test;
+use crate::model::{EdgeContext, ModuleInfo, ModuleTree, PackageInfo, TestKind};
 
 /// Find integration test files in `tests/*.rs`.
 /// Each top-level `.rs` file is an independent test binary.
@@ -126,21 +118,15 @@ fn insert_inline_modules(
     }
 }
 
-/// Copy `all_module_paths` and add the module paths of the integration test
-/// whose root is `test_file`, under the key `test_crate`.
-fn with_test_crate(
-    all_module_paths: &ModulePathMap,
-    test_crate: &str,
-    test_file: &Path,
-    include_tests: bool,
-) -> ModulePathMap {
+/// The module paths of the integration test whose root is `test_file`.
+fn test_crate_modules(test_file: &Path, include_tests: bool) -> ModulePaths {
     let root = ModuleFile {
         path: test_file.to_path_buf(),
         owns_directory: true,
     };
     let mut modules = ModulePaths::default();
     walk_modules_for_paths(&root, "", &mut modules, include_tests);
-    all_module_paths.with(test_crate, modules)
+    modules
 }
 
 /// Collect all module paths reachable from the crate's targets via filesystem walk.
@@ -168,31 +154,15 @@ pub(crate) fn collect_syn_module_paths(
 /// Invariant parameters shared across the recursive module walk.
 #[derive(Clone)]
 struct WalkContext<'a> {
-    crate_view: &'a CrateView<'a>,
-    workspace_root: &'a Path,
+    /// The crate root whose tree the walk reads.
+    root: Root,
+    /// The full path of the root's module: the package key, or for an
+    /// integration test the full path of its root module.
+    crate_name: &'a str,
     include_tests: bool,
     /// The context of the code the walk enters: test code for a module only
     /// test builds load, with all it holds.
     base_context: EdgeContext,
-}
-
-/// Whether `dep` of the module at `module_path` only passes a name on to a
-/// descendant, as [`PassedOn::passes_on`] decides in the build `dep`'s code
-/// is compiled in.
-fn only_passes_on(
-    ctx: &WalkContext,
-    passed_on: &PassedOn,
-    module_path: &str,
-    dep: &crate::model::DependencyRef,
-) -> bool {
-    let view = ctx.crate_view;
-    passed_on.passes_on(
-        view.crate_name,
-        module_path,
-        dep,
-        view.builds.reading(dep.context.kind),
-        view.module_paths,
-    )
 }
 
 /// Take in the module read from another file of the same declaration
@@ -222,7 +192,7 @@ fn walk_declared_module(
     parent: &ModuleFile,
     decl: &ModDecl,
     parent_path: &str,
-    walked: &mut Walked,
+    walked: &mut Walked<'_>,
 ) -> Option<ModuleInfo> {
     // A module declared under `#[cfg(test)]`, or a file only a test-only
     // `#[cfg_attr]` path loads, is test code with all it holds
@@ -255,14 +225,12 @@ fn walk_declared_module(
     Some(module)
 }
 
-/// What the walk of a crate's module trees gathers beyond the trees.
-#[derive(Default)]
-struct Walked {
+/// What the walk of a crate's module trees carries from file to file.
+struct Walked<'w> {
     /// The files that do not parse.
     unparsed: Vec<PathBuf>,
-    /// The private bindings of ancestors the files walked so far named
-    /// something through.
-    passed_on: PassedOn,
+    /// The resolution of the package's names, through all its roots.
+    resolver: PackageResolver<'w>,
 }
 
 /// Recursively walk a module, building `ModuleInfo` with dependency
@@ -273,7 +241,7 @@ fn walk_module_syn(
     module_name: &str,
     parent_path: &str,
     owns_directory: bool,
-    walked: &mut Walked,
+    walked: &mut Walked<'_>,
 ) -> ModuleInfo {
     let full_path = if parent_path == module_name {
         // root module: full_path == crate name
@@ -313,27 +281,20 @@ fn walk_module_syn(
         }
     };
 
-    let source_file = file_path
-        .strip_prefix(ctx.workspace_root)
-        .map_or_else(|_| file_path.to_path_buf(), std::path::Path::to_path_buf);
-
     // Relative module path within the crate (e.g. "render" for render/mod.rs, "" for root)
     let current_module_path = full_path
-        .strip_prefix(&format!("{}::", ctx.crate_view.crate_name))
+        .strip_prefix(&format!("{}::", ctx.crate_name))
         .unwrap_or("");
 
-    let res_ctx = ResolutionContext::new(ctx.crate_view, &source_file, current_module_path);
-    let mut dependencies = parse_file_dependencies(
+    let pending = walked.resolver.dependencies(
+        ctx.root,
+        FileInModule {
+            file: file_path,
+            module_path: current_module_path,
+            context: ctx.base_context.clone(),
+        },
         &syntax,
-        &res_ctx,
-        ctx.base_context.clone(),
-        ctx.include_tests,
-        &mut walked.passed_on,
     );
-
-    if !ctx.include_tests {
-        dependencies.retain(|d| d.context.kind == UsageKind::Production);
-    }
 
     // Extract mod declarations from the same AST (no second file read)
     let decls = extract_mod_declarations(&syntax, ctx.include_tests);
@@ -347,42 +308,13 @@ fn walk_module_syn(
         .filter_map(|decl| walk_declared_module(ctx, &parent, &decl, &full_path, walked))
         .collect();
 
-    // The descendants are walked now. A private glob or `use` this module
-    // takes no name from but a descendant names something through only
-    // passes the names on, which is no dependency of this module.
-    dependencies.retain(|dep| !only_passes_on(ctx, &walked.passed_on, current_module_path, dep));
-
-    // A module declared inline is no node; the module of its file is, with
-    // the inline module as the item where the path ends on it.
-    for dep in &mut dependencies {
-        let file_module = ctx
-            .crate_view
-            .module_paths
-            .file_module(&dep.target_package, &dep.target_module);
-        if file_module.len() < dep.target_module.len() {
-            let file_module = file_module.to_string();
-            if dep.target_item.is_none() {
-                let module = dep.target_module.as_str();
-                let name = module.rsplit_once("::").map_or(module, |(_, name)| name);
-                dep.target_item = Some(name.to_string());
-            }
-            dep.target_module = file_module;
-        }
-    }
-    // A path that stays in this file, as `use super::*` in an inline module,
-    // depends on nothing outside it.
-    let own_package = normalize_crate_name(ctx.crate_view.crate_name);
-    dependencies.retain(|dep| {
-        dep.target_root != TargetRoot::AsSeen
-            || dep.target_package != own_package
-            || dep.target_module != current_module_path
-    });
-
-    let definitions = ctx.crate_view.builds.definitions(
-        ctx.crate_view.crate_name,
-        current_module_path,
-        ctx.base_context.kind,
-    );
+    // The descendants are walked now, so what they pass through this
+    // module is known.
+    let dependencies = walked.resolver.finish(pending);
+    let definitions =
+        walked
+            .resolver
+            .definitions(ctx.root, current_module_path, ctx.base_context.kind);
 
     ModuleInfo {
         name: module_name.to_string(),
@@ -398,10 +330,10 @@ fn walk_module_syn(
 /// keyed by the full path of its root module under `tests_path`. Cargo names
 /// the crate as the file, `-` as `_`; the node shows the file's name.
 fn walk_integration_test(
-    ctx: &WalkContext,
     tests_path: &str,
     test_file: &Path,
-    walked: &mut Walked,
+    include_tests: bool,
+    walked: &mut Walked<'_>,
 ) -> ModuleInfo {
     let test_name = test_file
         .file_stem()
@@ -409,19 +341,12 @@ fn walk_integration_test(
         .unwrap_or("unknown");
     let crate_name = normalize_crate_name(test_name);
     let test_crate = format!("{tests_path}::{crate_name}");
-    let view = ctx.crate_view;
-    let module_paths =
-        with_test_crate(view.module_paths, &test_crate, test_file, ctx.include_tests);
-    let test_crate_view = CrateView {
-        crate_name: &test_crate,
-        module_paths: &module_paths,
-        builds: view.builds.clone(),
-        modules_bound: ModulesBound::default(),
-        ..*view
-    };
+    let modules = test_crate_modules(test_file, include_tests);
     let test_ctx = WalkContext {
-        crate_view: &test_crate_view,
-        ..ctx.clone()
+        root: walked.resolver.integration_test(&test_crate, modules),
+        crate_name: &test_crate,
+        include_tests,
+        base_context: EdgeContext::test(TestKind::Integration),
     };
     let mut tree = walk_module_syn(&test_ctx, test_file, &crate_name, tests_path, true, walked);
     tree.name = test_name.to_string();
@@ -432,40 +357,20 @@ fn walk_integration_test(
 /// Drop-in replacement for `hir::analyze_modules()`.
 pub(crate) fn analyze_modules_syn(
     crate_info: &PackageInfo,
-    workspace_crates: &WorkspacePackages,
-    all_module_paths: &ModulePathMap,
-    crate_exports: &PackageExportMap,
-    reexport_map: &ReExportMap,
+    resolution: &NameResolution,
     external_crate_names: &std::collections::HashMap<String, String>,
-    include_tests: bool,
 ) -> ModuleTree {
     let normalized = normalize_crate_name(&crate_info.name);
-    let integration_test_prelude = root_extern_prelude(crate_info, None);
-    // Seen from no root: what integration tests see.
-    let unrooted_view = CrateView {
-        crate_name: &normalized,
-        workspace_crates,
-        module_paths: all_module_paths,
-        crate_exports,
-        external_crate_names,
-        extern_prelude: &integration_test_prelude,
-        builds: RootBuilds::of(reexport_map.clone()),
-        modules_bound: ModulesBound::default(),
+    let include_tests = resolution.include_tests();
+    let mut walked = Walked {
+        unparsed: Vec::new(),
+        resolver: resolution.package(crate_info, external_crate_names),
     };
-
-    let mut walked = Walked::default();
     let mut root: Option<ModuleInfo> = None;
     for (index, entry) in crate_info.entry_files.iter().enumerate() {
-        let extern_prelude = root_extern_prelude(crate_info, Some(entry));
-        let root_view = CrateView {
-            extern_prelude: &extern_prelude,
-            builds: RootBuilds::of(reexport_map.for_root(&normalized, index)),
-            modules_bound: ModulesBound::default(),
-            ..unrooted_view
-        };
         let root_ctx = WalkContext {
-            crate_view: &root_view,
-            workspace_root: &crate_info.workspace_root,
+            root: Root::entry(index),
+            crate_name: &normalized,
             include_tests,
             base_context: EdgeContext::production(),
         };
@@ -511,17 +416,11 @@ pub(crate) fn analyze_modules_syn(
 
     // Walk integration test files (tests/*.rs) when --include-tests is active
     if include_tests {
-        let test_ctx = WalkContext {
-            crate_view: &unrooted_view,
-            workspace_root: &crate_info.workspace_root,
-            include_tests,
-            base_context: EdgeContext::test(TestKind::Integration),
-        };
         let test_files = find_integration_test_files(&crate_info.path);
         let root = root.as_mut().unwrap();
         let tests_path = format!("{normalized}::tests");
         for test_file in test_files {
-            let tree = walk_integration_test(&test_ctx, &tests_path, &test_file, &mut walked);
+            let tree = walk_integration_test(&tests_path, &test_file, include_tests, &mut walked);
             root.children.push(tree);
         }
     }
@@ -538,9 +437,7 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    use crate::analyze::name_resolution::collect_crate_exports;
-    use crate::analyze::use_parser::{BindingKind, ModuleExportInfo, NameBinding, Visibility};
-    use crate::model::{DefKind, Definition};
+    use crate::analyze::packages::{ModulePathMap, WorkspacePackages};
     use crate::test_support::conventional_package;
     use tempfile::TempDir;
 
@@ -756,12 +653,12 @@ mod tests {
 
             let tree = analyze_modules_syn(
                 &conventional_package("fixture", tmp.path()),
-                &WorkspacePackages::default(),
-                &ModulePathMap::default(),
-                &PackageExportMap::default(),
-                &ReExportMap::default(),
+                &NameResolution::syn_walk_only(
+                    WorkspacePackages::default(),
+                    &ModulePathMap::default(),
+                    false,
+                ),
                 &std::collections::HashMap::new(),
-                false,
             );
 
             assert_eq!(tree.unparsed, vec![tmp.path().join("src/broken.rs")]);
@@ -780,12 +677,8 @@ mod tests {
 
             let tree = analyze_modules_syn(
                 &crate_info,
-                &workspace_crates,
-                &ModulePathMap::default(),
-                &PackageExportMap::default(),
-                &ReExportMap::default(),
+                &NameResolution::syn_walk_only(workspace_crates, &ModulePathMap::default(), false),
                 &std::collections::HashMap::new(),
-                false,
             );
 
             assert_eq!(tree.root.name, "cargo_arc");
@@ -841,12 +734,8 @@ mod tests {
 
             let tree = analyze_modules_syn(
                 &crate_info,
-                &workspace_crates,
-                &all_module_paths,
-                &PackageExportMap::default(),
-                &ReExportMap::default(),
+                &NameResolution::syn_walk_only(workspace_crates, &all_module_paths, false),
                 &std::collections::HashMap::new(),
-                false,
             );
 
             let graph_mod = tree
@@ -865,63 +754,6 @@ mod tests {
             );
         }
 
-        /// A module takes its definitions from the re-export map entry at its
-        /// own crate-relative path; the crate root reads the `""` entry.
-        #[test]
-        fn test_analyze_modules_syn_attaches_definitions_by_module_path() {
-            let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-            let crate_info = conventional_package("cargo-arc", crate_root);
-            let workspace_crates: WorkspacePackages = ["cargo-arc"].into_iter().collect();
-            let definition = |line| Definition {
-                kind: DefKind::Struct,
-                line,
-            };
-            let module_info = |name: &str, line| {
-                let mut info = ModuleExportInfo::default();
-                let item = NameBinding::new(
-                    BindingKind::Definition(definition(line)),
-                    Visibility::Public,
-                );
-                info.bind(name.to_string(), item);
-                info
-            };
-            let reexport_map: ReExportMap = [(
-                "cargo_arc".to_string(),
-                std::collections::HashMap::from([
-                    (String::new(), module_info("Root", 3)),
-                    ("graph".to_string(), module_info("ArcGraph", 9)),
-                ]),
-            )]
-            .into_iter()
-            .collect();
-
-            let tree = analyze_modules_syn(
-                &crate_info,
-                &workspace_crates,
-                &ModulePathMap::default(),
-                &PackageExportMap::default(),
-                &reexport_map,
-                &std::collections::HashMap::new(),
-                false,
-            );
-
-            assert_eq!(tree.root.definitions.get("Root"), Some(&definition(3)));
-            let graph_mod = tree
-                .root
-                .children
-                .iter()
-                .find(|m| m.name == "graph")
-                .unwrap();
-            assert_eq!(graph_mod.definitions.get("ArcGraph"), Some(&definition(9)));
-            let model_mod = tree
-                .root
-                .children
-                .iter()
-                .find(|m| m.name == "model")
-                .unwrap();
-            assert!(model_mod.definitions.is_empty());
-        }
-
         #[test]
         fn test_binary_only_crate() {
             let tmp = TestProject::new()
@@ -937,23 +769,16 @@ mod tests {
                 "should contain 'cli', found: {paths:?}"
             );
 
-            // collect_crate_exports returns empty (no lib.rs)
-            let exports = collect_crate_exports(&conventional_package("fixture", tmp.path()));
-            assert!(
-                exports.is_empty(),
-                "binary-only should have no exports, found: {exports:?}"
-            );
-
             // analyze_modules_syn builds tree with "cli" child
             let crate_info = conventional_package("binonly", tmp.path());
             let tree = analyze_modules_syn(
                 &crate_info,
-                &WorkspacePackages::default(),
-                &ModulePathMap::default(),
-                &PackageExportMap::default(),
-                &ReExportMap::default(),
+                &NameResolution::syn_walk_only(
+                    WorkspacePackages::default(),
+                    &ModulePathMap::default(),
+                    false,
+                ),
                 &std::collections::HashMap::new(),
-                false,
             );
 
             let child_names: Vec<&str> =
@@ -975,12 +800,12 @@ mod tests {
             let crate_info = conventional_package("fixture", tmp.path());
             let tree = analyze_modules_syn(
                 &crate_info,
-                &WorkspacePackages::default(),
-                &ModulePathMap::default(),
-                &PackageExportMap::default(),
-                &ReExportMap::default(),
+                &NameResolution::syn_walk_only(
+                    WorkspacePackages::default(),
+                    &ModulePathMap::default(),
+                    false,
+                ),
                 &std::collections::HashMap::new(),
-                false,
             );
 
             assert_eq!(tree.root.file, Some(tmp.path().join("src/lib.rs")));
@@ -1016,12 +841,8 @@ fn main() {
             };
             let tree = analyze_modules_syn(
                 &crate_info,
-                &ws,
-                &mp,
-                &PackageExportMap::default(),
-                &ReExportMap::default(),
+                &NameResolution::syn_walk_only(ws, &mp, false),
                 &std::collections::HashMap::new(),
-                false,
             );
 
             // Path expressions should be detected as dependencies
@@ -1058,12 +879,8 @@ fn main() {
             };
             let tree = analyze_modules_syn(
                 &crate_info,
-                &ws,
-                &mp,
-                &PackageExportMap::default(),
-                &ReExportMap::default(),
+                &NameResolution::syn_walk_only(ws, &mp, false),
                 &std::collections::HashMap::new(),
-                false,
             );
 
             let user = tree
@@ -1105,12 +922,8 @@ fn main() {
             };
             let tree = analyze_modules_syn(
                 &crate_info,
-                &ws,
-                &mp,
-                &PackageExportMap::default(),
-                &ReExportMap::default(),
+                &NameResolution::syn_walk_only(ws, &mp, false),
                 &std::collections::HashMap::new(),
-                false,
             );
 
             // Should have exactly 1 dep for other_crate::module::Item (deduped)
@@ -1148,12 +961,8 @@ fn main() {
             let crate_info = conventional_package("my_crate", tmp.path());
             let tree = analyze_modules_syn(
                 &crate_info,
-                &WorkspacePackages::default(),
-                &mp,
-                &PackageExportMap::default(),
-                &ReExportMap::default(),
+                &NameResolution::syn_walk_only(WorkspacePackages::default(), &mp, false),
                 &std::collections::HashMap::new(),
-                false,
             );
 
             let parent = tree
@@ -1189,12 +998,8 @@ fn main() {
             let crate_info = conventional_package("my_crate", tmp.path());
             let tree = analyze_modules_syn(
                 &crate_info,
-                &WorkspacePackages::default(),
-                &mp,
-                &PackageExportMap::default(),
-                &ReExportMap::default(),
+                &NameResolution::syn_walk_only(WorkspacePackages::default(), &mp, false),
                 &std::collections::HashMap::new(),
-                false,
             );
 
             let parent = tree
@@ -1226,12 +1031,12 @@ fn main() {
             let crate_info = conventional_package("mixed", tmp.path());
             let tree = analyze_modules_syn(
                 &crate_info,
-                &WorkspacePackages::default(),
-                &ModulePathMap::default(),
-                &PackageExportMap::default(),
-                &ReExportMap::default(),
+                &NameResolution::syn_walk_only(
+                    WorkspacePackages::default(),
+                    &ModulePathMap::default(),
+                    false,
+                ),
                 &std::collections::HashMap::new(),
-                false,
             );
 
             let child_names: Vec<&str> =
@@ -1266,12 +1071,8 @@ fn main() {
 
             let tree = analyze_modules_syn(
                 &crate_info,
-                &workspace_crates,
-                &all_module_paths,
-                &PackageExportMap::default(),
-                &ReExportMap::default(),
+                &NameResolution::syn_walk_only(workspace_crates, &all_module_paths, false),
                 &std::collections::HashMap::new(),
-                false,
             );
 
             let render_mod = tree
@@ -1352,12 +1153,8 @@ fn main() {
 
             let tree = analyze_modules_syn(
                 &crate_info,
-                &ws,
-                &ModulePathMap::default(),
-                &PackageExportMap::default(),
-                &ReExportMap::default(),
+                &NameResolution::syn_walk_only(ws, &ModulePathMap::default(), true),
                 &std::collections::HashMap::new(),
-                true,
             );
 
             let child_names: Vec<&str> =
@@ -1390,12 +1187,12 @@ fn main() {
 
             let tree = analyze_modules_syn(
                 &crate_info,
-                &WorkspacePackages::default(),
-                &ModulePathMap::default(),
-                &PackageExportMap::default(),
-                &ReExportMap::default(),
+                &NameResolution::syn_walk_only(
+                    WorkspacePackages::default(),
+                    &ModulePathMap::default(),
+                    false,
+                ),
                 &std::collections::HashMap::new(),
-                false,
             );
 
             let child_names: Vec<&str> =
@@ -1421,12 +1218,8 @@ fn main() {
 
             let tree = analyze_modules_syn(
                 &crate_info,
-                &ws,
-                &ModulePathMap::default(),
-                &PackageExportMap::default(),
-                &ReExportMap::default(),
+                &NameResolution::syn_walk_only(ws, &ModulePathMap::default(), true),
                 &std::collections::HashMap::new(),
-                true,
             );
 
             assert_eq!(tree.root.name, "test_only_crate");
@@ -1446,12 +1239,12 @@ fn main() {
 
             let tree = analyze_modules_syn(
                 &crate_info,
-                &WorkspacePackages::default(),
-                &ModulePathMap::default(),
-                &PackageExportMap::default(),
-                &ReExportMap::default(),
+                &NameResolution::syn_walk_only(
+                    WorkspacePackages::default(),
+                    &ModulePathMap::default(),
+                    false,
+                ),
                 &std::collections::HashMap::new(),
-                false,
             );
             assert!(tree.root.children.is_empty());
         }
@@ -1485,12 +1278,8 @@ mod tests {
 
             let tree = analyze_modules_syn(
                 &crate_info,
-                &WorkspacePackages::default(),
-                &mp,
-                &PackageExportMap::default(),
-                &ReExportMap::default(),
+                &NameResolution::syn_walk_only(WorkspacePackages::default(), &mp, false),
                 &std::collections::HashMap::new(),
-                false,
             );
 
             let alpha = tree
