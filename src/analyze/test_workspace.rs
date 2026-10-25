@@ -8,9 +8,8 @@ use std::path::Path;
 use tempfile::TempDir;
 
 use super::packages::{ModulePathMap, PackageExportMap, WorkspacePackages};
-use super::reexports::collect_crate_reexports;
+use super::reexports::collect_reexport_map;
 use super::syn_walker::{analyze_modules_syn, collect_crate_exports, collect_syn_module_paths};
-use super::use_parser::ReExportMap;
 use crate::model::{DependencyRef, ModuleInfo, ModuleTree, PackageInfo};
 use crate::test_support::conventional_package;
 
@@ -72,14 +71,8 @@ impl TestWorkspace {
             .iter()
             .map(|p| (p.key.clone(), collect_crate_exports(p)))
             .collect();
-        let reexport_map = packages
-            .iter()
-            .map(|p| {
-                let roots = collect_crate_reexports(p, &module_paths, &workspace, include_tests);
-                (p.key.clone(), roots)
-            })
-            .collect::<ReExportMap>()
-            .settle_written_paths(&module_paths);
+        let reexport_map =
+            collect_reexport_map(&packages, &module_paths, &workspace, include_tests);
         let no_externals = HashMap::new();
         let trees = packages
             .iter()
