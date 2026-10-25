@@ -532,7 +532,7 @@ pub(crate) fn analyze_modules_syn(
     include_tests: bool,
 ) -> ModuleTree {
     let normalized = normalize_crate_name(&crate_info.name);
-    let test_prelude = root_extern_prelude(crate_info, None);
+    let integration_test_prelude = root_extern_prelude(crate_info, None);
     // Seen from no root: what integration tests see.
     let unrooted_view = CrateView {
         crate_name: &normalized,
@@ -540,7 +540,7 @@ pub(crate) fn analyze_modules_syn(
         module_paths: all_module_paths,
         crate_exports,
         external_crate_names,
-        extern_prelude: &test_prelude,
+        extern_prelude: &integration_test_prelude,
         builds: RootBuilds::of(reexport_map.clone()),
         modules_bound: ModulesBound::default(),
     };

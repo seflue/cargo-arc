@@ -3285,6 +3285,38 @@ fn name_resolution_glob_through_cfg_alternatives_names_the_binding_module() {
     assert_arc_on_the_module_binding_chosen("pb::lock_glob");
 }
 
+/// Cell 93a: the root of `pc` binds `pub use Mode::B;` and brings another
+/// `B` through `pub use other::*;`. The explicit `use` hides the glob, so
+/// `crate::B` in `variant_user` names the enum `Mode` in `kinds`.
+/// The glob line of the root itself brings `helper` only, and `B` through
+/// `use super::*;` in `glob_user` reaches `Mode` where `kinds` defines it.
+#[test]
+fn name_resolution_use_of_a_variant_from_scope_hides_a_glob() {
+    assert_name_resolution_arc("pc::variant_user", "pc::kinds", "production", &["Mode"]);
+    assert_name_resolution_arc("pc::variant_user", "pc::other", "production", &["helper"]);
+    assert_name_resolution_arc("pc", "pc::other", "production", &["helper"]);
+    assert_name_resolution_arc("pc::glob_user", "pc::kinds", "production", &["Mode"]);
+    assert_no_name_resolution_arc("pc::glob_user", "pc");
+    assert_no_name_resolution_arc("pc::glob_user", "pc::other");
+}
+
+/// Cell 93b: `own` defines `enum segs` beside the dependency `segs` and
+/// writes `use segs::is_start;`. The own item comes before the extern
+/// prelude, so the path gives no arc to the crate.
+#[test]
+fn name_resolution_own_item_named_like_a_dependency_starts_a_use_path() {
+    assert_no_name_resolution_arc("pc::own", "segs");
+}
+
+/// Cell 93c: `holder` binds `geo` to the module `shapes` and to the fn
+/// `util::geo`. Only the module carries a path on, so `pub use geo::Circle;`
+/// reaches `shapes`, and `circle_user` gets its arc there.
+#[test]
+fn name_resolution_path_through_a_name_bound_in_two_namespaces_takes_the_module() {
+    assert_name_resolution_arc("pc::circle_user", "pc::shapes", "production", &["Circle"]);
+    assert_no_name_resolution_arc("pc::circle_user", "pc::holder");
+}
+
 /// The arc of cell 92 from `locker` to `lock`, and none to an alternative.
 fn assert_arc_on_the_module_binding_chosen(lock: &str) {
     assert_name_resolution_arc("pb::locker", lock, "production", &["Mutex"]);

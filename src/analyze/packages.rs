@@ -62,6 +62,13 @@ impl ModulePathMap {
         self.paths.get(key).unwrap_or(&EMPTY)
     }
 
+    /// Whether package `key` has the module `module`, its root (`""`)
+    /// included.
+    #[must_use]
+    pub fn holds(&self, key: &str, module: &str) -> bool {
+        module.is_empty() || self.get_or_empty(key).contains(module)
+    }
+
     /// The module of package `key` whose file holds `module`: `module` itself
     /// unless it is declared inline, otherwise the nearest ancestor that is
     /// not.
