@@ -422,18 +422,7 @@ pub struct VolatilityStats {
 mod tests {
     use super::*;
     use crate::analyze::rust::PROFILE as RUST_PROFILE;
-
-    /// Runs a git subcommand in `dir`, failing the test on a non-zero exit.
-    fn git(dir: &Path, args: &[&str]) {
-        let status = Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .expect("git should be on PATH");
-        assert!(status.success(), "git {args:?} failed in {}", dir.display());
-    }
+    use crate::test_support::git;
 
     /// A fresh repository with a local identity, so commits succeed without
     /// relying on the environment's global git config.
@@ -454,12 +443,7 @@ mod tests {
         std::fs::write(&path, contents).unwrap();
         git(repo_dir, &["add", relative]);
         git(repo_dir, &["commit", "-q", "-m", "test commit"]);
-        let output = Command::new("git")
-            .args(["rev-parse", "HEAD"])
-            .current_dir(repo_dir)
-            .output()
-            .unwrap();
-        String::from_utf8(output.stdout).unwrap().trim().to_string()
+        git(repo_dir, &["rev-parse", "HEAD"])
     }
 
     /// `n` distinct commits with fabricated hashes, for tests that only care
