@@ -15,7 +15,7 @@ use super::lookup::{FromProduction, PassedOn, Visited, covers, is_glob};
 use super::path::{PathEnd, PathStart, resolve_single_path};
 use super::place::{append_to_path, resolve_use_tree};
 use crate::model::{
-    DefKind, DependencyRef, EdgeContext, SymbolUse, TargetRoot, TestKind, UsageKind, UseCategory,
+    DefKind, DependencyRef, EdgeContext, SymbolUse, TargetRoot, TestKind, UsageCategory, UsageKind,
 };
 use std::collections::{HashMap, HashSet};
 use syn::visit::Visit;
@@ -956,32 +956,34 @@ fn categorize(
     position: PathPosition,
     associated: Option<&str>,
     meaning: Meaning,
-) -> UseCategory {
+) -> UsageCategory {
     let kind = definition_kind(ctx, dep, item, meaning);
     let items = ctx
         .target_bindings(dep)
         .and_then(|bindings| bindings.associated(item));
     match (associated, position) {
-        (_, PathPosition::Type | PathPosition::Construct) => UseCategory::Types,
+        (_, PathPosition::Type | PathPosition::Construct) => UsageCategory::Types,
         (Some(name), _) if items.is_some_and(|items| items.variants.contains(name)) => {
-            UseCategory::Types
+            UsageCategory::Types
         }
-        (Some(name), _) if items.is_some_and(|items| items.fns.contains(name)) => UseCategory::Fns,
+        (Some(name), _) if items.is_some_and(|items| items.fns.contains(name)) => {
+            UsageCategory::Functions
+        }
         (Some(name), _) if items.is_some_and(|items| items.consts.contains(name)) => {
-            UseCategory::Values
+            UsageCategory::Values
         }
         (Some(name), PathPosition::Call) => category_of_unknown_call(name),
         (Some(name), PathPosition::Value | PathPosition::Binding) => category_by_convention(name),
         (None, PathPosition::Call) => match kind {
-            Some(DefKind::Struct | DefKind::Enum) => UseCategory::Types,
-            Some(_) => UseCategory::Fns,
+            Some(DefKind::Struct | DefKind::Enum) => UsageCategory::Types,
+            Some(_) => UsageCategory::Functions,
             None => category_of_unknown_call(item),
         },
         (None, PathPosition::Value | PathPosition::Binding) => match kind {
-            Some(DefKind::Const | DefKind::Static) => UseCategory::Values,
-            Some(DefKind::Fn) => UseCategory::Fns,
+            Some(DefKind::Const | DefKind::Static) => UsageCategory::Values,
+            Some(DefKind::Fn) => UsageCategory::Functions,
             Some(DefKind::Struct | DefKind::Enum | DefKind::Type | DefKind::Trait) => {
-                UseCategory::Types
+                UsageCategory::Types
             }
             Some(DefKind::Macro) | None => category_by_convention(item),
         },
@@ -991,27 +993,27 @@ fn categorize(
 /// Categorize a name by its spelling, where no definition says what it is:
 /// Rust names constants in upper case, types in camel case and functions in
 /// snake case.
-fn category_by_convention(name: &str) -> UseCategory {
+fn category_by_convention(name: &str) -> UsageCategory {
     let mut chars = name.chars();
     match chars.next() {
         Some(first) if first.is_uppercase() => {
             if chars.all(|c| !c.is_lowercase()) {
-                UseCategory::Values
+                UsageCategory::Values
             } else {
-                UseCategory::Types
+                UsageCategory::Types
             }
         }
-        _ => UseCategory::Fns,
+        _ => UsageCategory::Functions,
     }
 }
 
 /// Categorize a call of a name no definition explains: capitalised, it
 /// constructs a tuple struct or a variant; otherwise it calls a fn.
-fn category_of_unknown_call(name: &str) -> UseCategory {
+fn category_of_unknown_call(name: &str) -> UsageCategory {
     if name.starts_with(char::is_uppercase) {
-        UseCategory::Types
+        UsageCategory::Types
     } else {
-        UseCategory::Fns
+        UsageCategory::Functions
     }
 }
 
@@ -1153,7 +1155,7 @@ fn import_only_use(ctx: &ResolutionContext, dep: &DependencyRef, item: &str) -> 
     if is_trait {
         SymbolUse {
             line: dep.line,
-            category: UseCategory::Fns,
+            category: UsageCategory::Functions,
             imported_for_methods: true,
         }
     } else {

@@ -243,10 +243,10 @@ impl EntryFile {
     }
 }
 
-/// What one use takes from a symbol: a name to write types with, a value to
+/// What one usage takes from a symbol: a name to write types with, a value to
 /// read, or behaviour to call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum UseCategory {
+pub enum UsageCategory {
     /// A name in a type position, or a value built from a struct or an enum
     /// variant.
     Types,
@@ -254,15 +254,15 @@ pub enum UseCategory {
     Values,
     /// A free or associated function called, or a trait imported for its
     /// methods.
-    Fns,
+    Functions,
 }
 
-impl std::fmt::Display for UseCategory {
+impl std::fmt::Display for UsageCategory {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Types => "types",
             Self::Values => "values",
-            Self::Fns => "fns",
+            Self::Functions => "functions",
         })
     }
 }
@@ -271,7 +271,7 @@ impl std::fmt::Display for UseCategory {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SymbolUse {
     pub line: usize,
-    pub category: UseCategory,
+    pub category: UsageCategory,
     /// A trait imported and never named is used through its methods, which no
     /// path in the file spells out. The category is then inferred, and the
     /// line is the import's.
