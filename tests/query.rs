@@ -335,7 +335,7 @@ fn hotspots_header_states_the_ranking_and_counting_rules() {
     );
     assert_eq!(
         header_value(&out, "ties"),
-        "by file name, then by position in the module tree"
+        "by path, relative to the workspace root"
     );
     assert_eq!(
         header_value(&out, "code-lines"),
