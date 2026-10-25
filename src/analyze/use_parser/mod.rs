@@ -136,7 +136,7 @@ impl Namespace {
     /// The namespace an item of `kind` takes its name in. A tuple or unit
     /// struct also has a constructor in the value namespace, which `kind`
     /// does not tell.
-    fn of(kind: DefKind) -> Self {
+    pub(crate) fn of(kind: DefKind) -> Self {
         match kind {
             DefKind::Fn | DefKind::Const | DefKind::Static => Self::Value,
             DefKind::Struct | DefKind::Enum | DefKind::Trait | DefKind::Type => Self::Type,
@@ -291,7 +291,7 @@ pub(crate) struct ModuleExportInfo {
     globs: Vec<GlobBinding>,
     /// The names a `use` binds by a path from a name in scope: its first
     /// name is neither a child module nor a crate, so it is a binding of the
-    /// module or an external crate ([`UsePlace::FromScope`]).
+    /// module or an external crate ([`UsePlace::Name`]).
     from_scope: HashSet<String>,
     /// Whether an item of the module calls a macro, or carries an attribute
     /// or derive macro rustc does not build in. What the macro expands to
@@ -644,7 +644,7 @@ impl ReExportMap {
     /// path that runs through a binding or glob still written waits for a
     /// later round, and rounds repeat while one settles a path. A path whose
     /// first name the root binds nothing under names that name in the root.
-    /// A path from a name in scope ([`UsePlace::FromScope`]) whose first
+    /// A path from a name in scope ([`UsePlace::Name`]) whose first
     /// name stands for no module in the holding module names an external
     /// crate: a private `use` of it binds [`BindingKind::Elsewhere`], a
     /// `pub use` [`BindingKind::ReExportFromOutside`]. A glob whose path does not reach a module
@@ -776,12 +776,8 @@ impl ReExportMap {
         &'a self,
         module_paths: &'a ModulePathMap,
     ) -> impl Iterator<Item = (BindingPlace, &'a ReExportTarget)> + 'a {
-        self.use_targets().filter(move |(_, target)| {
-            !target.module.is_empty()
-                && !module_paths
-                    .get_or_empty(&target.crate_name)
-                    .contains(&target.module)
-        })
+        self.use_targets()
+            .filter(move |(_, target)| !module_paths.holds(&target.crate_name, &target.module))
     }
 
     /// Each glob whose module lies in no module of its crate: the path as
@@ -803,12 +799,7 @@ impl ReExportMap {
                     (place, glob)
                 })
             })
-            .filter(move |(_, glob)| {
-                !glob.module.is_empty()
-                    && !module_paths
-                        .get_or_empty(&glob.crate_name)
-                        .contains(&glob.module)
-            })
+            .filter(move |(_, glob)| !module_paths.holds(&glob.crate_name, &glob.module))
     }
 
     /// Each module of the map, in every root and build, with its package,
@@ -1070,34 +1061,31 @@ fn reached_target(
             crate_name: &crate_name,
             path: &module,
         };
-        if binds_alternatives(lookup, holder, name) {
-            return Reached::Target(target_in(crate_name, module, last));
-        }
-        let mut visited = Visited::default();
-        let named = lookup.name_passing(holder, name, AfterName::PathGoesOn, &mut visited);
-        if visited.entered_any(unsettled) {
-            return Reached::Waits;
-        }
-        match named {
-            Some(NameTarget::Module {
+        let at_start = crate_name == target.crate_name;
+        match WrittenStep::of(lookup, holder, name, unsettled) {
+            WrittenStep::Alternatives => {
+                return Reached::Target(target_in(crate_name, module, last));
+            }
+            WrittenStep::Waits => return Reached::Waits,
+            WrittenStep::Module {
                 crate_name: reached_crate,
                 path,
-            }) => {
+            } => {
                 crate_name = reached_crate;
                 module = path;
             }
-            _ if crate_name == target.crate_name
-                && matches!(from, WrittenFrom::Scope(start) if module == start) =>
+            _ if at_start && matches!(from, WrittenFrom::Scope(start) if module == start) => {
+                return match lookup.type_item_definer(holder, name, &mut Visited::default()) {
+                    Some(definer) => Reached::Target(definer),
+                    None => Reached::Unbound,
+                };
+            }
+            WrittenStep::Unbound
+                if at_start && module.is_empty() && matches!(from, WrittenFrom::CrateRoot) =>
             {
                 return Reached::Unbound;
             }
-            None if crate_name == target.crate_name
-                && module.is_empty()
-                && matches!(from, WrittenFrom::CrateRoot) =>
-            {
-                return Reached::Unbound;
-            }
-            Some(NameTarget::Item) | None => {
+            WrittenStep::Item | WrittenStep::Unbound => {
                 return Reached::Target(target_in(crate_name, module, name));
             }
         }
@@ -1121,23 +1109,19 @@ fn reached_module(
             crate_name: &crate_name,
             path: &module,
         };
-        if binds_alternatives(lookup, holder, name) {
-            return Some(NameTarget::Item);
+        match WrittenStep::of(lookup, holder, name, unsettled) {
+            WrittenStep::Waits => return None,
+            WrittenStep::Module {
+                crate_name: reached_crate,
+                path,
+            } => {
+                crate_name = reached_crate;
+                module = path;
+            }
+            WrittenStep::Alternatives | WrittenStep::Item | WrittenStep::Unbound => {
+                return Some(NameTarget::Item);
+            }
         }
-        let mut visited = Visited::default();
-        let named = lookup.name_passing(holder, name, AfterName::PathGoesOn, &mut visited);
-        if visited.entered_any(unsettled) {
-            return None;
-        }
-        let Some(NameTarget::Module {
-            crate_name: reached_crate,
-            path,
-        }) = named
-        else {
-            return Some(NameTarget::Item);
-        };
-        crate_name = reached_crate;
-        module = path;
     }
     Some(NameTarget::Module {
         crate_name,
@@ -1145,14 +1129,71 @@ fn reached_module(
     })
 }
 
+/// What one name of a written path that goes on past it stands for in its
+/// holder.
+enum WrittenStep {
+    /// Alternatives under `cfg` the holder binds, of which syn cannot tell
+    /// which a build takes.
+    Alternatives,
+    /// Not known yet: the lookup entered a module a path still written
+    /// holds.
+    Waits,
+    /// A module, which carries the path on.
+    Module { crate_name: String, path: String },
+    /// An item.
+    Item,
+    /// Nothing the holder binds.
+    Unbound,
+}
+
+impl WrittenStep {
+    /// What `name` in `holder` stands for, as `lookup` sees it, where
+    /// `unsettled` holds the modules that paths still written hold.
+    fn of(
+        lookup: NameLookup,
+        holder: CrateModule,
+        name: &str,
+        unsettled: &HashSet<(String, String)>,
+    ) -> Self {
+        if binds_alternatives(lookup, holder, name) {
+            return Self::Alternatives;
+        }
+        let mut visited = Visited::default();
+        let named = lookup.name_passing(holder, name, AfterName::PathGoesOn, &mut visited);
+        if visited.entered_any(unsettled) {
+            return Self::Waits;
+        }
+        match named {
+            Some(NameTarget::Module { crate_name, path }) => Self::Module { crate_name, path },
+            Some(NameTarget::Item) => Self::Item,
+            None => Self::Unbound,
+        }
+    }
+}
+
 /// Whether `holder` binds `name` to different targets by private `use`
-/// items, as `lookup` sees it: alternatives under `cfg`, of which syn
-/// cannot tell which a build takes.
+/// items that may carry a path on, as `lookup` sees it: alternatives under
+/// `cfg`, of which syn cannot tell which a build takes. A target its module
+/// defines only outside the type namespace carries no path on, so it is no
+/// alternative to one that does.
 fn binds_alternatives(lookup: NameLookup, holder: CrateModule, name: &str) -> bool {
-    lookup
-        .viewer
-        .bindings_in(holder)
-        .is_some_and(|bindings| binds_to_differing_targets(bindings, name))
+    let Some(bindings) = lookup.viewer.bindings_in(holder) else {
+        return false;
+    };
+    let mut targets = bindings
+        .every(name)
+        .filter_map(|binding| match &binding.kind {
+            BindingKind::PrivateUse(target) => Some(target),
+            _ => None,
+        })
+        .filter(|target| !lookup.defines_only_outside_the_type_namespace(target));
+    let differ = targets
+        .next()
+        .is_some_and(|first| targets.any(|target| target != first));
+    differ
+        && bindings
+            .named(name)
+            .any(|binding| matches!(binding.kind, BindingKind::PrivateUse(_)))
 }
 
 /// The target `name` in the module `module` of `crate_name`.
@@ -1765,11 +1806,7 @@ impl<'a> NameLookup<'a> {
             &mut Visited::default(),
             &mut |_, module, bindings| {
                 let Some(bindings) = bindings else {
-                    let known = module.path.is_empty()
-                        || self
-                            .module_paths
-                            .get_or_empty(module.crate_name)
-                            .contains(module.path);
+                    let known = self.module_paths.holds(module.crate_name, module.path);
                     return if known {
                         ControlFlow::Continue(())
                     } else {
@@ -2139,6 +2176,90 @@ impl<'a> NameLookup<'a> {
             || visible_binding(named)
                 .and_then(NameBinding::use_target)
                 .is_some_and(|target| !self.binds_a_module(target))
+    }
+
+    /// Where the item of the type namespace that `module` binds as `name` is
+    /// defined, by a definition of its own or through `use` items, as the
+    /// viewer sees it. `None` where `name` is bound to no such item; the
+    /// modules and names in `visited` bind nothing.
+    fn type_item_definer(
+        self,
+        module: CrateModule,
+        name: &str,
+        visited: &mut Visited,
+    ) -> Option<ReExportTarget> {
+        let (lookup, bindings) = self.enter(module, Some(name), visited)?;
+        for binding in bindings?.named(name) {
+            let definer = match &binding.kind {
+                BindingKind::Definition(_) if binding.namespace() == Some(Namespace::Type) => Some(
+                    target_in(module.crate_name.to_string(), module.path.to_string(), name),
+                ),
+                BindingKind::ReExport(target) | BindingKind::PrivateUse(target) => {
+                    let holder = CrateModule {
+                        crate_name: &target.crate_name,
+                        path: &target.module,
+                    };
+                    lookup.type_item_definer(holder, &target.original_name, visited)
+                }
+                BindingKind::Definition(_)
+                | BindingKind::ReExportFromOutside(_)
+                | BindingKind::Elsewhere
+                | BindingKind::Module => None,
+            };
+            if definer.is_some() {
+                return definer;
+            }
+        }
+        None
+    }
+
+    /// The namespace of the definition `module` binds as `name`, by a
+    /// definition of its own or through `use` items, as the viewer sees it.
+    /// `None` where no definition the map knows is reached; the modules and
+    /// names in `visited` bind nothing.
+    fn definition_namespace(
+        self,
+        module: CrateModule,
+        name: &str,
+        visited: &mut Visited,
+    ) -> Option<Namespace> {
+        let (lookup, bindings) = self.enter(module, Some(name), visited)?;
+        for binding in bindings?.named(name) {
+            let namespace = match &binding.kind {
+                BindingKind::Definition(_) => binding.namespace(),
+                BindingKind::ReExport(target) | BindingKind::PrivateUse(target) => {
+                    let holder = CrateModule {
+                        crate_name: &target.crate_name,
+                        path: &target.module,
+                    };
+                    lookup.definition_namespace(holder, &target.original_name, visited)
+                }
+                BindingKind::ReExportFromOutside(_)
+                | BindingKind::Elsewhere
+                | BindingKind::Module => None,
+            };
+            if namespace.is_some() {
+                return namespace;
+            }
+        }
+        None
+    }
+
+    /// Whether the module of `target` defines its name, as the viewer sees
+    /// it, and only outside the type namespace.
+    fn defines_only_outside_the_type_namespace(self, target: &ReExportTarget) -> bool {
+        let holder = CrateModule {
+            crate_name: &target.crate_name,
+            path: &target.module,
+        };
+        let Some(bindings) = self.viewer.bindings_in(holder) else {
+            return false;
+        };
+        let mut named = bindings.every(&target.original_name).peekable();
+        named.peek().is_some()
+            && named.all(|binding| {
+                binding.definition().is_some() && binding.namespace() != Some(Namespace::Type)
+            })
     }
 
     /// Whether `target` binds a module of a workspace crate, or its root, as
@@ -3552,6 +3673,15 @@ fn append_to_path(prefix: &str, segment: &str) -> String {
     }
 }
 
+/// `path` followed by `rest`, `path` alone where `rest` is empty.
+fn followed_by(path: &str, rest: &str) -> String {
+    if rest.is_empty() {
+        path.to_string()
+    } else {
+        format!("{path}::{rest}")
+    }
+}
+
 /// Whether a use-tree leaf is the `self` that names its parent module.
 /// A `self` without a prefix (`use self;`) does not name a module and is left alone.
 fn is_self_segment(ident: &syn::Ident, prefix: &str) -> bool {
@@ -3650,6 +3780,90 @@ fn module_segments(path: &str) -> impl Iterator<Item = &str> {
     path.split("::").filter(|segment| !segment.is_empty())
 }
 
+/// What the first name of a path stands for in the module the path is
+/// written in, as far as the one who asks can tell.
+enum FirstName {
+    /// A module: a child module, or one a binding of the module names.
+    Module { crate_name: String, path: String },
+    /// An item of the type namespace the module defines.
+    TypeItem,
+    /// Something only the binding table tells, asked while it is collected.
+    Unknown,
+    /// Nothing the module binds.
+    Unbound,
+}
+
+/// Where a path starts, picked in rustc's order: `self::` and `super::` an
+/// ancestor of the module, `crate::` the root, then what the first name
+/// stands for in the module, then a crate of the extern prelude.
+enum PickedStart<'p> {
+    /// The own crate, with the path from its root, `::`-joined.
+    OwnRoot(String),
+    /// A module the first name stands for, with the rest of the path, `""`
+    /// where it ends on the name.
+    Module {
+        crate_name: String,
+        path: String,
+        rest: &'p str,
+    },
+    /// The item `name` of the module; the rest of the path names something
+    /// in the item.
+    TypeItem { name: &'p str },
+    /// A name only the binding table tells, then the rest of the path.
+    Unknown { rest: &'p str },
+    /// The workspace crate the extern prelude names, with the rest.
+    Crate { crate_name: String, rest: &'p str },
+    /// None of these: an external crate, or nothing.
+    Outside,
+}
+
+impl<'p> PickedStart<'p> {
+    /// The start of `path`, written in `module_path`. `first_name` tells what
+    /// the first name stands for in the module, and is asked only where the
+    /// path starts with a name. An unknown first name gives way to a crate
+    /// of `extern_prelude`: in a `use` path a name both bound and a crate is
+    /// ambiguous to rustc, so the crate is what compiles. `None` where the
+    /// path starts with an empty segment.
+    fn of(
+        path: &'p str,
+        module_path: &str,
+        extern_prelude: &HashMap<String, String>,
+        first_name: impl FnOnce(&str, AfterName) -> FirstName,
+    ) -> Option<Self> {
+        if let Some(resolved) = resolve_relative_path(path, module_path) {
+            return Some(Self::OwnRoot(resolved));
+        }
+        if let Some(after_crate) = path.strip_prefix("crate::") {
+            return Some(Self::OwnRoot(after_crate.to_string()));
+        }
+        let (first, rest) = path.split_once("::").unwrap_or((path, ""));
+        if first.is_empty() {
+            return None;
+        }
+        let in_prelude = || {
+            extern_prelude.get(first).map(|crate_name| Self::Crate {
+                crate_name: crate_name.clone(),
+                rest,
+            })
+        };
+        let after = if rest.is_empty() {
+            AfterName::PathEnds
+        } else {
+            AfterName::PathGoesOn
+        };
+        Some(match first_name(first, after) {
+            FirstName::Module { crate_name, path } => Self::Module {
+                crate_name,
+                path,
+                rest,
+            },
+            FirstName::TypeItem => Self::TypeItem { name: first },
+            FirstName::Unknown => in_prelude().unwrap_or(Self::Unknown { rest }),
+            FirstName::Unbound => in_prelude().unwrap_or(Self::Outside),
+        })
+    }
+}
+
 /// Where a path leads: the package, the module in it (`""` for its root),
 /// the item the path names there, and the root the package is read through.
 /// No item where the path names the module itself.
@@ -3669,10 +3883,9 @@ impl PathEnd {
 
     /// Where `path`, written in the file of `ctx` inside the inline modules
     /// `inline_path`, leads. Inside an inline module the path is read from
-    /// that module, as from a file of its own. The first segments pick the
-    /// start: `super::` and `self::` an ancestor of the module, `crate::` the
-    /// crate root, a child module of the module, a module the module binds, a
-    /// crate of the extern prelude. From there [`PathStart::follow`] walks the
+    /// that module, as from a file of its own. [`PickedStart::of`] picks the
+    /// start, with what the module binds as the binding table has it
+    /// ([`PathEnd::first_name`]); from there [`PathStart::follow`] walks the
     /// rest. A glob `base::*` leads where `base` does, with `*` as the item.
     /// `None` where no start fits, or where the walk enters a crate outside
     /// the workspace.
@@ -3681,18 +3894,14 @@ impl PathEnd {
             let module = append_to_path(ctx.current_module_path, inline_path);
             return Self::of_path(&ctx.in_module(&module), path, "");
         }
-        if let Some(resolved) = resolve_relative_path(path, ctx.current_module_path) {
-            let segments: Vec<&str> = resolved.split("::").collect();
-            return PathStart::own_crate(ctx).follow(ctx, &segments);
-        }
-
         // `crate` alone, as in `use crate as name;`, is the root.
         if path == "crate" {
             return Some(Self::own_root(ctx));
         }
-
         // `crate::*` has no module to resolve and is the root's glob.
-        if let Some(base) = path.strip_suffix("::*") {
+        if let Some(base) = path.strip_suffix("::*")
+            && resolve_relative_path(path, ctx.current_module_path).is_none()
+        {
             let base = if base == "crate" {
                 Self::own_root(ctx)
             } else {
@@ -3700,43 +3909,68 @@ impl PathEnd {
             };
             return Some(base.glob());
         }
-
-        if let Some(after_crate) = path.strip_prefix("crate::") {
-            let segments: Vec<&str> = after_crate.split("::").collect();
-            return PathStart::own_crate(ctx).follow(ctx, &segments);
-        }
-
-        if let Some(end) = Self::beside_the_file(ctx, path) {
-            return Some(end);
-        }
-        if let Some(end) = Self::module_bound_in_the_module(ctx, path) {
-            return Some(end);
-        }
-        // Only a name of the extern prelude names a workspace crate, and it
-        // names the crate it stands for there, whatever crate has that key.
-        let crate_names = ctx.crate_view.extern_prelude.names(ctx.test_build);
-        match dealias_extern_crate(crate_names, path) {
-            Some(in_workspace) => Self::in_workspace_crate(ctx, &in_workspace),
-            None => Self::in_external_crate(ctx, path),
+        let extern_prelude = ctx.crate_view.extern_prelude.names(ctx.test_build);
+        let picked = PickedStart::of(
+            path,
+            ctx.current_module_path,
+            extern_prelude,
+            |first, after| Self::first_name(ctx, first, after),
+        )?;
+        let own = PathStart::own_crate(ctx);
+        match picked {
+            PickedStart::OwnRoot(from_root) => {
+                let segments: Vec<&str> = from_root.split("::").collect();
+                own.follow(ctx, &segments)
+            }
+            PickedStart::Module {
+                crate_name,
+                path,
+                rest,
+            } if crate_name == own.crate_name => {
+                let in_crate: Vec<&str> = module_segments(&path)
+                    .chain(module_segments(rest))
+                    .collect();
+                Some(own.walk(ctx, &in_crate))
+            }
+            PickedStart::Module {
+                crate_name,
+                path,
+                rest,
+            } => {
+                let in_other: Vec<&str> = std::iter::once(crate_name.as_str())
+                    .chain(module_segments(&path))
+                    .chain(module_segments(rest))
+                    .collect();
+                Self::in_workspace_crate(ctx, &in_other.join("::"))
+            }
+            PickedStart::TypeItem { name } => {
+                Some(own.end((ctx.current_module_path.to_string(), Some(name.to_string()))))
+            }
+            PickedStart::Crate { crate_name, rest } => {
+                Self::in_workspace_crate(ctx, &followed_by(&crate_name, rest))
+            }
+            PickedStart::Unknown { .. } | PickedStart::Outside => {
+                Self::in_external_crate(ctx, path)
+            }
         }
     }
 
-    /// Where a bare path leads whose first segment the file's module binds
-    /// to a module, through a `use` or a glob, as the binding table has it.
-    /// `None` where the module binds no module of that name, or where the
-    /// path leaves the workspace.
-    fn module_bound_in_the_module(ctx: &ResolutionContext, path: &str) -> Option<Self> {
-        let segments: Vec<&str> = path.split("::").collect();
-        let (&first, rest) = segments.split_first()?;
-        if first.is_empty() {
-            return None;
+    /// What `first`, a path goes on past as `after` says, stands for in the
+    /// module of `ctx`, as the binding table has it: a child module, a module
+    /// a `use` or glob binds, an item of the type namespace the module
+    /// defines.
+    fn first_name(ctx: &ResolutionContext, first: &str, after: AfterName) -> FirstName {
+        let own = PathStart::own_crate(ctx);
+        if ctx.has_child_module(first) {
+            return FirstName::Module {
+                path: append_to_path(ctx.current_module_path, first),
+                crate_name: own.crate_name,
+            };
         }
-        let start = PathStart::own_crate(ctx);
         let module = CrateModule {
-            crate_name: &start.crate_name,
+            crate_name: &own.crate_name,
             path: ctx.current_module_path,
         };
-        let after = AfterName::followed_by(rest);
         let key = (
             ctx.test_build,
             ctx.current_module_path.to_string(),
@@ -3744,28 +3978,30 @@ impl PathEnd {
             after,
         );
         let cached = ctx.crate_view.modules_bound.0.borrow().get(&key).cloned();
+        let lookup = ctx.lookup(own.target_root);
         let named = cached.unwrap_or_else(|| {
-            let named = ctx
-                .lookup(start.target_root)
-                .module_named(module, first, after);
+            let named = lookup.module_named(module, first, after);
             ctx.crate_view
                 .modules_bound
                 .0
                 .borrow_mut()
                 .insert(key, named.clone());
             named
-        })?;
-        let NameTarget::Module { crate_name, path } = named else {
-            return None;
-        };
-        let in_module: Vec<&str> = module_segments(&path).chain(rest.iter().copied()).collect();
-        if crate_name != start.crate_name {
-            let in_other: Vec<&str> = std::iter::once(crate_name.as_str())
-                .chain(in_module.iter().copied())
-                .collect();
-            return Self::in_workspace_crate(ctx, &in_other.join("::"));
+        });
+        if let Some(NameTarget::Module { crate_name, path }) = named {
+            return FirstName::Module { crate_name, path };
         }
-        Some(start.walk(ctx, &in_module))
+        let defines_a_type = after == AfterName::PathGoesOn
+            && lookup.viewer.bindings_in(module).is_some_and(|bindings| {
+                bindings.named(first).any(|binding| {
+                    binding.definition().is_some() && binding.namespace() == Some(Namespace::Type)
+                })
+            });
+        if defines_a_type {
+            FirstName::TypeItem
+        } else {
+            FirstName::Unbound
+        }
     }
 
     /// Where `path`, written from the root of `package`, a workspace crate
@@ -3784,24 +4020,6 @@ impl PathEnd {
             format!("{package}::{path}")
         };
         Self::in_workspace_crate(ctx, &full).or_else(|| Self::in_external_crate(ctx, &full))
-    }
-
-    /// Where a bare path leads whose first segment names a child module of
-    /// the file's module: `use css::X` in `render/mod.rs` is `render::css`,
-    /// `use cli::X` in the root is `cli`. A top-level module is a child of the
-    /// root only; from any other file its bare name is not in scope, and what
-    /// stands there is an extern crate or a name a `use` bound.
-    fn beside_the_file(ctx: &ResolutionContext, path: &str) -> Option<Self> {
-        let segments: Vec<&str> = path.split("::").collect();
-        let first = *segments.first()?;
-        if first.is_empty() || !ctx.has_child_module(first) {
-            return None;
-        }
-        let start = PathStart::own_crate(ctx);
-        let in_crate: Vec<&str> = module_segments(ctx.current_module_path)
-            .chain(segments.iter().copied())
-            .collect();
-        Some(start.walk(ctx, &in_crate))
     }
 
     /// Where a path through a workspace crate leads, `other_crate::module`
@@ -4070,19 +4288,6 @@ impl PathStart {
     }
 }
 
-/// `path` with a leading name of the extern prelude replaced by the crate it
-/// names, also when the name is all of `path`.
-fn dealias_extern_crate(crate_names: &HashMap<String, String>, path: &str) -> Option<String> {
-    let (first, rest) = path
-        .split_once("::")
-        .map_or((path, None), |(first, rest)| (first, Some(rest)));
-    let crate_name = crate_names.get(first)?;
-    Some(rest.map_or_else(
-        || crate_name.clone(),
-        |rest| format!("{crate_name}::{rest}"),
-    ))
-}
-
 /// The workspace crates in the extern prelude of one crate root: name in
 /// the code -> key of the crate named, in the root's build without `test`
 /// and in its test build. Only these names start a path at a workspace
@@ -4118,19 +4323,23 @@ pub(crate) struct UseScope<'a> {
     pub(crate) module_paths: &'a ModulePathMap,
     /// The workspace crates of the extern prelude, by name, in the build the
     /// `use` is read in ([`ExternPrelude::names`]).
-    pub(crate) crate_names: &'a HashMap<String, String>,
+    pub(crate) extern_prelude: &'a HashMap<String, String>,
+    /// The names of the type items the module defines.
+    pub(crate) type_items: &'a HashSet<String>,
 }
 
 /// What a `use` path binds, placed by the module tree alone.
 #[derive(Debug)]
 pub(crate) enum UsePlace {
     /// A name in a module of a workspace crate, or a crate root as the name
-    /// `""` in its own root.
-    Name(ReExportTarget),
-    /// A name by a path from a name in scope: its first name is neither a
-    /// child module nor a crate, so it is a binding of the module or an
-    /// external crate. The target holds the path as written, from the root.
-    FromScope(ReExportTarget),
+    /// `""` in its own root. Where the path starts from a name in scope, its
+    /// first name is a binding of the module or an external crate
+    /// (`from_scope`), and the target holds the path as written, from the
+    /// root.
+    Name {
+        target: ReExportTarget,
+        from_scope: bool,
+    },
     /// The names a glob takes from a module, or the path of the glob as
     /// written where it goes on past the modules of the tree.
     Glob { crate_name: String, module: String },
@@ -4186,52 +4395,48 @@ impl UseScope<'_> {
             module,
             original_name: name,
         };
-        Some(if from_scope {
-            UsePlace::FromScope(target)
-        } else {
-            UsePlace::Name(target)
-        })
+        Some(UsePlace::Name { target, from_scope })
     }
 
-    /// The crate a `use` path starts in and its segments from that crate's
-    /// root: `super::` and `self::` an ancestor of this module, `crate::`
-    /// the root, a child module of this module, a workspace crate by the
-    /// name the extern prelude gives it. No other binding of this module is
-    /// asked, though rustc takes an item of this module over a crate of the
-    /// same name [ca-0761]. Any other first name the path goes
-    /// on past is a name in scope, a binding of this module or an external
-    /// crate: the path starts in this module and is marked as from scope,
-    /// and [`ReExportMap::settle_written_paths`] tells which once the table
-    /// is whole.
+    /// The crate a `use` path starts in, its segments from that crate's root,
+    /// and whether it starts from a name in scope. [`PickedStart::of`] picks
+    /// the start, with what this module binds as far as the table being
+    /// collected tells: its child modules and the type items it defines. Any
+    /// other first name the path goes on past is a binding of this module or
+    /// an external crate: the path starts in this module and is marked as
+    /// from scope, and [`ReExportMap::settle_written_paths`] tells which once
+    /// the table is whole.
     fn start(&self, path: &str) -> Option<(String, Vec<String>, bool)> {
         let own = |in_crate: &str, from_scope: bool| {
             let segments = in_crate.split("::").map(ToString::to_string);
             Some((self.crate_name.to_string(), segments.collect(), from_scope))
         };
-        if let Some(resolved) = resolve_relative_path(path, self.module_path) {
-            return own(&resolved, false);
+        let first_name = |first: &str, _| {
+            let child = append_to_path(self.module_path, first);
+            if self.module_paths.holds(self.crate_name, &child) {
+                FirstName::Module {
+                    crate_name: self.crate_name.to_string(),
+                    path: child,
+                }
+            } else if self.type_items.contains(first) {
+                FirstName::TypeItem
+            } else {
+                FirstName::Unknown
+            }
+        };
+        match PickedStart::of(path, self.module_path, self.extern_prelude, first_name)? {
+            PickedStart::OwnRoot(from_root) => own(&from_root, false),
+            PickedStart::Module { path, rest, .. } => own(&followed_by(&path, rest), false),
+            PickedStart::TypeItem { .. } => own(&append_to_path(self.module_path, path), false),
+            PickedStart::Crate { crate_name, rest } => {
+                let segments = module_segments(rest).map(ToString::to_string).collect();
+                Some((crate_name, segments, false))
+            }
+            PickedStart::Unknown { rest } if !rest.is_empty() => {
+                own(&append_to_path(self.module_path, path), true)
+            }
+            PickedStart::Unknown { .. } | PickedStart::Outside => None,
         }
-        if let Some(after_crate) = path.strip_prefix("crate::") {
-            return own(after_crate, false);
-        }
-        let (first, rest) = path.split_once("::").unwrap_or((path, ""));
-        let child = append_to_path(self.module_path, first);
-        if !first.is_empty()
-            && self
-                .module_paths
-                .get_or_empty(self.crate_name)
-                .contains(&child)
-        {
-            return own(&append_to_path(self.module_path, path), false);
-        }
-        if let Some(crate_name) = self.crate_names.get(first) {
-            let segments = module_segments(rest).map(ToString::to_string).collect();
-            return Some((crate_name.clone(), segments, false));
-        }
-        if first.is_empty() || rest.is_empty() {
-            return None;
-        }
-        own(&append_to_path(self.module_path, path), true)
     }
 
     /// Enter each of `segments` that names a child module, from the root of
@@ -4292,7 +4497,7 @@ pub(crate) fn parse_workspace_dependencies(
                     continue;
                 }
                 dep.via_reexport = via_reexport;
-                for mut dep in expand_glob(dep, ctx) {
+                for mut dep in expand_glob(dep, ctx, &collected.inline_path) {
                     if ctx.resolve_noting(&mut dep, Meaning::Any, passed_on) {
                         DependencyRef::dedup_push(&mut deps, &mut seen_targets, dep);
                     }
@@ -4338,15 +4543,43 @@ fn glob_payload(dep: &DependencyRef, ctx: &ResolutionContext) -> Option<Vec<Stri
 /// Non-globs pass through. So does a glob whose payload is unknown: it keeps the
 /// `*`, which scores as a single unnamed symbol — an understatement, but a
 /// smaller one than dropping the edge to zero.
-fn expand_glob(dep: DependencyRef, ctx: &ResolutionContext) -> Vec<DependencyRef> {
+///
+/// A name the module holding the glob, in the inline modules `inline_path`
+/// of the file, binds itself in the namespace the glob brings it in is not
+/// the glob's: its own binding hides the glob there. Where either namespace
+/// is unknown, the glob keeps the name.
+fn expand_glob(
+    dep: DependencyRef,
+    ctx: &ResolutionContext,
+    inline_path: &str,
+) -> Vec<DependencyRef> {
     if !is_glob(&dep) {
         return vec![dep];
     }
     let Some(names) = glob_payload(&dep, ctx) else {
         return vec![dep];
     };
+    let own = PathStart::own_crate(ctx);
+    let holder_path = append_to_path(ctx.current_module_path, inline_path);
+    let holder = CrateModule {
+        crate_name: &own.crate_name,
+        path: &holder_path,
+    };
+    let lookup = ctx.lookup(own.target_root);
+    let source_lookup = ctx.lookup_for(&dep);
+    let bound_by_the_holder = |name: &str| {
+        let Some(brought) = source_lookup.definition_namespace(
+            CrateModule::of(&dep),
+            name,
+            &mut Visited::default(),
+        ) else {
+            return false;
+        };
+        lookup.definition_namespace(holder, name, &mut Visited::default()) == Some(brought)
+    };
     names
         .into_iter()
+        .filter(|name| !bound_by_the_holder(name))
         .map(|name| DependencyRef {
             target_item: Some(name),
             ..dep.clone()

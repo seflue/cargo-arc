@@ -13,8 +13,8 @@ use crate::model::{DefKind, Definition, EntryFile, EntryKind, PackageInfo};
 use super::mod_resolver::{CfgCondition, ModuleFile, declared_files, extract_mod_declarations};
 use super::use_parser::{
     AssociatedItems, BindingKind, Brought, ExternPrelude, GlobBinding, GlobReach, ModuleExportInfo,
-    NameBinding, ReExportMap, RootReExports, UsePlace, UseScope, Visibility, attributes_expand,
-    is_reexport_visibility, item_attrs, resolve_use_tree,
+    NameBinding, Namespace, ReExportMap, RootReExports, UsePlace, UseScope, Visibility,
+    attributes_expand, is_reexport_visibility, item_attrs, resolve_use_tree,
 };
 
 /// Invariant parameters shared across the recursive re-export walk.
@@ -265,12 +265,22 @@ fn collect_module_info(
     let items = items_in_builds(items, test);
     info.expands_macros = items.iter().any(|(item, _)| expands_a_macro(item));
     info.unlisted = unlisted_names(&items);
+    let type_items = type_item_names(&items);
+    let scope = use_scope(ctx, module_path, test, &type_items);
     let macros = macro_rules_names(&items);
 
     for &(item, builds) in &items {
         let defined = match item {
             syn::Item::Use(use_item) => {
-                collect_use_reexports(ctx, use_item, module_path, test, &macros, &mut info, builds);
+                collect_use_reexports(
+                    ctx,
+                    &scope,
+                    use_item,
+                    module_path,
+                    &macros,
+                    &mut info,
+                    builds,
+                );
                 None
             }
             syn::Item::Mod(i) => Some((&i.vis, i.ident.clone(), BindingKind::Module)),
@@ -327,7 +337,7 @@ fn collect_module_info(
                     continue;
                 };
                 let Some((owner, type_name)) =
-                    impl_owner(ctx, &self_type.path, module_path, test, &info)
+                    impl_owner(ctx, &scope, &self_type.path, module_path, &info)
                 else {
                     continue;
                 };
@@ -489,6 +499,16 @@ fn expands_a_macro(item: &syn::Item) -> bool {
     }
 }
 
+/// The names the type items among `items` define.
+fn type_item_names(items: &[(&syn::Item, Brought)]) -> HashSet<String> {
+    items
+        .iter()
+        .filter_map(|(item, _)| defined_item(item))
+        .filter(|(_, _, kind)| Namespace::of(*kind) == Namespace::Type)
+        .map(|(_, ident, _)| ident.to_string())
+        .collect()
+}
+
 /// The visibility, name and kind of an item that defines a symbol, or `None`
 /// for any other item.
 fn defined_item(item: &syn::Item) -> Option<(&syn::Visibility, syn::Ident, DefKind)> {
@@ -539,9 +559,9 @@ pub(crate) fn name_a_fn_defines(item: &syn::ItemFn) -> (syn::Ident, DefKind) {
 /// place, is no type of this crate, and its `impl` is skipped.
 fn impl_owner(
     ctx: &CollectContext,
+    scope: &UseScope,
     path: &syn::Path,
     module_path: &str,
-    test: bool,
     info: &ModuleExportInfo,
 ) -> Option<(ImplOwner, String)> {
     let name = path.segments.last()?.ident.to_string();
@@ -565,15 +585,16 @@ fn impl_owner(
         .map(|s| s.ident.to_string())
         .collect::<Vec<_>>()
         .join("::");
-    let Some(UsePlace::Name(target)) = use_scope(ctx, module_path, test).place(&path_str) else {
+    let Some(UsePlace::Name {
+        target,
+        from_scope: false,
+    }) = scope.place(&path_str)
+    else {
         return None;
     };
-    let in_the_tree = target.module.is_empty()
-        || ctx
-            .all_module_paths
-            .get_or_empty(ctx.crate_name)
-            .contains(&target.module);
-    if target.crate_name != ctx.crate_name || !in_the_tree {
+    if target.crate_name != ctx.crate_name
+        || !ctx.all_module_paths.holds(ctx.crate_name, &target.module)
+    {
         return None;
     }
     let owner = if target.module == module_path {
@@ -584,14 +605,20 @@ fn impl_owner(
     Some((owner, target.original_name))
 }
 
-/// The scope that places the paths written in `module_path`, in the test
-/// build where `test` is set.
-fn use_scope<'a>(ctx: &'a CollectContext, module_path: &'a str, test: bool) -> UseScope<'a> {
+/// The scope that places the paths written in `module_path`, which defines
+/// `type_items`, in the test build where `test` is set.
+fn use_scope<'a>(
+    ctx: &'a CollectContext,
+    module_path: &'a str,
+    test: bool,
+    type_items: &'a HashSet<String>,
+) -> UseScope<'a> {
     UseScope {
         crate_name: ctx.crate_name,
         module_path,
         module_paths: ctx.all_module_paths,
-        crate_names: ctx.extern_prelude.names(test),
+        extern_prelude: ctx.extern_prelude.names(test),
+        type_items,
     }
 }
 
@@ -618,9 +645,9 @@ fn use_scope<'a>(ctx: &'a CollectContext, module_path: &'a str, test: bool) -> U
 /// map where `test` is set.
 fn collect_use_reexports(
     ctx: &CollectContext,
+    scope: &UseScope,
     use_item: &syn::ItemUse,
     module_path: &str,
-    test: bool,
     macros: &HashMap<String, usize>,
     info: &mut ModuleExportInfo,
     builds: Brought,
@@ -628,13 +655,12 @@ fn collect_use_reexports(
     let alias_paths = resolve_use_tree(&use_item.tree, "", true);
     let original_paths = resolve_use_tree(&use_item.tree, "", false);
 
-    let scope = use_scope(ctx, module_path, test);
     let visibility = Visibility::of(&use_item.vis, module_path);
     let private = !is_reexport_visibility(&use_item.vis);
 
     for (alias_path, original_path) in alias_paths.iter().zip(original_paths.iter()) {
         let alias_name = alias_path.rsplit("::").next().unwrap_or(alias_path);
-        let kind = match scope.place(original_path) {
+        let (kind, from_scope) = match scope.place(original_path) {
             None => {
                 if alias_name == "*" {
                     info.unplaced_globs.push(visibility.clone());
@@ -643,7 +669,7 @@ fn collect_use_reexports(
                 let own_macro = macros
                     .get(original_path)
                     .filter(|_| alias_path == original_path);
-                if let Some(&line) = own_macro {
+                let kind = if let Some(&line) = own_macro {
                     BindingKind::Definition(Definition {
                         kind: DefKind::Macro,
                         line,
@@ -652,7 +678,8 @@ fn collect_use_reexports(
                     BindingKind::Elsewhere
                 } else {
                     BindingKind::ReExportFromOutside(original_path.clone())
-                }
+                };
+                (kind, false)
             }
             Some(UsePlace::Glob { crate_name, module }) => {
                 let foreign = crate_name != ctx.crate_name;
@@ -669,21 +696,13 @@ fn collect_use_reexports(
                 });
                 continue;
             }
-            Some(UsePlace::Name(target)) if private => BindingKind::PrivateUse(target),
-            Some(UsePlace::Name(target)) => BindingKind::ReExport(target),
-            Some(UsePlace::FromScope(target)) => {
+            Some(UsePlace::Name { target, from_scope }) => {
                 let kind = if private {
                     BindingKind::PrivateUse(target)
                 } else {
                     BindingKind::ReExport(target)
                 };
-                let binding = NameBinding {
-                    kind,
-                    visibility: visibility.clone(),
-                    builds,
-                };
-                info.bind_from_scope(alias_name.to_string(), binding);
-                continue;
+                (kind, from_scope)
             }
             Some(UsePlace::Nothing) => continue,
         };
@@ -692,7 +711,11 @@ fn collect_use_reexports(
             visibility: visibility.clone(),
             builds,
         };
-        info.bind(alias_name.to_string(), binding);
+        if from_scope {
+            info.bind_from_scope(alias_name.to_string(), binding);
+        } else {
+            info.bind(alias_name.to_string(), binding);
+        }
     }
 }
 
