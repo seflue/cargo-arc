@@ -535,8 +535,8 @@ pub(crate) fn name_a_fn_defines(item: &syn::ItemFn) -> (syn::Ident, DefKind) {
 /// type's name there. A bare name is this module's when it defines the name,
 /// and otherwise whatever a `use` of this file binds it to; a qualified path
 /// is placed like the path of a `use`, in the test build where `test` is
-/// set. What resolves to neither is no type of this crate, and its `impl` is
-/// skipped.
+/// set. What resolves to neither, or to a path the module tree alone cannot
+/// place, is no type of this crate, and its `impl` is skipped.
 fn impl_owner(
     ctx: &CollectContext,
     path: &syn::Path,
@@ -568,7 +568,12 @@ fn impl_owner(
     let Some(UsePlace::Name(target)) = use_scope(ctx, module_path, test).place(&path_str) else {
         return None;
     };
-    if target.crate_name != ctx.crate_name {
+    let in_the_tree = target.module.is_empty()
+        || ctx
+            .all_module_paths
+            .get_or_empty(ctx.crate_name)
+            .contains(&target.module);
+    if target.crate_name != ctx.crate_name || !in_the_tree {
         return None;
     }
     let owner = if target.module == module_path {
@@ -601,8 +606,8 @@ fn use_scope<'a>(ctx: &'a CollectContext, module_path: &'a str, test: bool) -> U
 /// [`BindingKind::PrivateUse`] (a binding descendants can still name through
 /// this module). A glob is held with [`GlobReach::ReExport`] or
 /// [`GlobReach::Private`] by the same split, with the crate of its module
-/// where that is another workspace crate, and a glob no start places, or
-/// one of an item, as one of the module's unplaced globs. A non-glob leaf that no start places
+/// where that is another workspace crate, and a glob no start places as one
+/// of the module's unplaced globs. A non-glob leaf that no start places
 /// names something outside the workspace. Private, it binds by
 /// [`BindingKind::Elsewhere`], which keeps a descendant's reference to it
 /// from resolving to this module; public, by
@@ -666,12 +671,21 @@ fn collect_use_reexports(
             }
             Some(UsePlace::Name(target)) if private => BindingKind::PrivateUse(target),
             Some(UsePlace::Name(target)) => BindingKind::ReExport(target),
-            Some(UsePlace::Nothing) => {
-                if alias_name == "*" {
-                    info.unplaced_globs.push(visibility.clone());
-                }
+            Some(UsePlace::FromScope(target)) => {
+                let kind = if private {
+                    BindingKind::PrivateUse(target)
+                } else {
+                    BindingKind::ReExport(target)
+                };
+                let binding = NameBinding {
+                    kind,
+                    visibility: visibility.clone(),
+                    builds,
+                };
+                info.bind_from_scope(alias_name.to_string(), binding);
                 continue;
             }
+            Some(UsePlace::Nothing) => continue,
         };
         let binding = NameBinding {
             kind,

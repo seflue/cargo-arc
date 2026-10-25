@@ -164,9 +164,11 @@ pub(crate) enum BindingKind {
     /// even though it defines nothing. Resolving through it attributes the
     /// edge to the definer, not to this ancestor.
     PrivateUse(ReExportTarget),
-    /// A private `use` of a path [`UseScope::place`] finds no start for: an
-    /// external crate, which the placement does not know. Nothing here
-    /// names a definer, so a descendant's reference through this module
+    /// A private `use` of a path [`UseScope::place`] finds no start for, or
+    /// of a path from a name in scope that
+    /// [`ReExportMap::settle_written_paths`] finds no module for: an
+    /// external crate, which the map does not know. Nothing here names a
+    /// definer, so a descendant's reference through this module
     /// produces no edge rather than staying on the ancestor.
     Elsewhere,
     /// A child module declared here. A glob or a path from where the module
@@ -287,6 +289,10 @@ pub(crate) struct ModuleExportInfo {
     /// The globs of the module: `pub use` globs of its own crate, of other
     /// workspace crates, then private globs of its own crate and of others.
     globs: Vec<GlobBinding>,
+    /// The names a `use` binds by a path from a name in scope: its first
+    /// name is neither a child module nor a crate, so it is a binding of the
+    /// module or an external crate ([`UsePlace::FromScope`]).
+    from_scope: HashSet<String>,
     /// Whether an item of the module calls a macro, or carries an attribute
     /// or derive macro rustc does not build in. What the macro expands to
     /// may define names no binding lists.
@@ -359,6 +365,13 @@ impl ModuleExportInfo {
         self.globs.insert(at, glob);
     }
 
+    /// Bind `name` by `binding` like [`ModuleExportInfo::bind`], for a `use`
+    /// whose path starts from a name in scope.
+    pub(crate) fn bind_from_scope(&mut self, name: String, binding: NameBinding) {
+        self.from_scope.insert(name.clone());
+        self.bind(name, binding);
+    }
+
     /// Bind `name` by `binding`, read after the bindings the module already
     /// holds. A binding equal to one of them adds nothing.
     pub(crate) fn bind(&mut self, name: String, binding: NameBinding) {
@@ -389,6 +402,7 @@ impl ModuleExportInfo {
         for glob in other.globs {
             self.hold_glob(glob);
         }
+        self.from_scope.extend(other.from_scope);
         self.expands_macros |= other.expands_macros;
         self.unplaced_globs.extend(other.unplaced_globs);
         self.unlisted.extend(other.unlisted);
@@ -622,39 +636,127 @@ impl ReExportMap {
         })
     }
 
-    /// Point each `use` of another workspace crate whose target holds the path
-    /// as written, where [`UseScope::place`] left it, at what that path
-    /// reaches through the crate's root. A path whose first name the root
-    /// binds nothing under names that name in the root. A path that runs
-    /// through a binding still written waits for a later round, and rounds
-    /// repeat while one settles a path.
+    /// Point each `use` whose target holds the path as written, where
+    /// [`UseScope::place`] left it, at what that path reaches, and each glob
+    /// whose module is written at the module it reaches. Each path is read
+    /// from the root of its crate: into another workspace crate as seen from
+    /// outside, in the own crate as the module holding the `use` sees it. A
+    /// path that runs through a binding or glob still written waits for a
+    /// later round, and rounds repeat while one settles a path. A path whose
+    /// first name the root binds nothing under names that name in the root.
+    /// A path from a name in scope ([`UsePlace::FromScope`]) whose first
+    /// name stands for no module in the holding module names an external
+    /// crate: a private `use` of it binds [`BindingKind::Elsewhere`], a
+    /// `pub use` [`BindingKind::ReExportFromOutside`]. A glob whose path does not reach a module
+    /// imports nothing.
     pub(crate) fn settle_written_paths(mut self, module_paths: &ModulePathMap) -> Self {
         loop {
-            let lookup = NameLookup {
-                viewer: self.viewer_from_outside(),
-                module_paths,
-            };
-            let unsettled: HashSet<(String, String)> = self
-                .written_targets(module_paths)
-                .map(|(_, target)| (target.crate_name.clone(), target.module.clone()))
-                .collect();
-            let reached: Vec<_> = self
-                .written_targets(module_paths)
-                .filter_map(|(place, target)| {
-                    Some((place, reached_target(lookup, target, &unsettled)?))
-                })
-                .collect();
-            if reached.is_empty() {
+            let unsettled = self.unsettled(module_paths);
+            let targets = self.settled_targets(module_paths, &unsettled);
+            let globs = self.settled_globs(module_paths, &unsettled);
+            if targets.is_empty() && globs.is_empty() {
                 break;
             }
-            self.rebind(reached);
+            self.rebind(targets);
+            self.reglob(globs);
         }
         let unreached: Vec<_> = self
             .written_targets(module_paths)
-            .map(|(place, target)| (place, root_name_of(target)))
+            .filter(|(place, _)| !place.from_scope)
+            .map(|(place, target)| (place, Settled::Target(root_name_of(target))))
             .collect();
         self.rebind(unreached);
+        let nothing_waits = HashSet::new();
+        let targets = self.settled_targets(module_paths, &nothing_waits);
+        self.rebind(targets);
+        let globs = self.settled_globs(module_paths, &nothing_waits);
+        self.reglob(globs);
         self
+    }
+
+    /// The modules that paths still written hold, by crate and path: of
+    /// `use` targets and of globs.
+    fn unsettled(&self, module_paths: &ModulePathMap) -> HashSet<(String, String)> {
+        let targets = self
+            .written_targets(module_paths)
+            .map(|(_, target)| (target.crate_name.clone(), target.module.clone()));
+        let globs = self
+            .written_globs(module_paths)
+            .map(|(_, glob)| (glob.crate_name.clone(), glob.module.clone()));
+        targets.chain(globs).collect()
+    }
+
+    /// What each written `use` target reaches, where its path waits on none
+    /// of `unsettled`. A path not from a name in scope whose first name the
+    /// root binds nothing under stays written.
+    fn settled_targets(
+        &self,
+        module_paths: &ModulePathMap,
+        unsettled: &HashSet<(String, String)>,
+    ) -> Vec<(BindingPlace, Settled)> {
+        self.written_targets(module_paths)
+            .filter_map(|(place, target)| {
+                let own = target.crate_name == place.package;
+                let own_root = (place.package.clone(), place.root);
+                let lookup = NameLookup {
+                    viewer: self.viewer_of_written(own, &own_root, place.test_build, &place.module),
+                    module_paths,
+                };
+                let from = if place.from_scope {
+                    WrittenFrom::Scope(&place.module)
+                } else {
+                    WrittenFrom::CrateRoot
+                };
+                let settled = match reached_target(lookup, target, from, unsettled) {
+                    Reached::Target(target) => Settled::Target(target),
+                    Reached::Unbound if place.from_scope => Settled::Outside,
+                    Reached::Unbound | Reached::Waits => return None,
+                };
+                Some((place, settled))
+            })
+            .collect()
+    }
+
+    /// The module each written glob reaches, [`NameTarget::Item`] where its
+    /// path reaches no module, where the path waits on none of `unsettled`.
+    fn settled_globs(
+        &self,
+        module_paths: &ModulePathMap,
+        unsettled: &HashSet<(String, String)>,
+    ) -> Vec<(GlobPlace, NameTarget)> {
+        self.written_globs(module_paths)
+            .filter_map(|(place, glob)| {
+                let own = glob.crate_name == place.package;
+                let own_root = (place.package.clone(), place.root);
+                let lookup = NameLookup {
+                    viewer: self.viewer_of_written(own, &own_root, place.test_build, &place.module),
+                    module_paths,
+                };
+                let reached = reached_module(lookup, glob, unsettled)?;
+                Some((place, reached))
+            })
+            .collect()
+    }
+
+    /// The viewer that reads a path written in `module` of `own_root`, in
+    /// its test build where `test_build` is set: from that module where the
+    /// path stays in the own crate (`own`), else from outside every package.
+    fn viewer_of_written<'a>(
+        &'a self,
+        own: bool,
+        own_root: &'a (String, usize),
+        test_build: bool,
+        module: &'a str,
+    ) -> Viewer<'a> {
+        if !own {
+            return self.viewer_from_outside();
+        }
+        Viewer {
+            packages: &self.packages,
+            own_root: Some(own_root),
+            test_build,
+            module: Some(module),
+        }
     }
 
     /// The viewer from outside every package: it sees each package's lib root,
@@ -668,32 +770,67 @@ impl ReExportMap {
         }
     }
 
-    /// Each `use` binding whose target, in another workspace crate than its
-    /// holder's, lies in no module of that crate: the path as written.
+    /// Each `use` binding whose target lies in no module of its crate: the
+    /// path as written.
     fn written_targets<'a>(
         &'a self,
         module_paths: &'a ModulePathMap,
     ) -> impl Iterator<Item = (BindingPlace, &'a ReExportTarget)> + 'a {
-        self.use_targets().filter(move |(place, target)| {
-            target.crate_name != place.package
-                && !target.module.is_empty()
+        self.use_targets().filter(move |(_, target)| {
+            !target.module.is_empty()
                 && !module_paths
                     .get_or_empty(&target.crate_name)
                     .contains(&target.module)
         })
     }
 
+    /// Each glob whose module lies in no module of its crate: the path as
+    /// written.
+    fn written_globs<'a>(
+        &'a self,
+        module_paths: &'a ModulePathMap,
+    ) -> impl Iterator<Item = (GlobPlace, &'a GlobBinding)> + 'a {
+        self.module_infos()
+            .flat_map(|(package, root, test_build, module, info)| {
+                info.globs.iter().enumerate().map(move |(index, glob)| {
+                    let place = GlobPlace {
+                        package: package.clone(),
+                        root,
+                        test_build,
+                        module: module.clone(),
+                        index,
+                    };
+                    (place, glob)
+                })
+            })
+            .filter(move |(_, glob)| {
+                !glob.module.is_empty()
+                    && !module_paths
+                        .get_or_empty(&glob.crate_name)
+                        .contains(&glob.module)
+            })
+    }
+
+    /// Each module of the map, in every root and build, with its package,
+    /// root, build and path.
+    fn module_infos(
+        &self,
+    ) -> impl Iterator<Item = (&String, usize, bool, &String, &ModuleExportInfo)> {
+        self.packages.iter().flat_map(|(package, roots)| {
+            roots.iter().enumerate().flat_map(move |(root, exports)| {
+                exports.builds().flat_map(move |(test_build, modules)| {
+                    modules
+                        .iter()
+                        .map(move |(module, info)| (package, root, test_build, module, info))
+                })
+            })
+        })
+    }
+
     /// Each `use` binding of the map, in every root and build, with its place.
     fn use_targets(&self) -> impl Iterator<Item = (BindingPlace, &ReExportTarget)> {
-        let builds = self.packages.iter().flat_map(|(package, roots)| {
-            roots.iter().enumerate().flat_map(move |(root, exports)| {
-                exports
-                    .builds()
-                    .map(move |(test_build, modules)| (package, root, test_build, modules))
-            })
-        });
-        builds.flat_map(|(package, root, test_build, modules)| {
-            modules.iter().flat_map(move |(module, info)| {
+        self.module_infos()
+            .flat_map(|(package, root, test_build, module, info)| {
                 info.use_targets().map(move |(name, index, target)| {
                     let place = BindingPlace {
                         package: package.clone(),
@@ -702,28 +839,57 @@ impl ReExportMap {
                         module: module.clone(),
                         name: name.to_string(),
                         index,
+                        from_scope: info.from_scope.contains(name),
                     };
                     (place, target)
                 })
             })
-        })
     }
 
-    /// Replace the target of the `use` binding at each place.
-    fn rebind(&mut self, targets: Vec<(BindingPlace, ReExportTarget)>) {
-        let packages = Arc::make_mut(&mut self.packages);
-        for (place, target) in targets {
-            let binding = packages
-                .get_mut(&place.package)
-                .and_then(|roots| roots.get_mut(place.root))
-                .and_then(|exports| {
-                    if place.test_build {
-                        exports.test_build_modules.as_mut()
-                    } else {
-                        Some(&mut exports.modules)
-                    }
-                })
-                .and_then(|modules| modules.get_mut(&place.module))
+    /// The module `module` of the `root`-th root of `package`, in its test
+    /// build where `test_build` is set.
+    fn module_mut(
+        &mut self,
+        package: &str,
+        root: usize,
+        test_build: bool,
+        module: &str,
+    ) -> Option<&mut ModuleExportInfo> {
+        let exports = Arc::make_mut(&mut self.packages)
+            .get_mut(package)?
+            .get_mut(root)?;
+        let modules = if test_build {
+            exports.test_build_modules.as_mut()?
+        } else {
+            &mut exports.modules
+        };
+        modules.get_mut(module)
+    }
+
+    /// Settle the `use` binding at each place: point it at its target, or,
+    /// where it names something outside the workspace, bind a private `use`
+    /// [`BindingKind::Elsewhere`] and a `pub use`
+    /// [`BindingKind::ReExportFromOutside`].
+    fn rebind(&mut self, settled: Vec<(BindingPlace, Settled)>) {
+        let mut outside: HashMap<(String, usize, bool, String, String), HashSet<usize>> =
+            HashMap::new();
+        for (place, settled) in settled {
+            let target = match settled {
+                Settled::Target(target) => target,
+                Settled::Outside => {
+                    let key = (
+                        place.package,
+                        place.root,
+                        place.test_build,
+                        place.module,
+                        place.name,
+                    );
+                    outside.entry(key).or_default().insert(place.index);
+                    continue;
+                }
+            };
+            let binding = self
+                .module_mut(&place.package, place.root, place.test_build, &place.module)
                 .and_then(|info| info.bindings.get_mut(&place.name))
                 .and_then(|bindings| bindings.get_mut(place.index));
             if let Some(NameBinding {
@@ -732,6 +898,66 @@ impl ReExportMap {
             }) = binding
             {
                 *held = target;
+            }
+        }
+        for ((package, root, test_build, module, name), indices) in outside {
+            let Some(info) = self.module_mut(&package, root, test_build, &module) else {
+                continue;
+            };
+            let Some(bindings) = info.bindings.remove(&name) else {
+                continue;
+            };
+            // Bound again oldest first, so the order of the kinds holds.
+            for (index, mut binding) in bindings.into_iter().enumerate().rev() {
+                if indices.contains(&index) {
+                    binding.kind = match binding.kind {
+                        BindingKind::ReExport(written) => {
+                            // Written from a name in scope, the path starts
+                            // with the module that holds it.
+                            let path = append_to_path(&written.module, &written.original_name);
+                            let from_holder = path
+                                .strip_prefix(&format!("{module}::"))
+                                .map_or(path.clone(), ToString::to_string);
+                            BindingKind::ReExportFromOutside(from_holder)
+                        }
+                        _ => BindingKind::Elsewhere,
+                    };
+                }
+                info.bind(name.clone(), binding);
+            }
+        }
+    }
+
+    /// Point each written glob at the module it reaches, or hold it as
+    /// unplaced where it reaches none.
+    fn reglob(&mut self, settled: Vec<(GlobPlace, NameTarget)>) {
+        let mut by_module: HashMap<ModuleKey, HashMap<usize, NameTarget>> = HashMap::new();
+        for (place, reached) in settled {
+            let key = (place.package, place.root, place.test_build, place.module);
+            by_module
+                .entry(key)
+                .or_default()
+                .insert(place.index, reached);
+        }
+        for ((package, root, test_build, module), reached) in by_module {
+            let Some(info) = self.module_mut(&package, root, test_build, &module) else {
+                continue;
+            };
+            let globs = std::mem::take(&mut info.globs);
+            for (index, mut glob) in globs.into_iter().enumerate() {
+                match reached.get(&index) {
+                    Some(NameTarget::Item) => {
+                        info.unplaced_globs.push(glob.visibility);
+                        continue;
+                    }
+                    Some(NameTarget::Module { crate_name, path }) => {
+                        glob.foreign = *crate_name != package;
+                        glob.crate_name.clone_from(crate_name);
+                        glob.module.clone_from(path);
+                    }
+                    None => {}
+                }
+                info.hold_glob(glob);
             }
         }
     }
@@ -763,37 +989,94 @@ struct BindingPlace {
     module: String,
     name: String,
     index: usize,
+    /// Whether the `use` path of the binding starts from a name in scope.
+    from_scope: bool,
+}
+
+/// A module of a [`ReExportMap`] by package, root, build and path.
+type ModuleKey = (String, usize, bool, String);
+
+/// Where a glob sits in a [`ReExportMap`]: package, root, build, module, and
+/// place among the globs of the module.
+struct GlobPlace {
+    package: String,
+    root: usize,
+    test_build: bool,
+    module: String,
+    index: usize,
+}
+
+/// What a written `use` path settles to: a target, or something outside the
+/// workspace.
+enum Settled {
+    Target(ReExportTarget),
+    Outside,
+}
+
+/// What a written path reaches as far as the map tells now.
+enum Reached {
+    /// The target the path reaches.
+    Target(ReExportTarget),
+    /// The first name binds nothing in the module the path starts in.
+    Unbound,
+    /// A name's lookup entered a module that a path still written holds:
+    /// what the name stands for is known once that path is settled.
+    Waits,
+}
+
+/// Where the written part of a path starts, and what a name there that
+/// stands for no module means.
+#[derive(Clone, Copy)]
+enum WrittenFrom<'a> {
+    /// The root of the crate: a path into another workspace crate, or one
+    /// of the own crate from `crate::`, `self::`, `super::` or a child
+    /// module. A first name the root binds nothing under leaves the path
+    /// [`Reached::Unbound`], an item ends it.
+    CrateRoot,
+    /// The module holding a `use` whose path starts from a name in scope: a
+    /// first name that stands for no module there names an external crate,
+    /// since a path goes on only through a module, and leaves the path
+    /// [`Reached::Unbound`].
+    Scope(&'a str),
 }
 
 /// The target the path `target` holds as written reaches from the root of
 /// its crate, as `lookup` sees it: each name but the last carries the path
 /// into the module it stands for, and the name that stands for no module
-/// ends it, as an item whose associated item the rest names. `None` where
-/// the root binds nothing under the first name, or where a name's lookup
-/// enters a module of `unsettled`, the modules that paths still written
-/// hold: what the name stands for is known once those paths are settled.
+/// ends it, as an item whose associated item the rest names. A name that
+/// binds nothing ends it the same way, except where the written part of the
+/// path starts (`from`). A name its holder binds to alternatives under
+/// `cfg` ends it on the holder: the target is the last name there, so a
+/// lookup of it stays in the module that binds the alternatives.
+/// `unsettled` holds the modules that paths still written hold.
 fn reached_target(
     lookup: NameLookup,
     target: &ReExportTarget,
+    from: WrittenFrom,
     unsettled: &HashSet<(String, String)>,
-) -> Option<ReExportTarget> {
+) -> Reached {
     let written: Vec<&str> = target
         .module
         .split("::")
         .chain(std::iter::once(target.original_name.as_str()))
         .collect();
-    let (last, through) = written.split_last()?;
+    let Some((last, through)) = written.split_last() else {
+        return Reached::Unbound;
+    };
     let mut crate_name = target.crate_name.clone();
     let mut module = String::new();
-    for (index, name) in through.iter().enumerate() {
+    for name in through {
         let holder = CrateModule {
             crate_name: &crate_name,
             path: &module,
         };
+        if binds_alternatives(lookup, holder, name) {
+            return Reached::Target(target_in(crate_name, module, last));
+        }
         let mut visited = Visited::default();
         let named = lookup.name_passing(holder, name, AfterName::PathGoesOn, &mut visited);
         if visited.entered_any(unsettled) {
-            return None;
+            return Reached::Waits;
         }
         match named {
             Some(NameTarget::Module {
@@ -803,11 +1086,73 @@ fn reached_target(
                 crate_name = reached_crate;
                 module = path;
             }
-            None if index == 0 => return None,
-            Some(NameTarget::Item) | None => return Some(target_in(crate_name, module, name)),
+            _ if crate_name == target.crate_name
+                && matches!(from, WrittenFrom::Scope(start) if module == start) =>
+            {
+                return Reached::Unbound;
+            }
+            None if crate_name == target.crate_name
+                && module.is_empty()
+                && matches!(from, WrittenFrom::CrateRoot) =>
+            {
+                return Reached::Unbound;
+            }
+            Some(NameTarget::Item) | None => {
+                return Reached::Target(target_in(crate_name, module, name));
+            }
         }
     }
-    Some(target_in(crate_name, module, last))
+    Reached::Target(target_in(crate_name, module, last))
+}
+
+/// The module the written path of `glob` reaches from the root of its
+/// crate, as `lookup` sees it, or [`NameTarget::Item`] where a name on it
+/// stands for no module or for alternatives under `cfg`. `None` where a
+/// name's lookup enters a module of `unsettled`.
+fn reached_module(
+    lookup: NameLookup,
+    glob: &GlobBinding,
+    unsettled: &HashSet<(String, String)>,
+) -> Option<NameTarget> {
+    let mut crate_name = glob.crate_name.clone();
+    let mut module = String::new();
+    for name in glob.module.split("::") {
+        let holder = CrateModule {
+            crate_name: &crate_name,
+            path: &module,
+        };
+        if binds_alternatives(lookup, holder, name) {
+            return Some(NameTarget::Item);
+        }
+        let mut visited = Visited::default();
+        let named = lookup.name_passing(holder, name, AfterName::PathGoesOn, &mut visited);
+        if visited.entered_any(unsettled) {
+            return None;
+        }
+        let Some(NameTarget::Module {
+            crate_name: reached_crate,
+            path,
+        }) = named
+        else {
+            return Some(NameTarget::Item);
+        };
+        crate_name = reached_crate;
+        module = path;
+    }
+    Some(NameTarget::Module {
+        crate_name,
+        path: module,
+    })
+}
+
+/// Whether `holder` binds `name` to different targets by private `use`
+/// items, as `lookup` sees it: alternatives under `cfg`, of which syn
+/// cannot tell which a build takes.
+fn binds_alternatives(lookup: NameLookup, holder: CrateModule, name: &str) -> bool {
+    lookup
+        .viewer
+        .bindings_in(holder)
+        .is_some_and(|bindings| binds_to_differing_targets(bindings, name))
 }
 
 /// The target `name` in the module `module` of `crate_name`.
@@ -3782,10 +4127,14 @@ pub(crate) enum UsePlace {
     /// A name in a module of a workspace crate, or a crate root as the name
     /// `""` in its own root.
     Name(ReExportTarget),
-    /// The names a glob takes from a module.
+    /// A name by a path from a name in scope: its first name is neither a
+    /// child module nor a crate, so it is a binding of the module or an
+    /// external crate. The target holds the path as written, from the root.
+    FromScope(ReExportTarget),
+    /// The names a glob takes from a module, or the path of the glob as
+    /// written where it goes on past the modules of the tree.
     Glob { crate_name: String, module: String },
-    /// Nothing: the path names its own crate alone, or is a glob of an item
-    /// in a module, such as the variants of an enum.
+    /// Nothing: the path names its own crate alone.
     Nothing,
 }
 
@@ -3795,17 +4144,15 @@ impl UseScope<'_> {
     /// is being collected. From the start [`UseScope::start`] picks, each
     /// segment that names a child module enters it, and the next segment is
     /// the name. A path that ends on a module binds it as a name in its
-    /// parent; a whole workspace crate binds its root. A path into another
-    /// workspace crate that goes on past the name keeps the path as written,
-    /// with its last segment as the name, for
-    /// [`ReExportMap::settle_written_paths`] to follow once the table is
-    /// whole. In this crate, a first segment that names no child of the root
-    /// and that the path goes on past is taken for a module, and the next
-    /// segment for the name. A glob takes the names of the module its path
-    /// ends on, or of the first segment taken for a module. `None` where no
+    /// parent; a whole workspace crate binds its root. A path that goes on
+    /// past the name keeps the path as written, with its last segment as the
+    /// name, for [`ReExportMap::settle_written_paths`] to follow once the
+    /// table is whole, in this crate as in another. A glob takes the names
+    /// of the module its path ends on; one whose path goes on past the
+    /// modules of the tree keeps it as written the same way. `None` where no
     /// start fits.
     pub(crate) fn place(&self, path: &str) -> Option<UsePlace> {
-        let (crate_name, segments) = self.start(path)?;
+        let (crate_name, segments, from_scope) = self.start(path)?;
         if segments.first().is_some_and(String::is_empty) {
             return None;
         }
@@ -3814,10 +4161,10 @@ impl UseScope<'_> {
             && last == "*"
         {
             let (module, rest) = self.enter_modules(&crate_name, base);
-            let module = match rest {
-                [] => module,
-                [first] if module.is_empty() => first.clone(),
-                _ => return Some(UsePlace::Nothing),
+            let module = if rest.is_empty() {
+                module
+            } else {
+                base.join("::")
             };
             return Some(UsePlace::Glob { crate_name, module });
         }
@@ -3829,36 +4176,43 @@ impl UseScope<'_> {
                 (parent.to_string(), name.to_string())
             }
             [name] => (module, name.clone()),
-            [.., last] if foreign => {
+            [.., last] => {
                 let written = &segments[..segments.len() - 1];
                 (written.join("::"), last.clone())
             }
-            [first, next, ..] if module.is_empty() => (first.clone(), next.clone()),
-            [name, ..] => (module, name.clone()),
         };
-        Some(UsePlace::Name(ReExportTarget {
+        let target = ReExportTarget {
             crate_name,
             module,
             original_name: name,
-        }))
+        };
+        Some(if from_scope {
+            UsePlace::FromScope(target)
+        } else {
+            UsePlace::Name(target)
+        })
     }
 
     /// The crate a `use` path starts in and its segments from that crate's
     /// root: `super::` and `self::` an ancestor of this module, `crate::`
     /// the root, a child module of this module, a workspace crate by the
     /// name the extern prelude gives it. No other binding of this module is
-    /// asked: a name that is both a binding and a crate is ambiguous in a
-    /// `use` path, which rustc rejects.
-    fn start(&self, path: &str) -> Option<(String, Vec<String>)> {
-        let own = |in_crate: &str| {
+    /// asked, though rustc takes an item of this module over a crate of the
+    /// same name [ca-0761]. Any other first name the path goes
+    /// on past is a name in scope, a binding of this module or an external
+    /// crate: the path starts in this module and is marked as from scope,
+    /// and [`ReExportMap::settle_written_paths`] tells which once the table
+    /// is whole.
+    fn start(&self, path: &str) -> Option<(String, Vec<String>, bool)> {
+        let own = |in_crate: &str, from_scope: bool| {
             let segments = in_crate.split("::").map(ToString::to_string);
-            Some((self.crate_name.to_string(), segments.collect()))
+            Some((self.crate_name.to_string(), segments.collect(), from_scope))
         };
         if let Some(resolved) = resolve_relative_path(path, self.module_path) {
-            return own(&resolved);
+            return own(&resolved, false);
         }
         if let Some(after_crate) = path.strip_prefix("crate::") {
-            return own(after_crate);
+            return own(after_crate, false);
         }
         let (first, rest) = path.split_once("::").unwrap_or((path, ""));
         let child = append_to_path(self.module_path, first);
@@ -3868,11 +4222,16 @@ impl UseScope<'_> {
                 .get_or_empty(self.crate_name)
                 .contains(&child)
         {
-            return own(&append_to_path(self.module_path, path));
+            return own(&append_to_path(self.module_path, path), false);
         }
-        let crate_name = self.crate_names.get(first)?;
-        let segments = module_segments(rest).map(ToString::to_string).collect();
-        Some((crate_name.clone(), segments))
+        if let Some(crate_name) = self.crate_names.get(first) {
+            let segments = module_segments(rest).map(ToString::to_string).collect();
+            return Some((crate_name.clone(), segments, false));
+        }
+        if first.is_empty() || rest.is_empty() {
+            return None;
+        }
+        own(&append_to_path(self.module_path, path), true)
     }
 
     /// Enter each of `segments` that names a child module, from the root of
