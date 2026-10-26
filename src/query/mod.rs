@@ -4,6 +4,7 @@
 
 pub(crate) mod edges;
 pub(crate) mod hotspots;
+pub(crate) mod usages;
 
 use serde_json::{Map, Value};
 use std::io::{self, Write};

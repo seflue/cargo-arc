@@ -99,3 +99,30 @@ The header adds these fields after `flags`:
 | `locations` | What the `locations` column holds. |
 | `cycles` | What the `cycles` column counts. |
 | `not-shown` | What an edge does not show: method calls on a receiver, field access, usages inside the same module, and test usages unless `--include-tests`. |
+
+## query usages
+
+`query usages <SYMBOL>` lists every [usage](GLOSSARY.md#usage) of the items named `<SYMBOL>` in a module other than the one that defines the item.
+`<SYMBOL>` is the item's name without its module path, so it can match items of several modules; each record names its provider.
+The usages are the ones the module dependencies of the diagram carry, and `--debug` logs them for a diagram run.
+A name without such usages prints the header and the column line, with `items` as `none`, and exits with 0: either no item has the name, or its items are used only inside their own module.
+Lua references record no usages, so on a Lua workspace `query usages` ends with an error.
+
+| Column | Value |
+|--------|-------|
+| `symbol` | The item's name. |
+| `provider` | The module that defines the item, as a path starting with the package; `pub use` re-exports are followed. |
+| `module` | The module the usage is in, as a path starting with the package. |
+| `path` | The file of the usage, relative to the workspace root. |
+| `line` | The line of the usage. |
+| `usage-category` | The [usage category](GLOSSARY.md#usage-category): `types`, `values` or `functions`. |
+
+The header adds these fields after `flags`:
+
+| Key | Value |
+|-----|-------|
+| `symbol` | The name asked for. |
+| `items` | The items of that name that have a usage in another module, each as its provider's path followed by its name, or `none`. |
+| `usage` | What counts as a usage: a place where a module uses a symbol of another module, through an import or by its full path, such as a call, a type in a signature or a bound, a struct literal, or a const or static read. An import nothing in the file names counts once, at the import's line: a trait as `functions`, used for its methods, another type as `types`, a const or static as `values`, a function as `functions`, any other item by the case of its name. |
+| `not-listed` | What the records leave out: method calls on a receiver, usages inside the module that provides the item (an item used only there is missing from `items` as well), `pub use` re-exports, and usages in test code unless `--include-tests`. With `--include-tests`, test and production usages share the records without a mark that tells them apart. |
+| `order` | The order of the records: by provider, then path, line and the usage category's name. |

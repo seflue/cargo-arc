@@ -134,6 +134,9 @@ pub enum QueryCommand {
     /// categories, its imports and the cycles through the edge
     #[command(override_usage = "cargo arc [SHARED OPTIONS] query edges [OPTIONS]")]
     Edges,
+    /// List every usage of a symbol in another module, with its line and
+    /// usage category
+    Usages(UsagesQueryArgs),
     /// A name that is no subcommand, kept to answer it with the valid ones;
     /// clap's own error would not list them.
     #[command(external_subcommand)]
@@ -156,6 +159,14 @@ pub struct HotspotsQueryArgs {
     /// Files to list instead of the top N, relative to the workspace root
     #[arg(value_name = "PATH")]
     pub paths: Vec<PathBuf>,
+}
+
+#[derive(Parser)]
+#[command(override_usage = "cargo arc [SHARED OPTIONS] query usages [OPTIONS] <SYMBOL>")]
+pub struct UsagesQueryArgs {
+    /// Name of the item, without its module path
+    #[arg(value_name = "SYMBOL")]
+    pub symbol: String,
 }
 
 impl QueryArgs {
@@ -440,6 +451,7 @@ fn run_query(args: &ArcCommand, query_args: &QueryArgs) -> Result<Judgment> {
     let output = match &query_args.command {
         QueryCommand::Hotspots(hotspots_args) => query_hotspots(args, hotspots_args)?,
         QueryCommand::Edges => query_edges(args)?,
+        QueryCommand::Usages(usages_args) => query_usages(args, usages_args)?,
         QueryCommand::Unknown(words) => {
             let given = words.first().map_or("", String::as_str);
             let valid: Vec<String> = <QueryArgs as clap::CommandFactory>::command()
@@ -521,6 +533,36 @@ fn query_edges(args: &ArcCommand) -> Result<QueryOutput> {
         header,
         columns: &query::edges::COLUMNS,
         records: query::edges::records(&analysis.layout),
+    })
+}
+
+/// The output of `query usages`: the usages of the symbol on the module
+/// edges of the diagram's dependency graph.
+fn query_usages(args: &ArcCommand, usages_args: &UsagesQueryArgs) -> Result<QueryOutput> {
+    use query::usages::{COLUMNS, header_fields, of_symbol, records};
+
+    if language_of(&args.common)? == Language::Lua {
+        anyhow::bail!("query usages: usages are recorded for Rust only, and this run analyzes Lua");
+    }
+    let adapter = adapter_for(args, args.switches())?;
+    let analysis = adapter.analyze()?;
+    let workspace_root = workspace_root_of(&analysis.packages).with_context(|| {
+        format!(
+            "workspace has no {} to list usages in",
+            adapter.profile().wording.packages
+        )
+    })?;
+    let usages = of_symbol(
+        crate::graph::usages(&analysis.packages, &analysis.modules),
+        &usages_args.symbol,
+    );
+
+    let mut header = query::Header::for_workspace(&workspace_root, args.query_flags()?);
+    header.subcommand_fields = header_fields(&usages_args.symbol, &usages);
+    Ok(QueryOutput {
+        header,
+        columns: &COLUMNS,
+        records: records(&usages),
     })
 }
 
@@ -1327,7 +1369,7 @@ mod tests {
 
         assert_eq!(
             err,
-            "'bogus' is no subcommand of query; its subcommands: hotspots, edges"
+            "'bogus' is no subcommand of query; its subcommands: hotspots, edges, usages"
         );
     }
 

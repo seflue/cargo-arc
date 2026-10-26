@@ -804,6 +804,17 @@ fn check_refuses_a_lua_plugin() {
 }
 
 #[test]
+fn query_usages_refuses_a_lua_plugin() {
+    let plugin = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lua_plugin");
+    let (code, stderr) = cargo_arc_in(&plugin, &["query", "usages", "setup"]);
+    assert_eq!(code, 2, "stderr: {stderr}");
+    assert!(
+        stderr.contains("usages are recorded for Rust only"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
 fn test_multi_package_fixture() {
     let (temp, cmd) = fixture_args("multi_crate", false);
 
