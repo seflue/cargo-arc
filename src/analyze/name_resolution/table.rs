@@ -16,8 +16,9 @@ use super::super::mod_resolver::{
 use super::super::use_parser::{
     AssociatedItems, BindingKind, Brought, ExternPrelude, GlobBinding, GlobReach, ModuleExportInfo,
     NameBinding, Namespace, ReExportMap, RootReExports, UsePlace, UseScope, Visibility,
-    attributes_expand, is_reexport_visibility, item_attrs, resolve_use_tree,
+    is_reexport_visibility, resolve_use_tree,
 };
+use super::collect::{attributes_expand, item_attrs};
 
 /// Invariant parameters shared across the recursive re-export walk.
 struct CollectContext<'a> {
