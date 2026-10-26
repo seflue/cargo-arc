@@ -633,17 +633,19 @@ impl ReExportMap {
         })
     }
 
-    /// Each module of the map, in every root and build, with its package,
-    /// root, build and path.
-    fn module_infos(
-        &self,
-    ) -> impl Iterator<Item = (&String, usize, bool, &String, &ModuleExportInfo)> {
+    /// Each module of the map, in every root and build.
+    fn module_infos(&self) -> impl Iterator<Item = (ModuleKey, &ModuleExportInfo)> {
         self.packages.iter().flat_map(|(package, roots)| {
             roots.iter().enumerate().flat_map(move |(root, exports)| {
                 exports.builds().flat_map(move |(test_build, modules)| {
-                    modules
-                        .iter()
-                        .map(move |(module, info)| (package, root, test_build, module, info))
+                    modules.iter().map(move |(path, info)| {
+                        let module = ModuleKey {
+                            root: (package.clone(), root),
+                            test_build,
+                            path: path.clone(),
+                        };
+                        (module, info)
+                    })
                 })
             })
         })
@@ -651,43 +653,33 @@ impl ReExportMap {
 
     /// Each `use` binding of the map, in every root and build, with its place.
     fn use_targets(&self) -> impl Iterator<Item = (BindingPlace, &ReExportTarget)> {
-        self.module_infos()
-            .flat_map(|(package, root, test_build, module, info)| {
-                info.use_targets()
-                    .map(move |(name, index, re_export, target)| {
-                        let place = BindingPlace {
-                            package: package.clone(),
-                            root,
-                            test_build,
-                            module: module.clone(),
-                            name: name.to_string(),
-                            index,
-                            re_export,
-                            from_scope: info.from_scope.contains(name),
-                        };
-                        (place, target)
-                    })
-            })
+        self.module_infos().flat_map(|(module, info)| {
+            info.use_targets()
+                .map(move |(name, index, re_export, target)| {
+                    let place = BindingPlace {
+                        module: module.clone(),
+                        name: name.to_string(),
+                        index,
+                        re_export,
+                        from_scope: info.from_scope.contains(name),
+                    };
+                    (place, target)
+                })
+        })
     }
 
-    /// The module `module` of the `root`-th root of `package`, in its test
-    /// build where `test_build` is set.
-    fn module_mut(
-        &mut self,
-        package: &str,
-        root: usize,
-        test_build: bool,
-        module: &str,
-    ) -> Option<&mut ModuleExportInfo> {
+    /// The export info of `module`.
+    fn module_mut(&mut self, module: &ModuleKey) -> Option<&mut ModuleExportInfo> {
+        let (package, root) = &module.root;
         let exports = Arc::make_mut(&mut self.packages)
             .get_mut(package)?
-            .get_mut(root)?;
-        let modules = if test_build {
+            .get_mut(*root)?;
+        let modules = if module.test_build {
             exports.test_build_modules.as_mut()?
         } else {
             &mut exports.modules
         };
-        modules.get_mut(module)
+        modules.get_mut(&module.path)
     }
 
     /// Settle the `use` binding at each place: point it at its target, or,
@@ -700,7 +692,7 @@ impl ReExportMap {
             let kind = match settled {
                 Settled::Target(target) => {
                     let binding = self
-                        .module_mut(&place.package, place.root, place.test_build, &place.module)
+                        .module_mut(&place.module)
                         .and_then(|info| info.bindings.get_mut(&place.name))
                         .and_then(|bindings| bindings.get_mut(place.index));
                     if let Some(NameBinding {
@@ -715,14 +707,13 @@ impl ReExportMap {
                 Settled::Elsewhere => BindingKind::Elsewhere,
                 Settled::ReExportFromOutside(path) => BindingKind::ReExportFromOutside(path),
             };
-            let module = (place.package, place.root, place.test_build, place.module);
             outside
-                .entry((module, place.name))
+                .entry((place.module, place.name))
                 .or_default()
                 .insert(place.index, kind);
         }
-        for (((package, root, test_build, module), name), mut kinds) in outside {
-            let Some(info) = self.module_mut(&package, root, test_build, &module) else {
+        for ((module, name), mut kinds) in outside {
+            let Some(info) = self.module_mut(&module) else {
                 continue;
             };
             let Some(bindings) = info.bindings.remove(&name) else {
@@ -743,14 +734,13 @@ impl ReExportMap {
     fn reglob(&mut self, settled: Vec<(GlobPlace, NameTarget)>) {
         let mut by_module: HashMap<ModuleKey, HashMap<usize, NameTarget>> = HashMap::new();
         for (place, reached) in settled {
-            let key = (place.package, place.root, place.test_build, place.module);
             by_module
-                .entry(key)
+                .entry(place.module)
                 .or_default()
                 .insert(place.index, reached);
         }
-        for ((package, root, test_build, module), reached) in by_module {
-            let Some(info) = self.module_mut(&package, root, test_build, &module) else {
+        for (module, reached) in by_module {
+            let Some(info) = self.module_mut(&module) else {
                 continue;
             };
             let globs = std::mem::take(&mut info.globs);
@@ -761,7 +751,7 @@ impl ReExportMap {
                         continue;
                     }
                     Some(NameTarget::Module { crate_name, path }) => {
-                        glob.foreign = *crate_name != package;
+                        glob.foreign = *crate_name != module.root.0;
                         glob.crate_name.clone_from(crate_name);
                         glob.module.clone_from(path);
                     }
@@ -790,13 +780,10 @@ impl ReExportMap {
     }
 }
 
-/// Where a binding sits in a [`ReExportMap`]: package, root, build, module,
-/// name, and place among the bindings of the name.
+/// Where a binding sits in a [`ReExportMap`]: module, name, and place among
+/// the bindings of the name.
 struct BindingPlace {
-    package: String,
-    root: usize,
-    test_build: bool,
-    module: String,
+    module: ModuleKey,
     name: String,
     index: usize,
     /// Whether the binding is a `pub use`.
@@ -806,15 +793,19 @@ struct BindingPlace {
 }
 
 /// A module of a [`ReExportMap`] by package, root, build and path.
-type ModuleKey = (String, usize, bool, String);
-
-/// Where a glob sits in a [`ReExportMap`]: package, root, build, module, and
-/// place among the globs of the module.
-struct GlobPlace {
-    package: String,
-    root: usize,
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct ModuleKey {
+    /// The package and the index of its root, as [`ReExportMap`] holds its
+    /// own root.
+    root: (String, usize),
     test_build: bool,
-    module: String,
+    path: String,
+}
+
+/// Where a glob sits in a [`ReExportMap`]: module, and place among the globs
+/// of the module.
+struct GlobPlace {
+    module: ModuleKey,
     index: usize,
 }
 
@@ -1117,14 +1108,10 @@ impl ReExportMap {
     ) -> Vec<(BindingPlace, Settled)> {
         self.written_targets(module_paths)
             .filter_map(|(place, target)| {
-                let own = target.crate_name == place.package;
-                let own_root = (place.package.clone(), place.root);
-                let lookup = NameLookup {
-                    viewer: self.viewer_of_written(own, &own_root, place.test_build, &place.module),
-                    module_paths,
-                };
+                let own = target.crate_name == place.module.root.0;
+                let lookup = self.lookup_of_written(own, &place.module, module_paths);
                 let from = if place.from_scope {
-                    WrittenFrom::Scope(&place.module)
+                    WrittenFrom::Scope(&place.module.path)
                 } else {
                     WrittenFrom::CrateRoot
                 };
@@ -1138,7 +1125,7 @@ impl ReExportMap {
                         }
                         let path = append_to_path(&target.module, &target.original_name);
                         let from_holder = path
-                            .strip_prefix(&format!("{}::", place.module))
+                            .strip_prefix(&format!("{}::", place.module.path))
                             .map_or(path.clone(), ToString::to_string);
                         Settled::ReExportFromOutside(from_holder)
                     }
@@ -1158,36 +1145,36 @@ impl ReExportMap {
     ) -> Vec<(GlobPlace, NameTarget)> {
         self.written_globs(module_paths)
             .filter_map(|(place, glob)| {
-                let own = glob.crate_name == place.package;
-                let own_root = (place.package.clone(), place.root);
-                let lookup = NameLookup {
-                    viewer: self.viewer_of_written(own, &own_root, place.test_build, &place.module),
-                    module_paths,
-                };
+                let own = glob.crate_name == place.module.root.0;
+                let lookup = self.lookup_of_written(own, &place.module, module_paths);
                 let reached = reached_module(lookup, glob, unsettled)?;
                 Some((place, reached))
             })
             .collect()
     }
 
-    /// The viewer that reads a path written in `module` of `own_root`, in
-    /// its test build where `test_build` is set: from that module where the
-    /// path stays in the own crate (`own`), else from outside every package.
-    fn viewer_of_written<'a>(
+    /// The lookup that reads a path written in `module`: from that module
+    /// where the path stays in the own crate (`own`), else from outside every
+    /// package.
+    fn lookup_of_written<'a>(
         &'a self,
         own: bool,
-        own_root: &'a (String, usize),
-        test_build: bool,
-        module: &'a str,
-    ) -> Viewer<'a> {
-        if !own {
-            return self.viewer_from_outside();
-        }
-        Viewer {
-            packages: &self.packages,
-            own_root: Some(own_root),
-            test_build,
-            module: Some(module),
+        module: &'a ModuleKey,
+        module_paths: &'a ModulePathMap,
+    ) -> NameLookup<'a> {
+        let viewer = if own {
+            Viewer {
+                packages: &self.packages,
+                own_root: Some(&module.root),
+                test_build: module.test_build,
+                module: Some(&module.path),
+            }
+        } else {
+            self.viewer_from_outside()
+        };
+        NameLookup {
+            viewer,
+            module_paths,
         }
     }
 
@@ -1219,12 +1206,9 @@ impl ReExportMap {
         module_paths: &'a ModulePathMap,
     ) -> impl Iterator<Item = (GlobPlace, &'a GlobBinding)> + 'a {
         self.module_infos()
-            .flat_map(|(package, root, test_build, module, info)| {
+            .flat_map(|(module, info)| {
                 info.globs.iter().enumerate().map(move |(index, glob)| {
                     let place = GlobPlace {
-                        package: package.clone(),
-                        root,
-                        test_build,
                         module: module.clone(),
                         index,
                     };
