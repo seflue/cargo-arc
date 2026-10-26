@@ -4,9 +4,9 @@
 use super::super::packages::normalize_crate_name;
 use super::super::use_parser::{
     AfterName, CrateModule, FirstName, Meaning, NameBinding, NameTarget, Namespace, PickedStart,
-    ResolutionContext, Visited, append_to_path, followed_by, module_segments,
-    resolve_relative_path, sees_the_module,
+    Visited, append_to_path, followed_by, module_segments, resolve_relative_path, sees_the_module,
 };
+use super::context::ResolutionContext;
 use crate::model::{DependencyRef, EdgeContext, TargetRoot};
 
 /// Resolve a single path written in the file of `ctx`: where it leads
@@ -135,23 +135,14 @@ impl PathEnd {
             crate_name: &own.crate_name,
             path: ctx.current_module_path,
         };
-        let key = (
-            ctx.test_build,
-            ctx.current_module_path.to_string(),
-            first.to_string(),
-            after,
-        );
-        let cached = ctx.crate_view.modules_bound.0.borrow().get(&key).cloned();
         let lookup = ctx.lookup(own.target_root);
-        let named = cached.unwrap_or_else(|| {
-            let named = lookup.module_named(module, first, after);
-            ctx.crate_view
-                .modules_bound
-                .0
-                .borrow_mut()
-                .insert(key, named.clone());
-            named
-        });
+        let named = ctx.crate_view.modules_bound.bound_or_look_up(
+            ctx.test_build,
+            ctx.current_module_path,
+            first,
+            after,
+            || lookup.module_named(module, first, after),
+        );
         if let Some(NameTarget::Module { crate_name, path }) = named {
             return FirstName::Module { crate_name, path };
         }

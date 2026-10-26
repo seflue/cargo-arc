@@ -4,14 +4,15 @@
 use super::super::packages::normalize_crate_name;
 use super::super::use_parser::{
     BindingKind, Brought, CrateModule, FromProduction, Meaning, NameBinding, PassedOn,
-    ResolutionContext, SeenBindings, Visited, append_to_path, covers, is_glob,
-    is_reexport_visibility, resolve_use_tree,
+    SeenBindings, Visited, append_to_path, covers, is_glob, is_reexport_visibility,
+    resolve_use_tree,
 };
 use super::collect::{
     BindingRegions, CollectedPathRefs, CollectedUse, CollectedUses, LocalBinding, PathPosition,
     PathRef, RegionId, attributes_expand, collect_all_path_refs, collect_all_use_items,
     foreign_item_ident, item_ident,
 };
+use super::context::ResolutionContext;
 use super::path::{PathEnd, PathStart, resolve_single_path};
 use crate::model::{
     DefKind, DependencyRef, EdgeContext, SymbolUse, TargetRoot, TestKind, UsageKind, UseCategory,
@@ -1025,7 +1026,7 @@ fn category_of_unknown_call(name: &str) -> UseCategory {
 /// resolved and yields no dependency.
 ///
 /// Each piece of code resolves in the build its context reads
-/// ([`super::super::use_parser::RootBuilds::reading`]), whatever build `file` reads.
+/// ([`super::context::RootBuilds::reading`]), whatever build `file` reads.
 pub(super) fn parse_file_dependencies(
     syntax: &syn::File,
     file: &ResolutionContext,
