@@ -2,6 +2,7 @@
 //! run builds it from the command line.
 
 use serde_json::Value;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -448,7 +449,7 @@ fn an_unknown_query_subcommand_exits_nonzero_naming_the_valid_ones() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("'bogus' is no subcommand of query; its subcommands: hotspots"),
+        stderr.contains("'bogus' is no subcommand of query; its subcommands: hotspots, edges"),
         "stderr: {stderr}"
     );
 }
@@ -505,4 +506,395 @@ fn hotspots_top_ten_on_cargo_arc_itself_equal_the_map_of_arc_hotspots() {
     let mapped = ranked_in_map(&svg);
     assert!(!mapped.is_empty(), "the map ranks hotspots");
     assert_eq!(queried, mapped);
+}
+
+// ===== query edges =====
+
+/// A one-package workspace outside any repository: `alpha` and `beta`
+/// import each other, and `beta` re-exports `Token` from `gamma`, which
+/// imports `beta` back. The re-export closes a second cycle only under
+/// `--include-reexports`. A test in `gamma` uses `alpha`, an edge only
+/// `--include-tests` shows.
+fn edges_workspace() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    let files = [
+        ("lib.rs", "pub mod alpha;\npub mod beta;\npub mod gamma;\n"),
+        (
+            "alpha.rs",
+            "use crate::beta::{helper, Settings, LIMIT};\n\
+             \n\
+             pub struct Widget;\n\
+             \n\
+             pub fn run(_settings: Settings) -> usize {\n\
+             \x20   Settings::new();\n\
+             \x20   helper();\n\
+             \x20   LIMIT\n\
+             }\n",
+        ),
+        (
+            "beta.rs",
+            "use crate::alpha::Widget;\n\
+             pub use crate::gamma::Token;\n\
+             \n\
+             pub struct Settings;\n\
+             \n\
+             impl Settings {\n\
+             \x20   pub fn new() -> Self {\n\
+             \x20       Settings\n\
+             \x20   }\n\
+             }\n\
+             \n\
+             pub const LIMIT: usize = 3;\n\
+             \n\
+             pub fn helper() -> Option<Widget> {\n\
+             \x20   None\n\
+             }\n",
+        ),
+        (
+            "gamma.rs",
+            "use crate::beta::helper;\n\
+             \n\
+             pub struct Token;\n\
+             \n\
+             pub fn make() {\n\
+             \x20   helper();\n\
+             }\n\
+             \n\
+             #[cfg(test)]\n\
+             mod tests {\n\
+             \x20   use crate::alpha::Widget;\n\
+             \n\
+             \x20   #[test]\n\
+             \x20   fn widget() {\n\
+             \x20       let _widget: Option<Widget> = None;\n\
+             \x20   }\n\
+             }\n",
+        ),
+    ];
+    for (name, text) in files {
+        std::fs::write(root.join("src").join(name), text).unwrap();
+    }
+    dir
+}
+
+#[test]
+fn edges_list_each_symbol_crossing_an_edge_with_its_usage_categories() {
+    let ws = edges_workspace();
+    let out = stdout_of(&arc(ws.path(), &["query", "edges"]));
+
+    assert_eq!(
+        body_of(&out),
+        [
+            "from\tto\tsymbol\tusage-categories\tre-exported\tlocations\tcycles",
+            "app::alpha\tapp::beta\tLIMIT\tvalues\tfalse\tsrc/alpha.rs:1\t1",
+            "app::alpha\tapp::beta\tSettings\ttypes,functions\tfalse\tsrc/alpha.rs:1\t1",
+            "app::alpha\tapp::beta\thelper\tfunctions\tfalse\tsrc/alpha.rs:1\t1",
+            "app::beta\tapp::alpha\tWidget\ttypes\tfalse\tsrc/beta.rs:1\t1",
+            "app::beta\tapp::gamma\tToken\t\ttrue\tsrc/beta.rs:2\t0",
+            "app::gamma\tapp::beta\thelper\tfunctions\tfalse\tsrc/gamma.rs:1\t0",
+        ]
+    );
+}
+
+#[test]
+fn edges_count_the_cycles_a_re_export_closes_under_include_reexports() {
+    let ws = edges_workspace();
+    let out = stdout_of(&arc(ws.path(), &["--include-reexports", "query", "edges"]));
+
+    let cycles: Vec<(&str, &str)> = body_of(&out)[1..]
+        .iter()
+        .map(|line| {
+            let cells: Vec<&str> = line.split('\t').collect();
+            (cells[2], cells[6])
+        })
+        .collect();
+    assert_eq!(
+        cycles,
+        [
+            ("LIMIT", "1"),
+            ("Settings", "1"),
+            ("helper", "1"),
+            ("Widget", "1"),
+            ("Token", "1"),
+            ("helper", "1"),
+        ]
+    );
+}
+
+#[test]
+fn edges_header_says_what_an_edge_does_not_show() {
+    let ws = edges_workspace();
+    let out = stdout_of(&arc(ws.path(), &["query", "edges"]));
+
+    let not_shown = header_value(&out, "not-shown");
+    for part in [
+        "method calls on a receiver",
+        "field access",
+        "usages inside the same module",
+        "test usages unless --include-tests",
+    ] {
+        assert!(not_shown.contains(part), "{part} missing: {not_shown}");
+    }
+    let keys: Vec<String> = header_of(&out).into_iter().map(|(key, _)| key).collect();
+    assert_eq!(
+        keys[5..],
+        [
+            "records",
+            "order",
+            "usage-categories",
+            "re-exported",
+            "locations",
+            "cycles",
+            "not-shown",
+        ]
+    );
+}
+
+#[test]
+fn edges_in_json_carry_lists_and_numbers() {
+    let ws = edges_workspace();
+    let json = stdout_of(&arc(ws.path(), &["query", "edges", "--json"]));
+
+    let lines: Vec<Value> = json
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("each line is JSON"))
+        .collect();
+    assert_eq!(
+        lines[0]["columns"],
+        serde_json::json!([
+            "from",
+            "to",
+            "symbol",
+            "usage-categories",
+            "re-exported",
+            "locations",
+            "cycles"
+        ])
+    );
+    assert_eq!(
+        lines[5],
+        serde_json::json!({
+            "from": "app::beta",
+            "to": "app::gamma",
+            "symbol": "Token",
+            "usage-categories": [],
+            "re-exported": true,
+            "locations": ["src/beta.rs:2"],
+            "cycles": 0,
+        })
+    );
+    assert_eq!(lines.len(), 7);
+}
+
+/// One record of `query edges` or one usage group of `STATIC_DATA`:
+/// the edge's ends, the symbol, whether it is only re-exported, its
+/// locations and the number of cycles on the edge.
+type EdgeSymbol = (String, String, String, bool, Vec<String>, u64);
+
+/// Parse `STATIC_DATA` from an arc diagram.
+fn static_data(svg: &str) -> Value {
+    let json = svg
+        .split("const STATIC_DATA = ")
+        .nth(1)
+        .expect("the diagram carries STATIC_DATA")
+        .split(";\n")
+        .next()
+        .unwrap();
+    serde_json::from_str(json).unwrap()
+}
+
+/// Return the qualified node name of node `id` in `data`: the names from
+/// its package down to it, joined by `::`.
+fn qualified_in_static_data(data: &Value, id: &str) -> String {
+    let mut segments = Vec::new();
+    let mut current = Some(id.to_string());
+    while let Some(id) = current {
+        let node = &data["nodes"][&id];
+        if node["type"] == "external-section" {
+            break;
+        }
+        segments.push(node["name"].as_str().unwrap().to_string());
+        current = node["parent"].as_str().map(str::to_string);
+    }
+    segments.reverse();
+    segments.join("::")
+}
+
+/// Return one entry per arc and usage group of the diagram's `STATIC_DATA`,
+/// and the number of arcs with usage groups.
+fn usage_groups_in_static_data(svg: &str) -> (Vec<EdgeSymbol>, usize) {
+    let data = static_data(svg);
+    let mut groups = Vec::new();
+    let mut arcs = 0;
+    for arc in data["arcs"].as_object().unwrap().values() {
+        let from = qualified_in_static_data(&data, arc["from"].as_str().unwrap());
+        let to = qualified_in_static_data(&data, arc["to"].as_str().unwrap());
+        let cycles = arc["cycleIds"].as_array().map_or(0, Vec::len) as u64;
+        let usages = arc["usages"].as_array().unwrap();
+        if !usages.is_empty() {
+            arcs += 1;
+        }
+        for usage in usages {
+            let locations = usage["locations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|l| format!("{}:{}", l["file"].as_str().unwrap(), l["line"]))
+                .collect();
+            groups.push((
+                from.clone(),
+                to.clone(),
+                usage["symbol"].as_str().unwrap().to_string(),
+                usage["viaReexport"].as_bool().unwrap_or(false),
+                locations,
+                cycles,
+            ));
+        }
+    }
+    (groups, arcs)
+}
+
+/// Return the records of `query edges --json` output `json`, and the usage
+/// categories of each keyed by its ends and symbol.
+fn edge_records(json: &str) -> (Vec<EdgeSymbol>, EdgeCategories) {
+    let mut records = Vec::new();
+    let mut categories = EdgeCategories::new();
+    for line in json.lines().skip(1) {
+        let record: Value = serde_json::from_str(line).unwrap();
+        let text = |key: &str| record[key].as_str().unwrap().to_string();
+        let strings = |key: &str| -> Vec<String> {
+            record[key]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|value| value.as_str().unwrap().to_string())
+                .collect()
+        };
+        records.push((
+            text("from"),
+            text("to"),
+            text("symbol"),
+            record["re-exported"].as_bool().unwrap(),
+            strings("locations"),
+            record["cycles"].as_u64().unwrap(),
+        ));
+        categories.insert(
+            (text("from"), text("to"), text("symbol")),
+            strings("usage-categories").into_iter().collect(),
+        );
+    }
+    (records, categories)
+}
+
+/// The usage categories per edge and symbol.
+type EdgeCategories = BTreeMap<(String, String, String), BTreeSet<String>>;
+
+/// Return the usage categories `--debug` logs per edge and symbol. The log
+/// names a package by its crate name, which turns its dashes into
+/// underscores; `crate_names` maps each back to the package name.
+fn usage_categories_in_debug_log(log: &str, crate_names: &[(&str, &str)]) -> EdgeCategories {
+    let package_of = |node: &str| -> String {
+        let (head, rest) = node
+            .split_once("::")
+            .map_or((node, None), |(h, r)| (h, Some(r)));
+        let head = crate_names
+            .iter()
+            .find(|(krate, _)| *krate == head)
+            .map_or(head, |(_, package)| package);
+        rest.map_or_else(|| head.to_string(), |rest| format!("{head}::{rest}"))
+    };
+    let mut categories = EdgeCategories::new();
+    for line in log.lines() {
+        let plain: String = strip_ansi(line);
+        let Some((_, entry)) = plain.split_once(" DEBUG use ") else {
+            continue;
+        };
+        let (edge, usage) = entry.split_once(": ").unwrap();
+        let (from, to) = edge.split_once(" -> ").unwrap();
+        let mut words = usage.split(' ');
+        let symbol = words.next().unwrap();
+        let category = words.next().unwrap();
+        categories
+            .entry((package_of(from), package_of(to), symbol.to_string()))
+            .or_default()
+            .insert(category.to_string());
+    }
+    categories
+}
+
+fn strip_ansi(line: &str) -> String {
+    let mut plain = String::with_capacity(line.len());
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            for c in chars.by_ref() {
+                if c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            plain.push(c);
+        }
+    }
+    plain
+}
+
+/// Assert that `query edges` on `root` lists the arcs and usage groups of
+/// the diagram under the same `flags`, and the usage categories `--debug`
+/// logs.
+fn assert_edges_match_the_diagram(root: &Path, flags: &[&str], crate_names: &[(&str, &str)]) {
+    let svg = stdout_of(&arc(root, flags));
+    let json = stdout_of(&arc(root, &[flags, &["query", "edges", "--json"]].concat()));
+    let debug = arc(root, &[flags, &["--debug", "-o", "/dev/null"]].concat());
+    assert!(debug.status.success());
+
+    let (records, categories) = edge_records(&json);
+    let (groups, arcs) = usage_groups_in_static_data(&svg);
+    assert!(!groups.is_empty(), "the diagram has usage groups");
+    let record_set: BTreeSet<&EdgeSymbol> = records.iter().collect();
+    let group_set: BTreeSet<&EdgeSymbol> = groups.iter().collect();
+    assert_eq!(record_set.len(), records.len(), "duplicate records");
+    assert_eq!(group_set.len(), groups.len(), "duplicate usage groups");
+    assert_eq!(record_set, group_set);
+    let edges: BTreeSet<(&str, &str)> = records
+        .iter()
+        .map(|(from, to, ..)| (from.as_str(), to.as_str()))
+        .collect();
+    assert_eq!(edges.len(), arcs, "one arc per edge with records");
+
+    let logged =
+        usage_categories_in_debug_log(&String::from_utf8_lossy(&debug.stderr), crate_names);
+    for (key, record_categories) in &categories {
+        let empty = BTreeSet::new();
+        let logged_categories = logged.get(key).unwrap_or(&empty);
+        assert_eq!(record_categories, logged_categories, "{key:?}");
+    }
+    for key in logged.keys() {
+        assert!(
+            categories.contains_key(key),
+            "logged but not listed: {key:?}"
+        );
+    }
+}
+
+#[rstest::rstest]
+#[case::default(&[])]
+#[case::with_reexports(&["--include-reexports"])]
+#[case::with_tests(&["--include-tests"])]
+fn edges_on_a_fixture_equal_the_arcs_and_usage_groups_of_the_diagram(#[case] flags: &[&str]) {
+    let ws = edges_workspace();
+    assert_edges_match_the_diagram(ws.path(), flags, &[]);
+}
+
+#[test]
+fn edges_on_cargo_arc_itself_equal_the_arcs_and_usage_groups_of_the_diagram() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    assert_edges_match_the_diagram(&root, &[], &[("cargo_arc", "cargo-arc")]);
 }

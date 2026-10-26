@@ -248,7 +248,8 @@ impl EntryFile {
 }
 
 /// What one usage takes from a symbol: a name to write types with, a value to
-/// read, or behaviour to call.
+/// read, or behaviour to call. The variants' order is the order `query`
+/// lists the categories in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum UsageCategory {
     /// A name in a type position, or a value built from a struct or an enum
