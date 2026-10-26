@@ -1117,6 +1117,7 @@ mod tests {
     use crate::rules::diagnostics::{DiagnosticKind, UnsortedNode};
     use crate::rules::test_support::{allow_edge, pattern_edge};
     use crate::test_support::{module_node, package_node};
+    use std::collections::BTreeSet;
     use std::path::PathBuf;
 
     // -- Test graph helpers --
@@ -1173,6 +1174,7 @@ mod tests {
                     symbols: vec![],
                     module_path: String::new(),
                     via_reexport: false,
+                    usage_categories: BTreeSet::new(),
                 }],
                 context: EdgeContext::production(),
             },
@@ -1202,6 +1204,7 @@ mod tests {
                     symbols: symbols.iter().map(|s| (*s).to_string()).collect(),
                     module_path: String::new(),
                     via_reexport: false,
+                    usage_categories: BTreeSet::new(),
                 }],
                 context: EdgeContext::production(),
             },
@@ -1251,6 +1254,7 @@ mod tests {
                     symbols: vec![],
                     module_path: String::new(),
                     via_reexport: true,
+                    usage_categories: BTreeSet::new(),
                 }],
                 context: EdgeContext::production(),
             },

@@ -16,6 +16,10 @@ pub struct SourceLocation {
     /// True when every reference at this location is a `pub use` re-export
     /// (republish, not behavioral use). Drives the logic-subgraph exclusion.
     pub via_reexport: bool,
+    /// Each usage category a symbol of `symbols` is used in, across the
+    /// importing file. A symbol never used there, such as a re-exported one,
+    /// has no pair.
+    pub usage_categories: BTreeSet<(String, UsageCategory)>,
 }
 
 /// Which dependency edge, as the package-qualified names of its endpoints.
@@ -245,7 +249,7 @@ impl EntryFile {
 
 /// What one usage takes from a symbol: a name to write types with, a value to
 /// read, or behaviour to call.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum UsageCategory {
     /// A name in a type position, or a value built from a struct or an enum
     /// variant.
@@ -491,6 +495,7 @@ mod tests {
             symbols: symbols.iter().map(|s| (*s).to_string()).collect(),
             module_path: "krate::a".to_string(),
             via_reexport: false,
+            usage_categories: BTreeSet::new(),
         }
     }
 

@@ -185,6 +185,79 @@ impl LayoutIR {
         self.items.push(LayoutItem::new(id, kind, label));
         id
     }
+
+    /// Return the qualified node name of item `id`: the labels from its
+    /// package down to it, joined by `::`, as `ArcGraph::qualified_name`
+    /// names the node it was built from. An external package is its label.
+    #[must_use]
+    pub fn qualified_name(&self, id: NodeId) -> String {
+        let mut segments = vec![self.items[id].label.as_str()];
+        let mut current = id;
+        while let ItemKind::Module { parent, .. } = self.items[current].kind {
+            segments.push(&self.items[parent].label);
+            current = parent;
+        }
+        segments.reverse();
+        segments.join("::")
+    }
+}
+
+/// The locations of one symbol on an edge, as the arc diagram lists them.
+pub(crate) struct SymbolGroup<'a> {
+    /// The symbol's name; empty for the bare imports, which name no symbol.
+    pub(crate) symbol: &'a str,
+    /// True when every location carrying the symbol is a `pub use`
+    /// re-export; never for the bare imports.
+    pub(crate) via_reexport: bool,
+    /// Ordered by file, line and id.
+    pub(crate) locations: Vec<&'a LocatedSource>,
+}
+
+/// Group an edge's `locations` by the symbols they carry: the bare imports
+/// first, if any, then one group per symbol in name order.
+pub(crate) fn symbol_groups(locations: &[LocatedSource]) -> Vec<SymbolGroup<'_>> {
+    let mut bare = Vec::new();
+    let mut by_symbol: BTreeMap<&str, Vec<&LocatedSource>> = BTreeMap::new();
+    for located in locations {
+        if located.location.symbols.is_empty() {
+            bare.push(located);
+        }
+        for symbol in &located.location.symbols {
+            by_symbol.entry(symbol).or_default().push(located);
+        }
+    }
+    let bare = (!bare.is_empty()).then_some(SymbolGroup {
+        symbol: "",
+        via_reexport: false,
+        locations: bare,
+    });
+    // A symbol counts as re-exported only when every location carrying it is
+    // a `pub use`; a single real import makes it coupling, as the edge-level
+    // `EdgeWeight::is_reexport_module_dep` decides for the whole edge.
+    let symbols = by_symbol
+        .into_iter()
+        .map(|(symbol, locations)| SymbolGroup {
+            symbol,
+            via_reexport: locations
+                .iter()
+                .all(|located| located.location.via_reexport),
+            locations,
+        });
+    bare.into_iter()
+        .chain(symbols)
+        .map(|mut group| {
+            // The file as displayed, not as a path: `Path` orders by
+            // component, and the diagram lists by the text it shows.
+            group.locations.sort_by_cached_key(|located| {
+                (
+                    located.location.file.display().to_string(),
+                    located.location.line,
+                    located.id,
+                )
+            });
+            group
+        })
+        .collect()
 }
 
 /// Build `LayoutIR` from graph and cycle information, alongside the `JumpTable`
@@ -1019,7 +1092,7 @@ mod tests {
     use assert2::check;
     use petgraph::graph::NodeIndex;
     use rstest::rstest;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::{BTreeSet, HashMap, HashSet};
     use std::path::PathBuf;
 
     /// `CycleAnalysis` for graphs with no cycles.
@@ -1241,6 +1314,7 @@ mod tests {
                             .collect(),
                         module_path: module_path.to_string(),
                         via_reexport: false,
+                        usage_categories: BTreeSet::new(),
                     }],
                     context: EdgeContext::production(),
                 },
@@ -1265,6 +1339,7 @@ mod tests {
                     symbols: vec![symbol.to_string()],
                     module_path: to.to_string(),
                     via_reexport: true,
+                    usage_categories: BTreeSet::new(),
                 }],
             )
         }
@@ -1362,6 +1437,7 @@ mod tests {
                 symbols: vec![],
                 module_path: String::new(),
                 via_reexport: false,
+                usage_categories: BTreeSet::new(),
             }],
         );
         assert_eq!(edge.source_locations.len(), 1);
@@ -1385,6 +1461,44 @@ mod tests {
         assert_eq!(ir.edges.len(), 1);
         assert_eq!(ir.edges[0].direction, EdgeDirection::Downward);
         assert!(ir.edges[0].cycle.is_none());
+    }
+
+    #[test]
+    fn layout_items_carry_the_qualified_names_of_their_graph_nodes() {
+        let mut b = TestGraphBuilder::new();
+        b.package_with_modules("first", &["shared"])
+            .package_with_modules("second", &["outer"])
+            .nested_module("outer", "inner")
+            .external_package("ext", "1.0.0")
+            .prod_dep("inner", "shared")
+            .package_dep("second", "ext");
+        let (graph, _) = b.build();
+        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
+
+        let mut layout_names: Vec<String> = ir
+            .items
+            .iter()
+            .filter(|item| !matches!(item.kind, ItemKind::ExternalSection))
+            .map(|item| ir.qualified_name(item.id))
+            .collect();
+        layout_names.sort();
+        assert_eq!(
+            layout_names,
+            [
+                "ext",
+                "first",
+                "first::shared",
+                "second",
+                "second::outer",
+                "second::outer::inner",
+            ]
+        );
+        let mut graph_names: Vec<String> = graph
+            .node_indices()
+            .map(|idx| graph.qualified_name(idx))
+            .collect();
+        graph_names.sort();
+        assert_eq!(layout_names, graph_names);
     }
 
     #[test]
@@ -1822,6 +1936,7 @@ mod tests {
                         symbols: vec!["Foo".to_string()],
                         module_path: "mod_b".to_string(),
                         via_reexport: false,
+                        usage_categories: BTreeSet::new(),
                     },
                     SourceLocation {
                         file: PathBuf::from("/ws/app/src/mod_a.rs"),
@@ -1829,6 +1944,7 @@ mod tests {
                         symbols: vec!["Bar".to_string()],
                         module_path: "mod_b".to_string(),
                         via_reexport: false,
+                        usage_categories: BTreeSet::new(),
                     },
                 ],
             );

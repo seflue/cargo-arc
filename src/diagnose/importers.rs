@@ -181,6 +181,7 @@ mod tests {
                 symbols: symbols.iter().map(|s| (*s).to_owned()).collect(),
                 module_path: String::new(),
                 via_reexport: false,
+                usage_categories: BTreeSet::new(),
             }];
             g.add_edge(
                 idx[from],
@@ -261,6 +262,7 @@ mod tests {
                     symbols: vec!["Foo".to_owned()],
                     module_path: String::new(),
                     via_reexport: true,
+                    usage_categories: BTreeSet::new(),
                 }],
                 context: EdgeContext::production(),
             },
@@ -287,6 +289,7 @@ mod tests {
                     symbols: vec!["Foo".to_owned()],
                     module_path: String::new(),
                     via_reexport: false,
+                    usage_categories: BTreeSet::new(),
                 }],
                 context: EdgeContext::test(TestKind::Unit),
             },

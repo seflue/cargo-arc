@@ -6,7 +6,7 @@ use crate::model::{
 };
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
@@ -673,26 +673,29 @@ fn build_source_locations(target_deps: &[&DependencyRef], target: &str) -> Vec<S
     // Per (file, line): collect symbols, their usage categories, and whether
     // every ref there is a re-export. `via_reexport` starts true and clears on the first non-re-export
     // ref, so a location is a pure re-export only if all its refs are.
-    let mut by_line: BTreeMap<(PathBuf, usize), (Vec<String>, bool)> = BTreeMap::new();
+    let mut by_line: BTreeMap<(PathBuf, usize), SourceLocation> = BTreeMap::new();
     for dep in target_deps {
-        let (symbols, via_reexport) = by_line
+        let location = by_line
             .entry((dep.source_file.clone(), dep.line))
-            .or_insert_with(|| (Vec::new(), true));
+            .or_insert_with(|| SourceLocation {
+                file: dep.source_file.clone(),
+                line: dep.line,
+                symbols: Vec::new(),
+                module_path: module_path.clone(),
+                via_reexport: true,
+                usage_categories: BTreeSet::new(),
+            });
         if let Some(item) = &dep.target_item {
-            symbols.push(item.clone());
+            location.symbols.push(item.clone());
+            location.usage_categories.extend(
+                dep.uses
+                    .iter()
+                    .map(|symbol_use| (item.clone(), symbol_use.category)),
+            );
         }
-        *via_reexport &= dep.via_reexport;
+        location.via_reexport &= dep.via_reexport;
     }
-    by_line
-        .into_iter()
-        .map(|((file, line), (symbols, via_reexport))| SourceLocation {
-            file,
-            line,
-            symbols,
-            module_path: module_path.clone(),
-            via_reexport,
-        })
-        .collect()
+    by_line.into_values().collect()
 }
 
 fn aggregate_context(deps: &[&DependencyRef]) -> EdgeContext {
@@ -711,7 +714,8 @@ fn aggregate_context(deps: &[&DependencyRef]) -> EdgeContext {
 mod tests {
     use super::*;
     use crate::model::{
-        DefKind, Definition, DependencyRef, ModuleInfo, ModuleTree, PackageInfo, TargetRoot,
+        DefKind, Definition, DependencyRef, ModuleInfo, ModuleTree, PackageInfo, SymbolUse,
+        TargetRoot, UsageCategory,
     };
     use crate::test_support::{conventional_package, module_node, package_node};
     use std::path::{Path, PathBuf};
@@ -1025,6 +1029,68 @@ mod tests {
         let (_, locs) =
             find_module_dep(&graph, "crate_a", "gamma").expect("expected ModuleDep root→gamma");
         assert_eq!(locs[0].file, PathBuf::from("src/lib.rs"));
+    }
+
+    #[test]
+    fn a_source_location_carries_the_usage_categories_of_its_symbols() {
+        let symbol_use = |line, category| SymbolUse {
+            line,
+            category,
+            imported_for_methods: false,
+        };
+        let packages = vec![package("my_crate")];
+        let modules = vec![tree(ModuleInfo {
+            children: vec![
+                ModuleInfo {
+                    dependencies: vec![
+                        DependencyRef {
+                            target_item: Some("Config".into()),
+                            uses: vec![
+                                symbol_use(5, UsageCategory::Functions),
+                                symbol_use(9, UsageCategory::Types),
+                                symbol_use(12, UsageCategory::Types),
+                            ],
+                            ..dep("crate", "bar", "src/foo.rs", 1)
+                        },
+                        DependencyRef {
+                            target_item: Some("LIMIT".into()),
+                            uses: vec![symbol_use(7, UsageCategory::Values)],
+                            ..dep("crate", "bar", "src/foo.rs", 1)
+                        },
+                        DependencyRef {
+                            target_item: Some("Unused".into()),
+                            ..dep("crate", "bar", "src/foo.rs", 2)
+                        },
+                    ],
+                    ..module("foo", "crate::foo")
+                },
+                module("bar", "crate::bar"),
+            ],
+            ..module("my_crate", "crate")
+        })];
+        let graph = ArcGraph::build(&packages, &modules, None, false);
+
+        let (_, locs) = find_module_dep(&graph, "foo", "bar").expect("ModuleDep foo -> bar");
+        let categories: Vec<Vec<(&str, UsageCategory)>> = locs
+            .iter()
+            .map(|loc| {
+                loc.usage_categories
+                    .iter()
+                    .map(|(symbol, category)| (symbol.as_str(), *category))
+                    .collect()
+            })
+            .collect();
+        assert_eq!(
+            categories,
+            [
+                vec![
+                    ("Config", UsageCategory::Types),
+                    ("Config", UsageCategory::Functions),
+                    ("LIMIT", UsageCategory::Values),
+                ],
+                vec![],
+            ]
+        );
     }
 
     #[test]

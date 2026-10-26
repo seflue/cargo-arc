@@ -4,11 +4,11 @@ mod build;
 mod jump;
 mod toposort;
 
-pub(crate) use build::build_layout;
 pub use build::{
     ClusterInfo, CycleKind, CyclicEdgeInfo, EdgeDirection, ItemKind, LayoutEdge, LayoutIR,
     LayoutItem, NodeId, SymbolLocality,
 };
+pub(crate) use build::{build_layout, symbol_groups};
 #[allow(dead_code, unused_imports)]
 // render's tests build these directly, nothing else reads them.
 pub(crate) use jump::JumpTarget;
