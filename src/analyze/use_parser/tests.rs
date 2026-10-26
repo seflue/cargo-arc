@@ -1,4 +1,5 @@
 use super::*;
+use crate::analyze::packages::normalize_crate_name;
 use crate::analyze::test_workspace::{Analyzed, TestWorkspace};
 use crate::model::{DefKind, Definition, EdgeContext, SymbolUse, UseCategory};
 use std::path::Path;

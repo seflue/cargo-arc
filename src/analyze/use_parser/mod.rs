@@ -1,11 +1,9 @@
 //! Syn-based use statement parsing for workspace dependency extraction.
 
-use super::packages::{ModulePathMap, PackageExportMap, WorkspacePackages, normalize_crate_name};
+use super::packages::ModulePathMap;
 use crate::model::{DefKind, Definition, DependencyRef, EntryKind, TargetRoot, UsageKind};
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::ops::ControlFlow;
-use std::path::Path;
 use std::sync::Arc;
 use syn::UseTree;
 
@@ -599,7 +597,7 @@ impl ReExportMap {
     /// The viewer from `module` of the root this map is seen from, looking
     /// through `root`: [`TargetRoot::Lib`] sees every package's lib root, and
     /// the own root only where it is that lib.
-    fn viewer<'a>(&'a self, root: TargetRoot, module: &'a str) -> Viewer<'a> {
+    pub(crate) fn viewer<'a>(&'a self, root: TargetRoot, module: &'a str) -> Viewer<'a> {
         let own_root = match root {
             TargetRoot::AsSeen => self.own_root.as_ref(),
             TargetRoot::Lib => self.lib_view_root(),
@@ -1597,7 +1595,7 @@ impl AfterName {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct NameLookup<'a> {
     pub(crate) viewer: Viewer<'a>,
-    module_paths: &'a ModulePathMap,
+    pub(crate) module_paths: &'a ModulePathMap,
 }
 
 impl<'a> NameLookup<'a> {
@@ -1666,7 +1664,7 @@ impl<'a> NameLookup<'a> {
     /// the crate (an external crate), and which private `use` items and globs
     /// of other modules it passed through. Whether the reference means a
     /// module, `meaning` tells.
-    fn follow(self, dep: &mut DependencyRef, meaning: Meaning) -> Resolution {
+    pub(crate) fn follow(self, dep: &mut DependencyRef, meaning: Meaning) -> Resolution {
         let mut lookup = self;
         let mut lookup_name = dep.target_item.clone();
         let mut passed = Vec::new();
@@ -2386,204 +2384,6 @@ fn common_ancestor<'a>(module: &'a str, other: &str) -> &'a str {
             (segments + 1, chars + own.len())
         });
     &module[..chars + "::".len() * segments.saturating_sub(1)]
-}
-
-/// The map as each build of a crate root sees it: the build without `test`
-/// and, where the root has one, its test build. Which of the two reads a
-/// piece of code follows from the code's context alone.
-#[derive(Clone, Default)]
-pub(crate) struct RootBuilds {
-    production: ReExportMap,
-    /// The map as the root's test build sees it, where the root has modules
-    /// of its test build: the map of a file only test builds load.
-    test_build: Option<ReExportMap>,
-}
-
-impl RootBuilds {
-    /// The builds of the root `map` is seen from. A map seen from no root,
-    /// or from one without modules of its test build, reads test code as
-    /// built without `test`.
-    pub(crate) fn of(map: ReExportMap) -> Self {
-        Self {
-            test_build: map.test_build(),
-            production: map,
-        }
-    }
-
-    /// The map that reads code of `kind`: test code in the root's test
-    /// build, where it has one, production code in the build without `test`.
-    pub(crate) fn reading(&self, kind: UsageKind) -> &ReExportMap {
-        self.reading_first(kind).0
-    }
-
-    /// The map that reads code of `kind`, and the other build where the root
-    /// has two.
-    fn reading_first(&self, kind: UsageKind) -> (&ReExportMap, Option<&ReExportMap>) {
-        match (&self.test_build, kind) {
-            (Some(test_build), UsageKind::Test(_)) => (test_build, Some(&self.production)),
-            _ => (&self.production, self.test_build.as_ref()),
-        }
-    }
-
-    /// The definitions of `module` in `crate_name`, from both builds: a
-    /// `#[cfg(test)]` item is in the test build only. The build that reads
-    /// code of `kind` comes first, and of alternatives in one build the one
-    /// read last.
-    pub(crate) fn definitions(
-        &self,
-        crate_name: &str,
-        module: &str,
-        kind: UsageKind,
-    ) -> HashMap<String, Definition> {
-        let (first, other) = self.reading_first(kind);
-        let mut definitions = HashMap::new();
-        for map in std::iter::once(first).chain(other) {
-            let Some(info) = map.get(crate_name).and_then(|modules| modules.get(module)) else {
-                continue;
-            };
-            for (name, binding) in info.all() {
-                if let Some(definition) = binding.definition() {
-                    definitions.entry(name.to_string()).or_insert(*definition);
-                }
-            }
-        }
-        definitions
-    }
-}
-
-/// One crate as its code resolves names: the crate, the workspace around it,
-/// the module tree, and the builds of the root whose files are read.
-pub(crate) struct CrateView<'a> {
-    /// The crate's key in `module_paths`: a package key, or for an
-    /// integration test the full path of its root module.
-    pub(crate) crate_name: &'a str,
-    pub(crate) workspace_crates: &'a WorkspacePackages,
-    pub(crate) module_paths: &'a ModulePathMap,
-    pub(crate) crate_exports: &'a PackageExportMap,
-    /// Code-side crate name -> `package_id` for external crates visible to
-    /// the crate. Populated from `crate_name_map[crate_name]`.
-    pub(crate) external_crate_names: &'a HashMap<String, String>,
-    /// The workspace crates the extern prelude of the root whose files are
-    /// read names, in every module of the crate.
-    pub(crate) extern_prelude: &'a ExternPrelude,
-    pub(crate) builds: RootBuilds,
-    pub(crate) modules_bound: ModulesBound,
-}
-
-/// The module each module of a crate binds under a name, as
-/// `PathEnd::of_path` asks it, kept once it is looked up. Every path of a
-/// module that starts with the same name asks the same question, and the
-/// answer walks the module's globs.
-#[derive(Default)]
-pub(crate) struct ModulesBound(pub(crate) RefCell<HashMap<BoundQuestion, Option<NameTarget>>>);
-
-/// What [`ModulesBound`] is asked: whether the build is the test build, the
-/// module, the name, and whether the path goes on after it.
-type BoundQuestion = (bool, String, String, AfterName);
-
-/// Invariant context for dependency resolution within a single source file,
-/// in one build of its root.
-pub(crate) struct ResolutionContext<'a> {
-    pub(crate) crate_view: &'a CrateView<'a>,
-    pub(crate) source_file: &'a Path,
-    pub(crate) current_module_path: &'a str,
-    reexport_map: &'a ReExportMap,
-    /// Whether the code read is the root's test build.
-    pub(crate) test_build: bool,
-}
-
-impl<'a> ResolutionContext<'a> {
-    /// The context of `source_file`, the file of `current_module_path` in
-    /// the crate of `crate_view`, reading production code.
-    pub(crate) fn new(
-        crate_view: &'a CrateView<'a>,
-        source_file: &'a Path,
-        current_module_path: &'a str,
-    ) -> Self {
-        Self {
-            crate_view,
-            source_file,
-            current_module_path,
-            reexport_map: crate_view.builds.reading(UsageKind::Production),
-            test_build: false,
-        }
-    }
-
-    /// The same file, read from `module`, an inline module in it.
-    pub(crate) fn in_module<'m>(&'m self, module: &'m str) -> ResolutionContext<'m> {
-        ResolutionContext {
-            current_module_path: module,
-            ..*self
-        }
-    }
-
-    /// The same file, reading code of `kind`.
-    pub(crate) fn reading(&self, kind: UsageKind) -> Self {
-        Self {
-            reexport_map: self.crate_view.builds.reading(kind),
-            test_build: kind != UsageKind::Production,
-            ..*self
-        }
-    }
-
-    /// The viewer from this file's module, looking through `root`.
-    fn viewer(&self, root: TargetRoot) -> Viewer<'a> {
-        self.reexport_map.viewer(root, self.current_module_path)
-    }
-
-    /// The viewer from this file's module that reads what `dep` points at.
-    pub(crate) fn viewer_for(&self, dep: &DependencyRef) -> Viewer<'a> {
-        self.viewer(dep.target_root)
-    }
-
-    /// The name lookup from this file's module, looking through `root`.
-    pub(crate) fn lookup(&self, root: TargetRoot) -> NameLookup<'a> {
-        NameLookup {
-            viewer: self.viewer(root),
-            module_paths: self.crate_view.module_paths,
-        }
-    }
-
-    /// The name lookup from this file's module that reads what `dep` points
-    /// at.
-    pub(crate) fn lookup_for(&self, dep: &DependencyRef) -> NameLookup<'a> {
-        self.lookup(dep.target_root)
-    }
-
-    /// Whether the module of this file has a child module `name` in the
-    /// module tree.
-    pub(crate) fn has_child_module(&self, name: &str) -> bool {
-        self.crate_view
-            .module_paths
-            .get_or_empty(&normalize_crate_name(self.crate_view.crate_name))
-            .contains(&append_to_path(self.current_module_path, name))
-    }
-
-    /// The bindings of the module `dep` points at, as this file sees it.
-    pub(crate) fn target_bindings(&self, dep: &DependencyRef) -> Option<SeenBindings<'a>> {
-        self.viewer_for(dep).bindings_in(CrateModule::of(dep))
-    }
-
-    /// [`NameLookup::follow`] from this file's module, through the root `dep`
-    /// resolves against, for a reference that asks `meaning` of `dep`'s item.
-    pub(crate) fn resolve_reexport(&self, dep: &mut DependencyRef, meaning: Meaning) -> Resolution {
-        self.lookup_for(dep).follow(dep, meaning)
-    }
-
-    /// [`ResolutionContext::resolve_reexport`], with what the chain passed
-    /// through noted in `passed_on`. Whether the chain places a definer, so
-    /// that `dep` produces an edge.
-    pub(crate) fn resolve_noting(
-        &self,
-        dep: &mut DependencyRef,
-        meaning: Meaning,
-        passed_on: &mut PassedOn,
-    ) -> bool {
-        let resolution = self.resolve_reexport(dep, meaning);
-        let places_a_definer = !resolution.places_no_definer();
-        passed_on.note(resolution, self.current_module_path, dep);
-        places_a_definer
-    }
 }
 
 /// The meaning a reference asks of a name: one of the three namespaces of the
