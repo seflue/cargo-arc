@@ -1005,23 +1005,11 @@ impl WrittenStep {
 /// defines only outside the type namespace carries no path on, so it is no
 /// alternative to one that does.
 fn binds_alternatives(lookup: NameLookup, holder: CrateModule, name: &str) -> bool {
-    let Some(bindings) = lookup.viewer.bindings_in(holder) else {
-        return false;
-    };
-    let mut targets = bindings
-        .every(name)
-        .filter_map(|binding| match &binding.kind {
-            BindingKind::PrivateUse(target) => Some(target),
-            _ => None,
+    lookup.viewer.bindings_in(holder).is_some_and(|bindings| {
+        binds_to_differing_targets(bindings, name, |target| {
+            !lookup.defines_only_outside_the_type_namespace(target)
         })
-        .filter(|target| !lookup.defines_only_outside_the_type_namespace(target));
-    let differ = targets
-        .next()
-        .is_some_and(|first| targets.any(|target| target != first));
-    differ
-        && bindings
-            .named(name)
-            .any(|binding| matches!(binding.kind, BindingKind::PrivateUse(_)))
+    })
 }
 
 /// The target `name` in the module `module` of `crate_name`.
@@ -1884,7 +1872,7 @@ impl<'a> NameLookup<'a> {
             let binding = visible_binding(named.clone());
             let bound_in_every_build = binding
                 .is_some_and(|binding| binding.builds == Brought::InEveryBuild)
-                || binds_to_differing_targets(bindings, symbol)
+                || binds_to_differing_targets(bindings, symbol, |_| true)
                 || binds_elsewhere(named);
             if bound_in_every_build {
                 return ControlFlow::Break(Brought::InEveryBuild);
@@ -2190,29 +2178,10 @@ impl<'a> NameLookup<'a> {
         name: &str,
         visited: &mut Visited,
     ) -> Option<ReExportTarget> {
-        let (lookup, bindings) = self.enter(module, Some(name), visited)?;
-        for binding in bindings?.named(name) {
-            let definer = match &binding.kind {
-                BindingKind::Definition(_) if binding.namespace() == Some(Namespace::Type) => Some(
-                    target_in(module.crate_name.to_string(), module.path.to_string(), name),
-                ),
-                BindingKind::ReExport(target) | BindingKind::PrivateUse(target) => {
-                    let holder = CrateModule {
-                        crate_name: &target.crate_name,
-                        path: &target.module,
-                    };
-                    lookup.type_item_definer(holder, &target.original_name, visited)
-                }
-                BindingKind::Definition(_)
-                | BindingKind::ReExportFromOutside(_)
-                | BindingKind::Elsewhere
-                | BindingKind::Module => None,
-            };
-            if definer.is_some() {
-                return definer;
-            }
-        }
-        None
+        self.first_definition(module, name, visited, &|module, name, definition| {
+            (definition.namespace() == Some(Namespace::Type))
+                .then(|| target_in(module.crate_name.to_string(), module.path.to_string(), name))
+        })
     }
 
     /// The namespace of the definition `module` binds as `name`, by a
@@ -2225,23 +2194,39 @@ impl<'a> NameLookup<'a> {
         name: &str,
         visited: &mut Visited,
     ) -> Option<Namespace> {
+        self.first_definition(module, name, visited, &|_, _, definition| {
+            definition.namespace()
+        })
+    }
+
+    /// The first result `of_definition` gives for a definition `module`
+    /// binds as `name`, by a definition of its own or through `use` items, as
+    /// the viewer sees it. `of_definition` is asked with the module and name
+    /// of the definition; the modules and names in `visited` bind nothing.
+    fn first_definition<T>(
+        self,
+        module: CrateModule,
+        name: &str,
+        visited: &mut Visited,
+        of_definition: &impl Fn(CrateModule, &str, &NameBinding) -> Option<T>,
+    ) -> Option<T> {
         let (lookup, bindings) = self.enter(module, Some(name), visited)?;
         for binding in bindings?.named(name) {
-            let namespace = match &binding.kind {
-                BindingKind::Definition(_) => binding.namespace(),
+            let found = match &binding.kind {
+                BindingKind::Definition(_) => of_definition(module, name, binding),
                 BindingKind::ReExport(target) | BindingKind::PrivateUse(target) => {
                     let holder = CrateModule {
                         crate_name: &target.crate_name,
                         path: &target.module,
                     };
-                    lookup.definition_namespace(holder, &target.original_name, visited)
+                    lookup.first_definition(holder, &target.original_name, visited, of_definition)
                 }
                 BindingKind::ReExportFromOutside(_)
                 | BindingKind::Elsewhere
                 | BindingKind::Module => None,
             };
-            if namespace.is_some() {
-                return namespace;
+            if found.is_some() {
+                return found;
             }
         }
         None
@@ -2299,30 +2284,42 @@ impl<'a> NameLookup<'a> {
 /// which of the other targets the reference has, the bindings do not tell.
 fn places_no_definer(bindings: SeenBindings, name: &str, binding: Option<&NameBinding>) -> bool {
     match binding.map(|binding| &binding.kind) {
-        Some(BindingKind::PrivateUse(_)) => private_targets_differ(bindings.every(name)),
+        Some(BindingKind::PrivateUse(_)) => private_targets_differ(bindings.every(name), |_| true),
         Some(BindingKind::ReExport(_)) => false,
-        _ => binds_to_differing_targets(bindings, name) || binds_elsewhere(bindings.named(name)),
+        _ => {
+            binds_to_differing_targets(bindings, name, |_| true)
+                || binds_elsewhere(bindings.named(name))
+        }
     }
 }
 
 /// Whether the private `use` items among `named`, the bindings of one name,
-/// bind it to different targets: alternatives under `cfg` in one file or in
-/// alternative files.
-fn private_targets_differ<'a>(named: impl Iterator<Item = &'a NameBinding>) -> bool {
-    let mut targets = named.filter_map(|binding| match &binding.kind {
-        BindingKind::PrivateUse(target) => Some(target),
-        _ => None,
-    });
+/// bind it to different targets among those `admits` holds for:
+/// alternatives under `cfg` in one file or in alternative files.
+fn private_targets_differ<'a>(
+    named: impl Iterator<Item = &'a NameBinding>,
+    admits: impl Fn(&ReExportTarget) -> bool,
+) -> bool {
+    let mut targets = named
+        .filter_map(|binding| match &binding.kind {
+            BindingKind::PrivateUse(target) => Some(target),
+            _ => None,
+        })
+        .filter(|target| admits(target));
     targets
         .next()
         .is_some_and(|first| targets.any(|target| target != first))
 }
 
 /// Whether private `use` items bind `name` in the module of `bindings` to
-/// different targets, one of them seen by the viewer, whatever builds it is
-/// in.
-fn binds_to_differing_targets(bindings: SeenBindings, name: &str) -> bool {
-    private_targets_differ(bindings.every(name))
+/// different targets among those `admits` holds for, one of them seen by the
+/// viewer, whatever builds it is in.
+fn binds_to_differing_targets(
+    bindings: SeenBindings,
+    name: &str,
+    admits: impl Fn(&ReExportTarget) -> bool,
+) -> bool {
+    private_targets_differ(bindings.every(name), admits)
         && bindings
             .named(name)
             .any(|binding| matches!(binding.kind, BindingKind::PrivateUse(_)))
