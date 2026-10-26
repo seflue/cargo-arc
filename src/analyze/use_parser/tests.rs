@@ -2193,7 +2193,10 @@ mod lookup_tests {
         let use_of_a = NameBinding::new(BindingKind::PrivateUse(target("a")), restricted.clone());
         let use_of_b = NameBinding::new(BindingKind::PrivateUse(target("b")), restricted);
 
-        assert!(private_targets_differ([&use_of_b, &use_of_a].into_iter()));
+        assert!(private_targets_differ(
+            [&use_of_b, &use_of_a].into_iter(),
+            |_| true
+        ));
     }
 }
 
