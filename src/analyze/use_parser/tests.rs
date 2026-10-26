@@ -4034,6 +4034,40 @@ mod test_build_tests {
         assert_eq!(names_in(from_test_build.reaching("dep"), "own"), ["real"]);
     }
 
+    /// A path a `use` writes through a module whose file differs between the
+    /// builds settles in each build as that build reads it: test code that
+    /// names the item through the module holding the `use` reaches the
+    /// module the test build picks.
+    #[test]
+    fn a_written_path_settles_as_each_build_reads_it() {
+        let ws = TestWorkspace::new()
+            .package(
+                "my_crate",
+                &[
+                    (
+                        "src/lib.rs",
+                        "mod user;\nmod consumer;\nmod real;\nmod fake;\n\
+                         #[cfg(not(test))]\n#[path = \"pick_real.rs\"]\nmod pick;\n\
+                         #[cfg(test)]\n#[path = \"pick_fake.rs\"]\nmod pick;",
+                    ),
+                    ("src/real.rs", "pub struct Thing;"),
+                    ("src/fake.rs", "pub struct Thing;"),
+                    ("src/pick_real.rs", "pub use crate::real as backend;"),
+                    ("src/pick_fake.rs", "pub use crate::fake as backend;"),
+                    ("src/user.rs", "pub use crate::pick::backend::Thing;"),
+                    (
+                        "src/consumer.rs",
+                        "#[cfg(test)]\nfn check() { let _ = crate::user::Thing; }",
+                    ),
+                ],
+            )
+            .analyze_with_tests();
+        assert_eq!(
+            ws.targets("my_crate::consumer"),
+            [("my_crate", "fake", Some("Thing"))]
+        );
+    }
+
     #[test]
     fn a_root_without_test_build_modules_has_no_test_build() {
         let roots = vec![RootReExports {
