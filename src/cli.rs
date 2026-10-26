@@ -130,6 +130,10 @@ pub enum QueryCommand {
     /// List the top N hotspots, or the named files with their rank among all
     /// files
     Hotspots(HotspotsQueryArgs),
+    /// List each symbol that crosses an edge between modules, with its usage
+    /// categories, its imports and the cycles through the edge
+    #[command(override_usage = "cargo arc [SHARED OPTIONS] query edges [OPTIONS]")]
+    Edges,
     /// A name that is no subcommand, kept to answer it with the valid ones;
     /// clap's own error would not list them.
     #[command(external_subcommand)]
@@ -435,6 +439,7 @@ impl ArcCommand {
 fn run_query(args: &ArcCommand, query_args: &QueryArgs) -> Result<Judgment> {
     let output = match &query_args.command {
         QueryCommand::Hotspots(hotspots_args) => query_hotspots(args, hotspots_args)?,
+        QueryCommand::Edges => query_edges(args)?,
         QueryCommand::Unknown(words) => {
             let given = words.first().map_or("", String::as_str);
             let valid: Vec<String> = <QueryArgs as clap::CommandFactory>::command()
@@ -497,6 +502,25 @@ fn query_hotspots(args: &ArcCommand, hotspots_args: &HotspotsQueryArgs) -> Resul
         header,
         columns: &COLUMNS,
         records: records(&tree, &selection)?,
+    })
+}
+
+/// The output of `query edges`: the arcs of the diagram over the same
+/// analysis, one record per arc and symbol.
+fn query_edges(args: &ArcCommand) -> Result<QueryOutput> {
+    let analysis = analyze_for_diagram(args, args.switches(), false)?;
+    let workspace_root = analysis.workspace_root.with_context(|| {
+        format!(
+            "workspace has no {} to list edges in",
+            analysis.profile.wording.packages
+        )
+    })?;
+    let mut header = query::Header::for_workspace(&workspace_root, args.query_flags()?);
+    header.subcommand_fields = query::edges::header_fields();
+    Ok(QueryOutput {
+        header,
+        columns: &query::edges::COLUMNS,
+        records: query::edges::records(&analysis.layout),
     })
 }
 
@@ -1303,7 +1327,7 @@ mod tests {
 
         assert_eq!(
             err,
-            "'bogus' is no subcommand of query; its subcommands: hotspots"
+            "'bogus' is no subcommand of query; its subcommands: hotspots, edges"
         );
     }
 

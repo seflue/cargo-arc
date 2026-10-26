@@ -66,3 +66,36 @@ The header adds these fields after `flags`:
 | `window-end` | The UTC date of the run, the window's end. `GIT_TEST_DATE_NOW` sets the run's time as it does for git. |
 
 Without volatility data, under `--no-volatility` or outside a git repository, `window-start` and `window-end` are `none`, every file has zero commits, and the top N lists no file.
+
+## query edges
+
+`query edges` lists every symbol that crosses an [edge](GLOSSARY.md#edge) between modules, one record per edge and symbol.
+A package stands for its root module, so an edge can start or end at a package.
+The records are the arcs of the diagram and the symbols listed under each, under the same flags.
+The [bare imports](GLOSSARY.md#bare-import) of an edge name no symbol and share one record with an empty `symbol`.
+A [manifest edge](GLOSSARY.md#manifest-edge) that no import backs has no record.
+The records are ordered by `from`, then `to`, then `symbol`.
+
+| Column | Value |
+|--------|-------|
+| `from` | The importing module, as its [qualified node name](GLOSSARY.md#qualified-node-name). |
+| `to` | The module or package the edge points to, as its qualified node name. |
+| `symbol` | The name the imports take from `to`; empty for the bare imports. |
+| `usage-categories` | The [usage categories](GLOSSARY.md#usage-category) of the symbol's [usages](GLOSSARY.md#usage) in the importing files, in the order `types`, `values`, `functions`. Empty when the files never use the symbol, as when they only re-export it, and always for the bare imports. |
+| `re-exported` | `true` when every import line that names the symbol is a `pub use` and the importing file refers to no name on that line otherwise, as the diagram's `viaReexport`; `false` otherwise and for the bare imports. A `pub use` of several names whose one name the file also uses is no re-export for any of them. |
+| `locations` | The imports that name the symbol, as `path:line`, the path relative to the workspace root. |
+| `cycles` | The number of [representative cycles](GLOSSARY.md#representative-cycle) through the edge, the same for each symbol on it. A [re-export](GLOSSARY.md#re-export) lies on none unless `--include-reexports`. |
+
+In TSV, `usage-categories` and `locations` are comma-separated; JSON gives both as lists.
+
+The header adds these fields after `flags`:
+
+| Key | Value |
+|-----|-------|
+| `records` | What a record is: one per edge and symbol, the bare imports in one record, no record for a manifest edge without imports. |
+| `order` | How the records are ordered. |
+| `usage-categories` | What the `usage-categories` column holds. |
+| `re-exported` | What the `re-exported` column holds. |
+| `locations` | What the `locations` column holds. |
+| `cycles` | What the `cycles` column counts. |
+| `not-shown` | What an edge does not show: method calls on a receiver, field access, usages inside the same module, and test usages unless `--include-tests`. |

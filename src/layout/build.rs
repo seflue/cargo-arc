@@ -6,12 +6,12 @@ use crate::diagnose::{
     Cluster, ClusterReport, ConsumerLocality, Cycle, CycleAnalysis, CyclicEdge, order_cycle_blocks,
 };
 use crate::graph::{ArcGraph, EdgeWeight, Node, Reexports};
-use crate::model::{EdgeContext, EntryFile, EntryKind, SourceLocation};
+use crate::model::{EdgeContext, EntryFile, EntryKind, SourceLocation, UsageCategory};
 use crate::volatility::Volatility;
 use petgraph::algo::has_path_connecting;
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
 /// Index into LayoutIR.items
@@ -211,6 +211,19 @@ pub(crate) struct SymbolGroup<'a> {
     pub(crate) via_reexport: bool,
     /// Ordered by file, line and id.
     pub(crate) locations: Vec<&'a LocatedSource>,
+}
+
+impl SymbolGroup<'_> {
+    /// Return the usage categories the symbol is used in across its
+    /// locations' files.
+    pub(crate) fn usage_categories(&self) -> BTreeSet<UsageCategory> {
+        self.locations
+            .iter()
+            .flat_map(|located| &located.location.usage_categories)
+            .filter(|(symbol, _)| symbol == self.symbol)
+            .map(|(_, category)| *category)
+            .collect()
+    }
 }
 
 /// Group an edge's `locations` by the symbols they carry: the bare imports
@@ -1915,6 +1928,83 @@ mod tests {
             vec![
                 "/registry/dep-1.0/src/lib.rs",
                 "/registry/dep-1.0/Cargo.toml"
+            ]
+        );
+    }
+
+    #[test]
+    fn symbol_groups_list_bare_imports_first_then_each_symbol_with_its_categories() {
+        // Symbol, re-export, (file, line) per location, usage categories.
+        type Group<'a> = (&'a str, bool, Vec<(String, usize)>, BTreeSet<UsageCategory>);
+        use crate::model::UsageCategory::{Functions, Types, Values};
+        let location =
+            |file: &str, line, symbols: &[&str], categories: &[(&str, _)]| SourceLocation {
+                file: file.into(),
+                line,
+                symbols: symbols.iter().map(|s| (*s).to_owned()).collect(),
+                module_path: "crate::provider".into(),
+                via_reexport: false,
+                usage_categories: categories
+                    .iter()
+                    .map(|(symbol, category)| ((*symbol).to_owned(), *category))
+                    .collect(),
+            };
+        let mut table = JumpTable::new();
+        let locations: Vec<LocatedSource> = [
+            location(
+                "src/b.rs",
+                4,
+                &["Thing", "LIMIT"],
+                &[("Thing", Types), ("LIMIT", Values)],
+            ),
+            location("src/a.rs", 2, &["Thing"], &[("Thing", Functions)]),
+            location("src/a.rs", 1, &[], &[]),
+            SourceLocation {
+                via_reexport: true,
+                ..location("src/c.rs", 1, &["Passed"], &[])
+            },
+        ]
+        .into_iter()
+        .map(|location| LocatedSource {
+            id: table.insert(location.file.clone(), location.line),
+            location,
+        })
+        .collect();
+
+        let groups: Vec<Group> = symbol_groups(&locations)
+            .iter()
+            .map(|group| {
+                (
+                    group.symbol,
+                    group.via_reexport,
+                    group
+                        .locations
+                        .iter()
+                        .map(|l| (l.location.file.display().to_string(), l.location.line))
+                        .collect(),
+                    group.usage_categories(),
+                )
+            })
+            .collect();
+
+        let at = |file: &str, line| (file.to_owned(), line);
+        assert_eq!(
+            groups,
+            [
+                ("", false, vec![at("src/a.rs", 1)], BTreeSet::new()),
+                (
+                    "LIMIT",
+                    false,
+                    vec![at("src/b.rs", 4)],
+                    BTreeSet::from([Values])
+                ),
+                ("Passed", true, vec![at("src/c.rs", 1)], BTreeSet::new()),
+                (
+                    "Thing",
+                    false,
+                    vec![at("src/a.rs", 2), at("src/b.rs", 4)],
+                    BTreeSet::from([Types, Functions])
+                ),
             ]
         );
     }

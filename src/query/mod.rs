@@ -2,6 +2,7 @@
 //! describes, then one record per line, as TSV or as JSON Lines. The format
 //! is described in `docs/QUERY.md`.
 
+pub(crate) mod edges;
 pub(crate) mod hotspots;
 
 use serde_json::{Map, Value};
