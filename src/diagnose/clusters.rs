@@ -407,6 +407,7 @@ mod tests {
     use crate::graph::{ArcGraph, EdgeWeight, Reexports};
     use crate::model::{EdgeContext, SourceLocation};
     use crate::test_support::{module_node, package_node};
+    use std::collections::BTreeSet;
 
     /// Single-package graph: `modules` by name, production `ModuleDep` edges
     /// `(from, to, ref_count)`. Returns the graph and the module node indices.
@@ -431,6 +432,7 @@ mod tests {
                     symbols: vec![format!("Sym{i}")],
                     module_path: String::new(),
                     via_reexport: false,
+                    usage_categories: BTreeSet::new(),
                 })
                 .collect();
             g.add_edge(
@@ -493,6 +495,7 @@ mod tests {
                 symbols: symbols.iter().map(|s| (*s).to_owned()).collect(),
                 module_path: String::new(),
                 via_reexport: false,
+                usage_categories: BTreeSet::new(),
             })
             .collect()
     }
@@ -580,6 +583,7 @@ mod tests {
                 symbols: vec![format!("Sym{i}")],
                 module_path: String::new(),
                 via_reexport: true,
+                usage_categories: BTreeSet::new(),
             })
             .collect();
         graph.add_edge(
@@ -598,6 +602,7 @@ mod tests {
                 symbols: vec![format!("Sym{i}")],
                 module_path: String::new(),
                 via_reexport: false,
+                usage_categories: BTreeSet::new(),
             })
             .collect();
         graph.add_edge(
@@ -647,6 +652,7 @@ mod tests {
                 symbols: vec![format!("Sym{i}")],
                 module_path: String::new(),
                 via_reexport: true,
+                usage_categories: BTreeSet::new(),
             })
             .collect();
         graph.add_edge(
@@ -666,6 +672,7 @@ mod tests {
                     symbols: vec![format!("Sym{i}")],
                     module_path: String::new(),
                     via_reexport: false,
+                    usage_categories: BTreeSet::new(),
                 })
                 .collect()
         };

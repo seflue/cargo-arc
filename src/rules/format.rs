@@ -480,6 +480,7 @@ mod tests {
     use crate::model::SourceLocation;
     use crate::rules::engine::{CycleClusterEdge, Violation, WrittenEdge};
     use crate::test_support::{module_node, package_node};
+    use std::collections::BTreeSet;
     use std::path::PathBuf;
 
     /// Single-cycle, single-edge `CycleCluster` fixture for tests that only
@@ -561,6 +562,7 @@ mod tests {
                     symbols: vec![],
                     module_path: String::new(),
                     via_reexport: false,
+                    usage_categories: BTreeSet::new(),
                 }],
             }],
             ..Default::default()
@@ -581,6 +583,7 @@ mod tests {
                     symbols: vec![],
                     module_path: String::new(),
                     via_reexport: false,
+                    usage_categories: BTreeSet::new(),
                 })
                 .collect(),
         }
@@ -658,6 +661,7 @@ mod tests {
                 symbols: vec![],
                 module_path: String::new(),
                 via_reexport: false,
+                usage_categories: BTreeSet::new(),
             }],
         }
     }
@@ -1516,6 +1520,7 @@ mod tests {
                     ],
                     module_path: String::new(),
                     via_reexport: false,
+                    usage_categories: BTreeSet::new(),
                 }],
             }],
             ..Default::default()
@@ -1743,6 +1748,7 @@ mod tests {
                     symbols: vec![format!("Sym{i}")],
                     module_path: String::new(),
                     via_reexport: false,
+                    usage_categories: BTreeSet::new(),
                 })
                 .collect();
             g.add_edge(

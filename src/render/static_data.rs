@@ -5,6 +5,7 @@ use crate::diagnose::ConsumerLocality;
 use crate::js_bundle::bundle;
 use crate::layout::{
     CyclicEdgeInfo, ItemKind, LayoutIR, LocatedSource, LocationId, NodeId, TargetKind,
+    symbol_groups,
 };
 use crate::model::Wording;
 use serde::Serialize;
@@ -270,13 +271,9 @@ struct CycleAccum {
 
 // === Data building ===
 
-/// Format source locations grouped by symbol.
-///
-/// Inverts the Location->Symbols structure to Symbol->Locations for structured display.
-///
-/// Returns a Vec of `SymbolUsageGroup` objects. Bare locations (without symbols)
-/// are returned with symbol="". Groups are ordered: bare locations first, then
-/// symbol groups alphabetically.
+/// Format source locations grouped by symbol, in the groups and order of
+/// [`symbol_groups`]: bare locations first with symbol="", then the symbol
+/// groups alphabetically.
 fn format_source_locations_by_symbol(
     locs: &[LocatedSource],
     config: &RenderConfig,
@@ -295,72 +292,24 @@ fn format_source_locations_by_symbol(
         Some(module_path)
     };
 
-    // Invert: Symbol -> Vec<UsageLocation>
-    let mut by_symbol: BTreeMap<String, Vec<UsageLocation>> = BTreeMap::new();
-    let mut bare_locations: Vec<UsageLocation> = Vec::new();
-    // A symbol counts as re-exported only when every location carrying it is a
-    // `pub use`; a single real import makes it coupling. Mirrors the edge-level
-    // `all(via_reexport)` rule (graph.rs `is_reexport_module_dep`).
-    let mut reexport_by_symbol: BTreeMap<String, bool> = BTreeMap::new();
-
-    for loc in locs {
-        let location = &loc.location;
-        let usage = UsageLocation {
-            file: location.file.display().to_string(),
-            line: location.line,
-            jump: config.with_jump_ids.then_some(loc.id),
-        };
-        if location.symbols.is_empty() {
-            // Location without symbols - collect separately
-            bare_locations.push(usage);
-        } else {
-            for symbol in &location.symbols {
-                by_symbol
-                    .entry(symbol.clone())
-                    .or_default()
-                    .push(usage.clone());
-                let flag = reexport_by_symbol.entry(symbol.clone()).or_insert(true);
-                *flag &= location.via_reexport;
-            }
-        }
-    }
-
-    let by_file_line_jump = |a: &UsageLocation, b: &UsageLocation| {
-        (&a.file, a.line, a.jump).cmp(&(&b.file, b.line, b.jump))
-    };
-
-    // Sort locations within each symbol alphabetically
-    for locations in by_symbol.values_mut() {
-        locations.sort_by(by_file_line_jump);
-    }
-
-    let mut groups = Vec::new();
-
-    // First: bare locations (symbol = "")
-    if !bare_locations.is_empty() {
-        bare_locations.sort_by(by_file_line_jump);
-        groups.push(SymbolUsageGroup {
-            symbol: String::new(),
+    symbol_groups(locs)
+        .into_iter()
+        .map(|group| SymbolUsageGroup {
+            symbol: group.symbol.to_owned(),
             module_path: module_path_opt.clone(),
-            via_reexport: false,
-            locations: bare_locations,
+            via_reexport: group.via_reexport,
+            locations: group
+                .locations
+                .into_iter()
+                .map(|located| UsageLocation {
+                    file: located.location.file.display().to_string(),
+                    line: located.location.line,
+                    jump: config.with_jump_ids.then_some(located.id),
+                })
+                .collect(),
             definition: None,
-        });
-    }
-
-    // Then: symbol-grouped locations in alphabetical order
-    for (symbol, locations) in by_symbol {
-        let via_reexport = reexport_by_symbol.get(&symbol).copied().unwrap_or(false);
-        groups.push(SymbolUsageGroup {
-            symbol,
-            module_path: module_path_opt.clone(),
-            via_reexport,
-            locations,
-            definition: None,
-        });
-    }
-
-    groups
+        })
+        .collect()
 }
 
 /// Attach each symbol group's definition at the provider, when the layout
@@ -672,6 +621,7 @@ mod tests {
             symbols: vec![],
             module_path: String::new(),
             via_reexport: false,
+            usage_categories: BTreeSet::new(),
         }];
         let groups = format_source_locations_by_symbol(
             &located(locs),
@@ -694,6 +644,7 @@ mod tests {
             symbols: vec!["ModuleInfo".to_string()],
             module_path: String::new(),
             via_reexport: false,
+            usage_categories: BTreeSet::new(),
         }];
         let groups = format_source_locations_by_symbol(
             &located(locs),
@@ -718,6 +669,7 @@ mod tests {
                 symbols: vec!["ModuleInfo".to_string()],
                 module_path: String::new(),
                 via_reexport: false,
+                usage_categories: BTreeSet::new(),
             },
             SourceLocation {
                 file: PathBuf::from("src/render.rs"),
@@ -725,6 +677,7 @@ mod tests {
                 symbols: vec!["ModuleInfo".to_string()],
                 module_path: String::new(),
                 via_reexport: false,
+                usage_categories: BTreeSet::new(),
             },
         ];
         let groups = format_source_locations_by_symbol(
@@ -752,6 +705,7 @@ mod tests {
             symbols: vec!["ModuleInfo".to_string(), "analyze_module".to_string()],
             module_path: String::new(),
             via_reexport: false,
+            usage_categories: BTreeSet::new(),
         }];
         let groups = format_source_locations_by_symbol(
             &located(locs),
@@ -777,6 +731,7 @@ mod tests {
                 symbols: vec!["Foo".to_string()],
                 module_path: String::new(),
                 via_reexport: true,
+                usage_categories: BTreeSet::new(),
             },
             SourceLocation {
                 file: PathBuf::from("src/b.rs"),
@@ -784,6 +739,7 @@ mod tests {
                 symbols: vec!["Foo".to_string()],
                 module_path: String::new(),
                 via_reexport: true,
+                usage_categories: BTreeSet::new(),
             },
             // Bar: one re-export, one real import -> coupling, not flagged
             SourceLocation {
@@ -792,6 +748,7 @@ mod tests {
                 symbols: vec!["Bar".to_string()],
                 module_path: String::new(),
                 via_reexport: true,
+                usage_categories: BTreeSet::new(),
             },
             SourceLocation {
                 file: PathBuf::from("src/d.rs"),
@@ -799,6 +756,7 @@ mod tests {
                 symbols: vec!["Bar".to_string()],
                 module_path: String::new(),
                 via_reexport: false,
+                usage_categories: BTreeSet::new(),
             },
         ];
         let groups = format_source_locations_by_symbol(
@@ -844,6 +802,7 @@ mod tests {
                         symbols: vec!["Reexported".to_string()],
                         module_path: String::new(),
                         via_reexport: true,
+                        usage_categories: BTreeSet::new(),
                     },
                     SourceLocation {
                         file: PathBuf::from("src/a.rs"),
@@ -851,6 +810,7 @@ mod tests {
                         symbols: vec!["Coupled".to_string()],
                         module_path: String::new(),
                         via_reexport: false,
+                        usage_categories: BTreeSet::new(),
                     },
                 ],
             ),
@@ -887,6 +847,7 @@ mod tests {
                 symbols: vec!["ModuleInfo".to_string(), "analyze_module".to_string()],
                 module_path: String::new(),
                 via_reexport: false,
+                usage_categories: BTreeSet::new(),
             },
             SourceLocation {
                 file: PathBuf::from("src/render.rs"),
@@ -894,6 +855,7 @@ mod tests {
                 symbols: vec!["ModuleInfo".to_string()],
                 module_path: String::new(),
                 via_reexport: false,
+                usage_categories: BTreeSet::new(),
             },
         ];
         let groups = format_source_locations_by_symbol(
@@ -922,6 +884,7 @@ mod tests {
             symbols: vec!["Foo".to_string(), "Bar".to_string()],
             module_path: String::new(),
             via_reexport: false,
+            usage_categories: BTreeSet::new(),
         }];
         let config = RenderConfig {
             with_jump_ids: true,
@@ -997,6 +960,7 @@ mod tests {
                     symbols: vec!["Foo".to_string()],
                     module_path: String::new(),
                     via_reexport: false,
+                    usage_categories: BTreeSet::new(),
                 }],
             ),
         );
@@ -1321,6 +1285,7 @@ mod tests {
                     symbols: vec!["MyStruct".to_string()],
                     module_path: String::new(),
                     via_reexport: false,
+                    usage_categories: BTreeSet::new(),
                 }],
             ),
         );
@@ -1461,6 +1426,7 @@ mod tests {
                         symbols: vec!["Symbol1".to_string()],
                         module_path: String::new(),
                         via_reexport: false,
+                        usage_categories: BTreeSet::new(),
                     },
                     SourceLocation {
                         file: PathBuf::from("src/b.rs"),
@@ -1468,6 +1434,7 @@ mod tests {
                         symbols: vec!["Symbol1".to_string()],
                         module_path: String::new(),
                         via_reexport: false,
+                        usage_categories: BTreeSet::new(),
                     },
                 ],
             ),
@@ -1576,6 +1543,7 @@ mod tests {
                     symbols: vec!["Test\"Quote".to_string()],
                     module_path: String::new(),
                     via_reexport: false,
+                    usage_categories: BTreeSet::new(),
                 }],
             ),
         );
@@ -1693,6 +1661,7 @@ mod tests {
                 symbols: vec!["Symbol1".to_string()],
                 module_path: String::new(),
                 via_reexport: false,
+                usage_categories: BTreeSet::new(),
             },
             SourceLocation {
                 file: PathBuf::from("src/lib.rs"),
@@ -1700,6 +1669,7 @@ mod tests {
                 symbols: vec!["Symbol1".to_string()],
                 module_path: String::new(),
                 via_reexport: false,
+                usage_categories: BTreeSet::new(),
             },
             SourceLocation {
                 file: PathBuf::from("src/util.rs"),
@@ -1707,6 +1677,7 @@ mod tests {
                 symbols: vec!["Symbol2".to_string()],
                 module_path: String::new(),
                 via_reexport: false,
+                usage_categories: BTreeSet::new(),
             },
             SourceLocation {
                 file: PathBuf::from("src/bare.rs"),
@@ -1714,6 +1685,7 @@ mod tests {
                 symbols: vec![], // Bare location
                 module_path: String::new(),
                 via_reexport: false,
+                usage_categories: BTreeSet::new(),
             },
         ];
 
@@ -1837,6 +1809,7 @@ mod tests {
                     symbols: vec![],
                     module_path: String::new(),
                     via_reexport: false,
+                    usage_categories: BTreeSet::new(),
                 }],
             ),
         );
@@ -2179,6 +2152,7 @@ mod tests {
                     symbols: vec![format!("Sym{i}")],
                     module_path: String::new(),
                     via_reexport: false,
+                    usage_categories: BTreeSet::new(),
                 })
                 .collect::<Vec<_>>()
         };
@@ -2299,6 +2273,7 @@ mod tests {
                     symbols: symbols.iter().map(|s| (*s).to_owned()).collect(),
                     module_path: String::new(),
                     via_reexport: false,
+                    usage_categories: BTreeSet::new(),
                 }],
                 context: EdgeContext::production(),
             },
@@ -2409,6 +2384,7 @@ mod tests {
                     symbols: vec!["Foo".to_owned()],
                     module_path: String::new(),
                     via_reexport: true,
+                    usage_categories: BTreeSet::new(),
                 }],
                 context: EdgeContext::production(),
             },
