@@ -2,7 +2,7 @@
 
 use crate::model::{
     Definition, DependencyRef, EdgeContext, EntryFile, ExternalsResult, ModuleInfo, ModuleTree,
-    PackageInfo, SourceLocation, TestKind, UsageKind,
+    PackageInfo, SourceLocation, SymbolUse, TestKind, UsageCategory, UsageKind,
 };
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
@@ -420,9 +420,7 @@ impl ArcGraph {
         externals: Option<&ExternalsResult>,
         include_tests: bool,
     ) -> Self {
-        let mut builder = GraphBuilder::new();
-        builder.add_packages(packages);
-        builder.add_modules(modules);
+        let mut builder = GraphBuilder::with_nodes(packages, modules);
         builder.add_package_deps(packages, include_tests);
         builder.add_module_deps();
         if let Some(ext) = externals {
@@ -450,6 +448,15 @@ impl GraphBuilder {
             external_map: HashMap::new(),
             module_deps: Vec::new(),
         }
+    }
+
+    /// Start a builder whose graph holds the package and module nodes, the
+    /// first steps of [`ArcGraph::build`].
+    fn with_nodes(packages: &[PackageInfo], modules: &[ModuleTree]) -> Self {
+        let mut builder = Self::new();
+        builder.add_packages(packages);
+        builder.add_modules(modules);
+        builder
     }
 
     fn add_packages(&mut self, packages: &[PackageInfo]) {
@@ -542,10 +549,31 @@ impl GraphBuilder {
     }
 
     fn add_module_deps(&mut self) {
-        // Clone to avoid borrow conflict (self.module_deps read vs self.resolve_node)
+        // Taken out of `self` so the groups can borrow it while edges are added.
         let module_deps = std::mem::take(&mut self.module_deps);
 
-        for (from_path, deps) in &module_deps {
+        for group in self.resolve_module_deps(&module_deps) {
+            let context = aggregate_context(&group.deps);
+            log_uses(&group);
+            let locations = build_source_locations(&group.deps, &group.target);
+            self.graph.add_edge(
+                group.from_idx,
+                group.to_idx,
+                EdgeWeight::ModuleDep { locations, context },
+            );
+        }
+    }
+
+    /// Group the references of each module in `module_deps` by the module or
+    /// package they target, one group per module edge: groups whose source
+    /// or target is no node of the graph, and references into the module
+    /// itself, are left out.
+    fn resolve_module_deps<'a>(
+        &self,
+        module_deps: &'a [(String, Vec<DependencyRef>)],
+    ) -> Vec<ModuleDepGroup<'a>> {
+        let mut groups = Vec::new();
+        for (from_path, deps) in module_deps {
             let Some(from_idx) = self.resolve_node(from_path) else {
                 continue;
             };
@@ -562,25 +590,18 @@ impl GraphBuilder {
                     .push(dep_ref);
             }
 
-            let resolved: Vec<_> = grouped
-                .into_iter()
-                .filter_map(|(target, target_deps)| {
-                    let to_idx = self.resolve_node(&target)?;
-                    (from_idx != to_idx).then_some((to_idx, target, target_deps))
-                })
-                .collect();
-
-            for (to_idx, target, target_deps) in resolved {
-                let context = aggregate_context(&target_deps);
-                log_uses(from_path, &target, &target_deps);
-                let locations = build_source_locations(&target_deps, &target);
-                self.graph.add_edge(
+            groups.extend(grouped.into_iter().filter_map(|(target, target_deps)| {
+                let to_idx = self.resolve_node(&target)?;
+                (from_idx != to_idx).then_some(ModuleDepGroup {
+                    from_path,
                     from_idx,
                     to_idx,
-                    EdgeWeight::ModuleDep { locations, context },
-                );
-            }
+                    target,
+                    deps: target_deps,
+                })
+            }));
         }
+        groups
     }
 
     fn add_externals(&mut self, ext: &ExternalsResult) {
@@ -640,27 +661,86 @@ impl GraphBuilder {
     }
 }
 
+/// The references of one module into another, which become one module edge.
+struct ModuleDepGroup<'a> {
+    from_path: &'a str,
+    from_idx: NodeIndex,
+    to_idx: NodeIndex,
+    /// The qualified path of the targeted module or package.
+    target: String,
+    deps: Vec<&'a DependencyRef>,
+}
+
+impl ModuleDepGroup<'_> {
+    /// Yield each usage on this edge with its symbol and the reference that
+    /// carries it, skipping references that name no item.
+    fn symbol_uses(&self) -> impl Iterator<Item = (&str, &DependencyRef, &SymbolUse)> {
+        self.deps.iter().flat_map(|dep| {
+            dep.target_item.iter().flat_map(move |symbol| {
+                dep.uses
+                    .iter()
+                    .map(move |symbol_use| (symbol.as_str(), *dep, symbol_use))
+            })
+        })
+    }
+}
+
+/// One usage of a symbol in a module other than the one that defines it,
+/// as the glossary defines a usage.
+#[derive(Debug)]
+pub(crate) struct Usage {
+    pub symbol: String,
+    /// The qualified node name of the module that defines the symbol; `pub
+    /// use` re-exports are followed.
+    pub provider: String,
+    /// The qualified node name of the module the usage is in.
+    pub module: String,
+    /// Relative to the workspace root; a file outside it stays absolute.
+    pub source_file: PathBuf,
+    pub line: usize,
+    pub category: UsageCategory,
+}
+
+/// Return the usages on the module edges that [`ArcGraph::build`] draws
+/// from `packages` and `modules`, the ones the `--debug` log of a diagram
+/// run lists, in that order.
+#[must_use]
+pub(crate) fn usages(packages: &[PackageInfo], modules: &[ModuleTree]) -> Vec<Usage> {
+    let mut builder = GraphBuilder::with_nodes(packages, modules);
+    let module_deps = std::mem::take(&mut builder.module_deps);
+    let mut usages = Vec::new();
+    for group in builder.resolve_module_deps(&module_deps) {
+        let provider = builder.graph.qualified_name(group.to_idx);
+        let module = builder.graph.qualified_name(group.from_idx);
+        usages.extend(group.symbol_uses().map(|(symbol, dep, symbol_use)| Usage {
+            symbol: symbol.to_owned(),
+            provider: provider.clone(),
+            module: module.clone(),
+            source_file: dep.source_file.clone(),
+            line: symbol_use.line,
+            category: symbol_use.category,
+        }));
+    }
+    usages
+}
+
 /// List every use on one edge with its category, so the walker's result can
 /// be read without a rule that consumes it. `STATIC_DATA` leaves the uses
 /// out; the debug log is where they show.
-fn log_uses(from: &str, target: &str, target_deps: &[&DependencyRef]) {
-    for dep in target_deps {
-        let Some(symbol) = &dep.target_item else {
-            continue;
+fn log_uses(group: &ModuleDepGroup<'_>) {
+    let (from, target) = (group.from_path, &group.target);
+    for (symbol, dep, symbol_use) in group.symbol_uses() {
+        let inferred = if symbol_use.imported_for_methods {
+            " (imported for its methods)"
+        } else {
+            ""
         };
-        for symbol_use in &dep.uses {
-            let inferred = if symbol_use.imported_for_methods {
-                " (imported for its methods)"
-            } else {
-                ""
-            };
-            tracing::debug!(
-                "use {from} -> {target}: {symbol} {}{inferred} at {}:{}",
-                symbol_use.category,
-                dep.source_file.display(),
-                symbol_use.line
-            );
-        }
+        tracing::debug!(
+            "use {from} -> {target}: {symbol} {}{inferred} at {}:{}",
+            symbol_use.category,
+            dep.source_file.display(),
+            symbol_use.line
+        );
     }
 }
 

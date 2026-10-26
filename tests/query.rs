@@ -898,3 +898,322 @@ fn edges_on_cargo_arc_itself_equal_the_arcs_and_usage_groups_of_the_diagram() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     assert_edges_match_the_diagram(&root, &[], &[("cargo_arc", "cargo-arc")]);
 }
+
+// ===== query usages =====
+
+/// A one-package workspace without git: `alpha` imports `helper` and
+/// `Config` from `beta`, calls `helper` at lines 4, 6 and 10 and names
+/// `Config` in a signature at line 3, and calls a method on a `Config` at
+/// line 5. `beta` calls its own `helper`, and `delta` calls the `helper` of
+/// `gamma` at line 4. The crate root re-exports `beta::shared`, and
+/// `epsilon` calls it through that re-export at line 4.
+fn usages_workspace() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    let files = [
+        (
+            "lib.rs",
+            "pub mod alpha;\npub mod beta;\npub mod gamma;\npub mod delta;\npub mod epsilon;\n\
+             \n\
+             pub use beta::shared;\n",
+        ),
+        (
+            "alpha.rs",
+            "use crate::beta::{helper, Config};\n\
+             \n\
+             pub fn run(config: &Config) {\n\
+             \x20   helper();\n\
+             \x20   config.check();\n\
+             \x20   helper();\n\
+             }\n\
+             \n\
+             pub fn again() {\n\
+             \x20   helper();\n\
+             }\n",
+        ),
+        (
+            "beta.rs",
+            "pub struct Config;\n\
+             \n\
+             impl Config {\n\
+             \x20   pub fn check(&self) {}\n\
+             }\n\
+             \n\
+             pub fn helper() {}\n\
+             \n\
+             pub fn twice() {\n\
+             \x20   helper();\n\
+             \x20   helper();\n\
+             }\n\
+             \n\
+             pub fn shared() {}\n",
+        ),
+        ("gamma.rs", "pub fn helper() {}\n"),
+        (
+            "delta.rs",
+            "use crate::gamma::helper;\n\
+             \n\
+             pub fn go() {\n\
+             \x20   helper();\n\
+             }\n",
+        ),
+        (
+            "epsilon.rs",
+            "use crate::shared;\n\
+             \n\
+             pub fn go() {\n\
+             \x20   shared();\n\
+             }\n",
+        ),
+    ];
+    for (name, text) in files {
+        std::fs::write(root.join("src").join(name), text).unwrap();
+    }
+    dir
+}
+
+#[test]
+fn usages_list_each_call_of_a_function_from_another_module() {
+    let ws = usages_workspace();
+    let out = stdout_of(&arc(ws.path(), &["query", "usages", "helper"]));
+
+    assert_eq!(
+        body_of(&out),
+        [
+            "symbol\tprovider\tmodule\tpath\tline\tusage-category",
+            "helper\tapp::beta\tapp::alpha\tsrc/alpha.rs\t4\tfunctions",
+            "helper\tapp::beta\tapp::alpha\tsrc/alpha.rs\t6\tfunctions",
+            "helper\tapp::beta\tapp::alpha\tsrc/alpha.rs\t10\tfunctions",
+            "helper\tapp::gamma\tapp::delta\tsrc/delta.rs\t4\tfunctions",
+        ]
+    );
+    assert_eq!(header_value(&out, "symbol"), "helper");
+    assert_eq!(
+        header_value(&out, "items"),
+        "app::beta::helper,app::gamma::helper"
+    );
+}
+
+/// A workspace of two packages: `storage-engine`, whose library is named
+/// `store` and whose module `pool` defines `acquire`, and `query-layer`,
+/// whose module `lookup` calls it at line 4.
+fn renamed_library_workspace() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"storage-engine\", \"query-layer\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    let packages = [
+        (
+            "storage-engine",
+            "[package]\nname = \"storage-engine\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\
+             \n[lib]\nname = \"store\"\n",
+            [
+                ("lib.rs", "pub mod pool;\n"),
+                ("pool.rs", "pub fn acquire() {}\n"),
+            ],
+        ),
+        (
+            "query-layer",
+            "[package]\nname = \"query-layer\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\
+             \n[dependencies]\nstorage-engine = { path = \"../storage-engine\" }\n",
+            [
+                ("lib.rs", "pub mod lookup;\n"),
+                (
+                    "lookup.rs",
+                    "use store::pool::acquire;\n\npub fn go() {\n\x20   acquire();\n}\n",
+                ),
+            ],
+        ),
+    ];
+    for (package, manifest, files) in packages {
+        let package_dir = root.join(package);
+        std::fs::create_dir_all(package_dir.join("src")).unwrap();
+        std::fs::write(package_dir.join("Cargo.toml"), manifest).unwrap();
+        for (name, text) in files {
+            std::fs::write(package_dir.join("src").join(name), text).unwrap();
+        }
+    }
+    dir
+}
+
+#[test]
+fn usages_name_provider_and_module_by_the_package_name() {
+    let ws = renamed_library_workspace();
+    let out = stdout_of(&arc(ws.path(), &["query", "usages", "acquire"]));
+
+    assert_eq!(
+        body_of(&out)[1..],
+        [
+            "acquire\tstorage-engine::pool\tquery-layer::lookup\tquery-layer/src/lookup.rs\t4\tfunctions"
+        ]
+    );
+    assert_eq!(header_value(&out, "items"), "storage-engine::pool::acquire");
+}
+
+#[test]
+fn usages_list_a_type_named_in_a_signature_as_types() {
+    let ws = usages_workspace();
+    let out = stdout_of(&arc(ws.path(), &["query", "usages", "Config"]));
+
+    assert_eq!(
+        body_of(&out)[1..],
+        ["Config\tapp::beta\tapp::alpha\tsrc/alpha.rs\t3\ttypes"]
+    );
+}
+
+#[test]
+fn usages_of_a_name_no_item_has_print_the_header_saying_so_and_no_records() {
+    let ws = usages_workspace();
+    let output = arc(ws.path(), &["query", "usages", "missing"]);
+    let out = stdout_of(&output);
+
+    assert_eq!(
+        body_of(&out),
+        ["symbol\tprovider\tmodule\tpath\tline\tusage-category"]
+    );
+    assert_eq!(header_value(&out, "symbol"), "missing");
+    assert_eq!(header_value(&out, "items"), "none");
+}
+
+#[test]
+fn usages_header_says_what_is_not_listed() {
+    let ws = usages_workspace();
+    let out = stdout_of(&arc(ws.path(), &["query", "usages", "helper"]));
+
+    let not_listed = header_value(&out, "not-listed");
+    assert!(
+        not_listed.contains("method calls on a receiver"),
+        "{not_listed}"
+    );
+    assert!(
+        not_listed.contains("inside the module that provides the symbol"),
+        "{not_listed}"
+    );
+    let usage = header_value(&out, "usage");
+    assert!(usage.contains("an import"), "{usage}");
+    assert!(usage.contains("by its full path"), "{usage}");
+}
+
+#[test]
+fn usages_of_an_item_used_only_in_its_own_module_say_why_items_is_none() {
+    let ws = usages_workspace();
+    let out = stdout_of(&arc(ws.path(), &["query", "usages", "twice"]));
+
+    assert_eq!(header_value(&out, "items"), "none");
+    let not_listed = header_value(&out, "not-listed");
+    assert!(
+        not_listed.contains("an item used only there is missing from items"),
+        "{not_listed}"
+    );
+}
+
+#[test]
+fn usages_header_says_include_tests_mixes_test_and_production_usages() {
+    let ws = usages_workspace();
+    let out = stdout_of(&arc(ws.path(), &["query", "usages", "helper"]));
+
+    let not_listed = header_value(&out, "not-listed");
+    assert!(
+        not_listed.contains("with it, test and production usages share the records unmarked"),
+        "{not_listed}"
+    );
+}
+
+#[test]
+fn usages_through_a_reexport_name_the_defining_module_as_provider() {
+    let ws = usages_workspace();
+    let out = stdout_of(&arc(ws.path(), &["query", "usages", "shared"]));
+
+    assert_eq!(
+        body_of(&out)[1..],
+        ["shared\tapp::beta\tapp::epsilon\tsrc/epsilon.rs\t4\tfunctions"]
+    );
+}
+
+#[test]
+fn usages_as_json_lines_key_each_record_by_the_columns() {
+    let ws = usages_workspace();
+    let json = stdout_of(&arc(ws.path(), &["query", "usages", "Config", "--json"]));
+
+    let lines: Vec<Value> = json
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("each line is JSON"))
+        .collect();
+    assert_eq!(lines[0]["items"], serde_json::json!(["app::beta::Config"]));
+    assert_eq!(
+        lines[1..],
+        [serde_json::json!({
+            "symbol": "Config",
+            "provider": "app::beta",
+            "module": "app::alpha",
+            "path": "src/alpha.rs",
+            "line": 3,
+            "usage-category": "types",
+        })]
+    );
+}
+
+/// The `(path, line, usage category)` of every usage of `symbol` that the
+/// `--debug` log of a diagram run lists, in log order.
+fn logged_usages(stderr: &str, symbol: &str) -> Vec<(String, u64, String)> {
+    stderr
+        .lines()
+        .map(strip_ansi)
+        .filter_map(|line| {
+            let logged = line.split_once(" use ")?.1;
+            let (_edge, usage) = logged.split_once(": ")?;
+            let (name, rest) = usage.split_once(' ')?;
+            if name != symbol {
+                return None;
+            }
+            let (described, location) = rest.rsplit_once(" at ")?;
+            let category = described.split(' ').next()?;
+            let (path, line) = location.rsplit_once(':')?;
+            Some((path.to_string(), line.parse().ok()?, category.to_string()))
+        })
+        .collect()
+}
+
+#[test]
+fn usages_on_cargo_arc_itself_equal_what_debug_logs() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let svg = tempfile::NamedTempFile::new().unwrap();
+    let diagram = arc(
+        &root,
+        &[
+            "--debug",
+            "-o",
+            svg.path().to_str().unwrap(),
+            "--no-volatility",
+        ],
+    );
+    let stderr = String::from_utf8(diagram.stderr).unwrap();
+    assert!(diagram.status.success(), "stderr: {stderr}");
+    let out = stdout_of(&arc(&root, &["query", "usages", "ArcGraph"]));
+
+    let mut logged = logged_usages(&stderr, "ArcGraph");
+    logged.sort();
+    let mut queried: Vec<(String, u64, String)> = body_of(&out)[1..]
+        .iter()
+        .map(|line| {
+            let cells: Vec<&str> = line.split('\t').collect();
+            (
+                cells[3].to_string(),
+                cells[4].parse().unwrap(),
+                cells[5].to_string(),
+            )
+        })
+        .collect();
+    queried.sort();
+    assert!(!logged.is_empty(), "the debug log lists usages of ArcGraph");
+    assert_eq!(queried, logged);
+}
