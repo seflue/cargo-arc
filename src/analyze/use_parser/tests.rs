@@ -2070,61 +2070,6 @@ mod binding_tests {
         assert_eq!(through("other", "a::b").named("Name").next(), None);
     }
 
-    /// A bin module that globs a module of its own package's lib sees no
-    /// `pub(crate)` trait of the lib, which is another crate than the bin:
-    /// the glob passes on what a descendant named through it.
-    #[test]
-    fn a_bin_glob_on_the_own_lib_brings_in_no_trait_of_the_lib_crate() {
-        let mut lib_module = ModuleExportInfo::default();
-        define(&mut lib_module, "f", DefKind::Fn);
-        define_with(
-            &mut lib_module,
-            "T",
-            DefKind::Trait,
-            Visibility::Restricted(String::new()),
-        );
-        let roots = vec![
-            RootReExports {
-                kind: EntryKind::Lib,
-                modules: HashMap::from([("tm".to_string(), lib_module)]),
-                test_build_modules: None,
-            },
-            RootReExports {
-                kind: EntryKind::Bin,
-                modules: HashMap::from([("holder".to_string(), ModuleExportInfo::default())]),
-                test_build_modules: None,
-            },
-        ];
-        let map: ReExportMap = [("my_crate".to_string(), roots)].into_iter().collect();
-        let glob = DependencyRef {
-            target_package: "my_crate".to_string(),
-            target_module: "tm".to_string(),
-            target_item: Some("*".to_string()),
-            source_file: Path::new("src/holder.rs").to_path_buf(),
-            line: 1,
-            context: EdgeContext::production(),
-            via_reexport: false,
-            uses: Vec::new(),
-            target_root: TargetRoot::Lib,
-        };
-        let holder_and_source = (
-            ("my_crate".to_string(), "holder".to_string()),
-            "tm".to_string(),
-        );
-        let passed_on = PassedOn {
-            globs: HashMap::from([(holder_and_source, true)]),
-            uses: HashMap::new(),
-        };
-
-        assert!(passed_on.passes_on(
-            "my_crate",
-            "holder",
-            &glob,
-            &map.for_root("my_crate", 1),
-            &ModulePathMap::default(),
-        ));
-    }
-
     #[test]
     fn the_bindings_of_a_name_come_definition_first_and_child_module_last() {
         let private = Visibility::Restricted("holder".to_string());
@@ -2176,27 +2121,6 @@ mod binding_tests {
             [&restricted_definition, &public_definition]
         );
         assert_eq!(name.collect::<Vec<_>>(), [&use_of_b, &use_of_a]);
-    }
-}
-
-mod lookup_tests {
-    use super::*;
-
-    #[test]
-    fn private_uses_of_one_name_to_different_targets_differ() {
-        let target = |module: &str| ReExportTarget {
-            crate_name: "my_crate".to_string(),
-            module: module.to_string(),
-            original_name: "Name".to_string(),
-        };
-        let restricted = Visibility::Restricted("holder".to_string());
-        let use_of_a = NameBinding::new(BindingKind::PrivateUse(target("a")), restricted.clone());
-        let use_of_b = NameBinding::new(BindingKind::PrivateUse(target("b")), restricted);
-
-        assert!(private_targets_differ(
-            [&use_of_b, &use_of_a].into_iter(),
-            |_| true
-        ));
     }
 }
 
