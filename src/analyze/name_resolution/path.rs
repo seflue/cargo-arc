@@ -2,7 +2,7 @@
 //! names stands for, and where it ends.
 
 use super::super::packages::normalize_crate_name;
-use super::super::use_parser::{CrateModule, Meaning, NameBinding, NameTarget, Namespace};
+use super::bindings::{CrateModule, Meaning, NameBinding, NameTarget, Namespace};
 use super::context::ResolutionContext;
 use super::lookup::{Visited, sees_the_module};
 use super::place::{

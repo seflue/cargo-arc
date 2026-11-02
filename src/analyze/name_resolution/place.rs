@@ -3,7 +3,7 @@
 //! and the place a `use` or path starts from.
 
 use super::super::packages::ModulePathMap;
-use super::super::use_parser::ReExportTarget;
+use super::bindings::ReExportTarget;
 use crate::model::{EntryFile, EntryKind, PackageInfo};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -347,7 +347,7 @@ impl UseScope<'_> {
     /// parent; a whole workspace crate binds its root. A path that goes on
     /// past the name keeps the path as written, with its last segment as the
     /// name, for
-    /// [`super::super::use_parser::ReExportMap::settle_written_paths`] to
+    /// [`super::bindings::ReExportMap::settle_written_paths`] to
     /// follow once the table is whole, in this crate as in another. A glob
     /// takes the names of the module its path ends on; one whose path goes on
     /// past the modules of the tree keeps it as written the same way. `None`
@@ -397,7 +397,7 @@ impl UseScope<'_> {
     /// other first name the path goes on past is a binding of this module or
     /// an external crate: the path starts in this module and is marked as
     /// from scope, and
-    /// [`super::super::use_parser::ReExportMap::settle_written_paths`] tells
+    /// [`super::bindings::ReExportMap::settle_written_paths`] tells
     /// which once the table is whole.
     fn start(&self, path: &str) -> Option<(String, Vec<String>, bool)> {
         let own = |in_crate: &str, from_scope: bool| {

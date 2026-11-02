@@ -7,7 +7,7 @@ use std::path::Path;
 use super::super::packages::{
     ModulePathMap, ModulePaths, PackageExportMap, WorkspacePackages, normalize_crate_name,
 };
-use super::super::use_parser::ReExportMap;
+use super::bindings::ReExportMap;
 use super::context::{CrateView, ModulesBound, ResolutionContext, RootBuilds};
 use super::dependencies::parse_file_dependencies;
 use super::lookup::PassedOn;

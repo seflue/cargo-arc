@@ -1,4 +1,4 @@
-use super::super::super::use_parser::{ModuleExportInfo, RootReExports, Visibility};
+use super::super::bindings::{ModuleExportInfo, RootReExports, Visibility};
 use super::*;
 use crate::model::{Definition, EdgeContext, EntryKind, TargetRoot};
 use std::path::Path;

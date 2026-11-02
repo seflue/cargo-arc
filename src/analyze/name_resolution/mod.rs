@@ -1,5 +1,6 @@
 //! Name resolution: the item each path in the workspace's source names.
 
+mod bindings;
 mod collect;
 mod context;
 mod dependencies;

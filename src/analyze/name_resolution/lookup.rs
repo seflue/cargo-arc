@@ -3,7 +3,7 @@
 //! on, and the settling of paths the table still holds as written.
 
 use super::super::packages::ModulePathMap;
-use super::super::use_parser::{
+use super::bindings::{
     BindingKind, BindingPlace, Brought, CrateModule, DefinedAt, GlobBinding, GlobPlace, GlobReach,
     Holder, Meaning, ModuleKey, NameBinding, NameTarget, Namespace, ReExportMap, ReExportTarget,
     SeenBindings, Settled, Viewer,

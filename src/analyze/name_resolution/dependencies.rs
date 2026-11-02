@@ -2,7 +2,7 @@
 //! item it names, with the uses of that item.
 
 use super::super::packages::normalize_crate_name;
-use super::super::use_parser::{
+use super::bindings::{
     BindingKind, Brought, CrateModule, Meaning, NameBinding, SeenBindings, is_reexport_visibility,
 };
 use super::collect::{
@@ -1167,7 +1167,7 @@ fn import_only_use(ctx: &ResolutionContext, dep: &DependencyRef, item: &str) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::use_parser::Visibility;
+    use super::super::bindings::Visibility;
     use super::*;
     use crate::model::Definition;
 
