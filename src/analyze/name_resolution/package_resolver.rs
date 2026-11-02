@@ -7,9 +7,10 @@ use std::path::Path;
 use super::super::packages::{
     ModulePathMap, ModulePaths, PackageExportMap, WorkspacePackages, normalize_crate_name,
 };
-use super::super::use_parser::{ExternPrelude, PassedOn, ReExportMap};
+use super::super::use_parser::{ExternPrelude, ReExportMap};
 use super::context::{CrateView, ModulesBound, ResolutionContext, RootBuilds};
 use super::dependencies::parse_file_dependencies;
+use super::lookup::PassedOn;
 use super::table::root_extern_prelude;
 use crate::model::{Definition, DependencyRef, EdgeContext, PackageInfo, TargetRoot, UsageKind};
 

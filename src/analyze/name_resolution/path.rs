@@ -4,9 +4,10 @@
 use super::super::packages::normalize_crate_name;
 use super::super::use_parser::{
     AfterName, CrateModule, FirstName, Meaning, NameBinding, NameTarget, Namespace, PickedStart,
-    Visited, append_to_path, followed_by, module_segments, resolve_relative_path, sees_the_module,
+    append_to_path, followed_by, module_segments, resolve_relative_path,
 };
 use super::context::ResolutionContext;
+use super::lookup::{Visited, sees_the_module};
 use crate::model::{DependencyRef, EdgeContext, TargetRoot};
 
 /// Resolve a single path written in the file of `ctx`: where it leads
@@ -321,7 +322,7 @@ impl PathStart {
     }
 
     /// Where `segments`, written from this root, lead. The first is asked of
-    /// the root's names ([`super::super::use_parser::NameLookup::name`]): a
+    /// the root's names ([`super::lookup::NameLookup::name`]): a
     /// module carries the rest of the path into it, also in another workspace
     /// crate; an item, or a module of another crate the path ends on, is the
     /// item of the root. A name the root does not bind starts down the module

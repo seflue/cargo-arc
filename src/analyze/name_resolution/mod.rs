@@ -3,6 +3,7 @@
 mod collect;
 mod context;
 mod dependencies;
+mod lookup;
 mod package_resolver;
 mod path;
 mod table;
