@@ -157,4 +157,11 @@ mod tests {
         let names: Vec<&str> = ws.iter().map(std::string::String::as_str).collect();
         assert_eq!(names, vec!["core_utils"]);
     }
+
+    #[test]
+    fn test_normalize_crate_name() {
+        assert_eq!(normalize_crate_name("my-lib"), "my_lib");
+        assert_eq!(normalize_crate_name("already_valid"), "already_valid");
+        assert_eq!(normalize_crate_name("a-b-c"), "a_b_c");
+    }
 }

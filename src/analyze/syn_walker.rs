@@ -595,7 +595,7 @@ mod tests {
                 "model",
                 "graph",
                 "analyze::hir",
-                "analyze::use_parser",
+                "analyze::name_resolution",
             ] {
                 assert!(
                     paths.contains(expected),
@@ -711,8 +711,8 @@ mod tests {
                 "analyze should contain 'hir', found: {sub_names:?}"
             );
             assert!(
-                sub_names.contains(&"use_parser"),
-                "analyze should contain 'use_parser', found: {sub_names:?}"
+                sub_names.contains(&"name_resolution"),
+                "analyze should contain 'name_resolution', found: {sub_names:?}"
             );
         }
 

@@ -536,7 +536,7 @@ pub(super) enum Brought {
 }
 
 /// What one crate root's module tree exports: module path → export info.
-/// Module paths are crate-relative (e.g. `"render"`, `"analyze::use_parser"`),
+/// Module paths are crate-relative (e.g. `"render"`, `"analyze::packages"`),
 /// and `""` is the root file itself.
 #[derive(Debug, Clone)]
 pub(super) struct RootReExports {
