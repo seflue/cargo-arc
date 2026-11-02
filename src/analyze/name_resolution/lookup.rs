@@ -4,10 +4,11 @@
 
 use super::super::packages::ModulePathMap;
 use super::super::use_parser::{
-    AfterName, BindingKind, BindingPlace, Brought, CrateModule, DefinedAt, GlobBinding, GlobPlace,
-    GlobReach, Holder, Meaning, ModuleKey, NameBinding, NameTarget, Namespace, ReExportMap,
-    ReExportTarget, SeenBindings, Settled, Viewer, append_to_path,
+    BindingKind, BindingPlace, Brought, CrateModule, DefinedAt, GlobBinding, GlobPlace, GlobReach,
+    Holder, Meaning, ModuleKey, NameBinding, NameTarget, Namespace, ReExportMap, ReExportTarget,
+    SeenBindings, Settled, Viewer,
 };
+use super::place::{AfterName, append_to_path};
 use crate::model::{DefKind, DependencyRef, UsageKind};
 use std::collections::{HashMap, HashSet};
 use std::ops::ControlFlow;
@@ -214,7 +215,7 @@ fn root_name_of(target: &ReExportTarget) -> ReExportTarget {
 
 impl ReExportMap {
     /// Point each `use` whose target holds the path as written, where
-    /// [`super::super::use_parser::UseScope::place`] left it, at what that path
+    /// [`super::place::UseScope::place`] left it, at what that path
     /// reaches, and each glob whose module is written at the module it reaches.
     /// Each path is read from the root of its crate: into another workspace
     /// crate as seen from outside, in the own crate as the module holding the
@@ -222,7 +223,7 @@ impl ReExportMap {
     /// waits for a later round, and rounds repeat while one settles a path. A
     /// path whose first name the root binds nothing under names that name in
     /// the root. A path from a name in scope
-    /// ([`super::super::use_parser::UsePlace::Name`]) whose first name stands
+    /// ([`super::place::UsePlace::Name`]) whose first name stands
     /// for no module in the holding module names an external crate: a private
     /// `use` of it binds [`BindingKind::Elsewhere`], a
     /// `pub use` [`BindingKind::ReExportFromOutside`]. A glob whose path does not reach a module
