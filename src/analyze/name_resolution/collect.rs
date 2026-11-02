@@ -2,7 +2,7 @@
 //! names, each with the region it is written in.
 
 use super::super::mod_resolver::is_cfg_test;
-use super::super::use_parser::Meaning;
+use super::bindings::Meaning;
 use super::place::append_to_path;
 use crate::model::EdgeContext;
 use std::collections::{HashMap, HashSet};

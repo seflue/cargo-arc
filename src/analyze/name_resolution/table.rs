@@ -13,7 +13,7 @@ use crate::model::{DefKind, Definition, PackageInfo};
 use super::super::mod_resolver::{
     CfgCondition, ModuleFile, declared_files, extract_mod_declarations,
 };
-use super::super::use_parser::{
+use super::bindings::{
     AssociatedItems, BindingKind, Brought, GlobBinding, GlobReach, ModuleExportInfo, NameBinding,
     Namespace, ReExportMap, RootReExports, Visibility, is_reexport_visibility,
 };
