@@ -12,7 +12,6 @@ use super::context::{CrateView, ModulesBound, ResolutionContext, RootBuilds};
 use super::dependencies::parse_file_dependencies;
 use super::lookup::PassedOn;
 use super::place::ExternPrelude;
-use super::table::root_extern_prelude;
 use crate::model::{Definition, DependencyRef, EdgeContext, PackageInfo, TargetRoot, UsageKind};
 
 /// The workspace as the code of each of its packages resolves names: what
@@ -134,7 +133,7 @@ impl<'w> PackageResolver<'w> {
                     .iter()
                     .enumerate()
                     .map(|(index, entry)| EntryRoot {
-                        extern_prelude: root_extern_prelude(package, Some(entry)),
+                        extern_prelude: ExternPrelude::of_root(package, Some(entry)),
                         builds: RootBuilds::of(workspace.table.for_root(&crate_name, index)),
                         modules_bound: ModulesBound::default(),
                     })
@@ -143,7 +142,7 @@ impl<'w> PackageResolver<'w> {
             }
             Backend::Hir => {
                 let entry = EntryRoot {
-                    extern_prelude: root_extern_prelude(package, package.entry_files.first()),
+                    extern_prelude: ExternPrelude::of_root(package, package.entry_files.first()),
                     builds: RootBuilds::of(ReExportMap::default()),
                     modules_bound: ModulesBound::default(),
                 };
@@ -151,7 +150,7 @@ impl<'w> PackageResolver<'w> {
             }
         };
         let unrooted = Unrooted {
-            extern_prelude: root_extern_prelude(package, None),
+            extern_prelude: ExternPrelude::of_root(package, None),
             builds: RootBuilds::of(workspace.table.clone()),
         };
         Self {
