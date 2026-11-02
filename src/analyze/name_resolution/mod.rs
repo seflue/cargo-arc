@@ -6,6 +6,7 @@ mod dependencies;
 mod lookup;
 mod package_resolver;
 mod path;
+mod place;
 mod table;
 mod workspace;
 

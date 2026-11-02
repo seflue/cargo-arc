@@ -14,11 +14,11 @@ use super::super::mod_resolver::{
     CfgCondition, ModuleFile, declared_files, extract_mod_declarations,
 };
 use super::super::use_parser::{
-    AssociatedItems, BindingKind, Brought, ExternPrelude, GlobBinding, GlobReach, ModuleExportInfo,
-    NameBinding, Namespace, ReExportMap, RootReExports, UsePlace, UseScope, Visibility,
-    is_reexport_visibility, resolve_use_tree,
+    AssociatedItems, BindingKind, Brought, GlobBinding, GlobReach, ModuleExportInfo, NameBinding,
+    Namespace, ReExportMap, RootReExports, Visibility, is_reexport_visibility,
 };
 use super::collect::{attributes_expand, item_attrs};
+use super::place::{ExternPrelude, UsePlace, UseScope, resolve_use_tree};
 
 /// Invariant parameters shared across the recursive re-export walk.
 struct CollectContext<'a> {

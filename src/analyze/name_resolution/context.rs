@@ -6,10 +6,10 @@ use super::super::packages::{
     ModulePathMap, PackageExportMap, WorkspacePackages, normalize_crate_name,
 };
 use super::super::use_parser::{
-    AfterName, CrateModule, ExternPrelude, Meaning, NameTarget, ReExportMap, SeenBindings, Viewer,
-    append_to_path,
+    CrateModule, Meaning, NameTarget, ReExportMap, SeenBindings, Viewer,
 };
 use super::lookup::{NameLookup, PassedOn, Resolution};
+use super::place::{AfterName, ExternPrelude, append_to_path};
 use crate::model::{Definition, DependencyRef, TargetRoot, UsageKind};
 use std::cell::RefCell;
 use std::collections::HashMap;

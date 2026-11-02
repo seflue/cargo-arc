@@ -3,8 +3,7 @@
 
 use super::super::packages::normalize_crate_name;
 use super::super::use_parser::{
-    BindingKind, Brought, CrateModule, Meaning, NameBinding, SeenBindings, append_to_path,
-    is_reexport_visibility, resolve_use_tree,
+    BindingKind, Brought, CrateModule, Meaning, NameBinding, SeenBindings, is_reexport_visibility,
 };
 use super::collect::{
     BindingRegions, CollectedPathRefs, CollectedUse, CollectedUses, LocalBinding, PathPosition,
@@ -14,6 +13,7 @@ use super::collect::{
 use super::context::ResolutionContext;
 use super::lookup::{FromProduction, PassedOn, Visited, covers, is_glob};
 use super::path::{PathEnd, PathStart, resolve_single_path};
+use super::place::{append_to_path, resolve_use_tree};
 use crate::model::{
     DefKind, DependencyRef, EdgeContext, SymbolUse, TargetRoot, TestKind, UsageKind, UseCategory,
 };

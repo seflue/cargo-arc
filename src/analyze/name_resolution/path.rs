@@ -2,12 +2,13 @@
 //! names stands for, and where it ends.
 
 use super::super::packages::normalize_crate_name;
-use super::super::use_parser::{
-    AfterName, CrateModule, FirstName, Meaning, NameBinding, NameTarget, Namespace, PickedStart,
-    append_to_path, followed_by, module_segments, resolve_relative_path,
-};
+use super::super::use_parser::{CrateModule, Meaning, NameBinding, NameTarget, Namespace};
 use super::context::ResolutionContext;
 use super::lookup::{Visited, sees_the_module};
+use super::place::{
+    AfterName, FirstName, PickedStart, append_to_path, followed_by, module_segments,
+    resolve_relative_path,
+};
 use crate::model::{DependencyRef, EdgeContext, TargetRoot};
 
 /// Resolve a single path written in the file of `ctx`: where it leads
