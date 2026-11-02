@@ -8,6 +8,8 @@ use crate::analyze::packages::{ModulePathMap, ModulePaths};
 use crate::model::{DependencyRef, EdgeContext, PackageInfo, TestKind, UsageKind};
 use crate::test_support::conventional_package;
 
+mod workspace;
+
 /// The package `p` written to a temporary directory, with the module paths
 /// its files declare.
 struct Fixture {

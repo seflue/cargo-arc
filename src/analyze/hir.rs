@@ -176,7 +176,7 @@ fn resolve_module_name_and_path(
 }
 
 /// Collects all module paths from hir::Module tree (lightweight, no dependency analysis).
-/// Returns relative paths without crate prefix, e.g. {"analyze", "analyze::use_parser"}.
+/// Returns relative paths without crate prefix, e.g. {"analyze", "analyze::name_resolution"}.
 #[cfg(feature = "hir")]
 pub(crate) fn collect_hir_module_paths(
     module: hir::Module,
@@ -483,8 +483,8 @@ mod hir_tests {
                 paths
             );
             assert!(
-                paths.contains("analyze::use_parser"),
-                "should contain 'analyze::use_parser', found: {:?}",
+                paths.contains("analyze::name_resolution"),
+                "should contain 'analyze::name_resolution', found: {:?}",
                 paths
             );
             // Must NOT contain crate prefix

@@ -1,16 +1,8 @@
-use crate::analyze::packages::normalize_crate_name;
 use crate::analyze::test_workspace::{Analyzed, TestWorkspace};
 use crate::model::{DefKind, Definition, DependencyRef, EdgeContext, SymbolUse, UseCategory};
 
 mod normalize_tests {
     use super::*;
-
-    #[test]
-    fn test_normalize_crate_name() {
-        assert_eq!(normalize_crate_name("my-lib"), "my_lib");
-        assert_eq!(normalize_crate_name("already_valid"), "already_valid");
-        assert_eq!(normalize_crate_name("a-b-c"), "a_b_c");
-    }
 
     #[test]
     fn test_process_use_statement_crate_local() {
@@ -142,15 +134,15 @@ mod submodule_tests {
                 "my_crate",
                 &[
                     ("src/lib.rs", "mod analyze;\nmod cli;"),
-                    ("src/analyze/mod.rs", "pub mod use_parser;"),
-                    ("src/analyze/use_parser.rs", "pub fn normalize() {}"),
-                    ("src/cli.rs", "use crate::analyze::use_parser::normalize;"),
+                    ("src/analyze/mod.rs", "pub mod util;"),
+                    ("src/analyze/util.rs", "pub fn normalize() {}"),
+                    ("src/cli.rs", "use crate::analyze::util::normalize;"),
                 ],
             )
             .analyze();
         assert_eq!(
             ws.targets("my_crate::cli"),
-            [("my_crate", "analyze::use_parser", Some("normalize"))]
+            [("my_crate", "analyze::util", Some("normalize"))]
         );
     }
 
@@ -550,14 +542,14 @@ make_enum!(Kind);
                 "my_crate",
                 &[
                     ("src/lib.rs", "mod analyze;\nmod cli;"),
-                    ("src/analyze/mod.rs", "pub mod use_parser;"),
+                    ("src/analyze/mod.rs", "pub mod util;"),
                     (
-                        "src/analyze/use_parser.rs",
+                        "src/analyze/util.rs",
                         "pub fn normalize() {}\npub fn is_workspace_member() {}",
                     ),
                     (
                         "src/cli.rs",
-                        "use crate::analyze::use_parser::{normalize, is_workspace_member};",
+                        "use crate::analyze::util::{normalize, is_workspace_member};",
                     ),
                 ],
             )
@@ -565,12 +557,8 @@ make_enum!(Kind);
         assert_eq!(
             ws.sorted_targets("my_crate::cli"),
             [
-                (
-                    "my_crate",
-                    "analyze::use_parser",
-                    Some("is_workspace_member")
-                ),
-                ("my_crate", "analyze::use_parser", Some("normalize")),
+                ("my_crate", "analyze::util", Some("is_workspace_member")),
+                ("my_crate", "analyze::util", Some("normalize")),
             ]
         );
     }
@@ -947,18 +935,15 @@ mod bare_module_tests {
             .package(
                 "my_crate",
                 &[
-                    (
-                        "src/lib.rs",
-                        "mod analyze;\nuse analyze::use_parser::normalize;",
-                    ),
-                    ("src/analyze/mod.rs", "pub mod use_parser;"),
-                    ("src/analyze/use_parser.rs", "pub fn normalize() {}"),
+                    ("src/lib.rs", "mod analyze;\nuse analyze::util::normalize;"),
+                    ("src/analyze/mod.rs", "pub mod util;"),
+                    ("src/analyze/util.rs", "pub fn normalize() {}"),
                 ],
             )
             .analyze();
         assert_eq!(
             ws.targets("my_crate"),
-            [("my_crate", "analyze::use_parser", Some("normalize"))]
+            [("my_crate", "analyze::util", Some("normalize"))]
         );
     }
 
@@ -1301,10 +1286,10 @@ mod relative_import_e2e_tests {
                     ("src/lib.rs", "mod analyze;"),
                     (
                         "src/analyze/mod.rs",
-                        "mod filtering;\nmod use_parser;\nmod workspace;",
+                        "mod filtering;\nmod util;\nmod workspace;",
                     ),
                     ("src/analyze/filtering.rs", "pub struct DependencyInfo;"),
-                    ("src/analyze/use_parser.rs", ""),
+                    ("src/analyze/util.rs", ""),
                     (
                         "src/analyze/workspace.rs",
                         "use super::filtering::DependencyInfo;",
@@ -1319,37 +1304,29 @@ mod relative_import_e2e_tests {
     }
 
     #[test]
-    fn test_super_use_parser_from_syn_walker() {
+    fn test_super_util_from_consumer() {
         let ws = TestWorkspace::new()
             .package(
                 "my_crate",
                 &[
                     ("src/lib.rs", "mod analyze;"),
-                    ("src/analyze/mod.rs", "mod syn_walker;\nmod use_parser;"),
+                    ("src/analyze/mod.rs", "mod consumer;\nmod util;"),
                     (
-                        "src/analyze/use_parser.rs",
-                        "pub fn parse_workspace_dependencies() {}\npub fn collect_all_use_items() {}",
+                        "src/analyze/util.rs",
+                        "pub fn read_one() {}\npub fn read_all() {}",
                     ),
                     (
-                        "src/analyze/syn_walker.rs",
-                        "use super::use_parser::{parse_workspace_dependencies, collect_all_use_items};",
+                        "src/analyze/consumer.rs",
+                        "use super::util::{read_one, read_all};",
                     ),
                 ],
             )
             .analyze();
         assert_eq!(
-            ws.sorted_targets("my_crate::analyze::syn_walker"),
+            ws.sorted_targets("my_crate::analyze::consumer"),
             [
-                (
-                    "my_crate",
-                    "analyze::use_parser",
-                    Some("collect_all_use_items")
-                ),
-                (
-                    "my_crate",
-                    "analyze::use_parser",
-                    Some("parse_workspace_dependencies")
-                ),
+                ("my_crate", "analyze::util", Some("read_all")),
+                ("my_crate", "analyze::util", Some("read_one")),
             ]
         );
     }
