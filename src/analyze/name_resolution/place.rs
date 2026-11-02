@@ -4,7 +4,9 @@
 
 use super::super::packages::ModulePathMap;
 use super::super::use_parser::ReExportTarget;
+use crate::model::{EntryFile, EntryKind, PackageInfo};
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use syn::UseTree;
 
 /// What a path does after the name it asks of a module.
@@ -219,10 +221,46 @@ pub(super) struct ExternPrelude {
 }
 
 impl ExternPrelude {
-    pub(super) fn new(
-        without_test: HashMap<String, String>,
-        test: HashMap<String, String>,
-    ) -> Self {
+    /// The workspace crates in the extern prelude of the root `entry` of
+    /// `package`, or of an integration test where `entry` is `None`, in each
+    /// build. Each dependency stands under the name the manifest gives it
+    /// (`code_names`), never under its key where that differs. A bin and an
+    /// integration test also name the package's lib; the test build adds the
+    /// dev-dependencies. `extern crate X as Y;` in the root adds `Y` for `X`,
+    /// `extern crate self as Y;` adds `Y` for the package itself.
+    pub(super) fn of_root(package: &PackageInfo, entry: Option<&EntryFile>) -> Self {
+        let key = package.key.as_str();
+        let names_of = |dependency: &str| -> Vec<(String, String)> {
+            let renamed: Vec<_> = package
+                .code_names
+                .iter()
+                .filter(|(_, named)| named.as_str() == dependency)
+                .map(|(name, named)| (name.clone(), named.clone()))
+                .collect();
+            if renamed.is_empty() {
+                vec![(dependency.to_string(), dependency.to_string())]
+            } else {
+                renamed
+            }
+        };
+        let mut without_test: HashMap<String, String> = package
+            .dependencies
+            .iter()
+            .flat_map(|dependency| names_of(dependency))
+            .collect();
+        if entry.is_none_or(|entry| entry.kind == EntryKind::Bin) {
+            without_test.extend(names_of(key));
+        }
+        if let Some(entry) = entry {
+            without_test.extend(extern_crate_aliases(&entry.file, key, &without_test));
+        }
+        let mut test = without_test.clone();
+        test.extend(
+            package
+                .dev_dependencies
+                .iter()
+                .flat_map(|dependency| names_of(dependency)),
+        );
         Self { without_test, test }
     }
 
@@ -231,6 +269,39 @@ impl ExternPrelude {
     pub(super) fn names(&self, test: bool) -> &HashMap<String, String> {
         if test { &self.test } else { &self.without_test }
     }
+}
+
+/// The alias and crate of each `extern crate X as Y;` in `root_file` whose
+/// `X` is in `names` or is `self`, the package `key`. Empty when the file
+/// cannot be read or does not parse.
+fn extern_crate_aliases(
+    root_file: &Path,
+    key: &str,
+    names: &HashMap<String, String>,
+) -> Vec<(String, String)> {
+    let Some(syntax) = std::fs::read_to_string(root_file)
+        .ok()
+        .and_then(|source| syn::parse_file(&source).ok())
+    else {
+        return Vec::new();
+    };
+    syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::ExternCrate(extern_crate) => {
+                let (_, alias) = extern_crate.rename.as_ref()?;
+                let name = extern_crate.ident.to_string();
+                let crate_name = if name == "self" {
+                    key.to_string()
+                } else {
+                    names.get(&name)?.clone()
+                };
+                Some((alias.to_string(), crate_name))
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// The module of a workspace crate a `use` is written in, with what places
