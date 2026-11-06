@@ -24,6 +24,7 @@ The subcommand's own fields follow them.
 The line after the header holds the column names, separated by tabs.
 Each following line is one record, its fields separated by tabs.
 A subcommand with no records prints the header and the column line and exits with 0.
+A module file that does not parse ends the run with exit code 2 and prints no records, because the result would miss what the file declares.
 
 A field never splits its line: in header values and in records, a backslash is written as `\\`, a tab as `\t`, a newline as `\n` and a carriage return as `\r`.
 A reader undoes the escapes after splitting the line at the tabs.

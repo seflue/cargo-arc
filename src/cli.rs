@@ -14,7 +14,7 @@ use crate::diagnose::RepresentativeCycles;
 use crate::graph::{ArcGraph, Reexports};
 use crate::hotspots;
 use crate::layout::{JumpTable, LayoutIR, LocationId, build_layout};
-use crate::model::{LanguageProfile, PackageInfo};
+use crate::model::{LanguageProfile, ModuleTree, PackageInfo};
 use crate::query;
 use crate::render::{
     AnalysisSwitches, Appearance, Document, RenderConfig, THEMES, Theme, html_page, project_name,
@@ -487,7 +487,7 @@ fn query_hotspots(args: &ArcCommand, hotspots_args: &HotspotsQueryArgs) -> Resul
     use query::hotspots::{COLUMNS, Selection, header_fields, records};
 
     let adapter = adapter_for(args, args.switches())?;
-    let (graph, workspace_root, _unparsed) =
+    let (graph, workspace_root, unparsed) =
         build_dependency_graph(adapter.as_ref(), args.common.include_tests)?;
     let workspace_root = workspace_root.with_context(|| {
         format!(
@@ -495,6 +495,7 @@ fn query_hotspots(args: &ArcCommand, hotspots_args: &HotspotsQueryArgs) -> Resul
             adapter.profile().wording.packages
         )
     })?;
+    refuse_unparsed(&unparsed, &workspace_root)?;
     let selection = if hotspots_args.paths.is_empty() {
         Selection::Top(hotspots_args.top)
     } else {
@@ -527,6 +528,7 @@ fn query_edges(args: &ArcCommand) -> Result<QueryOutput> {
             analysis.profile.wording.packages
         )
     })?;
+    refuse_unparsed(&analysis.unparsed, &workspace_root)?;
     let mut header = query::Header::for_workspace(&workspace_root, args.query_flags()?);
     header.subcommand_fields = query::edges::header_fields();
     Ok(QueryOutput {
@@ -552,6 +554,7 @@ fn query_usages(args: &ArcCommand, usages_args: &UsagesQueryArgs) -> Result<Quer
             adapter.profile().wording.packages
         )
     })?;
+    refuse_unparsed(&unparsed_files(&analysis.modules), &workspace_root)?;
     let usages = of_symbol(
         crate::graph::usages(&analysis.packages, &analysis.modules),
         &usages_args.symbol,
@@ -678,6 +681,21 @@ fn analyze_for_diagram(
 /// from the diagram without notice. Paths are shown relative to `root`
 /// where they lie under it.
 fn unparsed_error(unparsed: &[PathBuf], root: &Path) -> Option<anyhow::Error> {
+    unparsed_sentence(unparsed, root)
+        .map(|sentence| anyhow::anyhow!("{sentence}; the diagram stays at the last run"))
+}
+
+/// Refuse a result that would leave out what the files in `unparsed` declare:
+/// a reader of `query` or `check` would take the missing edges for absent ones.
+fn refuse_unparsed(unparsed: &[PathBuf], root: &Path) -> Result<()> {
+    match unparsed_sentence(unparsed, root) {
+        Some(sentence) => anyhow::bail!("{sentence}; fix the syntax and run again"),
+        None => Ok(()),
+    }
+}
+
+/// Name the files in `unparsed`, relative to `root` where they lie under it.
+fn unparsed_sentence(unparsed: &[PathBuf], root: &Path) -> Option<String> {
     if unparsed.is_empty() {
         return None;
     }
@@ -691,10 +709,7 @@ fn unparsed_error(unparsed: &[PathBuf], root: &Path) -> Option<anyhow::Error> {
         })
         .collect();
     let verb = if files.len() == 1 { "does" } else { "do" };
-    Some(anyhow::anyhow!(
-        "{} {verb} not parse; the diagram stays at the last run",
-        files.join(", ")
-    ))
+    Some(format!("{} {verb} not parse", files.join(", ")))
 }
 
 /// Run the `ui` subcommand: analyze with jump ids, then serve both pages and
@@ -915,8 +930,12 @@ fn run_check(check_args: &CheckArgs, common: &CommonArgs) -> Result<Judgment> {
         externals: false,
         transitive_deps: false,
     };
-    let (graph, _workspace_root, _unparsed) =
+    let (graph, workspace_root, unparsed) =
         build_dependency_graph(&adapter, adapter.feature_config.include_tests)?;
+    refuse_unparsed(
+        &unparsed,
+        workspace_root.as_deref().unwrap_or(Path::new("")),
+    )?;
 
     let manifest_dir = resolve_repo_path(&common.manifest_path);
     let default_rules_path = manifest_dir.join("arc-rules.toml");
@@ -1144,6 +1163,14 @@ fn workspace_root_of(packages: &[PackageInfo]) -> Option<PathBuf> {
     packages.first().map(|krate| krate.workspace_root.clone())
 }
 
+/// The module files of `modules` that did not parse.
+fn unparsed_files(modules: &[ModuleTree]) -> Vec<PathBuf> {
+    modules
+        .iter()
+        .flat_map(|tree| tree.unparsed.iter().cloned())
+        .collect()
+}
+
 /// Run `adapter` and build the dependency graph from what it delivers, along
 /// with the workspace root and the module files that did not parse.
 /// `include_tests` decides whether dev-dependencies become shown test edges.
@@ -1153,11 +1180,7 @@ fn build_dependency_graph(
 ) -> Result<(ArcGraph, Option<PathBuf>, Vec<PathBuf>)> {
     let analysis = adapter.analyze()?;
     let workspace_root = workspace_root_of(&analysis.packages);
-    let unparsed = analysis
-        .modules
-        .iter()
-        .flat_map(|tree| tree.unparsed.iter().cloned())
-        .collect();
+    let unparsed = unparsed_files(&analysis.modules);
 
     let graph = ArcGraph::build(
         &analysis.packages,
@@ -1719,7 +1742,7 @@ mod tests {
     /// graph, root and unparsed files come from it alone.
     #[test]
     fn any_adapter_feeds_the_graph() {
-        use crate::model::{Analysis, ModuleInfo, ModuleTree};
+        use crate::model::{Analysis, ModuleInfo};
 
         struct Fake;
         impl LanguageAdapter for Fake {

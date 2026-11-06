@@ -454,6 +454,30 @@ fn an_unknown_query_subcommand_exits_nonzero_naming_the_valid_ones() {
     );
 }
 
+#[test]
+fn a_file_that_does_not_parse_fails_the_run_naming_the_file() {
+    let ws = workspace();
+    std::fs::write(ws.path().join("src/beta.rs"), "pub fn broken( {\n").unwrap();
+
+    for args in [
+        vec!["query", "hotspots"],
+        vec!["query", "edges"],
+        vec!["query", "usages", "anything"],
+        vec!["check"],
+        vec!["check", "--generate-baseline"],
+    ] {
+        let output = arc(&ws.path().join("Cargo.toml"), &args);
+
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        assert!(output.stdout.is_empty(), "{args:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("src/beta.rs does not parse"),
+            "{args:?}: {stderr}"
+        );
+    }
+}
+
 /// Return the files of `hotspots` in the `STATIC_DATA` of a hotspot map, in
 /// rank order, each with its code lines and commits.
 fn ranked_in_map(svg: &str) -> Vec<(String, u64, u64)> {
