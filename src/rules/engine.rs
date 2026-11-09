@@ -182,8 +182,9 @@ pub enum ClusterShape {
         cycles: usize,
         /// Feedback edges, package-relative names, ranked as `Cluster::feedback_edges`.
         feedback_edges: Vec<CycleClusterEdge>,
-        /// Carries `Cluster::counts_every_cycle`: set when `feedback_edges`
-        /// breaks every cycle of the cluster, unset in a mixed cluster.
+        /// Carries `Cluster::counts_every_cycle`: set when every cycle of the
+        /// cluster contains an edge of `feedback_edges`, unset in a mixed
+        /// cluster.
         counts_every_cycle: bool,
     },
 }

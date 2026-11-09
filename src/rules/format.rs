@@ -429,7 +429,7 @@ fn cluster_block(cluster: &CycleCluster, indent: &str, mark: &str) -> String {
                 // would be false.
                 let _ = writeln!(
                     out,
-                    "{indent}  an unlisted cycle running through these edges can still stand once every listed edge is gone"
+                    "{indent}  a frozen or unlisted circular dependency need not contain any of these edges"
                 );
             }
         }
@@ -1894,7 +1894,7 @@ mod tests {
         );
         assert!(
             out.contains(
-                "an unlisted cycle running through these edges can still stand once every listed edge is gone"
+                "a frozen or unlisted circular dependency need not contain any of these edges"
             ),
             "got:\n{out}"
         );

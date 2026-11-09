@@ -34,7 +34,7 @@ In the [arc diagram](#arc-diagram), an arc is the curve that draws a dependency 
 | **<a id="cluster">Cluster</a>** | A strongly connected component of the module graph with at least two modules: the maximal set of modules that all reach each other. A cluster holds one or more [cycles](#cycle) and never spans packages. |
 | **<a id="tangle">Tangle</a>** | The same set of modules as a [cluster](#cluster). Structure101 [defines a tangle](https://www.sonarsource.com/structure101/docs/java/studio/Content/restructure101/tangles.html) as "a set of items that form a cyclic dependency graph at any scope …". |
 | **<a id="representative-cycle">Representative cycle</a>** | The shortest [cycle](#cycle) through one [edge](#edge). Several edges can share the same representative cycle. Every cycle cargo-arc reports is a representative cycle. |
-| **<a id="counted-cycle">Counted cycle</a>** | A [representative cycle](#representative-cycle) that is not [frozen](#frozen). When every cycle of a [tangle](#tangle) is frozen, all of them are counted, so that the tangle still has a [feedback arc set](#feedback-arc-set) that shows how to reduce the frozen debt. [Traffic](#traffic) and the feedback arc set consider only counted cycles. |
+| **<a id="counted-cycle">Counted cycle</a>** | A [representative cycle](#representative-cycle) that is not [frozen](#frozen). When every cycle of a [tangle](#tangle) is frozen, all of them are counted, so that the tangle still has a [feedback arc set](#feedback-arc-set). [Traffic](#traffic) and the feedback arc set consider only counted cycles. |
 | **<a id="unlisted-cycle">Unlisted cycle</a>** | A [cycle](#cycle) that is not the [representative cycle](#representative-cycle) of any of its [edges](#edge). For each of its edges, cargo-arc lists a shorter or equally short cycle instead. |
 | **<a id="cyclic-edge">Cyclic edge</a>** | An [edge](#edge) that lies on at least one [cycle](#cycle). Its two ends are in the same [cluster](#cluster). The [arc diagram](#arc-diagram) highlights cyclic edges. |
 
@@ -74,7 +74,7 @@ Whether an edge is [cyclic](#cyclic-edge) does not.
 |------|------------|
 | **<a id="feedback-arc">Feedback arc</a>** | An [edge](#edge) in a [feedback arc set](#feedback-arc-set). In a [single-cycle tangle](#tangle), any one edge of the [cycle](#cycle) is a feedback arc set by itself. |
 | **<a id="feedback-arc-set">Feedback arc set</a>** | A set of [edges](#edge) whose removal together breaks every [counted cycle](#counted-cycle) of a [tangle](#tangle). In a tangle where some but not all [cycles](#cycle) are [frozen](#frozen), it breaks only the counted cycles. In any other tangle it makes the tangle acyclic, which can take more edges than the counted cycles need. A tangle can have more than one feedback arc set. |
-| **<a id="traffic">Traffic</a>** | The number of [counted cycles](#counted-cycle) that run through one [edge](#edge). Removing the edge breaks all of them. Traffic does not depend on which other edges are removed first. [Feedback arcs](#feedback-arc) are ranked by traffic. |
+| **<a id="traffic">Traffic</a>** | The number of [counted cycles](#counted-cycle) that run through one [edge](#edge). [Feedback arcs](#feedback-arc) are ranked by traffic ([ADR-023](adr/023-greedy-feedback-arc-set-ranked-by-traffic.md)). |
 | **<a id="symbol-count">Symbol count</a>** | The number of distinct symbols that cross one [edge](#edge). A symbol counts once, even when several imports on the edge carry it. All [bare imports](#bare-import) on an edge together add one. A symbol imported by `pub use` does not count, unless every import on the edge is a `pub use`. The symbol count breaks ties in the [traffic](#traffic) ranking. In a [single-cycle tangle](#tangle) every edge has the same traffic, so the symbol count alone decides the order. |
 
 Every [feedback arc](#feedback-arc) is a [cyclic edge](#cyclic-edge).
@@ -91,7 +91,9 @@ The [report](#report) describes the set in a sentence without naming it ([RULES.
 *Traffic* is a term of this project.
 *Edge betweenness* is the nearest established term, and it counts the shortest paths through an [edge](#edge) instead of [cycles](#cycle).
 
-Removing a [feedback arc](#feedback-arc) moves code, and Lakos names the two directions it can go.
+Only a change to the code makes a [cycle](#cycle) go away, such as moving an [item](#item) or inverting a dependency through a trait.
+A [feedback arc](#feedback-arc) only shows where to look.
+Lakos has a name for moving code up and for moving it down.
 *Escalation* moves mutually dependent functionality into a component above both modules, an existing one or a new one.
 *Demotion* moves common functionality into a component below both.
 They are two of the nine levelization techniques in Lakos, *Large-Scale C++* Vol. I, section 3.5.

@@ -6,9 +6,10 @@
 //! set-cover over the representative cycles, then a single `tarjan_scc`
 //! verification with a residual re-cover loop.
 //!
-//! The caller names the cycles it tolerates and the set breaks the rest, so
-//! tolerating nothing makes the cluster acyclic; something tolerated can
-//! leave an unlisted cycle standing.
+//! The caller names the cycles it tolerates, and the set covers the rest. If
+//! the caller tolerates nothing, every cycle of the cluster contains an edge
+//! of the set. If it tolerates something, an unlisted cycle need not contain
+//! one.
 
 use super::cycles::{Cycle, CycleAnalysis, RepresentativeCycles};
 use crate::graph::{ArcGraph, EdgeWeight};
@@ -40,13 +41,13 @@ pub struct Cluster {
     pub cycles: Vec<usize>,
     /// Set when the cluster has no untolerated cycle of its own.
     pub tolerated: bool,
-    /// Set when `feedback_edges` breaks every cycle of the cluster, tolerated
-    /// or not. Unset in a mixed cluster, where a tolerated cycle's own edges
-    /// stay in the graph and `feedback_edges` covers only the untolerated
-    /// ones.
+    /// Set when every cycle of the cluster contains an edge of
+    /// `feedback_edges`, tolerated cycles included. Unset in a mixed cluster,
+    /// where a tolerated cycle's own edges stay in the graph and
+    /// `feedback_edges` covers only the untolerated ones.
     pub counts_every_cycle: bool,
-    /// Edge set whose removal breaks every cycle in `cycles`, ranked traffic
-    /// desc, symbols asc, name asc.
+    /// Edges that cover every cycle in `cycles`, ranked traffic desc, symbols
+    /// asc, name asc.
     pub feedback_edges: Vec<CyclicEdge>,
     /// Every SCC-internal edge, ranked like `feedback_edges`.
     pub edges: Vec<CyclicEdge>,
@@ -157,11 +158,11 @@ impl ArcGraph {
 
     /// Greedy set-cover feedback arc set for one cluster, ranked best-first.
     ///
-    /// The cover breaks every cycle in `open`. With `counts_every_cycle` set, a
-    /// `tarjan_scc` guard then re-covers whatever the residual enumeration
-    /// still finds, until the cluster is acyclic. With it unset, the cover
-    /// stops at `open`: the cluster is mixed, and chasing the residual could
-    /// pull in an edge that carries none of its own cycles.
+    /// Every cycle in `open` contains an edge of the cover. With
+    /// `counts_every_cycle` set, a `tarjan_scc` guard then re-covers whatever
+    /// the residual enumeration still finds, until the cluster is acyclic.
+    /// With it unset, the cover stops at `open`: the cluster is mixed, and
+    /// chasing the residual could pull in an edge that carries none of its own cycles.
     fn feedback_edges(
         &self,
         sub: &DiGraph<NodeIndex, ()>,
@@ -256,7 +257,7 @@ impl ArcGraph {
         });
     }
 
-    /// Repeatedly remove the edge covering the most still-open cycles until none
+    /// Repeatedly pick the edge covering the most still-open cycles until none
     /// remain, appending each pick to `chosen`. Ties break on [`RemovalBias`],
     /// then fewer symbols, then smaller name, so the choice is deterministic.
     fn greedy_cover(
@@ -730,7 +731,7 @@ mod tests {
     #[test]
     fn shared_edge_is_ranked_by_traffic() {
         // Two triangles sharing directed edge 0->1:
-        //   0->1->2->0  and  0->1->3->0. Removing 0->1 breaks both.
+        //   0->1->2->0  and  0->1->3->0. Both run through 0->1.
         let (g, idx) = graph_with(
             &["m0", "m1", "m2", "m3"],
             &[(0, 1, 1), (1, 2, 1), (2, 0, 1), (1, 3, 1), (3, 0, 1)],

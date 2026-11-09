@@ -379,10 +379,10 @@ An [`allow`](#allow) entry naming that package on both sides does that job inste
 
 Violations are reported per tangle.
 A tangle holding one cycle prints a `cycle:` line naming its modules in order, then one row per edge on it.
-Removing any one of those edges breaks the cycle.
+Any one of those edges is a [feedback arc set](GLOSSARY.md#feedback-arc-set) by itself.
 
 A tangle holding more than one cycle prints no `cycle:` line.
-It prints its feedback arcs, the edges to remove together, one row each:
+It prints its feedback arcs, one row each:
 
 ```
 error[no-cycles]: no cycles
@@ -393,16 +393,17 @@ error[no-cycles]: no cycles
       every circular dependency contains at least one of these 2 edges
 ```
 
-Where no cycle in the tangle is frozen, removing every edge in the list leaves no circular dependency at all, counted or not.
+Where no cycle in the tangle is frozen, every circular dependency in it contains at least one edge of the list.
 The closing sentence reads `every circular dependency contains this edge` for a list of one.
 It is left out where every listed edge lies on exactly one cycle and the list is as long as the cycle count, because the rows already say it; the heading then reads `edges:` instead.
 The cycle count on a row is every counted cycle running through that edge, not only the one the edge itself contributed to the count.
 
 A tangle whose edges are all frozen keeps its whole block, marked `(frozen)` on the tangle line (`tangle 1/1 (frozen): ...`); it only shows up under `--show-silenced`.
 
-A tangle mixing a frozen cycle with counted ones lists only the arcs that break the counted cycles.
-The frozen cycle's edges stay in the graph, so the block closes with `an unlisted cycle running through these edges can still stand once every listed edge is gone` in place of the closing sentence above.
-Remove every listed edge and run again to see whether an unlisted cycle is left.
+In a tangle that mixes a frozen cycle with counted ones, each counted cycle contains at least one edge of the list.
+The list adds no edge for the frozen cycle.
+The frozen cycle's edges stay in the graph, so the block closes with `a frozen or unlisted circular dependency need not contain any of these edges` in place of the closing sentence above.
+Run the check again after changing the code to see whether such a cycle is left.
 
 The search reads module edges only, so a dependency declared in a `Cargo.toml` is never part of a reported tangle.
 A dependency whose imports are all `pub use` counts only under `--include-reexports`: republishing a name is not a dependency on it, and the idiomatic re-export cycles that arise from it are not violations.

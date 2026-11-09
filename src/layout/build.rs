@@ -2570,9 +2570,8 @@ mod tests {
     fn build_layout_orders_cycle_blocks_by_layout_rank() {
         // Two triangles sharing directed edge m0->m1: two 3-node cycles
         // through m0. The fully-cyclic sibling set's minimum-upward-edges
-        // order places m1 first and m0 last (cutting only m0->m1 suffices
-        // to make the group acyclic), so cycle blocks rotate to start at
-        // m1, not m0.
+        // order places m1 first and m0 last (only m0->m1 then points
+        // upward), so cycle blocks rotate to start at m1, not m0.
         let mut b = TestGraphBuilder::new();
         b.package_with_modules("app", &["m0", "m1", "m2", "m3"])
             .prod_dep("m0", "m1")
