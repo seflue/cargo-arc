@@ -58,6 +58,7 @@ ra_ap_cfg = { version = "=0.0.320", optional = true }
 dunce = "1.0.4"
 syn = { version = "3", features = ["full", "visit"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
+quote = "1"
 tiny_http = "0.12"
 tokei = { version = "15.0.0", default-features = false }
 full_moon = { version = "3.0.0", default-features = false }

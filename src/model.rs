@@ -281,6 +281,11 @@ pub struct SymbolUse {
     /// path in the file spells out. The category is then inferred, and the
     /// line is the import's.
     pub imported_for_methods: bool,
+    /// The module-level item that contains the usage, named below the inline
+    /// modules around it: `make`, `impl<T> Writer<T>`, `nested::deep`. An
+    /// item nested in another item belongs to that item. None for a usage at
+    /// an import.
+    pub enclosing_item: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

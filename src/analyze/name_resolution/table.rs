@@ -1254,12 +1254,21 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
             line,
             category,
             imported_for_methods: false,
+            enclosing_item: None,
         }
     }
 
-    /// The uses of `item` in the dependencies of the module at `path`.
-    fn uses_of<'a>(ws: &'a Analyzed, path: &str, item: &str) -> &'a [SymbolUse] {
-        &ws.dep_on(path, item).uses
+    /// The uses of `item` in the dependencies of the module at `path`, without
+    /// the item each is written in.
+    fn uses_of(ws: &Analyzed, path: &str, item: &str) -> Vec<SymbolUse> {
+        ws.dep_on(path, item)
+            .uses
+            .iter()
+            .map(|symbol_use| SymbolUse {
+                enclosing_item: None,
+                ..symbol_use.clone()
+            })
+            .collect()
     }
 
     /// Variants, `impl` fns and consts, and trait fns are recorded on the module
@@ -1414,11 +1423,15 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
                 .find(|dep| dep.target_module == module)
                 .map(|dep| dep.uses.clone())
         };
+        let in_f = |symbol_use| SymbolUse {
+            enclosing_item: Some("f".to_string()),
+            ..symbol_use
+        };
         assert_eq!(
             (uses_in("a"), uses_in("b")),
             (
-                Some(vec![use_at(2, UsageCategory::Functions)]),
-                Some(vec![use_at(3, UsageCategory::Types)])
+                Some(vec![in_f(use_at(2, UsageCategory::Functions))]),
+                Some(vec![in_f(use_at(3, UsageCategory::Types))])
             ),
             "`Made` is recorded on `a::S` only, `b::S::Made` goes by its spelling"
         );

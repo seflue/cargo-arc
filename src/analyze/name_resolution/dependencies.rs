@@ -789,6 +789,7 @@ fn parse_path_ref_dependencies(
             line: path_ref.line,
             category: categorize(ctx, &dep, item, path_ref.position, associated, meaning),
             imported_for_methods: false,
+            enclosing_item: path_ref.enclosing_item.as_deref().map(str::to_string),
         };
         dep.uses.push(symbol_use);
         DependencyRef::dedup_push(&mut deps, &mut seen_targets, dep);
@@ -1157,12 +1158,14 @@ fn import_only_use(ctx: &ResolutionContext, dep: &DependencyRef, item: &str) -> 
             line: dep.line,
             category: UsageCategory::Functions,
             imported_for_methods: true,
+            enclosing_item: None,
         }
     } else {
         SymbolUse {
             line: dep.line,
             category: categorize(ctx, dep, item, PathPosition::Value, None, Meaning::Any),
             imported_for_methods: false,
+            enclosing_item: None,
         }
     }
 }

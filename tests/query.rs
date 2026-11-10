@@ -1010,11 +1010,11 @@ fn usages_list_each_call_of_a_function_from_another_module() {
     assert_eq!(
         body_of(&out),
         [
-            "symbol\tprovider\tmodule\tpath\tline\tusage-category",
-            "helper\tapp::beta\tapp::alpha\tsrc/alpha.rs\t4\tfunctions",
-            "helper\tapp::beta\tapp::alpha\tsrc/alpha.rs\t6\tfunctions",
-            "helper\tapp::beta\tapp::alpha\tsrc/alpha.rs\t10\tfunctions",
-            "helper\tapp::gamma\tapp::delta\tsrc/delta.rs\t4\tfunctions",
+            "symbol\tprovider\tmodule\tenclosing-item\tpath\tline\tusage-category",
+            "helper\tapp::beta\tapp::alpha\trun\tsrc/alpha.rs\t4\tfunctions",
+            "helper\tapp::beta\tapp::alpha\trun\tsrc/alpha.rs\t6\tfunctions",
+            "helper\tapp::beta\tapp::alpha\tagain\tsrc/alpha.rs\t10\tfunctions",
+            "helper\tapp::gamma\tapp::delta\tgo\tsrc/delta.rs\t4\tfunctions",
         ]
     );
     assert_eq!(header_value(&out, "symbol"), "helper");
@@ -1077,7 +1077,7 @@ fn usages_name_provider_and_module_by_the_package_name() {
     assert_eq!(
         body_of(&out)[1..],
         [
-            "acquire\tstorage-engine::pool\tquery-layer::lookup\tquery-layer/src/lookup.rs\t4\tfunctions"
+            "acquire\tstorage-engine::pool\tquery-layer::lookup\tgo\tquery-layer/src/lookup.rs\t4\tfunctions"
         ]
     );
     assert_eq!(header_value(&out, "items"), "storage-engine::pool::acquire");
@@ -1090,7 +1090,7 @@ fn usages_list_a_type_named_in_a_signature_as_types() {
 
     assert_eq!(
         body_of(&out)[1..],
-        ["Config\tapp::beta\tapp::alpha\tsrc/alpha.rs\t3\ttypes"]
+        ["Config\tapp::beta\tapp::alpha\trun\tsrc/alpha.rs\t3\ttypes"]
     );
 }
 
@@ -1102,7 +1102,7 @@ fn usages_of_a_name_no_item_has_print_the_header_saying_so_and_no_records() {
 
     assert_eq!(
         body_of(&out),
-        ["symbol\tprovider\tmodule\tpath\tline\tusage-category"]
+        ["symbol\tprovider\tmodule\tenclosing-item\tpath\tline\tusage-category"]
     );
     assert_eq!(header_value(&out, "symbol"), "missing");
     assert_eq!(header_value(&out, "items"), "none");
@@ -1159,7 +1159,7 @@ fn usages_through_a_reexport_name_the_defining_module_as_provider() {
 
     assert_eq!(
         body_of(&out)[1..],
-        ["shared\tapp::beta\tapp::epsilon\tsrc/epsilon.rs\t4\tfunctions"]
+        ["shared\tapp::beta\tapp::epsilon\tgo\tsrc/epsilon.rs\t4\tfunctions"]
     );
 }
 
@@ -1179,6 +1179,7 @@ fn usages_as_json_lines_key_each_record_by_the_columns() {
             "symbol": "Config",
             "provider": "app::beta",
             "module": "app::alpha",
+            "enclosing-item": "run",
             "path": "src/alpha.rs",
             "line": 3,
             "usage-category": "types",
@@ -1231,9 +1232,9 @@ fn usages_on_cargo_arc_itself_equal_what_debug_logs() {
         .map(|line| {
             let cells: Vec<&str> = line.split('\t').collect();
             (
-                cells[3].to_string(),
-                cells[4].parse().unwrap(),
-                cells[5].to_string(),
+                cells[4].to_string(),
+                cells[5].parse().unwrap(),
+                cells[6].to_string(),
             )
         })
         .collect();

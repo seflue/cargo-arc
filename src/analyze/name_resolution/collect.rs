@@ -355,6 +355,8 @@ pub(super) struct PathRef {
     /// Written in an attribute whose path starts with a registered tool
     /// ([`TOOL_NAMES`]), such as `#[rustfmt::skip]`.
     pub(super) in_tool_attribute: bool,
+    /// As [`crate::model::SymbolUse::enclosing_item`].
+    pub(super) enclosing_item: Option<Arc<str>>,
 }
 
 /// The tools whose name starts an attribute path rustc reads as the tool's,
@@ -582,8 +584,50 @@ struct PathRefCollector {
     /// Inside an item that derives a macro rustc does not build in, whose
     /// helper attributes a bare attribute path may name.
     in_derive_helpers_reach: bool,
+    /// The module-level item being visited.
+    enclosing_item: Option<ModuleItem>,
 }
+
+/// An item of the file's module or of one of its inline modules.
+struct ModuleItem {
+    /// Below the inline modules around it, as
+    /// [`crate::model::SymbolUse::enclosing_item`].
+    name: Arc<str>,
+    /// For an inline module, the inline path of its body, whose items are
+    /// module-level items of their own.
+    body: Option<Arc<str>>,
+}
+
 impl PathRefCollector {
+    /// Visit an item `name` names by `visit`; `opens_module` for an inline
+    /// module. Inside another item, other than in the body of an inline module
+    /// at module level, the outer item stays the one visited.
+    fn visiting_item(
+        &mut self,
+        name: Option<String>,
+        opens_module: bool,
+        visit: impl FnOnce(&mut Self),
+    ) {
+        let at_module_level = self
+            .enclosing_item
+            .as_ref()
+            .is_none_or(|outer| outer.body.as_ref() == Some(&self.inline_path));
+        if !at_module_level {
+            visit(self);
+            return;
+        }
+        let item = name.map(|name| {
+            let name: Arc<str> = append_to_path(&self.inline_path, &name).into();
+            ModuleItem {
+                body: opens_module.then(|| Arc::clone(&name)),
+                name,
+            }
+        });
+        let outer = std::mem::replace(&mut self.enclosing_item, item);
+        visit(self);
+        self.enclosing_item = outer;
+    }
+
     /// Visit an item that may carry derives with `attrs`, its fields and
     /// variants by `visit`, as [`PathRefCollector::in_derive_helpers_reach`]
     /// tells.
@@ -683,6 +727,10 @@ impl PathRefCollector {
             in_macro,
             local,
             in_tool_attribute: self.in_tool_attribute,
+            enclosing_item: self
+                .enclosing_item
+                .as_ref()
+                .map(|item| Arc::clone(&item.name)),
         });
     }
 
@@ -788,9 +836,17 @@ impl<'ast> Visit<'ast> for PathRefCollector {
         let outer = std::mem::take(&mut self.locals);
         let prev_context = self.context.clone();
         self.context = item_context(node, &prev_context);
-        syn::visit::visit_item(self, node);
+        let opens_module = matches!(node, syn::Item::Mod(m) if m.content.is_some());
+        self.visiting_item(item_name(node), opens_module, |s| {
+            syn::visit::visit_item(s, node);
+        });
         self.context = prev_context;
         self.locals = outer;
+    }
+
+    fn visit_foreign_item(&mut self, node: &'ast syn::ForeignItem) {
+        let name = foreign_item_ident(node).map(ToString::to_string);
+        self.visiting_item(name, false, |s| syn::visit::visit_foreign_item(s, node));
     }
 
     fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
@@ -1005,6 +1061,7 @@ pub(super) fn collect_all_path_refs(
         naming_macro: false,
         in_tool_attribute: false,
         in_derive_helpers_reach: false,
+        enclosing_item: None,
     };
     collector.visit_file(syntax);
     CollectedPathRefs {
@@ -1029,6 +1086,61 @@ pub(super) fn item_ident(item: &syn::Item) -> Option<&syn::Ident> {
         syn::Item::Macro(i) => i.ident.as_ref(),
         _ => None,
     }
+}
+
+/// The name of `item` as one of its module's items: the name it declares, its
+/// header for an `impl` block, the macro's path for a macro call that
+/// declares nothing. None for an `extern` block, whose items have their own,
+/// and for an item that declares no name, such as a `use`.
+fn item_name(item: &syn::Item) -> Option<String> {
+    match item {
+        syn::Item::Impl(i) => Some(impl_header(i)),
+        syn::Item::Macro(i) if i.ident.is_none() => Some(format!("{}!", tidy_tokens(&i.mac.path))),
+        _ => item_ident(item).map(ToString::to_string),
+    }
+}
+
+/// `impl<T> Writer<T>`, `impl Step for Writer<u8>`: the generic parameters,
+/// the trait and the type, which tell two `impl` blocks of a type apart. The
+/// `where` clause is left out.
+fn impl_header(item: &syn::ItemImpl) -> String {
+    let params = if item.generics.params.is_empty() {
+        String::new()
+    } else {
+        format!("<{}>", tidy_tokens(&item.generics.params))
+    };
+    let implemented = match &item.trait_ {
+        Some((path, _)) => format!("{} for ", tidy_tokens(path)),
+        None => String::new(),
+    };
+    format!("impl{params} {implemented}{}", tidy_tokens(&item.self_ty))
+}
+
+/// Print `node` from its tokens, without the spaces the token printer puts
+/// around `::`, angle brackets, commas, colons and brackets (`Writer < T >`
+/// becomes `Writer<T>`). Other spacing stays as printed: `Fn (u8)`.
+fn tidy_tokens(node: &impl quote::ToTokens) -> String {
+    const TIGHTENED: [(&str, &str); 14] = [
+        (" :: ", "::"),
+        (":: ", "::"),
+        (" < ", "<"),
+        ("< ", "<"),
+        (" <", "<"),
+        (" >", ">"),
+        (" ,", ","),
+        (" ;", ";"),
+        (" :", ":"),
+        ("& ", "&"),
+        ("( ", "("),
+        (" )", ")"),
+        ("[ ", "["),
+        (" ]", "]"),
+    ];
+    let mut text = node.to_token_stream().to_string();
+    for (spaced, tight) in TIGHTENED {
+        text = text.replace(spaced, tight);
+    }
+    text
 }
 
 /// The name an item of an `extern` block declares in the module holding the

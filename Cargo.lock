@@ -220,6 +220,7 @@ dependencies = [
  "itertools 0.15.0",
  "petgraph",
  "proc-macro2",
+ "quote",
  "ra_ap_cfg",
  "ra_ap_hir",
  "ra_ap_ide",

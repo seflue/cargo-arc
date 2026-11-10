@@ -114,6 +114,7 @@ Lua references record no usages, so on a Lua workspace `query usages` ends with 
 | `symbol` | The item's name. |
 | `provider` | The module that defines the item, as a path starting with the package; `pub use` re-exports are followed. |
 | `module` | The module the usage is in, as a path starting with the package. |
+| `enclosing-item` | The module-level [item](GLOSSARY.md#item) that contains the usage, or `none` for a usage at an import. An item in an inline module is named below it (`nested::deep`); an `impl` block by its header without the `where` clause (`impl<T> Writer<T>`, `impl Step for Writer<u8>`); a method by its `impl` block; an item inside a function by that function. |
 | `path` | The file of the usage, relative to the workspace root. |
 | `line` | The line of the usage. |
 | `usage-category` | The [usage category](GLOSSARY.md#usage-category): `types`, `values` or `functions`. |
@@ -124,6 +125,6 @@ The header adds these fields after `flags`:
 |-----|-------|
 | `symbol` | The name asked for. |
 | `items` | The items of that name that have a usage in another module, each as its provider's path followed by its name, or `none`. |
-| `usage` | What counts as a usage: a place where a module uses a symbol of another module, through an import or by its full path, such as a call, a type in a signature or a bound, a struct literal, or a const or static read. An import nothing in the file names counts once, at the import's line: a trait as `functions`, used for its methods, another type as `types`, a const or static as `values`, a function as `functions`, any other item by the case of its name. |
+| `usage` | What counts as a usage: a place where a module uses a symbol of another module, through an import or by its full path, such as a call, a type in a signature or a bound, a struct literal, or a const or static read. An import nothing in the file names counts once, at the import's line and in no enclosing item: a trait as `functions`, used for its methods, another type as `types`, a const or static as `values`, a function as `functions`, any other item by the case of its name. |
 | `not-listed` | What the records leave out: method calls on a receiver, usages inside the module that provides the item (an item used only there is missing from `items` as well), `pub use` re-exports, and usages in test code unless `--include-tests`. With `--include-tests`, test and production usages share the records without a mark that tells them apart. |
 | `order` | The order of the records: by provider, then path, line and the usage category's name. |

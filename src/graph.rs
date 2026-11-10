@@ -695,6 +695,8 @@ pub(crate) struct Usage {
     pub provider: String,
     /// The qualified node name of the module the usage is in.
     pub module: String,
+    /// As [`SymbolUse::enclosing_item`].
+    pub enclosing_item: Option<String>,
     /// Relative to the workspace root; a file outside it stays absolute.
     pub source_file: PathBuf,
     pub line: usize,
@@ -716,6 +718,7 @@ pub(crate) fn usages(packages: &[PackageInfo], modules: &[ModuleTree]) -> Vec<Us
             symbol: symbol.to_owned(),
             provider: provider.clone(),
             module: module.clone(),
+            enclosing_item: symbol_use.enclosing_item.clone(),
             source_file: dep.source_file.clone(),
             line: symbol_use.line,
             category: symbol_use.category,
@@ -1117,6 +1120,7 @@ mod tests {
             line,
             category,
             imported_for_methods: false,
+            enclosing_item: None,
         };
         let packages = vec![package("my_crate")];
         let modules = vec![tree(ModuleInfo {

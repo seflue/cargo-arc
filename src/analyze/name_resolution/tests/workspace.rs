@@ -705,6 +705,7 @@ use crate::graph;
                 line: 2,
                 category: UsageCategory::Types,
                 imported_for_methods: false,
+                enclosing_item: Some("f".to_string()),
             }]
         );
         assert_eq!(deps[1].uses[0].category, UsageCategory::Functions);
@@ -3098,12 +3099,19 @@ pub trait Step { fn run(&self); }
         analyzed.deps("my_crate::user").to_vec()
     }
 
-    fn uses_of<'a>(deps: &'a [DependencyRef], item: &str) -> &'a [SymbolUse] {
+    /// The uses of `item`, without the item each is written in.
+    fn uses_of(deps: &[DependencyRef], item: &str) -> Vec<SymbolUse> {
         let dep = deps
             .iter()
             .find(|d| d.target_item.as_deref() == Some(item))
             .unwrap_or_else(|| panic!("no dep on {item}: {deps:?}"));
-        &dep.uses
+        dep.uses
+            .iter()
+            .map(|symbol_use| SymbolUse {
+                enclosing_item: None,
+                ..symbol_use.clone()
+            })
+            .collect()
     }
 
     fn use_at(line: usize, category: UsageCategory) -> SymbolUse {
@@ -3111,6 +3119,7 @@ pub trait Step { fn run(&self); }
             line,
             category,
             imported_for_methods: false,
+            enclosing_item: None,
         }
     }
 
@@ -3203,7 +3212,13 @@ pub trait Step { fn run(&self); }
             .iter()
             .find(|d| d.context == test)
             .unwrap_or_else(|| panic!("no test dependency: {deps:?}"));
-        assert_eq!(test_dep.uses, [use_at(3, UsageCategory::Types)]);
+        assert_eq!(
+            test_dep.uses,
+            [SymbolUse {
+                enclosing_item: Some("check".to_string()),
+                ..use_at(3, UsageCategory::Types)
+            }]
+        );
         let production = deps
             .iter()
             .find(|d| d.context == EdgeContext::production())
@@ -3420,6 +3435,7 @@ pub trait Step { fn run(&self); }
                 line: 1,
                 category: UsageCategory::Functions,
                 imported_for_methods: true,
+                enclosing_item: None,
             }]
         );
     }
@@ -3475,7 +3491,113 @@ pub trait Step { fn run(&self); }
                 line: 1,
                 category: UsageCategory::Types,
                 imported_for_methods: false,
+                enclosing_item: None,
             }]
+        );
+    }
+}
+
+/// Each usage names the item of the module it is written in.
+mod usage_item_tests {
+    use super::*;
+
+    /// The line and item of each usage of `item` in the module `user`, written
+    /// as `source` beside a module `vocab` that defines `Config` and `Step`.
+    fn items_using(source: &str, item: &str) -> Vec<(usize, Option<String>)> {
+        let analyzed = TestWorkspace::new()
+            .package(
+                "my_crate",
+                &[
+                    ("src/lib.rs", "mod user;\nmod vocab;"),
+                    (
+                        "src/vocab.rs",
+                        "pub struct Config;\npub trait Step { fn run(&self); }",
+                    ),
+                    ("src/user.rs", source),
+                ],
+            )
+            .analyze();
+        let dep = analyzed
+            .deps("my_crate::user")
+            .iter()
+            .find(|d| d.target_item.as_deref() == Some(item))
+            .unwrap_or_else(|| panic!("no dep on {item}"))
+            .clone();
+        dep.uses
+            .into_iter()
+            .map(|u| (u.line, u.enclosing_item))
+            .collect()
+    }
+
+    fn at(line: usize, item: &str) -> (usize, Option<String>) {
+        (line, Some(item.to_string()))
+    }
+
+    /// A function nested in another function belongs to the outer one, a
+    /// method to its `impl` block, which is named by its type and trait with
+    /// their generic arguments. An item of an inline module is named below
+    /// that module.
+    #[test]
+    fn a_usage_names_the_module_level_item_around_it() {
+        let items = items_using(
+            "use crate::vocab::{Config, Step};
+pub struct Writer<T>(T);
+fn make() -> Config {
+    fn inner() -> Config { Config }
+    inner()
+}
+impl<T> Writer<T> {
+    fn get(&self) -> Config { Config }
+}
+impl Step for Writer<u8> {
+    fn run(&self) { let _ = Config; }
+}
+mod nested {
+    fn deep(_: crate::vocab::Config) {}
+}",
+            "Config",
+        );
+        assert_eq!(
+            items,
+            [
+                at(3, "make"),
+                at(4, "make"),
+                at(4, "make"),
+                at(8, "impl<T> Writer<T>"),
+                at(8, "impl<T> Writer<T>"),
+                at(11, "impl Step for Writer<u8>"),
+                at(14, "nested::deep"),
+            ]
+        );
+    }
+
+    /// A module declared in a function body is no module of the file, so
+    /// what it holds belongs to the function.
+    #[test]
+    fn a_usage_in_a_module_inside_a_function_names_the_function() {
+        let items = items_using(
+            "fn outer() {\n    mod m {\n        fn g(_: crate::vocab::Config) {}\n    }\n}",
+            "Config",
+        );
+        assert_eq!(items, [at(3, "outer")]);
+    }
+
+    /// A trait imported only for its methods has its usage at the import,
+    /// which is in no item.
+    #[test]
+    fn a_trait_used_for_its_methods_names_no_item() {
+        let items = items_using(
+            "use crate::vocab::Step;\nfn f(w: crate::vocab::Config) { w.run(); }",
+            "Step",
+        );
+        assert_eq!(items, [(1, None)]);
+    }
+
+    #[test]
+    fn a_dead_import_names_no_item() {
+        assert_eq!(
+            items_using("use crate::vocab::Config;", "Config"),
+            [(1, None)]
         );
     }
 }

@@ -5,10 +5,11 @@ use crate::graph::Usage;
 use serde_json::Value;
 use std::collections::BTreeSet;
 
-pub(crate) const COLUMNS: [&str; 6] = [
+pub(crate) const COLUMNS: [&str; 7] = [
     "symbol",
     "provider",
     "module",
+    "enclosing-item",
     "path",
     "line",
     "usage-category",
@@ -49,7 +50,7 @@ pub(crate) fn header_fields(symbol: &str, usages: &[Usage]) -> Vec<(&'static str
             "a place where a module uses a symbol of another module, through an import or \
              by its full path: a call, a type in a signature or a bound, a struct \
              literal, a const or static read. An import nothing in the file names counts \
-             once, at the import's line: a trait as functions, used for its methods, \
+             once, at the import's line and in no enclosing item: a trait as functions, used for its methods, \
              another type as types, a const or static as values, a function as \
              functions, any other item by the case of its name"
                 .into(),
@@ -78,6 +79,10 @@ pub(crate) fn records(usages: &[Usage]) -> Vec<Vec<Value>> {
                 usage.symbol.as_str().into(),
                 usage.provider.as_str().into(),
                 usage.module.as_str().into(),
+                usage
+                    .enclosing_item
+                    .as_deref()
+                    .map_or(Value::Null, Value::from),
                 usage.source_file.display().to_string().into(),
                 usage.line.into(),
                 usage.category.to_string().into(),
