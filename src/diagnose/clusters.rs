@@ -323,8 +323,8 @@ impl ArcGraph {
     /// A child→parent edge that is itself a pure re-export (the prelude
     /// pattern, `pub use super::*;`) ranks
     /// [`Structural`](RemovalBias::Structural) rather than
-    /// [`Preferred`](RemovalBias::Preferred): under the default graph this edge
-    /// doesn't exist at all (ADR-022 drops it as non-coupling), so it only
+    /// [`Preferred`](RemovalBias::Preferred): the default analysis leaves this
+    /// edge out (ADR-022 tags it as a re-export, not coupling), so it only
     /// shows up as a candidate under `--include-reexports`, where it's still
     /// just a re-export, not a layer to break.
     fn removal_bias(&self, edge: (NodeIndex, NodeIndex)) -> RemovalBias {
