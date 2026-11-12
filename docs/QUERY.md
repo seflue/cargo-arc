@@ -103,10 +103,12 @@ The header adds these fields after `flags`:
 
 ## query usages
 
-`query usages <SYMBOL>` lists every [usage](GLOSSARY.md#usage) of the items named `<SYMBOL>` in a module other than the one that defines the item.
+`query usages <SYMBOL>` lists where the items named `<SYMBOL>` are used, in other modules and in their own (see [usage](GLOSSARY.md#usage)).
+A usage inside the module that defines the item has that module as both `provider` and `module`.
 `<SYMBOL>` is the item's name without its module path, so it can match items of several modules; each record names its provider.
-The usages are the ones the module dependencies of the diagram carry, and `--debug` logs them for a diagram run.
-A name without such usages prints the header and the column line, with `items` as `none`, and exits with 0: either no item has the name, or its items are used only inside their own module.
+The usages in other modules are the ones the module dependencies of the diagram carry, and `--debug` logs them for a diagram run. A usage inside its own module makes no dependency.
+A name without usages prints the header and the column line, with `items` as `none`, and exits with 0.
+Without `<SYMBOL>`, it lists every usage in the workspace. The header then has no `symbol` and no `items`.
 Lua references record no usages, so on a Lua workspace `query usages` ends with an error.
 
 | Column | Value |
@@ -123,8 +125,8 @@ The header adds these fields after `flags`:
 
 | Key | Value |
 |-----|-------|
-| `symbol` | The name asked for. |
-| `items` | The items of that name that have a usage in another module, each as its provider's path followed by its name, or `none`. |
-| `usage` | What counts as a usage: a place where a module uses a symbol of another module, through an import or by its full path, such as a call, a type in a signature or a bound, a struct literal, or a const or static read. An import nothing in the file names counts once, at the import's line and in no enclosing item: a trait as `functions`, used for its methods, another type as `types`, a const or static as `values`, a function as `functions`, any other item by the case of its name. |
-| `not-listed` | What the records leave out: method calls on a receiver, usages inside the module that provides the item (an item used only there is missing from `items` as well), `pub use` re-exports, and usages in test code unless `--include-tests`. With `--include-tests`, test and production usages share the records without a mark that tells them apart. |
-| `order` | The order of the records: by provider, then path, line and the usage category's name. |
+| `symbol` | The name asked for. Left out without `<SYMBOL>`. |
+| `items` | The items of that name that have a usage, each as its provider's path followed by its name, or `none`. Left out without `<SYMBOL>`. |
+| `usage` | What counts as a usage: a place where a module uses a symbol, its own or another module's, through an import or by its full path, such as a call, a type in a signature or a bound, a struct literal, or a const or static read. `impl Writer` uses `Writer`. An import nothing in the file names counts once, at the import's line and in no enclosing item: a trait as `functions`, used for its methods, another type as `types`, a const or static as `values`, a function as `functions`, any other item by the case of its name. |
+| `not-listed` | What the records leave out: method calls on a receiver, a recursive call, a field of the item's own type, `Self`, `pub use` re-exports, and usages in test code unless `--include-tests`. With `--include-tests`, test and production usages share the records without a mark that tells them apart. |
+| `order` | The order of the records: by provider, then path, line, the usage category's name and the symbol. |

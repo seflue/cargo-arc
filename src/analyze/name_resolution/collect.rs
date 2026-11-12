@@ -81,6 +81,12 @@ impl BindingRegions {
             .is_some_and(|names| names.contains(name))
     }
 
+    /// The region of the module `region` belongs to: the file or an inline
+    /// module.
+    pub(super) fn module_of(&self, region: RegionId) -> RegionId {
+        self.modules[region]
+    }
+
     #[cfg(test)]
     fn count(&self) -> usize {
         self.parents.len()
@@ -357,6 +363,9 @@ pub(super) struct PathRef {
     pub(super) in_tool_attribute: bool,
     /// As [`crate::model::SymbolUse::enclosing_item`].
     pub(super) enclosing_item: Option<Arc<str>>,
+    /// Its first segment names a type or const parameter in scope where the
+    /// path is written.
+    pub(super) names_a_generic_parameter: bool,
 }
 
 /// The tools whose name starts an attribute path rustc reads as the tool's,
@@ -586,6 +595,8 @@ struct PathRefCollector {
     in_derive_helpers_reach: bool,
     /// The module-level item being visited.
     enclosing_item: Option<ModuleItem>,
+    /// The names of the type and const parameters in scope.
+    generic_parameters: Vec<String>,
 }
 
 /// An item of the file's module or of one of its inline modules.
@@ -663,6 +674,16 @@ impl PathRefCollector {
         self.locals.truncate(outer);
     }
 
+    /// Visit a fn of an `impl` block or a trait by `visit`, with the
+    /// parameters of `generics` in scope beside those of the block.
+    fn with_generics_of_fn(&mut self, generics: &syn::Generics, visit: impl FnOnce(&mut Self)) {
+        let outer = self.generic_parameters.len();
+        self.generic_parameters
+            .extend(generic_parameter_names(generics));
+        visit(self);
+        self.generic_parameters.truncate(outer);
+    }
+
     /// Visit a pattern and return the variables it declares instead of
     /// bringing them into scope.
     fn declarations_of(&mut self, pattern: impl FnOnce(&mut Self)) -> Vec<ScopedLocal> {
@@ -716,6 +737,8 @@ impl PathRefCollector {
 
     fn record_meaning(&mut self, path: String, line: usize, in_macro: bool, meaning: Meaning) {
         let local = self.local_named(&path);
+        let first = path.split("::").next().unwrap_or_default();
+        let names_a_generic_parameter = self.generic_parameters.iter().any(|name| name == first);
         self.paths.push(PathRef {
             path,
             line,
@@ -731,6 +754,7 @@ impl PathRefCollector {
                 .enclosing_item
                 .as_ref()
                 .map(|item| Arc::clone(&item.name)),
+            names_a_generic_parameter,
         });
     }
 
@@ -831,9 +855,16 @@ impl<'ast> Visit<'ast> for PathRefCollector {
         syn::visit::visit_pat_ident(self, node);
     }
 
-    // An item nested in a fn body sees none of the fn's variables.
+    // An item nested in a fn body sees none of the fn's variables, nor the
+    // generic parameters around it.
     fn visit_item(&mut self, node: &'ast syn::Item) {
         let outer = std::mem::take(&mut self.locals);
+        let outer_generics = std::mem::replace(
+            &mut self.generic_parameters,
+            item_generics(node)
+                .map(|generics| generic_parameter_names(generics).collect())
+                .unwrap_or_default(),
+        );
         let prev_context = self.context.clone();
         self.context = item_context(node, &prev_context);
         let opens_module = matches!(node, syn::Item::Mod(m) if m.content.is_some());
@@ -842,6 +873,7 @@ impl<'ast> Visit<'ast> for PathRefCollector {
         });
         self.context = prev_context;
         self.locals = outer;
+        self.generic_parameters = outer_generics;
     }
 
     fn visit_foreign_item(&mut self, node: &'ast syn::ForeignItem) {
@@ -854,12 +886,16 @@ impl<'ast> Visit<'ast> for PathRefCollector {
         if is_cfg_test(&node.attrs) {
             self.context = self.context.promoted_to_test();
         }
-        self.in_scope(|s| syn::visit::visit_impl_item_fn(s, node));
+        self.with_generics_of_fn(&node.sig.generics, |s| {
+            s.in_scope(|s| syn::visit::visit_impl_item_fn(s, node));
+        });
         self.context = prev_context;
     }
 
     fn visit_trait_item_fn(&mut self, node: &'ast syn::TraitItemFn) {
-        self.in_scope(|s| syn::visit::visit_trait_item_fn(s, node));
+        self.with_generics_of_fn(&node.sig.generics, |s| {
+            s.in_scope(|s| syn::visit::visit_trait_item_fn(s, node));
+        });
     }
 
     fn visit_expr_closure(&mut self, node: &'ast syn::ExprClosure) {
@@ -1062,6 +1098,7 @@ pub(super) fn collect_all_path_refs(
         in_tool_attribute: false,
         in_derive_helpers_reach: false,
         enclosing_item: None,
+        generic_parameters: Vec::new(),
     };
     collector.visit_file(syntax);
     CollectedPathRefs {
@@ -1086,6 +1123,29 @@ pub(super) fn item_ident(item: &syn::Item) -> Option<&syn::Ident> {
         syn::Item::Macro(i) => i.ident.as_ref(),
         _ => None,
     }
+}
+
+/// The generic parameters an item declares; none for an item that takes
+/// none.
+fn item_generics(item: &syn::Item) -> Option<&syn::Generics> {
+    match item {
+        syn::Item::Enum(i) => Some(&i.generics),
+        syn::Item::Fn(i) => Some(&i.sig.generics),
+        syn::Item::Impl(i) => Some(&i.generics),
+        syn::Item::Struct(i) => Some(&i.generics),
+        syn::Item::Trait(i) => Some(&i.generics),
+        syn::Item::TraitAlias(i) => Some(&i.generics),
+        syn::Item::Type(i) => Some(&i.generics),
+        syn::Item::Union(i) => Some(&i.generics),
+        _ => None,
+    }
+}
+
+/// The names of the type and const parameters of `generics`.
+fn generic_parameter_names(generics: &syn::Generics) -> impl Iterator<Item = String> + '_ {
+    let types = generics.type_params().map(|param| param.ident.to_string());
+    let consts = generics.const_params().map(|param| param.ident.to_string());
+    types.chain(consts)
 }
 
 /// The name of `item` as one of its module's items: the name it declares, its

@@ -14,5 +14,7 @@ mod workspace;
 #[cfg(test)]
 mod tests;
 
+#[cfg(feature = "hir")]
+pub(crate) use package_resolver::ModuleReferences;
 pub(crate) use package_resolver::{FileInModule, PackageResolver, Root};
 pub(crate) use workspace::NameResolution;

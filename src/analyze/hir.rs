@@ -15,9 +15,11 @@ pub struct FeatureConfig {
 
 #[cfg(feature = "hir")]
 use {
-    super::name_resolution::{FileInModule, NameResolution, PackageResolver, Root},
+    super::name_resolution::{
+        FileInModule, ModuleReferences, NameResolution, PackageResolver, Root,
+    },
     super::packages::normalize_crate_name,
-    crate::model::{DependencyRef, EdgeContext, ModuleInfo, ModuleTree, PackageInfo},
+    crate::model::{EdgeContext, ModuleInfo, ModuleTree, PackageInfo},
     anyhow::{Context, Result},
     ra_ap_cfg::{CfgAtom, CfgDiff},
     ra_ap_hir as hir, ra_ap_ide as ide, ra_ap_load_cargo as load_cargo, ra_ap_paths as paths,
@@ -270,7 +272,7 @@ fn walk_module(
         .strip_prefix(&format!("{}::", ctx.crate_name))
         .unwrap_or("");
 
-    let dependencies = extract_module_dependencies(module, current_module_path, ctx, resolver);
+    let references = extract_module_references(module, current_module_path, ctx, resolver);
     let file = module_file(module, ctx);
 
     let children: Vec<ModuleInfo> = module
@@ -290,7 +292,8 @@ fn walk_module(
         full_path,
         file,
         children,
-        dependencies,
+        dependencies: references.dependencies,
+        own_item_uses: references.own_item_uses,
         // The syn re-export walk is the only definition source; this backend
         // resolves through rust-analyzer and records none.
         definitions: HashMap::new(),
@@ -310,27 +313,27 @@ fn module_file(module: hir::Module, ctx: &HirWalkContext) -> Option<PathBuf> {
         .map(|abs_path| PathBuf::from(abs_path.as_str()))
 }
 
-/// The dependencies of `module`: every path its file writes, resolved by
+/// The references of `module`: every path its file writes, resolved by
 /// `resolver`.
 #[cfg(feature = "hir")]
-fn extract_module_dependencies(
+fn extract_module_references(
     module: hir::Module,
     current_module_path: &str,
     ctx: &HirWalkContext,
     resolver: &mut PackageResolver,
-) -> Vec<DependencyRef> {
+) -> ModuleReferences {
     let Some(abs_path_buf) = module_file(module, ctx) else {
-        return Vec::new();
+        return ModuleReferences::default();
     };
     // Graceful degradation: rust-analyzer already parsed this file successfully,
     // so read errors here are rare edge cases (file deleted mid-run, permissions).
     // Missing deps are acceptable - the module still appears, just without edges.
     let source_text = match std::fs::read_to_string(&abs_path_buf) {
         Ok(s) => s,
-        Err(_) => return Vec::new(),
+        Err(_) => return ModuleReferences::default(),
     };
     let Ok(syntax) = syn::parse_file(&source_text) else {
-        return Vec::new();
+        return ModuleReferences::default();
     };
     let file = FileInModule {
         file: &abs_path_buf,

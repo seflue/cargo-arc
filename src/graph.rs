@@ -685,8 +685,8 @@ impl ModuleDepGroup<'_> {
     }
 }
 
-/// One usage of a symbol in a module other than the one that defines it,
-/// as the glossary defines a usage.
+/// One usage of a symbol, in the module that defines it or in another, as
+/// the glossary defines a usage.
 #[derive(Debug)]
 pub(crate) struct Usage {
     pub symbol: String,
@@ -703,9 +703,30 @@ pub(crate) struct Usage {
     pub category: UsageCategory,
 }
 
+impl Usage {
+    fn new(
+        symbol: &str,
+        provider: &str,
+        module: &str,
+        dep: &DependencyRef,
+        symbol_use: &SymbolUse,
+    ) -> Self {
+        Self {
+            symbol: symbol.to_owned(),
+            provider: provider.to_owned(),
+            module: module.to_owned(),
+            enclosing_item: symbol_use.enclosing_item.clone(),
+            source_file: dep.source_file.clone(),
+            line: symbol_use.line,
+            category: symbol_use.category,
+        }
+    }
+}
+
 /// Return the usages on the module edges that [`ArcGraph::build`] draws
 /// from `packages` and `modules`, the ones the `--debug` log of a diagram
-/// run lists, in that order.
+/// run lists, in that order, followed by the usages of each module's own
+/// items, which make no edge.
 #[must_use]
 pub(crate) fn usages(packages: &[PackageInfo], modules: &[ModuleTree]) -> Vec<Usage> {
     let mut builder = GraphBuilder::with_nodes(packages, modules);
@@ -714,17 +735,34 @@ pub(crate) fn usages(packages: &[PackageInfo], modules: &[ModuleTree]) -> Vec<Us
     for group in builder.resolve_module_deps(&module_deps) {
         let provider = builder.graph.qualified_name(group.to_idx);
         let module = builder.graph.qualified_name(group.from_idx);
-        usages.extend(group.symbol_uses().map(|(symbol, dep, symbol_use)| Usage {
-            symbol: symbol.to_owned(),
-            provider: provider.clone(),
-            module: module.clone(),
-            enclosing_item: symbol_use.enclosing_item.clone(),
-            source_file: dep.source_file.clone(),
-            line: symbol_use.line,
-            category: symbol_use.category,
+        usages.extend(group.symbol_uses().map(|(symbol, dep, symbol_use)| {
+            Usage::new(symbol, &provider, &module, dep, symbol_use)
         }));
     }
+    for tree in modules {
+        push_own_item_usages(&builder, &tree.root, &mut usages);
+    }
     usages
+}
+
+/// Push the usages `module` and its descendants make of their own items. A
+/// module the graph has no node for gives none, as it gives no edge.
+fn push_own_item_usages(builder: &GraphBuilder, module: &ModuleInfo, usages: &mut Vec<Usage>) {
+    if let Some(idx) = builder.resolve_node(&module.full_path) {
+        let name = builder.graph.qualified_name(idx);
+        for dep in &module.own_item_uses {
+            if let Some(symbol) = &dep.target_item {
+                usages.extend(
+                    dep.uses
+                        .iter()
+                        .map(|symbol_use| Usage::new(symbol, &name, &name, dep, symbol_use)),
+                );
+            }
+        }
+    }
+    for child in &module.children {
+        push_own_item_usages(builder, child, usages);
+    }
 }
 
 /// List every use on one edge with its category, so the walker's result can
@@ -823,6 +861,7 @@ mod tests {
             file: None,
             children: vec![],
             dependencies: vec![],
+            own_item_uses: vec![],
             definitions: HashMap::new(),
         }
     }

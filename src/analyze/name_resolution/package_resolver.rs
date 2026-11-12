@@ -76,6 +76,16 @@ pub(crate) struct Pending {
     dependencies: Vec<DependencyRef>,
 }
 
+/// What the code of one module's file references, once
+/// [`PackageResolver::finish`] has sorted it.
+#[derive(Default)]
+pub(crate) struct ModuleReferences {
+    /// As [`crate::model::ModuleInfo::dependencies`].
+    pub(crate) dependencies: Vec<DependencyRef>,
+    /// As [`crate::model::ModuleInfo::own_item_uses`].
+    pub(crate) own_item_uses: Vec<DependencyRef>,
+}
+
 /// The name resolution of one package, through all its roots.
 pub(crate) struct PackageResolver<'w> {
     roots: Roots<'w>,
@@ -220,29 +230,37 @@ impl<'w> PackageResolver<'w> {
         }
     }
 
-    /// The dependencies of the file `pending` was read from. Call it once the
-    /// files of all descendants of its module are read: a private `use` or
-    /// glob a descendant names something through only passes the names on,
-    /// which is no dependency of the module. Without test code included,
-    /// only dependencies of production code remain. Resolving as the HIR
-    /// backend, the dependencies stay as resolved.
-    pub(crate) fn finish(&self, pending: Pending) -> Vec<DependencyRef> {
+    /// The references of the file `pending` was read from, sorted into its
+    /// dependencies and its uses of its own items. Call it once the files of
+    /// all descendants of its module are read: a private `use` or glob a
+    /// descendant names something through only passes the names on, which is
+    /// no dependency of the module. Without test code included, only
+    /// references of production code remain. Resolving as the HIR backend,
+    /// neither of these filters runs. A reference that stays in the module's
+    /// file is no dependency: it goes to [`ModuleReferences::own_item_uses`]
+    /// where it carries usages of an item, and is dropped otherwise.
+    pub(crate) fn finish(&self, pending: Pending) -> ModuleReferences {
         let Pending {
             root,
             module_path,
             mut dependencies,
         } = pending;
-        if self.roots.workspace.backend == Backend::Hir {
-            return dependencies;
-        }
-        if !self.roots.workspace.include_tests {
-            dependencies.retain(|dep| dep.context.kind == UsageKind::Production);
-        }
-        dependencies.retain(|dep| !self.only_passes_on(root, &module_path, dep));
-        target_file_modules(&mut dependencies, self.roots.module_paths(root));
         let own_package = normalize_crate_name(self.roots.crate_name(root));
-        dependencies.retain(|dep| !stays_in_its_file(dep, &own_package, &module_path));
-        dependencies
+        if self.roots.workspace.backend != Backend::Hir {
+            if !self.roots.workspace.include_tests {
+                dependencies.retain(|dep| dep.context.kind == UsageKind::Production);
+            }
+            dependencies.retain(|dep| !self.only_passes_on(root, &module_path, dep));
+            target_file_modules(&mut dependencies, self.roots.module_paths(root));
+        }
+        let (mut own_item_uses, dependencies): (Vec<_>, Vec<_>) = dependencies
+            .into_iter()
+            .partition(|dep| stays_in_its_file(dep, &own_package, &module_path));
+        own_item_uses.retain(|dep| dep.target_item.is_some() && !dep.uses.is_empty());
+        ModuleReferences {
+            dependencies,
+            own_item_uses,
+        }
     }
 
     /// The definitions of the module at `module_path` in `root`, for code of

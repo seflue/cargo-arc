@@ -226,11 +226,11 @@ cargo-arc tried one and draws nested circles instead, which show the nesting dep
 
 | Term | Definition |
 |------|------------|
-| **<a id="provider">Provider</a>** | A module that other modules import symbols from. |
+| **<a id="provider">Provider</a>** | The module that defines a symbol. Other modules import the symbol from it. |
 | **<a id="consumer">Consumer</a>** | A module that imports a symbol from a [provider](#provider) in production code. A module that imports a symbol only by `pub use` republishes it and is not its consumer. |
 | **<a id="consumer-group">Consumer group</a>** | The symbols of one [provider](#provider) that have exactly the same [consumers](#consumer). |
 | **<a id="consumer-locality">Consumer locality</a>** | How close the [consumers](#consumer) of a [consumer group](#consumer-group) sit to each other in the module tree. It has three cases: a single consumer, several consumers under a common ancestor module that does not contain the [provider](#provider), or consumers spread across the package. |
-| **<a id="usage">Usage</a>** | One place where a module uses a symbol of another module, whether imported or named by its full path: a call, a trait bound, a type in a signature, a struct literal. A trait whose methods are called counts as a usage at its import, because cargo-arc does not resolve method calls. |
+| **<a id="usage">Usage</a>** | A place where a module uses a symbol, for example by calling a function, naming a type, writing a struct literal or using a trait as a bound. The symbol can belong to another module, imported or written as a full path, or to the module itself. Only a usage of another module's symbol is a dependency. cargo-arc does not resolve method calls, so a trait whose methods are called counts as one usage, at its import. |
 | **<a id="usage-category">Usage category</a>** | What a [usage](#usage) takes from its symbol: `types` (a type, or a value built from a struct or an enum variant), `values` (a const or a static), `functions` (a function called, or a trait used for its methods). Every usage has exactly one usage category. |
 
 [Consumer locality](#consumer-locality) shows whether the symbols of a group could move closer to the modules that use them.

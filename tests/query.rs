@@ -930,7 +930,8 @@ fn edges_on_cargo_arc_itself_equal_the_arcs_and_usage_groups_of_the_diagram() {
 /// `Config` in a signature at line 3, and calls a method on a `Config` at
 /// line 5. `beta` calls its own `helper`, and `delta` calls the `helper` of
 /// `gamma` at line 4. The crate root re-exports `beta::shared`, and
-/// `epsilon` calls it through that re-export at line 4.
+/// `epsilon` calls it through that re-export at line 4. `zeta` calls its
+/// private `inner` at line 4.
 fn usages_workspace() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
@@ -944,8 +945,17 @@ fn usages_workspace() -> tempfile::TempDir {
         (
             "lib.rs",
             "pub mod alpha;\npub mod beta;\npub mod gamma;\npub mod delta;\npub mod epsilon;\n\
+             pub mod zeta;\n\
              \n\
              pub use beta::shared;\n",
+        ),
+        (
+            "zeta.rs",
+            "fn inner() {}\n\
+             \n\
+             pub fn outer() {\n\
+             \x20   inner();\n\
+             }\n",
         ),
         (
             "alpha.rs",
@@ -1003,7 +1013,7 @@ fn usages_workspace() -> tempfile::TempDir {
 }
 
 #[test]
-fn usages_list_each_call_of_a_function_from_another_module() {
+fn usages_list_each_call_of_a_function_in_its_own_module_and_in_others() {
     let ws = usages_workspace();
     let out = stdout_of(&arc(ws.path(), &["query", "usages", "helper"]));
 
@@ -1014,6 +1024,8 @@ fn usages_list_each_call_of_a_function_from_another_module() {
             "helper\tapp::beta\tapp::alpha\trun\tsrc/alpha.rs\t4\tfunctions",
             "helper\tapp::beta\tapp::alpha\trun\tsrc/alpha.rs\t6\tfunctions",
             "helper\tapp::beta\tapp::alpha\tagain\tsrc/alpha.rs\t10\tfunctions",
+            "helper\tapp::beta\tapp::beta\ttwice\tsrc/beta.rs\t10\tfunctions",
+            "helper\tapp::beta\tapp::beta\ttwice\tsrc/beta.rs\t11\tfunctions",
             "helper\tapp::gamma\tapp::delta\tgo\tsrc/delta.rs\t4\tfunctions",
         ]
     );
@@ -1021,6 +1033,81 @@ fn usages_list_each_call_of_a_function_from_another_module() {
     assert_eq!(
         header_value(&out, "items"),
         "app::beta::helper,app::gamma::helper"
+    );
+}
+
+#[test]
+fn usages_without_a_symbol_list_every_usage_of_the_workspace() {
+    let ws = usages_workspace();
+    let out = stdout_of(&arc(ws.path(), &["query", "usages"]));
+
+    assert_eq!(
+        body_of(&out),
+        [
+            "symbol\tprovider\tmodule\tenclosing-item\tpath\tline\tusage-category",
+            "Config\tapp::beta\tapp::alpha\trun\tsrc/alpha.rs\t3\ttypes",
+            "helper\tapp::beta\tapp::alpha\trun\tsrc/alpha.rs\t4\tfunctions",
+            "helper\tapp::beta\tapp::alpha\trun\tsrc/alpha.rs\t6\tfunctions",
+            "helper\tapp::beta\tapp::alpha\tagain\tsrc/alpha.rs\t10\tfunctions",
+            "Config\tapp::beta\tapp::beta\timpl Config\tsrc/beta.rs\t3\ttypes",
+            "helper\tapp::beta\tapp::beta\ttwice\tsrc/beta.rs\t10\tfunctions",
+            "helper\tapp::beta\tapp::beta\ttwice\tsrc/beta.rs\t11\tfunctions",
+            "shared\tapp::beta\tapp::epsilon\tgo\tsrc/epsilon.rs\t4\tfunctions",
+            "helper\tapp::gamma\tapp::delta\tgo\tsrc/delta.rs\t4\tfunctions",
+            "inner\tapp::zeta\tapp::zeta\touter\tsrc/zeta.rs\t4\tfunctions",
+        ]
+    );
+    let keys: Vec<String> = header_of(&out).into_iter().map(|(key, _)| key).collect();
+    assert!(!keys.contains(&"symbol".to_string()), "{keys:?}");
+    assert!(!keys.contains(&"items".to_string()), "{keys:?}");
+    assert!(keys.contains(&"usage".to_string()), "{keys:?}");
+}
+
+#[test]
+fn usages_on_one_line_are_ordered_by_symbol() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/lib.rs"),
+        "fn second() {}\n\
+         fn first() {}\n\
+         \n\
+         pub fn both() {\n\
+         \x20   second(); first();\n\
+         }\n",
+    )
+    .unwrap();
+    let out = stdout_of(&arc(root, &["query", "usages"]));
+
+    assert_eq!(
+        body_of(&out),
+        [
+            "symbol\tprovider\tmodule\tenclosing-item\tpath\tline\tusage-category",
+            "first\tapp\tapp\tboth\tsrc/lib.rs\t5\tfunctions",
+            "second\tapp\tapp\tboth\tsrc/lib.rs\t5\tfunctions",
+        ]
+    );
+}
+
+#[cfg(feature = "hir")]
+#[test]
+#[ignore = "requires rust-analyzer (~30s)"]
+fn usages_inside_a_module_are_listed_under_hir() {
+    let ws = usages_workspace();
+    let out = stdout_of(&arc(ws.path(), &["--hir", "query", "usages", "inner"]));
+
+    assert_eq!(
+        body_of(&out),
+        [
+            "symbol\tprovider\tmodule\tenclosing-item\tpath\tline\tusage-category",
+            "inner\tapp::zeta\tapp::zeta\touter\tsrc/zeta.rs\t4\tfunctions",
+        ]
     );
 }
 
@@ -1090,7 +1177,10 @@ fn usages_list_a_type_named_in_a_signature_as_types() {
 
     assert_eq!(
         body_of(&out)[1..],
-        ["Config\tapp::beta\tapp::alpha\trun\tsrc/alpha.rs\t3\ttypes"]
+        [
+            "Config\tapp::beta\tapp::alpha\trun\tsrc/alpha.rs\t3\ttypes",
+            "Config\tapp::beta\tapp::beta\timpl Config\tsrc/beta.rs\t3\ttypes",
+        ]
     );
 }
 
@@ -1118,25 +1208,23 @@ fn usages_header_says_what_is_not_listed() {
         not_listed.contains("method calls on a receiver"),
         "{not_listed}"
     );
-    assert!(
-        not_listed.contains("inside the module that provides the symbol"),
-        "{not_listed}"
-    );
+    assert!(not_listed.contains("a recursive call"), "{not_listed}");
+    assert!(!not_listed.contains("inside the module"), "{not_listed}");
     let usage = header_value(&out, "usage");
+    assert!(usage.contains("its own"), "{usage}");
     assert!(usage.contains("an import"), "{usage}");
     assert!(usage.contains("by its full path"), "{usage}");
 }
 
 #[test]
-fn usages_of_an_item_used_only_in_its_own_module_say_why_items_is_none() {
+fn usages_of_an_item_used_only_in_its_own_module_list_it_in_items() {
     let ws = usages_workspace();
-    let out = stdout_of(&arc(ws.path(), &["query", "usages", "twice"]));
+    let out = stdout_of(&arc(ws.path(), &["query", "usages", "inner"]));
 
-    assert_eq!(header_value(&out, "items"), "none");
-    let not_listed = header_value(&out, "not-listed");
-    assert!(
-        not_listed.contains("an item used only there is missing from items"),
-        "{not_listed}"
+    assert_eq!(header_value(&out, "items"), "app::zeta::inner");
+    assert_eq!(
+        body_of(&out)[1..],
+        ["inner\tapp::zeta\tapp::zeta\touter\tsrc/zeta.rs\t4\tfunctions"]
     );
 }
 
@@ -1174,7 +1262,7 @@ fn usages_as_json_lines_key_each_record_by_the_columns() {
         .collect();
     assert_eq!(lines[0]["items"], serde_json::json!(["app::beta::Config"]));
     assert_eq!(
-        lines[1..],
+        lines[1..2],
         [serde_json::json!({
             "symbol": "Config",
             "provider": "app::beta",
@@ -1227,10 +1315,12 @@ fn usages_on_cargo_arc_itself_equal_what_debug_logs() {
 
     let mut logged = logged_usages(&stderr, "ArcGraph");
     logged.sort();
+    // A usage inside its provider is on no edge, so the log leaves it out.
     let mut queried: Vec<(String, u64, String)> = body_of(&out)[1..]
         .iter()
-        .map(|line| {
-            let cells: Vec<&str> = line.split('\t').collect();
+        .map(|line| line.split('\t').collect::<Vec<&str>>())
+        .filter(|cells| cells[1] != cells[2])
+        .map(|cells| {
             (
                 cells[4].to_string(),
                 cells[5].parse().unwrap(),

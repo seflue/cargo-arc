@@ -10,6 +10,9 @@ use tempfile::TempDir;
 use super::name_resolution::NameResolution;
 use super::packages::ModulePathMap;
 use super::syn_walker::{analyze_modules_syn, collect_syn_module_paths};
+use petgraph::visit::EdgeRef;
+
+use crate::graph::{self, ArcGraph, EdgeWeight, Usage};
 use crate::model::{DependencyRef, ModuleInfo, ModuleTree, PackageInfo};
 use crate::test_support::conventional_package;
 
@@ -85,7 +88,11 @@ impl TestWorkspace {
                 (p.key.clone(), tree)
             })
             .collect();
-        Analyzed { trees, _dir: dir }
+        Analyzed {
+            packages,
+            trees,
+            _dir: dir,
+        }
     }
 }
 
@@ -105,6 +112,7 @@ fn write_package(root: &Path, name: &str, files: &[(String, String)]) -> Package
 
 /// The module trees of an analyzed workspace, by package key.
 pub(crate) struct Analyzed {
+    packages: Vec<PackageInfo>,
     trees: HashMap<String, ModuleTree>,
     _dir: TempDir,
 }
@@ -118,6 +126,40 @@ impl Analyzed {
             .get(package)
             .unwrap_or_else(|| panic!("no package {package}"));
         find_module(&tree.root, path).unwrap_or_else(|| panic!("no module {path}"))
+    }
+
+    /// The usages `query usages` lists for the workspace, in the order
+    /// [`graph::usages`] returns them.
+    pub(crate) fn usages(&self) -> Vec<Usage> {
+        let trees: Vec<ModuleTree> = self
+            .packages
+            .iter()
+            .filter_map(|package| self.trees.get(&package.key).cloned())
+            .collect();
+        graph::usages(&self.packages, &trees)
+    }
+
+    /// The module edges of the diagram's graph, each as the qualified names
+    /// of its ends, sorted.
+    pub(crate) fn module_edges(&self) -> Vec<(String, String)> {
+        let trees: Vec<ModuleTree> = self
+            .packages
+            .iter()
+            .filter_map(|package| self.trees.get(&package.key).cloned())
+            .collect();
+        let graph = ArcGraph::build(&self.packages, &trees, None, false);
+        let mut edges: Vec<(String, String)> = graph
+            .edge_references()
+            .filter(|edge| matches!(edge.weight(), EdgeWeight::ModuleDep { .. }))
+            .map(|edge| {
+                (
+                    graph.qualified_name(edge.source()),
+                    graph.qualified_name(edge.target()),
+                )
+            })
+            .collect();
+        edges.sort();
+        edges
     }
 
     /// The dependencies of the module at `path`.

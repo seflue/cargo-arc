@@ -386,6 +386,9 @@ pub struct ModuleInfo {
     pub file: Option<PathBuf>,
     pub children: Vec<ModuleInfo>,
     pub dependencies: Vec<DependencyRef>,
+    /// The references of the module's code to its own items, each with its
+    /// usages. They are no dependencies and make no edge.
+    pub own_item_uses: Vec<DependencyRef>,
     /// The module's own definitions, whatever their visibility, by symbol
     /// name.
     pub definitions: HashMap<String, Definition>,
@@ -780,6 +783,7 @@ mod tests {
             file: None,
             children: vec![],
             definitions: HashMap::new(),
+            own_item_uses: vec![],
             dependencies: vec![DependencyRef {
                 target_package: "crate".to_string(),
                 target_module: "graph".to_string(),

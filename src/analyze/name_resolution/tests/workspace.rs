@@ -3602,6 +3602,264 @@ mod nested {
     }
 }
 
+/// A usage inside the module that defines the item is listed too, with the
+/// module as its provider.
+mod own_module_usage_tests {
+    use super::*;
+
+    /// Each usage of `symbol` in the package `app`, whose `src/lib.rs` is
+    /// `lib` and whose `src/a.rs` is `a`: provider, module, enclosing item and
+    /// line.
+    fn usages_of(lib: &str, a: &str, symbol: &str) -> Vec<(String, String, Option<String>, usize)> {
+        TestWorkspace::new()
+            .package("app", &[("src/lib.rs", lib), ("src/a.rs", a)])
+            .analyze()
+            .usages()
+            .into_iter()
+            .filter(|usage| usage.symbol == symbol)
+            .map(|usage| {
+                (
+                    usage.provider,
+                    usage.module,
+                    usage.enclosing_item,
+                    usage.line,
+                )
+            })
+            .collect()
+    }
+
+    fn row(
+        provider: &str,
+        module: &str,
+        item: &str,
+        line: usize,
+    ) -> (String, String, Option<String>, usize) {
+        (
+            provider.to_string(),
+            module.to_string(),
+            Some(item.to_string()),
+            line,
+        )
+    }
+
+    #[test]
+    fn a_qualified_path_to_an_item_of_the_own_module_is_a_usage() {
+        let usages = usages_of(
+            "mod a;",
+            "fn helper() {}\nfn make() {\n    self::helper();\n    crate::a::helper();\n}",
+            "helper",
+        );
+        assert_eq!(
+            usages,
+            [
+                row("app::a", "app::a", "make", 3),
+                row("app::a", "app::a", "make", 4)
+            ]
+        );
+    }
+
+    #[test]
+    fn an_item_that_uses_itself_has_no_usage_from_itself() {
+        let a = "fn walk() {\n    walk();\n    crate::a::walk();\n}\n\
+                 struct Node {\n    next: Option<Box<Node>>,\n}";
+        assert_eq!(usages_of("mod a;", a, "walk"), []);
+        assert_eq!(usages_of("mod a;", a, "Node"), []);
+    }
+
+    #[test]
+    fn a_local_variable_of_an_item_name_is_no_usage() {
+        let usages = usages_of(
+            "mod a;",
+            "fn helper() {}\nfn f() {\n    let helper = 1;\n    let _ = helper;\n}",
+            "helper",
+        );
+        assert_eq!(usages, []);
+    }
+
+    /// An inline module is part of its file's module, which provides the
+    /// item and holds the usage; the enclosing item is named below the
+    /// inline modules.
+    #[test]
+    fn a_usage_inside_an_inline_module_names_the_module_of_its_file() {
+        let usages = usages_of(
+            "mod a;",
+            "mod inner {\n    fn g() {}\n    fn h() {\n        g();\n    }\n}",
+            "g",
+        );
+        assert_eq!(usages, [row("app::a", "app::a", "inner::h", 4)]);
+    }
+
+    /// The path names the type for an associated item, and the header of an
+    /// `impl` block names it too. `Self` names nothing.
+    #[test]
+    fn an_associated_item_and_an_impl_header_are_usages_of_the_type() {
+        let usages = usages_of(
+            "mod a;",
+            "struct Writer;\nimpl Writer {\n    fn new() -> Self {\n        Writer\n    }\n}\n\
+             fn make() {\n    Writer::new();\n}",
+            "Writer",
+        );
+        assert_eq!(
+            usages,
+            [
+                row("app::a", "app::a", "impl Writer", 2),
+                row("app::a", "app::a", "impl Writer", 4),
+                row("app::a", "app::a", "make", 8),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_usage_from_another_module_stays_listed_beside_one_in_the_own_module() {
+        let analyzed = TestWorkspace::new()
+            .package(
+                "app",
+                &[
+                    ("src/lib.rs", "mod a;\nmod b;"),
+                    (
+                        "src/a.rs",
+                        "pub fn helper() {}\nfn make() {\n    helper();\n}",
+                    ),
+                    ("src/b.rs", "fn go() {\n    crate::a::helper();\n}"),
+                ],
+            )
+            .analyze();
+        let rows: Vec<_> = analyzed
+            .usages()
+            .into_iter()
+            .map(|usage| {
+                (
+                    usage.provider,
+                    usage.module,
+                    usage.enclosing_item,
+                    usage.line,
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                row("app::a", "app::b", "go", 2),
+                row("app::a", "app::a", "make", 3)
+            ]
+        );
+    }
+
+    /// Every kind of usage inside a module, beside one from another module:
+    /// only the latter makes an edge.
+    #[test]
+    fn a_usage_inside_its_module_makes_no_edge() {
+        let a = "pub fn helper() {}\nfn make() {\n    helper();\n    self::helper();\n    \
+                 crate::a::helper();\n}\nfn walk() {\n    walk();\n}\n\
+                 struct Node {\n    next: Option<Box<Node>>,\n}\n\
+                 struct Writer;\nimpl Writer {\n    fn new() -> Self {\n        Writer\n    }\n}\n\
+                 fn build() {\n    Writer::new();\n}\n\
+                 mod inner {\n    fn g() {}\n    fn h() {\n        g();\n        super::helper();\n    }\n}";
+        let analyzed = TestWorkspace::new()
+            .package(
+                "app",
+                &[
+                    ("src/lib.rs", "mod a;\nmod b;"),
+                    ("src/a.rs", a),
+                    ("src/b.rs", "fn go() {\n    crate::a::helper();\n}"),
+                ],
+            )
+            .analyze();
+        assert!(
+            analyzed.usages().len() > 1,
+            "the fixture has usages inside a"
+        );
+        assert_eq!(
+            analyzed.module_edges(),
+            [("app::b".to_string(), "app::a".to_string())]
+        );
+    }
+
+    #[test]
+    fn a_usage_in_test_code_is_listed_only_with_test_code() {
+        let files = [
+            ("src/lib.rs", "mod a;"),
+            (
+                "src/a.rs",
+                "fn helper() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn t() {\n        super::helper();\n    }\n}",
+            ),
+        ];
+        let lines = |analyzed: Analyzed| -> Vec<usize> {
+            analyzed
+                .usages()
+                .into_iter()
+                .map(|usage| usage.line)
+                .collect()
+        };
+        assert_eq!(
+            lines(TestWorkspace::new().package("app", &files).analyze()),
+            Vec::<usize>::new()
+        );
+        assert_eq!(
+            lines(
+                TestWorkspace::new()
+                    .package("app", &files)
+                    .analyze_with_tests()
+            ),
+            [6]
+        );
+    }
+
+    #[test]
+    fn a_bare_name_of_an_item_beside_it_is_a_usage() {
+        let usages = usages_of(
+            "mod a;",
+            "fn helper() {}\nfn make() {\n    helper();\n    self::helper();\n}",
+            "helper",
+        );
+        assert_eq!(
+            usages,
+            [
+                row("app::a", "app::a", "make", 3),
+                row("app::a", "app::a", "make", 4)
+            ]
+        );
+    }
+
+    /// A name an inline module of the file defines is not the module's: the
+    /// bare name outside it is the prelude's.
+    #[test]
+    fn a_name_only_an_inline_module_defines_is_no_usage_outside_it() {
+        let usages = usages_of(
+            "mod a;",
+            "mod hidden {\n    pub struct Option;\n}\nfn uses_std() -> Option<u8> {\n    None\n}",
+            "Option",
+        );
+        assert_eq!(usages, []);
+    }
+
+    /// An item a fn body defines is no item of the module, and hides the
+    /// module's item of that name.
+    #[test]
+    fn an_item_of_a_fn_body_is_no_usage_of_the_module() {
+        let a = "fn helper() {}\nfn local_item() {\n    fn inner_only() {}\n    inner_only();\n}\n\
+                 fn f() {\n    fn helper() {}\n    helper();\n}";
+        assert_eq!(usages_of("mod a;", a, "inner_only"), []);
+        assert_eq!(usages_of("mod a;", a, "helper"), []);
+    }
+
+    /// A generic parameter hides the module's item of its name in the item
+    /// that declares it, and only there.
+    #[test]
+    fn a_generic_parameter_of_an_item_name_is_no_usage() {
+        let a = "pub struct Key;\npub fn generic<Key: Clone>(k: Key) -> Key {\n    k\n}\n\
+                 struct Holder<Key>(Key);\nimpl<Key> Holder<Key> {\n    fn get(&self) -> &Key {\n        &self.0\n    }\n}\n\
+                 fn make() -> Key {\n    Key\n}";
+        assert_eq!(
+            usages_of("mod a;", a, "Key"),
+            [
+                row("app::a", "app::a", "make", 11),
+                row("app::a", "app::a", "make", 12)
+            ]
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The test build of a crate root
 // ---------------------------------------------------------------------------

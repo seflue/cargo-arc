@@ -116,6 +116,7 @@ fn module(name: &str, full_path: String, file: Option<PathBuf>, dir: Option<&Pat
         file,
         children,
         dependencies: Vec::new(),
+        own_item_uses: Vec::new(),
         definitions: HashMap::new(),
     }
 }

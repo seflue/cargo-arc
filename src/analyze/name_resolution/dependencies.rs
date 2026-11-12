@@ -617,6 +617,11 @@ impl BoundModule {
     }
 }
 
+/// What [`PathRef::resolve_unbound`] resolves a reference to: the
+/// dependency, the associated item the path names after it, and the
+/// `(full_target, kind)` of the glob the name was taken from.
+type UnboundResolution<'p> = (DependencyRef, Option<&'p str>, Option<(String, UsageKind)>);
+
 impl PathRef {
     /// Whether this path names a tool rather than a crate: written in a tool
     /// attribute whose tool no crate of the extern prelude of `ctx`'s build
@@ -645,6 +650,110 @@ impl PathRef {
             &self.inline_path,
             self.meaning,
         )
+    }
+
+    /// Resolve this reference, which nothing in `bindings` binds, split into
+    /// the bare `name` and the `associated` item after it. With the
+    /// dependency come the associated item the path names and, for a name a
+    /// glob brings, the glob's `(full_target, kind)`.
+    ///
+    /// A qualified path resolves on its own where it can; what does not, and
+    /// a bare name, is a glob's where a glob exports it, and otherwise an
+    /// item of the own module.
+    fn resolve_unbound<'p>(
+        &'p self,
+        ctx: &ResolutionContext,
+        bindings: &FileBindings,
+        name: &str,
+        associated: Option<&'p str>,
+    ) -> Option<UnboundResolution<'p>> {
+        if let Some(dep) = associated.and_then(|_| self.resolve(ctx)) {
+            let associated = associated_segment(&self.path, &dep);
+            return Some((dep, associated, None));
+        }
+        let Some(glob) = glob_taking(ctx, bindings, name, self.region) else {
+            let (dep, associated) = self.resolve_in_own_module(ctx, bindings)?;
+            return Some((dep, associated, None));
+        };
+        let dep = DependencyRef {
+            target_item: Some(name.to_string()),
+            context: context_of_use(&self.context, &glob.context),
+            ..glob.clone()
+        };
+        if associated.is_some() && ends_on_an_item_named_like_its_crate(ctx, &dep) {
+            return None;
+        }
+        let taken_from = (glob.full_target(), dep.context.kind);
+        Some((dep, associated, Some(taken_from)))
+    }
+
+    /// Resolve this reference, which nothing in `bindings` binds, as
+    /// `self::<path>`: the item of the own module it names, where that module
+    /// defines its first name and neither a block around the reference nor a
+    /// generic parameter in scope defines it again, with the associated item
+    /// the path goes on to name. A path that leads out of the module, such as
+    /// into a child module, resolves to nothing here.
+    fn resolve_in_own_module(
+        &self,
+        ctx: &ResolutionContext,
+        bindings: &FileBindings,
+    ) -> Option<(DependencyRef, Option<&str>)> {
+        if self.names_a_generic_parameter {
+            return None;
+        }
+        let first = self.path.split("::").next().unwrap_or_default();
+        let regions = &bindings.regions;
+        let declaring = regions
+            .enclosing(self.region)
+            .find(|&region| regions.declares(region, first));
+        if declaring != Some(regions.module_of(self.region)) {
+            return None;
+        }
+        let dep = resolve_single_path(
+            ctx,
+            &format!("self::{}", self.path),
+            self.line,
+            &self.context,
+            &self.inline_path,
+            self.meaning,
+        )?;
+        let own_module = if self.inline_path.is_empty() {
+            ctx.current_module_path.to_string()
+        } else {
+            append_to_path(ctx.current_module_path, &self.inline_path)
+        };
+        let own = PathStart::own_crate(ctx);
+        let stays = dep.target_root == own.target_root
+            && dep.target_package == own.crate_name
+            && dep.target_module == own_module
+            && dep.target_item.is_some();
+        stays.then(|| {
+            let associated = associated_segment(&self.path, &dep);
+            (dep, associated)
+        })
+    }
+
+    /// Whether `dep`, what this reference resolved to, is the module-level
+    /// item the reference is written in, as in a recursive call: an item
+    /// of the file's module or of an inline module in it.
+    fn names_its_enclosing_item(&self, ctx: &ResolutionContext, dep: &DependencyRef) -> bool {
+        let (Some(enclosing), Some(item)) = (self.enclosing_item.as_deref(), &dep.target_item)
+        else {
+            return false;
+        };
+        let own = PathStart::own_crate(ctx);
+        if dep.target_root != own.target_root || dep.target_package != own.crate_name {
+            return false;
+        }
+        let file_module = ctx.current_module_path;
+        let inline_path = if file_module.is_empty() || dep.target_module == file_module {
+            dep.target_module.strip_prefix(file_module)
+        } else {
+            dep.target_module
+                .strip_prefix(file_module)
+                .and_then(|rest| rest.strip_prefix("::"))
+        };
+        inline_path.is_some_and(|inline_path| append_to_path(inline_path, item) == enclosing)
     }
 
     /// Resolve `rest`, what this reference writes after a name bound to
@@ -714,27 +823,11 @@ fn parse_path_ref_dependencies(
         let (mut dep, associated, glob_taken_from) =
             match bindings.binding_of(&path_ref.path, path_ref.region) {
                 PathBinding::Unbound(name, associated) => {
-                    // A qualified path resolves on its own where it can; what
-                    // does not, and a bare name, is a glob's where a glob
-                    // exports it.
-                    if let Some(dep) = associated.and_then(|_| path_ref.resolve(ctx)) {
-                        let associated = associated_segment(&path_ref.path, &dep);
-                        (dep, associated, None)
-                    } else {
-                        let Some(glob) = glob_taking(ctx, bindings, name, path_ref.region) else {
-                            continue;
-                        };
-                        let dep = DependencyRef {
-                            target_item: Some(name.to_string()),
-                            context: context_of_use(&path_ref.context, &glob.context),
-                            ..glob.clone()
-                        };
-                        if associated.is_some() && ends_on_an_item_named_like_its_crate(ctx, &dep) {
-                            continue;
-                        }
-                        let taken_from = (glob.full_target(), dep.context.kind);
-                        (dep, associated, Some(taken_from))
-                    }
+                    let Some(resolved) = path_ref.resolve_unbound(ctx, bindings, name, associated)
+                    else {
+                        continue;
+                    };
+                    resolved
                 }
                 // A qualified path may still name a module beside the file: a
                 // `use` of a fn `helper` leaves the module `helper` addressable,
@@ -768,7 +861,9 @@ fn parse_path_ref_dependencies(
         if path_ref.position == PathPosition::Binding && declares_a_variable(ctx, &dep, meaning) {
             continue;
         }
-        if !ctx.resolve_noting(&mut dep, meaning, passed_on) {
+        if !ctx.resolve_noting(&mut dep, meaning, passed_on)
+            || path_ref.names_its_enclosing_item(ctx, &dep)
+        {
             continue;
         }
         if let Some(import) = module_import {

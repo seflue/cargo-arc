@@ -162,11 +162,11 @@ pub struct HotspotsQueryArgs {
 }
 
 #[derive(Parser)]
-#[command(override_usage = "cargo arc [SHARED OPTIONS] query usages [OPTIONS] <SYMBOL>")]
+#[command(override_usage = "cargo arc [SHARED OPTIONS] query usages [OPTIONS] [SYMBOL]")]
 pub struct UsagesQueryArgs {
-    /// Name of the item, without its module path
+    /// Name of the item, without its module path; without it, every usage
     #[arg(value_name = "SYMBOL")]
-    pub symbol: String,
+    pub symbol: Option<String>,
 }
 
 impl QueryArgs {
@@ -538,10 +538,11 @@ fn query_edges(args: &ArcCommand) -> Result<QueryOutput> {
     })
 }
 
-/// The output of `query usages`: the usages of the symbol on the module
-/// edges of the diagram's dependency graph.
+/// The output of `query usages`: the usages of the symbol, or of every
+/// symbol, on the module edges of the diagram's dependency graph and inside
+/// each module.
 fn query_usages(args: &ArcCommand, usages_args: &UsagesQueryArgs) -> Result<QueryOutput> {
-    use query::usages::{COLUMNS, header_fields, of_symbol, records};
+    use query::usages::{COLUMNS, header_fields, records, selected};
 
     if language_of(&args.common)? == Language::Lua {
         anyhow::bail!("query usages: usages are recorded for Rust only, and this run analyzes Lua");
@@ -555,13 +556,14 @@ fn query_usages(args: &ArcCommand, usages_args: &UsagesQueryArgs) -> Result<Quer
         )
     })?;
     refuse_unparsed(&unparsed_files(&analysis.modules), &workspace_root)?;
-    let usages = of_symbol(
+    let symbol = usages_args.symbol.as_deref();
+    let usages = selected(
         crate::graph::usages(&analysis.packages, &analysis.modules),
-        &usages_args.symbol,
+        symbol,
     );
 
     let mut header = query::Header::for_workspace(&workspace_root, args.query_flags()?);
-    header.subcommand_fields = header_fields(&usages_args.symbol, &usages);
+    header.subcommand_fields = header_fields(symbol, &usages);
     Ok(QueryOutput {
         header,
         columns: &COLUMNS,
@@ -1768,6 +1770,7 @@ mod tests {
                     file: Some(PathBuf::from("/repo/lua/plugin/util.lua")),
                     children: vec![],
                     dependencies: vec![],
+                    own_item_uses: vec![],
                     definitions: HashMap::new(),
                 };
                 let root = ModuleInfo {
@@ -1776,6 +1779,7 @@ mod tests {
                     file: None,
                     children: vec![child],
                     dependencies: vec![],
+                    own_item_uses: vec![],
                     definitions: HashMap::new(),
                 };
                 Ok(Analysis {

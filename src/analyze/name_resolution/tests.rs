@@ -138,7 +138,7 @@ fn a_reexport_chain_ends_on_the_definer() {
     let pending = read(&mut resolver, &fixture, Root::entry(0), "src/c.rs", "c");
 
     assert_eq!(
-        targets(&resolver.finish(pending)),
+        targets(&resolver.finish(pending).dependencies),
         [("p", "a", Some("Item"))]
     );
 }
@@ -173,10 +173,10 @@ fn a_private_use_only_a_descendant_names_something_through_is_no_dependency() {
     );
 
     assert_eq!(
-        targets(&resolver.finish(descendant)),
+        targets(&resolver.finish(descendant).dependencies),
         [("p", "a", Some("Item"))]
     );
-    assert_eq!(targets(&resolver.finish(holder)), []);
+    assert_eq!(targets(&resolver.finish(holder).dependencies), []);
 }
 
 /// `a` declares `inner` inline, with `X` in it.
@@ -209,7 +209,7 @@ fn a_target_in_an_inline_module_is_the_module_of_its_file() {
     let pending = read(&mut resolver, &fixture, Root::entry(0), "src/b.rs", "b");
 
     assert_eq!(
-        targets(&resolver.finish(pending)),
+        targets(&resolver.finish(pending).dependencies),
         [("p", "a", Some("inner")), ("p", "a", Some("X"))]
     );
 }
@@ -227,7 +227,7 @@ fn a_path_that_stays_in_its_file_is_no_dependency() {
 
     let pending = read(&mut resolver, &fixture, Root::entry(0), "src/a.rs", "a");
 
-    assert_eq!(targets(&resolver.finish(pending)), []);
+    assert_eq!(targets(&resolver.finish(pending).dependencies), []);
 }
 
 #[test]
@@ -284,7 +284,7 @@ fn an_integration_test_names_its_package_as_a_crate_of_its_own() {
     );
 
     assert_eq!(
-        targets(&resolver.finish(pending)),
+        targets(&resolver.finish(pending).dependencies),
         [("p", "a", Some("Item"))]
     );
 }
@@ -302,7 +302,7 @@ fn without_the_table_a_path_ends_where_it_is_written() {
     let pending = read(&mut resolver, &fixture, Root::entry(0), "src/c.rs", "c");
 
     assert_eq!(
-        targets(&resolver.finish(pending)),
+        targets(&resolver.finish(pending).dependencies),
         [("p", "b", Some("Item"))]
     );
 }
@@ -334,7 +334,7 @@ fn without_the_table_a_package_needs_no_entry_file() {
     let pending = read(&mut resolver, &fixture, Root::entry(0), "src/b.rs", "b");
 
     assert_eq!(
-        targets(&resolver.finish(pending)),
+        targets(&resolver.finish(pending).dependencies),
         [("my_pkg", "a", Some("Item"))]
     );
 }
@@ -353,11 +353,11 @@ fn without_the_table_targets_in_inline_modules_stay_as_written() {
     let user = read(&mut resolver, &fixture, Root::entry(0), "src/b.rs", "b");
 
     assert_eq!(
-        targets(&resolver.finish(holder)),
+        targets(&resolver.finish(holder).dependencies),
         [("p", "a::inner", Some("X"))]
     );
     assert_eq!(
-        targets(&resolver.finish(user)),
+        targets(&resolver.finish(user).dependencies),
         [("p", "a::inner", None), ("p", "a::inner", Some("X"))]
     );
 }
@@ -386,7 +386,7 @@ fn without_the_table_test_code_is_read() {
     let pending = read(&mut resolver, &fixture, Root::entry(0), "src/b.rs", "b");
 
     assert_eq!(
-        targets(&resolver.finish(pending)),
+        targets(&resolver.finish(pending).dependencies),
         [("p", "a", Some("Item"))]
     );
 }

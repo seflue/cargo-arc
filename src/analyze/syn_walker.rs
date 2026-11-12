@@ -260,6 +260,7 @@ fn walk_module_syn(
                 file: Some(file_path.to_path_buf()),
                 children: Vec::new(),
                 dependencies: Vec::new(),
+                own_item_uses: Vec::new(),
                 definitions: HashMap::new(),
             };
         }
@@ -275,6 +276,7 @@ fn walk_module_syn(
                 file: Some(file_path.to_path_buf()),
                 children: Vec::new(),
                 dependencies: Vec::new(),
+                own_item_uses: Vec::new(),
                 definitions: HashMap::new(),
             };
         }
@@ -309,7 +311,7 @@ fn walk_module_syn(
 
     // The descendants are walked now, so what they pass through this
     // module is known.
-    let dependencies = walked.resolver.finish(pending);
+    let references = walked.resolver.finish(pending);
     let definitions =
         walked
             .resolver
@@ -320,7 +322,8 @@ fn walk_module_syn(
         full_path,
         file: Some(file_path.to_path_buf()),
         children,
-        dependencies,
+        dependencies: references.dependencies,
+        own_item_uses: references.own_item_uses,
         definitions,
     }
 }
@@ -397,6 +400,11 @@ pub(crate) fn analyze_modules_syn(
                         existing.dependencies.push(dep);
                     }
                 }
+                for dep in tree.own_item_uses {
+                    if !existing.own_item_uses.contains(&dep) {
+                        existing.own_item_uses.push(dep);
+                    }
+                }
             }
         }
     }
@@ -409,6 +417,7 @@ pub(crate) fn analyze_modules_syn(
             file: None,
             children: Vec::new(),
             dependencies: Vec::new(),
+            own_item_uses: Vec::new(),
             definitions: HashMap::new(),
         });
     }
