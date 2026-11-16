@@ -95,8 +95,9 @@ struct NodeData {
     node_type: &'static str,
     name: String,
     /// Workspace-relative path identifying this node across pages (the
-    /// hotspot map keys its own data by the same path); absent for a node
-    /// with no module or manifest target (an external package or section).
+    /// hotspot map keys its own data by the same path): a package's manifest,
+    /// a module's file, a binary's root file. Absent for a node with none of
+    /// them (an external package or section).
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(test, ts(optional))]
     file: Option<String>,
@@ -375,10 +376,17 @@ fn generate_static_data(
                 Some(parent.to_string())
             }
         };
+        let is_module_row = matches!(item.kind, ItemKind::Module { .. });
         let file = item
             .targets
             .iter()
-            .find(|target| matches!(target.kind, TargetKind::Manifest | TargetKind::Module))
+            .find(|target| match target.kind {
+                TargetKind::Manifest | TargetKind::Module => true,
+                // A binary's row holds its root file, a package's row the
+                // root file of a binary that is the package's root.
+                TargetKind::Bin => is_module_row,
+                TargetKind::Lib => false,
+            })
             .map(|target| target.name.clone());
         let targets = if config.with_jump_ids {
             item.targets
@@ -975,6 +983,49 @@ mod tests {
             )]),
         );
         (ir, c, m)
+    }
+
+    /// A binary's row is found by its root file. A package whose root is its
+    /// binary is still found by its manifest.
+    #[test]
+    fn test_static_data_names_a_binarys_root_file_as_the_file_of_its_row() {
+        use std::path::PathBuf;
+
+        let mut table = JumpTable::new();
+        let mut target = |kind, name: &str| JumpTarget {
+            kind,
+            name: name.to_string(),
+            id: table.insert(PathBuf::from(format!("/ws/{name}")), 1),
+        };
+        let mut ir = LayoutIR::new();
+        let app = ir.add_item(ItemKind::Package, "app".into());
+        let binary = ir.add_item(
+            ItemKind::Module {
+                nesting: 1,
+                parent: app,
+            },
+            "{bin}::app".into(),
+        );
+        let tool = ir.add_item(ItemKind::Package, "tool".into());
+        ir.items[app].targets = vec![
+            target(TargetKind::Lib, "app/src/lib.rs"),
+            target(TargetKind::Manifest, "app/Cargo.toml"),
+        ];
+        ir.items[binary].targets = vec![target(TargetKind::Bin, "app/src/main.rs")];
+        ir.items[tool].targets = vec![
+            target(TargetKind::Bin, "tool/src/main.rs"),
+            target(TargetKind::Manifest, "tool/Cargo.toml"),
+        ];
+
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
+        let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
+        let parents: HashSet<NodeId> = HashSet::from([app]);
+        let data = generate_static_data(&config, &ir, &positioned, &parents);
+
+        let file = |id: NodeId| data.nodes[&id.to_string()].file.clone();
+        assert_eq!(file(binary).as_deref(), Some("app/src/main.rs"));
+        assert_eq!(file(app).as_deref(), Some("app/Cargo.toml"));
+        assert_eq!(file(tool).as_deref(), Some("tool/Cargo.toml"));
     }
 
     #[test]

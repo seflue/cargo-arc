@@ -2,7 +2,7 @@
 
 use crate::model::{
     Definition, DependencyRef, EdgeContext, EntryFile, ExternalsResult, ModuleInfo, ModuleTree,
-    PackageInfo, SourceLocation, SymbolUse, TestKind, UsageCategory, UsageKind,
+    PackageInfo, SourceLocation, SymbolUse, TestKind, UsageCategory, UsageKind, binary_segments,
 };
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
@@ -24,6 +24,15 @@ pub enum Node {
         file: Option<PathBuf>,
         /// The module's own definitions, see `ModuleInfo::definitions`.
         definitions: HashMap<String, Definition>,
+    },
+    /// A binary its package builds beside its root. The node stands for the
+    /// binary's root file.
+    Binary {
+        /// The name of the binary's target.
+        name: String,
+        package_idx: NodeIndex,
+        /// Absolute path of the binary's root file.
+        file: Option<PathBuf>,
     },
     ExternalPackage {
         name: String,
@@ -52,11 +61,26 @@ impl Node {
     }
 
     #[must_use]
+    pub fn is_binary(&self) -> bool {
+        matches!(self, Node::Binary { .. })
+    }
+
+    #[must_use]
     pub fn name(&self) -> &str {
         match self {
             Node::Package { name, .. }
             | Node::Module { name, .. }
+            | Node::Binary { name, .. }
             | Node::ExternalPackage { name, .. } => name,
+        }
+    }
+
+    /// The node's part of a qualified node name: its name, for a binary
+    /// after the segment that marks one.
+    pub(crate) fn qualified_segment(&self) -> String {
+        match self {
+            Node::Binary { name, .. } => binary_segments(name),
+            node => node.name().to_string(),
         }
     }
 }
@@ -221,7 +245,7 @@ impl ArcGraph {
     #[must_use]
     pub fn owning_package(&self, idx: NodeIndex) -> NodeIndex {
         match &self[idx] {
-            Node::Module { package_idx, .. } => *package_idx,
+            Node::Module { package_idx, .. } | Node::Binary { package_idx, .. } => *package_idx,
             Node::Package { .. } | Node::ExternalPackage { .. } => idx,
         }
     }
@@ -235,7 +259,7 @@ impl ArcGraph {
     /// degrades to its leaf name.
     #[must_use]
     pub fn qualified_name(&self, idx: NodeIndex) -> String {
-        let mut segments = vec![self[idx].name().to_string()];
+        let mut segments = vec![self[idx].qualified_segment()];
         let mut current = idx;
         let mut package_name = None;
         while let Some(edge) = self
@@ -247,7 +271,7 @@ impl ArcGraph {
                 package_name = Some(self[parent].name());
                 break;
             }
-            segments.push(self[parent].name().to_string());
+            segments.push(self[parent].qualified_segment());
             current = parent;
         }
         segments.reverse();
@@ -261,7 +285,8 @@ impl ArcGraph {
     /// Compute the set of production-reachable package nodes.
     ///
     /// A package is reachable if:
-    /// 1. It is an "anchor" — has Contains edges (= has modules to visualize),
+    /// 1. It is an "anchor" — has Contains edges (= has modules or a binary
+    ///    to visualize),
     ///    or nobody depends on it while it depends on production code itself
     ///    (a workspace entry point, typically a thin binary), OR
     /// 2. It is transitively reachable from an anchor via production `PackageDep` edges.
@@ -485,6 +510,24 @@ impl GraphBuilder {
             for child in &module_tree.root.children {
                 self.add_modules_recursive(child, package_idx, package_idx);
             }
+            for binary in &module_tree.binaries {
+                self.add_binary(binary, package_idx);
+            }
+        }
+    }
+
+    fn add_binary(&mut self, binary: &ModuleInfo, package_idx: NodeIndex) {
+        let binary_idx = self.graph.add_node(Node::Binary {
+            name: binary.name.clone(),
+            package_idx,
+            file: binary.file.clone(),
+        });
+        self.graph
+            .add_edge(package_idx, binary_idx, EdgeWeight::Contains);
+        self.module_map.insert(binary.full_path.clone(), binary_idx);
+        self.stash_deps(&binary.full_path, &binary.dependencies);
+        for child in &binary.children {
+            self.add_modules_recursive(child, package_idx, binary_idx);
         }
     }
 
@@ -741,6 +784,9 @@ pub(crate) fn usages(packages: &[PackageInfo], modules: &[ModuleTree]) -> Vec<Us
     }
     for tree in modules {
         push_own_item_usages(&builder, &tree.root, &mut usages);
+        for binary in &tree.binaries {
+            push_own_item_usages(&builder, binary, &mut usages);
+        }
     }
     usages
 }
@@ -895,6 +941,7 @@ mod tests {
     fn tree(root: ModuleInfo) -> ModuleTree {
         ModuleTree {
             root,
+            binaries: Vec::new(),
             unparsed: Vec::new(),
         }
     }
@@ -1533,7 +1580,7 @@ mod tests {
 
         let app_entries = vec![
             EntryFile::lib("/ws/app/src/lib.rs"),
-            EntryFile::bin("/ws/app/src/main.rs"),
+            EntryFile::bin("app", "/ws/app/src/main.rs"),
         ];
         let serde_entries = vec![EntryFile::lib("/reg/serde-1.0.0/src/lib.rs")];
         let packages = vec![PackageInfo {

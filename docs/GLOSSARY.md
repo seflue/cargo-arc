@@ -9,10 +9,11 @@ See also [RULES.md](RULES.md), [ARC_DIAGRAM.md](ARC_DIAGRAM.md), [HOTSPOT_MAP.md
 
 | Term | Definition |
 |------|------------|
-| **<a id="package">Package</a>** | The unit at the top of a module tree, which other packages depend on as a whole. In Rust a package is what a `Cargo.toml` describes, usually called a crate, although strictly a crate is the library or binary the package builds. In a Neovim plugin it is a top-level namespace, a directory `lua/<name>/` or a single file `lua/<name>.lua`, with the plugin's repository as the workspace. |
-| **<a id="node">Node</a>** | The [packages](#package) of the workspace and the modules within them are the nodes of the dependency graph. Modules can be nested at any depth. `--externals` adds the external packages the workspace depends on to the graph. [Patterns](#module-path-pattern) match only nodes inside the workspace. |
+| **<a id="package">Package</a>** | The unit at the top of a module tree, which other packages depend on as a whole. In Rust a package is what a `Cargo.toml` describes, usually called a crate, although strictly a crate is the library or [binary](#binary) the package builds. In a Neovim plugin it is a top-level namespace, a directory `lua/<name>/` or a single file `lua/<name>.lua`, with the plugin's repository as the workspace. |
+| **<a id="binary">Binary</a>** | A program that a [package](#package) builds from an entry file of its own, such as `src/main.rs` or a file in `src/bin/`. In Rust a binary is a crate of its own, which can depend on the library of its package, while the library never depends on it. A binary is a [node](#node) under its package, and the modules that only the binary declares sit under it. In a package that builds one binary and no library, the binary is the root of the package and has no node of its own. |
+| **<a id="node">Node</a>** | The [packages](#package) of the workspace, the modules within them and the [binaries](#binary) a package builds beside its root are the nodes of the dependency graph. Modules can be nested at any depth. `--externals` adds the external packages the workspace depends on to the graph. [Patterns](#module-path-pattern) match only nodes inside the workspace. |
 | **<a id="edge">Edge</a>** | The directed connection from one [node](#node) to another that the first depends on directly. A transitive dependency runs through other nodes and is not an edge. |
-| **<a id="qualified-node-name">Qualified node name</a>** | A [node](#node)'s path starting at its package: `storage` is the package, `storage::pool` a module in it. `check` writes both ends of a `layers` or `forbidden-dependency` [violation](#violation) as qualified node names. |
+| **<a id="qualified-node-name">Qualified node name</a>** | A [node](#node)'s path starting at its package: `storage` is the package, `storage::pool` a module in it, and `storage::{bin}::storaged` a [binary](#binary) the package builds. The segment `{bin}` is no module and says that the segment after it names a binary. `check` writes both ends of a `layers` or `forbidden-dependency` [violation](#violation) as qualified node names. |
 | **<a id="manifest-edge">Manifest edge</a>** | The [edge](#edge) from one package to another that the first declares in its manifest, such as a `Cargo.toml`. No import in the source code creates it. |
 | **<a id="item">Item</a>** | A declaration in a module: a function, a type, a trait, an `impl` block, a constant, a static, a macro, a macro call, or a module. The term and its scope come from the [Rust Reference](https://doc.rust-lang.org/reference/items.html), so a module and an `impl` block are items too. A path can name most items, but not an `impl` block or a macro call. |
 | **<a id="name-resolution">Name resolution</a>** | Finding the [item](#item) a path in the source code names, through `use` declarations and re-exports up to the module that defines it. The term comes from the Rust Reference and rustc. |
@@ -20,6 +21,8 @@ See also [RULES.md](RULES.md), [ARC_DIAGRAM.md](ARC_DIAGRAM.md), [HOTSPOT_MAP.md
 
 Lakos uses *package* for a smaller unit (see [Module roles](#module-roles)).
 The UI and the CLI output use the analyzed language's own word for a package, which is *crate* for Rust and *namespace* for a Lua plugin.
+Cargo calls a [binary](#binary) a *binary target*, or *bin* for short.
+The braces around `{bin}` follow rustc, which writes path segments that have no name in the source the same way, such as `{closure#0}`.
 
 Graph theory calls a [node](#node) a *vertex*.
 The literature on directed graphs calls an [edge](#edge) an *arc*.

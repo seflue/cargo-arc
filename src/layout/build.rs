@@ -301,7 +301,7 @@ pub(crate) fn build_layout(
     for idx in graph.node_indices() {
         match &graph[idx] {
             Node::Package { .. } => package_indices.push(idx),
-            Node::Module { .. } => module_indices.push(idx),
+            Node::Module { .. } | Node::Binary { .. } => module_indices.push(idx),
             Node::ExternalPackage { .. } => external_indices.push(idx),
         }
     }
@@ -374,16 +374,16 @@ fn target_name(path: &Path, workspace_root: Option<&Path>) -> String {
 
 /// Insert a package's (or external package's) jump targets: its entry files
 /// in order, then its manifest if it has one, all at line 1.
-fn package_targets(
+fn package_targets<'a>(
     table: &mut JumpTable,
-    entry_files: &[EntryFile],
+    entry_files: impl IntoIterator<Item = &'a EntryFile>,
     manifest: Option<&Path>,
     workspace_root: Option<&Path>,
 ) -> Vec<JumpTarget> {
-    let entries = entry_files.iter().map(|entry| {
+    let entries = entry_files.into_iter().map(|entry| {
         let kind = match entry.kind {
             EntryKind::Lib => TargetKind::Lib,
-            EntryKind::Bin => TargetKind::Bin,
+            EntryKind::Bin { .. } => TargetKind::Bin,
         };
         (kind, entry.file.as_path())
     });
@@ -398,9 +398,11 @@ fn package_targets(
         .collect()
 }
 
-/// Insert a module's declaring file as its jump target, when known.
-fn module_targets(
+/// Insert the file that holds a module's code, or a binary's root file, as
+/// its jump target of `kind`, when known.
+fn source_targets(
     table: &mut JumpTable,
+    kind: TargetKind,
     file: Option<&Path>,
     workspace_root: Option<&Path>,
 ) -> Vec<JumpTarget> {
@@ -408,7 +410,7 @@ fn module_targets(
         return Vec::new();
     };
     vec![JumpTarget {
-        kind: TargetKind::Module,
+        kind,
         name: target_name(file, workspace_root),
         id: table.insert(file.to_path_buf(), 1),
     }]
@@ -592,9 +594,18 @@ fn populate_items(
     table: &mut JumpTable,
     workspace_root: Option<&Path>,
 ) -> HashMap<NodeIndex, NodeId> {
+    // A binary's root file is the jump target of the binary's own row.
+    let binary_files: HashSet<&Path> = graph
+        .node_weights()
+        .filter_map(|node| match node {
+            Node::Binary { file, .. } => file.as_deref(),
+            _ => None,
+        })
+        .collect();
     let mut node_map = HashMap::new();
     for &idx in ordered {
-        let (kind, label, source_path, targets) = match &graph[idx] {
+        let node = &graph[idx];
+        let (kind, label, source_path, targets) = match node {
             Node::Package {
                 name,
                 entry_files,
@@ -604,9 +615,20 @@ fn populate_items(
                 ItemKind::Package,
                 name.clone(),
                 None,
-                package_targets(table, entry_files, manifest.as_deref(), workspace_root),
+                package_targets(
+                    table,
+                    entry_files
+                        .iter()
+                        .filter(|entry| !binary_files.contains(entry.file.as_path())),
+                    manifest.as_deref(),
+                    workspace_root,
+                ),
             ),
-            Node::Module { name, file, .. } => {
+            Node::Module { file, .. } | Node::Binary { file, .. } => {
+                let target_kind = match node {
+                    Node::Binary { .. } => TargetKind::Bin,
+                    _ => TargetKind::Module,
+                };
                 let nesting = nesting_depth(idx, parent_map);
                 let parent_layout_id = parent_map
                     .get(&idx)
@@ -618,9 +640,9 @@ fn populate_items(
                         nesting,
                         parent: parent_layout_id,
                     },
-                    name.clone(),
+                    node.qualified_segment(),
                     module_source_path(graph, idx),
-                    module_targets(table, file.as_deref(), workspace_root),
+                    source_targets(table, target_kind, file.as_deref(), workspace_root),
                 )
             }
             Node::ExternalPackage { .. } => continue, // handled by populate_external_items
@@ -978,6 +1000,10 @@ impl ArcGraph {
         }
         // On cycles (empty result): keep alphabetical order
 
+        // Binaries first. No module uses a binary, so this keeps the order
+        // the dependencies ask for.
+        children.sort_by_key(|&child| self[child].is_module());
+
         // Add each child + its descendants recursively
         children
             .into_iter()
@@ -1100,7 +1126,7 @@ mod tests {
         DefKind, Definition, EdgeContext, EntryFile, SourceLocation, TestKind, UsageKind,
     };
     use crate::test_support::{
-        module_node, module_node_with_file, package_node, package_node_with_targets,
+        binary_node, module_node, module_node_with_file, package_node, package_node_with_targets,
     };
     use assert2::check;
     use petgraph::graph::NodeIndex;
@@ -1155,7 +1181,7 @@ mod tests {
         fn nested_module(&mut self, parent: &str, child: &str) -> &mut Self {
             let parent_idx = self.names[parent];
             let package_idx = match &self.graph[parent_idx] {
-                Node::Module { package_idx, .. } => *package_idx,
+                Node::Module { package_idx, .. } | Node::Binary { package_idx, .. } => *package_idx,
                 Node::Package { .. } | Node::ExternalPackage { .. } => parent_idx,
             };
             let child_idx = self.graph.add_node(module_node(child, package_idx));
@@ -1179,11 +1205,20 @@ mod tests {
             self
         }
 
+        /// Add a binary with its root file under an existing package.
+        fn binary(&mut self, package: &str, name: &str, file: &str) -> &mut Self {
+            let package_idx = self.names[package];
+            let idx = self.graph.add_node(binary_node(name, package_idx, file));
+            self.names.insert(name.to_string(), idx);
+            self.graph.add_edge(package_idx, idx, EdgeWeight::Contains);
+            self
+        }
+
         /// Add a module with a declaring file under an existing parent (module or package).
         fn module_with_file(&mut self, parent: &str, name: &str, file: &str) -> &mut Self {
             let parent_idx = self.names[parent];
             let package_idx = match &self.graph[parent_idx] {
-                Node::Module { package_idx, .. } => *package_idx,
+                Node::Module { package_idx, .. } | Node::Binary { package_idx, .. } => *package_idx,
                 Node::Package { .. } | Node::ExternalPackage { .. } => parent_idx,
             };
             let idx = self
@@ -1204,7 +1239,7 @@ mod tests {
         ) -> &mut Self {
             let parent_idx = self.names[parent];
             let package_idx = match &self.graph[parent_idx] {
-                Node::Module { package_idx, .. } => *package_idx,
+                Node::Module { package_idx, .. } | Node::Binary { package_idx, .. } => *package_idx,
                 Node::Package { .. } | Node::ExternalPackage { .. } => parent_idx,
             };
             let definitions = definitions
@@ -1724,7 +1759,7 @@ mod tests {
     fn build_layout_assigns_jump_targets_and_resolves_them() {
         let entry_files = vec![
             EntryFile::lib("/ws/app/src/lib.rs"),
-            EntryFile::bin("/ws/app/src/main.rs"),
+            EntryFile::bin("app", "/ws/app/src/main.rs"),
         ];
         let mut b = TestGraphBuilder::new();
         b.package_with_targets("app", entry_files, Some("/ws/app/Cargo.toml"))
@@ -1799,13 +1834,63 @@ mod tests {
         assert_eq!(kinds, vec![TargetKind::Lib]);
     }
 
+    /// A binary's row is labelled as its qualified name ends and holds the
+    /// jump target of its root file, which the package's row then leaves out.
+    #[test]
+    fn a_binary_has_a_row_that_holds_its_root_file() {
+        let entry_files = vec![
+            EntryFile::lib("/ws/app/src/lib.rs"),
+            EntryFile::bin("tool", "/ws/app/src/main.rs"),
+        ];
+        let mut b = TestGraphBuilder::new();
+        b.package_with_targets("app", entry_files, Some("/ws/app/Cargo.toml"))
+            .binary("app", "tool", "/ws/app/src/main.rs")
+            .module_with_file("tool", "cli", "/ws/app/src/cli.rs");
+        let (graph, _) = b.build();
+        let (ir, table) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
+
+        let la = LayoutAssert::new(ir);
+        let kinds = |name: &str| -> Vec<TargetKind> {
+            let targets = &la.ir.items[la.pos(name)].targets;
+            targets.iter().map(|target| target.kind).collect()
+        };
+        assert_eq!(kinds("app"), [TargetKind::Lib, TargetKind::Manifest]);
+        assert_eq!(kinds("{bin}::tool"), [TargetKind::Bin]);
+        assert_eq!(
+            table.node_at(Path::new("/ws/app/src/main.rs")),
+            Some(la.pos("{bin}::tool").to_string().as_str())
+        );
+        assert_eq!(
+            la.ir.qualified_name(la.pos("{bin}::tool")),
+            "app::{bin}::tool"
+        );
+        assert_eq!(la.ir.qualified_name(la.pos("cli")), "app::{bin}::tool::cli");
+    }
+
+    /// A binary's row stands above the rows of its package's modules, also
+    /// above a module that sorts before it and uses nothing.
+    #[test]
+    fn a_binarys_row_stands_above_the_modules_of_its_package() {
+        let mut b = TestGraphBuilder::new();
+        b.package_with_targets("app", Vec::new(), Some("/ws/app/Cargo.toml"))
+            .module_with_file("app", "alpha", "/ws/app/src/alpha.rs")
+            .module_with_file("app", "zeta", "/ws/app/src/zeta.rs")
+            .binary("app", "tool", "/ws/app/src/main.rs")
+            .prod_dep("tool", "zeta");
+        let (graph, _) = b.build();
+        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
+
+        let la = LayoutAssert::new(ir);
+        assert_eq!(la.labels(), ["app", "{bin}::tool", "alpha", "zeta"]);
+    }
+
     /// Every file a node's jump targets point at maps back to that node,
     /// under the key `STATIC_DATA` uses for it.
     #[test]
     fn build_layout_maps_target_files_back_to_their_node() {
         let entry_files = vec![
             EntryFile::lib("/ws/app/src/lib.rs"),
-            EntryFile::bin("/ws/app/src/main.rs"),
+            EntryFile::bin("app", "/ws/app/src/main.rs"),
         ];
         let mut b = TestGraphBuilder::new();
         b.package_with_targets("app", entry_files, Some("/ws/app/Cargo.toml"))
@@ -1880,7 +1965,7 @@ mod tests {
     fn target_names_are_relative_to_the_workspace_root() {
         let entry_files = vec![
             EntryFile::lib("/ws/app/src/lib.rs"),
-            EntryFile::bin("/ws/app/src/bin/tool.rs"),
+            EntryFile::bin("tool", "/ws/app/src/bin/tool.rs"),
         ];
         let mut b = TestGraphBuilder::new();
         b.package_with_targets("app", entry_files, Some("/ws/app/Cargo.toml"))

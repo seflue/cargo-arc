@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Neovim Lua plugins: the arc diagram and the hotspot map for a plugin's `lua/` namespaces (see [docs/LUA_PLUGINS.md](docs/LUA_PLUGINS.md)).
 
+### Changed
+
+- A package that builds a library and a binary no longer reports the cycles that arose only because `lib.rs` and `main.rs` shared the package's node. The binary is a node of its own, `<package>::{bin}::<name>`, in the diagram, in `query` and in rules, and an `exhaustive` `layers` rule reports it until a layer names it (see [docs/RULES.md](docs/RULES.md#module-path-patterns)). A violation frozen in `arc-baseline.toml` whose edge starts at such a binary is reported again until it is frozen under the binary's name.
+
 ## [0.6.2] - 2026-10-08
 
 ### Fixed

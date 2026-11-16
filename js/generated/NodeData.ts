@@ -4,7 +4,8 @@ import type { TargetData } from "./TargetData";
 export type NodeData = { type: string, name: string, 
 /**
  * Workspace-relative path identifying this node across pages (the
- * hotspot map keys its own data by the same path); absent for a node
- * with no module or manifest target (an external package or section).
+ * hotspot map keys its own data by the same path): a package's manifest,
+ * a module's file, a binary's root file. Absent for a node with none of
+ * them (an external package or section).
  */
 file?: string, parent: string | null, x: number, y: number, width: number, height: number, hasChildren: boolean, nesting: number, version?: string, sccId?: number, targets?: Array<TargetData>, };

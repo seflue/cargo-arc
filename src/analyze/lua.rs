@@ -70,6 +70,7 @@ impl LanguageAdapter for Lua {
             });
             modules.push(ModuleTree {
                 root: root_module,
+                binaries: Vec::new(),
                 unparsed: Vec::new(),
             });
         }
@@ -276,7 +277,13 @@ fn add_entry_imports(
             .collect();
         tally.discarded += read - dependencies.len();
         modules[owner].root.dependencies.extend(dependencies);
-        packages[owner].entry_files.push(EntryFile::bin(script));
+        let name = script
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        packages[owner]
+            .entry_files
+            .push(EntryFile::bin(name, script));
     }
 }
 

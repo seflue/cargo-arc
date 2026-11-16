@@ -72,6 +72,7 @@ Without volatility data, under `--no-volatility` or outside a git repository, `w
 
 `query edges` lists every symbol that crosses an [edge](GLOSSARY.md#edge) between modules, one record per edge and symbol.
 A package stands for its root module, so an edge can start or end at a package.
+A [binary](GLOSSARY.md#binary) that a package builds beside its root is named `<package>::{bin}::<name>`, and a module only the binary declares is named under it.
 The records are the arcs of the diagram and the symbols listed under each, under the same flags.
 The [bare imports](GLOSSARY.md#bare-import) of an edge name no symbol and share one record with an empty `symbol`.
 A [manifest edge](GLOSSARY.md#manifest-edge) that no import backs has no record.

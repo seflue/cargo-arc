@@ -3123,7 +3123,7 @@ pub trait Step { fn run(&self); }
         }
     }
 
-    /// The dependencies of `banner`, a module of the bin tree of `my_crate`
+    /// The dependencies of `banner`, a module of the binary of `my_crate`
     /// written as `source`, whose lib root defines the unit struct `Shared`.
     fn bin_tree_deps_of(source: &str) -> Vec<DependencyRef> {
         TestWorkspace::new()
@@ -3136,7 +3136,7 @@ pub trait Step { fn run(&self); }
                 ],
             )
             .analyze()
-            .deps("my_crate::banner")
+            .deps("my_crate::{bin}::my_crate::banner")
             .to_vec()
     }
 

@@ -48,7 +48,9 @@ mod lookup_tests {
                 test_build_modules: None,
             },
             RootReExports {
-                kind: EntryKind::Bin,
+                kind: EntryKind::Bin {
+                    name: "my_crate".to_string(),
+                },
                 modules: HashMap::from([("holder".to_string(), ModuleExportInfo::default())]),
                 test_build_modules: None,
             },

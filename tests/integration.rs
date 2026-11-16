@@ -1865,16 +1865,21 @@ fn name_resolution_private_module_is_the_reexported_const_outside_its_parent() {
 }
 
 /// Cell 25: a bin root is a crate of its own: it does not see a private
-/// module of the lib root. The edge still starts at the package node.
+/// module of the lib root. The edge starts at the binary's node.
 #[test]
 fn name_resolution_bin_root_takes_the_item_the_lib_root_reexports() {
-    assert_name_resolution_arc("app5", "app5::lex", "production", &["lex"]);
+    assert_name_resolution_arc("app5::{bin}::app5", "app5::lex", "production", &["lex"]);
 }
 
 /// Cell 26: a bin root does not see a `pub(crate)` module of the lib.
 #[test]
 fn name_resolution_bin_root_takes_the_item_beside_a_pub_crate_module() {
-    assert_name_resolution_arc("app", "app::pcrate::helper", "production", &["helper"]);
+    assert_name_resolution_arc(
+        "app::{bin}::app",
+        "app::pcrate::helper",
+        "production",
+        &["helper"],
+    );
 }
 
 /// Cell 27: a `pub use` of a name that is a `pub(crate)` module and a public
@@ -2258,9 +2263,9 @@ fn name_resolution_lib_naming_itself_in_its_tests_reads_its_test_build() {
 #[test]
 fn name_resolution_other_roots_naming_the_lib_read_its_build_without_test() {
     assert_name_resolution_arc("xs::xsit", "xs::a", "test", &["helper"]);
-    assert_name_resolution_arc("xs::xsbin", "xs::a", "test", &["helper"]);
+    assert_name_resolution_arc("xs::{bin}::xs::xsbin", "xs::a", "test", &["helper"]);
     assert_no_name_resolution_arc("xs::xsit", "xs::b");
-    assert_no_name_resolution_arc("xs::xsbin", "xs::b");
+    assert_no_name_resolution_arc("xs::{bin}::xs::xsbin", "xs::b");
 }
 
 /// Cell 47r15: production code of a lib that names itself by
@@ -2287,7 +2292,7 @@ fn name_resolution_lib_naming_itself_without_test_build_sees_its_crate_visible_r
 /// only its `*` arc.
 #[test]
 fn name_resolution_other_roots_naming_the_lib_skip_its_crate_visible_reexport() {
-    for root in ["xs::xsit", "xs::xsbin"] {
+    for root in ["xs::xsit", "xs::{bin}::xs::xsbin"] {
         assert_name_resolution_arc(root, "xs::e", "test", &["shared"]);
         assert_name_resolution_arc(root, "xs::pc", "test", &["*"]);
         assert_no_name_resolution_arc(root, "xs::d");
@@ -2972,8 +2977,8 @@ fn name_resolution_glob_chain_brings_in_what_every_holder_sees() {
 /// root's glob on `cli` brings in a `Shared` of its own.
 #[test]
 fn name_resolution_binding_of_the_own_package_in_a_bin_means_the_lib() {
-    assert_name_resolution_arc("bl::bshow", "bl", "production", &["Shared"]);
-    assert_no_name_resolution_arc("bl::bshow", "bl::cli");
+    assert_name_resolution_arc("bl::{bin}::bl::bshow", "bl", "production", &["Shared"]);
+    assert_no_name_resolution_arc("bl::{bin}::bl::bshow", "bl::{bin}::bl::cli");
 }
 
 /// Cell 73: `mx` defines `macro_rules! min` and imports `std::cmp::min`, a
@@ -3049,7 +3054,7 @@ fn name_resolution_glob_brings_in_no_reexported_trait_its_holder_does_not_see() 
 /// in the bin module is the lib's `G`.
 #[test]
 fn name_resolution_child_module_through_a_glob_on_the_own_lib_is_the_libs() {
-    assert_name_resolution_arc("lv::lvglob", "lv::gm", "production", &["G"]);
+    assert_name_resolution_arc("lv::{bin}::lv::lvglob", "lv::gm", "production", &["G"]);
 }
 
 /// Cell 78e: the same glob binds `kv`, which the lib root binds by
@@ -3057,8 +3062,13 @@ fn name_resolution_child_module_through_a_glob_on_the_own_lib_is_the_libs() {
 /// re-exports `bcli::K`; `kv::K` in the bin module is the lib's `K`.
 #[test]
 fn name_resolution_module_a_glob_on_the_own_lib_binds_by_use_is_the_libs() {
-    assert_name_resolution_arc("lv::lvglob", "lv::store::kv", "production", &["K"]);
-    assert_no_name_resolution_arc("lv::lvglob", "lv::bcli");
+    assert_name_resolution_arc(
+        "lv::{bin}::lv::lvglob",
+        "lv::store::kv",
+        "production",
+        &["K"],
+    );
+    assert_no_name_resolution_arc("lv::{bin}::lv::lvglob", "lv::{bin}::lv::bcli");
 }
 
 /// Cell 78f: the integration test `itm` has a module `gm` of its own, which

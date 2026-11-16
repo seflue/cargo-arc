@@ -225,10 +225,13 @@ pub struct EntryFile {
     pub file: PathBuf,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EntryKind {
     Lib,
-    Bin,
+    Bin {
+        /// The name of the binary's target, as its manifest gives it.
+        name: String,
+    },
 }
 
 impl EntryFile {
@@ -239,11 +242,17 @@ impl EntryFile {
         }
     }
 
-    pub fn bin(file: impl Into<PathBuf>) -> Self {
+    pub fn bin(name: impl Into<String>, file: impl Into<PathBuf>) -> Self {
         Self {
-            kind: EntryKind::Bin,
+            kind: EntryKind::Bin { name: name.into() },
             file: file.into(),
         }
+    }
+
+    /// Whether the file is the root of a binary.
+    #[must_use]
+    pub fn is_bin(&self) -> bool {
+        matches!(self.kind, EntryKind::Bin { .. })
     }
 }
 
@@ -394,9 +403,24 @@ pub struct ModuleInfo {
     pub definitions: HashMap<String, Definition>,
 }
 
+/// The segment of a qualified node name that says the next segment names a
+/// binary. No module can bear it: braces are no part of an identifier.
+pub const BINARY_SEGMENT: &str = "{bin}";
+
+/// The two segments that name the binary `name` under its package in a
+/// qualified node name.
+#[must_use]
+pub fn binary_segments(name: &str) -> String {
+    format!("{BINARY_SEGMENT}::{name}")
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModuleTree {
     pub root: ModuleInfo,
+    /// The binaries the package builds beside its root, each the root module
+    /// of the binary's own tree. Its `full_path` is the package's key and the
+    /// [`binary_segments`] of its target's name, joined by `::`.
+    pub binaries: Vec<ModuleInfo>,
     /// Module files that did not parse. Their modules stand in the tree
     /// without children or dependencies.
     pub unparsed: Vec<PathBuf>,

@@ -6,6 +6,7 @@
 [config]
 version = 1
 
+# The binary starts a run through the library and stands above all of it.
 # `cli` drives a run, `render`, `rules` and `query` are the things a run
 # produces, and they rest on the analysis layer. `diagnose`, `layout` and
 # `analyze` share a position: the layout builder reads the cycle and order
@@ -24,6 +25,7 @@ version = 1
 type = "layers"
 name = "architecture layers"
 layers = [
+  ["cargo-arc::{bin}::cargo-arc"],
   ["cargo-arc::cli"],
   ["cargo-arc::ui"],
   ["cargo-arc::render", "cargo-arc::rules", "cargo-arc::query"],
@@ -33,8 +35,8 @@ layers = [
   ["cargo-arc::model", "cargo-arc::volatility"],
 ]
 direction = "top-down"
-# The claim is over the modules of this crate: a new top-level module fails the
-# run until it is placed. The crate node `cargo-arc` is not claimed, because no
+# The claim is over the modules and the binary of this crate: a new top-level
+# module fails the run until it is placed. The crate node `cargo-arc` is not claimed, because no
 # crate pattern names it.
 exhaustive = true
 

@@ -244,7 +244,9 @@ mod viewer_tests {
                 test_build_modules: None,
             },
             RootReExports {
-                kind: EntryKind::Bin,
+                kind: EntryKind::Bin {
+                    name: "my_crate".to_string(),
+                },
                 modules: HashMap::from([(String::new(), ModuleExportInfo::default())]),
                 test_build_modules: None,
             },

@@ -1786,6 +1786,7 @@ mod tests {
                     packages: vec![package],
                     modules: vec![ModuleTree {
                         root,
+                        binaries: Vec::new(),
                         unparsed: vec![PathBuf::from("/repo/lua/plugin/broken.lua")],
                     }],
                     externals: None,

@@ -52,7 +52,7 @@ In a page that `cargo arc ui` serves to an editor, a click on the location opens
 ## Scripts in `plugin/`
 
 The files in `plugin/` are scripts Neovim runs at startup, and they are not modules.
-Their `require` calls are edges from the namespace that bears the script's name, the way the imports of a crate's `main.rs` are edges from the crate.
+Their `require` calls are edges from the namespace that bears the script's name, the way the imports of `main.rs` are edges from a crate without a library.
 A script whose name matches no namespace belongs to the plugin's only namespace with a root file, `lua/<n>.lua` or `lua/<n>/init.lua`.
 With none or several of those, its calls are discarded and counted under `--debug`.
 

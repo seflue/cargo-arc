@@ -153,7 +153,7 @@ error: configuration
 
 A pattern without `::` names a package, and a rule carrying one claims every workspace package.
 The rule above sorts `cli`, `storage`, `services` and `core`, so anything else is a gap.
-A pattern with `::` names a module, and a rule carrying one claims every module of the packages its module patterns reach, saying nothing about the other packages and nothing about the package nodes themselves.
+A pattern with `::` names a module, and a rule carrying one claims every module and binary of the packages its module patterns reach, saying nothing about the other packages and nothing about the package nodes themselves.
 A rule that mixes both kinds of pattern makes both claims side by side.
 
 Only the topmost unsorted node of a containment chain is reported.
@@ -220,14 +220,17 @@ Unknown keys are rejected rather than ignored, so a typo in a rule or a diagnost
 
 ### Module path patterns
 
-A module path pattern names packages and modules by their path:
+A module path pattern names packages, modules and [binaries](GLOSSARY.md#binary) by their path:
 
 | Pattern | Matches |
 |---------|---------|
-| `core` | the package `core`, and every module in it |
+| `core` | the package `core`, and every module and binary in it |
 | `core::model` | the module `core::model`, and every module in it |
-| `core::*` | the direct children of `core` |
-| `core::**` | every module below `core`, not `core` itself |
+| `core::*` | the modules directly in `core` |
+| `core::**` | every module and binary below `core`, not `core` itself |
+| `core::{bin}::server` | the binary `server` of `core`, and every module in it |
+| `core::{bin}::*` | the binaries of `core` |
+| `core::{bin}::**` | the binaries of `core`, and every module in them |
 | `core*` | every package starting with `core`, and every module in each |
 | `**` | everything in the workspace |
 
@@ -238,12 +241,13 @@ Inside one segment, `*` stands for any run of characters, including none.
 It may sit anywhere in the segment and appear more than once, but never crosses a `::`.
 So `core*` names every package that starts with `core`, and `*_test` every one that ends with `_test`.
 Any segment of a path may hold one, so `core::*::error` matches `core::model::error` and `core::api::error`.
+Only `{bin}` itself matches the segment `{bin}`, so `core::*::server` does not match the binary `core::{bin}::server`, and `*::{bin}::*` matches every binary in the workspace.
 A pattern always starts at a package name; there is no `crate::` prefix, because a rules file applies to the workspace and not from inside one package.
 That first segment is the package name as `Cargo.toml` writes it, so a package named `data-store` is `data-store` in a pattern and not `data_store`.
 Outside a `layers` position, `*` is an ordinary pattern and matches every package together with its modules.
 A `layers` position may hold `*` only alone, and it is then the catch-all layer, described under [`layers`](#layers).
 
-A pattern reaches the packages under analysis and the modules in them, and nothing else.
+A pattern reaches the packages under analysis and the modules and binaries in them, and nothing else.
 A package the workspace depends on lies outside that reach, so `to = "tokio"` matches nothing.
 
 A package has the dependencies its `Cargo.toml` declares, and a module has the imports written in its own file.
@@ -422,7 +426,7 @@ allow = [
 ```
 
 The package root contains its top-level modules, so an edge from such a module to its own package is removed too, where `scope` takes the package in at all.
-`super::super` reaches the module two levels up instead, and `crate` the root of the package from anywhere inside it.
+`super::super` reaches the module two levels up instead, and `crate` the root of the package from anywhere inside it, or the binary from a module of a binary.
 A removed edge that lay on a cycle is counted as *allowed* and listed under `--show-silenced`; one that lay on none raises no count.
 The dependency down from the containing module stays in the search, and so does a cycle between two modules under the same parent.
 
@@ -509,13 +513,14 @@ An entry with the same pattern on both sides ranks nothing, and neither does a p
 
 | `to` | Reaches |
 |------|---------|
-| `super` | the module containing `from`, or the package for a top-level module |
+| `super` | the module containing `from`, or the package or binary for a top-level module |
 | `super::super` | the module two levels up; every further `::super` one more |
-| `crate` | the root of the package `from` lies in |
+| `crate` | the binary `from` lies in, or else the root of its package |
 | `self::*` | the direct children of `from` |
 | `self::**` | every module under `from` |
 
 A relative `to` that leads nowhere, `super` from the package node or `self::*` from a leaf module, matches nothing and is not reported.
+A binary is the root of its own crate, so `super` from a binary leads nowhere, and `self::*` and `self::**` from its package reach neither the binary nor its modules.
 `unmatched-allow` asks about the `from` pattern of such an entry only.
 Other forms starting with `self`, `super` or `crate` are refused when the file is loaded.
 

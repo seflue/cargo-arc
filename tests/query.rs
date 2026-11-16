@@ -627,6 +627,84 @@ fn edges_list_each_symbol_crossing_an_edge_with_its_usage_categories() {
     );
 }
 
+/// A package with a library and a binary, outside any repository: `screen`
+/// uses `Config` from the library's root, and the binary uses `screen` and
+/// declares `cli`, which uses `Config` too.
+fn binary_workspace() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    let files = [
+        ("lib.rs", "pub mod screen;\n\npub struct Config;\n"),
+        (
+            "screen.rs",
+            "use crate::Config;\n\npub fn draw(_config: Config) {}\n",
+        ),
+        (
+            "main.rs",
+            "mod cli;\n\
+             \n\
+             use app::screen::draw;\n\
+             \n\
+             fn main() {\n\
+             \x20   draw(cli::config());\n\
+             }\n",
+        ),
+        (
+            "cli.rs",
+            "use app::Config;\n\
+             \n\
+             pub fn config() -> Config {\n\
+             \x20   Config\n\
+             }\n",
+        ),
+    ];
+    for (name, text) in files {
+        std::fs::write(root.join("src").join(name), text).unwrap();
+    }
+    dir
+}
+
+/// The binary's usage of `screen` closes no cycle with `screen`'s usage of
+/// the library's root.
+#[test]
+fn edges_name_a_binary_beside_a_library_as_a_node_of_its_own() {
+    let ws = binary_workspace();
+    let out = stdout_of(&arc(ws.path(), &["query", "edges"]));
+
+    assert_eq!(
+        body_of(&out),
+        [
+            "from\tto\tsymbol\tusage-categories\tre-exported\tlocations\tcycles",
+            "app::screen\tapp\tConfig\ttypes\tfalse\tsrc/screen.rs:1\t0",
+            "app::{bin}::app\tapp::screen\tdraw\tfunctions\tfalse\tsrc/main.rs:3\t0",
+            "app::{bin}::app\tapp::{bin}::app::cli\tconfig\tfunctions\tfalse\tsrc/main.rs:6\t0",
+            "app::{bin}::app::cli\tapp\tConfig\ttypes\tfalse\tsrc/cli.rs:1\t0",
+        ]
+    );
+}
+
+#[test]
+fn usages_name_a_module_of_a_binary_under_the_binary() {
+    let ws = binary_workspace();
+    let out = stdout_of(&arc(ws.path(), &["query", "usages", "Config"]));
+
+    assert_eq!(
+        body_of(&out),
+        [
+            "symbol\tprovider\tmodule\tenclosing-item\tpath\tline\tusage-category",
+            "Config\tapp\tapp::{bin}::app::cli\tconfig\tsrc/cli.rs\t3\ttypes",
+            "Config\tapp\tapp::{bin}::app::cli\tconfig\tsrc/cli.rs\t4\ttypes",
+            "Config\tapp\tapp::screen\tdraw\tsrc/screen.rs\t3\ttypes",
+        ]
+    );
+}
+
 #[test]
 fn edges_count_the_cycles_a_re_export_closes_under_include_reexports() {
     let ws = edges_workspace();

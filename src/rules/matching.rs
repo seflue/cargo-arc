@@ -4,6 +4,7 @@
 //! `NodeIndex` sets in the `ArcGraph`.
 
 use crate::graph::{ArcGraph, EdgeWeight};
+use crate::model::BINARY_SEGMENT;
 use crate::rules::config::{AllowTarget, AllowedEdge, Layer};
 use petgraph::graph::NodeIndex;
 use petgraph::visit::EdgeRef;
@@ -47,8 +48,12 @@ impl<'graph> PatternIndex<'graph> {
     /// Supported patterns:
     /// - `"domain"` — the package and every module in it
     /// - `"domain::service"` — that module and every module in it
-    /// - `"domain::*"` — the direct children of `domain`
-    /// - `"domain::**"` — every module in `domain`, not `domain` itself
+    /// - `"domain::*"` — the modules directly in `domain`
+    /// - `"domain::**"` — every module and binary in `domain`, not `domain`
+    ///   itself
+    /// - `"domain::{bin}::server"` — that binary of `domain` and every module
+    ///   in it; `"domain::{bin}::*"` its binaries, `"domain::{bin}::**"` its
+    ///   binaries and every module in them
     /// - `*` inside a name segment matches any run of characters, never `::`;
     ///   a name it matches contributes its whole containment subtree, same as
     ///   an exact name would.
@@ -76,32 +81,45 @@ impl<'graph> PatternIndex<'graph> {
         result.into_iter().collect()
     }
 
-    /// `domain::*` — direct children of every node `base_pattern` names.
+    /// `domain::*` — the modules directly in every node `base_pattern` names,
+    /// or its binaries where `base_pattern` ends on the binary segment.
     fn resolve_children(&self, base_pattern: &str) -> Vec<NodeIndex> {
+        let (base_pattern, binaries) = strip_binary_segment(base_pattern);
         self.matching_indices(base_pattern)
             .into_iter()
-            .flat_map(|base_idx| {
-                self.graph
-                    .edges(base_idx)
-                    .filter(|edge| matches!(edge.weight(), EdgeWeight::Contains))
-                    .map(|edge| edge.target())
-                    .collect::<Vec<_>>()
-            })
+            .flat_map(|base_idx| self.contained(base_idx, binaries))
             .collect::<HashSet<_>>()
             .into_iter()
             .collect()
     }
 
     /// `domain::**` — transitive descendants of every node `base_pattern`
-    /// names, excluding those nodes themselves.
+    /// names, excluding those nodes themselves. Where `base_pattern` ends on
+    /// the binary segment, its binaries and their descendants.
     fn resolve_descendants(&self, base_pattern: &str) -> Vec<NodeIndex> {
+        let (base_pattern, binaries) = strip_binary_segment(base_pattern);
         let mut result = HashSet::new();
         for base_idx in self.matching_indices(base_pattern) {
-            let mut subtree = self.graph.containment_subtree(base_idx);
-            subtree.remove(&base_idx);
-            result.extend(subtree);
+            if binaries {
+                for binary in self.contained(base_idx, true) {
+                    result.extend(self.graph.containment_subtree(binary));
+                }
+            } else {
+                let mut subtree = self.graph.containment_subtree(base_idx);
+                subtree.remove(&base_idx);
+                result.extend(subtree);
+            }
         }
         result.into_iter().collect()
+    }
+
+    /// The nodes directly in `parent`: its binaries, or else its modules.
+    fn contained(&self, parent: NodeIndex, binaries: bool) -> impl Iterator<Item = NodeIndex> + '_ {
+        self.graph
+            .edges(parent)
+            .filter(|edge| matches!(edge.weight(), EdgeWeight::Contains))
+            .map(|edge| edge.target())
+            .filter(move |&child| self.graph[child].is_binary() == binaries)
     }
 
     /// Every non-external node that `layers`'s ordinary positions do not
@@ -131,7 +149,8 @@ impl<'graph> PatternIndex<'graph> {
     ///
     /// A wildcard-free pattern is a single `HashMap` lookup, so rule files
     /// without `*` see no slowdown. A pattern containing `*` scans
-    /// `self.names`, matching qualified names segment by segment.
+    /// `self.names`, matching qualified names segment by segment. The binary
+    /// segment is matched only by itself, so `*` stands for a name.
     fn matching_indices(&self, pattern: &str) -> Vec<NodeIndex> {
         if !pattern.contains('*') {
             return self.get(pattern).into_iter().collect();
@@ -142,10 +161,13 @@ impl<'graph> PatternIndex<'graph> {
             .filter(|(name, _)| {
                 let name_segments: Vec<&str> = name.split("::").collect();
                 name_segments.len() == pattern_segments.len()
-                    && pattern_segments
-                        .iter()
-                        .zip(&name_segments)
-                        .all(|(&p, &n)| segment_matches(p, n))
+                    && pattern_segments.iter().zip(&name_segments).all(|(&p, &n)| {
+                        if n == BINARY_SEGMENT {
+                            p == n
+                        } else {
+                            segment_matches(p, n)
+                        }
+                    })
             })
             .map(|(_, &idx)| idx)
             .collect()
@@ -155,8 +177,7 @@ impl<'graph> PatternIndex<'graph> {
 /// The `allow` entries of one rule, resolved once against the graph so a
 /// per-edge check is a set lookup or a walk along the containment chain
 /// rather than a re-run of pattern resolution.
-pub(super) struct ResolvedAllows<'entries, 'graph> {
-    graph: &'graph ArcGraph,
+pub(super) struct ResolvedAllows<'entries> {
     entries: Vec<ResolvedAllow<'entries>>,
     parent_of: HashMap<NodeIndex, NodeIndex>,
     children_of: HashMap<NodeIndex, Vec<NodeIndex>>,
@@ -178,16 +199,18 @@ enum ResolvedTarget {
     Descendants,
 }
 
-impl<'entries, 'graph> ResolvedAllows<'entries, 'graph> {
-    pub(super) fn resolve(entries: &'entries [AllowedEdge], index: &PatternIndex<'graph>) -> Self {
+impl<'entries> ResolvedAllows<'entries> {
+    pub(super) fn resolve(entries: &'entries [AllowedEdge], index: &PatternIndex) -> Self {
         let graph = index.graph();
-        let parent_of = graph.parent_map();
+        // A binary is the root of its crate: no relative path leads from it
+        // to its package or from the package into it.
+        let mut parent_of = graph.parent_map();
+        parent_of.retain(|&child, _| !graph[child].is_binary());
         let mut children_of: HashMap<NodeIndex, Vec<NodeIndex>> = HashMap::new();
         for (&child, &parent) in &parent_of {
             children_of.entry(parent).or_default().push(child);
         }
         Self {
-            graph,
             entries: entries
                 .iter()
                 .map(|entry| ResolvedAllow {
@@ -252,7 +275,7 @@ impl<'entries, 'graph> ResolvedAllows<'entries, 'graph> {
         match to {
             ResolvedTarget::Nodes(nodes) => nodes.contains(&target),
             ResolvedTarget::Ancestor(levels) => self.ancestor_of(source, *levels) == Some(target),
-            ResolvedTarget::Crate => self.package_of(source) == Some(target),
+            ResolvedTarget::Crate => self.crate_root_of(source) == Some(target),
             ResolvedTarget::Children => self.parent_of.get(&target) == Some(&source),
             ResolvedTarget::Descendants => {
                 let mut node = target;
@@ -273,7 +296,7 @@ impl<'entries, 'graph> ResolvedAllows<'entries, 'graph> {
             ResolvedTarget::Ancestor(levels) => {
                 self.ancestor_of(source, *levels).into_iter().collect()
             }
-            ResolvedTarget::Crate => self.package_of(source).into_iter().collect(),
+            ResolvedTarget::Crate => self.crate_root_of(source).into_iter().collect(),
             ResolvedTarget::Children => self.children_of.get(&source).cloned().unwrap_or_default(),
             ResolvedTarget::Descendants => {
                 let mut found = Vec::new();
@@ -297,13 +320,25 @@ impl<'entries, 'graph> ResolvedAllows<'entries, 'graph> {
         Some(node)
     }
 
-    /// The package root of a module; `None` for a package node, which `crate`
-    /// does not point back at.
-    fn package_of(&self, source: NodeIndex) -> Option<NodeIndex> {
-        self.graph[source]
-            .is_module()
-            .then(|| self.graph.owning_package(source))
+    /// The root of the crate a module belongs to: its binary, or else its
+    /// package. `None` for a root itself, which `crate` does not point back
+    /// at.
+    fn crate_root_of(&self, source: NodeIndex) -> Option<NodeIndex> {
+        let mut root = source;
+        while let Some(&parent) = self.parent_of.get(&root) {
+            root = parent;
+        }
+        (root != source).then_some(root)
     }
+}
+
+/// `pattern` without the binary segment it ends on, and whether it ended on
+/// one.
+fn strip_binary_segment(pattern: &str) -> (&str, bool) {
+    pattern
+        .strip_suffix(BINARY_SEGMENT)
+        .and_then(|rest| rest.strip_suffix("::"))
+        .map_or((pattern, false), |rest| (rest, true))
 }
 
 /// Whether `*` in `pattern` can stretch to make `name` match, where `*`
@@ -337,7 +372,7 @@ fn segment_matches(pattern: &str, name: &str) -> bool {
 mod tests {
     use super::*;
     use crate::rules::test_support::allow_edge;
-    use crate::test_support::{module_node, package_node};
+    use crate::test_support::{binary_node, module_node, package_node};
 
     /// Build a test graph with a package "test" and modules beneath it.
     /// Returns (graph, `package_idx`).
@@ -454,6 +489,94 @@ mod tests {
 
     fn add_package(graph: &mut ArcGraph, name: &str) -> NodeIndex {
         graph.add_node(package_node(name))
+    }
+
+    /// The package `app` with the library module `core` and the binary
+    /// `tool`, which declares the module `cli`.
+    struct WithBinary {
+        graph: ArcGraph,
+        app: NodeIndex,
+        core: NodeIndex,
+        tool: NodeIndex,
+        cli: NodeIndex,
+    }
+
+    fn graph_with_binary() -> WithBinary {
+        let mut graph = ArcGraph::new();
+        let app = add_package(&mut graph, "app");
+        let core = add_module(&mut graph, "core", app, app);
+        let tool = graph.add_node(binary_node("tool", app, "/app/src/main.rs"));
+        graph.add_edge(app, tool, EdgeWeight::Contains);
+        let cli = add_module(&mut graph, "cli", app, tool);
+        WithBinary {
+            graph,
+            app,
+            core,
+            tool,
+            cli,
+        }
+    }
+
+    #[test]
+    fn test_patterns_name_a_binary_through_its_segment() {
+        let WithBinary {
+            graph,
+            app,
+            core,
+            tool,
+            cli,
+        } = graph_with_binary();
+        let index = PatternIndex::build(&graph);
+        let resolve =
+            |pattern: &str| -> HashSet<NodeIndex> { index.resolve(pattern).into_iter().collect() };
+
+        assert_eq!(resolve("app"), HashSet::from([app, core, tool, cli]));
+        assert_eq!(resolve("app::**"), HashSet::from([core, tool, cli]));
+        assert_eq!(resolve("app::*"), HashSet::from([core]));
+        assert_eq!(resolve("app::{bin}::tool"), HashSet::from([tool, cli]));
+        assert_eq!(resolve("app::{bin}::*"), HashSet::from([tool]));
+        assert_eq!(resolve("*::{bin}::*"), HashSet::from([tool]));
+        assert_eq!(resolve("app::{bin}::**"), HashSet::from([tool, cli]));
+        assert_eq!(resolve("app::*::tool"), HashSet::new());
+    }
+
+    /// A binary is the root of its crate: `crate` and `super` from its module
+    /// lead to it, nothing leads from it up to the package, and the package's
+    /// `self::*` and `self::**` stay among the library's modules.
+    #[test]
+    fn test_relative_targets_treat_a_binary_as_a_crate_root() {
+        let WithBinary {
+            graph,
+            app,
+            core,
+            tool,
+            cli,
+        } = graph_with_binary();
+        let index = PatternIndex::build(&graph);
+        let covered = |to: &str, source: NodeIndex, target: NodeIndex| {
+            let entries = [allow_edge("**", to)];
+            ResolvedAllows::resolve(&entries, &index)
+                .covers(source, target)
+                .is_some()
+        };
+
+        assert!(covered("crate", cli, tool));
+        assert!(!covered("crate", cli, app));
+        assert!(covered("crate", core, app));
+        assert!(covered("super", cli, tool));
+        assert!(!covered("super", tool, app));
+        assert!(covered("self::*", tool, cli));
+        assert!(covered("self::*", app, core));
+        assert!(!covered("self::*", app, tool));
+        assert!(!covered("self::**", app, cli));
+
+        let entries = [allow_edge("app", "self::**")];
+        let mut pairs: Vec<_> = ResolvedAllows::resolve(&entries, &index)
+            .pairs()
+            .map(|(source, target, _)| (source, target))
+            .collect();
+        pairs.sort_unstable();
+        assert_eq!(pairs, [(app, core), (tool, cli)]);
     }
 
     #[test]

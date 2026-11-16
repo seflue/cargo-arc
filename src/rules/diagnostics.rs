@@ -242,7 +242,8 @@ fn unlayered_nodes(index: &PatternIndex, config: &ArcConfig) -> Vec<UnsortedNode
             .collect();
         if !touched.is_empty() {
             claimed.extend(graph.node_indices().filter(|&idx| {
-                graph[idx].is_module() && touched.contains(&graph.owning_package(idx))
+                (graph[idx].is_module() || graph[idx].is_binary())
+                    && touched.contains(&graph.owning_package(idx))
             }));
         }
 
@@ -495,7 +496,7 @@ mod tests {
     };
     use crate::rules::matching::PatternIndex;
     use crate::rules::test_support::allow_edge;
-    use crate::test_support::{module_node, package_node};
+    use crate::test_support::{binary_node, module_node, package_node};
     use petgraph::graph::NodeIndex;
 
     /// Workspace graph with one module per named package, so that a package
@@ -718,6 +719,37 @@ mod tests {
         // Neither `app` nor `xtask` nor `xtask::service` is claimed: the
         // module pattern says nothing about the package node or other packages.
         assert_eq!(unlayered(&diagnose(&graph, &config)), ["app::store"]);
+    }
+
+    /// A binary of a package the rule touches needs a position, as the
+    /// package's modules do. Of the binary and its module only the topmost
+    /// unsorted node is named.
+    #[test]
+    fn an_exhaustive_module_rule_claims_the_binaries_of_the_packages_it_touches() {
+        let mut graph = ArcGraph::new();
+        let app = add_package(&mut graph, "app");
+        add_module(&mut graph, "service", app, app);
+        let tool = graph.add_node(binary_node("tool", app, "/app/src/main.rs"));
+        graph.add_edge(app, tool, EdgeWeight::Contains);
+        add_module(&mut graph, "cli", app, tool);
+
+        let unsorted = |layers: &[&str]| -> Vec<String> {
+            let config = config_of(
+                vec![exhaustive_layers_rule("app layers", layers)],
+                Diagnostics::default(),
+            );
+            let diagnostics = diagnose(&graph, &config);
+            unlayered(&diagnostics)
+                .into_iter()
+                .map(str::to_owned)
+                .collect()
+        };
+        assert_eq!(unsorted(&["app::service"]), ["app::{bin}::tool"]);
+        assert_eq!(
+            unsorted(&["app::{bin}::*", "app::service"]),
+            ["app::{bin}::tool::cli"]
+        );
+        assert!(unsorted(&["app::{bin}::**", "app::service"]).is_empty());
     }
 
     #[test]

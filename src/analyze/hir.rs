@@ -246,6 +246,7 @@ pub(crate) fn analyze_modules(
 
     Ok(ModuleTree {
         root,
+        binaries: Vec::new(),
         unparsed: Vec::new(),
     })
 }

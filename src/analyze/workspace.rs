@@ -233,7 +233,7 @@ pub(crate) fn entry_files(pkg: &cargo_metadata::Package) -> Vec<EntryFile> {
         .targets
         .iter()
         .filter(|t| t.is_bin())
-        .map(|t| EntryFile::bin(t.src_path.clone()));
+        .map(|t| EntryFile::bin(t.name.clone(), t.src_path.clone()));
     lib.into_iter().chain(bins).collect()
 }
 
@@ -437,10 +437,7 @@ mod tests {
             let crates = crates();
             let krate = crates.iter().find(|c| c.name == "custom-bin").unwrap();
             assert!(
-                krate
-                    .entry_files
-                    .iter()
-                    .all(|entry| entry.kind == EntryKind::Bin),
+                krate.entry_files.iter().all(EntryFile::is_bin),
                 "binary-only crate has no lib"
             );
             assert_eq!(root_names(krate), vec!["tool.rs"]);

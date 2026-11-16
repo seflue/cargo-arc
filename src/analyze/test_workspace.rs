@@ -118,14 +118,17 @@ pub(crate) struct Analyzed {
 }
 
 impl Analyzed {
-    /// The module at `path`, the package key followed by the module names.
+    /// The module or binary at `path`, its `full_path`.
     pub(crate) fn module(&self, path: &str) -> &ModuleInfo {
         let package = path.split("::").next().unwrap_or(path);
         let tree = self
             .trees
             .get(package)
             .unwrap_or_else(|| panic!("no package {package}"));
-        find_module(&tree.root, path).unwrap_or_else(|| panic!("no module {path}"))
+        std::iter::once(&tree.root)
+            .chain(&tree.binaries)
+            .find_map(|root| find_module(root, path))
+            .unwrap_or_else(|| panic!("no module {path}"))
     }
 
     /// The usages `query usages` lists for the workspace, in the order

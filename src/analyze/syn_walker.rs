@@ -1,7 +1,7 @@
 //! Module discovery via syn + filesystem walk.
 
 use anyhow::{Context, Result};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use super::mod_resolver::{
@@ -9,7 +9,10 @@ use super::mod_resolver::{
 };
 use super::name_resolution::{FileInModule, NameResolution, PackageResolver, Root};
 use super::packages::{ModulePaths, normalize_crate_name};
-use crate::model::{EdgeContext, ModuleInfo, ModuleTree, PackageInfo, TestKind};
+use crate::model::{
+    EdgeContext, EntryKind, ModuleInfo, ModuleTree, PackageInfo, TargetRoot, TestKind,
+    binary_segments,
+};
 
 /// Find integration test files in `tests/*.rs`.
 /// Each top-level `.rs` file is an independent test binary.
@@ -355,6 +358,71 @@ fn walk_integration_test(
     tree
 }
 
+/// Turn `tree`, read from the root file of the binary `name` of `package`,
+/// into the binary's node. A module that `library` holds under the same name
+/// and file stands once, as the library's, and is left out here.
+fn binary_node(tree: ModuleInfo, package: &str, name: &str, library: &[ModuleInfo]) -> ModuleInfo {
+    let own_children: Vec<ModuleInfo> = tree
+        .children
+        .into_iter()
+        .filter(|child| {
+            !library
+                .iter()
+                .any(|module| module.name == child.name && module.file == child.file)
+        })
+        .collect();
+    let own_modules: HashSet<String> = own_children
+        .iter()
+        .map(|child| child.name.clone())
+        .collect();
+    let mut binary = ModuleInfo {
+        name: name.to_string(),
+        children: own_children,
+        ..tree
+    };
+    move_under_binary(&mut binary, package, &binary_segments(name), &own_modules);
+    binary
+}
+
+/// Rename `module` and its descendants from the tree of `package` into the
+/// binary's: `segment` follows the package in each full path, and in each
+/// reference to the binary's root or to one of its `own_modules`.
+fn move_under_binary(
+    module: &mut ModuleInfo,
+    package: &str,
+    segment: &str,
+    own_modules: &HashSet<String>,
+) {
+    let under_binary = |path: &str| {
+        if path.is_empty() {
+            segment.to_string()
+        } else {
+            format!("{segment}::{path}")
+        }
+    };
+    let module_path = module
+        .full_path
+        .strip_prefix(package)
+        .map_or("", |rest| rest.trim_start_matches("::"));
+    module.full_path = format!("{package}::{}", under_binary(module_path));
+    for dep in module
+        .dependencies
+        .iter_mut()
+        .chain(&mut module.own_item_uses)
+    {
+        let top = dep.target_module.split("::").next().unwrap_or_default();
+        let in_binary = dep.target_package == package
+            && dep.target_root == TargetRoot::AsSeen
+            && (top.is_empty() || own_modules.contains(top));
+        if in_binary {
+            dep.target_module = under_binary(&dep.target_module);
+        }
+    }
+    for child in &mut module.children {
+        move_under_binary(child, package, segment, own_modules);
+    }
+}
+
 /// Analyze module hierarchy via syn + filesystem walk (no rust-analyzer needed).
 /// Drop-in replacement for `hir::analyze_modules()`.
 pub(crate) fn analyze_modules_syn(
@@ -368,7 +436,19 @@ pub(crate) fn analyze_modules_syn(
         unparsed: Vec::new(),
         resolver: resolution.package(crate_info, external_crate_names),
     };
+    let has_library = crate_info
+        .entry_files
+        .iter()
+        .any(|entry| entry.kind == EntryKind::Lib);
+    let binary_count = crate_info
+        .entry_files
+        .iter()
+        .filter(|entry| entry.is_bin())
+        .count();
+    // The one binary of a package without a library is the package's root.
+    let root_is_binary = !has_library && binary_count == 1;
     let mut root: Option<ModuleInfo> = None;
+    let mut binaries = Vec::new();
     for (index, entry) in crate_info.entry_files.iter().enumerate() {
         let root_ctx = WalkContext {
             root: Root::entry(index),
@@ -384,32 +464,19 @@ pub(crate) fn analyze_modules_syn(
             true,
             &mut walked,
         );
-        match &mut root {
-            None => root = Some(tree),
-            Some(existing) => {
-                for child in tree.children {
-                    if !existing.children.iter().any(|c| c.name == child.name) {
-                        existing.children.push(child);
-                    }
-                }
-                // Dedup via PartialEq (compares kind + features). Correct while
-                // every feature set is empty; once feature filtering lands,
-                // entries differing only in features must be merged, not dropped.
-                for dep in tree.dependencies {
-                    if !existing.dependencies.contains(&dep) {
-                        existing.dependencies.push(dep);
-                    }
-                }
-                for dep in tree.own_item_uses {
-                    if !existing.own_item_uses.contains(&dep) {
-                        existing.own_item_uses.push(dep);
-                    }
-                }
+        match &entry.kind {
+            EntryKind::Bin { name } if !root_is_binary => {
+                // The library comes first among the entry files, so its tree
+                // is known here.
+                let library = root.as_ref().map_or(&[][..], |root| &root.children);
+                binaries.push(binary_node(tree, &normalized, name, library));
             }
+            EntryKind::Lib | EntryKind::Bin { .. } => root = Some(tree),
         }
     }
 
-    // For test-only crates (no src/), create an empty root module
+    // A package without a root file, one with only tests or with several
+    // binaries and no library, has a root module without code.
     if root.is_none() {
         root = Some(ModuleInfo {
             name: normalized.clone(),
@@ -436,6 +503,7 @@ pub(crate) fn analyze_modules_syn(
     let root = root.unwrap();
     ModuleTree {
         root,
+        binaries,
         unparsed: walked.unparsed,
     }
 }
@@ -1047,15 +1115,14 @@ fn main() {
                 &std::collections::HashMap::new(),
             );
 
-            let child_names: Vec<&str> =
-                tree.root.children.iter().map(|m| m.name.as_str()).collect();
-            assert!(
-                child_names.contains(&"a"),
-                "should contain 'a' from lib.rs, found: {child_names:?}"
-            );
-            assert!(
-                child_names.contains(&"b"),
-                "should contain 'b' from main.rs, found: {child_names:?}"
+            let names = |modules: &[ModuleInfo]| -> Vec<String> {
+                modules.iter().map(|m| m.full_path.clone()).collect()
+            };
+            assert_eq!(names(&tree.root.children), ["mixed::a"]);
+            assert_eq!(names(&tree.binaries), ["mixed::{bin}::mixed"]);
+            assert_eq!(
+                names(&tree.binaries[0].children),
+                ["mixed::{bin}::mixed::b"]
             );
         }
     }
@@ -1309,6 +1376,98 @@ mod tests {
             assert!(
                 !dep_modules.contains(&"gamma"),
                 "test dep on gamma should be excluded without --include-tests: {dep_modules:?}"
+            );
+        }
+    }
+
+    mod binary_nodes {
+        use crate::analyze::test_workspace::TestWorkspace;
+
+        fn edge(from: &str, to: &str) -> (String, String) {
+            (from.to_string(), to.to_string())
+        }
+
+        /// A library module uses an item of the library's root file, and the
+        /// binary uses that module. The binary's usage starts at its own
+        /// node, so the two edges close no cycle.
+        #[test]
+        fn a_binary_beside_a_library_is_a_node_of_its_own() {
+            let analyzed = TestWorkspace::new()
+                .package(
+                    "app",
+                    &[
+                        ("src/lib.rs", "pub mod screen;\npub type Width = u16;"),
+                        ("src/screen.rs", "pub fn draw(_: crate::Width) {}"),
+                        ("src/main.rs", "fn main() {\n    app::screen::draw(80);\n}"),
+                    ],
+                )
+                .analyze();
+            assert_eq!(
+                analyzed.module_edges(),
+                [
+                    edge("app::screen", "app"),
+                    edge("app::{bin}::app", "app::screen"),
+                ]
+            );
+        }
+
+        /// A module only the binary declares hangs under the binary, and
+        /// `crate` in it is the binary. A file both roots declare stands
+        /// once, as the library's module.
+        #[test]
+        fn a_binary_keeps_the_modules_only_it_declares() {
+            let analyzed = TestWorkspace::new()
+                .package(
+                    "app",
+                    &[
+                        ("src/lib.rs", "pub mod shared;"),
+                        ("src/shared.rs", "pub fn load() {}"),
+                        (
+                            "src/main.rs",
+                            "mod cli;\nmod shared;\npub struct Args;\n\
+                             fn main() {\n    cli::run();\n    shared::load();\n}",
+                        ),
+                        (
+                            "src/cli.rs",
+                            "pub fn run() {\n    let _ = crate::Args;\n    crate::shared::load();\n}",
+                        ),
+                    ],
+                )
+                .analyze();
+            assert_eq!(
+                analyzed.module_edges(),
+                [
+                    edge("app::{bin}::app", "app::shared"),
+                    edge("app::{bin}::app", "app::{bin}::app::cli"),
+                    edge("app::{bin}::app::cli", "app::shared"),
+                    edge("app::{bin}::app::cli", "app::{bin}::app"),
+                ]
+            );
+        }
+
+        /// A package of several binaries and no library has a root without
+        /// code. Each binary is a node and keeps its own module, also under
+        /// a name another binary uses.
+        #[test]
+        fn binaries_without_a_library_are_each_a_node() {
+            let main = "mod util;\nfn main() {\n    util::run();\n}";
+            let analyzed = TestWorkspace::new()
+                .package(
+                    "tools",
+                    &[
+                        ("src/bin/pack/main.rs", main),
+                        ("src/bin/pack/util.rs", "pub fn run() {}"),
+                        ("src/bin/ship/main.rs", main),
+                        ("src/bin/ship/util.rs", "pub fn run() {}"),
+                    ],
+                )
+                .analyze();
+            assert_eq!(
+                analyzed.module_edges(),
+                [
+                    edge("tools::{bin}::pack", "tools::{bin}::pack::util"),
+                    edge("tools::{bin}::ship", "tools::{bin}::ship::util"),
+                ]
             );
         }
     }

@@ -4,7 +4,7 @@
 
 use super::super::packages::ModulePathMap;
 use super::bindings::ReExportTarget;
-use crate::model::{EntryFile, EntryKind, PackageInfo};
+use crate::model::{EntryFile, PackageInfo};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use syn::UseTree;
@@ -248,7 +248,7 @@ impl ExternPrelude {
             .iter()
             .flat_map(|dependency| names_of(dependency))
             .collect();
-        if entry.is_none_or(|entry| entry.kind == EntryKind::Bin) {
+        if entry.is_none_or(EntryFile::is_bin) {
             without_test.extend(names_of(key));
         }
         if let Some(entry) = entry {

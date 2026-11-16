@@ -297,7 +297,16 @@ where
         ));
     }
 
-    for module_idx in contains_children(graph, idx) {
+    // A binary's root file is one of the entry files listed above, so the
+    // binary adds only the modules under it.
+    let modules = contains_children(graph, idx).into_iter().flat_map(|child| {
+        if graph[child].is_module() {
+            vec![child]
+        } else {
+            contains_children(graph, child)
+        }
+    });
+    for module_idx in modules {
         if let Some((node, commits)) =
             build_module(graph, module_idx, workspace_root, lines, commits_of)
         {
@@ -389,7 +398,9 @@ mod tests {
     use super::*;
     use crate::graph::ArcGraph;
     use crate::model::EntryFile;
-    use crate::test_support::{module_node, module_node_with_file, package_node_with_targets};
+    use crate::test_support::{
+        binary_node, module_node, module_node_with_file, package_node_with_targets,
+    };
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -462,6 +473,46 @@ mod tests {
         assert_eq!(leaf.lines, 4);
         assert!(leaf.children.is_empty());
         assert_eq!(tree.root.lines, 4);
+    }
+
+    /// A module only a binary declares is listed beside the package's other
+    /// modules, and the binary's root file once, as an entry file.
+    #[test]
+    fn a_binarys_own_module_is_listed_in_its_package() {
+        let mut graph = ArcGraph::new();
+        let package_idx = graph.add_node(package_node_with_targets(
+            "app",
+            vec![
+                EntryFile::lib("/ws/app/src/lib.rs"),
+                EntryFile::bin("app", "/ws/app/src/main.rs"),
+            ],
+            Some("/ws/app/Cargo.toml"),
+        ));
+        let binary_idx = graph.add_node(binary_node("app", package_idx, "/ws/app/src/main.rs"));
+        graph.add_edge(package_idx, binary_idx, crate::graph::EdgeWeight::Contains);
+        let cli_idx = graph.add_node(module_node_with_file(
+            "cli",
+            package_idx,
+            "/ws/app/src/cli.rs",
+        ));
+        graph.add_edge(binary_idx, cli_idx, crate::graph::EdgeWeight::Contains);
+
+        let tree = build(&graph, Path::new("/ws"), |_| 4, no_commits, 10);
+
+        let files: Vec<&Path> = tree
+            .root
+            .children
+            .iter()
+            .map(|child| child.file.as_path())
+            .collect();
+        assert_eq!(
+            files,
+            [
+                Path::new("app/src/lib.rs"),
+                Path::new("app/src/main.rs"),
+                Path::new("app/src/cli.rs"),
+            ]
+        );
     }
 
     #[test]

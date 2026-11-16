@@ -70,7 +70,7 @@ fn collect_crate_reexports(
             let (modules, test_build_modules) =
                 collect_root_reexports(&ctx, &entry.file, include_tests);
             RootReExports {
-                kind: entry.kind,
+                kind: entry.kind.clone(),
                 modules,
                 test_build_modules,
             }
