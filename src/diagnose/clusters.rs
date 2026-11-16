@@ -301,6 +301,29 @@ impl ArcGraph {
         }
     }
 
+    /// Return the clusters of `sub`, a subgraph of this graph, each as its
+    /// modules by qualified name with their nodes in `sub`, in name order:
+    /// the largest cluster first, clusters of one size by their first module.
+    pub(super) fn clusters_by_size(
+        &self,
+        sub: &DiGraph<NodeIndex, ()>,
+    ) -> Vec<Vec<(String, NodeIndex)>> {
+        let mut clusters: Vec<Vec<(String, NodeIndex)>> = tarjan_scc(sub)
+            .into_iter()
+            .filter(|component| component.len() > 1)
+            .map(|component| {
+                let mut modules: Vec<(String, NodeIndex)> = component
+                    .into_iter()
+                    .map(|node| (self.qualified_name(sub[node]), node))
+                    .collect();
+                modules.sort();
+                modules
+            })
+            .collect();
+        clusters.sort_by(|a, b| (Reverse(a.len()), &a[0].0).cmp(&(Reverse(b.len()), &b[0].0)));
+        clusters
+    }
+
     /// Distinct symbols crossing the module-dependency edge `from -> to`.
     pub(crate) fn edge_symbols(&self, from: NodeIndex, to: NodeIndex) -> EdgeSymbols {
         self.find_edge(from, to)

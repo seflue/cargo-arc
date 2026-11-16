@@ -2,7 +2,7 @@
 //! smaller tangles, with the tangles the move leaves.
 
 use crate::diagnose::MoveReport;
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 pub(crate) const COLUMNS: [&str; 6] = [
     "symbol",
@@ -17,18 +17,12 @@ pub(crate) const COLUMNS: [&str; 6] = [
 /// the number of moves tried, then what a move is, what each column says and
 /// what the prediction leaves out.
 pub(crate) fn header_fields(report: &MoveReport) -> Vec<(&'static str, Value)> {
-    let tangles: Map<String, Value> = report
+    let tangles = report
         .clusters
         .iter()
-        .map(|modules| (modules[0].clone(), modules.len().into()))
-        .collect();
-    let tangles = if tangles.is_empty() {
-        Value::Null
-    } else {
-        Value::Object(tangles)
-    };
+        .map(|modules| (modules[0].as_str(), modules.len()));
     vec![
-        ("tangles", tangles),
+        ("tangles", super::tangle_sizes(tangles)),
         ("candidates", report.candidates.into()),
         (
             "move",

@@ -141,6 +141,9 @@ pub enum QueryCommand {
     /// smaller tangles, with the tangles the move leaves
     #[command(override_usage = "cargo arc [SHARED OPTIONS] query moves [OPTIONS]")]
     Moves,
+    /// List each module of a tangle with its level
+    #[command(override_usage = "cargo arc [SHARED OPTIONS] query tangles [OPTIONS]")]
+    Tangles,
     /// A name that is no subcommand, kept to answer it with the valid ones;
     /// clap's own error would not list them.
     #[command(external_subcommand)]
@@ -457,6 +460,7 @@ fn run_query(args: &ArcCommand, query_args: &QueryArgs) -> Result<Judgment> {
         QueryCommand::Edges => query_edges(args)?,
         QueryCommand::Usages(usages_args) => query_usages(args, usages_args)?,
         QueryCommand::Moves => query_moves(args)?,
+        QueryCommand::Tangles => query_tangles(args)?,
         QueryCommand::Unknown(words) => {
             let given = words.first().map_or("", String::as_str);
             let valid: Vec<String> = <QueryArgs as clap::CommandFactory>::command()
@@ -611,6 +615,33 @@ fn query_moves(args: &ArcCommand) -> Result<QueryOutput> {
         header,
         columns: &COLUMNS,
         records: records(&report),
+    })
+}
+
+/// The output of `query tangles`: the modules of each tangle of the
+/// diagram's dependency graph with their levels.
+fn query_tangles(args: &ArcCommand) -> Result<QueryOutput> {
+    use query::tangles::{COLUMNS, header_fields, records};
+
+    let switches = args.switches();
+    let adapter = adapter_for(args, switches)?;
+    let (graph, workspace_root, unparsed) =
+        build_dependency_graph(adapter.as_ref(), switches.tests)?;
+    let workspace_root = workspace_root.with_context(|| {
+        format!(
+            "workspace has no {} to list tangles in",
+            adapter.profile().wording.packages
+        )
+    })?;
+    refuse_unparsed(&unparsed, &workspace_root)?;
+    let tangles = graph.cluster_levels(Reexports::from(args.common.include_reexports));
+
+    let mut header = query::Header::for_workspace(&workspace_root, args.query_flags()?);
+    header.subcommand_fields = header_fields(&tangles);
+    Ok(QueryOutput {
+        header,
+        columns: &COLUMNS,
+        records: records(&tangles),
     })
 }
 
@@ -1437,7 +1468,8 @@ mod tests {
 
         assert_eq!(
             err,
-            "'bogus' is no subcommand of query; its subcommands: hotspots, edges, usages, moves"
+            "'bogus' is no subcommand of query; its subcommands: hotspots, edges, usages, moves, \
+             tangles"
         );
     }
 

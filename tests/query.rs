@@ -1572,9 +1572,8 @@ fn moves_leave_an_impl_block_for_a_type_of_another_module_where_it_is() {
 /// `alpha`, `beta` and `gamma` form the larger tangle, and both its cycles
 /// run through `zero`. `able` and `acre` form the smaller one, whose name
 /// comes first.
-#[test]
-fn moves_of_the_largest_tangle_come_first() {
-    let ws = library_of(&[
+fn library_of_a_triple_and_a_pair() -> tempfile::TempDir {
+    library_of(&[
         (
             "lib.rs",
             "pub mod able;\npub mod acre;\npub mod alpha;\npub mod beta;\npub mod gamma;\n",
@@ -1605,7 +1604,12 @@ fn moves_of_the_largest_tangle_come_first() {
             "acre.rs",
             "pub fn second() -> u32 {\n    crate::able::third()\n}\n",
         ),
-    ]);
+    ])
+}
+
+#[test]
+fn moves_of_the_largest_tangle_come_first() {
+    let ws = library_of_a_triple_and_a_pair();
     let out = stdout_of(&arc(ws.path(), &["query", "moves"]));
 
     assert_eq!(
@@ -1805,4 +1809,213 @@ fn moves_try_no_item_for_a_usage_in_test_code() {
     let out = stdout_of(&arc(ws.path(), &["--include-tests", "query", "moves"]));
 
     assert_eq!(header_value(&out, "candidates"), "3");
+}
+
+/// `store` uses `render` and `width` of `report`, and `report` uses `load`
+/// of `store`. The edge with fewer symbols is the one that runs against the
+/// level order, so `store` lies above `report`.
+#[test]
+fn the_module_that_uses_more_symbols_of_the_other_lies_one_level_higher() {
+    let ws = library_of(&[
+        ("lib.rs", "pub mod report;\npub mod store;\n"),
+        (
+            "store.rs",
+            "pub fn load() -> u32 {\n    1\n}\n\
+             \n\
+             pub fn summary() -> u32 {\n    crate::report::render() + crate::report::width()\n}\n",
+        ),
+        (
+            "report.rs",
+            "pub fn render() -> u32 {\n    crate::store::load()\n}\n\
+             \n\
+             pub fn width() -> u32 {\n    80\n}\n",
+        ),
+    ]);
+    let out = stdout_of(&arc(ws.path(), &["query", "tangles"]));
+
+    assert_eq!(
+        body_of(&out),
+        [
+            "tangle\tsize\tmodule\tlevel",
+            "app::report\t2\tapp::store\t2",
+            "app::report\t2\tapp::report\t1",
+        ]
+    );
+    assert_eq!(header_value(&out, "tangles"), "app::report=2");
+}
+
+/// `report` uses `base`, which uses `ground`. Neither is in the tangle, and
+/// `report` lies above both.
+#[test]
+fn a_module_of_a_tangle_lies_above_a_module_outside_it_that_it_uses() {
+    let ws = library_of(&[
+        (
+            "lib.rs",
+            "pub mod base;\npub mod ground;\npub mod report;\npub mod store;\n",
+        ),
+        ("store.rs", &format!("{LOAD}\n{SUMMARY}")),
+        (
+            "report.rs",
+            "pub fn render() -> u32 {\n    crate::store::load() + crate::base::unit()\n}\n",
+        ),
+        (
+            "base.rs",
+            "pub fn unit() -> u32 {\n    crate::ground::zero()\n}\n",
+        ),
+        ("ground.rs", "pub fn zero() -> u32 {\n    0\n}\n"),
+    ]);
+    let out = stdout_of(&arc(ws.path(), &["query", "tangles"]));
+
+    assert_eq!(
+        body_of(&out)[1..],
+        [
+            "app::report\t2\tapp::report\t3",
+            "app::report\t2\tapp::store\t1",
+        ]
+    );
+}
+
+#[test]
+fn tangles_come_largest_first_and_their_modules_highest_first() {
+    let ws = library_of_a_triple_and_a_pair();
+    let out = stdout_of(&arc(ws.path(), &["query", "tangles"]));
+
+    assert_eq!(
+        body_of(&out)[1..],
+        [
+            "app::alpha\t3\tapp::alpha\t2",
+            "app::alpha\t3\tapp::beta\t1",
+            "app::alpha\t3\tapp::gamma\t1",
+            "app::able\t2\tapp::able\t2",
+            "app::able\t2\tapp::acre\t1",
+        ]
+    );
+    assert_eq!(header_value(&out, "tangles"), "app::able=2 app::alpha=3");
+}
+
+#[test]
+fn tangles_as_json_lines_carry_size_and_level_as_numbers() {
+    let ws = tangled_library();
+    let json = stdout_of(&arc(ws.path(), &["query", "--json", "tangles"]));
+    let lines: Vec<Value> = json
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("each line is JSON"))
+        .collect();
+
+    assert_eq!(lines[0]["tangles"], serde_json::json!({"app::report": 2}));
+    assert_eq!(
+        lines[1..],
+        [
+            serde_json::json!({
+                "tangle": "app::report",
+                "size": 2,
+                "module": "app::report",
+                "level": 2,
+            }),
+            serde_json::json!({
+                "tangle": "app::report",
+                "size": 2,
+                "module": "app::store",
+                "level": 1,
+            }),
+        ]
+    );
+}
+
+#[test]
+fn a_workspace_without_a_tangle_lists_no_module() {
+    let ws = library_of(&[
+        ("lib.rs", "pub mod report;\npub mod store;\n"),
+        ("store.rs", LOAD),
+        ("report.rs", REPORT),
+    ]);
+    let out = stdout_of(&arc(ws.path(), &["query", "tangles"]));
+
+    assert_eq!(body_of(&out), ["tangle\tsize\tmodule\tlevel"]);
+    assert_eq!(header_value(&out, "tangles"), "none");
+    let keys: Vec<String> = header_of(&out).into_iter().map(|(key, _)| key).collect();
+    assert_eq!(
+        keys[keys.len() - 6..],
+        [
+            "tangles",
+            "records",
+            "tangle",
+            "level",
+            "level-order",
+            "order"
+        ]
+    );
+}
+
+/// In the fixture, `alpha` and `beta` use each other by `pub use` alone, and
+/// `gamma` and `delta` by ordinary imports.
+#[test]
+fn tangles_hold_a_re_export_only_with_include_reexports() {
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/reexport_cycle_workspace");
+    let tangles = |args: &[&str]| header_value(&stdout_of(&arc(&fixture, args)), "tangles");
+
+    assert_eq!(tangles(&["query", "tangles"]), "my_crate::delta=2");
+    assert_eq!(
+        tangles(&["--include-reexports", "query", "tangles"]),
+        "my_crate::alpha=2 my_crate::delta=2"
+    );
+}
+
+/// `store` uses `deep` of the package `base`, which lies two modules above
+/// the lowest module of `base`. In `app`, `store` uses nothing that counts.
+#[test]
+fn a_module_of_another_package_raises_no_level() {
+    let dir = tempfile::tempdir().unwrap();
+    let files = [
+        (
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"app\", \"base\"]\nresolver = \"2\"\n",
+        ),
+        (
+            "app/Cargo.toml",
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\
+             \n\
+             [dependencies]\nbase = { path = \"../base\" }\n",
+        ),
+        ("app/src/lib.rs", "pub mod report;\npub mod store;\n"),
+        (
+            "app/src/store.rs",
+            "pub fn load() -> u32 {\n    base::deep::top()\n}\n\
+             \n\
+             pub fn summary() -> u32 {\n    crate::report::render()\n}\n",
+        ),
+        ("app/src/report.rs", REPORT),
+        (
+            "base/Cargo.toml",
+            "[package]\nname = \"base\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        ),
+        (
+            "base/src/lib.rs",
+            "pub mod deep;\npub mod low;\npub mod mid;\n",
+        ),
+        (
+            "base/src/deep.rs",
+            "pub fn top() -> u32 {\n    crate::mid::middle()\n}\n",
+        ),
+        (
+            "base/src/mid.rs",
+            "pub fn middle() -> u32 {\n    crate::low::bottom()\n}\n",
+        ),
+        ("base/src/low.rs", "pub fn bottom() -> u32 {\n    0\n}\n"),
+    ];
+    for (path, text) in files {
+        let file = dir.path().join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, text).unwrap();
+    }
+    let out = stdout_of(&arc(dir.path(), &["query", "tangles"]));
+
+    assert_eq!(
+        body_of(&out)[1..],
+        [
+            "app::report\t2\tapp::report\t2",
+            "app::report\t2\tapp::store\t1",
+        ]
+    );
 }

@@ -101,6 +101,29 @@ Lakos has a name for moving code up and for moving it down.
 They are two of the nine levelization techniques in Lakos, *Large-Scale C++* Vol. I, section 3.5.
 cargo-arc does not use either word yet; a hint that proposes a move should use them.
 
+## Levels
+
+| Term | Definition |
+|------|------------|
+| **<a id="level-order">Level order</a>** | An order of the modules of a [tangle](#tangle), each module before the modules it uses, that leaves few symbols on the [edges](#edge) against it, counted as [symbol count](#symbol-count). cargo-arc finds it by a search that starts from the same order on every run, so the same graph gives the same level order. Another order can leave as few symbols, or fewer. |
+| **<a id="level">Level</a>** | The height of a module above the modules it uses: 1 for a module that uses no module of its [package](#package), and otherwise one more than the highest level among the modules of its package that it uses. In a [tangle](#tangle), an [edge](#edge) against the [level order](#level-order) that closes a [cycle](#cycle) does not count. |
+
+The [level](#level) is the one Lakos defines (Vol. I, section 1.10), counted inside a [package](#package).
+A module of another package raises no level, and what lies outside the workspace has none, where Lakos gives it 0.
+Several modules can share a level, so a level is not a position in the [reading order](#reading-order).
+
+Lakos gives every member of a [cycle](#cycle) the highest level the cycle spans (footnote 128).
+cargo-arc leaves out the edges against the [level order](#level-order), so the modules of a [tangle](#tangle) get levels of their own.
+Those levels belong to that one order, and another order gives other levels.
+
+The edges against the [level order](#level-order) are not the [feedback arc set](#feedback-arc-set), which covers the [counted cycles](#counted-cycle) and is ranked by [traffic](#traffic).
+
+*Levelization* is Lakos's word for giving every component a level, and it needs a graph without [cycles](#cycle).
+The *diagnostic level* of a rules file is unrelated and is always written with *diagnostic*.
+An [architectural layer](#architectural-layer) is a position that a `layers` [rule](#rule) names, and a level is computed from the dependencies.
+
+`query tangles` lists the modules of each [tangle](#tangle) with their levels ([QUERY.md](QUERY.md#query-tangles)).
+
 ## Module roles
 
 | Term | Definition |
@@ -279,11 +302,7 @@ A *suppressed* arc is one the diagram does not draw: a package-dep arc between t
 
 The checkbox of the circular-dependencies [filter](#filter) also turns on *cluster mode*, which is not a filter.
 
-The [reading order](#reading-order) follows a levelization in Lakos's sense, and Structure101 calls an [edge](#edge) against it a *feedback (upward) dependency*.
-A [node](#node)'s *level* is the one Lakos defines: 0 for what lies outside the workspace, 1 for a node that depends on nothing inside it, and otherwise one more than the highest level among the nodes it depends on (Vol. I, section 1.10).
-Levels are not positions in the reading order, and several nodes can share a level.
-Lakos gives every member of a [cycle](#cycle) the highest level the cycle spans (footnote 128), so levels cannot order the nodes of a [tangle](#tangle).
-The *diagnostic level* of a rules file is unrelated and is always written with *diagnostic*.
+The [reading order](#reading-order) follows a levelization in Lakos's sense (see [Levels](#levels)), and Structure101 calls an [edge](#edge) against it a *feedback (upward) dependency*.
 
 Whether an [edge](#edge) is a *back edge* depends on where a depth-first search starts (see [Cycles and clusters](#cycles-and-clusters)).
 Whether an edge is [upward](#upward-edge) depends only on the [reading order](#reading-order), which a reader can see in the diagram.

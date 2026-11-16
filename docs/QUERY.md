@@ -184,3 +184,42 @@ The header adds these fields after `flags`:
 | `released` | What the `released` column holds. |
 | `not-seen` | What the prediction does not see. |
 | `order` | How the records are ordered. |
+
+## query tangles
+
+`query tangles` lists the modules of each [tangle](GLOSSARY.md#tangle) with their [level](GLOSSARY.md#level).
+A module that uses no module of its package has level 1.
+Every other module lies one level above the highest module of its package that it uses.
+The modules of its package outside the tangle count as well, so the lowest level in a tangle can be above 1.
+
+No levels fit every edge of a tangle.
+cargo-arc first puts the modules of a tangle into a [level order](GLOSSARY.md#level-order), each module before the modules it uses, that leaves few symbols on the edges against it.
+An edge against that order does not count for the levels when it closes a cycle.
+The search for the order starts from the same order on every run, so the same code gives the same levels.
+Another order can leave as few symbols on the edges against it, or fewer, and give other levels.
+
+The tangles are the ones the diagram shows and the `cycles` column of `query edges` counts.
+`check` searches inside the scope of each `no-cycles` rule and leaves out the dependencies an `allow` entry permits, so the tangles it reports can be smaller.
+
+A workspace without tangles prints the header and the column line, with `tangles` as `none`, and exits with 0.
+
+| Column | Value |
+|--------|-------|
+| `tangle` | The tangle the module lies in, named by its first module in name order. |
+| `size` | The number of modules in that tangle. |
+| `module` | The module, as its [qualified node name](GLOSSARY.md#qualified-node-name). |
+| `level` | The level of the module. |
+
+The records are ordered by tangle, the largest first and tangles of one size by name.
+The modules of one tangle are ordered by level, the highest first, then by name.
+
+The header adds these fields after `flags`:
+
+| Key | Value |
+|-----|-------|
+| `tangles` | Each tangle with the number of its modules, as space-separated `name=size` pairs in name order; an object in JSON. `none` when the workspace has no tangle. |
+| `records` | What a record is. |
+| `tangle` | What the `tangle` column holds. |
+| `level` | What the `level` column holds. |
+| `level-order` | How the modules of a tangle are ordered before the levels are counted. |
+| `order` | How the records are ordered. |

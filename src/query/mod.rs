@@ -5,6 +5,7 @@
 pub(crate) mod edges;
 pub(crate) mod hotspots;
 pub(crate) mod moves;
+pub(crate) mod tangles;
 pub(crate) mod usages;
 
 use serde_json::{Map, Value};
@@ -184,6 +185,19 @@ fn escape_tsv(text: &str) -> String {
         }
     }
     escaped
+}
+
+/// Return the value of the header field `tangles`: the number of modules
+/// of each tangle under its name, null without a tangle.
+fn tangle_sizes<'a>(tangles: impl Iterator<Item = (&'a str, usize)>) -> Value {
+    let sizes: Map<String, Value> = tangles
+        .map(|(name, size)| (name.to_string(), size.into()))
+        .collect();
+    if sizes.is_empty() {
+        Value::Null
+    } else {
+        Value::Object(sizes)
+    }
 }
 
 /// Format the Unix timestamp `seconds` as its UTC date, `YYYY-MM-DD`.

@@ -71,19 +71,7 @@ impl ArcGraph {
     #[must_use]
     pub(crate) fn moves(&self, reexports: Reexports, references: &[Reference]) -> MoveReport {
         let sub = self.production_subgraph(reexports);
-        let mut clusters: Vec<Vec<(String, NodeIndex)>> = tarjan_scc(&sub)
-            .into_iter()
-            .filter(|component| component.len() > 1)
-            .map(|component| {
-                let mut modules: Vec<(String, NodeIndex)> = component
-                    .into_iter()
-                    .map(|node| (self.qualified_name(sub[node]), node))
-                    .collect();
-                modules.sort();
-                modules
-            })
-            .collect();
-        clusters.sort_by(|a, b| (Reverse(a.len()), &a[0].0).cmp(&(Reverse(b.len()), &b[0].0)));
+        let clusters = self.clusters_by_size(&sub);
 
         let mut report = MoveReport {
             clusters: Vec::new(),
