@@ -1,4 +1,12 @@
-import { afterAll, afterEach, describe, expect, test } from 'bun:test';
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  jest,
+  test,
+} from 'bun:test';
 import { ArcLogic } from './arc_logic.js';
 import { DomAdapter } from './dom_adapter.js';
 import { createFakeElement, createMockDomAdapter } from './dom_mock.js';
@@ -583,7 +591,13 @@ describe("`?select=` on the page host (svg_script.ts's init)", () => {
 });
 
 describe("the scroll listener on each overlay host (svg_script.ts's init)", () => {
-  afterEach(resetSidebarHooks);
+  // A scroll starts the timer that ends the scrolling state after a quiet
+  // period. On the real clock it fires in a later test file.
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => {
+    jest.useRealTimers();
+    resetSidebarHooks();
+  });
 
   /** Calls every scroll listener the init registered. */
   const scroll = (windowListeners) => {
