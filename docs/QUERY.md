@@ -131,3 +131,56 @@ The header adds these fields after `flags`:
 | `usage` | What counts as a usage: a place where a module uses a symbol, its own or another module's, through an import or by its full path, such as a call, a type in a signature or a bound, a struct literal, or a const or static read. `impl Writer` uses `Writer`. An import nothing in the file names counts once, at the import's line and in no enclosing item: a trait as `functions`, used for its methods, another type as `types`, a const or static as `values`, a function as `functions`, any other item by the case of its name. |
 | `not-listed` | What the records leave out: method calls on a receiver, a recursive call, a field of the item's own type, `Self`, `pub use` re-exports, and usages in test code unless `--include-tests`. With `--include-tests`, test and production usages share the records without a mark that tells them apart. |
 | `order` | The order of the records: by provider, then path, line, the usage category's name and the symbol. |
+
+## query moves
+
+`query moves` lists each [move](GLOSSARY.md#move) that leaves only [tangles](GLOSSARY.md#tangle) smaller than the tangle it is tried in.
+A move that only splits a tangle is listed too, although as many modules lie in tangles after it as before.
+A move puts one [item](GLOSSARY.md#item) into a new module of its own.
+A struct, an enum or a union takes along the `impl` blocks of its file that name it by a single segment.
+The [usages](GLOSSARY.md#usage) and imports of the item then lead to the new module, and the new module uses what the item used, items of its old module included.
+A move is tried for every item that uses, or is used by, another module of its tangle in production code.
+
+Everything else the old module uses or imports stays in it.
+That includes what belongs to no item: a [bare import](GLOSSARY.md#bare-import), a glob import nothing takes a name from, a path to a module, and an import nothing in the file names.
+Every other `impl` block stays as well: one that names its type by a path, and one whose type the file does not declare, such as a type of another module, a type alias or a type that a macro declares.
+
+Each move is tried alone, on the dependency graph of the diagram under the same flags.
+The records of one run are no sequence of steps: after a move is made in the code, a new run lists the moves that are left.
+The tangles are the ones the diagram shows and the `cycles` column of `query edges` counts.
+`check` searches inside the scope of each `no-cycles` rule and leaves out the dependencies an `allow` entry permits, so the tangles it reports can be smaller.
+
+The prediction rests on the usages cargo-arc records.
+It does not see method calls on a receiver or field accesses, so the new module can need an import that the prediction leaves in the old module.
+It does not check whether the code builds after the move.
+
+A workspace without tangles prints the header and the column line, with `tangles` as `none`, and exits with 0.
+Lua references record no usages, so on a Lua workspace `query moves` ends with an error.
+
+| Column | Value |
+|--------|-------|
+| `symbol` | The item that moves. |
+| `provider` | The module that defines the item, as its [qualified node name](GLOSSARY.md#qualified-node-name). |
+| `tangle` | The tangle the provider lies in, named by its first module in name order. |
+| `size` | The number of modules in that tangle. |
+| `sizes-after` | The sizes of the tangles that the modules of the tangle and the new module form after the move, largest first. Empty when none is left. |
+| `released` | The modules of the tangle that lie in no tangle after the move, in name order. |
+
+In TSV, `sizes-after` and `released` are comma-separated; JSON gives both as lists.
+The records are ordered by tangle, the largest first and tangles of one size by name.
+The moves of one tangle are ordered by the largest tangle the move leaves, the smallest first, then by the number of modules it leaves in tangles, the fewest first, then by `provider` and `symbol`.
+
+The header adds these fields after `flags`:
+
+| Key | Value |
+|-----|-------|
+| `tangles` | Each tangle with the number of its modules, as space-separated `name=size` pairs in name order; an object in JSON. `none` when the workspace has no tangle. |
+| `candidates` | The number of moves tried. |
+| `move` | What a move is. |
+| `stays` | What stays in the old module. |
+| `records` | Which moves have a record, and that each is tried alone. |
+| `tangle` | What the `tangle` column holds. |
+| `sizes-after` | What the `sizes-after` column holds. |
+| `released` | What the `released` column holds. |
+| `not-seen` | What the prediction does not see. |
+| `order` | How the records are ordered. |

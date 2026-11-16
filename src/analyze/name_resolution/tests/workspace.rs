@@ -706,6 +706,7 @@ use crate::graph;
                 category: UsageCategory::Types,
                 imported_for_methods: false,
                 enclosing_item: Some("f".to_string()),
+                owner: Some("f".to_string()),
             }]
         );
         assert_eq!(deps[1].uses[0].category, UsageCategory::Functions);
@@ -3109,6 +3110,7 @@ pub trait Step { fn run(&self); }
             .iter()
             .map(|symbol_use| SymbolUse {
                 enclosing_item: None,
+                owner: None,
                 ..symbol_use.clone()
             })
             .collect()
@@ -3120,6 +3122,7 @@ pub trait Step { fn run(&self); }
             category,
             imported_for_methods: false,
             enclosing_item: None,
+            owner: None,
         }
     }
 
@@ -3216,6 +3219,7 @@ pub trait Step { fn run(&self); }
             test_dep.uses,
             [SymbolUse {
                 enclosing_item: Some("check".to_string()),
+                owner: Some("check".to_string()),
                 ..use_at(3, UsageCategory::Types)
             }]
         );
@@ -3436,6 +3440,7 @@ pub trait Step { fn run(&self); }
                 category: UsageCategory::Functions,
                 imported_for_methods: true,
                 enclosing_item: None,
+                owner: None,
             }]
         );
     }
@@ -3492,6 +3497,7 @@ pub trait Step { fn run(&self); }
                 category: UsageCategory::Types,
                 imported_for_methods: false,
                 enclosing_item: None,
+                owner: None,
             }]
         );
     }

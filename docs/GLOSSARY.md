@@ -233,6 +233,7 @@ cargo-arc tried one and draws nested circles instead, which show the nesting dep
 | **<a id="consumer-group">Consumer group</a>** | The symbols of one [provider](#provider) that have exactly the same [consumers](#consumer). |
 | **<a id="consumer-locality">Consumer locality</a>** | How close the [consumers](#consumer) of a [consumer group](#consumer-group) sit to each other in the module tree. It has three cases: a single consumer, several consumers under a common ancestor module that does not contain the [provider](#provider), or consumers spread across the package. |
 | **<a id="usage">Usage</a>** | A place where a module uses a symbol, for example by calling a function, naming a type, writing a struct literal or using a trait as a bound. The symbol can belong to another module, imported or written as a full path, or to the module itself. Only a usage of another module's symbol is a dependency. cargo-arc does not resolve method calls, so a trait whose methods are called counts as one usage, at its import. |
+| **<a id="move">Move</a>** | Putting one [item](#item) into a new module of its own, together with the `impl` blocks that its module holds for it. After a move, the [usages](#usage) and imports of the item lead to the new module, and the new module uses what the item used, items of its old module included. |
 | **<a id="usage-category">Usage category</a>** | What a [usage](#usage) takes from its symbol: `types` (a type, or a value built from a struct or an enum variant), `values` (a const or a static), `functions` (a function called, or a trait used for its methods). Every usage has exactly one usage category. |
 
 [Consumer locality](#consumer-locality) shows whether the symbols of a group could move closer to the modules that use them.
@@ -240,6 +241,10 @@ cargo-arc tried one and draws nested circles instead, which show the nesting dep
 
 A [consumer group](#consumer-group) is the unit that can move.
 Its symbols share one set of [consumers](#consumer), so the group's locality holds for each of them.
+
+A [move](#move) is of one item.
+`query moves` tries each move alone and lists what it leaves of a [tangle](#tangle) ([QUERY.md](QUERY.md#query-moves)).
+It does not try to move a consumer group as a whole.
 
 *Use* means the `use` declaration, which this glossary calls an import, and never one [usage](#usage).
 

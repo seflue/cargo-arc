@@ -1255,6 +1255,7 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
             category,
             imported_for_methods: false,
             enclosing_item: None,
+            owner: None,
         }
     }
 
@@ -1266,6 +1267,7 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
             .iter()
             .map(|symbol_use| SymbolUse {
                 enclosing_item: None,
+                owner: None,
                 ..symbol_use.clone()
             })
             .collect()
@@ -1425,6 +1427,7 @@ pub fn wrap(_: TokenStream, input: TokenStream) -> TokenStream { input }
         };
         let in_f = |symbol_use| SymbolUse {
             enclosing_item: Some("f".to_string()),
+            owner: Some("f".to_string()),
             ..symbol_use
         };
         assert_eq!(

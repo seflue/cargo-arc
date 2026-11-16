@@ -295,6 +295,12 @@ pub struct SymbolUse {
     /// item nested in another item belongs to that item. None for a usage at
     /// an import.
     pub enclosing_item: Option<String>,
+    /// The item `enclosing_item` belongs to, without the inline modules
+    /// around it: the item itself, or the type of an `impl` block where one
+    /// segment names the type and the file declares it (`Writer` for
+    /// `impl Step for Writer<u8>`). None without an enclosing item, for any
+    /// other `impl` block and for an inline module.
+    pub owner: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

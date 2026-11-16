@@ -1410,3 +1410,399 @@ fn usages_on_cargo_arc_itself_equal_what_debug_logs() {
     assert!(!logged.is_empty(), "the debug log lists usages of ArcGraph");
     assert_eq!(queried, logged);
 }
+
+/// A package `app` whose library holds `files` under `src/`, outside any
+/// repository.
+fn library_of(files: &[(&str, &str)]) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    for (name, text) in files {
+        std::fs::write(root.join("src").join(name), text).unwrap();
+    }
+    dir
+}
+
+const REPORT: &str = "pub fn render() -> u32 {\n    crate::store::load()\n}\n";
+const LOAD: &str = "pub fn load() -> u32 {\n    1\n}\n";
+const SUMMARY: &str = "pub fn summary() -> u32 {\n    crate::report::render()\n}\n";
+
+/// `store` and `report` use each other: `summary` in `store` calls `render`,
+/// and `render` calls `load` in `store`.
+fn tangled_library() -> tempfile::TempDir {
+    library_of(&[
+        ("lib.rs", "pub mod report;\npub mod store;\n"),
+        ("store.rs", &format!("{LOAD}\n{SUMMARY}")),
+        ("report.rs", REPORT),
+    ])
+}
+
+/// With `load` or with `summary` in a module of its own, no module is left
+/// in a tangle. With `render` in one, `store` and the new module form a
+/// tangle as large as the one before, so that move is not listed. Nothing
+/// outside `store` uses `summary`.
+#[test]
+fn moves_list_each_item_whose_move_leaves_only_smaller_tangles() {
+    let ws = tangled_library();
+    let out = stdout_of(&arc(ws.path(), &["query", "moves"]));
+
+    assert_eq!(
+        body_of(&out),
+        [
+            "symbol\tprovider\ttangle\tsize\tsizes-after\treleased",
+            "load\tapp::store\tapp::report\t2\t\tapp::report,app::store",
+            "summary\tapp::store\tapp::report\t2\t\tapp::report,app::store",
+        ]
+    );
+    assert_eq!(header_value(&out, "tangles"), "app::report=2");
+    assert_eq!(header_value(&out, "candidates"), "3");
+}
+
+/// The library of [`tangled_library`] after the move of `summary` that
+/// `query moves` lists there.
+#[test]
+fn a_move_made_in_the_code_leaves_the_tangles_it_predicted() {
+    let ws = library_of(&[
+        (
+            "lib.rs",
+            "pub mod report;\npub mod store;\npub mod summary;\n",
+        ),
+        ("store.rs", LOAD),
+        ("summary.rs", SUMMARY),
+        ("report.rs", REPORT),
+    ]);
+    let out = stdout_of(&arc(ws.path(), &["query", "moves"]));
+
+    assert_eq!(
+        body_of(&out),
+        ["symbol\tprovider\ttangle\tsize\tsizes-after\treleased"]
+    );
+    assert_eq!(header_value(&out, "tangles"), "none");
+}
+
+/// The call of `render` is in a method of `Row`, and nothing else in `store`
+/// uses `report`. With `Row` and its `impl` block in a module of their own,
+/// `store` uses `report` no more.
+#[test]
+fn moves_take_the_impl_blocks_of_a_type_along() {
+    let ws = library_of(&[
+        ("lib.rs", "pub mod report;\npub mod store;\n"),
+        (
+            "store.rs",
+            "pub struct Row;\n\
+             \n\
+             impl Row {\n\
+             \x20   pub fn total(&self) -> u32 {\n\
+             \x20       crate::report::render()\n\
+             \x20   }\n\
+             }\n\
+             \n\
+             pub fn load() -> u32 {\n\
+             \x20   1\n\
+             }\n",
+        ),
+        (
+            "report.rs",
+            "pub fn render() -> u32 {\n    crate::store::load()\n}\n",
+        ),
+    ]);
+    let out = stdout_of(&arc(ws.path(), &["query", "moves"]));
+
+    assert_eq!(
+        body_of(&out)[1..],
+        [
+            "Row\tapp::store\tapp::report\t2\t\tapp::report,app::store",
+            "load\tapp::store\tapp::report\t2\t\tapp::report,app::store",
+        ]
+    );
+}
+
+/// `report` implements its trait for `Row`, which `store` defines. That
+/// `impl` block is no item of `report` that could move: `report` has no
+/// `Row`.
+#[test]
+fn moves_leave_an_impl_block_for_a_type_of_another_module_where_it_is() {
+    let ws = library_of(&[
+        ("lib.rs", "pub mod report;\npub mod store;\n"),
+        (
+            "store.rs",
+            "pub struct Row;\n\
+             \n\
+             pub fn summary() -> u32 {\n\
+             \x20   crate::report::render()\n\
+             }\n",
+        ),
+        (
+            "report.rs",
+            "use crate::store::Row;\n\
+             \n\
+             pub trait Shown {\n\
+             \x20   fn show(&self) -> u32;\n\
+             }\n\
+             \n\
+             impl Shown for Row {\n\
+             \x20   fn show(&self) -> u32 {\n\
+             \x20       0\n\
+             \x20   }\n\
+             }\n\
+             \n\
+             pub fn render() -> u32 {\n\
+             \x20   1\n\
+             }\n",
+        ),
+    ]);
+    let out = stdout_of(&arc(ws.path(), &["query", "moves"]));
+
+    assert_eq!(
+        body_of(&out)[1..],
+        [
+            "render\tapp::report\tapp::report\t2\t\tapp::report,app::store",
+            "Row\tapp::store\tapp::report\t2\t\tapp::report,app::store",
+            "summary\tapp::store\tapp::report\t2\t\tapp::report,app::store",
+        ]
+    );
+    assert_eq!(header_value(&out, "candidates"), "3");
+}
+
+/// `alpha`, `beta` and `gamma` form the larger tangle, and both its cycles
+/// run through `zero`. `able` and `acre` form the smaller one, whose name
+/// comes first.
+#[test]
+fn moves_of_the_largest_tangle_come_first() {
+    let ws = library_of(&[
+        (
+            "lib.rs",
+            "pub mod able;\npub mod acre;\npub mod alpha;\npub mod beta;\npub mod gamma;\n",
+        ),
+        (
+            "alpha.rs",
+            "pub fn zero() -> u32 {\n    0\n}\n\
+             \n\
+             pub fn start() -> u32 {\n    crate::beta::middle()\n}\n\
+             \n\
+             pub fn go() -> u32 {\n    crate::gamma::end()\n}\n",
+        ),
+        (
+            "beta.rs",
+            "pub fn middle() -> u32 {\n    crate::alpha::zero()\n}\n",
+        ),
+        (
+            "gamma.rs",
+            "pub fn end() -> u32 {\n    crate::alpha::zero()\n}\n",
+        ),
+        (
+            "able.rs",
+            "pub fn first() -> u32 {\n    crate::acre::second()\n}\n\
+             \n\
+             pub fn third() -> u32 {\n    3\n}\n",
+        ),
+        (
+            "acre.rs",
+            "pub fn second() -> u32 {\n    crate::able::third()\n}\n",
+        ),
+    ]);
+    let out = stdout_of(&arc(ws.path(), &["query", "moves"]));
+
+    assert_eq!(
+        body_of(&out)[1..],
+        [
+            "zero\tapp::alpha\tapp::alpha\t3\t\tapp::alpha,app::beta,app::gamma",
+            "go\tapp::alpha\tapp::alpha\t3\t2\tapp::gamma",
+            "start\tapp::alpha\tapp::alpha\t3\t2\tapp::beta",
+            "first\tapp::able\tapp::able\t2\t\tapp::able,app::acre",
+            "third\tapp::able\tapp::able\t2\t\tapp::able,app::acre",
+        ]
+    );
+    assert_eq!(header_value(&out, "tangles"), "app::able=2 app::alpha=3");
+    assert_eq!(header_value(&out, "candidates"), "8");
+}
+
+/// `alpha` and `beta` use each other, and so do `gamma` and `delta`. `bridge`
+/// in `beta` calls `shared` in `gamma`, and `back` in `delta` calls `two` in
+/// `beta`, so the four modules form one tangle.
+fn library_of_two_pairs() -> tempfile::TempDir {
+    library_of(&[
+        (
+            "lib.rs",
+            "pub mod alpha;\npub mod beta;\npub mod delta;\npub mod gamma;\n",
+        ),
+        (
+            "alpha.rs",
+            "pub fn one() -> u32 {\n    crate::beta::two()\n}\n\
+             \n\
+             pub fn base() -> u32 {\n    0\n}\n",
+        ),
+        (
+            "beta.rs",
+            "pub fn two() -> u32 {\n    crate::alpha::base()\n}\n\
+             \n\
+             pub fn bridge() -> u32 {\n    crate::gamma::shared()\n}\n",
+        ),
+        (
+            "gamma.rs",
+            "pub fn shared() -> u32 {\n    1\n}\n\
+             \n\
+             pub fn three() -> u32 {\n    crate::delta::four()\n}\n\
+             \n\
+             pub fn ground() -> u32 {\n    2\n}\n",
+        ),
+        (
+            "delta.rs",
+            "pub fn four() -> u32 {\n    crate::gamma::ground()\n}\n\
+             \n\
+             pub fn back() -> u32 {\n    crate::beta::two()\n}\n",
+        ),
+    ])
+}
+
+/// With `bridge` in a module of its own, `beta` uses `gamma` no more. Each
+/// pair still forms a tangle, so the move leaves as many modules in tangles
+/// as before, in two tangles of half the size.
+#[test]
+fn moves_list_a_move_that_only_splits_its_tangle() {
+    let ws = library_of_two_pairs();
+    let out = stdout_of(&arc(ws.path(), &["query", "moves"]));
+
+    assert!(
+        body_of(&out).contains(&"bridge\tapp::beta\tapp::alpha\t4\t2,2\t"),
+        "{out}"
+    );
+}
+
+/// The move of `three` leaves one tangle of two modules. Five moves leave
+/// two such tangles. The moves of `base` and `one` release `alpha` and leave
+/// the other three modules in one tangle: fewer modules in tangles than
+/// after a split, in a larger tangle. With `ground` in a module of its own,
+/// the four modules still form one tangle.
+#[test]
+fn moves_of_a_tangle_are_ordered_by_the_largest_tangle_they_leave() {
+    let ws = library_of_two_pairs();
+    let out = stdout_of(&arc(ws.path(), &["query", "moves"]));
+
+    assert_eq!(
+        body_of(&out)[1..],
+        [
+            "three\tapp::gamma\tapp::alpha\t4\t2\tapp::delta,app::gamma",
+            "bridge\tapp::beta\tapp::alpha\t4\t2,2\t",
+            "two\tapp::beta\tapp::alpha\t4\t2,2\tapp::beta",
+            "back\tapp::delta\tapp::alpha\t4\t2,2\t",
+            "four\tapp::delta\tapp::alpha\t4\t2,2\tapp::delta",
+            "shared\tapp::gamma\tapp::alpha\t4\t2,2\t",
+            "base\tapp::alpha\tapp::alpha\t4\t3\tapp::alpha",
+            "one\tapp::alpha\tapp::alpha\t4\t3\tapp::alpha",
+        ]
+    );
+    assert_eq!(header_value(&out, "candidates"), "9");
+}
+
+/// The library of [`tangled_library`] with an import of `report` in `store`
+/// that names no item. The import belongs to no item, so `store` uses
+/// `report` with `summary` moved out as well.
+#[rstest::rstest]
+#[case::bare_import("use crate::report;")]
+#[case::glob_import_nothing_takes_a_name_from("use crate::report::*;")]
+fn moves_keep_an_edge_that_an_import_of_no_item_carries_too(#[case] import: &str) {
+    let ws = library_of(&[
+        ("lib.rs", "pub mod report;\npub mod store;\n"),
+        (
+            "store.rs",
+            &format!("#[allow(unused_imports)]\n{import}\n\n{LOAD}\n{SUMMARY}"),
+        ),
+        ("report.rs", REPORT),
+    ]);
+    let out = stdout_of(&arc(ws.path(), &["query", "moves"]));
+
+    assert_eq!(
+        body_of(&out)[1..],
+        ["load\tapp::store\tapp::report\t2\t\tapp::report,app::store"]
+    );
+    assert_eq!(header_value(&out, "candidates"), "3");
+}
+
+#[test]
+fn moves_as_json_lines_carry_sizes_as_numbers_and_modules_as_lists() {
+    let ws = tangled_library();
+    let json = stdout_of(&arc(ws.path(), &["query", "--json", "moves"]));
+    let lines: Vec<Value> = json
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("each line is JSON"))
+        .collect();
+
+    assert_eq!(lines[0]["tangles"], serde_json::json!({"app::report": 2}));
+    assert_eq!(lines[0]["candidates"], 3);
+    assert_eq!(
+        lines[1],
+        serde_json::json!({
+            "symbol": "load",
+            "provider": "app::store",
+            "tangle": "app::report",
+            "size": 2,
+            "sizes-after": [],
+            "released": ["app::report", "app::store"],
+        })
+    );
+    assert_eq!(lines.len(), 3);
+}
+
+/// `deep` is an item of the inline module `nested` in `store`. It moves
+/// under its own name, as `query usages` names it in `symbol`.
+#[test]
+fn moves_name_an_item_of_an_inline_module_without_the_inline_module() {
+    let ws = library_of(&[
+        ("lib.rs", "pub mod report;\npub mod store;\n"),
+        (
+            "store.rs",
+            &format!(
+                "pub mod nested {{\n\
+                 \x20   pub fn deep() -> u32 {{\n\
+                 \x20       crate::report::render()\n\
+                 \x20   }}\n\
+                 }}\n\
+                 \n\
+                 {LOAD}"
+            ),
+        ),
+        ("report.rs", REPORT),
+    ]);
+    let out = stdout_of(&arc(ws.path(), &["query", "moves"]));
+
+    assert_eq!(
+        body_of(&out)[1..],
+        [
+            "deep\tapp::store\tapp::report\t2\t\tapp::report,app::store",
+            "load\tapp::store\tapp::report\t2\t\tapp::report,app::store",
+        ]
+    );
+}
+
+/// The library of [`tangled_library`] with a test in `store` that calls
+/// `render`. A usage in test code carries no edge of a tangle, so the test
+/// is no candidate under `--include-tests` either.
+#[test]
+fn moves_try_no_item_for_a_usage_in_test_code() {
+    let ws = library_of(&[
+        ("lib.rs", "pub mod report;\npub mod store;\n"),
+        (
+            "store.rs",
+            &format!(
+                "{LOAD}\n{SUMMARY}\n\
+                 #[cfg(test)]\n\
+                 mod tests {{\n\
+                 \x20   #[test]\n\
+                 \x20   fn renders() {{\n\
+                 \x20       let _ = crate::report::render();\n\
+                 \x20   }}\n\
+                 }}\n"
+            ),
+        ),
+        ("report.rs", REPORT),
+    ]);
+    let out = stdout_of(&arc(ws.path(), &["--include-tests", "query", "moves"]));
+
+    assert_eq!(header_value(&out, "candidates"), "3");
+}

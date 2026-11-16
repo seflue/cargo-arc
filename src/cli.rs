@@ -137,6 +137,10 @@ pub enum QueryCommand {
     /// List every usage of a symbol in another module, with its line and
     /// usage category
     Usages(UsagesQueryArgs),
+    /// List each item whose move into a module of its own leaves only
+    /// smaller tangles, with the tangles the move leaves
+    #[command(override_usage = "cargo arc [SHARED OPTIONS] query moves [OPTIONS]")]
+    Moves,
     /// A name that is no subcommand, kept to answer it with the valid ones;
     /// clap's own error would not list them.
     #[command(external_subcommand)]
@@ -452,6 +456,7 @@ fn run_query(args: &ArcCommand, query_args: &QueryArgs) -> Result<Judgment> {
         QueryCommand::Hotspots(hotspots_args) => query_hotspots(args, hotspots_args)?,
         QueryCommand::Edges => query_edges(args)?,
         QueryCommand::Usages(usages_args) => query_usages(args, usages_args)?,
+        QueryCommand::Moves => query_moves(args)?,
         QueryCommand::Unknown(words) => {
             let given = words.first().map_or("", String::as_str);
             let valid: Vec<String> = <QueryArgs as clap::CommandFactory>::command()
@@ -568,6 +573,44 @@ fn query_usages(args: &ArcCommand, usages_args: &UsagesQueryArgs) -> Result<Quer
         header,
         columns: &COLUMNS,
         records: records(&usages),
+    })
+}
+
+/// The output of `query moves`: the moves that shrink the tangles of the
+/// diagram's dependency graph.
+fn query_moves(args: &ArcCommand) -> Result<QueryOutput> {
+    use query::moves::{COLUMNS, header_fields, records};
+
+    if language_of(&args.common)? == Language::Lua {
+        anyhow::bail!("query moves: usages are recorded for Rust only, and this run analyzes Lua");
+    }
+    let switches = args.switches();
+    let adapter = adapter_for(args, switches)?;
+    let analysis = adapter.analyze()?;
+    let workspace_root = workspace_root_of(&analysis.packages).with_context(|| {
+        format!(
+            "workspace has no {} to try moves in",
+            adapter.profile().wording.packages
+        )
+    })?;
+    refuse_unparsed(&unparsed_files(&analysis.modules), &workspace_root)?;
+    let graph = ArcGraph::build(
+        &analysis.packages,
+        &analysis.modules,
+        analysis.externals.as_ref(),
+        switches.tests,
+    );
+    let report = graph.moves(
+        Reexports::from(args.common.include_reexports),
+        &crate::graph::references(&analysis.packages, &analysis.modules),
+    );
+
+    let mut header = query::Header::for_workspace(&workspace_root, args.query_flags()?);
+    header.subcommand_fields = header_fields(&report);
+    Ok(QueryOutput {
+        header,
+        columns: &COLUMNS,
+        records: records(&report),
     })
 }
 
@@ -1394,7 +1437,7 @@ mod tests {
 
         assert_eq!(
             err,
-            "'bogus' is no subcommand of query; its subcommands: hotspots, edges, usages"
+            "'bogus' is no subcommand of query; its subcommands: hotspots, edges, usages, moves"
         );
     }
 

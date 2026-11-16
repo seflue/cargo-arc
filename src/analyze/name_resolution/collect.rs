@@ -363,6 +363,8 @@ pub(super) struct PathRef {
     pub(super) in_tool_attribute: bool,
     /// As [`crate::model::SymbolUse::enclosing_item`].
     pub(super) enclosing_item: Option<Arc<str>>,
+    /// As [`crate::model::SymbolUse::owner`].
+    pub(super) owner: Option<Arc<str>>,
     /// Its first segment names a type or const parameter in scope where the
     /// path is written.
     pub(super) names_a_generic_parameter: bool,
@@ -597,6 +599,9 @@ struct PathRefCollector {
     enclosing_item: Option<ModuleItem>,
     /// The names of the type and const parameters in scope.
     generic_parameters: Vec<String>,
+    /// The names of the structs, enums and unions the file declares, in its
+    /// module or in an inline module.
+    declared_types: HashSet<String>,
 }
 
 /// An item of the file's module or of one of its inline modules.
@@ -604,18 +609,34 @@ struct ModuleItem {
     /// Below the inline modules around it, as
     /// [`crate::model::SymbolUse::enclosing_item`].
     name: Arc<str>,
+    /// As [`crate::model::SymbolUse::owner`].
+    owner: Option<Arc<str>>,
     /// For an inline module, the inline path of its body, whose items are
     /// module-level items of their own.
     body: Option<Arc<str>>,
 }
 
 impl PathRefCollector {
-    /// Visit an item `name` names by `visit`; `opens_module` for an inline
-    /// module. Inside another item, other than in the body of an inline module
-    /// at module level, the outer item stays the one visited.
+    /// The item `item` belongs to, as [`crate::model::SymbolUse::owner`].
+    fn owner_of(&self, item: &syn::Item) -> Option<String> {
+        let owner = match item {
+            syn::Item::Impl(i) => {
+                impl_type(i).filter(|ty| self.declared_types.contains(&ty.to_string()))
+            }
+            syn::Item::Mod(_) => None,
+            _ => item_ident(item),
+        };
+        owner.map(ToString::to_string)
+    }
+
+    /// Visit an item `name` names by `visit`, which belongs to `owner`;
+    /// `opens_module` for an inline module. Inside another item, other than
+    /// in the body of an inline module at module level, the outer item stays
+    /// the one visited.
     fn visiting_item(
         &mut self,
         name: Option<String>,
+        owner: Option<String>,
         opens_module: bool,
         visit: impl FnOnce(&mut Self),
     ) {
@@ -632,6 +653,7 @@ impl PathRefCollector {
             ModuleItem {
                 body: opens_module.then(|| Arc::clone(&name)),
                 name,
+                owner: owner.map(Arc::from),
             }
         });
         let outer = std::mem::replace(&mut self.enclosing_item, item);
@@ -754,6 +776,10 @@ impl PathRefCollector {
                 .enclosing_item
                 .as_ref()
                 .map(|item| Arc::clone(&item.name)),
+            owner: self
+                .enclosing_item
+                .as_ref()
+                .and_then(|item| item.owner.clone()),
             names_a_generic_parameter,
         });
     }
@@ -868,7 +894,7 @@ impl<'ast> Visit<'ast> for PathRefCollector {
         let prev_context = self.context.clone();
         self.context = item_context(node, &prev_context);
         let opens_module = matches!(node, syn::Item::Mod(m) if m.content.is_some());
-        self.visiting_item(item_name(node), opens_module, |s| {
+        self.visiting_item(item_name(node), self.owner_of(node), opens_module, |s| {
             syn::visit::visit_item(s, node);
         });
         self.context = prev_context;
@@ -878,7 +904,9 @@ impl<'ast> Visit<'ast> for PathRefCollector {
 
     fn visit_foreign_item(&mut self, node: &'ast syn::ForeignItem) {
         let name = foreign_item_ident(node).map(ToString::to_string);
-        self.visiting_item(name, false, |s| syn::visit::visit_foreign_item(s, node));
+        self.visiting_item(name.clone(), name, false, |s| {
+            syn::visit::visit_foreign_item(s, node);
+        });
     }
 
     fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
@@ -1099,6 +1127,7 @@ pub(super) fn collect_all_path_refs(
         in_derive_helpers_reach: false,
         enclosing_item: None,
         generic_parameters: Vec::new(),
+        declared_types: declared_types(&syntax.items),
     };
     collector.visit_file(syntax);
     CollectedPathRefs {
@@ -1158,6 +1187,50 @@ fn item_name(item: &syn::Item) -> Option<String> {
         syn::Item::Macro(i) if i.ident.is_none() => Some(format!("{}!", tidy_tokens(&i.mac.path))),
         _ => item_ident(item).map(ToString::to_string),
     }
+}
+
+/// The names of the structs, enums and unions among `items` and in their
+/// inline modules.
+fn declared_types(items: &[syn::Item]) -> HashSet<String> {
+    let mut names = HashSet::new();
+    let mut open = vec![items];
+    while let Some(items) = open.pop() {
+        for item in items {
+            match item {
+                syn::Item::Struct(syn::ItemStruct { ident, .. })
+                | syn::Item::Enum(syn::ItemEnum { ident, .. })
+                | syn::Item::Union(syn::ItemUnion { ident, .. }) => {
+                    names.insert(ident.to_string());
+                }
+                syn::Item::Mod(syn::ItemMod {
+                    content: Some((_, items)),
+                    ..
+                }) => open.push(items),
+                _ => {}
+            }
+        }
+    }
+    names
+}
+
+/// The type `item` is for, where one segment names it and it is no parameter
+/// of the block: `Writer` for `impl<T> Step for Writer<T>`.
+fn impl_type(item: &syn::ItemImpl) -> Option<&syn::Ident> {
+    let syn::Type::Path(syn::TypePath {
+        qself: None, path, ..
+    }) = &*item.self_ty
+    else {
+        return None;
+    };
+    let mut segments = path.segments.iter();
+    let (Some(segment), None) = (segments.next(), segments.next()) else {
+        return None;
+    };
+    let is_parameter = item
+        .generics
+        .type_params()
+        .any(|param| param.ident == segment.ident);
+    (path.leading_colon.is_none() && !is_parameter).then_some(&segment.ident)
 }
 
 /// `impl<T> Writer<T>`, `impl Step for Writer<u8>`: the generic parameters,

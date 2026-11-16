@@ -772,42 +772,112 @@ impl Usage {
 /// items, which make no edge.
 #[must_use]
 pub(crate) fn usages(packages: &[PackageInfo], modules: &[ModuleTree]) -> Vec<Usage> {
-    let mut builder = GraphBuilder::with_nodes(packages, modules);
-    let module_deps = std::mem::take(&mut builder.module_deps);
     let mut usages = Vec::new();
-    for group in builder.resolve_module_deps(&module_deps) {
-        let provider = builder.graph.qualified_name(group.to_idx);
-        let module = builder.graph.qualified_name(group.from_idx);
-        usages.extend(group.symbol_uses().map(|(symbol, dep, symbol_use)| {
-            Usage::new(symbol, &provider, &module, dep, symbol_use)
-        }));
-    }
-    for tree in modules {
-        push_own_item_usages(&builder, &tree.root, &mut usages);
-        for binary in &tree.binaries {
-            push_own_item_usages(&builder, binary, &mut usages);
+    visit_references(packages, modules, |module, provider, dep| {
+        if let Some(symbol) = &dep.target_item {
+            usages.extend(
+                dep.uses
+                    .iter()
+                    .map(|symbol_use| Usage::new(symbol, provider, module, dep, symbol_use)),
+            );
         }
-    }
+    });
     usages
 }
 
-/// Push the usages `module` and its descendants make of their own items. A
-/// module the graph has no node for gives none, as it gives no edge.
-fn push_own_item_usages(builder: &GraphBuilder, module: &ModuleInfo, usages: &mut Vec<Usage>) {
+/// One reference a module makes to an item or to a module: a usage, a
+/// re-export, or an import that names no item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Reference {
+    /// The qualified node name of the module the reference is in.
+    pub module: String,
+    /// The qualified node name of the module it leads to: `module` itself
+    /// for a usage of one of its own items.
+    pub provider: String,
+    /// The item of `module` that makes the reference, as
+    /// [`SymbolUse::owner`].
+    pub user: Option<String>,
+    /// The item of `provider` it names. None where it names the module, and
+    /// for a glob import nothing takes a name from.
+    pub item: Option<String>,
+    /// Whether production code makes it.
+    pub production: bool,
+    /// Whether it is a `pub use` re-export.
+    pub reexport: bool,
+}
+
+/// Return the references behind the module edges that [`ArcGraph::build`]
+/// draws from `packages` and `modules`, followed by each module's
+/// references to its own items. A reference with several usages is listed
+/// once per usage.
+#[must_use]
+pub(crate) fn references(packages: &[PackageInfo], modules: &[ModuleTree]) -> Vec<Reference> {
+    let mut references = Vec::new();
+    visit_references(packages, modules, |module, provider, dep| {
+        let made_by = |user: Option<&String>| Reference {
+            module: module.to_owned(),
+            provider: provider.to_owned(),
+            user: user.cloned(),
+            item: dep.target_item.clone().filter(|item| item != "*"),
+            production: dep.context.kind == UsageKind::Production,
+            reexport: dep.via_reexport,
+        };
+        if dep.uses.is_empty() {
+            references.push(made_by(None));
+        } else {
+            references.extend(
+                dep.uses
+                    .iter()
+                    .map(|symbol_use| made_by(symbol_use.owner.as_ref())),
+            );
+        }
+    });
+    references
+}
+
+/// Call `visit` with each reference behind the module edges that
+/// [`ArcGraph::build`] draws from `packages` and `modules`, edge by edge,
+/// then with each module's references to its own items. `visit` gets the
+/// qualified node names of the module the reference is in and of the module
+/// it leads to.
+fn visit_references(
+    packages: &[PackageInfo],
+    modules: &[ModuleTree],
+    mut visit: impl FnMut(&str, &str, &DependencyRef),
+) {
+    let mut builder = GraphBuilder::with_nodes(packages, modules);
+    let module_deps = std::mem::take(&mut builder.module_deps);
+    for group in builder.resolve_module_deps(&module_deps) {
+        let provider = builder.graph.qualified_name(group.to_idx);
+        let module = builder.graph.qualified_name(group.from_idx);
+        for dep in &group.deps {
+            visit(&module, &provider, dep);
+        }
+    }
+    for tree in modules {
+        visit_own_item_references(&builder, &tree.root, &mut visit);
+        for binary in &tree.binaries {
+            visit_own_item_references(&builder, binary, &mut visit);
+        }
+    }
+}
+
+/// Call `visit` with the references `module` and its descendants make to
+/// their own items. A module the graph has no node for gives none, as it
+/// gives no edge.
+fn visit_own_item_references(
+    builder: &GraphBuilder,
+    module: &ModuleInfo,
+    visit: &mut impl FnMut(&str, &str, &DependencyRef),
+) {
     if let Some(idx) = builder.resolve_node(&module.full_path) {
         let name = builder.graph.qualified_name(idx);
         for dep in &module.own_item_uses {
-            if let Some(symbol) = &dep.target_item {
-                usages.extend(
-                    dep.uses
-                        .iter()
-                        .map(|symbol_use| Usage::new(symbol, &name, &name, dep, symbol_use)),
-                );
-            }
+            visit(&name, &name, dep);
         }
     }
     for child in &module.children {
-        push_own_item_usages(builder, child, usages);
+        visit_own_item_references(builder, child, visit);
     }
 }
 
@@ -1207,6 +1277,7 @@ mod tests {
             category,
             imported_for_methods: false,
             enclosing_item: None,
+            owner: None,
         };
         let packages = vec![package("my_crate")];
         let modules = vec![tree(ModuleInfo {
