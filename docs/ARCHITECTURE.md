@@ -62,3 +62,4 @@ What that means for a reader of the diagram is in [ARC_DIAGRAM.md](ARC_DIAGRAM.m
 | 028 | [Generate the STATIC_DATA Types from the Rust Structs](adr/028-static-data-types-generated-from-rust.md) | Active | 2026-10-10 |
 | 029 | [Analyze Through a Language Adapter](adr/029-analysis-through-a-language-adapter.md) | Active | 2026-10-11 |
 | 030 | [One Language per Run, and a Lua Adapter](adr/030-one-language-per-run-and-a-lua-adapter.md) | Active | 2026-10-12 |
+| 031 | [A Binary Is a Node under Its Package](adr/031-a-binary-is-a-node-under-its-package.md) | Active | 2026-11-16 |
