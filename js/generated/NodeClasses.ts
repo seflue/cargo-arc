@@ -14,4 +14,12 @@ hidesCycle: string,
  * The tspan inside a parent label that shows the cycle glyph while
  * [`hides_cycle`](Self::hides_cycle) applies; empty otherwise, like `child_count`.
  */
-cycleMarker: string, treeLine: string, collapseToggle: string, collapsed: string, };
+cycleMarker: string, treeLine: string, collapseToggle: string, collapsed: string, 
+/**
+ * The tspan inside a module label that shows the level of the module.
+ */
+level: string, 
+/**
+ * Root state class while the level numbers are hidden.
+ */
+levelsHidden: string, };

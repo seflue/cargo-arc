@@ -16,6 +16,21 @@ pub(super) fn calculate_box_width(ir: &LayoutIR) -> f32 {
         .fold(0.0_f32, f32::max)
         + LAYOUT.box_padding
         + LAYOUT.toggle_space
+        + level_space(ir)
+}
+
+/// The room every row keeps for a level number, between the longest label
+/// and the collapse symbol: the digits of the highest level and the gap
+/// after them. No room when no item has a level.
+#[allow(clippy::cast_precision_loss)] // a level has a handful of digits
+fn level_space(ir: &LayoutIR) -> f32 {
+    ir.items
+        .iter()
+        .filter_map(|item| item.level)
+        .max()
+        .map_or(0.0, |highest| {
+            highest.to_string().len() as f32 * LAYOUT.level_char_width + LAYOUT.level_gap
+        })
 }
 
 /// Calculate the maximum width of the arcs to the right of the rows
@@ -68,6 +83,7 @@ pub(super) struct PositionedItem {
     pub height: f32,
     pub label: String,
     pub kind: ItemKind,
+    pub level: Option<usize>,
 }
 
 /// Get the nesting depth for an item kind.
@@ -103,6 +119,7 @@ pub(super) fn collapse_positions(
             height: item.height,
             label: item.label.clone(),
             kind: item.kind.clone(),
+            level: item.level,
         });
         current_y += config.row_height;
     }
@@ -137,6 +154,7 @@ pub(super) fn calculate_positions(
                 height,
                 label: item.label.clone(),
                 kind: item.kind.clone(),
+                level: item.level,
             }
         })
         .collect()
@@ -288,6 +306,7 @@ mod tests {
                 height: 24.0,
                 label: "crate".into(),
                 kind: ItemKind::Package,
+                level: None,
             },
             PositionedItem {
                 id: 1,
@@ -300,6 +319,7 @@ mod tests {
                     nesting: 1,
                     parent: 0,
                 },
+                level: None,
             },
             PositionedItem {
                 id: 2,
@@ -312,6 +332,7 @@ mod tests {
                     nesting: 1,
                     parent: 0,
                 },
+                level: None,
             },
         ];
 
@@ -353,6 +374,7 @@ mod tests {
             height: 24.0,
             label: "crate".into(),
             kind: ItemKind::Package,
+            level: None,
         }];
 
         let visible: HashSet<NodeId> = HashSet::new();
@@ -429,6 +451,32 @@ mod tests {
             direction: EdgeDirection::Upward { tie: false },
             ..LayoutEdge::new(from, to, EdgeContext::production())
         }
+    }
+
+    #[test]
+    fn test_box_width_reserves_room_for_the_level_number() {
+        let mut ir = package_with_modules(2);
+        let without_levels = calculate_box_width(&ir);
+        ir.items[1].level = Some(3);
+        ir.items[2].level = Some(12);
+
+        // Two digits of 6 px for the highest level, and a gap of 6.
+        assert_eq!(calculate_box_width(&ir), without_levels + 18.0);
+    }
+
+    #[test]
+    fn test_positioned_item_keeps_its_level() {
+        let mut ir = package_with_modules(1);
+        ir.items[1].level = Some(3);
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
+
+        let positioned = calculate_positions(&ir, &config, 100.0);
+        let visible: HashSet<NodeId> = [0, 1].into();
+        let collapsed = collapse_positions(&positioned, &visible, &config);
+
+        assert_eq!(positioned[0].level, None);
+        assert_eq!(positioned[1].level, Some(3));
+        assert_eq!(collapsed[1].level, Some(3));
     }
 
     #[test]

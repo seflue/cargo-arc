@@ -134,6 +134,7 @@ The *diagnostic level* of a rules file is unrelated and is always written with *
 An [architectural layer](#architectural-layer) is a position that a `layers` [rule](#rule) names, and a level is computed from the dependencies.
 
 `query tangles` lists the modules of each [tangle](#tangle) with their levels ([QUERY.md](QUERY.md#query-tangles)).
+The arc diagram shows the level of a module in its box ([ARC_DIAGRAM.md](ARC_DIAGRAM.md#what-you-see)).
 
 ## Module roles
 

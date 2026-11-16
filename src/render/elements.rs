@@ -179,6 +179,10 @@ fn toolbar_content(
             "            <span class=\"{} {}\" id=\"cycles-checkbox\"></span>\n",
             "            Show Circular Dependencies\n",
             "          </label>\n",
+            "          <label class=\"{}\">\n",
+            "            <span class=\"{} {}\" id=\"levels-checkbox\"></span>\n",
+            "            Show Levels\n",
+            "          </label>\n",
             "{}",
         ),
         ct.toggle,
@@ -192,7 +196,10 @@ fn toolbar_content(
         ct.checkbox, // checkbox span (unchecked → default hidden)
         ct.toggle,   // label.toolbar-toggle (cycles)
         ct.checkbox,
-        ct.checked,        // checkbox span (checked → cluster mode on)
+        ct.checked, // checkbox span (checked → cluster mode on)
+        ct.toggle,  // label.toolbar-toggle (levels)
+        ct.checkbox,
+        ct.checked,        // checkbox span (checked → level numbers shown)
         external_checkbox, // optional external dep checkbox
     );
 
@@ -414,6 +421,7 @@ pub(super) fn render_nodes(
         let label = escape_xml(&item.label);
         let text_x = render_x + LAYOUT.text_padding_x;
         let text_y = render_y + item.height / 2.0 + LAYOUT.text_y_offset;
+        let level = render_level(item, render_x);
 
         let _ = writeln!(
             nodes,
@@ -444,13 +452,13 @@ pub(super) fn render_nodes(
             let cm = CSS.nodes.cycle_marker;
             let _ = writeln!(
                 nodes,
-                "    <text class=\"{label_class}\" x=\"{text_x}\" y=\"{text_y}\">{label}<tspan id=\"cycle-marker-{}\" class=\"{cm}\">{marker_text}</tspan><tspan id=\"count-{}\" class=\"{cc}\">{count_text}</tspan></text>",
+                "    <text class=\"{label_class}\" x=\"{text_x}\" y=\"{text_y}\">{label}<tspan id=\"cycle-marker-{}\" class=\"{cm}\">{marker_text}</tspan><tspan id=\"count-{}\" class=\"{cc}\">{count_text}</tspan>{level}</text>",
                 item.id, item.id
             );
         } else {
             let _ = writeln!(
                 nodes,
-                "    <text class=\"{label_class}\" x=\"{text_x}\" y=\"{text_y}\">{label}</text>"
+                "    <text class=\"{label_class}\" x=\"{text_x}\" y=\"{text_y}\">{label}{level}</text>"
             );
         }
 
@@ -468,6 +476,19 @@ pub(super) fn render_nodes(
 
     nodes.push_str("  </g>\n");
     nodes
+}
+
+/// The level number of a row as a part of its label, empty for a row
+/// without a level. The number is right-aligned and ends a gap before the
+/// collapse symbol.
+fn render_level(item: &PositionedItem, render_x: f32) -> String {
+    item.level.map_or_else(String::new, |level| {
+        let level_x = render_x + item.width - LAYOUT.toggle_offset - LAYOUT.level_gap;
+        format!(
+            "<tspan id=\"level-{}\" class=\"{}\" x=\"{level_x}\">{level}</tspan>",
+            item.id, CSS.nodes.level
+        )
+    })
 }
 
 fn label_classes(is_hidden: bool, on_cycle: bool, hides_cycle: bool) -> String {
@@ -1311,6 +1332,10 @@ mod tests {
 \u{20}           Show Circular Dependencies\n\
 \u{20}         </label>\n\
 \u{20}         <label class=\"toolbar-toggle\">\n\
+\u{20}           <span class=\"toolbar-checkbox checked\" id=\"levels-checkbox\"></span>\n\
+\u{20}           Show Levels\n\
+\u{20}         </label>\n\
+\u{20}         <label class=\"toolbar-toggle\">\n\
 \u{20}           <span class=\"toolbar-checkbox checked\" id=\"external-dep-checkbox\"></span>\n\
 \u{20}           External Dependencies\n\
 \u{20}         </label>\n\
@@ -1612,6 +1637,91 @@ mod tests {
             output.contains(r#"data-direction="downward""#),
             "Edge should have data-direction"
         );
+    }
+
+    /// The rows of a package with the parent module `outer` at level 7 and
+    /// its child `inner` at level 12, as `render_nodes` draws them.
+    fn rows_with_levels() -> String {
+        let mut ir = LayoutIR::new();
+        let package = ir.add_item(ItemKind::Package, "c".into());
+        let outer = ir.add_item(
+            ItemKind::Module {
+                nesting: 1,
+                parent: package,
+            },
+            "outer".into(),
+        );
+        let inner = ir.add_item(
+            ItemKind::Module {
+                nesting: 2,
+                parent: outer,
+            },
+            "inner".into(),
+        );
+        ir.items[outer].level = Some(7);
+        ir.items[inner].level = Some(12);
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
+        let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
+        let positioned_index: HashMap<NodeId, &PositionedItem> =
+            positioned.iter().map(|p| (p.id, p)).collect();
+        render_nodes(
+            &positioned,
+            &[package, outer].into(),
+            None,
+            &HashSet::new(),
+            &positioned_index,
+            &CycleMarks::from_ir(&ir),
+        )
+    }
+
+    #[test]
+    fn test_level_number_ends_left_of_the_collapse_symbol() {
+        let output = rows_with_levels();
+
+        // The box is 5 * 7.2 + 20 + 14 + 18 = 88 wide and `outer` starts at
+        // x 40, so its collapse symbol starts at 40 + 88 - 14 = 114.
+        assert!(
+            output.contains(r#"data-target="1" x="114""#),
+            "collapse symbol of outer: {output}"
+        );
+        assert!(
+            output.contains(r#"<tspan id="level-1" class="level" x="108">7</tspan>"#),
+            "level of outer: {output}"
+        );
+    }
+
+    #[test]
+    fn test_level_number_starts_right_of_the_longest_label() {
+        let output = rows_with_levels();
+
+        // `inner` starts at x 60 and its label ends at 60 + 10 + 36 = 106.
+        // Its two digits of 6 px end at 128, so they start at 116.
+        assert!(
+            output.contains(r#"<tspan id="level-2" class="level" x="128">12</tspan>"#),
+            "level of inner: {output}"
+        );
+    }
+
+    #[test]
+    fn test_package_row_has_no_level_number() {
+        let output = rows_with_levels();
+
+        assert!(!output.contains(r#"id="level-0""#), "{output}");
+    }
+
+    #[test]
+    fn test_toolbar_has_levels_checkbox_checked_by_default() {
+        let toolbar = render_toolbar(
+            800.0,
+            ToolbarFacts::default(),
+            &RenderConfig::new(&RUST_PROFILE.wording),
+        );
+        let idx = toolbar
+            .find("id=\"levels-checkbox\"")
+            .expect("the toolbar renders the levels checkbox");
+        let span_start = toolbar[..idx].rfind("<span").expect("a span");
+        assert!(toolbar[span_start..idx].contains(CSS.toolbar.checked));
+        assert!(toolbar[idx..].contains("Show Levels"));
     }
 
     /// A package on row 0 with the modules `a` and `b` on rows 1 and 2.

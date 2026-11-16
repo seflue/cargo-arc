@@ -42,6 +42,8 @@ pub struct LayoutItem {
     pub version: Option<String>,
     /// SCC id when this node lies in a dependency cycle, else `None`.
     pub scc_id: Option<usize>,
+    /// The level of a module inside its package; `None` for every other item.
+    pub level: Option<usize>,
     /// This item's jump targets; empty for items with none (e.g. `ExternalSection`).
     pub(crate) targets: Vec<JumpTarget>,
 }
@@ -56,6 +58,7 @@ impl LayoutItem {
             volatility: None,
             version: None,
             scc_id: None,
+            level: None,
             targets: Vec::new(),
         }
     }
@@ -340,6 +343,7 @@ pub(crate) fn build_layout(
         &mut table,
         workspace_root,
     );
+    attach_levels(&mut ir, &module_indices, &node_map, &levelization);
 
     if !external_indices.is_empty() {
         populate_external_items(
@@ -668,6 +672,21 @@ fn populate_items(
         ir.items[layout_id].targets = targets;
     }
     node_map
+}
+
+/// Give each module item its level. `modules` are the module and binary
+/// nodes of the graph.
+fn attach_levels(
+    ir: &mut LayoutIR,
+    modules: &[NodeIndex],
+    node_map: &HashMap<NodeIndex, NodeId>,
+    levelization: &Levelization,
+) {
+    for module in modules {
+        if let Some(&item) = node_map.get(module) {
+            ir.items[item].level = Some(levelization.level(*module));
+        }
+    }
 }
 
 /// Add external package nodes to the layout IR, preceded by a section header.
@@ -1546,6 +1565,35 @@ mod tests {
         assert_eq!(ir.edges.len(), 1);
         assert_eq!(ir.edges[0].direction, EdgeDirection::Downward);
         assert!(ir.edges[0].cycle.is_none());
+    }
+
+    #[test]
+    fn a_module_item_carries_its_level_and_a_package_item_none() {
+        let mut b = TestGraphBuilder::new();
+        b.package_with_modules("first", &["top", "middle", "bottom"])
+            .external_package("ext", "1.0.0")
+            .prod_dep("top", "middle")
+            .prod_dep("middle", "bottom")
+            .package_dep("first", "ext");
+        let (graph, _) = b.build();
+        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
+
+        let levels: HashMap<String, Option<usize>> = ir
+            .items
+            .iter()
+            .filter(|item| !matches!(item.kind, ItemKind::ExternalSection))
+            .map(|item| (ir.qualified_name(item.id), item.level))
+            .collect();
+        assert_eq!(
+            levels,
+            HashMap::from([
+                ("first".to_string(), None),
+                ("first::top".to_string(), Some(3)),
+                ("first::middle".to_string(), Some(2)),
+                ("first::bottom".to_string(), Some(1)),
+                ("ext".to_string(), None),
+            ])
+        );
     }
 
     #[test]

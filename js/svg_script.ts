@@ -8,6 +8,7 @@ import { HighlightRenderer } from './highlight_renderer.js';
 import { Jump } from './jump.js';
 import { JumpIcons } from './jump_icons.js';
 import { LayerManager } from './layer_manager.js';
+import { NodeBox } from './node_box.js';
 import { OnSaveToggle } from './on_save_toggle.js';
 import { PageLink } from './page_link.js';
 import { ScrollState } from './scroll_state.js';
@@ -139,7 +140,6 @@ if (typeof document !== 'undefined') {
     const OVERLAYS = typeof __OVERLAYS__ !== 'undefined' ? __OVERLAYS__ : 'svg';
     const PAGE_HOST = OVERLAYS === 'page';
     SidebarLogic.useHost(OVERLAYS);
-    const TOGGLE_OFFSET = 14;
     const SCROLL_MARGIN = 40; // px between a scrolled-to node and the window edge
     const C = STATIC_DATA.classes;
 
@@ -204,6 +204,8 @@ if (typeof document !== 'undefined') {
           nesting >= expandLevel
         ) {
           AppState.setCollapsed(appState, nodeId, true);
+          // The renderer drew the collapsed row at the common width.
+          fitCollapsedBox(nodeId);
         }
       }
     }
@@ -773,7 +775,10 @@ if (typeof document !== 'undefined') {
           toggle.setAttribute('y', String(currentY + height / 2 + 4));
           const nodeX = numberAttribute(node, 'x');
           const nodeW = numberAttribute(node, 'width');
-          toggle.setAttribute('x', String(nodeX + nodeW - TOGGLE_OFFSET));
+          toggle.setAttribute(
+            'x',
+            String(nodeX + nodeW - NodeBox.TOGGLE_OFFSET),
+          );
         }
 
         // Update tree lines
@@ -1198,12 +1203,6 @@ if (typeof document !== 'undefined') {
       if (!countLabel) return;
       const nodeRect = DomAdapter.getNode(nodeId);
       if (!nodeRect) return;
-      if (!nodeRect.hasAttribute('data-original-width')) {
-        nodeRect.setAttribute(
-          'data-original-width',
-          nodeRect.getAttribute('width') ?? '',
-        );
-      }
       // A collapsed parent hiding a cycle node shows the marker glyph (same
       // loop-closer as the sidebar's closing edge); CSS reveals it and turns
       // the label red only under cluster mode.
@@ -1222,44 +1221,53 @@ if (typeof document !== 'undefined') {
       );
       if (collapsed) {
         countLabel.textContent = ` (+${countDescendants(nodeId)})`;
-        const labelText = countLabel.parentElement;
-        if (labelText) {
-          const textWidth = TextMeasure.estimateWidth(
-            labelText.textContent,
-            12,
-          );
-          const padding = 20;
-          const neededWidth = textWidth + padding;
-          const originalWidth = numberAttribute(
-            nodeRect,
-            'data-original-width',
-          );
-          const newWidth = Math.max(originalWidth, neededWidth);
-          nodeRect.setAttribute('width', String(newWidth));
-          // Reposition toggle icon to right edge of expanded box
-          if (toggleIcon) {
-            const nodeX = numberAttribute(nodeRect, 'x');
-            toggleIcon.setAttribute(
-              'x',
-              String(nodeX + newWidth - TOGGLE_OFFSET),
-            );
-          }
-        }
+        fitCollapsedBox(nodeId);
       } else {
         countLabel.textContent = '';
         const originalWidth = nodeRect.getAttribute('data-original-width');
         if (originalWidth) {
           nodeRect.setAttribute('width', originalWidth);
-          // Restore toggle icon to original position
-          if (toggleIcon) {
-            const nodeX = numberAttribute(nodeRect, 'x');
-            toggleIcon.setAttribute(
-              'x',
-              String(nodeX + parseFloat(originalWidth) - TOGGLE_OFFSET),
-            );
-          }
+          placeBoxEnd(nodeId, nodeRect, parseFloat(originalWidth));
         }
       }
+    }
+
+    // Moves the collapse symbol and the level number of a row to the right
+    // edge of its box, `width` wide.
+    function placeBoxEnd(nodeId: string, nodeRect: Element, width: number) {
+      const nodeX = numberAttribute(nodeRect, 'x');
+      DomAdapter.getCollapseToggle(nodeId)?.setAttribute(
+        'x',
+        String(nodeX + width - NodeBox.TOGGLE_OFFSET),
+      );
+      DomAdapter.getLevelLabel(nodeId)?.setAttribute(
+        'x',
+        String(NodeBox.levelEndX(nodeX, width)),
+      );
+    }
+
+    // Widens the box of a collapsed parent until its grown label fits.
+    function fitCollapsedBox(nodeId: string) {
+      const nodeRect = DomAdapter.getNode(nodeId);
+      const label = DomAdapter.getCountLabel(nodeId)?.parentElement;
+      if (!nodeRect || !label) return;
+      if (!nodeRect.hasAttribute('data-original-width')) {
+        nodeRect.setAttribute(
+          'data-original-width',
+          nodeRect.getAttribute('width') ?? '',
+        );
+      }
+      const levelText = DomAdapter.getLevelLabel(nodeId)?.textContent ?? '';
+      const labelWidth = TextMeasure.estimateWidth(
+        NodeBox.labelText(label.textContent ?? '', levelText),
+        12,
+      );
+      const width = Math.max(
+        numberAttribute(nodeRect, 'data-original-width'),
+        NodeBox.collapsedWidth(labelWidth, levelText),
+      );
+      nodeRect.setAttribute('width', String(width));
+      placeBoxEnd(nodeId, nodeRect, width);
     }
 
     // Collapses or expands one node in state and DOM, without a relayout.
@@ -1410,6 +1418,18 @@ if (typeof document !== 'undefined') {
       );
       AppState.setClusterMode(appState, isChecked);
       recomputeArcVisibility();
+    }
+
+    // Flip the levels checkbox: the level numbers show while it is checked.
+    function toggleLevels() {
+      const checkbox = DomAdapter.querySelector('#levels-checkbox');
+      const isChecked = checkbox
+        ? checkbox.classList.toggle(C.toolbar.checked)
+        : false;
+      DomAdapter.getSvgRoot()?.classList.toggle(
+        C.nodes.levelsHidden,
+        !isChecked,
+      );
     }
 
     function toggleFilteredNodes(
@@ -1607,6 +1627,7 @@ if (typeof document !== 'undefined') {
       'module-dep-checkbox',
       'reexport-dep-checkbox',
       'cycles-checkbox',
+      'levels-checkbox',
       'external-dep-checkbox',
       'transitive-dep-checkbox',
     ];
@@ -1626,6 +1647,7 @@ if (typeof document !== 'undefined') {
       const box = DomAdapter.getElementById(id);
       if (!box || box.classList.contains(C.toolbar.checked) === on) return;
       if (id === 'cycles-checkbox') toggleClusterMode();
+      else if (id === 'levels-checkbox') toggleLevels();
       else if (id === 'external-dep-checkbox') toggleExternalDepVisibility();
       else if (id === 'transitive-dep-checkbox')
         toggleTransitiveDepVisibility();
@@ -1861,6 +1883,13 @@ if (typeof document !== 'undefined') {
       ?.addEventListener('click', (e) => {
         e.stopPropagation();
         toggleClusterMode();
+      });
+
+    DomAdapter.querySelector('#levels-checkbox')
+      ?.closest('label')
+      ?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleLevels();
       });
 
     DomAdapter.querySelector('#external-dep-checkbox')

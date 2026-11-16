@@ -187,6 +187,13 @@ describe('Convenience methods', () => {
     ]);
   });
 
+  test('getLevelLabel finds the level number of a row by its id', () => {
+    const mock = createMockDomAdapter();
+    const el = createFakeElement('tspan');
+    mock._registerElement('level-node1', el);
+    expect(mock.getLevelLabel('node1')).toBe(el);
+  });
+
   test('getTreeLines with role=child uses Selectors.treeLineChild', () => {
     const mock = createMockDomAdapter();
     const lines = [createFakeElement('line'), createFakeElement('line')];

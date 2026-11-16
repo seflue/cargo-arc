@@ -441,6 +441,18 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
             c.nodes.child_count,
             &[("font-size", "10px"), ("fill", n.child_count)],
         ),
+        CssRule::class(
+            c.nodes.level,
+            &[
+                ("font-size", "10px"),
+                ("fill", n.child_count),
+                ("text-anchor", "end"),
+            ],
+        ),
+        CssRule::new(
+            &format!(".{} .{}", c.nodes.levels_hidden, c.nodes.level),
+            &[("display", "none")],
+        ),
         // Labels on a cycle, and collapsed parents hiding one, share the cycle
         // color; both are gated on the container state like cycle-arc. The
         // marker glyph is always in the DOM (JS fills it on collapse) and only
@@ -2734,6 +2746,22 @@ mod tests {
                 &format!(".{}.{}", CSS.direction.dep_arc, CSS.direction.downward).as_str()
             ),
             "Should have .dep-arc.downward rule"
+        );
+    }
+
+    #[test]
+    fn test_level_numbers_are_right_aligned_and_can_be_hidden() {
+        let css = render_styles();
+
+        let rule = css
+            .find(".level {")
+            .map(|start| &css[start..start + 120])
+            .expect("a rule for the level number");
+        assert!(rule.contains("text-anchor: end"), "{rule}");
+        assert!(rule.contains("font-size: 10px"), "{rule}");
+        assert!(
+            css.contains(".levels-hidden .level { display: none"),
+            "a rule that hides the level numbers"
         );
     }
 

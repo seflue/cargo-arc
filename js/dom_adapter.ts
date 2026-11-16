@@ -88,6 +88,9 @@ function createConvenienceMethods() {
     getCycleMarker(this: DomQueries, nodeId: string) {
       return this.getElementById(Selectors.cycleMarkerId(nodeId));
     },
+    getLevelLabel(this: DomQueries, nodeId: string) {
+      return this.getElementById(Selectors.levelId(nodeId));
+    },
     getTreeLines(this: DomQueries, nodeId: string, role: 'child' | 'parent') {
       const sel =
         role === 'child'

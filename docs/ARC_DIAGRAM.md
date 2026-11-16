@@ -17,6 +17,7 @@ Terms used here are defined in [GLOSSARY.md](GLOSSARY.md).
 
 Every box is a package or a module, nested by hierarchy.
 Blue boxes are packages, orange boxes are modules, and gray boxes are external dependencies.
+A module box shows the [level](GLOSSARY.md#level) of its module as a small number near its right edge.
 
 Every arc is a dependency between two boxes, and carries exactly one arc type:
 
@@ -113,6 +114,8 @@ A node filter cannot force an arc back into view, and an arc filter cannot bring
 The circular-dependency checkbox does one thing beyond its filter.
 It turns on **cluster mode**, which widens hovering, highlighting and styling from the single edge to the whole tangle it belongs to.
 That mode is not a filter of its own.
+
+The menu also holds **Show Levels**, which shows or hides the level numbers in the module boxes and is on by default.
 
 ## Test code
 

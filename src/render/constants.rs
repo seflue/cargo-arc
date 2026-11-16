@@ -24,6 +24,10 @@ pub(super) struct LayoutConstants {
     /// Extra box width that keeps the collapse toggle clear of the longest label.
     pub toggle_space: f32,
     pub toggle_y_offset: f32,
+    /// The width of one digit of a level number.
+    pub level_char_width: f32,
+    /// The gap between the level number of a row and its collapse symbol.
+    pub level_gap: f32,
     pub arc_y_offset: f32,
     pub arc_min_space: f32,
     pub toolbar: ToolbarLayout,
@@ -97,6 +101,8 @@ pub(super) static LAYOUT: LayoutConstants = LayoutConstants {
     toggle_offset: 14.0,
     toggle_space: 14.0,
     toggle_y_offset: 4.0,
+    level_char_width: 6.0,
+    level_gap: 6.0,
     arc_y_offset: 3.0,
     arc_min_space: 50.0,
     toolbar: ToolbarLayout {
@@ -172,6 +178,10 @@ pub(super) struct NodeClasses {
     pub tree_line: &'static str,
     pub collapse_toggle: &'static str,
     pub collapsed: &'static str,
+    /// The tspan inside a module label that shows the level of the module.
+    pub level: &'static str,
+    /// Root state class while the level numbers are hidden.
+    pub levels_hidden: &'static str,
 }
 
 #[derive(Serialize)]
@@ -444,6 +454,8 @@ pub(super) static CSS: CssClassNames = CssClassNames {
         tree_line: "tree-line",
         collapse_toggle: "collapse-toggle",
         collapsed: "collapsed",
+        level: "level",
+        levels_hidden: "levels-hidden",
     },
     direction: DirectionClasses {
         dep_arc: "dep-arc",
