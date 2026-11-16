@@ -107,23 +107,11 @@ const DerivedState = {
   },
 
   /**
-   * Determine arc direction based on hierarchy.
-   * @private
-   * @returns 'upward' | 'downward'
+   * The direction class of an arc: 'upward' for an upward edge, an edge
+   * against the level order of its tangle, and 'downward' for every other.
    */
-  _determineDirection(
-    fromId: string,
-    toId: string,
-    parentMap: Map<string, string>,
-  ): string {
-    // Simple heuristic: check if 'to' is an ancestor of 'from' (upward)
-    // Otherwise downward
-    let current: string | undefined = fromId;
-    while (current) {
-      if (current === toId) return 'upward';
-      current = parentMap.get(current);
-    }
-    return 'downward';
+  arcDirection(arc: Pick<ArcData, 'upward'>): 'upward' | 'downward' {
+    return arc.upward ? 'upward' : 'downward';
   },
 
   /**

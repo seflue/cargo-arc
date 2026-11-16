@@ -4,7 +4,7 @@
 use crate::layout::{LayoutIR, symbol_groups};
 use serde_json::Value;
 
-pub(crate) const COLUMNS: [&str; 7] = [
+pub(crate) const COLUMNS: [&str; 9] = [
     "from",
     "to",
     "symbol",
@@ -12,6 +12,8 @@ pub(crate) const COLUMNS: [&str; 7] = [
     "re-exported",
     "locations",
     "cycles",
+    "upward",
+    "tie",
 ];
 
 /// Return the header fields `query edges` adds: what a record is, how the
@@ -51,6 +53,19 @@ pub(crate) fn header_fields() -> Vec<(&'static str, Value)> {
             "cycles",
             "the representative cycles through the edge; a re-export, an edge whose \
              imports are all pub use, lies on none unless --include-reexports"
+                .into(),
+        ),
+        (
+            "upward",
+            "true for an upward edge, the same for each symbol on it: an edge of a tangle \
+             that runs against the tangle's level order and closes a cycle; query tangles \
+             describes the level order"
+                .into(),
+        ),
+        (
+            "tie",
+            "true for an upward edge whose edge back carries as many symbols, so these two \
+             edges alone do not decide which of them is upward"
                 .into(),
         ),
         (
@@ -95,6 +110,8 @@ pub(crate) fn records(layout: &LayoutIR) -> Vec<Vec<Value>> {
                         group.via_reexport.into(),
                         locations.into(),
                         edge.cycle_ids.len().into(),
+                        edge.direction.is_upward().into(),
+                        edge.direction.is_tie().into(),
                     ]
                 })
                 .collect::<Vec<_>>()

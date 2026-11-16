@@ -146,6 +146,10 @@ struct ArcData {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(test, ts(optional))]
     scc_id: Option<usize>,
+    /// Whether the edge is an upward edge. Left out when it is not.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(test, ts(as = "Option<bool>", optional))]
+    upward: bool,
 }
 
 #[derive(Serialize)]
@@ -434,6 +438,7 @@ fn generate_static_data(
                 usages,
                 cycle_ids: edge.cycle_ids.clone(),
                 scc_id: edge.scc_id,
+                upward: edge.direction.is_upward(),
             },
         );
     }
@@ -575,7 +580,9 @@ mod tests {
     use crate::analyze::rust::PROFILE as RUST_PROFILE;
     use crate::diagnose::RepresentativeCycles;
     use crate::graph::{ArcGraph, EdgeWeight, Node, Reexports};
-    use crate::layout::{JumpTable, JumpTarget, LayoutEdge, LocatedDefinition, build_layout};
+    use crate::layout::{
+        EdgeDirection, JumpTable, JumpTarget, LayoutEdge, LocatedDefinition, build_layout,
+    };
     use crate::model::{EdgeContext, SourceLocation};
     use crate::test_support::{module_node, package_node};
 
@@ -1891,6 +1898,38 @@ mod tests {
             script.contains("aggregatedLocations") || script.contains("hiddenEdgeData"),
             "Script should collect locations from hidden edges for virtual arcs"
         );
+    }
+
+    #[test]
+    fn the_arc_of_an_upward_edge_is_marked_upward() {
+        let mut ir = LayoutIR::new();
+        let package = ir.add_item(ItemKind::Package, "app".into());
+        let module = |ir: &mut LayoutIR, name: &str| {
+            ir.add_item(
+                ItemKind::Module {
+                    nesting: 1,
+                    parent: package,
+                },
+                name.into(),
+            )
+        };
+        let (a, b) = (module(&mut ir, "a"), module(&mut ir, "b"));
+        ir.edges
+            .push(LayoutEdge::new(a, b, EdgeContext::production()));
+        ir.edges.push(LayoutEdge {
+            direction: EdgeDirection::Upward { tie: false },
+            ..LayoutEdge::new(b, a, EdgeContext::production())
+        });
+
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
+        let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
+        let data = generate_static_data(&config, &ir, &positioned, &HashSet::from([0]));
+
+        assert!(data.arcs["2-1"].upward);
+        assert!(!data.arcs["1-2"].upward);
+        let json = serde_json::to_value(&data.arcs).expect("arcs serialize");
+        assert_eq!(json["2-1"]["upward"], true);
+        assert!(json["1-2"].get("upward").is_none());
     }
 
     #[test]

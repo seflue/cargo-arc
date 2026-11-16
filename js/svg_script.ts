@@ -819,7 +819,7 @@ if (typeof document !== 'undefined') {
           fromCollapsed: getVisibleAncestor(fromId) !== fromId,
           toCollapsed: getVisibleAncestor(toId) !== toId,
           sourceLocations: StaticData.getArcUsages(arcId),
-          direction: DerivedState._determineDirection(fromId, toId, parentMap),
+          direction: DerivedState.arcDirection(arc),
         });
       }
       return edges;

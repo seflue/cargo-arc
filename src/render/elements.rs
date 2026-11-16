@@ -542,7 +542,7 @@ pub(super) fn render_edges(
         match (edge.cycle, edge.direction, &edge.context.kind) {
             (_, _, UsageKind::Test(_)) => 0,
             (None, EdgeDirection::Downward, UsageKind::Production) => 1,
-            (None, EdgeDirection::Upward, UsageKind::Production) => 2,
+            (None, EdgeDirection::Upward { .. }, UsageKind::Production) => 2,
             (Some(_), _, _) => 3,
         }
     });
@@ -662,7 +662,7 @@ fn arc_attrs(edge: &LayoutEdge, from_kind: &ItemKind, to_kind: &ItemKind) -> Arc
     // is the arc's only color.
     let (dir_arc_class, dir_arrow_class, direction) = match edge.direction {
         EdgeDirection::Downward => (cd.downward, cd.dep_arrow, "downward"),
-        EdgeDirection::Upward => (cd.upward, cd.upward_arrow, "upward"),
+        EdgeDirection::Upward { .. } => (cd.upward, cd.upward_arrow, "upward"),
     };
     let (arc_cycle_marker, arrow_cycle_marker) = if edge.cycle.is_some() {
         (format!(" {}", cd.cycle_arc), format!(" {}", cd.cycle_arrow))

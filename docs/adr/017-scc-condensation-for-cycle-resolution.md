@@ -2,49 +2,55 @@
 
 - **Status:** Active
 - **Decided:** 2026-02-11
-- **Updated:** 2026-09-17
+- **Updated:** 2026-11-16
+- **Related:** ADR-001 (deterministic layout), ADR-023 (feedback arc set)
 
 ## Context
 
-Module sorting broke when cross-subtree dependencies formed cycles (e.g. A's child uses B, B's child uses A). These cycles aren't real circular dependencies — they arise from combining two analysis levels (crate-level and module-level edges). But topological sorting can't handle cycles at all, so even these false positives caused non-deterministic output.
+The diagram lists the nodes under one parent from top to bottom, a node before the nodes it depends on.
+A topological sort gives such a sequence only for a graph without cycles.
 
-Simple heuristics (crate-level propagation, fallback sorting) didn't solve this reliably.
+Siblings form cycles in two ways.
+Inside a tangle, modules use each other.
+Outside a tangle, two sibling subtrees can each hold a module that uses a module of the other, without a cycle between modules.
+
+Until 2026-11-16 the order inside a tangle came from the feedback arc set of the cycle diagnosis.
+A cycle that was left among up to eight siblings was ordered by a search over every order, and a larger one alphabetically.
 
 ## Decision
 
-Three-step approach:
+The reading order of the modules follows the level order of the tangles.
+An upward edge counts in the reverse direction, so the modules give the order no cycle.
 
-1. **Break cycles:** Tarjan's SCC (Strongly Connected Components) algorithm groups mutually-dependent nodes into clusters. Collapsing each cluster into a single node produces a cycle-free graph (DAG).
+Siblings that still form a cycle are condensed into one node, and the condensed graph is sorted topologically.
+The siblings of a cycle stand together.
+Among the siblings free to come next, and among the siblings of a cycle, the one whose subtree has the higher mean level comes first, then the one first by name.
 
-2. **Sort the DAG:** Kahn's algorithm sorts the clusters in dependency order. When multiple clusters are equally valid, alphabetical order breaks the tie (determinism).
+The feedback arc set of ADR-023 is unchanged and is a different set of edges.
 
-3. **Order within clusters:** The sibling graph is built from the same production subgraph the cycle diagnosis runs on, so a pure re-export edge has no say in the order unless re-exports are included. Where a cycle runs between modules, the diagnosis has already chosen its feedback arcs; the sibling graph counts each of them in the reverse direction, so the sort puts the arc's target above its source and the arc is the edge that points "upward" (against the reading direction). A cluster that is still cyclic after that is a mixed-edge cycle with no cycle between modules. For those we try every possible ordering and pick the one where the least edge weight points upward, weights reflecting how many cross-subtree dependencies exist in each direction. For clusters larger than 8 nodes we fall back to alphabetical order (trying all orderings would be too expensive).
-
-These mixed-edge cycles are resolved silently, without visualizing them — they are analysis artifacts, not architecture problems.
-
-The feedback arcs are reversed rather than dropped: when the rest of a cycle runs outside the parent whose children are being ordered, nothing else at that level constrains the arc's two siblings, and the arc could end up pointing down.
+Packages have no level.
+They keep the search over every order for a cycle of up to eight packages and the alphabetical order above that.
 
 ## Rationale
 
-- Condensation mathematically guarantees a cycle-free graph — no heuristic needed
-- Kahn's algorithm with alphabetical tiebreaker produces deterministic output independent of internal graph representation (cf. ADR-001: Deterministic Layout)
-- Taking the order from the diagnosis makes the picture and the report name the same edges: what points up in a tangle is, as far as the sibling cycles allow, what the report lists as a feedback arc
-- Weighted ordering within the remaining clusters minimizes visual upward edges, making the diagram easier to read
-- Visualizing these false-positive cycles would be misleading
+- Condensation guarantees a graph without cycles, so the sort needs no heuristic.
+- The level order is the same on every run and the name decides every remaining choice, so the same graph gives the same diagram (ADR-001).
+- The level order covers a tangle of any size. The search over every order stopped at eight siblings, and above that the position of a row said nothing about its dependencies.
+- With the levels as the source, the diagram, `query tangles` and `query edges` name the same edges as upward.
+- The level order weighs an edge by its symbol count. ADR-023 rejects a reference weight for ranking the feedback arcs, because the count does not tell how hard the code behind an edge is to change. The level order makes no statement about that. It decides which of two modules that use each other the diagram shows as the user, and takes the one that uses more symbols of the other.
+- An upward edge is reversed where it could be dropped. When the rest of its cycle runs outside the parent whose children are being ordered, nothing else constrains its two siblings.
+- A cycle between subtrees without a cycle between modules comes from reading module edges at the level of subtrees. The diagram does not draw it as a cycle.
 
 ## Consequences
 
-### Positive
-- Stable sorting for arbitrary workspace topologies
-- A feedback arc of the report is an upward edge wherever the siblings around it form no mixed-edge cycle of their own
-- Minimal upward edges within the remaining cycle clusters
-
-### Negative
-- A mixed-edge cycle can remain inside a tangle once its feedback arcs are reversed; there the weight decides, an edge that is no feedback arc can point up, and a feedback arc can point down
-- Brute-force ordering limited to clusters of n≤8 nodes (40,320 permutations); above that the alphabet decides, and a feedback arc points either way
+- An upward edge of the diagram need not be a feedback arc of `check`, and a feedback arc need not be upward.
+- An upward edge can point down in the diagram, and another edge can point up. The row of a parent module stays above its children whatever their levels, and one position has to serve a whole subtree.
+- The order of siblings changes outside tangles too, because siblings that do not depend on each other now come by mean level.
+- Another level order can leave as few symbols on the edges against it and give another diagram.
+- A subtree with modules on many levels has a mean that describes none of them.
 
 ## References
 
-- [Tarjan (1972): "Depth-first search and linear graph algorithms"](https://doi.org/10.1137/0201010), SIAM J. Comput. 1(2):146-160. (SCC algorithm)
-- [Kahn (1962): "Topological sorting of large networks"](https://doi.org/10.1145/368996.369025), Comm. ACM 5(11):558-562. (Deterministic topological sort)
-- [Minimum Feedback Arc Set](https://en.wikipedia.org/wiki/Feedback_arc_set): NP-hard problem (Karp, 1972). The module-level set comes from the greedy cover of the cycle diagnosis; the ordering of what remains is a brute-force solution for the weighted variant — O(n!) justifies the guard at n>8.
+- [Tarjan (1972): "Depth-first search and linear graph algorithms"](https://doi.org/10.1137/0201010), SIAM J. Comput. 1(2):146-160.
+- [Kahn (1962): "Topological sorting of large networks"](https://doi.org/10.1145/368996.369025), Comm. ACM 5(11):558-562.
+- [Glossary: Levels](../GLOSSARY.md#levels): level order, level, upward edge.

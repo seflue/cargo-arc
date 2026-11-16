@@ -93,6 +93,27 @@ pub(super) fn stable_toposort(
     result
 }
 
+/// Return the nodes of `deps` in an order that puts a node before the nodes
+/// it depends on, and of the nodes free to come next the one with the lowest
+/// `rank` first. Nodes that depend on each other in a cycle stand together,
+/// in the order of their ranks.
+pub(super) fn ranked_toposort<R: Ord>(
+    deps: &DiGraph<NodeIndex, usize>,
+    rank: impl Fn(NodeIndex) -> R,
+) -> Vec<NodeIndex> {
+    let (condensed, _) = condense_sccs(deps, &tarjan_scc(deps));
+    let lowest_rank = |scc: LocalIdx| condensed[scc].iter().map(|&node| rank(deps[node])).min();
+    kahns_toposort(&condensed, lowest_rank)
+        .into_iter()
+        .flat_map(|scc| {
+            condensed[scc]
+                .iter()
+                .map(|&node| deps[node])
+                .sorted_by_key(|&node| rank(node))
+        })
+        .collect()
+}
+
 /// Read-only context for toposort operations on a subgraph.
 struct ToposortGraph<'a, F> {
     subgraph: &'a DiGraph<NodeIndex, usize>,
@@ -148,9 +169,9 @@ impl<F: Fn(NodeIndex) -> String> ToposortGraph<'_, F> {
             .collect()
     }
 
-    /// Brute-force minimum-upward-permutation for SCC members.
-    /// Enumerates all permutations and picks the one with the lowest sum of
-    /// "upward" edge weights (edges from later → earlier in the permutation).
+    /// Brute-force the permutation of SCC members with the least edge weight
+    /// against it. Enumerates all permutations and picks the one with the
+    /// lowest sum of edge weights from a later to an earlier member.
     /// Falls back to alphabetical for n > 8 (40320 permutations limit).
     fn optimal_scc_order(&self, members: &[LocalIdx]) -> Vec<NodeIndex> {
         let scc_size = members.len();
@@ -175,7 +196,7 @@ impl<F: Fn(NodeIndex) -> String> ToposortGraph<'_, F> {
             }
         }
 
-        // Enumerate all permutations, score by upward weight sum
+        // Enumerate all permutations, score by the weight against each
         let mut best_perm: Vec<usize> = (0..scc_size).collect();
         let mut best_score = usize::MAX;
         let mut best_names: Vec<String> = Vec::new();

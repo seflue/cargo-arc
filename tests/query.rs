@@ -616,13 +616,13 @@ fn edges_list_each_symbol_crossing_an_edge_with_its_usage_categories() {
     assert_eq!(
         body_of(&out),
         [
-            "from\tto\tsymbol\tusage-categories\tre-exported\tlocations\tcycles",
-            "app::alpha\tapp::beta\tLIMIT\tvalues\tfalse\tsrc/alpha.rs:1\t1",
-            "app::alpha\tapp::beta\tSettings\ttypes,functions\tfalse\tsrc/alpha.rs:1\t1",
-            "app::alpha\tapp::beta\thelper\tfunctions\tfalse\tsrc/alpha.rs:1\t1",
-            "app::beta\tapp::alpha\tWidget\ttypes\tfalse\tsrc/beta.rs:1\t1",
-            "app::beta\tapp::gamma\tToken\t\ttrue\tsrc/beta.rs:2\t0",
-            "app::gamma\tapp::beta\thelper\tfunctions\tfalse\tsrc/gamma.rs:1\t0",
+            "from\tto\tsymbol\tusage-categories\tre-exported\tlocations\tcycles\tupward\ttie",
+            "app::alpha\tapp::beta\tLIMIT\tvalues\tfalse\tsrc/alpha.rs:1\t1\tfalse\tfalse",
+            "app::alpha\tapp::beta\tSettings\ttypes,functions\tfalse\tsrc/alpha.rs:1\t1\tfalse\tfalse",
+            "app::alpha\tapp::beta\thelper\tfunctions\tfalse\tsrc/alpha.rs:1\t1\tfalse\tfalse",
+            "app::beta\tapp::alpha\tWidget\ttypes\tfalse\tsrc/beta.rs:1\t1\ttrue\tfalse",
+            "app::beta\tapp::gamma\tToken\t\ttrue\tsrc/beta.rs:2\t0\tfalse\tfalse",
+            "app::gamma\tapp::beta\thelper\tfunctions\tfalse\tsrc/gamma.rs:1\t0\tfalse\tfalse",
         ]
     );
 }
@@ -680,11 +680,11 @@ fn edges_name_a_binary_beside_a_library_as_a_node_of_its_own() {
     assert_eq!(
         body_of(&out),
         [
-            "from\tto\tsymbol\tusage-categories\tre-exported\tlocations\tcycles",
-            "app::screen\tapp\tConfig\ttypes\tfalse\tsrc/screen.rs:1\t0",
-            "app::{bin}::app\tapp::screen\tdraw\tfunctions\tfalse\tsrc/main.rs:3\t0",
-            "app::{bin}::app\tapp::{bin}::app::cli\tconfig\tfunctions\tfalse\tsrc/main.rs:6\t0",
-            "app::{bin}::app::cli\tapp\tConfig\ttypes\tfalse\tsrc/cli.rs:1\t0",
+            "from\tto\tsymbol\tusage-categories\tre-exported\tlocations\tcycles\tupward\ttie",
+            "app::screen\tapp\tConfig\ttypes\tfalse\tsrc/screen.rs:1\t0\tfalse\tfalse",
+            "app::{bin}::app\tapp::screen\tdraw\tfunctions\tfalse\tsrc/main.rs:3\t0\tfalse\tfalse",
+            "app::{bin}::app\tapp::{bin}::app::cli\tconfig\tfunctions\tfalse\tsrc/main.rs:6\t0\tfalse\tfalse",
+            "app::{bin}::app::cli\tapp\tConfig\ttypes\tfalse\tsrc/cli.rs:1\t0\tfalse\tfalse",
         ]
     );
 }
@@ -754,6 +754,8 @@ fn edges_header_says_what_an_edge_does_not_show() {
             "re-exported",
             "locations",
             "cycles",
+            "upward",
+            "tie",
             "not-shown",
         ]
     );
@@ -777,7 +779,9 @@ fn edges_in_json_carry_lists_and_numbers() {
             "usage-categories",
             "re-exported",
             "locations",
-            "cycles"
+            "cycles",
+            "upward",
+            "tie"
         ])
     );
     assert_eq!(
@@ -790,9 +794,99 @@ fn edges_in_json_carry_lists_and_numbers() {
             "re-exported": true,
             "locations": ["src/beta.rs:2"],
             "cycles": 0,
+            "upward": false,
+            "tie": false,
         })
     );
     assert_eq!(lines.len(), 7);
+}
+
+/// Return the edges of `query edges --json` as from, to, `upward` and `tie`.
+fn edge_marks(json: &str) -> BTreeSet<(String, String, bool, bool)> {
+    json.lines()
+        .skip(1)
+        .map(|line| serde_json::from_str::<Value>(line).expect("each line is JSON"))
+        .map(|record| {
+            let text = |key: &str| record[key].as_str().unwrap().to_string();
+            let flag = |key: &str| record[key].as_bool().unwrap();
+            (text("from"), text("to"), flag("upward"), flag("tie"))
+        })
+        .collect()
+}
+
+fn edge_mark(from: &str, to: &str, upward: bool, tie: bool) -> (String, String, bool, bool) {
+    (from.to_string(), to.to_string(), upward, tie)
+}
+
+/// `store` uses two symbols of `report` and `report` one of `store`, so
+/// `store` comes first in the level order and the edge back is upward.
+#[test]
+fn edges_mark_the_edge_against_the_level_order_as_upward() {
+    let ws = library_of(&[
+        ("lib.rs", "pub mod report;\npub mod store;\n"),
+        (
+            "store.rs",
+            "pub fn load() -> u32 {\n    1\n}\n\
+             \n\
+             pub fn summary() -> u32 {\n    crate::report::render() + crate::report::width()\n}\n",
+        ),
+        (
+            "report.rs",
+            "pub fn render() -> u32 {\n    crate::store::load()\n}\n\
+             \n\
+             pub fn width() -> u32 {\n    80\n}\n",
+        ),
+    ]);
+    let json = stdout_of(&arc(ws.path(), &["query", "edges", "--json"]));
+
+    assert_eq!(
+        edge_marks(&json),
+        BTreeSet::from([
+            edge_mark("app::report", "app::store", true, false),
+            edge_mark("app::store", "app::report", false, false),
+        ])
+    );
+}
+
+/// `store` and `report` use one symbol of each other. `report` comes first
+/// by name, and the edge back is upward and a tie.
+#[test]
+fn edges_mark_an_upward_edge_as_a_tie_when_the_edge_back_carries_as_many_symbols() {
+    let ws = tangled_library();
+    let json = stdout_of(&arc(ws.path(), &["query", "edges", "--json"]));
+
+    assert_eq!(
+        edge_marks(&json),
+        BTreeSet::from([
+            edge_mark("app::report", "app::store", false, false),
+            edge_mark("app::store", "app::report", true, true),
+        ])
+    );
+}
+
+#[test]
+fn edges_mark_upward_the_arcs_the_diagram_marks() {
+    let ws = tangled_library();
+    let data = static_data(&stdout_of(&arc(ws.path(), &[])));
+    let json = stdout_of(&arc(ws.path(), &["query", "edges", "--json"]));
+
+    let upward_arcs: BTreeSet<(String, String)> = data["arcs"]
+        .as_object()
+        .unwrap()
+        .values()
+        .filter(|arc| arc["upward"] == true)
+        .map(|arc| {
+            let end = |key: &str| qualified_in_static_data(&data, arc[key].as_str().unwrap());
+            (end("from"), end("to"))
+        })
+        .collect();
+    let upward_edges: BTreeSet<(String, String)> = edge_marks(&json)
+        .into_iter()
+        .filter(|(_, _, upward, _)| *upward)
+        .map(|(from, to, ..)| (from, to))
+        .collect();
+    assert_eq!(upward_arcs, upward_edges);
+    assert_eq!(upward_arcs.len(), 1);
 }
 
 /// One record of `query edges` or one usage group of `STATIC_DATA`:

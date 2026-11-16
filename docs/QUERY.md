@@ -87,6 +87,8 @@ The records are ordered by `from`, then `to`, then `symbol`.
 | `re-exported` | `true` when every import line that names the symbol is a `pub use` and the importing file refers to no name on that line otherwise, as the diagram's `viaReexport`; `false` otherwise and for the bare imports. A `pub use` of several names whose one name the file also uses is no re-export for any of them. |
 | `locations` | The imports that name the symbol, as `path:line`, the path relative to the workspace root. |
 | `cycles` | The number of [representative cycles](GLOSSARY.md#representative-cycle) through the edge, the same for each symbol on it. A [re-export](GLOSSARY.md#re-export) lies on none unless `--include-reexports`. |
+| `upward` | `true` for an [upward edge](GLOSSARY.md#upward-edge), the same for each symbol on it: an edge of a [tangle](GLOSSARY.md#tangle) that runs against the tangle's [level order](GLOSSARY.md#level-order) and closes a cycle. The diagram draws the arc of such an edge in its own style. |
+| `tie` | `true` for an upward edge whose edge back carries as many symbols, so that these two edges alone do not decide which of them is upward. |
 
 In TSV, `usage-categories` and `locations` are comma-separated; JSON gives both as lists.
 
@@ -100,6 +102,8 @@ The header adds these fields after `flags`:
 | `re-exported` | What the `re-exported` column holds. |
 | `locations` | What the `locations` column holds. |
 | `cycles` | What the `cycles` column counts. |
+| `upward` | What the `upward` column marks. |
+| `tie` | What the `tie` column marks. |
 | `not-shown` | What an edge does not show: method calls on a receiver, field access, usages inside the same module, and test usages unless `--include-tests`. |
 
 ## query usages
@@ -194,7 +198,8 @@ The modules of its package outside the tangle count as well, so the lowest level
 
 No levels fit every edge of a tangle.
 cargo-arc first puts the modules of a tangle into a [level order](GLOSSARY.md#level-order), each module before the modules it uses, that leaves few symbols on the edges against it.
-An edge against that order does not count for the levels when it closes a cycle.
+An edge against that order is an [upward edge](GLOSSARY.md#upward-edge) when it closes a cycle, and an upward edge does not count for the levels.
+`query edges` marks the upward edges in its column `upward`.
 The search for the order starts from the same order on every run, so the same code gives the same levels.
 Another order can leave as few symbols on the edges against it, or fewer, and give other levels.
 

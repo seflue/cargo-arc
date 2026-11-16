@@ -305,6 +305,22 @@ const PARENT_ARC_DATA = {
   },
 };
 
+describe('DerivedState.arcDirection', () => {
+  test('an arc marked upward is upward', () => {
+    expect(
+      DerivedState.arcDirection({ from: 'a', to: 'b', upward: true }),
+    ).toBe('upward');
+  });
+
+  // The record alone decides: an arc from a child to its parent row points
+  // up in the diagram and is still not an upward edge.
+  test('an arc without the mark is downward', () => {
+    expect(DerivedState.arcDirection({ from: 'child', to: 'parent' })).toBe(
+      'downward',
+    );
+  });
+});
+
 describe('DerivedState', () => {
   let staticData;
 

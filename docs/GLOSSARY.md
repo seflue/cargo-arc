@@ -106,17 +106,28 @@ cargo-arc does not use either word yet; a hint that proposes a move should use t
 | Term | Definition |
 |------|------------|
 | **<a id="level-order">Level order</a>** | An order of the modules of a [tangle](#tangle), each module before the modules it uses, that leaves few symbols on the [edges](#edge) against it, counted as [symbol count](#symbol-count). cargo-arc finds it by a search that starts from the same order on every run, so the same graph gives the same level order. Another order can leave as few symbols, or fewer. |
-| **<a id="level">Level</a>** | The height of a module above the modules it uses: 1 for a module that uses no module of its [package](#package), and otherwise one more than the highest level among the modules of its package that it uses. In a [tangle](#tangle), an [edge](#edge) against the [level order](#level-order) that closes a [cycle](#cycle) does not count. |
+| **<a id="level">Level</a>** | The height of a module above the modules it uses: 1 for a module that uses no module of its [package](#package), and otherwise one more than the highest level among the modules of its package that it uses. An [upward edge](#upward-edge) does not count. |
+| **<a id="upward-edge">Upward edge</a>** | An [edge](#edge) of a [tangle](#tangle) that runs against the tangle's [level order](#level-order) and closes a [cycle](#cycle) with edges that are not upward. Without its upward edges a tangle has no cycle. The arc diagram draws an upward edge in its own style, and `query edges` marks it. |
 
 The [level](#level) is the one Lakos defines (Vol. I, section 1.10), counted inside a [package](#package).
 A module of another package raises no level, and what lies outside the workspace has none, where Lakos gives it 0.
 Several modules can share a level, so a level is not a position in the [reading order](#reading-order).
 
 Lakos gives every member of a [cycle](#cycle) the highest level the cycle spans (footnote 128).
-cargo-arc leaves out the edges against the [level order](#level-order), so the modules of a [tangle](#tangle) get levels of their own.
-Those levels belong to that one order, and another order gives other levels.
+cargo-arc leaves out the [upward edges](#upward-edge), so the modules of a [tangle](#tangle) get levels of their own.
+Those levels belong to that one order, and another order gives other upward edges and other levels.
 
-The edges against the [level order](#level-order) are not the [feedback arc set](#feedback-arc-set), which covers the [counted cycles](#counted-cycle) and is ranked by [traffic](#traffic).
+An [upward edge](#upward-edge) is a *tie* when the edge back carries the same [symbol count](#symbol-count), so that these two edges alone do not decide which of them is upward.
+`query edges` marks it in the column `tie` ([QUERY.md](QUERY.md#query-edges)).
+Elsewhere *tie* has its ordinary meaning, as for equal scores in a ranking.
+
+The [upward edges](#upward-edge) are not the [feedback arc set](#feedback-arc-set), which covers the [counted cycles](#counted-cycle) and is ranked by [traffic](#traffic).
+`check` lists the [feedback arcs](#feedback-arc), and the arc diagram and `query edges` mark the upward edges.
+
+Structure101 calls an edge against its levelization a *feedback (upward) dependency*.
+Whether an [edge](#edge) is a *back edge* depends on where a depth-first search starts (see [Cycles and clusters](#cycles-and-clusters)).
+Whether an edge is [upward](#upward-edge) depends on the [level order](#level-order) of its tangle, which is the same on every run.
+In package managers, the *reverse dependencies* of a package are the packages that depend on it.
 
 *Levelization* is Lakos's word for giving every component a level, and it needs a graph without [cycles](#cycle).
 The *diagnostic level* of a rules file is unrelated and is always written with *diagnostic*.
@@ -281,8 +292,7 @@ In this file, a [cluster](#cluster) is a strongly connected component, and a [sc
 | **<a id="arc-type">Arc type</a>** | The category of dependency an arc draws: package-dep, module-dep or [re-export](#re-export). Every arc has exactly one arc type. cargo-arc derives it from the arc's endpoints and its re-export flag and does not store it. |
 | **<a id="re-export">Re-export</a>** | The [arc type](#arc-type) of an arc whose imports are all `pub use`, so that it passes names on without depending on them. A single ordinary import on the arc makes it a module-dep instead ([ADR-022](adr/022-reexport-edges-tagged-not-dropped.md)). |
 | **<a id="filter">Filter</a>** | A checkbox in the **View** menu that shows or hides part of the diagram. Four filters cover arcs: crate dependencies, module dependencies, [re-exports](#re-export) and circular dependencies. The others cover [nodes](#node). |
-| **<a id="reading-order">Reading order</a>** | The top-to-bottom sequence of the [nodes](#node) under one parent. A node comes before the nodes it depends on. Inside a [tangle](#tangle) no order can do that for every [edge](#edge), and the layout puts the [feedback arcs](#feedback-arc) upward as far as the [cycles](#cycle) between subtrees allow. A tangle of more than eight nodes under one parent is ordered alphabetically instead. |
-| **<a id="upward-edge">Upward edge</a>** | An [edge](#edge) whose target sits above its source in the [reading order](#reading-order). Inside a [tangle](#tangle) an upward edge is a [feedback arc](#feedback-arc) or an edge of a [cycle](#cycle) between two subtrees that each hold a module that uses a module of the other, without a cycle between modules. The layout breaks such a cycle by weight. Outside a tangle only the second case occurs. The diagram draws upward edges in their own style. |
+| **<a id="reading-order">Reading order</a>** | The top-to-bottom sequence of the [nodes](#node) under one parent. A node comes before the nodes it depends on, and an [upward edge](#upward-edge) counts in the reverse direction. Of the modules free to come next, the one whose subtree has the higher mean [level](#level) comes first, and with equal means the one first by name. |
 
 In this section and in [ARC_DIAGRAM.md](ARC_DIAGRAM.md), *diagram* alone means the [arc diagram](#arc-diagram).
 Where a text also covers the [hotspot map](#hotspot-map), say *arc diagram*.
@@ -302,14 +312,10 @@ A *suppressed* arc is one the diagram does not draw: a package-dep arc between t
 
 The checkbox of the circular-dependencies [filter](#filter) also turns on *cluster mode*, which is not a filter.
 
-The [reading order](#reading-order) follows a levelization in Lakos's sense (see [Levels](#levels)), and Structure101 calls an [edge](#edge) against it a *feedback (upward) dependency*.
-
-Whether an [edge](#edge) is a *back edge* depends on where a depth-first search starts (see [Cycles and clusters](#cycles-and-clusters)).
-Whether an edge is [upward](#upward-edge) depends only on the [reading order](#reading-order), which a reader can see in the diagram.
-In package managers, the *reverse dependencies* of a package are the packages that depend on it.
-
-The [reading order](#reading-order) is derived from the [feedback arc set](#feedback-arc-set) ([ADR-017](adr/017-scc-condensation-for-cycle-resolution.md)).
-A [feedback arc](#feedback-arc) between two sibling subtrees counts in the reverse direction, so the sort puts its target above its source.
-Where the siblings still form a [cycle](#cycle) after that, a cycle between subtrees without a cycle between modules, the weight decides, and a feedback arc can point down.
-In a tangle of more than eight nodes under one parent, the alphabet decides.
+The [reading order](#reading-order) of the modules follows the [levels](#level) ([ADR-017](adr/017-scc-condensation-for-cycle-resolution.md)).
+An [upward edge](#upward-edge) between two sibling subtrees counts in the reverse direction, as if the subtree it points to used the other.
+Two sibling subtrees can each hold a module that uses a module of the other without a [cycle](#cycle) between modules.
+Such siblings stand together, the one with the higher mean level first.
+An upward edge can point down in the diagram, and an edge that is not upward can point up.
+The row of a parent module stands above the rows of its children whatever their levels, and the reading order places whole subtrees.
 The order counts the same [edges](#edge) as the cycle search, so a [re-export](#re-export) arc does not affect it unless re-exports are included, and it can point either way.

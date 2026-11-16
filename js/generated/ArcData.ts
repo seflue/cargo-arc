@@ -2,4 +2,8 @@
 import type { ArcContext } from "./ArcContext";
 import type { SymbolUsageGroup } from "./SymbolUsageGroup";
 
-export type ArcData = { from: string, to: string, context: ArcContext, usages: Array<SymbolUsageGroup>, cycleIds?: Array<number>, sccId?: number, };
+export type ArcData = { from: string, to: string, context: ArcContext, usages: Array<SymbolUsageGroup>, cycleIds?: Array<number>, sccId?: number, 
+/**
+ * Whether the edge is an upward edge. Left out when it is not.
+ */
+upward?: boolean, };

@@ -21,6 +21,44 @@ pub(crate) struct ModuleLevel {
     pub level: usize,
 }
 
+/// The level of each node of the production subgraph, and the edges the
+/// levels leave out: the upward edges.
+pub(crate) struct Levelization {
+    reexports: Reexports,
+    levels: HashMap<NodeIndex, usize>,
+    upward: HashSet<(NodeIndex, NodeIndex)>,
+    ties: HashSet<(NodeIndex, NodeIndex)>,
+}
+
+impl Levelization {
+    /// Return the `Reexports` the production subgraph was taken under.
+    #[must_use]
+    pub(crate) fn reexports(&self) -> Reexports {
+        self.reexports
+    }
+
+    /// Return the level of `node` inside its package.
+    #[must_use]
+    pub(crate) fn level(&self, node: NodeIndex) -> usize {
+        self.levels[&node]
+    }
+
+    /// Whether the edge from `user` to `provider` runs against the level
+    /// order of its cluster and closes a cycle.
+    #[must_use]
+    pub(crate) fn is_upward(&self, user: NodeIndex, provider: NodeIndex) -> bool {
+        self.upward.contains(&(user, provider))
+    }
+
+    /// Whether the edge from `user` to `provider` is upward and the edge
+    /// back carries as many symbols, so the two edges alone do not decide
+    /// which of them is upward.
+    #[must_use]
+    pub(crate) fn is_tie(&self, user: NodeIndex, provider: NodeIndex) -> bool {
+        self.ties.contains(&(user, provider))
+    }
+}
+
 /// The number of symbols on each edge between two modules of a cluster. A
 /// module is named by its position among the cluster's modules in name
 /// order, an edge by the positions of its user and its provider.
@@ -35,18 +73,14 @@ impl ArcGraph {
     pub(crate) fn cluster_levels(&self, reexports: Reexports) -> Vec<Vec<ModuleLevel>> {
         let sub = self.production_subgraph(reexports);
         let clusters = self.clusters_by_size(&sub);
-        let against: HashSet<(NodeIndex, NodeIndex)> = clusters
-            .iter()
-            .flat_map(|cluster| self.edges_against_level_order(&sub, cluster))
-            .collect();
-        let levels = self.levels(&sub, &against);
+        let levelization = self.levelize(&sub, &clusters, reexports);
         clusters
             .into_iter()
             .map(|cluster| {
                 let mut modules: Vec<ModuleLevel> = cluster
                     .into_iter()
                     .map(|(module, node)| ModuleLevel {
-                        level: levels[&node],
+                        level: levelization.level(node),
                         module,
                     })
                     .collect();
@@ -58,19 +92,42 @@ impl ArcGraph {
             .collect()
     }
 
-    /// Return the edges of `cluster`, a cluster of `sub`, that run against
-    /// its level order and close a cycle, by their nodes in `sub`.
-    fn edges_against_level_order(
+    /// Return the levels and the upward edges of the production subgraph
+    /// under `reexports`.
+    #[must_use]
+    pub(crate) fn levelization(&self, reexports: Reexports) -> Levelization {
+        let sub = self.production_subgraph(reexports);
+        self.levelize(&sub, &self.clusters_by_size(&sub), reexports)
+    }
+
+    /// Return the levels of `sub`, the production subgraph under
+    /// `reexports`, and the upward edges of its `clusters`. A node of `sub`
+    /// has the index of its node in the dependency graph.
+    fn levelize(
         &self,
         sub: &DiGraph<NodeIndex, ()>,
-        cluster: &[(String, NodeIndex)],
-    ) -> Vec<(NodeIndex, NodeIndex)> {
-        let symbols = self.symbol_counts(sub, cluster);
-        let against = edges_against(&level_order(cluster.len(), &symbols), &symbols);
-        closing_a_cycle(against, &symbols)
-            .into_iter()
-            .map(|(user, provider)| (cluster[user].1, cluster[provider].1))
-            .collect()
+        clusters: &[Vec<(String, NodeIndex)>],
+        reexports: Reexports,
+    ) -> Levelization {
+        let mut upward = HashSet::new();
+        let mut ties = HashSet::new();
+        for cluster in clusters {
+            let symbols = self.symbol_counts(sub, cluster);
+            let against = edges_against(&level_order(cluster.len(), &symbols), &symbols);
+            for (user, provider) in closing_a_cycle(against, &symbols) {
+                let edge = (cluster[user].1, cluster[provider].1);
+                upward.insert(edge);
+                if symbols.get(&(provider, user)) == symbols.get(&(user, provider)) {
+                    ties.insert(edge);
+                }
+            }
+        }
+        Levelization {
+            reexports,
+            levels: self.levels(sub, &upward),
+            upward,
+            ties,
+        }
     }
 
     /// Return the symbol count of each edge between two modules of
@@ -403,5 +460,77 @@ mod tests {
         );
 
         assert_eq!(levels_of(&graph), [pairs(&[("app::a", 2), ("app::b", 1)])]);
+    }
+
+    fn node(graph: &ArcGraph, module: &str) -> NodeIndex {
+        graph
+            .node_indices()
+            .find(|&node| graph.qualified_name(node) == module)
+            .expect("the graph has the module")
+    }
+
+    #[test]
+    fn the_edge_against_the_level_order_of_a_cycle_is_upward() {
+        let graph = graph_of(
+            &["app::a", "app::b"],
+            &[("app::a", "app::b", 2), ("app::b", "app::a", 1)],
+        );
+        let (a, b) = (node(&graph, "app::a"), node(&graph, "app::b"));
+
+        let levelization = graph.levelization(Reexports::Excluded);
+
+        assert!(levelization.is_upward(b, a));
+        assert!(!levelization.is_upward(a, b));
+        assert!(!levelization.is_tie(b, a));
+    }
+
+    /// The cycle of the test above: a -> e runs against the level order and
+    /// closes no cycle, so only c -> b is upward.
+    #[test]
+    fn an_edge_against_the_level_order_that_closes_no_cycle_is_not_upward() {
+        let graph = graph_of(
+            &["app::a", "app::b", "app::c", "app::d", "app::e"],
+            &[
+                ("app::a", "app::e", 1),
+                ("app::e", "app::c", 2),
+                ("app::c", "app::b", 1),
+                ("app::b", "app::d", 3),
+                ("app::d", "app::a", 3),
+            ],
+        );
+
+        let levelization = graph.levelization(Reexports::Excluded);
+
+        assert!(levelization.is_upward(node(&graph, "app::c"), node(&graph, "app::b")));
+        assert!(!levelization.is_upward(node(&graph, "app::a"), node(&graph, "app::e")));
+    }
+
+    #[test]
+    fn an_upward_edge_is_a_tie_when_the_edge_back_carries_as_many_symbols() {
+        let graph = graph_of(
+            &["app::a", "app::b"],
+            &[("app::a", "app::b", 2), ("app::b", "app::a", 2)],
+        );
+        let (a, b) = (node(&graph, "app::a"), node(&graph, "app::b"));
+
+        let levelization = graph.levelization(Reexports::Excluded);
+
+        assert!(levelization.is_upward(b, a));
+        assert!(levelization.is_tie(b, a));
+        assert!(!levelization.is_tie(a, b));
+    }
+
+    #[test]
+    fn a_module_outside_every_cluster_has_a_level() {
+        let graph = graph_of(
+            &["app::x", "app::y", "app::z"],
+            &[("app::x", "app::y", 1), ("app::y", "app::z", 1)],
+        );
+
+        let levelization = graph.levelization(Reexports::Excluded);
+
+        let levels =
+            ["app::x", "app::y", "app::z"].map(|module| levelization.level(node(&graph, module)));
+        assert_eq!(levels, [3, 2, 1]);
     }
 }

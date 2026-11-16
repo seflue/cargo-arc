@@ -1,9 +1,10 @@
 //! Build layout IR from graph and cycle information.
 
 use super::jump::{JumpTable, JumpTarget, LocatedDefinition, LocatedSource, TargetKind};
-use super::toposort::stable_toposort;
+use super::toposort::{ranked_toposort, stable_toposort};
 use crate::diagnose::{
-    Cluster, ClusterReport, ConsumerLocality, Cycle, CycleAnalysis, CyclicEdge, order_cycle_blocks,
+    Cluster, ClusterReport, ConsumerLocality, Cycle, CycleAnalysis, CyclicEdge, Levelization,
+    order_cycle_blocks,
 };
 use crate::graph::{ArcGraph, EdgeWeight, Node, Reexports};
 use crate::model::{EdgeContext, EntryFile, EntryKind, SourceLocation, UsageCategory};
@@ -60,10 +61,32 @@ impl LayoutItem {
     }
 }
 
+/// The direction of an edge relative to the level order of its tangle.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum EdgeDirection {
+    /// From a node to a node below it in the level order, as every edge
+    /// outside a tangle does.
     Downward,
-    Upward,
+    /// Against the level order of a tangle, closing a cycle: an upward edge.
+    Upward {
+        /// Whether the edge back carries as many symbols.
+        tie: bool,
+    },
+}
+
+impl EdgeDirection {
+    /// Whether the edge is an upward edge.
+    #[must_use]
+    pub fn is_upward(self) -> bool {
+        matches!(self, Self::Upward { .. })
+    }
+
+    /// Whether the edge is an upward edge whose edge back carries as many
+    /// symbols.
+    #[must_use]
+    pub fn is_tie(self) -> bool {
+        matches!(self, Self::Upward { tie: true })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -89,19 +112,13 @@ pub struct LayoutEdge {
 }
 
 impl LayoutEdge {
-    /// Create a new edge with auto-computed direction.
-    /// `Downward` when `from < to`, `Upward` otherwise.
+    /// Create an edge outside every cycle that is not upward.
     #[must_use]
     pub fn new(from: NodeId, to: NodeId, context: EdgeContext) -> Self {
-        let direction = if from < to {
-            EdgeDirection::Downward
-        } else {
-            EdgeDirection::Upward
-        };
         Self {
             from,
             to,
-            direction,
+            direction: EdgeDirection::Downward,
             cycle: None,
             cycle_ids: vec![],
             scc_id: None,
@@ -309,21 +326,11 @@ pub(crate) fn build_layout(
     let sub = graph.production_subgraph(reexports);
     // The diagram shows the graph as it is; rule config plays no part in it.
     let report = graph.cluster_report(&sub, analysis, |_| false);
-    let feedback_arcs: HashSet<(NodeIndex, NodeIndex)> = report
-        .clusters
-        .iter()
-        .flat_map(|cluster| cluster.feedback_edges.iter().map(|e| (e.from, e.to)))
-        .collect();
+    let levelization = graph.levelization(reexports);
 
     let package_indices = graph.order_packages(&package_indices);
     let reachable = graph.production_reachable();
-    let ordered = graph.order_items(
-        &package_indices,
-        &module_indices,
-        &reachable,
-        reexports,
-        &feedback_arcs,
-    );
+    let ordered = graph.order_items(&package_indices, &module_indices, &reachable, &levelization);
     let mut node_map = populate_items(
         &mut ir,
         graph,
@@ -345,14 +352,13 @@ pub(crate) fn build_layout(
         );
     }
 
-    let suppressed = graph.suppressed_package_pairs();
     populate_edges(
         &mut ir,
         graph,
         &node_map,
         edge_to_cycles,
         &analysis.node_scc,
-        &suppressed,
+        &levelization,
         &mut table,
     );
 
@@ -666,7 +672,7 @@ fn populate_items(
 
 /// Add external package nodes to the layout IR, preceded by a section header.
 /// Sorted topologically by inter-external `PackageDep` edges so that dependencies appear
-/// below their dependents, eliminating upward edges.  Incoming edge count (descending)
+/// below their dependents.  Incoming edge count (descending)
 /// serves as tiebreaker to preserve the "most-used first" aesthetic where topology
 /// does not constrain ordering.
 fn populate_external_items(
@@ -747,15 +753,19 @@ fn populate_external_items(
 /// Add dependency edges (`PackageDep` and `ModuleDep`) to the layout IR.
 /// `PackageDep` and `ModuleDep` arms are unified — they share direction + cycle computation
 /// and only differ in suppression check and source locations.
+///
+/// An edge of the production subgraph that `levelization` was taken from is
+/// upward when `levelization` marks it. Every other edge is downward.
 fn populate_edges(
     ir: &mut LayoutIR,
     graph: &ArcGraph,
     node_map: &HashMap<NodeIndex, NodeId>,
     edge_to_cycles: &HashMap<(NodeIndex, NodeIndex), Vec<usize>>,
     node_scc: &HashMap<NodeIndex, usize>,
-    suppressed: &HashSet<(NodeIndex, NodeIndex)>,
+    levelization: &Levelization,
     table: &mut JumpTable,
 ) {
+    let suppressed = graph.suppressed_package_pairs();
     for edge in graph.edge_references() {
         let (src, dst) = (edge.source(), edge.target());
 
@@ -775,7 +785,18 @@ fn populate_edges(
         if let (Some(&from), Some(&to)) = (node_map.get(&src), node_map.get(&dst)) {
             let (cycle, cycle_ids, scc_id) =
                 compute_cycle_info(src, dst, edge_to_cycles, node_scc, graph, is_module_dep);
+            let upward = edge
+                .weight()
+                .in_production_subgraph(levelization.reexports())
+                && levelization.is_upward(src, dst);
             ir.edges.push(LayoutEdge {
+                direction: if upward {
+                    EdgeDirection::Upward {
+                        tie: levelization.is_tie(src, dst),
+                    }
+                } else {
+                    EdgeDirection::Downward
+                },
                 cycle,
                 cycle_ids,
                 scc_id,
@@ -888,16 +909,14 @@ fn add_soft_test_edges(
 
 /// Build a mini dependency graph among sibling nodes based on cross-subtree dependencies.
 /// For each sibling, collects its full subtree and counts how many edges of the
-/// production subgraph under `reexports` cross from one sibling's subtree to
-/// another's. A crossing edge in `feedback_arcs` counts in the reverse
-/// direction, so the order puts its target above its source and the arc is
-/// drawn upward; without that the rest of its cycle may run outside `children`
-/// and leave the two siblings unconstrained.
+/// production subgraph that `levelization` was taken from cross from one
+/// sibling's subtree to another's. A crossing upward edge counts in the reverse direction, so the
+/// order puts its target above its source; without that the rest of its
+/// cycle may run outside `children` and leave the two siblings unconstrained.
 fn build_sibling_dep_graph(
     children: &[NodeIndex],
     graph: &ArcGraph,
-    reexports: Reexports,
-    feedback_arcs: &HashSet<(NodeIndex, NodeIndex)>,
+    levelization: &Levelization,
 ) -> DiGraph<NodeIndex, usize> {
     // Collect subtrees for each sibling (child + all descendants)
     let subtrees: HashMap<NodeIndex, HashSet<NodeIndex>> = children
@@ -924,13 +943,13 @@ fn build_sibling_dep_graph(
         subtrees[&child]
             .iter()
             .flat_map(move |&node| graph.edges(node))
-            .filter(|e| e.weight().in_production_subgraph(reexports))
+            .filter(|e| e.weight().in_production_subgraph(levelization.reexports()))
             .filter_map(move |e| {
                 let &sibling = node_to_sibling.get(&e.target())?;
                 if sibling == child {
                     return None;
                 }
-                let reversed = feedback_arcs.contains(&(e.source(), e.target()));
+                let reversed = levelization.is_upward(e.source(), e.target());
                 Some(if reversed {
                     (sibling, child)
                 } else {
@@ -968,17 +987,18 @@ fn build_sibling_dep_graph(
 /// Kept in `build.rs` (not `graph.rs`) because they depend on `build_sibling_dep_graph`
 /// and `stable_toposort`, which are layout-specific.
 impl ArcGraph {
-    /// Hierarchically sorted modules for a parent, collecting children recursively.
-    /// Children are sorted topologically by `ModuleDep` edges, with alphabetical tie-breaker.
-    /// Also considers cross-subtree dependencies: if any node in subtree(A) depends on
-    /// any node in subtree(B), then A should appear before B.
+    /// Return the modules under `parent` in reading order, each followed by
+    /// its own children. A child comes before the siblings whose subtree its
+    /// subtree depends on, an upward edge counted in reverse. Of the
+    /// children free to come next, and among children whose subtrees depend
+    /// on each other, the one whose subtree lies higher by mean level comes
+    /// first, then the one first by name.
     fn ordered_children(
         &self,
         parent: NodeIndex,
         module_indices: &[NodeIndex],
         added: &mut HashSet<NodeIndex>,
-        reexports: Reexports,
-        feedback_arcs: &HashSet<(NodeIndex, NodeIndex)>,
+        levelization: &Levelization,
     ) -> Vec<NodeIndex> {
         // Find direct children of this parent (via Contains edge)
         let mut children: Vec<NodeIndex> = module_indices
@@ -987,18 +1007,12 @@ impl ArcGraph {
             .copied()
             .collect();
 
-        // FIRST: Sort alphabetically (provides stable base order for toposort)
+        // The sibling graph numbers its nodes in this order.
         children.sort_unstable_by(|&a, &b| self[a].name().cmp(self[b].name()));
 
-        let sibling_deps = build_sibling_dep_graph(&children, self, reexports, feedback_arcs);
-
-        // THEN: Stable topological sort using Kahn's algorithm
-        // This preserves alphabetical order for independent nodes (tie-breaker)
-        let sorted = stable_toposort(&sibling_deps, |idx| self[idx].name().to_owned());
-        if !sorted.is_empty() {
-            children = sorted;
-        }
-        // On cycles (empty result): keep alphabetical order
+        let sibling_deps = build_sibling_dep_graph(&children, self, levelization);
+        let ranks = self.ranks_by_mean_level(&children, levelization);
+        let mut children = ranked_toposort(&sibling_deps, |child| ranks[&child]);
 
         // Binaries first. No module uses a binary, so this keeps the order
         // the dependencies ask for.
@@ -1013,10 +1027,40 @@ impl ArcGraph {
                     child,
                     module_indices,
                     added,
-                    reexports,
-                    feedback_arcs,
+                    levelization,
                 ))
             })
+            .collect()
+    }
+
+    /// Return the rank of each of `children`, which are in name order: 0
+    /// for the child whose subtree has the highest mean level, children with
+    /// the same mean in name order.
+    fn ranks_by_mean_level(
+        &self,
+        children: &[NodeIndex],
+        levelization: &Levelization,
+    ) -> HashMap<NodeIndex, usize> {
+        let level_sums: Vec<(usize, usize)> = children
+            .iter()
+            .map(|&child| {
+                let subtree = self.containment_subtree(child);
+                let sum = subtree.iter().map(|&node| levelization.level(node)).sum();
+                (sum, subtree.len())
+            })
+            .collect();
+        let mut by_mean: Vec<usize> = (0..children.len()).collect();
+        // sum_a / count_a exceeds sum_b / count_b where sum_a * count_b
+        // exceeds sum_b * count_a. The sort is stable, so equal means keep
+        // the name order.
+        by_mean.sort_by(|&a, &b| {
+            let ((sum_a, count_a), (sum_b, count_b)) = (level_sums[a], level_sums[b]);
+            (sum_b * count_a).cmp(&(sum_a * count_b))
+        });
+        by_mean
+            .into_iter()
+            .enumerate()
+            .map(|(rank, child)| (children[child], rank))
             .collect()
     }
 
@@ -1088,8 +1132,7 @@ impl ArcGraph {
         package_indices: &[NodeIndex],
         module_indices: &[NodeIndex],
         reachable: &HashSet<NodeIndex>,
-        reexports: Reexports,
-        feedback_arcs: &HashSet<(NodeIndex, NodeIndex)>,
+        levelization: &Levelization,
     ) -> Vec<NodeIndex> {
         let mut ordered = Vec::new();
         let mut added = HashSet::new();
@@ -1098,13 +1141,7 @@ impl ArcGraph {
                 continue;
             }
             ordered.push(ci);
-            ordered.extend(self.ordered_children(
-                ci,
-                module_indices,
-                &mut added,
-                reexports,
-                feedback_arcs,
-            ));
+            ordered.extend(self.ordered_children(ci, module_indices, &mut added, levelization));
         }
         // Orphans: modules not claimed by any reachable package
         for &mi in module_indices {
@@ -1628,28 +1665,20 @@ mod tests {
     }
 
     #[test]
-    fn test_upward_edge_direction() {
-        // When a module that appears later in topo order depends on one that appears earlier,
-        // it should be marked as Downward. When the reverse happens (earlier depends on later),
-        // it should be marked as Upward.
+    fn an_edge_to_the_row_above_is_not_upward_outside_a_tangle() {
+        // The row of `a` stands above its child `a1`, so a1 → a points up in
+        // the diagram. It closes no cycle and runs with the level order.
         let mut b = TestGraphBuilder::new();
-        b.package_with_modules("test", &["a", "b"])
-            .prod_dep("a", "b"); // a depends on b
+        b.package_with_modules("test", &["a"])
+            .nested_module("a", "a1")
+            .prod_dep("a1", "a");
         let (graph, _) = b.build();
         let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
 
-        // There should be exactly one edge
         assert_eq!(ir.edges.len(), 1);
         let edge = &ir.edges[0];
-
-        // The direction depends on topo order position
-        // If from < to in layout order -> Downward
-        // If from > to in layout order -> Upward
-        assert!(
-            edge.cycle.is_none(),
-            "Edge should not be a cycle: {:?}",
-            edge.cycle
-        );
+        assert!(edge.from > edge.to, "the parent row stands above its child");
+        assert_eq!(edge.direction, EdgeDirection::Downward);
     }
 
     #[test]
@@ -2431,33 +2460,20 @@ mod tests {
     // === Cross-Subtree Cycle Tests ===
 
     #[test]
-    fn test_cross_subtree_cycles_weighted_asymmetric() {
-        // Topology: 4 module groups under one package
-        //   A (A1, A2, A3)  — no cycle involvement
-        //   B (B1, B2)      — B1 in both cycles
-        //   C               — standalone, cycle with B1
-        //   D (D1, D2, D3)  — D2 in cycle with B1
+    fn subtrees_in_a_cycle_come_before_the_siblings_below_them() {
+        // Four siblings under one package:
+        //   a (a1, a2, a3)  uses nothing
+        //   b (b1, b2)
+        //   c
+        //   d (d1, d2, d3)
         //
-        // Cycles: B1<->C, B1<->D2
+        // b1 <-> c and b1 <-> d2 form one tangle. Its level order is b1, c,
+        // d2, so c → b1 and d2 → b1 are upward and count in reverse: b
+        // before c and b before d. With d1 → b2, the subtrees b and d use
+        // each other, and d3 → c puts both before c.
         //
-        // Additional asymmetric edges (non-cycle):
-        //   D1 → B2   (D depends on B — extra weight D→B direction)
-        //   D3 → C    (D depends on C — extra weight D→C direction)
-        //
-        // Weighted virtual edges at group level:
-        //   w(D→B) = 2 (D2→B1 + D1→B2),  w(B→D) = 1 (B1→D2)
-        //   w(D→C) = 1 (D3→C),            w(C→D) = 0
-        //   w(B→C) = 1 (B1→C),            w(C→B) = 1 (C→B1)
-        //
-        // Upward edge counts per permutation:
-        //   D,B,C → 2 upward (optimal)
-        //   D,C,B → 2 upward (optimal, but lexicographically D,B,C wins)
-        //   B,D,C → 3 upward
-        //   C,D,B → 3 upward
-        //   B,C,D → 4 upward (worst — current alphabetical behavior)
-        //   C,B,D → 4 upward (worst)
-        //
-        // Expected SCC order: D, B, C (minimum upward, lexicographic tiebreak)
+        // Levels: b1, d1 and d3 on 2, every other module on 1. The mean is
+        // 3/2 for d, 4/3 for b and 1 for a and c.
         let mut b = TestGraphBuilder::new();
         b.package_with_modules("test_crate", &["a", "b", "c", "d"])
             .nested_module("a", "a1")
@@ -2468,13 +2484,10 @@ mod tests {
             .nested_module("d", "d1")
             .nested_module("d", "d2")
             .nested_module("d", "d3")
-            // Cycle 1: B1 <-> C
             .prod_dep("b1", "c")
             .prod_dep("c", "b1")
-            // Cycle 2: B1 <-> D2
             .prod_dep("b1", "d2")
             .prod_dep("d2", "b1")
-            // Asymmetric non-cycle edges: D's subtree uses B and C
             .prod_dep("d1", "b2")
             .prod_dep("d3", "c");
         let (graph, _) = b.build();
@@ -2487,22 +2500,15 @@ mod tests {
             .copied()
             .collect();
 
-        // With weighted virtual edges, D→B has weight 2 vs B→D weight 1,
-        // and D→C has weight 1 vs C→D weight 0.
-        // Optimal ordering within SCC: D, B, C (2 upward edges)
-        // Alphabetical B, C, D would give 4 upward edges (worst case).
         assert_eq!(
             top_level,
-            vec!["a", "d", "b", "c"],
-            "Expected: A first (independent, Kahn's), then SCC ordered D,B,C \
-             (minimum upward edges with weighted virtual edges). \
-             w(D→B)=2 > w(B→D)=1 → D before B. \
-             w(D→C)=1 > w(C→D)=0 → D before C. \
-             w(B→C)=1 = w(C→B)=1 → alphabetical tiebreak B before C."
+            vec!["d", "b", "a", "c"],
+            "d and b use each other and come by mean level, d first; \
+             a and c share the mean 1 and come by name"
         );
     }
 
-    // === Feedback Arcs As Upward Edges ===
+    // === Level Order ===
 
     /// Layout over the analysis of the same subgraph, the way `cli` runs it.
     fn layout_with_cycles(graph: &ArcGraph, reexports: Reexports) -> LayoutIR {
@@ -2520,11 +2526,10 @@ mod tests {
     }
 
     #[test]
-    fn upward_edge_of_a_tangle_is_its_feedback_arc() {
-        // Cycle a → b → c → a. Every rotation leaves one edge pointing up, so
-        // the weighted permutation search settles on the alphabet (a, b, c)
-        // and c → a points up. The diagnosis picks the arc with the fewest
-        // symbols, a → b, so the order has to be b, c, a.
+    fn upward_edge_of_a_cycle_carries_its_fewest_symbols() {
+        // Cycle a → b → c → a. Every order leaves one edge against it, and
+        // the level order leaves the one with the fewest symbols, a → b, so
+        // the order is b, c, a.
         let mut b = TestGraphBuilder::new();
         b.package_with_modules("test", &["a", "b", "c"])
             .prod_dep_with_location("a", "b", "src/a.rs", 1, &["B1"], "b")
@@ -2534,15 +2539,15 @@ mod tests {
         let la = LayoutAssert::new(layout_with_cycles(&graph, Reexports::Excluded));
 
         la.assert_top_level_order(&["b", "c", "a"]);
-        assert_eq!(edge_direction(&la, "a", "b"), EdgeDirection::Upward);
+        assert!(edge_direction(&la, "a", "b").is_upward());
         assert_eq!(edge_direction(&la, "c", "a"), EdgeDirection::Downward);
     }
 
     #[test]
-    fn feedback_arc_inside_a_subtree_points_up_when_the_cycle_leaves_it() {
-        // Cycle a::x → b::y → a::w → a::x, feedback arc w → x (fewest symbols).
-        // Under `a` the rest of the cycle is invisible, so nothing but the arc
-        // itself can put x above w.
+    fn upward_edge_inside_a_subtree_points_up_when_the_cycle_leaves_it() {
+        // Cycle a::x → b::y → a::w → a::x, upward edge w → x (fewest symbols).
+        // Under `a` the rest of the cycle is invisible, so nothing but the
+        // edge itself can put x above w.
         let mut b = TestGraphBuilder::new();
         b.package_with_modules("test", &["a", "b"])
             .nested_module("a", "w")
@@ -2555,7 +2560,7 @@ mod tests {
         let la = LayoutAssert::new(layout_with_cycles(&graph, Reexports::Excluded));
 
         la.assert_order("x", "w");
-        assert_eq!(edge_direction(&la, "w", "x"), EdgeDirection::Upward);
+        assert!(edge_direction(&la, "w", "x").is_upward());
     }
 
     #[test]
@@ -2573,29 +2578,77 @@ mod tests {
         assert_eq!(edge_direction(&la, "b", "a"), EdgeDirection::Downward);
     }
 
-    // === Barycenter Heuristic Tests ===
-
     #[test]
-    fn test_barycenter_reduces_crossings() {
-        // Graph: A→D, B→C
-        // Barycenter places each dep adjacent to its dependent.
-        // d is interleaved before c because d's dependent (a) is already placed,
-        // giving d a lower barycenter score (0.0) than c (whose dependent b has score 1.0).
+    fn siblings_of_a_tangle_come_by_level() {
+        // Two cycles share x → y: x → y → a → x and x → y → b → x. The edge
+        // x → y carries five symbols and every other edge one, so the level
+        // order leaves y → a and y → b against it: a and b lie on level 3,
+        // x on 2 and y on 1. The feedback arc of the tangle is x → y, the
+        // one edge on both cycles.
         let mut b = TestGraphBuilder::new();
-        b.package_with_modules("test", &["a", "b", "c", "d"])
-            .prod_dep("a", "d")
-            .prod_dep("b", "c");
+        b.package_with_modules("test", &["a", "b", "x", "y"])
+            .prod_dep_with_location(
+                "x",
+                "y",
+                "src/x.rs",
+                1,
+                &["Y1", "Y2", "Y3", "Y4", "Y5"],
+                "y",
+            )
+            .prod_dep_with_location("y", "a", "src/y.rs", 1, &["A1"], "a")
+            .prod_dep_with_location("a", "x", "src/a.rs", 1, &["X1"], "x")
+            .prod_dep_with_location("y", "b", "src/y.rs", 2, &["B1"], "b")
+            .prod_dep_with_location("b", "x", "src/b.rs", 1, &["X1"], "x");
         let (graph, _) = b.build();
-        let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
-        let la = LayoutAssert::new(ir);
+        let la = LayoutAssert::new(layout_with_cycles(&graph, Reexports::Excluded));
 
-        la.assert_order("d", "c");
+        la.assert_top_level_order(&["a", "b", "x", "y"]);
+        assert!(edge_direction(&la, "y", "a").is_upward());
+        assert!(edge_direction(&la, "y", "b").is_upward());
+        assert_eq!(edge_direction(&la, "x", "y"), EdgeDirection::Downward);
     }
 
     #[test]
-    fn test_barycenter_symmetric_diamond() {
-        // Symmetric diamond: A→C, A→D, B→C, B→D
-        // Equal barycenter scores → alphabetical fallback
+    fn subtrees_that_use_each_other_come_by_their_mean_level() {
+        // p::p1 uses q::q1 and q::q2 uses p::p2, so p and q use each other
+        // without a cycle between modules. q::q3 → q::q2 → p::p2 → z puts
+        // the modules of q on levels 1, 1, 3 and 4 and those of p on 1, 2
+        // and 2: q lies higher on average and comes first.
+        let mut b = TestGraphBuilder::new();
+        b.package_with_modules("test", &["p", "q", "z"])
+            .nested_module("p", "p1")
+            .nested_module("p", "p2")
+            .nested_module("q", "q1")
+            .nested_module("q", "q2")
+            .nested_module("q", "q3")
+            .prod_dep("p1", "q1")
+            .prod_dep("q2", "p2")
+            .prod_dep("q3", "q2")
+            .prod_dep("p2", "z");
+        let (graph, _) = b.build();
+        let la = LayoutAssert::new(layout_with_cycles(&graph, Reexports::Excluded));
+
+        la.assert_top_level_order(&["q", "p", "z"]);
+    }
+
+    #[test]
+    fn siblings_that_do_not_use_each_other_come_by_level() {
+        // a → x and b → c → d: b lies on level 3, a and c on 2, d and x on 1.
+        let mut b = TestGraphBuilder::new();
+        b.package_with_modules("test", &["a", "b", "c", "d", "x"])
+            .prod_dep("a", "x")
+            .prod_dep("b", "c")
+            .prod_dep("c", "d");
+        let (graph, _) = b.build();
+        let la = LayoutAssert::new(layout_with_cycles(&graph, Reexports::Excluded));
+
+        la.assert_top_level_order(&["b", "a", "c", "d", "x"]);
+    }
+
+    #[test]
+    fn siblings_on_one_level_come_by_name() {
+        // Diamond: a → c, a → d, b → c, b → d. a and b lie on level 2, c and
+        // d on level 1.
         let mut b = TestGraphBuilder::new();
         b.package_with_modules("test", &["a", "b", "c", "d"])
             .prod_dep("a", "c")
@@ -2606,9 +2659,7 @@ mod tests {
         let (ir, _) = build_layout(&graph, &no_cycles(), Reexports::Excluded, None);
         let la = LayoutAssert::new(ir);
 
-        la.assert_order("a", "c");
-        la.assert_order("b", "d");
-        la.assert_order("a", "b");
+        la.assert_top_level_order(&["a", "b", "c", "d"]);
     }
 
     // === External Dependency Ordering Tests ===
@@ -2654,9 +2705,9 @@ mod tests {
     #[test]
     fn build_layout_orders_cycle_blocks_by_layout_rank() {
         // Two triangles sharing directed edge m0->m1: two 3-node cycles
-        // through m0. The fully-cyclic sibling set's minimum-upward-edges
-        // order places m1 first and m0 last (only m0->m1 then points
-        // upward), so cycle blocks rotate to start at m1, not m0.
+        // through m0. The level order puts m1 first and m0 last, so m0->m1
+        // is the only upward edge, and cycle blocks rotate to start at m1,
+        // not m0.
         let mut b = TestGraphBuilder::new();
         b.package_with_modules("app", &["m0", "m1", "m2", "m3"])
             .prod_dep("m0", "m1")
