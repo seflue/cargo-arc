@@ -1,30 +1,6 @@
 import { describe, expect, test } from 'bun:test';
+import { ArcLogic } from './arc_logic.js';
 import { VirtualEdgeLogic } from './virtual_edge_logic.js';
-
-// Phase 1: determineAggregatedDirection
-describe('VirtualEdgeLogic.determineAggregatedDirection', () => {
-  test('all upward returns upward', () => {
-    expect(
-      VirtualEdgeLogic.determineAggregatedDirection(['upward', 'upward']),
-    ).toBe('upward');
-  });
-
-  test('all downward returns downward', () => {
-    expect(
-      VirtualEdgeLogic.determineAggregatedDirection(['downward', 'downward']),
-    ).toBe('downward');
-  });
-
-  test('mixed directions returns downward fallback', () => {
-    expect(
-      VirtualEdgeLogic.determineAggregatedDirection(['upward', 'downward']),
-    ).toBe('downward');
-  });
-
-  test('empty array returns downward', () => {
-    expect(VirtualEdgeLogic.determineAggregatedDirection([])).toBe('downward');
-  });
-});
 
 // Phase 2: aggregateHiddenEdges
 describe('VirtualEdgeLogic.aggregateHiddenEdges', () => {
@@ -125,7 +101,7 @@ describe('VirtualEdgeLogic.aggregateHiddenEdges', () => {
         toId: 'child',
         fromHidden: false,
         toHidden: true,
-        direction: 'upward',
+        direction: 'downward',
       },
     ];
     const result = VirtualEdgeLogic.aggregateHiddenEdges(
@@ -184,7 +160,7 @@ describe('VirtualEdgeLogic.aggregateHiddenEdges', () => {
     expect(data.hiddenEdgeData).toContain('Symbol2  ← file2:20');
   });
 
-  test('directions are collected', () => {
+  test('a pair with both directions gives one arc per direction', () => {
     const edges = [
       {
         arcId: 'a-x',
@@ -207,9 +183,36 @@ describe('VirtualEdgeLogic.aggregateHiddenEdges', () => {
       edges,
       mockVisibleAncestor({ a: 'root', b: 'root' }),
     );
-    const data = result.get('root-x');
-    expect(data.directions).toContain('upward');
-    expect(data.directions).toContain('downward');
+    expect(result.size).toBe(2);
+    expect(result.get('root-x')).toMatchObject({
+      count: 1,
+      direction: 'downward',
+      originalArcs: ['b-x'],
+    });
+    expect(result.get('root-x-up')).toMatchObject({
+      count: 1,
+      direction: 'upward',
+      originalArcs: ['a-x'],
+      fromId: 'root',
+      toId: 'x',
+    });
+  });
+
+  test('an edge without a direction counts as downward', () => {
+    const edges = [
+      {
+        arcId: 'a-x',
+        fromId: 'a',
+        toId: 'x',
+        fromHidden: true,
+        toHidden: false,
+      },
+    ];
+    const result = VirtualEdgeLogic.aggregateHiddenEdges(
+      edges,
+      mockVisibleAncestor({ a: 'root' }),
+    );
+    expect(result.get('root-x').direction).toBe('downward');
   });
 });
 
@@ -226,18 +229,19 @@ describe('VirtualEdgeLogic.prepareVirtualEdgeData', () => {
         midY: (fromY + toY) / 2,
       };
     },
-    calculateArcPathFromPositions(
-      fromPos,
-      toPos,
-      yOffset,
-      maxRight,
-      rowHeight,
-    ) {
+    calculateArcPathFromPositions(fromPos, toPos, yOffset, extent, rowHeight) {
       const fromX = fromPos.x + fromPos.width;
       const fromY = fromPos.y + fromPos.height / 2 + yOffset;
       const toX = toPos.x + toPos.width;
       const toY = toPos.y + toPos.height / 2 - yOffset;
-      return this.calculateArcPath(fromX, fromY, toX, toY, maxRight, rowHeight);
+      return this.calculateArcPath(
+        fromX,
+        fromY,
+        toX,
+        toY,
+        extent.right,
+        rowHeight,
+      );
     },
     countLocations(locs) {
       return locs ? locs.split('|').length : 0;
@@ -249,7 +253,7 @@ describe('VirtualEdgeLogic.prepareVirtualEdgeData', () => {
 
   test('arc path is calculated via ArcLogic', () => {
     const virtualEdges = new Map([
-      ['a-b', { count: 1, hiddenEdgeData: [], directions: ['downward'] }],
+      ['a-b', { count: 1, hiddenEdgeData: [], direction: 'downward' }],
     ]);
     const nodePositions = new Map([
       ['a', { x: 10, y: 100, width: 80, height: 20 }],
@@ -259,7 +263,7 @@ describe('VirtualEdgeLogic.prepareVirtualEdgeData', () => {
     const result = VirtualEdgeLogic.prepareVirtualEdgeData(
       virtualEdges,
       nodePositions,
-      300,
+      { left: 10, right: 300 },
       mockArcLogic,
       25,
     );
@@ -275,7 +279,7 @@ describe('VirtualEdgeLogic.prepareVirtualEdgeData', () => {
         {
           count: 2,
           hiddenEdgeData: ['loc1|loc2', 'loc3'],
-          directions: ['downward'],
+          direction: 'downward',
         },
       ],
     ]);
@@ -287,7 +291,7 @@ describe('VirtualEdgeLogic.prepareVirtualEdgeData', () => {
     const result = VirtualEdgeLogic.prepareVirtualEdgeData(
       virtualEdges,
       nodePositions,
-      300,
+      { left: 10, right: 300 },
       mockArcLogic,
       25,
     );
@@ -302,7 +306,7 @@ describe('VirtualEdgeLogic.prepareVirtualEdgeData', () => {
         {
           count: 3,
           hiddenEdgeData: ['loc1'],
-          directions: ['upward', 'upward'],
+          direction: 'upward',
         },
       ],
     ]);
@@ -314,7 +318,7 @@ describe('VirtualEdgeLogic.prepareVirtualEdgeData', () => {
     const result = VirtualEdgeLogic.prepareVirtualEdgeData(
       virtualEdges,
       nodePositions,
-      300,
+      { left: 10, right: 300 },
       mockArcLogic,
       25,
     );
@@ -326,6 +330,38 @@ describe('VirtualEdgeLogic.prepareVirtualEdgeData', () => {
     expect(data.hiddenEdgeData).toEqual(['loc1']);
     expect(data.arc).toBeDefined();
     expect(data.strokeWidth).toBeDefined();
-    expect(data.direction).toBe('upward'); // unanimous
+    expect(data.direction).toBe('upward');
+  });
+
+  test('an upward arc is drawn on the left of the rows', () => {
+    const virtualEdges = new Map([
+      [
+        'a-b-up',
+        {
+          count: 1,
+          hiddenEdgeData: [],
+          direction: 'upward',
+          fromId: 'a',
+          toId: 'b',
+        },
+      ],
+    ]);
+    const nodePositions = new Map([
+      ['b', { x: 200, y: 100, width: 80, height: 20 }],
+      ['a', { x: 220, y: 160, width: 80, height: 20 }],
+    ]);
+
+    const result = VirtualEdgeLogic.prepareVirtualEdgeData(
+      virtualEdges,
+      nodePositions,
+      { left: 200, right: 300 },
+      ArcLogic,
+      30,
+    );
+
+    // From y 173 to y 107 are 2 rows: reach 50 left of the leftmost row.
+    expect(result.get('a-b-up').arc.path).toBe(
+      'M 220,173 Q 150,173 150,140 Q 150,107 200,107',
+    );
   });
 });

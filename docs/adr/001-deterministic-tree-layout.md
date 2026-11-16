@@ -9,7 +9,7 @@ Existing tools (cargo-depgraph, cargo-modules) produce DOT format for GraphViz. 
 
 ## Decision
 
-We represent crates and modules as an indented tree structure and draw dependencies as quadratic Bezier arcs to the right. We compute the layout ourselves — identical input produces identical positions.
+We represent crates and modules as an indented tree structure and draw dependencies as quadratic Bezier arcs beside it, upward edges on its left and every other dependency on its right. We compute the layout ourselves — identical input produces identical positions.
 
 ## Rationale
 

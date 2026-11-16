@@ -18,7 +18,7 @@ pub(super) fn calculate_box_width(ir: &LayoutIR) -> f32 {
         + LAYOUT.toggle_space
 }
 
-/// Calculate maximum arc width from edges
+/// Calculate the maximum width of the arcs to the right of the rows
 pub(super) fn calculate_max_arc_width(
     positioned_index: &HashMap<NodeId, &PositionedItem>,
     ir: &LayoutIR,
@@ -26,11 +26,34 @@ pub(super) fn calculate_max_arc_width(
 ) -> f32 {
     ir.edges
         .iter()
+        .filter(|edge| !edge.direction.is_upward())
         .filter_map(|edge| {
             let from = positioned_index.get(&edge.from).copied()?;
             let to = positioned_index.get(&edge.to).copied()?;
             let rows_spanned = ((to.y - from.y).abs() / row_height).round().max(1.0);
             Some(LAYOUT.arc_base + rows_spanned * LAYOUT.arc_scale + LAYOUT.arrow_length)
+        })
+        .fold(0.0_f32, f32::max)
+}
+
+/// How far an upward arc over `rows_spanned` rows reaches to the left of
+/// the rows.
+pub(super) fn upward_arc_reach(rows_spanned: f32) -> f32 {
+    (LAYOUT.arc_base + rows_spanned * LAYOUT.arc_scale).min(LAYOUT.upward_arc_max)
+}
+
+/// Room to the left of the rows for the upward arcs, measured with every row
+/// shown so that collapsing moves no row sideways. The positions depend on
+/// this room, so the rows an arc spans come from the item ids, which are the
+/// row indices while every row is shown.
+#[allow(clippy::cast_precision_loss)] // row distances stay well below 2^23
+fn upward_arc_room(ir: &LayoutIR) -> f32 {
+    ir.edges
+        .iter()
+        .filter(|edge| edge.direction.is_upward())
+        .map(|edge| {
+            let rows_spanned = edge.from.abs_diff(edge.to).max(1) as f32;
+            upward_arc_reach(rows_spanned) + LAYOUT.arrow_length
         })
         .fold(0.0_f32, f32::max)
 }
@@ -92,6 +115,7 @@ pub(super) fn calculate_positions(
     config: &RenderConfig,
     box_width: f32,
 ) -> Vec<PositionedItem> {
+    let left = config.margin + upward_arc_room(ir);
     ir.items
         .iter()
         .enumerate()
@@ -107,7 +131,7 @@ pub(super) fn calculate_positions(
             };
             PositionedItem {
                 id: item.id,
-                x: config.margin + (nesting as f32 * config.indent_size),
+                x: left + (nesting as f32 * config.indent_size),
                 y: config.margin + LAYOUT.toolbar.height + (index as f32 * config.row_height),
                 width: box_width,
                 height,
@@ -149,7 +173,7 @@ pub(super) fn calculate_canvas_size(
 mod tests {
     use super::*;
     use crate::analyze::rust::PROFILE as RUST_PROFILE;
-    use crate::layout::{ItemKind, LayoutEdge, LayoutIR};
+    use crate::layout::{EdgeDirection, ItemKind, LayoutEdge, LayoutIR};
     use crate::model::EdgeContext;
     use std::collections::HashMap;
 
@@ -382,5 +406,83 @@ mod tests {
             height,
             LAYOUT.toolbar.height
         );
+    }
+
+    /// A package with `modules` child modules on the rows below it.
+    fn package_with_modules(modules: usize) -> LayoutIR {
+        let mut ir = LayoutIR::new();
+        let package = ir.add_item(ItemKind::Package, "c".into());
+        for i in 0..modules {
+            ir.add_item(
+                ItemKind::Module {
+                    nesting: 1,
+                    parent: package,
+                },
+                format!("m{i}"),
+            );
+        }
+        ir
+    }
+
+    fn upward_edge(from: usize, to: usize) -> LayoutEdge {
+        LayoutEdge {
+            direction: EdgeDirection::Upward { tie: false },
+            ..LayoutEdge::new(from, to, EdgeContext::production())
+        }
+    }
+
+    #[test]
+    fn test_rows_leave_room_on_the_left_for_an_upward_arc() {
+        let mut ir = package_with_modules(4);
+        // Row 4 uses row 1 against the level order: the arc spans 3 rows.
+        ir.edges.push(upward_edge(4, 1));
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
+
+        let positioned = calculate_positions(&ir, &config, 100.0);
+
+        // Reach 20 + 3 * 15 = 65, plus the arrow head of 8.
+        let room = 73.0;
+        assert!((positioned[0].x - (config.margin + room)).abs() < 0.01);
+        assert!((positioned[1].x - (config.margin + room + config.indent_size)).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_rows_start_at_the_margin_without_an_upward_edge() {
+        let mut ir = package_with_modules(4);
+        ir.edges
+            .push(LayoutEdge::new(1, 4, EdgeContext::production()));
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
+
+        let positioned = calculate_positions(&ir, &config, 100.0);
+
+        assert!((positioned[0].x - config.margin).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_room_on_the_left_stops_growing_with_a_long_upward_arc() {
+        let mut ir = package_with_modules(60);
+        ir.edges.push(upward_edge(60, 1));
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
+
+        let positioned = calculate_positions(&ir, &config, 100.0);
+
+        let room = LAYOUT.upward_arc_max + LAYOUT.arrow_length;
+        assert!((positioned[0].x - (config.margin + room)).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_max_arc_width_leaves_out_upward_edges() {
+        let mut ir = package_with_modules(10);
+        ir.edges.push(upward_edge(10, 1));
+        ir.edges
+            .push(LayoutEdge::new(1, 2, EdgeContext::production()));
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
+        let positioned = calculate_positions(&ir, &config, 100.0);
+        let positioned_index: HashMap<_, _> = positioned.iter().map(|p| (p.id, p)).collect();
+
+        let max_arc_width = calculate_max_arc_width(&positioned_index, &ir, config.row_height);
+
+        // The one arc on the right spans 1 row: 20 + 15 + 8.
+        assert!((max_arc_width - 43.0).abs() < 0.01);
     }
 }

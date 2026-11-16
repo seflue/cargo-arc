@@ -2,10 +2,15 @@
 // recomputed diagram. Node ids are assigned per run, so the snapshot keys
 // a node by the chain of names from its root down to it.
 
+import { VirtualEdgeLogic } from './virtual_edge_logic.js';
+
 interface View {
   /** Ids of the collapsed nodes. */
   collapsed: Iterable<string>;
-  /** The pinned selection; an arc id is `${from}-${to}`. */
+  /**
+   * The pinned selection; an arc id is `${from}-${to}`, with `-up` behind it
+   * for the arc that stands for the upward edges of a collapsed pair.
+   */
   selection: { type: 'node' | 'arc' | null; id: string | null };
   /** The view menu's checkboxes by element id. */
   checks: Record<string, boolean>;
@@ -19,7 +24,7 @@ interface Snapshot {
   collapsed: string[];
   selection:
     | { type: 'node'; key: string }
-    | { type: 'arc'; from: string; to: string }
+    | { type: 'arc'; from: string; to: string; upward?: true }
     | null;
   checks: Record<string, boolean>;
   search: { query: string; scope: string };
@@ -61,6 +66,9 @@ function capture(view: View, nodes: Nodes): Snapshot {
       from: nodeKey(nodes, from),
       to: nodeKey(nodes, to),
     };
+    if (VirtualEdgeLogic.isUpwardArcId(view.selection.id)) {
+      selection.upward = true;
+    }
   }
   return {
     collapsed: Array.from(view.collapsed, (id) => nodeKey(nodes, id)),
@@ -93,7 +101,11 @@ function restore(
     const from = ids.get(snapshot.selection.from);
     const to = ids.get(snapshot.selection.to);
     if (from !== undefined && to !== undefined) {
-      selection = { type: 'arc', id: `${from}-${to}` };
+      const direction = snapshot.selection.upward ? 'upward' : 'downward';
+      selection = {
+        type: 'arc',
+        id: VirtualEdgeLogic.virtualArcId(from, to, direction),
+      };
     }
   }
   return {

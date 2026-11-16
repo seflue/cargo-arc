@@ -3,6 +3,7 @@ import { AppState } from './app_state.js';
 import { ArcLogic } from './arc_logic.js';
 
 import { DerivedState } from './derived_state.js';
+import { HighlightLogic } from './highlight_logic.js';
 
 // Test data representing a mini crate structure:
 //
@@ -466,19 +467,72 @@ describe('DerivedState', () => {
     });
   });
 
-  describe('computeMaxRight', () => {
-    test('returns max x + width', () => {
+  describe('computeRowExtent', () => {
+    test('returns the leftmost x and the rightmost x + width', () => {
       const positions = new Map([
         ['a', { x: 10, width: 50 }],
         ['b', { x: 30, width: 80 }],
         ['c', { x: 5, width: 20 }],
       ]);
 
-      expect(DerivedState.computeMaxRight(positions)).toBe(110); // 30 + 80
+      expect(DerivedState.computeRowExtent(positions)).toEqual({
+        left: 5,
+        right: 110, // 30 + 80
+      });
     });
 
-    test('returns 0 for empty positions', () => {
-      expect(DerivedState.computeMaxRight(new Map())).toBe(0);
+    test('returns 0 on both sides for empty positions', () => {
+      expect(DerivedState.computeRowExtent(new Map())).toEqual({
+        left: 0,
+        right: 0,
+      });
+    });
+  });
+
+  describe('_computeShadowEntry', () => {
+    const fromPos = { x: 220, y: 160, width: 80, height: 20 };
+    const toPos = { x: 200, y: 100, width: 80, height: 20 };
+    const ctx = {
+      extent: { left: 200, right: 500 },
+      rowHeight: 30,
+      yOffset: 3,
+    };
+
+    test('the shadow of an upward arc has the length of its path on the left', () => {
+      const entry = DerivedState._computeShadowEntry(
+        1.5,
+        'dep',
+        fromPos,
+        toPos,
+        ctx,
+        false,
+        true,
+      );
+
+      // 2 rows: the arc reaches 50 left of the leftmost row.
+      const length = ArcLogic.estimatePathLength(
+        'M 220,173 Q 150,173 150,140 Q 150,107 200,107',
+      );
+      const expected = HighlightLogic.calculateShadowData(1.5, length);
+      expect(entry.visibleLength).toBe(expected.visibleLength);
+    });
+
+    test('the shadow of a downward arc has the length of its path on the right', () => {
+      const entry = DerivedState._computeShadowEntry(
+        1.5,
+        'dep',
+        fromPos,
+        toPos,
+        ctx,
+        false,
+        false,
+      );
+
+      const length = ArcLogic.estimatePathLength(
+        'M 300,173 Q 550,173 550,140 Q 550,107 280,107',
+      );
+      const expected = HighlightLogic.calculateShadowData(1.5, length);
+      expect(entry.visibleLength).toBe(expected.visibleLength);
     });
   });
 

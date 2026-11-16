@@ -1,7 +1,7 @@
 use super::constants::{CSS, LAYOUT, RenderConfig};
-use super::positioning::PositionedItem;
+use super::positioning::{PositionedItem, upward_arc_reach};
 use super::theme::Theme;
-use crate::layout::{CycleKind, EdgeDirection, ItemKind, LayoutEdge, LayoutIR, NodeId};
+use crate::layout::{EdgeDirection, ItemKind, LayoutEdge, LayoutIR, NodeId};
 use crate::model::UsageKind;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -519,6 +519,24 @@ fn render_collapse_toggle(
     )
 }
 
+/// The side of the rows an arc is drawn on.
+#[derive(Clone, Copy)]
+enum ArcSide {
+    Left,
+    Right,
+}
+
+impl ArcSide {
+    /// An upward edge is drawn on the left, every other edge on the right.
+    fn of(direction: EdgeDirection) -> Self {
+        if direction.is_upward() {
+            Self::Left
+        } else {
+            Self::Right
+        }
+    }
+}
+
 pub(super) fn render_edges(
     positioned_index: &HashMap<NodeId, &PositionedItem>,
     ir: &LayoutIR,
@@ -528,11 +546,16 @@ pub(super) fn render_edges(
     let mut base_arcs = String::new();
     let mut hitareas = String::new();
 
-    // Find the rightmost edge of all nodes for base arc position
+    // The arcs on the right bulge out from the rightmost edge of all nodes,
+    // the arcs on the left from the leftmost.
     let base_x = positioned_index
         .values()
         .map(|p| p.x + p.width)
         .fold(0.0_f32, f32::max);
+    let left_base_x = positioned_index
+        .values()
+        .map(|p| p.x)
+        .fold(f32::INFINITY, f32::min);
 
     // Sort edges by type for z-order: Test (back) → Downward Production →
     // Upward Production → Cycle (front). In SVG, later elements render on top.
@@ -558,8 +581,7 @@ pub(super) fn render_edges(
         let to_pos = positioned_index.get(&edge.to).copied();
 
         if let (Some(from), Some(to)) = (from_pos, to_pos) {
-            let from_x = from.x + from.width;
-            let to_x = to.x + to.width;
+            let side = ArcSide::of(edge.direction);
 
             // Offset arc endpoints: outgoing slightly below center, incoming slightly above
             // This prevents arcs from overlapping at nodes with both incoming and outgoing connections
@@ -569,8 +591,14 @@ pub(super) fn render_edges(
 
             let rows_spanned = ((to_y - from_y).abs() / row_height).round().max(1.0);
 
-            let arc_offset = LAYOUT.arc_base + (rows_spanned * LAYOUT.arc_scale);
-            let ctrl_x = base_x + arc_offset;
+            let (from_x, to_x, ctrl_x) = match side {
+                ArcSide::Left => (from.x, to.x, left_base_x - upward_arc_reach(rows_spanned)),
+                ArcSide::Right => (
+                    from.x + from.width,
+                    to.x + to.width,
+                    base_x + LAYOUT.arc_base + (rows_spanned * LAYOUT.arc_scale),
+                ),
+            };
             let mid_y = f32::midpoint(from_y, to_y);
 
             // S-shaped Bezier with two Q commands
@@ -620,14 +648,8 @@ pub(super) fn render_edges(
             );
 
             // Arrow head pointing to target → base-arcs layer
-            let arrow = render_arrow(to_x, to_y, &arrow_class, &edge_id);
+            let arrow = render_arrow(to_x, to_y, side, &arrow_class, &edge_id);
             base_arcs.push_str(&arrow);
-
-            // For DirectCycle, add reverse arrow.
-            if edge.cycle == Some(CycleKind::Direct) {
-                let reverse_arrow = render_arrow(from_x, from_y, &arrow_class, &edge_id);
-                base_arcs.push_str(&reverse_arrow);
-            }
         }
     }
 
@@ -704,20 +726,15 @@ fn arc_attrs(edge: &LayoutEdge, from_kind: &ItemKind, to_kind: &ItemKind) -> Arc
     }
 }
 
-fn render_arrow(x: f32, y: f32, class: &str, edge_id: &str) -> String {
-    // Arrow pointing left (toward the node at x)
-    // Tip at x, base at x+8
-    let p1 = format!(
-        "{},{}",
-        x + LAYOUT.arrow_length,
-        y - LAYOUT.arrow_length / 2.0
-    ); // top-right
-    let p2 = format!("{x},{y}"); // tip (left, pointing at node)
-    let p3 = format!(
-        "{},{}",
-        x + LAYOUT.arrow_length,
-        y + LAYOUT.arrow_length / 2.0
-    ); // bottom-right
+fn render_arrow(x: f32, y: f32, side: ArcSide, class: &str, edge_id: &str) -> String {
+    // Tip at x, pointing at the node; the base lies on the arc's side of it.
+    let base_x = match side {
+        ArcSide::Left => x - LAYOUT.arrow_length,
+        ArcSide::Right => x + LAYOUT.arrow_length,
+    };
+    let p1 = format!("{base_x},{}", y - LAYOUT.arrow_length / 2.0);
+    let p2 = format!("{x},{y}");
+    let p3 = format!("{base_x},{}", y + LAYOUT.arrow_length / 2.0);
     format!("    <polygon class=\"{class}\" data-edge=\"{edge_id}\" points=\"{p1} {p2} {p3}\"/>\n")
 }
 
@@ -735,7 +752,7 @@ mod tests {
     use super::super::positioning::{calculate_box_width, calculate_positions};
     use super::*;
     use crate::analyze::rust::PROFILE as RUST_PROFILE;
-    use crate::layout::LayoutEdge;
+    use crate::layout::{CycleKind, LayoutEdge};
     use crate::model::EdgeContext;
     use rstest::rstest;
     use std::collections::HashMap;
@@ -1595,6 +1612,76 @@ mod tests {
             output.contains(r#"data-direction="downward""#),
             "Edge should have data-direction"
         );
+    }
+
+    /// A package on row 0 with the modules `a` and `b` on rows 1 and 2.
+    fn package_with_two_modules() -> LayoutIR {
+        let mut ir = LayoutIR::new();
+        let c = ir.add_item(ItemKind::Package, "c".into());
+        for name in ["a", "b"] {
+            ir.add_item(
+                ItemKind::Module {
+                    nesting: 1,
+                    parent: c,
+                },
+                name.into(),
+            );
+        }
+        ir
+    }
+
+    #[test]
+    fn test_upward_arc_runs_on_the_left_of_the_rows() {
+        let mut ir = package_with_two_modules();
+        ir.edges.push(LayoutEdge {
+            direction: EdgeDirection::Upward { tie: false },
+            ..LayoutEdge::new(2, 1, EdgeContext::production())
+        });
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
+        let positioned = calculate_positions(&ir, &config, 100.0);
+        let positioned_index: HashMap<_, _> = positioned.iter().map(|p| (p.id, p)).collect();
+
+        let output = render_edges(&positioned_index, &ir, config.row_height, None);
+
+        // Room for an arc over 1 row: reach 35 plus arrow head 8. The package
+        // starts at 20 + 43 = 63, the modules at 83, the arc reaches to 63 - 35.
+        let (from, to) = (&positioned[2], &positioned[1]);
+        let from_y = from.y + from.height / 2.0 + 3.0;
+        let to_y = to.y + to.height / 2.0 - 3.0;
+        let mid_y = f32::midpoint(from_y, to_y);
+        let path = format!("M 83,{from_y} Q 28,{from_y} 28,{mid_y} Q 28,{to_y} 83,{to_y}");
+        assert!(
+            output.contains(&format!(
+                r#"id="edge-2-1" data-arc-id="2-1" data-direction="upward" d="{path}""#
+            )),
+            "{output}"
+        );
+        // The arrow head points right, at the left edge of the target row.
+        let arrow = format!("75,{} 83,{to_y} 75,{}", to_y - 4.0, to_y + 4.0);
+        assert!(output.contains(&format!(r#"points="{arrow}""#)), "{output}");
+    }
+
+    #[test]
+    fn test_downward_arc_runs_on_the_right_of_the_rows() {
+        let mut ir = package_with_two_modules();
+        ir.edges
+            .push(LayoutEdge::new(1, 2, EdgeContext::production()));
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
+        let positioned = calculate_positions(&ir, &config, 100.0);
+        let positioned_index: HashMap<_, _> = positioned.iter().map(|p| (p.id, p)).collect();
+
+        let output = render_edges(&positioned_index, &ir, config.row_height, None);
+
+        // The modules start at 20 + 20 and are 100 wide; the arc over 1 row
+        // reaches 35 past the widest row.
+        let (from, to) = (&positioned[1], &positioned[2]);
+        let from_y = from.y + from.height / 2.0 + 3.0;
+        let to_y = to.y + to.height / 2.0 - 3.0;
+        let mid_y = f32::midpoint(from_y, to_y);
+        let path = format!("M 140,{from_y} Q 175,{from_y} 175,{mid_y} Q 175,{to_y} 140,{to_y}");
+        assert!(output.contains(&format!(r#"d="{path}""#)), "{output}");
+        let arrow = format!("148,{} 140,{to_y} 148,{}", to_y - 4.0, to_y + 4.0);
+        assert!(output.contains(&format!(r#"points="{arrow}""#)), "{output}");
     }
 
     #[test]

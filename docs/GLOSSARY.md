@@ -107,7 +107,7 @@ cargo-arc does not use either word yet; a hint that proposes a move should use t
 |------|------------|
 | **<a id="level-order">Level order</a>** | An order of the modules of a [tangle](#tangle), each module before the modules it uses, that leaves few symbols on the [edges](#edge) against it, counted as [symbol count](#symbol-count). cargo-arc finds it by a search that starts from the same order on every run, so the same graph gives the same level order. Another order can leave as few symbols, or fewer. |
 | **<a id="level">Level</a>** | The height of a module above the modules it uses: 1 for a module that uses no module of its [package](#package), and otherwise one more than the highest level among the modules of its package that it uses. An [upward edge](#upward-edge) does not count. |
-| **<a id="upward-edge">Upward edge</a>** | An [edge](#edge) of a [tangle](#tangle) that runs against the tangle's [level order](#level-order) and closes a [cycle](#cycle) with edges that are not upward. Without its upward edges a tangle has no cycle. The arc diagram draws an upward edge in its own style, and `query edges` marks it. |
+| **<a id="upward-edge">Upward edge</a>** | An [edge](#edge) of a [tangle](#tangle) that runs against the tangle's [level order](#level-order) and closes a [cycle](#cycle) with edges that are not upward. Without its upward edges a tangle has no cycle. The arc diagram draws an upward edge on the left of the rows, in its own style, and `query edges` marks it. |
 
 The [level](#level) is the one Lakos defines (Vol. I, section 1.10), counted inside a [package](#package).
 A module of another package raises no level, and what lies outside the workspace has none, where Lakos gives it 0.

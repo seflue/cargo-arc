@@ -1,24 +1,38 @@
-import type { ArcLogic } from './arc_logic.js';
+import type { ArcLogic, RowExtent } from './arc_logic.js';
 
 // virtual_edge_logic.ts - Pure logic for virtual edge aggregation
 // No DOM dependencies - uses Maps as data structures
 
+type Direction = 'upward' | 'downward';
+
+type VirtualEdge = {
+  count: number;
+  hiddenEdgeData: ArcData['usages'][];
+  direction: Direction;
+  originalArcs: string[];
+  fromId: string;
+  toId: string;
+};
+
 const VirtualEdgeLogic = {
   /**
-   * Determine aggregated direction from multiple directions.
-   * Returns unanimous direction or 'downward' as fallback.
-   * @param directions - Array of direction strings ('upward' | 'downward')
-   * @returns - Aggregated direction
+   * The id of the virtual arc that stands for the hidden edges of one
+   * direction between two visible nodes. The upward edges get an arc of their
+   * own, drawn on the left.
    */
-  determineAggregatedDirection(directions: string[]): string {
-    if (directions.length === 0) return 'downward';
-    return directions.every((d) => d === directions[0])
-      ? directions[0]
-      : 'downward';
+  virtualArcId(fromId: string, toId: string, direction: Direction): string {
+    return direction === 'upward'
+      ? `${fromId}-${toId}-up`
+      : `${fromId}-${toId}`;
+  },
+
+  /** Whether `arcId` is the id of a virtual arc for upward edges. */
+  isUpwardArcId(arcId: string): boolean {
+    return arcId.endsWith('-up');
   },
 
   /**
-   * Aggregate hidden edges by their visible endpoints.
+   * Aggregate hidden edges by their visible endpoints and their direction.
    * @param getVisibleAncestorFn - Function to get visible ancestor for a node
    */
   aggregateHiddenEdges(
@@ -32,29 +46,12 @@ const VirtualEdgeLogic = {
       direction?: string;
     }>,
     getVisibleAncestorFn: (arg0: string) => string,
-  ): Map<
-    string,
-    {
-      count: number;
-      hiddenEdgeData: ArcData['usages'][];
-      directions: string[];
-      originalArcs: string[];
-      fromId: string;
-      toId: string;
-    }
-  > {
-    const virtualEdges = new Map();
+  ): Map<string, VirtualEdge> {
+    const virtualEdges = new Map<string, VirtualEdge>();
 
     for (const edge of edges) {
-      const {
-        arcId,
-        fromId,
-        toId,
-        fromHidden,
-        toHidden,
-        sourceLocations,
-        direction,
-      } = edge;
+      const { arcId, fromId, toId, fromHidden, toHidden, sourceLocations } =
+        edge;
 
       // Skip if both endpoints are visible
       if (!fromHidden && !toHidden) continue;
@@ -66,22 +63,24 @@ const VirtualEdgeLogic = {
       // Skip self-loops (both map to same visible ancestor)
       if (!visibleFrom || !visibleTo || visibleFrom === visibleTo) continue;
 
-      const key = `${visibleFrom}-${visibleTo}`;
-      if (!virtualEdges.has(key)) {
-        virtualEdges.set(key, {
+      const direction: Direction =
+        edge.direction === 'upward' ? 'upward' : 'downward';
+      const key = this.virtualArcId(visibleFrom, visibleTo, direction);
+      let existing = virtualEdges.get(key);
+      if (!existing) {
+        existing = {
           count: 0,
           hiddenEdgeData: [],
-          directions: [],
+          direction,
           originalArcs: [],
           fromId: visibleFrom,
           toId: visibleTo,
-        });
+        };
+        virtualEdges.set(key, existing);
       }
-      const existing = virtualEdges.get(key);
 
       existing.count++;
       if (sourceLocations) existing.hiddenEdgeData.push(sourceLocations);
-      if (direction) existing.directions.push(direction);
       existing.originalArcs.push(arcId);
     }
 
@@ -90,27 +89,17 @@ const VirtualEdgeLogic = {
 
   /**
    * Prepare virtual edge data for rendering.
-   * @param maxRight - Rightmost X coordinate
+   * @param extent - Outer edges of the visible rows
    * @param arcLogic - ArcLogic module with calculateArcPath, countLocations, calculateStrokeWidth
    * @param rowHeight - Row height for arc calculation
    */
   prepareVirtualEdgeData(
-    virtualEdges: Map<
-      string,
-      {
-        count: number;
-        hiddenEdgeData: ArcData['usages'][];
-        directions: string[];
-        originalArcs: string[];
-        fromId: string;
-        toId: string;
-      }
-    >,
+    virtualEdges: Map<string, VirtualEdge>,
     nodePositions: Map<
       string,
       { x: number; y: number; width: number; height: number }
     >,
-    maxRight: number,
+    extent: RowExtent,
     arcLogic: typeof ArcLogic,
     rowHeight: number,
   ): Map<
@@ -122,7 +111,7 @@ const VirtualEdgeLogic = {
       hiddenEdgeData: ArcData['usages'][];
       arc: ReturnType<typeof ArcLogic.calculateArcPathFromPositions>;
       strokeWidth: number;
-      direction: string;
+      direction: Direction;
       originalArcs: string[];
     }
   > {
@@ -141,8 +130,9 @@ const VirtualEdgeLogic = {
         fromPos,
         toPos,
         3,
-        maxRight,
+        extent,
         rowHeight,
+        data.direction === 'upward',
       );
 
       // Calculate stroke width from aggregated locations
@@ -152,9 +142,6 @@ const VirtualEdgeLogic = {
       );
       const strokeWidth = arcLogic.calculateStrokeWidth(totalLocations);
 
-      // Determine direction
-      const direction = this.determineAggregatedDirection(data.directions);
-
       mergedEdges.set(key, {
         fromId,
         toId,
@@ -162,7 +149,7 @@ const VirtualEdgeLogic = {
         hiddenEdgeData: data.hiddenEdgeData,
         arc,
         strokeWidth,
-        direction,
+        direction: data.direction,
         originalArcs: data.originalArcs,
       });
     });

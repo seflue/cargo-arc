@@ -5,33 +5,51 @@
 const ARROW_LENGTH = 8;
 const ARROW_HALF_WIDTH = 4;
 const BASE_STROKE_WIDTH = 1.5;
+// The farthest an upward arc reaches to the left of the rows.
+const UPWARD_ARC_MAX = 420;
+
+/** The outer edges of the visible rows, which the arcs bulge out from. */
+type RowExtent = { left: number; right: number };
+
+/** Where an arrow head ends. It points left unless `pointsRight` is set. */
+type ArrowTip = { x: number; y: number; pointsRight?: boolean };
+
+type ArcPath = {
+  path: string;
+  toX: number;
+  toY: number;
+  ctrlX: number;
+  midY: number;
+  tip: Required<ArrowTip>;
+};
 
 const ArcLogic = {
   // === Arrow geometry ===
 
   /**
    * Generate scaled arrow polygon points string.
-   * Arrow tip is at tip position, pointing left.
-   * @param tip - Arrow tip coordinates
+   * @param tip - Arrow tip coordinates and direction
    * @param scale - Scale factor (1.0 = original size)
    * @returns - SVG polygon points string
    */
-  getArrowPoints(tip: { x: number; y: number }, scale: number): string {
+  getArrowPoints(tip: ArrowTip, scale: number): string {
     const len = ARROW_LENGTH * scale;
     const hw = ARROW_HALF_WIDTH * scale;
-    return `${tip.x + len},${tip.y - hw} ${tip.x},${tip.y} ${tip.x + len},${tip.y + hw}`;
+    const baseX = tip.pointsRight ? tip.x - len : tip.x + len;
+    return `${baseX},${tip.y - hw} ${tip.x},${tip.y} ${baseX},${tip.y + hw}`;
   },
 
   /**
-   * Parse arrow tip position from SVG points string.
+   * Parse arrow tip position and direction from SVG points string.
    * @param points - SVG polygon points (format: "x1,y1 tipX,tipY x2,y2")
    */
-  parseTipFromPoints(points: string): { x: number; y: number } | null {
+  parseTipFromPoints(points: string): Required<ArrowTip> | null {
     const parts = points.split(' ');
     if (parts.length >= 2) {
+      const [baseX] = parts[0].split(',').map(Number);
       const [x, y] = parts[1].split(',').map(Number);
       if (Number.isNaN(x) || Number.isNaN(y)) return null;
-      return { x, y };
+      return { x, y, pointsRight: baseX < x };
     }
     return null;
   },
@@ -111,28 +129,40 @@ const ArcLogic = {
   },
 
   /**
+   * How far an upward arc reaches to the left of the rows.
+   * @param rowsSpanned - Number of rows between source and target
+   */
+  getUpwardArcReach(rowsSpanned: number): number {
+    return Math.min(this.getArcOffset(rowsSpanned), UPWARD_ARC_MAX);
+  },
+
+  /**
    * Calculate SVG path for an arc between two points
    * @param fromX - Start X coordinate
    * @param fromY - Start Y coordinate
    * @param toX - End X coordinate
    * @param toY - End Y coordinate
-   * @param maxRight - Rightmost X coordinate of visible nodes
+   * @param baseX - X the arc bulges out from: the rightmost edge of the
+   *   visible rows, or their leftmost edge for an upward arc
    * @param rowHeight - Height of each row
+   * @param upward - Whether the arc is an upward edge, drawn on the left
    */
   calculateArcPath(
     fromX: number,
     fromY: number,
     toX: number,
     toY: number,
-    maxRight: number,
+    baseX: number,
     rowHeight: number,
-  ): { path: string; toX: number; toY: number; ctrlX: number; midY: number } {
+    upward = false,
+  ): ArcPath {
     const rowsSpanned = Math.max(
       1,
       Math.round(Math.abs(toY - fromY) / rowHeight),
     );
-    const arcOffset = this.getArcOffset(rowsSpanned);
-    const ctrlX = maxRight + arcOffset;
+    const ctrlX = upward
+      ? baseX - this.getUpwardArcReach(rowsSpanned)
+      : baseX + this.getArcOffset(rowsSpanned);
     const midY = (fromY + toY) / 2;
 
     return {
@@ -141,6 +171,7 @@ const ArcLogic = {
       toY,
       ctrlX,
       midY,
+      tip: { x: toX, y: toY, pointsRight: upward },
     };
   },
 
@@ -148,21 +179,39 @@ const ArcLogic = {
    * Calculate arc path from position objects (convenience wrapper).
    * Converts position rects + yOffset to raw coordinates, then delegates to calculateArcPath.
    * @param yOffset - Y offset for arc endpoints
-   * @param maxRight - Rightmost X coordinate
+   * @param extent - Outer edges of the visible rows
    * @param rowHeight - Row height for arc offset calculation
+   * @param upward - Whether the arc is an upward edge, drawn on the left
    */
   calculateArcPathFromPositions(
     fromPos: { x: number; y: number; width: number; height: number },
     toPos: { x: number; y: number; width: number; height: number },
     yOffset: number,
-    maxRight: number,
+    extent: RowExtent,
     rowHeight: number,
-  ): { path: string; toX: number; toY: number; ctrlX: number; midY: number } {
-    const fromX = fromPos.x + fromPos.width;
+    upward = false,
+  ): ArcPath {
     const fromY = fromPos.y + fromPos.height / 2 + yOffset;
-    const toX = toPos.x + toPos.width;
     const toY = toPos.y + toPos.height / 2 - yOffset;
-    return this.calculateArcPath(fromX, fromY, toX, toY, maxRight, rowHeight);
+    if (upward) {
+      return this.calculateArcPath(
+        fromPos.x,
+        fromY,
+        toPos.x,
+        toY,
+        extent.left,
+        rowHeight,
+        true,
+      );
+    }
+    return this.calculateArcPath(
+      fromPos.x + fromPos.width,
+      fromY,
+      toPos.x + toPos.width,
+      toY,
+      extent.right,
+      rowHeight,
+    );
   },
 
   /**
@@ -234,4 +283,4 @@ const ArcLogic = {
   },
 };
 
-export { ArcLogic };
+export { ArcLogic, type RowExtent };

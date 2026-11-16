@@ -986,6 +986,41 @@ describe('SearchLogic', () => {
       AppState.isCollapsed = origIsCollapsed;
     });
 
+    test('an upward arc inside a collapsed module marks the virtual arc for the upward edges', () => {
+      const origGetNode = StaticData.getNode;
+      const origGetArc = StaticData.getArc;
+      const origQuerySelectorAll = DomAdapter.querySelectorAll;
+      const origIsCollapsed = AppState.isCollapsed;
+
+      StaticData.getNode = (id) =>
+        ({
+          1: { name: 'outer', type: 'module', parent: null },
+          2: { name: 'inner', type: 'module', parent: '1' },
+          3: { name: 'other', type: 'module', parent: null },
+        })[id];
+      StaticData.getArc = () => ({ from: '2', to: '3', upward: true });
+      AppState.isCollapsed = (_appState, nodeId) => nodeId === '1';
+
+      const marked = [];
+      DomAdapter.querySelectorAll = (selector) => {
+        marked.push(selector);
+        return [];
+      };
+
+      SearchLogic._setVirtualArcMatch('2-3', true);
+
+      expect(marked).toEqual([
+        '.virtual-arc[data-arc-id="1-3-up"]',
+        '.virtual-arrow[data-vedge="1-3-up"]',
+        '.arc-count[data-vedge="1-3-up"]',
+      ]);
+
+      StaticData.getNode = origGetNode;
+      StaticData.getArc = origGetArc;
+      DomAdapter.querySelectorAll = origQuerySelectorAll;
+      AppState.isCollapsed = origIsCollapsed;
+    });
+
     test('arc between non-matching nodes has no search-match', () => {
       const origGetAllNodeIds = StaticData.getAllNodeIds;
       const origGetNode = StaticData.getNode;

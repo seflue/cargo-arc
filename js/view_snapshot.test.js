@@ -78,6 +78,23 @@ describe('capture and restore', () => {
     ).toEqual({ type: null, id: null });
   });
 
+  test('carries the arc for the upward edges of a collapsed pair', () => {
+    const snapshot = capture(
+      { ...view, selection: { type: 'arc', id: '2-3-up' } },
+      nodes,
+    );
+    expect(snapshot.selection).toEqual({
+      type: 'arc',
+      from: 'app/core/util',
+      to: 'lib',
+      upward: true,
+    });
+    expect(restore(snapshot, renumbered).selection).toEqual({
+      type: 'arc',
+      id: '3-0-up',
+    });
+  });
+
   test('an empty selection stays empty', () => {
     const snapshot = capture(
       { ...view, selection: { type: null, id: null } },

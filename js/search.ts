@@ -1,6 +1,7 @@
 import { AppState } from './app_state.js';
 import { DomAdapter } from './dom_adapter.js';
 import { StaticData } from './static_data.js';
+import { VirtualEdgeLogic } from './virtual_edge_logic.js';
 
 // search.ts - Substring search with scope selector and highlight dimming
 
@@ -316,7 +317,11 @@ const SearchLogic = {
     if (visibleFrom === visibleTo) return;
 
     const C = STATIC_DATA.classes;
-    const virtualArcId = `${visibleFrom}-${visibleTo}`;
+    const virtualArcId = VirtualEdgeLogic.virtualArcId(
+      visibleFrom,
+      visibleTo,
+      arc.upward ? 'upward' : 'downward',
+    );
     const toggle = (el: Element) =>
       el.classList[add ? 'add' : 'remove'](C.search.searchMatch);
 

@@ -25,7 +25,9 @@ Every arc is a dependency between two boxes, and carries exactly one arc type:
 - a **re-export**, an arc whose imports are all `pub use`.
 
 Arcs on a circular dependency are drawn as cyclic edges in their own color.
+An [upward edge](GLOSSARY.md#upward-edge) is drawn on the left of the boxes, and every other arc on the right.
 A collapsed node folds its children away, and their individual arcs merge into summary arcs on the collapsed box.
+The upward edges among them merge into a summary arc of their own on the left.
 
 ## Interacting
 

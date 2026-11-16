@@ -1,5 +1,5 @@
 import { AppState } from './app_state.js';
-import { ArcLogic } from './arc_logic.js';
+import { ArcLogic, type RowExtent } from './arc_logic.js';
 import { CanvasSize } from './canvas_size.js';
 import { DerivedState } from './derived_state.js';
 import { DomAdapter, numberAttribute } from './dom_adapter.js';
@@ -674,7 +674,8 @@ if (typeof document !== 'undefined') {
       let maxArcWidth = 50; // arc_min_space
       for (const arcId of StaticData.getAllArcIds()) {
         const arc = StaticData.getArc(arcId);
-        if (!arc) continue;
+        // An upward arc runs on the left, in the room the rows already leave.
+        if (!arc || arc.upward) continue;
         const fromY = visiblePositionY.get(arc.from);
         const toY = visiblePositionY.get(arc.to);
         if (fromY === undefined || toY === undefined) continue;
@@ -852,7 +853,7 @@ if (typeof document !== 'undefined') {
     function updateOriginalEdges(
       edgeData: ReturnType<typeof extractEdgeData>,
       currentPositions: ReturnType<typeof DerivedState.computeCurrentPositions>,
-      maxRight: number,
+      extent: RowExtent,
     ) {
       edgeData.forEach((edge) => {
         const {
@@ -864,6 +865,7 @@ if (typeof document !== 'undefined') {
           toHidden,
           fromCollapsed,
           toCollapsed,
+          direction,
         } = edge;
 
         if (window.DEBUG_ARCS) {
@@ -906,8 +908,9 @@ if (typeof document !== 'undefined') {
               fromPos,
               toPos,
               3,
-              maxRight,
+              extent,
               ROW_HEIGHT,
+              direction === 'upward',
             );
             if (hitarea) {
               hitarea.setAttribute('d', arc.path);
@@ -925,7 +928,7 @@ if (typeof document !== 'undefined') {
             DomAdapter.getArrows(`${fromId}-${toId}`).forEach((arrow) => {
               arrow.setAttribute(
                 'points',
-                ArcLogic.getArrowPoints({ x: arc.toX, y: arc.toY }, scale),
+                ArcLogic.getArrowPoints(arc.tip, scale),
               );
               arrow.classList.remove(C.nodes.collapsed);
             });
@@ -982,11 +985,11 @@ if (typeof document !== 'undefined') {
         widthOverrides,
         hiddenByFilter,
       );
-      const maxRight = DerivedState.computeMaxRight(currentPositions);
+      const extent = DerivedState.computeRowExtent(currentPositions);
 
       const edgeData = extractEdgeData(visibleNodes);
 
-      updateOriginalEdges(edgeData, currentPositions, maxRight);
+      updateOriginalEdges(edgeData, currentPositions, extent);
 
       const layers = {
         baseArcs: DomAdapter.getElementById(LayerManager.LAYERS.BASE_ARCS),
@@ -1001,7 +1004,7 @@ if (typeof document !== 'undefined') {
       const mergedEdges = VirtualEdgeLogic.prepareVirtualEdgeData(
         virtualEdges,
         currentPositions,
-        maxRight,
+        extent,
         ArcLogic,
         ROW_HEIGHT,
       );
@@ -1017,7 +1020,7 @@ if (typeof document !== 'undefined') {
       const labelElements: SVGElement[] = [];
       const hitareaElements: SVGElement[] = [];
 
-      mergedEdges.forEach((data, _key) => {
+      mergedEdges.forEach((data, arcId) => {
         const {
           fromId,
           toId,
@@ -1028,7 +1031,6 @@ if (typeof document !== 'undefined') {
           hiddenEdgeData,
           originalArcs,
         } = data;
-        const arcId = `${fromId}-${toId}`;
 
         // Arc path
         const path = DomAdapter.createSvgElement('path');
@@ -1047,13 +1049,10 @@ if (typeof document !== 'undefined') {
         arrow.setAttribute('data-vedge', arcId);
         arrow.setAttribute('data-from', fromId);
         arrow.setAttribute('data-to', toId);
-        arrow.setAttribute(
-          'points',
-          ArcLogic.getArrowPoints({ x: arc.toX, y: arc.toY }, scale),
-        );
+        arrow.setAttribute('points', ArcLogic.getArrowPoints(arc.tip, scale));
         arrow.addEventListener('click', (e) => {
           e.stopPropagation();
-          highlightVirtualEdge(fromId, toId);
+          highlightVirtualEdge(arcId, fromId, toId);
         });
         arcElements.push(arrow);
 
@@ -1066,7 +1065,8 @@ if (typeof document !== 'undefined') {
           labelGroup.setAttribute('data-from', fromId);
           labelGroup.setAttribute('data-to', toId);
           const text = `(${count})`;
-          const x = arc.ctrlX + 5;
+          // Just outside the bulge of the arc, on its own side.
+          const x = direction === 'upward' ? arc.ctrlX - 5 : arc.ctrlX + 5;
           const y = arc.midY + 3;
 
           const padding = 2;
@@ -1091,7 +1091,7 @@ if (typeof document !== 'undefined') {
           labelGroup.style.cursor = 'pointer';
           labelGroup.addEventListener('click', (e) => {
             e.stopPropagation();
-            highlightVirtualEdge(fromId, toId);
+            highlightVirtualEdge(arcId, fromId, toId);
           });
           labelGroup.addEventListener('mouseenter', () =>
             handleMouseEnter('arc', arcId),
@@ -1119,7 +1119,7 @@ if (typeof document !== 'undefined') {
         }
         hitarea.addEventListener('click', (e) => {
           e.stopPropagation();
-          highlightVirtualEdge(fromId, toId);
+          highlightVirtualEdge(arcId, fromId, toId);
         });
         hitarea.addEventListener('mouseenter', () =>
           handleVirtualMouseEnter(arcId, fromId, toId),
@@ -1138,8 +1138,11 @@ if (typeof document !== 'undefined') {
       for (const el of hitareaElements) layers.hitareas?.appendChild(el);
     }
 
-    function highlightVirtualEdge(fromId: string, toId: string) {
-      const edgeId = `${fromId}-${toId}`;
+    function highlightVirtualEdge(
+      edgeId: string,
+      fromId: string,
+      toId: string,
+    ) {
       handleEdgeClick(edgeId, () => {
         const usages = virtualArcUsages.get(edgeId) || [];
         const originalArcs = virtualArcOriginals.get(edgeId) || [];
@@ -1673,8 +1676,13 @@ if (typeof document !== 'undefined') {
       if (view.selection.type === 'node' && view.selection.id !== null) {
         highlightNode(view.selection.id);
       } else if (view.selection.type === 'arc' && view.selection.id !== null) {
-        const [from, to] = view.selection.id.split('-');
-        highlightEdge(from, to);
+        const edgeId = view.selection.id;
+        const [from, to] = edgeId.split('-');
+        if (VirtualEdgeLogic.isUpwardArcId(edgeId)) {
+          highlightVirtualEdge(edgeId, from, to);
+        } else {
+          highlightEdge(from, to);
+        }
       }
       const input = DomAdapter.getElementById(
         'search-input',

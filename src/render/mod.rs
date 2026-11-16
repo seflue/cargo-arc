@@ -560,18 +560,28 @@ mod tests {
             "b".into(),
         );
 
-        // Test DirectCycle
-        ir.edges
-            .push(LayoutEdge::new(a, b, EdgeContext::production()).with_cycle(
-                CycleKind::Direct,
-                vec![0],
-                0,
-            ));
+        // Test DirectCycle: both edges are drawn, each with its own arc, so
+        // each gets one arrow head, at its target. cycle-arrow is an additive
+        // marker on top of the directional arrow class.
+        for (from, to) in [(a, b), (b, a)] {
+            ir.edges.push(
+                LayoutEdge::new(from, to, EdgeContext::production()).with_cycle(
+                    CycleKind::Direct,
+                    vec![0],
+                    0,
+                ),
+            );
+        }
         let svg = render(&ir, &RenderConfig::new(&RUST_PROFILE.wording));
         assert!(svg.contains("cycle-arc"));
-        // DirectCycle should have two arrows (bidirectional). cycle-arrow is an
-        // additive marker on top of the directional arrow class.
         assert_eq!(svg.matches(r#"class="dep-arrow cycle-arrow""#).count(), 2);
+        for edge in [format!("{a}-{b}"), format!("{b}-{a}")] {
+            assert_eq!(
+                svg.matches(&format!(r#"data-edge="{edge}""#)).count(),
+                1,
+                "edge {edge} should have one arrow head"
+            );
+        }
 
         // Test TransitiveCycle
         let mut ir2 = LayoutIR::new();

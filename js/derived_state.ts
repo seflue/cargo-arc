@@ -1,8 +1,9 @@
 import { AppState } from './app_state.js';
-import { ArcLogic } from './arc_logic.js';
+import { ArcLogic, type RowExtent } from './arc_logic.js';
 import { HighlightLogic } from './highlight_logic.js';
 import type { StaticData } from './static_data.js';
 import { TreeLogic } from './tree_logic.js';
+import { VirtualEdgeLogic } from './virtual_edge_logic.js';
 
 // derived_state.ts - Pure functions to derive display state from core state
 // Computes highlights and visibility based on selection and collapse state
@@ -38,7 +39,7 @@ export interface HighlightState {
 }
 
 type Position = { x: number; y: number; width: number; height: number };
-type ArcPathContext = { maxRight: number; rowHeight: number; yOffset: number };
+type ArcPathContext = { extent: RowExtent; rowHeight: number; yOffset: number };
 type ArcDescriptor = {
   key: string;
   fromId: string;
@@ -49,6 +50,8 @@ type ArcDescriptor = {
   isVirtual: boolean;
   isNonProduction?: boolean;
   isCycle?: boolean;
+  /** An upward edge, whose arc runs on the left of the rows. */
+  upward?: boolean;
 };
 
 const DerivedState = {
@@ -258,7 +261,7 @@ const DerivedState = {
       isPinned: selection.mode === 'click' || clusterActive,
     };
     const ctx: ArcPathContext = {
-      maxRight: this.computeMaxRight(positions),
+      extent: this.computeRowExtent(positions),
       rowHeight,
       yOffset: 3,
     };
@@ -440,6 +443,7 @@ const DerivedState = {
         originalWidth: staticData.getArcStrokeWidth(arcId),
         isVirtual: false,
         isCycle: isFocusArc,
+        upward: arc.upward,
       });
     }
     const usages = virtualArcUsages.get(arcId);
@@ -453,6 +457,7 @@ const DerivedState = {
         toInSet: true,
         originalWidth: ArcLogic.calculateStrokeWidth(count),
         isVirtual: true,
+        upward: VirtualEdgeLogic.isUpwardArcId(arcId),
       });
     }
 
@@ -493,6 +498,7 @@ const DerivedState = {
           originalWidth: staticData.getArcStrokeWidth(arcId),
           isVirtual: false,
           isCycle: true,
+          upward: arc.upward,
         });
       }
     }
@@ -533,6 +539,7 @@ const DerivedState = {
         isVirtual: false,
         isNonProduction: arc.context?.kind !== 'production',
         isCycle: !!arc.cycleIds?.length,
+        upward: arc.upward,
       });
     }
     return descs;
@@ -564,6 +571,7 @@ const DerivedState = {
         toInSet,
         originalWidth: ArcLogic.calculateStrokeWidth(count),
         isVirtual: true,
+        upward: VirtualEdgeLogic.isUpwardArcId(vArcId),
       });
     }
     return descs;
@@ -601,6 +609,7 @@ const DerivedState = {
         toPos,
         ctx,
         !!desc.isCycle,
+        !!desc.upward,
       );
 
       result.arcHighlights.set(desc.key, arcHighlight);
@@ -625,6 +634,7 @@ const DerivedState = {
     toPos: Position | undefined,
     ctx: ArcPathContext,
     isCycle: boolean,
+    upward: boolean,
   ) {
     const highlightWidth =
       HighlightLogic.calculateHighlightWidth(originalWidth);
@@ -638,6 +648,7 @@ const DerivedState = {
         toPos,
         ctx,
         isCycle,
+        upward,
       ),
     };
   },
@@ -650,14 +661,16 @@ const DerivedState = {
     toPos: Position | undefined,
     ctx: ArcPathContext,
     isCycle: boolean,
+    upward: boolean,
   ) {
     if (!fromPos || !toPos) return null;
     const pathData = ArcLogic.calculateArcPathFromPositions(
       fromPos,
       toPos,
       ctx.yOffset,
-      ctx.maxRight,
+      ctx.extent,
       ctx.rowHeight,
+      upward,
     );
     const pathLength = ArcLogic.estimatePathLength(pathData.path);
     const sd = HighlightLogic.calculateShadowData(originalWidth, pathLength);
@@ -698,16 +711,18 @@ const DerivedState = {
   },
 
   /**
-   * Compute the rightmost X coordinate from positions.
+   * Compute the outer edges of the rows from positions.
    */
-  computeMaxRight(
+  computeRowExtent(
     positions: Map<string, { x: number; width: number }>,
-  ): number {
-    let maxRight = 0;
+  ): RowExtent {
+    let left = Number.POSITIVE_INFINITY;
+    let right = 0;
     for (const pos of positions.values()) {
-      maxRight = Math.max(maxRight, pos.x + pos.width);
+      left = Math.min(left, pos.x);
+      right = Math.max(right, pos.x + pos.width);
     }
-    return maxRight;
+    return { left: positions.size === 0 ? 0 : left, right };
   },
 };
 

@@ -10,6 +10,8 @@ pub(super) struct LayoutConstants {
     pub box_padding: f32,
     pub arc_base: f32,
     pub arc_scale: f32,
+    /// The farthest an upward arc reaches to the left of the rows.
+    pub upward_arc_max: f32,
     pub arrow_length: f32,
     pub package_height: f32,
     pub module_height: f32,
@@ -83,6 +85,7 @@ pub(super) static LAYOUT: LayoutConstants = LayoutConstants {
     box_padding: 20.0,
     arc_base: 20.0,
     arc_scale: 15.0,
+    upward_arc_max: 420.0,
     arrow_length: 8.0,
     package_height: 24.0,
     module_height: 20.0,
