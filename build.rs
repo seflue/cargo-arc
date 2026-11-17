@@ -1,4 +1,5 @@
-//! Bundles the page scripts in `js/` into `OUT_DIR`.
+//! Bundles the page scripts in `js/` into `OUT_DIR` and sets
+//! `CARGO_ARC_VERSION`.
 //!
 //! A published crate ships the bundles in `js/dist/` (the release recipes
 //! write them); a git checkout has none and builds them with Bun.
@@ -9,8 +10,13 @@ use std::process::Command;
 
 const ENTRIES: [&str; 2] = ["svg_script", "hotspot_script"];
 
+/// The paths that make up the binary: a change to one of them outside a
+/// commit marks the build dirty.
+const SOURCES: [&str; 5] = ["src", "js", "build.rs", "Cargo.toml", "Cargo.lock"];
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rustc-env=CARGO_ARC_VERSION={}", version());
 
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR");
     let out_dir = Path::new(&out_dir);
@@ -59,4 +65,46 @@ fn main() {
         ),
         Err(e) => panic!("cannot run bun: {e}"),
     }
+}
+
+/// The package version, with the commit as semver build metadata in a git
+/// checkout: `<version>+<commit>`, or `<version>+<commit>.dirty` when a
+/// source differs from that commit.
+fn version() -> String {
+    let package = std::env::var("CARGO_PKG_VERSION").expect("CARGO_PKG_VERSION");
+    // A published crate has no .git of its own; git would describe the
+    // repository around it.
+    if !Path::new(".git").exists() {
+        return package;
+    }
+    let Some(commit) = git(&["rev-parse", "--short", "HEAD"]) else {
+        return package;
+    };
+    watch_git_state();
+    // The .ts files in js/ are watched where they are bundled.
+    println!("cargo:rerun-if-changed=src");
+    println!("cargo:rerun-if-changed=Cargo.toml");
+    println!("cargo:rerun-if-changed=Cargo.lock");
+    let mut status = vec!["status", "--porcelain", "--untracked-files=no", "--"];
+    status.extend(SOURCES);
+    let dirty = git(&status).is_some_and(|changes| !changes.is_empty());
+    let suffix = if dirty { ".dirty" } else { "" };
+    format!("{package}+{commit}{suffix}")
+}
+
+/// Rerun after a commit, a checkout or a staged change.
+fn watch_git_state() {
+    if let Some(git_dir) = git(&["rev-parse", "--git-dir"]) {
+        println!("cargo:rerun-if-changed={git_dir}/HEAD");
+        println!("cargo:rerun-if-changed={git_dir}/index");
+    }
+}
+
+/// The trimmed stdout of `git args`, or None when git fails.
+fn git(args: &[&str]) -> Option<String> {
+    let output = Command::new("git").args(args).output().ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }

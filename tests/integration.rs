@@ -5195,7 +5195,7 @@ fn ui_serves_the_page_and_resolves_a_jump_id_over_http() {
     let ready: Vec<&str> = ready_line.trim_end().split(' ').collect();
     assert_eq!(
         ready[..3],
-        ["arc", "ready", env!("CARGO_PKG_VERSION")],
+        ["arc", "ready", env!("CARGO_ARC_VERSION")],
         "unexpected ready line: {ready_line:?}"
     );
     let port: u16 = ready[3].parse().expect("ready line carries a port");

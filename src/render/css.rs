@@ -702,6 +702,14 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
             &format!(".{}:empty", c.toolbar.jump_status),
             &[("display", "none")],
         ),
+        CssRule::class(
+            c.toolbar.version,
+            &[
+                ("margin-left", "auto"),
+                ("font-size", "11px"),
+                ("color", tb.text_faint),
+            ],
+        ),
         // The follow and switch toggles carry their state in aria-pressed,
         // written by js/svg_script.ts; pressed reads as switched on.
         CssRule::new(

@@ -33,7 +33,7 @@ use std::path::Path;
 #[command(name = "cargo", bin_name = "cargo")]
 pub enum Cargo {
     /// Visualize workspace dependencies as SVG or check architecture rules
-    #[command(name = "arc", version, author)]
+    #[command(name = "arc", version = crate::VERSION, author)]
     Arc(ArcCommand),
 }
 

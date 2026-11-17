@@ -273,6 +273,8 @@ pub(super) struct ToolbarClasses {
     pub scope_active: &'static str,
     pub result_count: &'static str,
     pub jump_status: &'static str,
+    /// The cargo-arc build that rendered the page, at the right end.
+    pub version: &'static str,
     pub follow_toggle: &'static str,
     /// The two buttons that switch an analysis input; pressed is on, busy
     /// while the service recomputes.
@@ -525,6 +527,7 @@ pub(super) static CSS: CssClassNames = CssClassNames {
         scope_active: "active",
         result_count: "toolbar-result-count",
         jump_status: "toolbar-jump-status",
+        version: "toolbar-version",
         follow_toggle: "toolbar-follow-toggle",
         switch_toggle: "toolbar-switch-toggle",
         dropdown: "toolbar-dropdown",

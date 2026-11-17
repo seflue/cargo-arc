@@ -119,6 +119,7 @@ pub(super) fn markup(config: &RenderConfig, content: &Content, cross_link: Cross
             "{}",
             "{}",
             "      <span id=\"jump-status\" class=\"{}\"></span>\n",
+            "      <span class=\"{}\">cargo-arc {}</span>\n",
             "{}",
             "    </div>\n",
         ),
@@ -138,6 +139,8 @@ pub(super) fn markup(config: &RenderConfig, content: &Content, cross_link: Cross
         content.after_follow,     // page-specific service toggles after Follow editor
         page_link,                // link to the workspace's other page
         ct.jump_status,           // .toolbar-jump-status
+        ct.version,               // .toolbar-version
+        crate::VERSION,           // the build that rendered the page
         content.second_line,      // page-specific line below the buttons
     )
 }

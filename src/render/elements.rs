@@ -1306,7 +1306,8 @@ mod tests {
             externals_switch: true,
             ..RenderConfig::new(&RUST_PROFILE.wording)
         };
-        let output = render_toolbar(800.0, facts, &config);
+        // The version changes with every commit.
+        let output = render_toolbar(800.0, facts, &config).replace(crate::VERSION, "VERSION");
         assert_eq!(
             output,
             "  <foreignObject id=\"toolbar-fo\" x=\"0\" y=\"0\" width=\"800\" height=\"40\" style=\"display:none; overflow:visible\">\n\
@@ -1379,6 +1380,7 @@ mod tests {
 \u{20}     <button id=\"tests-toggle\" class=\"toolbar-html-btn toolbar-switch-toggle\" aria-pressed=\"false\">Test code</button>\n\
 \u{20}     <a id=\"hotspot-page-link\" class=\"toolbar-html-btn\" href=\"/hotspots\">Hotspot map</a>\n\
 \u{20}     <span id=\"jump-status\" class=\"toolbar-jump-status\"></span>\n\
+\u{20}     <span class=\"toolbar-version\">cargo-arc VERSION</span>\n\
 \u{20}   </div>\n\
 \u{20} </foreignObject>\n",
             "arc toolbar markup changed, got: {output}"

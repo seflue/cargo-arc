@@ -301,7 +301,7 @@ impl<'a> JumpService<'a> {
     }
 
     pub(crate) fn ready_line(port: u16) -> String {
-        format!("arc ready {} {port}\n", env!("CARGO_PKG_VERSION"))
+        format!("arc ready {} {port}\n", crate::VERSION)
     }
 
     pub(crate) fn jump_line(location: &Location) -> String {
@@ -664,10 +664,10 @@ mod tests {
     }
 
     #[test]
-    fn ready_line_names_the_package_version_and_port() {
+    fn ready_line_names_the_build_version_and_port() {
         assert_eq!(
             JumpService::ready_line(4321),
-            format!("arc ready {} 4321\n", env!("CARGO_PKG_VERSION"))
+            format!("arc ready {} 4321\n", crate::VERSION)
         );
     }
 
