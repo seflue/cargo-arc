@@ -131,16 +131,9 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
             &format!(".{}, .{}", c.direction.dep_arc, c.direction.cycle_arc),
             &[("pointer-events", "none")],
         ),
-        // Chromium rasterizes thousands of antialiased arcs on every repaint
-        // while scrolling, and drops segments of the thinnest ones. Firefox
-        // keeps antialiasing: render_styles restores it there.
         CssRule::class(
             c.direction.dep_arc,
-            &[
-                ("fill", "none"),
-                ("stroke-width", draw.dep_width),
-                ("shape-rendering", "optimizeSpeed"),
-            ],
+            &[("fill", "none"), ("stroke-width", draw.dep_width)],
         ),
         CssRule::new(
             &format!(".{}.{}", c.direction.dep_arc, c.direction.downward),
@@ -187,6 +180,15 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
         CssRule::new(
             &format!("svg.{} .{}", c.relation.scrolling, c.direction.arc_hitarea),
             &[("pointer-events", "none")],
+        ),
+        // A wide arc keeps only its middle hairline while the page scrolls
+        // fast, which Chromium rasterizes in a fraction of the time.
+        CssRule::new(
+            &format!(
+                "svg.{} .{}",
+                c.relation.scrolling_fast, c.direction.hair_outer
+            ),
+            &[("visibility", "hidden")],
         ),
         // Selection
         CssRule::class(
@@ -297,8 +299,9 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
         ),
         CssRule::new(
             &format!(
-                "svg.{} path:not(.{}):not(.{}):not(.{}):not(.{}):not(.{})",
+                "svg.{} path:not(.{}):not(.{} > path):not(.{}):not(.{}):not(.{}):not(.{})",
                 c.relation.has_highlight,
+                c.relation.highlighted_arc,
                 c.relation.highlighted_arc,
                 c.direction.arc_hitarea,
                 c.direction.virtual_hitarea,
@@ -736,8 +739,9 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
         // Paths: dim all except search matches, hitareas, and shadow paths
         CssRule::new(
             &format!(
-                "svg.{} path:not(.{}):not(.{}):not(.{}):not(.{}):not(.{})",
+                "svg.{} path:not(.{}):not(.{} > path):not(.{}):not(.{}):not(.{}):not(.{})",
                 c.search.search_active,
+                c.search.search_match,
                 c.search.search_match,
                 c.direction.arc_hitarea,
                 c.direction.virtual_hitarea,
@@ -1771,13 +1775,6 @@ pub(super) fn render_styles() -> String {
     css.push_str("    @media (prefers-reduced-motion: no-preference) {\n");
     css.push_str("      .block-chevron { transition: transform 0.15s ease; }\n");
     css.push_str("    }\n");
-    // Only Firefox recognizes -moz-appearance; it draws the arcs antialiased
-    // and fast, so it keeps what the arc base rule turns off.
-    let _ = writeln!(
-        css,
-        "    @supports (-moz-appearance: none) {{ .{} {{ shape-rendering: auto; }} }}",
-        CSS.direction.dep_arc
-    );
     css.push_str("  </style>\n");
     css
 }
@@ -1828,28 +1825,47 @@ mod tests {
         );
     }
 
-    /// Arcs draw without antialiasing except in Firefox, recognized by
-    /// `-moz-appearance`; the `@supports` block must follow the base rule to
-    /// win the tie in specificity.
+    /// Every browser draws the arcs antialiased. The hairline pieces keep
+    /// Chromium's rasterizing cheap.
     #[test]
-    fn test_arcs_skip_antialiasing_outside_firefox() {
+    fn test_arcs_keep_antialiasing_in_every_browser() {
         let css = render_styles();
-        let base = css
-            .find(&format!(
-                ".{} {{ fill: none; stroke-width: {}; shape-rendering: optimizeSpeed; }}",
-                CSS.direction.dep_arc, DRAWING.dep_width
-            ))
-            .expect("arc base rule turns antialiasing off");
-        let firefox = css
-            .find(&format!(
-                "@supports (-moz-appearance: none) {{ .{} {{ shape-rendering: auto; }} }}",
-                CSS.direction.dep_arc
-            ))
-            .expect("Firefox keeps antialiasing");
         assert!(
-            base < firefox,
-            "the Firefox block must follow the base rule"
+            css.contains(&format!(
+                ".{} {{ fill: none; stroke-width: {}; }}",
+                CSS.direction.dep_arc, DRAWING.dep_width
+            )),
+            "arc base rule, got: {css}"
         );
+        assert!(!css.contains("optimizeSpeed"), "{css}");
+        assert!(!css.contains("@supports (-moz-appearance"), "{css}");
+    }
+
+    #[test]
+    fn test_outer_hairlines_hide_while_scrolling_fast() {
+        let css = render_styles();
+        let rule = format!(
+            "svg.{} .{} {{ visibility: hidden; }}",
+            CSS.relation.scrolling_fast, CSS.direction.hair_outer
+        );
+        assert!(css.contains(&rule), "{css}");
+    }
+
+    /// The class of a highlighted or matching arc sits on its group, so the
+    /// dimming rules for paths must spare the pieces inside it.
+    #[test]
+    fn test_dimming_spares_the_pieces_of_a_highlighted_or_matching_arc() {
+        let css = render_styles();
+        let highlight = format!(
+            "svg.{} path:not(.{}):not(.{} > path):not(",
+            CSS.relation.has_highlight, CSS.relation.highlighted_arc, CSS.relation.highlighted_arc
+        );
+        assert!(css.contains(&highlight), "{css}");
+        let search = format!(
+            "svg.{} path:not(.{}):not(.{} > path):not(",
+            CSS.search.search_active, CSS.search.search_match, CSS.search.search_match
+        );
+        assert!(css.contains(&search), "{css}");
     }
 
     /// Arcs passing under a resting cursor while the page scrolls must not

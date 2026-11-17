@@ -7,6 +7,11 @@ const ARROW_HALF_WIDTH = 4;
 const BASE_STROKE_WIDTH = 1.5;
 // The farthest an upward arc reaches to the left of the rows.
 const UPWARD_ARC_MAX = 420;
+// How far a straight segment may stray from the curve it replaces, in CSS px.
+const FLATTEN_TOLERANCE = 0.15;
+// The longest piece, in CSS px. Chromium leaves gaps in a hairline along a
+// longer subpath.
+const PIECE_LENGTH = 2048;
 
 /** The outer edges of the visible rows, which the arcs bulge out from. */
 type RowExtent = { left: number; right: number };
@@ -22,6 +27,83 @@ type ArcPath = {
   midY: number;
   tip: Required<ArrowTip>;
 };
+
+/**
+ * One piece of an arc drawn as hairlines: the middle hairline, and the
+ * others as subpaths of one path, or null when the arc is one line wide.
+ */
+type HairlinePiece = { middle: string; outer: string | null };
+
+type Point = [number, number];
+
+/** Flatten the two quadratic curves of an arc path into points, each segment within the tolerance. */
+function flattenArc(path: string): Point[] {
+  const [x0, y0, cx1, cy1, x1, y1, cx2, cy2, x2, y2] = (
+    path.match(/-?\d+(\.\d+)?/g) ?? []
+  ).map(Number);
+  const points: Point[] = [[x0, y0]];
+  const quadratics: [Point, Point, Point][] = [
+    [
+      [x0, y0],
+      [cx1, cy1],
+      [x1, y1],
+    ],
+    [
+      [x1, y1],
+      [cx2, cy2],
+      [x2, y2],
+    ],
+  ];
+  for (const [start, ctrl, end] of quadratics) {
+    const bend = Math.hypot(
+      start[0] - 2 * ctrl[0] + end[0],
+      start[1] - 2 * ctrl[1] + end[1],
+    );
+    const steps = Math.max(
+      1,
+      Math.ceil(Math.sqrt(bend / (4 * FLATTEN_TOLERANCE))),
+    );
+    for (let i = 1; i <= steps; i++) {
+      const t = i / steps;
+      const u = 1 - t;
+      points.push([
+        u * u * start[0] + 2 * u * t * ctrl[0] + t * t * end[0],
+        u * u * start[1] + 2 * u * t * ctrl[1] + t * t * end[1],
+      ]);
+    }
+  }
+  return points;
+}
+
+/** Split the points into index ranges [first, last], consecutive ones sharing a point. */
+function pieceRanges(points: Point[]): [number, number][] {
+  const ranges: [number, number][] = [];
+  let first = 0;
+  let length = 0;
+  for (let i = 1; i < points.length; i++) {
+    length += Math.hypot(
+      points[i][0] - points[i - 1][0],
+      points[i][1] - points[i - 1][1],
+    );
+    if (length >= PIECE_LENGTH && i < points.length - 1) {
+      ranges.push([first, i]);
+      first = i;
+      length = 0;
+    }
+  }
+  ranges.push([first, points.length - 1]);
+  return ranges;
+}
+
+function round2(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+function lineData(points: Point[]): string {
+  return points
+    .map(([x, y], i) => `${i === 0 ? 'M' : 'L'} ${round2(x)},${round2(y)}`)
+    .join(' ');
+}
 
 const ArcLogic = {
   // === Arrow geometry ===
@@ -215,6 +297,54 @@ const ArcLogic = {
   },
 
   /**
+   * Split an arc into pieces of straight segments, each piece drawn as
+   * ⌈width · dpr⌉ parallel hairlines that together fill the arc's width.
+   * @param path - Arc path as `calculateArcPath` writes it
+   * @param width - Arc width in CSS px
+   * @param dpr - Device pixels per CSS px
+   */
+  hairlinePieces(path: string, width: number, dpr: number): HairlinePiece[] {
+    const points = flattenArc(path);
+    const ranges = pieceRanges(points);
+    // The subtraction keeps 2.5 · 1.6 = 4.000…01 at four lines.
+    const n = Math.max(1, Math.ceil(width * dpr - 1e-6));
+    if (n === 1) {
+      return ranges.map(([first, last]) => ({
+        middle: lineData(points.slice(first, last + 1)),
+        outer: null,
+      }));
+    }
+    // Normals over the whole arc, so the lines do not bend at piece boundaries.
+    const normals = points.map((_, i) => {
+      const a = points[Math.max(0, i - 1)];
+      const b = points[Math.min(points.length - 1, i + 1)];
+      const dx = b[0] - a[0];
+      const dy = b[1] - a[1];
+      const l = Math.hypot(dx, dy) || 1;
+      return [-dy / l, dx / l];
+    });
+    const line = (k: number, first: number, last: number) => {
+      const offset = (k - (n - 1) / 2) * (width / n);
+      const shifted: Point[] = [];
+      for (let i = first; i <= last; i++) {
+        shifted.push([
+          points[i][0] + normals[i][0] * offset,
+          points[i][1] + normals[i][1] * offset,
+        ]);
+      }
+      return lineData(shifted);
+    };
+    const middleLine = Math.floor(n / 2);
+    return ranges.map(([first, last]) => {
+      const outer = [];
+      for (let k = 0; k < n; k++) {
+        if (k !== middleLine) outer.push(line(k, first, last));
+      }
+      return { middle: line(middleLine, first, last), outer: outer.join(' ') };
+    });
+  },
+
+  /**
    * Count total source locations from structured usage groups.
    */
   countLocations(
@@ -283,4 +413,4 @@ const ArcLogic = {
   },
 };
 
-export { ArcLogic, type RowExtent };
+export { ArcLogic, type HairlinePiece, type RowExtent };

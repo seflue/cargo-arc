@@ -203,6 +203,8 @@ pub(super) struct DirectionClasses {
     pub virtual_arc: &'static str,
     pub virtual_arrow: &'static str,
     pub virtual_hitarea: &'static str,
+    /// The hairlines of a wide arc other than its middle one.
+    pub hair_outer: &'static str,
 }
 
 #[derive(Serialize)]
@@ -241,6 +243,9 @@ pub(super) struct RelationClasses {
     pub cluster_mode_on: &'static str,
     /// Root state class while the page scrolls, set by `js/scroll_state.ts`.
     pub scrolling: &'static str,
+    /// Root state class while the page scrolls fast or jumps, set by
+    /// `js/scroll_state.ts`.
+    pub scrolling_fast: &'static str,
 }
 
 #[derive(Serialize)]
@@ -472,6 +477,7 @@ pub(super) static CSS: CssClassNames = CssClassNames {
         virtual_arc: "virtual-arc",
         virtual_arrow: "virtual-arrow",
         virtual_hitarea: "virtual-hitarea",
+        hair_outer: "hair-outer",
     },
     node_selection: NodeSelectionClasses {
         selected_package: "selected-package",
@@ -496,6 +502,7 @@ pub(super) static CSS: CssClassNames = CssClassNames {
         has_pinned: "has-pinned",
         cluster_mode_on: "cluster-mode-on",
         scrolling: "scrolling",
+        scrolling_fast: "scrolling-fast",
     },
     toolbar: ToolbarClasses {
         view_options: "view-options",

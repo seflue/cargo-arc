@@ -127,6 +127,13 @@ const DomAdapter = {
   createSvgElement(tag: string) {
     return document.createElementNS(SVG_NS, tag);
   },
+  /**
+   * Firefox draws a long antialiased curve without gaps and rasterizes it
+   * fast, so an arc needs no hairline pieces there. Chromium does neither.
+   */
+  antialiasesWholeCurves() {
+    return CSS.supports('-moz-appearance', 'none');
+  },
   ...createConvenienceMethods(),
 };
 

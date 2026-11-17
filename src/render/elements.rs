@@ -662,10 +662,11 @@ pub(super) fn render_edges(
                 "    <path class=\"{hitarea}\" data-arc-id=\"{edge_id}\" data-from=\"{}\" data-to=\"{}\" data-direction=\"{direction}\"{cycle_ids_attr} d=\"{path}\"/>",
                 edge.from, edge.to
             );
-            // Visible path (styled, no pointer events) → base-arcs layer
+            // Visible arc (styled, no pointer events) → base-arcs layer. The
+            // JS replaces the curve inside the group with hairline pieces.
             let _ = writeln!(
                 base_arcs,
-                "    <path class=\"{arc_class}\" id=\"edge-{edge_id}\" data-arc-id=\"{edge_id}\" data-direction=\"{direction}\"{cycle_ids_attr} d=\"{path}\"/>"
+                "    <g class=\"{arc_class}\" id=\"edge-{edge_id}\" data-arc-id=\"{edge_id}\" data-direction=\"{direction}\"{cycle_ids_attr}><path d=\"{path}\"/></g>"
             );
 
             // Arrow head pointing to target → base-arcs layer
@@ -1639,6 +1640,32 @@ mod tests {
         );
     }
 
+    /// The browser replaces the curve inside the group with hairline pieces;
+    /// a viewer without JavaScript draws the curve.
+    #[test]
+    fn test_visible_arc_is_a_group_around_its_curve() {
+        let mut ir = package_with_two_modules();
+        ir.edges
+            .push(LayoutEdge::new(1, 2, EdgeContext::production()));
+        let config = RenderConfig::new(&RUST_PROFILE.wording);
+        let positioned = calculate_positions(&ir, &config, 100.0);
+        let positioned_index: HashMap<_, _> = positioned.iter().map(|p| (p.id, p)).collect();
+
+        let output = render_edges(&positioned_index, &ir, config.row_height, None);
+
+        let (from, to) = (&positioned[1], &positioned[2]);
+        let from_y = from.y + from.height / 2.0 + 3.0;
+        let to_y = to.y + to.height / 2.0 - 3.0;
+        let mid_y = f32::midpoint(from_y, to_y);
+        let path = format!("M 140,{from_y} Q 175,{from_y} 175,{mid_y} Q 175,{to_y} 140,{to_y}");
+        assert!(
+            output.contains(&format!(
+                r#"<g class="dep-arc downward module-dep-arc" id="edge-1-2" data-arc-id="1-2" data-direction="downward"><path d="{path}"/></g>"#
+            )),
+            "{output}"
+        );
+    }
+
     /// The rows of a package with the parent module `outer` at level 7 and
     /// its child `inner` at level 12, as `render_nodes` draws them.
     fn rows_with_levels() -> String {
@@ -1762,7 +1789,7 @@ mod tests {
         let path = format!("M 83,{from_y} Q 28,{from_y} 28,{mid_y} Q 28,{to_y} 83,{to_y}");
         assert!(
             output.contains(&format!(
-                r#"id="edge-2-1" data-arc-id="2-1" data-direction="upward" d="{path}""#
+                r#"id="edge-2-1" data-arc-id="2-1" data-direction="upward"><path d="{path}"/>"#
             )),
             "{output}"
         );

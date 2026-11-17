@@ -1,5 +1,5 @@
 // highlight_renderer.test.js - Tests for HighlightRenderer (DOM application of highlight state)
-import { beforeEach, describe, expect, test } from 'bun:test';
+import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 
 // Set up STATIC_DATA.classes and .theme (normally injected by render.rs)
 if (!globalThis.STATIC_DATA) globalThis.STATIC_DATA = {};
@@ -20,6 +20,7 @@ Object.assign(globalThis.STATIC_DATA.classes, {
     cycleArrow: 'cycle-arrow',
     downward: 'downward',
     upward: 'upward',
+    hairOuter: 'hair-outer',
   },
   relation: {
     hasHighlight: 'has-highlight',
@@ -48,10 +49,15 @@ Object.assign(globalThis.STATIC_DATA.classes, {
 });
 
 import { ArcLogic } from './arc_logic.js';
+import { ArcStroke } from './arc_stroke.js';
+import { DomAdapter } from './dom_adapter.js';
 import { createFakeElement, createMockDomAdapter } from './dom_mock.js';
 import { HighlightRenderer } from './highlight_renderer.js';
 import { LayerManager } from './layer_manager.js';
 import { Selectors } from './selectors.js';
+import { restoreAll, substitute } from './test_support.js';
+
+afterAll(restoreAll);
 
 // Helper: create a minimal mock staticData for renderer tests
 function createRendererStaticData(nodeIds, arcData) {
@@ -88,6 +94,7 @@ describe('HighlightRenderer', () => {
 
   beforeEach(() => {
     dom = createMockDomAdapter();
+    substitute(DomAdapter, dom);
     svg = registerSvgRoot(dom);
     layers = registerLayers(dom);
     // Reset dirty-set state from previous tests (singleton)
@@ -426,6 +433,127 @@ describe('HighlightRenderer', () => {
 
       // The glow opacity is the renderer's, handed over in STATIC_DATA.theme
       expect(shadow.getAttribute('opacity')).toBe('0.42');
+    });
+
+    test('the shadow of an arc is one path along its curve', () => {
+      const curve = 'M 100,0 Q 130,0 130,20 Q 130,40 100,40';
+      const arcEl = createFakeElement('g');
+      arcEl.classList.add(C.direction.depArc, C.direction.downward);
+      arcEl.setAttribute('data-arc-id', 'a-b');
+      ArcStroke.draw(arcEl, curve, 0.5, 1);
+      dom._registerSelector(Selectors.baseArc('a-b'), arcEl);
+      dom._registerSelector(Selectors.arrows('a-b'), []);
+      const shadowLayer = layers[LayerManager.LAYERS.SHADOWS];
+
+      HighlightRenderer.apply(
+        dom,
+        createRendererStaticData([], { 'a-b': { strokeWidth: 0.5 } }),
+        new Map(),
+        {
+          nodeHighlights: new Map(),
+          arcHighlights: new Map([
+            ['a-b', { highlightWidth: 2.5, arrowScale: 1, isVirtual: false }],
+          ]),
+          shadowData: new Map([
+            [
+              'a-b',
+              {
+                shadowWidth: 6,
+                visibleLength: 50,
+                dashOffset: 3,
+                glowClass: 'glowIncoming',
+              },
+            ],
+          ]),
+          promotedHitareas: new Set(),
+        },
+      );
+
+      expect(shadowLayer.children).toHaveLength(1);
+      const shadow = shadowLayer.children[0];
+      expect(shadow.tagName).toBe('path');
+      expect(shadow.getAttribute('d')).toBe(curve);
+      expect(shadow.children).toHaveLength(0);
+      expect(shadow.classList.contains(C.direction.depArc)).toBe(true);
+      expect(shadow.classList.contains(C.direction.downward)).toBe(false);
+      expect(shadow.classList.contains(C.relation.glowIncoming)).toBe(true);
+      expect(shadow.style.strokeWidth).toBe('6px');
+      expect(shadow.style.strokeDasharray).toBe(
+        `50 ${ArcLogic.estimatePathLength(curve)}`,
+      );
+      expect(shadow.style.strokeDashoffset).toBe('3px');
+    });
+
+    describe('hairline pieces at the highlight width', () => {
+      const curve = 'M 100,0 Q 130,0 130,20 Q 130,40 100,40';
+      const highlight = (key, isVirtual) => ({
+        nodeHighlights: new Map(),
+        arcHighlights: new Map([
+          [key, { highlightWidth: 2.5, arrowScale: 1, isVirtual }],
+        ]),
+        shadowData: new Map(),
+        promotedHitareas: new Set(),
+      });
+      const outerLines = (group) =>
+        group.children[1].getAttribute('d').match(/M/g).length;
+
+      test('a highlighted arc is drawn at its highlight width, and at its weight after the reset', () => {
+        const arcEl = createFakeElement('g');
+        ArcStroke.draw(arcEl, curve, 0.5, 1.6);
+        dom._registerSelector(Selectors.baseArc('a-b'), arcEl);
+        dom._registerSelector(Selectors.arrows('a-b'), []);
+        const staticData = createRendererStaticData([], {
+          'a-b': { strokeWidth: 0.5 },
+        });
+
+        HighlightRenderer.apply(
+          dom,
+          staticData,
+          new Map(),
+          highlight('a-b', false),
+          1.6,
+        );
+        // 2.5 px at density 1.6: a middle and three outer hairlines.
+        expect(arcEl.style.strokeWidth).toBe('2.5px');
+        expect(outerLines(arcEl)).toBe(3);
+
+        HighlightRenderer.apply(dom, staticData, new Map(), null, 1.6);
+        expect(arcEl.style.strokeWidth).toBe('0.5px');
+        expect(arcEl.children).toHaveLength(1);
+      });
+
+      test('a highlighted virtual arc is drawn at its highlight width, and at its weight after the reset', () => {
+        const arcEl = createFakeElement('g');
+        arcEl.classList.add(C.direction.virtualArc);
+        ArcStroke.draw(arcEl, curve, 0.5, 1.6);
+        dom.cacheArcElements('x-y', arcEl, [], null);
+        dom._registerSelector(`.${C.direction.virtualArc}[data-arc-id="x-y"]`, [
+          arcEl,
+        ]);
+        dom._registerSelector(
+          `.${C.direction.virtualArrow}[data-vedge="x-y"]`,
+          [],
+        );
+        // One location: the thinnest weight.
+        const usages = new Map([
+          ['x-y', [{ symbol: 's', locations: [{ file: 'f', line: 1 }] }]],
+        ]);
+        const staticData = createRendererStaticData([], {});
+
+        HighlightRenderer.apply(
+          dom,
+          staticData,
+          usages,
+          highlight('v:x-y', true),
+          1.6,
+        );
+        expect(arcEl.style.strokeWidth).toBe('2.5px');
+        expect(outerLines(arcEl)).toBe(3);
+
+        HighlightRenderer.apply(dom, staticData, usages, null, 1.6);
+        expect(arcEl.style.strokeWidth).toBe('0.5px');
+        expect(arcEl.children).toHaveLength(1);
+      });
     });
 
     test('dimming order: resetDimming before classes, activateDimming after', () => {

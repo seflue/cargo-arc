@@ -29,7 +29,7 @@ A `<canvas>` holds pixels, not elements, so the page would have to take over wha
 - The output would no longer be a standalone SVG file (ADR-006).
 - Tests assert classes and attributes on DOM elements; a canvas offers only pixels.
 
-A canvas pays off when the number of elements makes DOM layout and styling the cost, or for continuous animation. Neither applies. Chromium's slow rasterizing of many thin antialiased arcs while scrolling, which prompted the question, is fixed in CSS by drawing arcs without antialiasing outside Firefox.
+A canvas pays off when the number of elements makes DOM layout and styling the cost, or for continuous animation. Neither applies. Chromium's slow rasterizing of many thin antialiased arcs while scrolling, which prompted the question, is solved by drawing each arc as short pieces of straight segments, and a wide arc as parallel hairlines that together fill its width.
 
 ## Consequences
 

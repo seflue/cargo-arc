@@ -1,5 +1,6 @@
 import { AppState } from './app_state.js';
 import { ArcLogic, type RowExtent } from './arc_logic.js';
+import { ArcStroke } from './arc_stroke.js';
 import { CanvasSize } from './canvas_size.js';
 import { DerivedState } from './derived_state.js';
 import { DomAdapter, numberAttribute } from './dom_adapter.js';
@@ -145,11 +146,25 @@ if (typeof document !== 'undefined') {
 
     // === Arc weight scaling ===
 
+    const pixelDensity = () => window.devicePixelRatio || 1;
+
+    // Draws every arc, hidden ones included: a filter shows an arc by its
+    // class alone, without a relayout that would draw it.
     function applyInitialArcWeights() {
+      const dpr = pixelDensity();
+      // One query for all curves: a query per arc scans the growing DOM.
+      const curves = new Map<string | null, string | null>();
+      for (const hitarea of DomAdapter.getAllHitareas()) {
+        curves.set(
+          hitarea.getAttribute('data-arc-id'),
+          hitarea.getAttribute('d'),
+        );
+      }
       for (const arcId of StaticData.getAllArcIds()) {
         const width = StaticData.getArcStrokeWidth(arcId);
-        const visibleArc = DomAdapter.getVisibleArc(arcId);
-        if (visibleArc) visibleArc.style.strokeWidth = `${width}px`;
+        const arc = DomAdapter.getArc(arcId);
+        const curve = curves.get(arcId);
+        if (arc && curve) ArcStroke.draw(arc, curve, width, dpr);
         ArcLogic.scaleArrow(DomAdapter, arcId, width);
       }
     }
@@ -240,7 +255,13 @@ if (typeof document !== 'undefined') {
         positions,
         ROW_HEIGHT,
       );
-      HighlightRenderer.apply(DomAdapter, StaticData, virtualArcUsages, state);
+      HighlightRenderer.apply(
+        DomAdapter,
+        StaticData,
+        virtualArcUsages,
+        state,
+        pixelDensity(),
+      );
       updateHotspotLink();
     }
 
@@ -923,7 +944,15 @@ if (typeof document !== 'undefined') {
             }
             const visibleArc = DomAdapter.getVisibleArc(arcId);
             if (visibleArc) {
-              visibleArc.setAttribute('d', arc.path);
+              // An arc whose rows did not move keeps its pieces.
+              if (visibleArc.getAttribute('data-path') !== arc.path) {
+                ArcStroke.draw(
+                  visibleArc,
+                  arc.path,
+                  parseFloat(visibleArc.style.strokeWidth),
+                  pixelDensity(),
+                );
+              }
               visibleArc.classList.remove(C.nodes.collapsed);
             }
 
@@ -1037,15 +1066,13 @@ if (typeof document !== 'undefined') {
           originalArcs,
         } = data;
 
-        // Arc path
-        const path = DomAdapter.createSvgElement('path');
-        path.setAttribute('class', `${C.direction.virtualArc} ${direction}`);
-        path.setAttribute('d', arc.path);
-        path.setAttribute('data-arc-id', arcId);
-        path.setAttribute('data-from', fromId);
-        path.setAttribute('data-to', toId);
-        path.style.strokeWidth = `${strokeWidth}px`;
-        arcElements.push(path);
+        const group = DomAdapter.createSvgElement('g');
+        group.classList.add(C.direction.virtualArc, direction);
+        group.setAttribute('data-arc-id', arcId);
+        group.setAttribute('data-from', fromId);
+        group.setAttribute('data-to', toId);
+        ArcStroke.draw(group, arc.path, strokeWidth, pixelDensity());
+        arcElements.push(group);
 
         // Arrow (scaled to match stroke width)
         const scale = strokeWidth / 1.5;
@@ -1135,7 +1162,7 @@ if (typeof document !== 'undefined') {
         hitareaElements.push(hitarea);
 
         // Cache with direct references (no DOM queries needed)
-        DomAdapter.cacheArcElements(arcId, path, [arrow], labelGroup);
+        DomAdapter.cacheArcElements(arcId, group, [arrow], labelGroup);
       });
 
       for (const el of arcElements) layers.baseArcs?.appendChild(el);
@@ -1588,12 +1615,22 @@ if (typeof document !== 'undefined') {
     if (!PAGE_HOST) window.addEventListener('scroll', followScroll);
     const scrollState = ScrollState.createScrollState({
       setScrolling: (scrolling) => {
-        const classes = DomAdapter.getSvgRoot()?.classList;
-        if (scrolling) classes?.add(C.relation.scrolling);
-        else classes?.remove(C.relation.scrolling);
+        DomAdapter.getSvgRoot()?.classList.toggle(
+          C.relation.scrolling,
+          scrolling,
+        );
+      },
+      setFast: (fast) => {
+        DomAdapter.getSvgRoot()?.classList.toggle(
+          C.relation.scrollingFast,
+          fast,
+        );
       },
       schedule: (fn, ms) => setTimeout(fn, ms),
       cancel: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+      position: () => ({ x: window.scrollX, y: window.scrollY }),
+      now: () => performance.now(),
+      viewportHeight: () => window.innerHeight,
     });
     window.addEventListener('scroll', scrollState.onScroll, { passive: true });
     window.addEventListener('resize', () => {
@@ -1974,10 +2011,9 @@ if (typeof document !== 'undefined') {
       });
     }
 
-    // Apply initial arc weights based on source location counts
-    applyInitialArcWeights();
-
-    // Populate arc element cache for O(1) lookups during highlight
+    // Populate arc element cache for O(1) lookups during highlight. Before
+    // the arcs are drawn: each lookup scans the DOM, which the hairline
+    // pieces make several times larger.
     for (const arcId of StaticData.getAllArcIds()) {
       const arc = DomAdapter.querySelector(Selectors.baseArc(arcId));
       if (!arc) continue;
@@ -1988,6 +2024,24 @@ if (typeof document !== 'undefined') {
         DomAdapter.querySelector(Selectors.labelGroup(arcId)),
       );
     }
+
+    // Apply initial arc weights based on source location counts
+    applyInitialArcWeights();
+
+    // Browser zoom and a screen with another density change the device
+    // pixels per arc, so the arcs need another number of hairlines. A
+    // resolution query matches one density only: listen anew for each.
+    function redrawOnDensityChange() {
+      window.matchMedia(`(resolution: ${pixelDensity()}dppx)`).addEventListener(
+        'change',
+        () => {
+          ArcStroke.redrawAll(pixelDensity());
+          redrawOnDensityChange();
+        },
+        { once: true },
+      );
+    }
+    redrawOnDensityChange();
 
     // Initialize search module
     SearchLogic.init(appState);

@@ -282,6 +282,7 @@ function makeSvgPageStaticData() {
         hasHighlight: 'has-highlight',
         hasPinned: 'has-pinned',
         scrolling: 'scrolling',
+        scrollingFast: 'scrolling-fast',
         depNode: 'depNode',
         dependentNode: 'dependentNode',
         highlightedArc: 'highlightedArc',
@@ -635,6 +636,28 @@ describe("the scroll listener on each overlay host (svg_script.ts's init)", () =
       expect(svg.classList.contains('scrolling')).toBe(true);
     }
   });
+
+  test('a jump marks the SVG as scrolling fast until the quiet period ends', () => {
+    const { windowListeners, svg } = loadSvgPage();
+
+    // Three window heights down.
+    window.scrollY = 2400;
+    scroll(windowListeners);
+    expect(svg.classList.contains('scrolling-fast')).toBe(true);
+
+    jest.advanceTimersByTime(200);
+    expect(svg.classList.contains('scrolling-fast')).toBe(false);
+    expect(svg.classList.contains('scrolling')).toBe(false);
+  });
+
+  test('a small scroll step does not mark the SVG as scrolling fast', () => {
+    const { windowListeners, svg } = loadSvgPage();
+
+    window.scrollY = 1;
+    scroll(windowListeners);
+    expect(svg.classList.contains('scrolling')).toBe(true);
+    expect(svg.classList.contains('scrolling-fast')).toBe(false);
+  });
 });
 
 describe.each([
@@ -692,10 +715,19 @@ describe.each([
 // Two plain modules under one package, connected by one arc pre-classed the way
 // Rust bakes it (`hidden-by-filter` by default, or `collapsed` when the
 // endpoint starts hidden by expand-level).
+// The curve Rust writes for the arc a-b, which no layout of the page produces.
+const RUST_CURVE = 'M 120,63 Q 150,63 150,80 Q 150,97 120,97';
+
+/**
+ * `bParent: 'p'` puts `b` under a module `p` below `a`, so collapsing `p`
+ * turns the arc into a virtual arc a-p. `dpr` is the page's pixel density.
+ */
 function loadArcVisibilityPage({
   sessionStorageView,
   arcInitialClasses = ['hidden-by-filter'],
   nodeFilterHiddenIds = [],
+  bParent = 'root',
+  dpr = 1,
 }) {
   const dom = createMockDomAdapter();
 
@@ -734,7 +766,22 @@ function loadArcVisibilityPage({
       hasChildren: false,
     },
   };
+  if (bParent === 'p') {
+    nodes.p = {
+      type: 'module',
+      name: 'p',
+      file: 'src/p/mod.rs',
+      parent: 'root',
+      x: 20,
+      y: 80,
+      width: 100,
+      height: 20,
+      hasChildren: true,
+    };
+    nodes.b = { ...nodes.b, parent: 'p', x: 40, y: 110 };
+  }
   const staticData = { ...makeSvgPageStaticData(), nodes, arcs: {} };
+  staticData.classes.direction.hairOuter = 'hair-outer';
   staticData.arcs['a-b'] = { from: 'a', to: 'b', usages: [] };
 
   for (const [id, node] of Object.entries(nodes)) {
@@ -752,12 +799,15 @@ function loadArcVisibilityPage({
   // Both endpoints start visible; the arc itself carries whatever class
   // Rust baked at render time (a filter-hidden re-export, or a collapsed
   // endpoint at a given expand-level).
-  const arcEl = createFakeElement('path');
+  const arcEl = createFakeElement('g');
   arcEl.classList.add('dep-arc');
   arcEl.classList.add('downward');
   arcEl.classList.add('module-dep-arc');
   for (const cls of arcInitialClasses) arcEl.classList.add(cls);
   arcEl.setAttribute('data-arc-id', 'a-b');
+  const rustPath = createFakeElement('path');
+  rustPath.setAttribute('d', RUST_CURVE);
+  arcEl.appendChild(rustPath);
   dom._registerSelector(
     '.dep-arc[data-arc-id="a-b"], .cycle-arc[data-arc-id="a-b"]',
     arcEl,
@@ -766,7 +816,11 @@ function loadArcVisibilityPage({
   hitareaEl.classList.add('arc-hitarea');
   for (const cls of arcInitialClasses) hitareaEl.classList.add(cls);
   hitareaEl.setAttribute('data-arc-id', 'a-b');
+  hitareaEl.setAttribute('d', RUST_CURVE);
   dom._registerSelector('.arc-hitarea[data-arc-id="a-b"]', hitareaEl);
+  dom._registerSelector('.arc-hitarea', [hitareaEl]);
+  const baseArcsLayer = createFakeElement('g');
+  dom._registerElement('base-arcs-layer', baseArcsLayer);
 
   const svg = createFakeElement('svg');
   svg.viewBox = { baseVal: { width: 1000, height: 800 } };
@@ -793,9 +847,16 @@ function loadArcVisibilityPage({
     documentElement: { dataset: {}, scrollHeight: 2000, clientWidth: 1000 },
     createElement: (tag) => createFakeElement(tag),
   };
+  dom._registerSelector('.dep-arc, .cycle-arc, .virtual-arc', [arcEl]);
+  const mediaListeners = [];
   global.window = {
-    matchMedia: () => ({ matches: false, addEventListener() {} }),
+    matchMedia: (query) => ({
+      matches: false,
+      addEventListener: (type, handler) =>
+        mediaListeners.push({ query, type, handler }),
+    }),
     addEventListener: () => {},
+    devicePixelRatio: dpr,
     innerWidth: 1000,
     innerHeight: 800,
     scrollX: 0,
@@ -822,8 +883,90 @@ function loadArcVisibilityPage({
   delete require.cache[require.resolve('./svg_script.js')];
   require('./svg_script.js');
 
-  return { dom, arcEl, hitareaEl };
+  return { dom, arcEl, hitareaEl, baseArcsLayer, mediaListeners };
 }
+
+describe('arcs drawn as hairline pieces (svg_script.ts init)', () => {
+  afterEach(resetSidebarHooks);
+
+  const view = (collapsed) => ({
+    collapsed,
+    selection: null,
+    checks: {},
+    search: { query: '', scope: 'all' },
+    follow: false,
+    scroll: { x: 0, y: 0 },
+  });
+
+  test('on load an arc holds pieces of its hit-area curve at its weight', () => {
+    const { arcEl } = loadArcVisibilityPage({ arcInitialClasses: [] });
+
+    expect(arcEl.getAttribute('data-path')).toBe(RUST_CURVE);
+    // No usages: the thinnest weight.
+    expect(arcEl.style.strokeWidth).toBe('0.5px');
+    expect(arcEl.children).toHaveLength(1);
+    expect(arcEl.children[0].getAttribute('d')).toStartWith('M 120,63 L ');
+  });
+
+  test('on load the pieces follow the pixel density of the page', () => {
+    // 0.5 px at density 4 are two hairlines: a middle and an outer one.
+    const { arcEl } = loadArcVisibilityPage({ arcInitialClasses: [], dpr: 4 });
+
+    expect(arcEl.children).toHaveLength(2);
+    expect(arcEl.children[1].classList.contains('hair-outer')).toBe(true);
+  });
+
+  test('a relayout draws the arc along its new curve, and the hit area with it', () => {
+    const { arcEl, hitareaEl } = loadArcVisibilityPage({
+      sessionStorageView: view([]),
+      arcInitialClasses: [],
+    });
+
+    const curve = arcEl.getAttribute('data-path');
+    expect(curve).not.toBe(RUST_CURVE);
+    expect(hitareaEl.getAttribute('d')).toBe(curve);
+    expect(arcEl.children[0].getAttribute('d')).toStartWith(
+      `M ${curve.split(' ')[1]} L `,
+    );
+  });
+
+  test('a change of pixel density redraws the arcs and listens for the next one', () => {
+    const { arcEl, mediaListeners } = loadArcVisibilityPage({
+      arcInitialClasses: [],
+    });
+    const listener = (query) =>
+      mediaListeners.find((l) => l.query === query && l.type === 'change');
+
+    window.devicePixelRatio = 4;
+    listener('(resolution: 1dppx)').handler();
+
+    // 0.5 px at density 4 are two hairlines.
+    expect(arcEl.children).toHaveLength(2);
+    expect(arcEl.style.strokeWidth).toBe('0.5px');
+    expect(listener('(resolution: 4dppx)')).toBeDefined();
+  });
+
+  test('collapsing a node draws its virtual arc as a group of pieces', () => {
+    const { baseArcsLayer } = loadArcVisibilityPage({
+      sessionStorageView: view(['root/p']),
+      arcInitialClasses: [],
+      bParent: 'p',
+    });
+
+    const virtualArc = baseArcsLayer.children.find((el) =>
+      el.classList.contains('virtual-arc'),
+    );
+    expect(virtualArc.tagName).toBe('g');
+    expect(virtualArc.classList.contains('downward')).toBe(true);
+    expect(virtualArc.getAttribute('data-arc-id')).toBe('a-p');
+    expect(virtualArc.getAttribute('data-from')).toBe('a');
+    expect(virtualArc.getAttribute('data-to')).toBe('p');
+    expect(virtualArc.getAttribute('data-path')).toStartWith('M ');
+    expect(virtualArc.style.strokeWidth).toBe('0.5px');
+    expect(virtualArc.children.length).toBeGreaterThan(0);
+    expect(virtualArc.children[0].getAttribute('d')).toContain(' L ');
+  });
+});
 
 describe('arc visibility across a relayout (applyRestoredView)', () => {
   afterEach(resetSidebarHooks);

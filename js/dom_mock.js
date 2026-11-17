@@ -23,16 +23,25 @@ function createFakeElement(tagName) {
       attrs.delete(name);
     },
     classList: {
-      add(c) {
-        classes.add(c);
+      add(...cs) {
+        for (const c of cs) classes.add(c);
       },
-      remove(c) {
-        classes.delete(c);
+      remove(...cs) {
+        for (const c of cs) classes.delete(c);
       },
       contains(c) {
         return classes.has(c);
       },
+      toggle(c, force = !classes.has(c)) {
+        if (force) classes.add(c);
+        else classes.delete(c);
+        return force;
+      },
+      [Symbol.iterator]() {
+        return classes.values();
+      },
     },
+    addEventListener() {},
     style: styleData,
     cloneNode(_deep) {
       const clone = createFakeElement(tagName);
@@ -48,6 +57,10 @@ function createFakeElement(tagName) {
       }
       children.push(child);
       child._parentRef = this;
+    },
+    replaceChildren(...nodes) {
+      for (const child of [...children]) this.removeChild(child);
+      for (const node of nodes) this.appendChild(node);
     },
     removeChild(child) {
       const idx = children.indexOf(child);
@@ -83,6 +96,9 @@ function createMockDomAdapter() {
     createSvgElement(tag) {
       track('createSvgElement', [tag]);
       return createFakeElement(tag);
+    },
+    antialiasesWholeCurves() {
+      return false;
     },
     ...createConvenienceMethods(),
     _getCalls(method) {

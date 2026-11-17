@@ -1,4 +1,5 @@
 import { ArcLogic } from './arc_logic.js';
+import { ArcStroke } from './arc_stroke.js';
 import type { HighlightState } from './derived_state.js';
 import type { DomAdapter } from './dom_adapter.js';
 import { LayerManager } from './layer_manager.js';
@@ -23,15 +24,17 @@ const HighlightRenderer = {
    * @param staticData - StaticData accessor
    * @param virtualArcUsages - Runtime virtual arc usage map
    * @param state - Highlight state from deriveHighlightState, or null to reset
+   * @param dpr - Device pixels per CSS px, for the hairlines of the arcs
    */
   apply(
     dom: Dom,
     staticData: typeof StaticData,
     virtualArcUsages: Map<string, ArcData['usages']>,
     state: HighlightState | null,
+    dpr = 1,
   ) {
     const C = STATIC_DATA.classes;
-    this.resetToBase(dom, C, staticData, virtualArcUsages);
+    this.resetToBase(dom, C, staticData, virtualArcUsages, dpr);
 
     if (!state) {
       this._prevNodeIds = new Set<string>();
@@ -41,7 +44,7 @@ const HighlightRenderer = {
     }
 
     this._applyNodeClasses(dom, C, state.nodeHighlights);
-    this._applyArcHighlights(dom, C, state.arcHighlights);
+    this._applyArcHighlights(dom, C, state.arcHighlights, dpr);
     this._applyArrowScaling(dom, C, state.arcHighlights);
     this._createShadows(dom, C, state.shadowData);
     this._promoteToHighlightLayers(
@@ -72,19 +75,21 @@ const HighlightRenderer = {
    * @param C - STATIC_DATA.classes
    * @param staticData - StaticData accessor
    * @param virtualArcUsages - Runtime virtual arc usage map
+   * @param dpr - Device pixels per CSS px
    */
   resetToBase(
     dom: Dom,
     C: Classes,
     staticData: typeof StaticData,
     virtualArcUsages: Map<string, ArcData['usages']>,
+    dpr = 1,
   ) {
     this._resetDimming(dom, C);
     this._resetLayers(dom);
     this._clearShadowLayer(dom);
     this._resetNodeClasses(dom, C);
-    this._resetArcStyles(dom, C, staticData);
-    this._resetVirtualArcStyles(dom, C, virtualArcUsages);
+    this._resetArcStyles(dom, C, staticData, dpr);
+    this._resetVirtualArcStyles(dom, C, virtualArcUsages, dpr);
   },
 
   /**
@@ -163,13 +168,18 @@ const HighlightRenderer = {
   /**
    * Reset previously-highlighted regular arcs to base styling (dirty-set).
    */
-  _resetArcStyles(dom: Dom, C: Classes, staticData: typeof StaticData) {
+  _resetArcStyles(
+    dom: Dom,
+    C: Classes,
+    staticData: typeof StaticData,
+    dpr: number,
+  ) {
     for (const arcId of this._prevRegularArcIds) {
       const originalWidth = staticData.getArcStrokeWidth(arcId);
       const arc = dom.getArc(arcId);
       if (arc) {
         arc.classList.remove(C.relation.highlightedArc);
-        arc.style.strokeWidth = `${originalWidth}px`;
+        ArcStroke.redraw(arc, originalWidth, dpr);
       }
 
       // Reset arrows (including hidden — prevents stale state after collapse/expand)
@@ -215,13 +225,14 @@ const HighlightRenderer = {
   },
 
   /**
-   * Set highlighted class and stroke-width on arcs, plus label highlighting.
+   * Mark highlighted arcs and draw them at their highlight width, plus label highlighting.
    * Keys: "from-to" for regular arcs, "v:from-to" for virtual arcs.
    */
   _applyArcHighlights(
     dom: Dom,
     C: Classes,
     arcHighlights: HighlightState['arcHighlights'],
+    dpr: number,
   ) {
     for (const [key, { highlightWidth, isVirtual }] of arcHighlights) {
       const arcId = isVirtual ? key.slice(2) : key;
@@ -233,7 +244,7 @@ const HighlightRenderer = {
           )
           .forEach((arc) => {
             arc.classList.add(C.relation.highlightedArc);
-            arc.style.strokeWidth = `${highlightWidth}px`;
+            ArcStroke.redraw(arc, highlightWidth, dpr);
           });
         dom
           .querySelectorAll(`.${C.labels.arcCount}[data-vedge="${arcId}"]`)
@@ -244,7 +255,7 @@ const HighlightRenderer = {
         const arc = dom.getVisibleArc(arcId);
         if (arc) {
           arc.classList.add(C.relation.highlightedArc);
-          arc.style.strokeWidth = `${highlightWidth}px`;
+          ArcStroke.redraw(arc, highlightWidth, dpr);
         }
         const labelGroup = dom.getLabelGroup(arcId);
         if (labelGroup) {
@@ -288,8 +299,9 @@ const HighlightRenderer = {
   },
 
   /**
-   * Create shadow glow paths by cloning arc elements and applying pre-computed styling.
-   * pathLength is estimated from the actual DOM path (authoritative for display).
+   * Create shadow glow paths along the curve of each arc, with its classes
+   * and pre-computed styling. A shadow stays one antialiased stroke, since
+   * only highlighted arcs have one.
    */
   _createShadows(
     dom: Dom,
@@ -314,16 +326,15 @@ const HighlightRenderer = {
 
       for (const arc of arcs) {
         if (!arc) continue;
-        const shadow = arc.cloneNode(false) as SVGElement;
+        const curve = arc.getAttribute('data-path') ?? '';
+        const shadow = dom.createSvgElement('path');
+        shadow.classList.add(...arc.classList);
         shadow.classList.remove(C.direction.downward, C.direction.upward);
         shadow.classList.add(C.relation.shadowPath);
         shadow.classList.add(relation[glowClass]);
-        shadow.removeAttribute('id');
-        shadow.removeAttribute('data-arc-id');
+        shadow.setAttribute('d', curve);
 
-        const pathLength = ArcLogic.estimatePathLength(
-          arc.getAttribute('d') ?? '',
-        );
+        const pathLength = ArcLogic.estimatePathLength(curve);
         shadow.style.strokeWidth = `${shadowWidth}px`;
         shadow.setAttribute('opacity', STATIC_DATA.theme.shadowOpacity);
         shadow.style.strokeLinecap = 'round';
@@ -384,6 +395,7 @@ const HighlightRenderer = {
     dom: Dom,
     C: Classes,
     virtualArcUsages: Map<string, ArcData['usages']>,
+    dpr: number,
   ) {
     for (const arcId of this._prevVirtualArcIds) {
       const usages = virtualArcUsages.get(arcId);
@@ -392,11 +404,11 @@ const HighlightRenderer = {
       const strokeWidth = ArcLogic.calculateStrokeWidth(count);
       const scale = ArcLogic.scaleFromStrokeWidth(strokeWidth);
 
-      // Virtual arc path (from cache)
+      // Virtual arc group (from cache)
       const arc = dom.getArc(arcId);
       if (arc) {
         arc.classList.remove(C.relation.highlightedArc);
-        arc.style.strokeWidth = `${strokeWidth}px`;
+        ArcStroke.redraw(arc, strokeWidth, dpr);
       }
 
       // Virtual arrows (from cache)

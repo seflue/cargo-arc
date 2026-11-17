@@ -10,4 +10,9 @@ clusterModeOn: string,
 /**
  * Root state class while the page scrolls, set by `js/scroll_state.ts`.
  */
-scrolling: string, };
+scrolling: string, 
+/**
+ * Root state class while the page scrolls fast or jumps, set by
+ * `js/scroll_state.ts`.
+ */
+scrollingFast: string, };

@@ -729,7 +729,10 @@ mod tests {
 
         // Find base-arcs-layer content
         let base_arcs_start = svg.find(r#"<g id="base-arcs-layer">"#).unwrap();
-        let base_arcs_end = svg[base_arcs_start..].find("</g>").unwrap() + base_arcs_start;
+        let base_arcs_end = svg[base_arcs_start..]
+            .find(r#"<g id="base-labels-layer">"#)
+            .unwrap()
+            + base_arcs_start;
         let base_arcs_content = &svg[base_arcs_start..base_arcs_end];
 
         // Verify dep-arc is inside base-arcs-layer
