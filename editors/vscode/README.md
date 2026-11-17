@@ -8,10 +8,14 @@ The service is a child of this VS Code window and ends when the panel closes, wh
 
 Requires VS Code 1.80 or newer and a `cargo-arc` binary that has the `ui` subcommand.
 
-## Run the development version
+## Install
 
 Not distributed yet.
-Run it from this checkout.
+`just install-vscode-plugin` in the repository root installs the `cargo-arc` binary with `cargo install`, packs this folder into a `.vsix` and installs it with `code --install-extension`.
+The commands are then available in every VS Code window, and `cargoArc.binary` keeps its default.
+Run the target again to update both.
+
+## Run the development version
 
 Build the binary in the repository root with `just build --release` (or `cargo build --release`).
 Open the folder `editors/vscode` itself in VS Code (not the repository root; the launch configuration lives in its `.vscode/`).

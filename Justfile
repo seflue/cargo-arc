@@ -56,6 +56,16 @@ diagram:
 install:
     cargo install --path .
 
+# VS Code extension: packs editors/vscode into a .vsix and installs it; the extension runs cargo-arc from PATH
+install-vscode-plugin: install
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out=$(mktemp -d)
+    trap 'rm -rf "$out"' EXIT
+    cd editors/vscode
+    bunx @vscode/vsce package --no-dependencies --allow-missing-repository --skip-license --out "$out/cargo-arc.vsix"
+    code --install-extension "$out/cargo-arc.vsix" --force
+
 # show what a release would change, without touching anything
 release-dry version:
     #!/usr/bin/env bash

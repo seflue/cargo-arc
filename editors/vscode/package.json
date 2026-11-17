@@ -10,6 +10,10 @@
     "vscode": "^1.80.0"
   },
   "main": "./extension.js",
+  "files": [
+    "extension.js",
+    "service.js"
+  ],
   "contributes": {
     "commands": [
       {
