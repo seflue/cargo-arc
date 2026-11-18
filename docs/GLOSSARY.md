@@ -38,7 +38,7 @@ In the [arc diagram](#arc-diagram), an arc is the curve that draws a dependency 
 | **<a id="representative-cycle">Representative cycle</a>** | The shortest [cycle](#cycle) through one [edge](#edge). Several edges can share the same representative cycle. Every cycle cargo-arc reports is a representative cycle. |
 | **<a id="counted-cycle">Counted cycle</a>** | A [representative cycle](#representative-cycle) that is not [frozen](#frozen). When every cycle of a [tangle](#tangle) is frozen, all of them are counted, so that the tangle still has a [feedback arc set](#feedback-arc-set). [Traffic](#traffic) and the feedback arc set consider only counted cycles. |
 | **<a id="unlisted-cycle">Unlisted cycle</a>** | A [cycle](#cycle) that is not the [representative cycle](#representative-cycle) of any of its [edges](#edge). For each of its edges, cargo-arc lists a shorter or equally short cycle instead. |
-| **<a id="cyclic-edge">Cyclic edge</a>** | An [edge](#edge) that lies on at least one [cycle](#cycle). Its two ends are in the same [cluster](#cluster). The [arc diagram](#arc-diagram) highlights cyclic edges. |
+| **<a id="cyclic-edge">Cyclic edge</a>** | An [edge](#edge) that lies on at least one [cycle](#cycle). Its two ends are in the same [cluster](#cluster). The [arc diagram](#arc-diagram) colors the cyclic edges that are [upward edges](#upward-edge) red. |
 
 *Circular dependency* is the word in dependency analysis for a [cycle](#cycle).
 The code says *cycle*.

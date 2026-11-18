@@ -110,8 +110,7 @@ Neither side overrides the other.
 A node filter cannot force an arc back into view, and an arc filter cannot bring back an arc whose endpoint is hidden.
 
 The circular-dependency checkbox does one thing beyond its filter.
-It turns on **cluster mode**, which colors the cyclic edges and the labels of modules on a cycle red.
-That mode is not a filter of its own.
+It colors the [upward edges](GLOSSARY.md#upward-edge) red, which close the cycles against the order shown, and the labels of modules on a cycle.
 
 The menu also holds **Show Levels**, which shows or hides the level numbers in the module boxes and is on by default.
 

@@ -30,6 +30,8 @@ export interface HighlightState {
       visibleLength: number;
       dashOffset: number;
       glowClass: string;
+      /** Adds the cycle glow, which shows only while Cycles is on. */
+      closesCycle?: boolean;
     }
   >;
   /** Arc IDs (without "v:" prefix) whose hitareas should be promoted to highlight layer. */
@@ -49,7 +51,8 @@ type ArcDescriptor = {
   originalWidth: number;
   isVirtual: boolean;
   isNonProduction?: boolean;
-  isCycle?: boolean;
+  /** A cyclic edge that is upward: its glow takes the cycle color. */
+  closesCycle?: boolean;
   /** An upward edge, whose arc runs on the left of the rows. */
   upward?: boolean;
 };
@@ -459,7 +462,7 @@ const DerivedState = {
         originalWidth: staticData.getArcStrokeWidth(arcId),
         isVirtual: false,
         isNonProduction: arc.context?.kind !== 'production',
-        isCycle: !!arc.cycleIds?.length,
+        closesCycle: !!arc.cycleIds?.length && !!arc.upward,
         upward: arc.upward,
       });
     }
@@ -529,7 +532,7 @@ const DerivedState = {
         fromPos,
         toPos,
         ctx,
-        !!desc.isCycle,
+        !!desc.closesCycle,
         !!desc.upward,
       );
 
@@ -554,7 +557,7 @@ const DerivedState = {
     fromPos: Position | undefined,
     toPos: Position | undefined,
     ctx: ArcPathContext,
-    isCycle: boolean,
+    closesCycle: boolean,
     upward: boolean,
   ) {
     const highlightWidth =
@@ -568,7 +571,7 @@ const DerivedState = {
         fromPos,
         toPos,
         ctx,
-        isCycle,
+        closesCycle,
         upward,
       ),
     };
@@ -581,7 +584,7 @@ const DerivedState = {
     fromPos: Position | undefined,
     toPos: Position | undefined,
     ctx: ArcPathContext,
-    isCycle: boolean,
+    closesCycle: boolean,
     upward: boolean,
   ) {
     if (!fromPos || !toPos) return null;
@@ -595,16 +598,13 @@ const DerivedState = {
     );
     const pathLength = ArcLogic.estimatePathLength(pathData.path);
     const sd = HighlightLogic.calculateShadowData(originalWidth, pathLength);
-    const glowClass = isCycle
-      ? 'glowCycle'
-      : relationType === 'dep'
-        ? 'glowIncoming'
-        : 'glowOutgoing';
+    const glowClass = relationType === 'dep' ? 'glowIncoming' : 'glowOutgoing';
     return {
       shadowWidth: sd.shadowWidth,
       visibleLength: sd.visibleLength,
       dashOffset: sd.dashOffset,
       glowClass,
+      closesCycle,
     };
   },
 

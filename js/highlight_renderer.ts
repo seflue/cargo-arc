@@ -314,7 +314,7 @@ const HighlightRenderer = {
 
     for (const [
       key,
-      { shadowWidth, visibleLength, dashOffset, glowClass },
+      { shadowWidth, visibleLength, dashOffset, glowClass, closesCycle },
     ] of shadowData) {
       const isVirtual = key.startsWith('v:');
       const arcId = isVirtual ? key.slice(2) : key;
@@ -332,6 +332,7 @@ const HighlightRenderer = {
         shadow.classList.remove(C.direction.downward, C.direction.upward);
         shadow.classList.add(C.relation.shadowPath);
         shadow.classList.add(relation[glowClass]);
+        if (closesCycle) shadow.classList.add(C.relation.glowCycle);
         shadow.setAttribute('d', curve);
 
         const pathLength = ArcLogic.estimatePathLength(curve);

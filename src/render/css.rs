@@ -145,12 +145,13 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
         ),
         CssRule::class(c.direction.dep_arrow, &[("fill", d.downward)]),
         CssRule::class(c.direction.upward_arrow, &[("fill", d.upward)]),
-        // Cycle color applies only under the container state. Without it, cycle
-        // edges keep their directional dep color (they carry dep-arc + direction
-        // classes). Placed after the dep rules so the tie in specificity with
-        // `.dep-arc.downward` resolves in this rule's favor via source order.
+        // `:where()` keeps specificity at two classes, so the dimming rules win.
+        // Keep these after the dep rules: they tie with `.dep-arc.upward`.
         CssRule::new(
-            &format!(".{} .{}", c.relation.cluster_mode_on, c.direction.cycle_arc),
+            &format!(
+                ".{} .{}:where(.{})",
+                c.relation.cluster_mode_on, c.direction.cycle_arc, c.direction.upward
+            ),
             &[
                 ("fill", "none"),
                 ("stroke", d.cycle),
@@ -159,8 +160,8 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
         ),
         CssRule::new(
             &format!(
-                ".{} .{}",
-                c.relation.cluster_mode_on, c.direction.cycle_arrow
+                ".{} .{}:where(.{})",
+                c.relation.cluster_mode_on, c.direction.cycle_arrow, c.direction.upward_arrow
             ),
             &[("fill", d.cycle)],
         ),
@@ -220,7 +221,10 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
         // Glow classes
         CssRule::class(c.relation.glow_incoming, &[("stroke", glow.incoming)]),
         CssRule::class(c.relation.glow_outgoing, &[("stroke", glow.outgoing)]),
-        CssRule::class(c.relation.glow_cycle, &[("stroke", glow.cycle)]),
+        CssRule::new(
+            &format!(".{} .{}", c.relation.cluster_mode_on, c.relation.glow_cycle),
+            &[("stroke", glow.cycle)],
+        ),
         // Node borders (relation)
         CssRule::class(
             c.relation.dep_node,
@@ -1809,26 +1813,34 @@ mod tests {
     #[test]
     fn test_cycle_color_gated_by_cluster_mode() {
         // The cycle color must only apply under the .cluster-mode-on container
-        // state; without it, cycle edges keep the directional dependency color.
+        // state, and only to upward edges; a downward cyclic edge keeps the
+        // directional dependency color. The upward class sits in `:where()`, so
+        // the rules keep the two-class specificity the dimming rules beat.
         let css = render_styles();
         let d = &CSS.direction;
         let state = CSS.relation.cluster_mode_on;
         let cycle_color = ColorPalette::VARS.direction.cycle;
-        // Gated cycle-arc rule carries the cycle stroke color.
         assert!(
             css.contains(&format!(
-                ".{state} .{} {{ fill: none; stroke: {cycle_color}",
-                d.cycle_arc
+                ".{state} .{}:where(.{}) {{ fill: none; stroke: {cycle_color}",
+                d.cycle_arc, d.upward
             )),
-            "cycle-arc color should be gated behind .cluster-mode-on"
+            "cycle-arc color should be gated behind .cluster-mode-on and upward"
         );
-        // Gated cycle-arrow rule carries the cycle fill color.
         assert!(
             css.contains(&format!(
-                ".{state} .{} {{ fill: {cycle_color}",
-                d.cycle_arrow
+                ".{state} .{}:where(.{}) {{ fill: {cycle_color}",
+                d.cycle_arrow, d.upward_arrow
             )),
-            "cycle-arrow color should be gated behind .cluster-mode-on"
+            "cycle-arrow color should be gated behind .cluster-mode-on and upward"
+        );
+        assert!(
+            !css.contains(&format!(".{state} .{} {{", d.cycle_arc)),
+            "no rule may color a cycle-arc without the upward class"
+        );
+        assert!(
+            !css.contains(&format!(".{state} .{} {{", d.cycle_arrow)),
+            "no rule may color a cycle-arrow without the upward class"
         );
     }
 
@@ -2256,16 +2268,20 @@ mod tests {
     fn test_css_contains_focus_cycle_glow_rule() {
         let css = render_styles();
 
-        // The focused cycle edge (marked highlighted-arc + glow-cycle by
-        // DerivedState) gets a backing glow in the cycle glow color, same
-        // style as glow-incoming/glow-outgoing.
+        // The shadow of an upward cyclic edge carries glow-cycle beside its
+        // relation glow; the cycle color applies only while Cycles is on.
         assert!(
             css.contains(&format!(
-                ".{} {{ stroke: {};",
+                ".{} .{} {{ stroke: {};",
+                CSS.relation.cluster_mode_on,
                 CSS.relation.glow_cycle,
                 ColorPalette::VARS.glow.cycle
             )),
-            "CSS should contain .glow-cycle styled in the cycle glow color"
+            "CSS should contain .glow-cycle gated behind .cluster-mode-on"
+        );
+        assert!(
+            !css.contains(&format!("    .{} {{", CSS.relation.glow_cycle)),
+            "glow-cycle must not color the shadow with Cycles off"
         );
     }
 

@@ -1652,6 +1652,60 @@ describe('DerivedState', () => {
       });
     });
 
+    test('node hover: only the upward cyclic arc glows in the cycle color', () => {
+      const arc = (from, to, upward) => ({
+        from,
+        to,
+        cycleIds: [0],
+        ...(upward ? { upward: true } : {}),
+        context: { kind: 'production', subKind: null },
+        usages: [
+          {
+            symbol: 's',
+            modulePath: null,
+            locations: [{ file: 'a.rs', line: 1 }],
+          },
+        ],
+      });
+      const node = (y) => ({
+        type: 'module',
+        parent: null,
+        x: 20,
+        y,
+        width: 100,
+        height: 20,
+        hasChildren: false,
+      });
+      globalThis.STATIC_DATA = {
+        cycles: [{ nodes: ['X', 'Y'], arcs: ['X-Y', 'Y-X'] }],
+      };
+      const sd = createMockStaticData({
+        nodes: { X: node(60), Y: node(90) },
+        arcs: { 'X-Y': arc('X', 'Y', false), 'Y-X': arc('Y', 'X', true) },
+      });
+      const positions = new Map([
+        ['X', { x: 20, y: 60, width: 100, height: 20 }],
+        ['Y', { x: 20, y: 90, width: 100, height: 20 }],
+      ]);
+      const state = AppState.create();
+      AppState.setHover(state, 'node', 'X');
+
+      const result = DerivedState.deriveHighlightState(
+        state,
+        sd,
+        new Map(),
+        new Set(),
+        positions,
+        ROW_HEIGHT,
+      );
+
+      // The relation glow stays, so the shadow has a color with Cycles off.
+      const upward = result.shadowData.get('Y-X');
+      expect(upward.glowClass).toMatch(/^glow(Incoming|Outgoing)$/);
+      expect(upward.closesCycle).toBe(true);
+      expect(result.shadowData.get('X-Y').closesCycle).toBe(false);
+    });
+
     test('transitive-only cycle: no cycle-member on partner', () => {
       // Transitive cycle: P → Q → R → P (no direct P↔Q)
       const TRANS_DATA = {

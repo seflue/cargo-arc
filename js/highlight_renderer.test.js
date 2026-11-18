@@ -33,6 +33,7 @@ Object.assign(globalThis.STATIC_DATA.classes, {
     shadowPath: 'shadow-path',
     glowIncoming: 'glowIncoming',
     glowOutgoing: 'glowOutgoing',
+    glowCycle: 'glowCycle',
   },
   nodeSelection: {
     selectedPackage: 'selectedPackage',
@@ -482,6 +483,47 @@ describe('HighlightRenderer', () => {
         `50 ${ArcLogic.estimatePathLength(curve)}`,
       );
       expect(shadow.style.strokeDashoffset).toBe('3px');
+      expect(shadow.classList.contains(C.relation.glowCycle)).toBe(false);
+    });
+
+    test('the shadow of an arc that closes a cycle keeps its relation glow', () => {
+      const curve = 'M 100,0 Q 130,0 130,20 Q 130,40 100,40';
+      const arcEl = createFakeElement('g');
+      arcEl.classList.add(C.direction.depArc, C.direction.upward);
+      arcEl.setAttribute('data-arc-id', 'a-b');
+      ArcStroke.draw(arcEl, curve, 0.5, 1);
+      dom._registerSelector(Selectors.baseArc('a-b'), arcEl);
+      dom._registerSelector(Selectors.arrows('a-b'), []);
+      const shadowLayer = layers[LayerManager.LAYERS.SHADOWS];
+
+      HighlightRenderer.apply(
+        dom,
+        createRendererStaticData([], { 'a-b': { strokeWidth: 0.5 } }),
+        new Map(),
+        {
+          nodeHighlights: new Map(),
+          arcHighlights: new Map([
+            ['a-b', { highlightWidth: 2.5, arrowScale: 1, isVirtual: false }],
+          ]),
+          shadowData: new Map([
+            [
+              'a-b',
+              {
+                shadowWidth: 6,
+                visibleLength: 50,
+                dashOffset: 3,
+                glowClass: 'glowOutgoing',
+                closesCycle: true,
+              },
+            ],
+          ]),
+          promotedHitareas: new Set(),
+        },
+      );
+
+      const shadow = shadowLayer.children[0];
+      expect(shadow.classList.contains(C.relation.glowOutgoing)).toBe(true);
+      expect(shadow.classList.contains(C.relation.glowCycle)).toBe(true);
     });
 
     describe('hairline pieces at the highlight width', () => {
