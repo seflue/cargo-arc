@@ -6,9 +6,9 @@ export type SidebarClasses = { root: string, header: string, title: string, clos
  */
 pageHost: string, 
 /**
- * The cluster sidebar's counts line ("N modules · M cycles").
+ * The line above a cyclic arc's symbols ("on N cycles · upward edge").
  */
-subheader: string, 
+cycleLine: string, 
 /**
  * The consumer-locality tag after a symbol name.
  */
@@ -20,20 +20,4 @@ definition: string,
 /**
  * The inline jump icon at the end of a jump-capable row.
  */
-jump: string, 
-/**
- * A cycle-edge row of a cluster sidebar: its head over its symbol list.
- */
-edgeRow: string, 
-/**
- * Additional class on the edge row that is the current focus.
- */
-edgeRowFocus: string, edgeHead: string, edgeMeta: string, 
-/**
- * The loop glyph that leads the edge row closing a cycle.
- */
-edgeClosingMarker: string, 
-/**
- * One crossing symbol under an expanded edge row.
- */
-edgeSymbol: string, };
+jump: string, };

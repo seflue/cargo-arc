@@ -209,7 +209,6 @@ function createMockStaticData(data = TEST_STATIC_DATA) {
       return parentMap;
     },
     getCycle: (cycleId) => data.cycles?.[cycleId] ?? null,
-    getCluster: (sccId) => data.clusters?.[sccId],
   };
 }
 
@@ -1482,11 +1481,9 @@ describe('DerivedState', () => {
     });
   });
 
-  describe('SCC expansion (arc selection)', () => {
+  describe('hover on a cyclic arc', () => {
     const ROW_HEIGHT = 30;
 
-    // Node/arc factories: sccId is attached only when provided, matching the
-    // Rust output where non-cycle nodes/arcs carry no sccId.
     const mkNode = (y, sccId) => ({
       type: 'module',
       parent: null,
@@ -1508,10 +1505,10 @@ describe('DerivedState', () => {
           locations: [{ file: 'x.rs', line: 1 }],
         },
       ],
-      ...(sccId !== undefined ? { sccId } : {}),
+      ...(sccId !== undefined ? { sccId, cycleIds: [0] } : {}),
     });
 
-    // SCC {A,B,C} via arcs A→B→C→A (sccId=0), plus non-cycle A→D.
+    // Tangle {A,B,C} via arcs A→B→C→A (sccId=0, cycle 0), plus non-cyclic A→D.
     const CYCLE_DATA = {
       nodes: {
         A: mkNode(60, 0),
@@ -1526,7 +1523,6 @@ describe('DerivedState', () => {
         'A-D': mkArc('A', 'D'),
       },
     };
-
     const CYCLE_POSITIONS = new Map([
       ['A', { x: 20, y: 60, width: 100, height: 20 }],
       ['B', { x: 20, y: 90, width: 100, height: 20 }],
@@ -1534,393 +1530,33 @@ describe('DerivedState', () => {
       ['D', { x: 20, y: 150, width: 100, height: 20 }],
     ]);
 
-    test('SCC selected, no focus: all cycle arcs in arcHighlights', () => {
-      const sd = createMockStaticData(CYCLE_DATA);
+    const derive = (arcId) => {
       const state = AppState.create();
-      AppState.clickEdge(state, 'A-B', 0);
-
-      const result = DerivedState.deriveHighlightState(
+      AppState.setHover(state, 'arc', arcId);
+      return DerivedState.deriveHighlightState(
         state,
-        sd,
+        createMockStaticData(CYCLE_DATA),
         new Map(),
         new Set(),
         CYCLE_POSITIONS,
         ROW_HEIGHT,
       );
-
-      expect(result).not.toBeNull();
-      expect(result.arcHighlights.has('A-B')).toBe(true);
-      expect(result.arcHighlights.has('B-C')).toBe(true);
-      expect(result.arcHighlights.has('C-A')).toBe(true);
-    });
-
-    test('SCC selected, no focus: isPinned is true', () => {
-      const sd = createMockStaticData(CYCLE_DATA);
-      const state = AppState.create();
-      AppState.clickEdge(state, 'A-B', 0);
-
-      const result = DerivedState.deriveHighlightState(
-        state,
-        sd,
-        new Map(),
-        new Set(),
-        CYCLE_POSITIONS,
-        ROW_HEIGHT,
-      );
-
-      // The selection survives hover-leave like a pin, so the sidebar rows
-      // are jump targets before any inner edge is pinned.
-      expect(result.isPinned).toBe(true);
-    });
-
-    test('SCC selected, no focus: cycle nodes get cycle-member role', () => {
-      const sd = createMockStaticData(CYCLE_DATA);
-      const state = AppState.create();
-      AppState.clickEdge(state, 'A-B', 0);
-
-      const result = DerivedState.deriveHighlightState(
-        state,
-        sd,
-        new Map(),
-        new Set(),
-        CYCLE_POSITIONS,
-        ROW_HEIGHT,
-      );
-
-      expect(result).not.toBeNull();
-      // Without a focus edge the whole SCC is uniform: every cycle node gets
-      // cycle-member (not dependent/dependency — that role is reserved for a
-      // focused edge's endpoints or a plain single-edge pick).
-      expect(result.nodeHighlights.get('A')).toEqual({
-        role: 'cycle-member',
-        cssClass: 'cycleMember',
-      });
-      expect(result.nodeHighlights.get('B')).toEqual({
-        role: 'cycle-member',
-        cssClass: 'cycleMember',
-      });
-      expect(result.nodeHighlights.get('C')).toEqual({
-        role: 'cycle-member',
-        cssClass: 'cycleMember',
-      });
-    });
-
-    test('non-cycle arc: no cycle expansion (regression)', () => {
-      const sd = createMockStaticData(CYCLE_DATA);
-      const state = AppState.create();
-      AppState.setSelection(state, 'arc', 'A-D');
-
-      const result = DerivedState.deriveHighlightState(
-        state,
-        sd,
-        new Map(),
-        new Set(),
-        CYCLE_POSITIONS,
-        ROW_HEIGHT,
-      );
-
-      expect(result).not.toBeNull();
-      expect(result.arcHighlights.has('A-D')).toBe(true);
-      expect(result.arcHighlights.has('A-B')).toBe(false);
-      expect(result.arcHighlights.has('B-C')).toBe(false);
-      expect(result.arcHighlights.has('C-A')).toBe(false);
-      expect(result.nodeHighlights.has('C')).toBe(false);
-    });
-
-    test('SCC selected, no focus: shadow uses glowCycle class', () => {
-      const sd = createMockStaticData(CYCLE_DATA);
-      const state = AppState.create();
-      AppState.clickEdge(state, 'A-B', 0);
-
-      const result = DerivedState.deriveHighlightState(
-        state,
-        sd,
-        new Map(),
-        new Set(),
-        CYCLE_POSITIONS,
-        ROW_HEIGHT,
-      );
-
-      expect(result).not.toBeNull();
-      // All cycle arcs should use glowCycle, not glowIncoming/glowOutgoing
-      for (const cycleArcId of ['A-B', 'B-C', 'C-A']) {
-        const shadow = result.shadowData.get(cycleArcId);
-        expect(shadow).toBeDefined();
-        expect(shadow.glowClass).toBe('glowCycle');
-      }
-    });
-
-    test('non-cycle arc: shadow uses glowIncoming, not glowCycle', () => {
-      const sd = createMockStaticData(CYCLE_DATA);
-      const state = AppState.create();
-      AppState.setSelection(state, 'arc', 'A-D');
-
-      const result = DerivedState.deriveHighlightState(
-        state,
-        sd,
-        new Map(),
-        new Set(),
-        CYCLE_POSITIONS,
-        ROW_HEIGHT,
-      );
-
-      expect(result).not.toBeNull();
-      const shadow = result.shadowData.get('A-D');
-      expect(shadow).toBeDefined();
-      expect(shadow.glowClass).toBe('glowIncoming');
-    });
-
-    test('multi-cycle arc: whole SCC highlighted (two cycles, one SCC)', () => {
-      // Two cycles A→B→C→A and B→C→E→B share the arc B-C, so all
-      // four nodes are mutually reachable: one SCC (sccId=0).
-      const MULTI_CYCLE_DATA = {
-        nodes: {
-          A: mkNode(60, 0),
-          B: mkNode(90, 0),
-          C: mkNode(120, 0),
-          E: mkNode(150, 0),
-        },
-        arcs: {
-          'A-B': mkArc('A', 'B', 0),
-          'B-C': mkArc('B', 'C', 0),
-          'C-A': mkArc('C', 'A', 0),
-          'C-E': mkArc('C', 'E', 0),
-          'E-B': mkArc('E', 'B', 0),
-        },
-      };
-      const multiPositions = new Map([
-        ['A', { x: 20, y: 60, width: 100, height: 20 }],
-        ['B', { x: 20, y: 90, width: 100, height: 20 }],
-        ['C', { x: 20, y: 120, width: 100, height: 20 }],
-        ['E', { x: 20, y: 150, width: 100, height: 20 }],
-      ]);
-
-      const sd = createMockStaticData(MULTI_CYCLE_DATA);
-      const state = AppState.create();
-      AppState.clickEdge(state, 'B-C', 0);
-
-      const result = DerivedState.deriveHighlightState(
-        state,
-        sd,
-        new Map(),
-        new Set(),
-        multiPositions,
-        ROW_HEIGHT,
-      );
-
-      expect(result).not.toBeNull();
-      // All arcs of the SCC should be highlighted
-      expect(result.arcHighlights.has('B-C')).toBe(true);
-      expect(result.arcHighlights.has('A-B')).toBe(true);
-      expect(result.arcHighlights.has('C-A')).toBe(true);
-      expect(result.arcHighlights.has('C-E')).toBe(true);
-      expect(result.arcHighlights.has('E-B')).toBe(true);
-      // All cycle nodes from union should be in nodeHighlights
-      // B and C are primary arc endpoints
-      expect(result.nodeHighlights.has('B')).toBe(true);
-      expect(result.nodeHighlights.has('C')).toBe(true);
-      // A and E are cycle-members from the two cycles
-      expect(result.nodeHighlights.get('A')).toEqual({
-        role: 'cycle-member',
-        cssClass: 'cycleMember',
-      });
-      expect(result.nodeHighlights.get('E')).toEqual({
-        role: 'cycle-member',
-        cssClass: 'cycleMember',
-      });
-    });
-
-    test('cluster stability: any arc of an SCC highlights the same set', () => {
-      const sd = createMockStaticData(CYCLE_DATA);
-
-      const highlightsFor = (arcId) => {
-        const state = AppState.create();
-        AppState.clickEdge(state, arcId, 0);
-        const result = DerivedState.deriveHighlightState(
-          state,
-          sd,
-          new Map(),
-          new Set(),
-          CYCLE_POSITIONS,
-          ROW_HEIGHT,
-        );
-        return [...result.arcHighlights.keys()].sort();
-      };
-
-      // Picking A→B or C→A of the same SCC yields an identical arc set.
-      expect(highlightsFor('A-B')).toEqual(highlightsFor('C-A'));
-    });
-
-    test('clusterMode off: arc selection highlights only that edge', () => {
-      const sd = createMockStaticData(CYCLE_DATA);
-      const state = AppState.create();
-      AppState.setClusterMode(state, false);
-      state.selectedScc = 0;
-      AppState.setSelection(state, 'arc', 'A-B');
-
-      const result = DerivedState.deriveHighlightState(
-        state,
-        sd,
-        new Map(),
-        new Set(),
-        CYCLE_POSITIONS,
-        ROW_HEIGHT,
-      );
-
-      expect(result.arcHighlights.has('A-B')).toBe(true);
-      expect(result.arcHighlights.has('B-C')).toBe(false);
-      expect(result.arcHighlights.has('C-A')).toBe(false);
-      expect(result.nodeHighlights.has('C')).toBe(false);
-      // No cycle glow when the cluster category is off.
-      expect(result.shadowData.get('A-B')?.glowClass).not.toBe('glowCycle');
-    });
-  });
-
-  describe('cycle-mode two-level interaction (selectedScc + focus edge)', () => {
-    const ROW_HEIGHT = 30;
-
-    const mkNode = (y, sccId) => ({
-      type: 'module',
-      parent: null,
-      x: 20,
-      y,
-      width: 100,
-      height: 20,
-      hasChildren: false,
-      ...(sccId !== undefined ? { sccId } : {}),
-    });
-    const mkArc = (from, to, sccId) => ({
-      from,
-      to,
-      context: { kind: 'production', subKind: null },
-      usages: [
-        {
-          symbol: 's',
-          modulePath: null,
-          locations: [{ file: 'x.rs', line: 1 }],
-        },
-      ],
-      ...(sccId !== undefined ? { sccId } : {}),
-    });
-
-    // SCC {A,B,C} via arcs A→B→C→A (sccId=0), plus non-cycle A→D.
-    const FOCUS_DATA = {
-      nodes: {
-        A: mkNode(60, 0),
-        B: mkNode(90, 0),
-        C: mkNode(120, 0),
-        D: mkNode(150),
-      },
-      arcs: {
-        'A-B': mkArc('A', 'B', 0),
-        'B-C': mkArc('B', 'C', 0),
-        'C-A': mkArc('C', 'A', 0),
-        'A-D': mkArc('A', 'D'),
-      },
     };
-    const FOCUS_POSITIONS = new Map([
-      ['A', { x: 20, y: 60, width: 100, height: 20 }],
-      ['B', { x: 20, y: 90, width: 100, height: 20 }],
-      ['C', { x: 20, y: 120, width: 100, height: 20 }],
-      ['D', { x: 20, y: 150, width: 100, height: 20 }],
-    ]);
 
-    test('SCC selected, no focus: all SCC edges highlighted', () => {
-      const sd = createMockStaticData(FOCUS_DATA);
-      const state = AppState.create();
-      state.selectedScc = 0;
+    test('only that arc and its two endpoints highlight, not its tangle', () => {
+      const result = derive('A-B');
 
-      const result = DerivedState.deriveHighlightState(
-        state,
-        sd,
-        new Map(),
-        new Set(),
-        FOCUS_POSITIONS,
-        ROW_HEIGHT,
-      );
-
-      expect(result).not.toBeNull();
-      expect(result.arcHighlights.has('A-B')).toBe(true);
-      expect(result.arcHighlights.has('B-C')).toBe(true);
-      expect(result.arcHighlights.has('C-A')).toBe(true);
-      expect(result.nodeHighlights.get('A')).toEqual({
-        role: 'cycle-member',
-        cssClass: 'cycleMember',
-      });
-      expect(result.nodeHighlights.get('C')).toEqual({
-        role: 'cycle-member',
-        cssClass: 'cycleMember',
-      });
-    });
-
-    test('focus on pinned edge in SCC: only that edge highlighted, rest dims', () => {
-      const sd = createMockStaticData(FOCUS_DATA);
-      const state = AppState.create();
-      state.selectedScc = 0;
-      AppState.setSelection(state, 'arc', 'A-B');
-
-      const result = DerivedState.deriveHighlightState(
-        state,
-        sd,
-        new Map(),
-        new Set(),
-        FOCUS_POSITIONS,
-        ROW_HEIGHT,
-      );
-
-      expect(result).not.toBeNull();
-      // Only the focus edge is highlighted
-      expect(result.arcHighlights.has('A-B')).toBe(true);
-      expect(result.arcHighlights.has('B-C')).toBe(false);
-      expect(result.arcHighlights.has('C-A')).toBe(false);
-      // Focus edge carries the established cycle-glow backing class
-      expect(result.shadowData.get('A-B').glowClass).toBe('glowCycle');
-      // SCC rest is not marked highlighted → falls to generic dimming
+      expect([...result.arcHighlights.keys()]).toEqual(['A-B']);
+      expect(result.nodeHighlights.get('A').role).toBe('dependent');
+      expect(result.nodeHighlights.get('B').role).toBe('dependency');
       expect(result.nodeHighlights.has('C')).toBe(false);
     });
 
-    test('focus resolved via hover behaves like a pin', () => {
-      const sd = createMockStaticData(FOCUS_DATA);
-      const state = AppState.create();
-      state.selectedScc = 0;
-      AppState.setHover(state, 'arc', 'B-C');
+    test('non-cyclic arc: shadow uses glowIncoming', () => {
+      const result = derive('A-D');
 
-      const result = DerivedState.deriveHighlightState(
-        state,
-        sd,
-        new Map(),
-        new Set(),
-        FOCUS_POSITIONS,
-        ROW_HEIGHT,
-      );
-
-      expect(result).not.toBeNull();
-      expect(result.arcHighlights.has('B-C')).toBe(true);
+      expect(result.shadowData.get('A-D').glowClass).toBe('glowIncoming');
       expect(result.arcHighlights.has('A-B')).toBe(false);
-      expect(result.arcHighlights.has('C-A')).toBe(false);
-    });
-
-    test('focus edge outside the selected SCC is ignored: behaves like no focus', () => {
-      const sd = createMockStaticData(FOCUS_DATA);
-      const state = AppState.create();
-      state.selectedScc = 0;
-      AppState.setSelection(state, 'arc', 'A-D');
-
-      const result = DerivedState.deriveHighlightState(
-        state,
-        sd,
-        new Map(),
-        new Set(),
-        FOCUS_POSITIONS,
-        ROW_HEIGHT,
-      );
-
-      expect(result).not.toBeNull();
-      // Same as the no-focus case: whole SCC highlighted, A-D not singled out
-      expect(result.arcHighlights.has('A-B')).toBe(true);
-      expect(result.arcHighlights.has('B-C')).toBe(true);
-      expect(result.arcHighlights.has('C-A')).toBe(true);
-      expect(result.arcHighlights.has('A-D')).toBe(false);
     });
   });
 

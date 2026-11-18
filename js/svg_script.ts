@@ -57,13 +57,7 @@ function createPinnedSidebarRefresher<Relations>(
   };
 }
 
-function deriveHoverKey(
-  type: 'node' | 'arc',
-  id: string,
-  clusterMode: boolean,
-  sccId: number | null | undefined,
-) {
-  if (type === 'arc' && clusterMode && sccId != null) return `scc:${sccId}`;
+function deriveHoverKey(type: 'node' | 'arc', id: string) {
   return `${type}:${id}`;
 }
 
@@ -86,7 +80,7 @@ function createHoverKeyTracker() {
 // definition chip carrying data-jump, or null when the click landed elsewhere.
 function jumpIdFromClick(target: Element) {
   const el = target.closest<HTMLElement>(
-    '.sidebar-location[data-jump], .sidebar-definition[data-jump], .sidebar-edge-symbol[data-jump]',
+    '.sidebar-location[data-jump], .sidebar-definition[data-jump]',
   );
   return el ? Number(el.dataset.jump) : null;
 }
@@ -287,29 +281,9 @@ if (typeof document !== 'undefined') {
       showSidebar();
     }
 
-    // Cycle-aware click handling for edges (real or virtual), routed through
-    // the SCC state machine (AppState.clickEdge). Non-cycle edges keep the
-    // old pin-shows/unpin-hides contract; cycle edges are governed by
-    // selectedScc + inner-edge pin, so we just re-render and show whichever
-    // edge/cluster the state now resolves to.
-    function handleEdgeClick(edgeId: string, showPinnedSidebar: () => void) {
-      const sccId = StaticData.getArc(edgeId)?.sccId;
-      AppState.clickEdge(appState, edgeId, sccId);
-      highlightTiming.immediate();
-      if (sccId == null) {
-        if (AppState.isSelected(appState, 'arc', edgeId)) {
-          showPinnedSidebar();
-        } else {
-          SidebarLogic.hide();
-        }
-        return;
-      }
-      SidebarLogic.show(edgeId);
-    }
-
     function highlightEdge(from: string, to: string) {
       const edgeId = `${from}-${to}`;
-      handleEdgeClick(edgeId, () => SidebarLogic.show(edgeId));
+      toggleHighlight('arc', edgeId, () => SidebarLogic.show(edgeId));
     }
 
     function highlightNode(nodeId: string) {
@@ -466,119 +440,23 @@ if (typeof document !== 'undefined') {
     };
     SidebarLogic._isNodeCollapsed = (nodeId) =>
       AppState.isCollapsed(appState, nodeId);
-    SidebarLogic._isClusterMode = () => AppState.isClusterMode(appState);
-    // Resolved inner-edge focus (pin-or-hover, restricted to the selected SCC),
-    // matching derived_state's isFocusArc. The sidebar marks a row focused from
-    // this, not from whichever edge opened the cluster view.
-    SidebarLogic._resolvedFocusArc = () => {
-      const sel = AppState.getSelection(appState);
-      const scc = AppState.getSelectedScc(appState);
-      if (
-        sel.type !== 'arc' ||
-        sel.id == null ||
-        !AppState.isClusterMode(appState) ||
-        scc == null
-      ) {
-        return null;
-      }
-      return StaticData.getArc(sel.id)?.sccId === scc ? sel.id : null;
-    };
-    // Sidebar cluster row hover focuses the corresponding graph edge (mirror
-    // of handleMouseEnter/handleMouseLeave's pin-beats-hover gate).
-    SidebarLogic._onEdgeHover = (arcId) => {
-      if (arcId === undefined) return;
-      if (AppState.hasPinnedSelection(appState)) return;
-      AppState.setHover(appState, 'arc', arcId);
-      highlightTiming.debounced();
-    };
-    SidebarLogic._onEdgeHoverEnd = () => {
-      if (AppState.hasPinnedSelection(appState)) return;
-      AppState.clearHover(appState);
-      highlightTiming.debounced();
-    };
-    // Row expand state, read by the sidebar on every rebuild so a graph
-    // click never collapses a row the user had opened.
-    SidebarLogic._isRowExpanded = (arcId) =>
-      AppState.isRowExpanded(appState, arcId);
-    // Cluster row triangle: expand bit only, never the pin, so it never
-    // touches the graph.
-    SidebarLogic._onRowToggle = (arcId) => AppState.rowToggle(appState, arcId);
-    // Cluster row head (outside the triangle): pin/unpin, which may move the
-    // pin off another row (AppState.rowPinClick decides both).
-    SidebarLogic._onRowPinClick = (arcId) => {
-      const before = AppState.isSelected(appState, 'arc', arcId);
-      const sccId = StaticData.getArc(arcId)?.sccId;
-      AppState.rowPinClick(appState, arcId, sccId);
-      // Re-render the graph only when this row's pin actually changed; a
-      // pin move off another row is reflected in the same re-render.
-      if (AppState.isSelected(appState, 'arc', arcId) !== before) {
-        highlightTiming.immediate();
-      }
-    };
-    // Every arc id in an SCC's cycles, for the collapse-all control below.
-    function clusterArcIds(sccId: number) {
-      const cluster = StaticData.getCluster(sccId);
-      if (!cluster) return [];
-      const ids = new Set<string>();
-      for (const cycle of cluster.cycles) {
-        for (const edge of cycle) ids.add(`${edge.fromId}-${edge.toId}`);
-      }
-      return ids;
-    }
-    SidebarLogic._onRowsExpandAll = () => {
-      const sccId = AppState.getSelectedScc(appState);
-      if (sccId != null) {
-        AppState.rowsExpandAll(appState, clusterArcIds(sccId));
-      }
-    };
-    SidebarLogic._onRowsCollapseAll = () => {
-      const sccId = AppState.getSelectedScc(appState);
-      if (sccId != null) {
-        AppState.rowsCollapseAll(appState, clusterArcIds(sccId));
-      }
-    };
-    // The editor's cursor landed on a cluster row's jump target.
-    SidebarLogic._onRowFollow = (arcId) => AppState.rowFollow(appState, arcId);
 
     // Cancels a pending hide and updates hoverKey if the derived identity
-    // changed. Returns false when the hover is a same-cluster/element no-op
+    // changed. Returns false when the hover is a same-element no-op
     // (caller should bail without touching AppState/sidebar).
-    function enterHover(
-      type: 'node' | 'arc',
-      id: string,
-      sccId: number | null | undefined,
-    ) {
+    function enterHover(type: 'node' | 'arc', id: string) {
       clearTimeout(hideGraceTimer);
-      const key = deriveHoverKey(
-        type,
-        id,
-        AppState.isClusterMode(appState),
-        sccId,
-      );
-      return hoverTracker.enter(key);
-    }
-
-    // A selected SCC keeps the cluster sidebar pinned open even without an
-    // inner-edge pin: hover then only moves the focused row, it neither shows a
-    // transient sidebar nor hides it on leave.
-    function clusterActive() {
-      return (
-        AppState.isClusterMode(appState) &&
-        AppState.getSelectedScc(appState) != null
-      );
+      return hoverTracker.enter(deriveHoverKey(type, id));
     }
 
     function handleMouseEnter(type: 'node' | 'arc', id: string) {
       if (AppState.hasPinnedSelection(appState)) {
         return;
       }
-      const sccId = type === 'arc' ? StaticData.getArc(id)?.sccId : null;
-      if (!enterHover(type, id, sccId)) return;
+      if (!enterHover(type, id)) return;
       AppState.setHover(appState, type, id);
       highlightTiming.debounced();
-      if (clusterActive()) {
-        SidebarLogic.refreshClusterFocus();
-      } else if (type === 'node') {
+      if (type === 'node') {
         const relations = collectNodeRelations(id);
         SidebarLogic.showTransientNode(id, relations);
       } else if (type === 'arc') {
@@ -595,11 +473,7 @@ if (typeof document !== 'undefined') {
         AppState.clearHover(appState);
         hoverTracker.reset();
         highlightTiming.debounced();
-        if (clusterActive()) {
-          SidebarLogic.refreshClusterFocus();
-        } else {
-          SidebarLogic.hideTransient();
-        }
+        SidebarLogic.hideTransient();
       }, HOVER_HIDE_GRACE);
     }
 
@@ -609,13 +483,9 @@ if (typeof document !== 'undefined') {
       toId: string,
     ) {
       if (AppState.hasPinnedSelection(appState)) return;
-      if (!enterHover('arc', arcId, null)) return;
+      if (!enterHover('arc', arcId)) return;
       AppState.setHover(appState, 'arc', arcId);
       highlightTiming.debounced();
-      if (clusterActive()) {
-        SidebarLogic.refreshClusterFocus();
-        return;
-      }
       const usages = virtualArcUsages.get(arcId) || [];
       const originalArcs = virtualArcOriginals.get(arcId) || [];
       const mergedUsages = SidebarLogic.mergeSymbolGroups(usages);
@@ -1175,7 +1045,7 @@ if (typeof document !== 'undefined') {
       fromId: string,
       toId: string,
     ) {
-      handleEdgeClick(edgeId, () => {
+      toggleHighlight('arc', edgeId, () => {
         const usages = virtualArcUsages.get(edgeId) || [];
         const originalArcs = virtualArcOriginals.get(edgeId) || [];
         const mergedUsages = SidebarLogic.mergeSymbolGroups(usages);
@@ -1430,10 +1300,9 @@ if (typeof document !== 'undefined') {
       recomputeArcVisibility();
     }
 
-    // Flip the cycles checkbox. Cluster mode gates the two-level cluster
-    // interaction (a click selects the cluster, an inner edge then focuses) and
-    // CSS-gates the red cycle styling on the root class. It doubles as the
-    // cycles filter, so arc visibility is recomputed like the other filters.
+    // Flip the cycles checkbox. Cluster mode CSS-gates the red cycle styling on
+    // the root class. It doubles as the cycles filter, so arc visibility is
+    // recomputed like the other filters.
     function toggleClusterMode() {
       const checkbox = DomAdapter.querySelector('#cycles-checkbox');
       const isChecked = checkbox
@@ -1443,7 +1312,6 @@ if (typeof document !== 'undefined') {
         C.relation.clusterModeOn,
         isChecked,
       );
-      AppState.setClusterMode(appState, isChecked);
       recomputeArcVisibility();
     }
 
@@ -2001,10 +1869,9 @@ if (typeof document !== 'undefined') {
           highlightTiming.immediate();
           SidebarLogic.hide();
         }
-        // Sidebar rows are only clickable while pinned, a selected SCC
-        // included; the transient sidebar closes on its own hover-leave
-        // grace period.
-        if (AppState.getPinned(appState) || clusterActive()) {
+        // Sidebar rows are only clickable while pinned; the transient
+        // sidebar closes on its own hover-leave grace period.
+        if (AppState.getPinned(appState)) {
           const jumpId = jumpIdFromClick(target);
           if (jumpId !== null) jumper.jump(jumpId);
         }

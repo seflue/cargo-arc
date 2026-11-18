@@ -76,13 +76,11 @@ The footer counts `N References · M Symbols`.
 
 A crate dependency has no symbols of its own to show and reads `Cargo.toml dependency` instead.
 
+On a [cyclic edge](GLOSSARY.md#cyclic-edge) a line above the symbols says how many cycles run through it, for example `on 4 cycles`.
+On an [upward edge](GLOSSARY.md#upward-edge) the line ends in `· upward edge`.
+
 Each symbol carries its consumer locality, which answers whether it could move closer to the modules using it.
 A single consumer reads `only used by <module>`, consumers sharing an ancestor module read `used under <module>`, and consumers scattered across the package read `widely used (N modules)`.
-
-### The sidebar for a cluster
-
-In cluster mode the sidebar describes the whole tangle rather than the one arc under the pointer.
-It reads `Cluster · <crate>` with the extent of the tangle, `N modules · M cycles`.
 
 ## Searching
 
@@ -112,7 +110,7 @@ Neither side overrides the other.
 A node filter cannot force an arc back into view, and an arc filter cannot bring back an arc whose endpoint is hidden.
 
 The circular-dependency checkbox does one thing beyond its filter.
-It turns on **cluster mode**, which widens hovering, highlighting and styling from the single edge to the whole tangle it belongs to.
+It turns on **cluster mode**, which colors the cyclic edges and the labels of modules on a cycle red.
 That mode is not a filter of its own.
 
 The menu also holds **Show Levels**, which shows or hides the level numbers in the module boxes and is on by default.

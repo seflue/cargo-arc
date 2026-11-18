@@ -849,7 +849,7 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
             ],
         ),
         CssRule::class(
-            c.sidebar.subheader,
+            c.sidebar.cycle_line,
             &[("color", sb.text_muted), ("font-size", "11px")],
         ),
         CssRule::class(
@@ -966,21 +966,8 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
             &pinned_rows(&format!(".{}[data-jump]", c.sidebar.definition)),
             &[("cursor", "pointer")],
         ),
-        // A tangle sidebar row's whole symbol line is the jump target (see
-        // js/sidebar.ts _buildEdgeRow), not only its definition chip.
         CssRule::new(
-            &pinned_rows(&format!(".{}[data-jump]", c.sidebar.edge_symbol)),
-            &[("cursor", "pointer")],
-        ),
-        CssRule::new(
-            &format!(
-                "{}, {}",
-                pinned_rows(&format!(".{}:hover .{}", c.sidebar.symbol, c.sidebar.jump)),
-                pinned_rows(&format!(
-                    ".{}:hover .{}",
-                    c.sidebar.edge_symbol, c.sidebar.jump
-                ))
-            ),
+            &pinned_rows(&format!(".{}:hover .{}", c.sidebar.symbol, c.sidebar.jump)),
             &[("visibility", "visible")],
         ),
         // Jump popover: js/jump_icons.ts builds it next to a hovered node; no
@@ -1134,151 +1121,6 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
             ],
         ),
         CssRule::class(c.sidebar.locations, &[("padding-left", "16px")]),
-        // Cycle-edge row: stacks a one-line edge header over its (hidden until
-        // expanded) crossing-symbol list.
-        CssRule::class(
-            c.sidebar.edge_row,
-            &[("display", "flex"), ("flex-direction", "column")],
-        ),
-        // Focus row inside an SCC cluster view: marks the edge the graph
-        // interaction state machine currently resolves as focus (pin or
-        // hover).
-        CssRule::class(
-            c.sidebar.edge_row_focus,
-            &[
-                ("background", sb.row_focus_bg),
-                ("border-left", &format!("2px solid {}", d.cycle)),
-                ("margin-left", "-2px"),
-                ("padding-left", "2px"),
-            ],
-        ),
-        // The triangle's own hit area, wider than its glyph so a click does
-        // not need to land pixel-perfect; the negative margin keeps the row's
-        // other content from shifting. Grows slightly on hover, pure CSS.
-        CssRule::new(
-            &format!(".{} .{}", c.sidebar.edge_head, c.sidebar.toggle),
-            &[("padding", "4px"), ("margin", "-4px")],
-        ),
-        CssRule::new(
-            &format!(".{} .{}:hover", c.sidebar.edge_head, c.sidebar.toggle),
-            &[("transform", "scale(1.3)")],
-        ),
-        CssRule::class(
-            c.sidebar.edge_meta,
-            &[
-                ("color", sb.text_muted),
-                ("font-size", "10px"),
-                ("flex-shrink", "0"),
-                ("white-space", "nowrap"),
-            ],
-        ),
-        // Cycle blocks: one collapsible <details> per cycle in a
-        // cluster's sidebar section. Literal class strings from
-        // sidebar.ts, no constants.rs entries.
-        CssRule::class("cycle-block", &[("margin-bottom", "8px")]),
-        CssRule::class(
-            "block-head",
-            &[
-                ("list-style", "none"),
-                ("cursor", "pointer"),
-                ("display", "flex"),
-                ("align-items", "center"),
-                ("gap", "6px"),
-                ("padding", "2px 0"),
-                ("white-space", "nowrap"),
-            ],
-        ),
-        CssRule::new(
-            ".block-head::-webkit-details-marker",
-            &[("display", "none")],
-        ),
-        CssRule::class(
-            "block-chevron",
-            &[
-                ("display", "inline-block"),
-                ("flex-shrink", "0"),
-                ("width", "12px"),
-                ("font-size", "10px"),
-                ("color", sb.text_muted),
-            ],
-        ),
-        // Rotates open; transition lives in the reduced-motion media query below.
-        CssRule::new(
-            ".cycle-block[open] .block-chevron",
-            &[("transform", "rotate(90deg)")],
-        ),
-        CssRule::class(
-            "block-ordinal",
-            &[
-                ("flex-shrink", "0"),
-                ("background", sb.ordinal_bg),
-                ("color", sb.text),
-                ("font-size", "10px"),
-                ("padding", "0 4px"),
-                ("border-radius", "3px"),
-            ],
-        ),
-        CssRule::class(
-            "block-path",
-            &[
-                ("flex", "1 1 auto"),
-                ("min-width", "0"),
-                ("overflow", "hidden"),
-                ("text-overflow", "ellipsis"),
-                ("white-space", "nowrap"),
-            ],
-        ),
-        CssRule::class(
-            "block-module-count",
-            &[
-                ("flex-shrink", "0"),
-                ("color", sb.text_muted),
-                ("font-size", "10px"),
-            ],
-        ),
-        CssRule::class(
-            "cycle-block-body",
-            &[("padding-left", "14px"), ("margin-top", "2px")],
-        ),
-        // Repeated arc: dampened so it visually recedes behind its first
-        // occurrence. Closing rule below re-asserts full opacity so a row
-        // that were ever both classes at once (JS keeps this from happening)
-        // still renders as closing, not repeat.
-        CssRule::new(
-            &format!(".{}.edge-repeat", c.sidebar.edge_row),
-            &[("opacity", "0.55")],
-        ),
-        CssRule::new(
-            &format!(".{}.edge-closing", c.sidebar.edge_row),
-            &[("opacity", "1")],
-        ),
-        // Closing edge: reuses the existing cycle color (d.cycle, same red as
-        // the focus border and glow-cycle) for the arrow plus a leading
-        // loop-closer marker, no new color introduced.
-        CssRule::new(
-            &format!(".{}.edge-closing .{}", c.sidebar.edge_row, c.sidebar.arrow),
-            &[("color", d.cycle), ("font-weight", "bold")],
-        ),
-        CssRule::class(
-            c.sidebar.edge_closing_marker,
-            &[
-                ("color", d.cycle),
-                ("font-weight", "bold"),
-                ("margin-right", "4px"),
-            ],
-        ),
-        // One crossing symbol under an expanded edge row: name + scope tag,
-        // indented by the enclosing .sidebar-locations.
-        CssRule::class(
-            c.sidebar.edge_symbol,
-            &[
-                ("display", "flex"),
-                ("align-items", "center"),
-                ("gap", "4px"),
-                ("margin-bottom", "2px"),
-                ("white-space", "nowrap"),
-            ],
-        ),
         CssRule::class(
             c.sidebar.line_badge,
             &[
@@ -1777,12 +1619,6 @@ pub(super) fn render_styles() -> String {
             css.push_str(" }\n");
         }
     }
-    // Chevron rotation transition, gated behind prefers-reduced-motion so the
-    // rotate-on-open (see .cycle-block[open] .block-chevron above) doesn't
-    // animate for users who asked to avoid motion.
-    css.push_str("    @media (prefers-reduced-motion: no-preference) {\n");
-    css.push_str("      .block-chevron { transition: transform 0.15s ease; }\n");
-    css.push_str("    }\n");
     css.push_str("  </style>\n");
     css
 }
@@ -2233,49 +2069,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_css_contains_sidebar_edge_symbol_jump_rule() {
-        let css = render_styles();
-        let selector = format!(
-            "svg.{pinned} .sidebar-edge-symbol[data-jump], \
-             svg.{pinned} ~ .{host} .sidebar-edge-symbol[data-jump]",
-            pinned = CSS.relation.has_pinned,
-            host = CSS.sidebar.page_host
-        );
-        let idx = css
-            .find(&format!("{selector} {{"))
-            .unwrap_or_else(|| panic!("CSS should contain a rule for {selector}"));
-        let section = &css[idx..idx + selector.len() + 40];
-        assert!(
-            section.contains("cursor: pointer"),
-            "pinned sidebar-edge-symbol[data-jump] should set cursor: pointer, got: {section}"
-        );
-    }
-
-    /// The tangle sidebar row's triangle needs a bigger hit area than its
-    /// glyph, and grows slightly on hover, both without moving the row's
-    /// other content.
-    #[test]
-    fn test_css_edge_head_toggle_has_a_bigger_hit_area_and_grows_on_hover() {
-        let css = render_styles();
-        let idx = css
-            .find(".sidebar-edge-head .sidebar-toggle {")
-            .unwrap_or_else(|| panic!("CSS should contain .sidebar-edge-head .sidebar-toggle"));
-        let section = &css[idx..idx + 120];
-        assert!(
-            section.contains("padding"),
-            "the toggle should widen its own hit area with padding, got: {section}"
-        );
-        assert!(
-            section.contains("margin"),
-            "padding without a matching negative margin would shift the row, got: {section}"
-        );
-        assert!(
-            css.contains(".sidebar-edge-head .sidebar-toggle:hover { transform:"),
-            "hovering the triangle should grow it via transform, got: {css}"
-        );
-    }
-
     /// The path spans shrink inside their flex row so the sidebar's width
     /// limit cuts the path, not the symbol name or the line badge.
     #[test]
@@ -2329,9 +2122,7 @@ mod tests {
         assert!(pinned.contains("cursor: pointer"), "got: {pinned}");
         let hovered = rule_body(&format!(
             "svg.{pinned} .{symbol}:hover .sidebar-jump, \
-             svg.{pinned} ~ .{host} .{symbol}:hover .sidebar-jump, \
-             svg.{pinned} .sidebar-edge-symbol:hover .sidebar-jump, \
-             svg.{pinned} ~ .{host} .sidebar-edge-symbol:hover .sidebar-jump",
+             svg.{pinned} ~ .{host} .{symbol}:hover .sidebar-jump",
             pinned = CSS.relation.has_pinned,
             symbol = CSS.sidebar.symbol,
             host = CSS.sidebar.page_host
@@ -2475,20 +2266,6 @@ mod tests {
                 ColorPalette::VARS.glow.cycle
             )),
             "CSS should contain .glow-cycle styled in the cycle glow color"
-        );
-    }
-
-    #[test]
-    fn test_css_contains_sidebar_meta_rules() {
-        let css = render_styles();
-
-        assert!(
-            css.contains(".sidebar-subheader"),
-            "CSS should contain .sidebar-subheader"
-        );
-        assert!(
-            css.contains(".sidebar-edge-meta"),
-            "CSS should contain .sidebar-edge-meta"
         );
     }
 
@@ -2880,40 +2657,6 @@ mod tests {
         assert!(
             content_section.contains("min-height: 0"),
             ".sidebar-content should have min-height: 0, got: {content_section}"
-        );
-    }
-
-    #[test]
-    fn test_css_contains_cycle_block_rules() {
-        let css = render_styles();
-        for selector in [
-            ".cycle-block",
-            ".block-head",
-            ".block-head::-webkit-details-marker",
-            ".block-chevron",
-            ".cycle-block[open] .block-chevron",
-            ".block-ordinal",
-            ".block-path",
-            ".block-module-count",
-            ".cycle-block-body",
-            ".sidebar-edge-row.edge-repeat",
-            ".sidebar-edge-row.edge-closing",
-            ".sidebar-edge-closing-marker",
-        ] {
-            assert!(css.contains(selector), "CSS should contain {selector}");
-        }
-        // Closing row reuses the existing cycle color, no new red introduced.
-        assert!(
-            css.contains(&format!(
-                ".sidebar-edge-row.edge-closing .sidebar-arrow {{ color: {};",
-                ColorPalette::VARS.direction.cycle
-            )),
-            "edge-closing arrow should reuse the existing cycle color"
-        );
-        // Chevron rotation transition is gated behind reduced-motion opt-in.
-        assert!(
-            css.contains("@media (prefers-reduced-motion: no-preference)"),
-            "chevron transition should be gated behind prefers-reduced-motion"
         );
     }
 

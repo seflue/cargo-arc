@@ -2,10 +2,7 @@
 
 use super::jump::{JumpTable, JumpTarget, LocatedDefinition, LocatedSource, TargetKind};
 use super::toposort::{ranked_toposort, stable_toposort};
-use crate::diagnose::{
-    Cluster, ClusterReport, ConsumerLocality, Cycle, CycleAnalysis, CyclicEdge, Levelization,
-    order_cycle_blocks,
-};
+use crate::diagnose::{ClusterReport, ConsumerLocality, CycleAnalysis, Levelization};
 use crate::graph::{ArcGraph, EdgeWeight, Node, Reexports};
 use crate::model::{EdgeContext, EntryFile, EntryKind, SourceLocation, UsageCategory};
 use crate::volatility::Volatility;
@@ -107,6 +104,8 @@ pub struct LayoutEdge {
     pub cycle_ids: Vec<usize>,
     /// SCC id when this edge lies inside a cycle, else `None`.
     pub scc_id: Option<usize>,
+    /// Counted cycles through this edge, 0 outside every tangle.
+    pub traffic: usize,
     pub(crate) source_locations: Vec<LocatedSource>,
     pub context: EdgeContext,
     /// Edge republishes names via `pub use` only (no behavioral coupling).
@@ -125,6 +124,7 @@ impl LayoutEdge {
             cycle: None,
             cycle_ids: vec![],
             scc_id: None,
+            traffic: 0,
             source_locations: vec![],
             context,
             reexport: false,
@@ -154,25 +154,6 @@ impl LayoutEdge {
     }
 }
 
-#[derive(Debug)]
-pub struct CyclicEdgeInfo {
-    pub from_id: NodeId,
-    pub to_id: NodeId,
-    pub symbols: usize,
-}
-
-#[derive(Debug)]
-pub struct ClusterInfo {
-    pub package_name: String,
-    pub module_count: usize,
-    pub cycle_count: usize,
-    /// Cycles as ordered edge blocks: `cycles[i]` holds one cycle's edges in
-    /// node order, closing edge last. Blocks are sorted for
-    /// top-to-bottom sidebar reading (start node's layout rank, then length,
-    /// then rest-sequence rank).
-    pub cycles: Vec<Vec<CyclicEdgeInfo>>,
-}
-
 /// One symbol of a provider: how close its consumers sit in the module tree,
 /// plus the full consumer list, in layout `NodeId` space.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,7 +166,6 @@ pub struct SymbolLocality {
 pub struct LayoutIR {
     pub items: Vec<LayoutItem>,
     pub edges: Vec<LayoutEdge>,
-    pub clusters: BTreeMap<usize, ClusterInfo>,
     /// Provider `NodeId` → symbol → consumer locality. Providers with only
     /// re-export/test usage carry no entry.
     pub symbol_localities: BTreeMap<NodeId, BTreeMap<String, SymbolLocality>>,
@@ -296,7 +276,7 @@ pub(crate) fn symbol_groups(locations: &[LocatedSource]) -> Vec<SymbolGroup<'_>>
 /// Build `LayoutIR` from graph and cycle information, alongside the `JumpTable`
 /// holding every item's jump targets.
 /// Converts graph nodes to `LayoutItems` with proper nesting and edges with cycle markers,
-/// and attaches each cyclic SCC's cluster (package name, size, and cycles).
+/// and attaches each cyclic edge's traffic.
 /// `PackageDep` edges are skipped when `ModuleDep` edges exist between the same packages.
 /// `reexports` must match the subgraph `analysis` was computed from.
 /// Target ids are assigned in item order, so runs on the same graph are deterministic.
@@ -366,7 +346,7 @@ pub(crate) fn build_layout(
         &mut table,
     );
 
-    attach_clusters(&mut ir, graph, analysis, &node_map, report);
+    attach_traffic(&mut ir, &node_map, report);
     attach_symbol_localities(&mut ir, graph, &node_map);
     attach_symbol_definitions(&mut ir, graph, &node_map, &mut table);
     (ir, table)
@@ -479,7 +459,7 @@ fn attach_symbol_definitions(
 }
 
 /// Translate `importer_partition` into layout `NodeId` space and attach it as a
-/// per-symbol side table. Mirrors `attach_clusters`: provider/target/consumer
+/// per-symbol side table. Provider/target/consumer
 /// `NodeIndex` map through `node_map`; endpoints absent from the layout are
 /// skipped. Each symbol of a consumer group gets the group's hint, so lookup is
 /// by `(provider, symbol)`.
@@ -528,70 +508,19 @@ fn attach_symbol_localities(
     }
 }
 
-/// Compute each cluster's cycle blocks and attach them keyed by the
-/// analysis sccId (the same id carried by the layout items).
-fn attach_clusters(
-    ir: &mut LayoutIR,
-    graph: &ArcGraph,
-    analysis: &CycleAnalysis,
-    node_map: &HashMap<NodeIndex, NodeId>,
-    report: ClusterReport,
-) {
+/// Copy each edge's traffic from the cluster report onto its layout edge.
+fn attach_traffic(ir: &mut LayoutIR, node_map: &HashMap<NodeIndex, NodeId>, report: ClusterReport) {
     for cluster in report.clusters {
-        let Some(&scc_id) = cluster.nodes.first().and_then(|n| analysis.node_scc.get(n)) else {
-            continue;
-        };
-        let cycles = cycle_blocks(&cluster, analysis, node_map);
-        ir.clusters.insert(
-            scc_id,
-            ClusterInfo {
-                package_name: graph[cluster.package_idx].name().to_string(),
-                module_count: cluster.nodes.len(),
-                cycle_count: cluster.cycles.len(),
-                cycles,
-            },
-        );
+        for edge in &cluster.edges {
+            let (Some(&from), Some(&to)) = (node_map.get(&edge.from), node_map.get(&edge.to))
+            else {
+                continue;
+            };
+            if let Some(layout_edge) = ir.edges.iter_mut().find(|e| e.from == from && e.to == to) {
+                layout_edge.traffic = edge.cycles;
+            }
+        }
     }
-}
-
-/// Translate a cluster's cycles into ordered edge blocks for the sidebar: each
-/// block is one cycle's nodes, rotated to start at the node with the smallest
-/// layout `NodeId` (the vertical order nodes are drawn in), closing edge last;
-/// blocks are sorted the same way so the sidebar reads top to bottom with as
-/// few jumps as possible. The per-edge symbol count is looked up from
-/// `cluster.edges`, which already covers every SCC-internal edge, so a cycle
-/// edge is always found there.
-fn cycle_blocks(
-    cluster: &Cluster,
-    analysis: &CycleAnalysis,
-    node_map: &HashMap<NodeIndex, NodeId>,
-) -> Vec<Vec<CyclicEdgeInfo>> {
-    let edge_info: HashMap<(NodeIndex, NodeIndex), &CyclicEdge> =
-        cluster.edges.iter().map(|e| ((e.from, e.to), e)).collect();
-    let raw_cycles: Vec<Vec<NodeIndex>> = cluster
-        .cycles
-        .iter()
-        .filter_map(|&idx| analysis.cycles.get(idx))
-        .map(|cycle| cycle.nodes.clone())
-        .collect();
-    let rank_of = |n: NodeIndex| node_map.get(&n).copied().unwrap_or(usize::MAX);
-
-    order_cycle_blocks(&raw_cycles, rank_of)
-        .into_iter()
-        .map(|nodes| {
-            Cycle { nodes }
-                .edges()
-                .filter_map(|(from, to)| {
-                    let edge = edge_info.get(&(from, to))?;
-                    Some(CyclicEdgeInfo {
-                        from_id: *node_map.get(&from)?,
-                        to_id: *node_map.get(&to)?,
-                        symbols: edge.symbols,
-                    })
-                })
-                .collect()
-        })
-        .collect()
 }
 
 /// Convert graph nodes to `LayoutItems`, returning the `NodeIndex` → `NodeId` map.
@@ -2748,52 +2677,6 @@ mod tests {
         // serde (dependent) must appear before proc-macro2 (leaf)
         let la = LayoutAssert::new(ir);
         la.assert_order("serde", "proc-macro2");
-    }
-
-    #[test]
-    fn build_layout_orders_cycle_blocks_by_layout_rank() {
-        // Two triangles sharing directed edge m0->m1: two 3-node cycles
-        // through m0. The level order puts m1 first and m0 last, so m0->m1
-        // is the only upward edge, and cycle blocks rotate to start at m1,
-        // not m0.
-        let mut b = TestGraphBuilder::new();
-        b.package_with_modules("app", &["m0", "m1", "m2", "m3"])
-            .prod_dep("m0", "m1")
-            .prod_dep("m1", "m2")
-            .prod_dep("m2", "m0")
-            .prod_dep("m1", "m3")
-            .prod_dep("m3", "m0");
-        let (graph, _) = b.build();
-        let analysis = graph
-            .production_subgraph(Reexports::Excluded)
-            .representative_cycles();
-        let (ir, _) = build_layout(&graph, &analysis, Reexports::Excluded, None);
-
-        assert_eq!(ir.clusters.len(), 1, "one cyclic cluster expected");
-        let cluster = ir.clusters.values().next().unwrap();
-        assert_eq!(cluster.cycles.len(), 2, "two triangles through m0");
-
-        let id_of = |name: &str| ir.items.iter().find(|i| i.label == name).unwrap().id;
-        let (m0, m1, m2, m3) = (id_of("m0"), id_of("m1"), id_of("m2"), id_of("m3"));
-        assert!(
-            m1 < m2 && m2 < m3 && m3 < m0,
-            "expected layout rank m1 < m2 < m3 < m0"
-        );
-
-        // Block 0: m1->m2->m0->m1, closing edge last. Rest-sequence rank
-        // (m2 before m3) puts this block first.
-        let block0 = &cluster.cycles[0];
-        assert_eq!(block0.len(), 3);
-        assert_eq!((block0[0].from_id, block0[0].to_id), (m1, m2));
-        assert_eq!((block0[1].from_id, block0[1].to_id), (m2, m0));
-        assert_eq!((block0[2].from_id, block0[2].to_id), (m0, m1));
-
-        // Block 1: m1->m3->m0->m1, closing edge last.
-        let block1 = &cluster.cycles[1];
-        assert_eq!(block1.len(), 3);
-        assert_eq!((block1[0].from_id, block1[0].to_id), (m1, m3));
-        assert_eq!((block1[1].from_id, block1[1].to_id), (m3, m0));
-        assert_eq!((block1[2].from_id, block1[2].to_id), (m0, m1));
     }
 
     #[test]

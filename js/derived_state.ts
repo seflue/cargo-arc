@@ -246,19 +246,14 @@ const DerivedState = {
     rowHeight: number,
   ): HighlightState | null {
     const selection = AppState.getSelection(appState);
-    const selectedScc = AppState.getSelectedScc(appState);
-    const clusterActive =
-      AppState.isClusterMode(appState) && selectedScc != null;
-    if (selection.mode === 'none' && !clusterActive) return null;
+    if (selection.mode === 'none') return null;
 
     const result: HighlightState = {
       nodeHighlights: new Map(),
       arcHighlights: new Map(),
       shadowData: new Map(),
       promotedHitareas: new Set<string>(),
-      // A selected SCC persists like a pin (see AppState.clickEdge), so the
-      // has-pinned affordances apply before any inner edge is pinned.
-      isPinned: selection.mode === 'click' || clusterActive,
+      isPinned: selection.mode === 'click',
     };
     const ctx: ArcPathContext = {
       extent: this.computeRowExtent(positions),
@@ -281,19 +276,8 @@ const DerivedState = {
     } else if (type === 'arc' && id !== null) {
       this._deriveForArcSelection(
         id,
-        selectedScc,
-        clusterActive,
         staticData,
         virtualArcUsages,
-        hiddenByFilter,
-        positions,
-        ctx,
-        result,
-      );
-    } else if (clusterActive) {
-      this._deriveForClusterWide(
-        selectedScc,
-        staticData,
         hiddenByFilter,
         positions,
         ctx,
@@ -389,16 +373,9 @@ const DerivedState = {
     }
   },
 
-  /** @private Arc-selection: specific arc + its virtual variant. Two-level
-   *  cycle-mode interaction: when an SCC is selected (selectedScc) and the
-   *  resolved edge (click-pin or hover) belongs to it, only that edge is the
-   *  focus and gets highlighted — the rest of the SCC dims. An edge outside
-   *  the selected SCC (or no SCC selected at all) is ignored as a focus and
-   *  falls back to the whole-SCC highlight / plain single-edge pick. */
+  /** @private Arc-selection: specific arc + its virtual variant. */
   _deriveForArcSelection(
     arcId: string,
-    selectedScc: number | null,
-    clusterActive: boolean,
     staticData: typeof StaticData,
     virtualArcUsages: Map<string, ArcData['usages']>,
     hiddenByFilter: Set<string>,
@@ -409,19 +386,6 @@ const DerivedState = {
     const [fromId, toId] = arcId.split('-');
 
     const arc = staticData.getArc(arcId);
-    const isFocusArc = clusterActive && arc?.sccId === selectedScc;
-
-    if (clusterActive && !isFocusArc) {
-      this._deriveForClusterWide(
-        selectedScc,
-        staticData,
-        hiddenByFilter,
-        positions,
-        ctx,
-        result,
-      );
-      return;
-    }
 
     result.nodeHighlights.set(fromId, {
       role: 'dependent',
@@ -442,7 +406,6 @@ const DerivedState = {
         toInSet: true,
         originalWidth: staticData.getArcStrokeWidth(arcId),
         isVirtual: false,
-        isCycle: isFocusArc,
         upward: arc.upward,
       });
     }
@@ -459,48 +422,6 @@ const DerivedState = {
         isVirtual: true,
         upward: VirtualEdgeLogic.isUpwardArcId(arcId),
       });
-    }
-
-    this._processArcDescriptors(descs, positions, ctx, result);
-  },
-
-  /** @private Whole-SCC highlight: every member node/edge of `selectedScc` is
-   *  marked so the cluster reads as one unit. Used when no inner edge is
-   *  focused, and as the fallback when the focused edge lies outside the
-   *  selected SCC. */
-  _deriveForClusterWide(
-    selectedScc: number | null,
-    staticData: typeof StaticData,
-    hiddenByFilter: Set<string>,
-    positions: Map<string, Position>,
-    ctx: ArcPathContext,
-    result: HighlightState,
-  ) {
-    for (const nodeId of staticData.getAllNodeIds()) {
-      if (staticData.getNode(nodeId)?.sccId === selectedScc) {
-        result.nodeHighlights.set(nodeId, {
-          role: 'cycle-member',
-          cssClass: 'cycleMember',
-        });
-      }
-    }
-
-    const descs: ArcDescriptor[] = [];
-    for (const arcId of staticData.getAllArcIds()) {
-      const arc = staticData.getArc(arcId);
-      if (arc?.sccId === selectedScc && !hiddenByFilter.has(arcId)) {
-        descs.push({
-          key: arcId,
-          fromId: arc.from,
-          toId: arc.to,
-          fromInSet: true,
-          toInSet: true,
-          originalWidth: staticData.getArcStrokeWidth(arcId),
-          isVirtual: false,
-          isCycle: true,
-          upward: arc.upward,
-        });
-      }
     }
 
     this._processArcDescriptors(descs, positions, ctx, result);

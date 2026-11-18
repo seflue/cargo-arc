@@ -6,4 +6,3 @@ declare const STATIC_DATA: import('./generated/StaticData').StaticData;
 
 type NodeData = import('./generated/NodeData').NodeData;
 type ArcData = import('./generated/ArcData').ArcData;
-type CycleArcData = import('./generated/CycleArcData').CycleArcData;

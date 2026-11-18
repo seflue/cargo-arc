@@ -38,16 +38,6 @@ function resetSidebarHooks() {
     '_onBadgeClick',
     '_onCollapseToggle',
     '_isNodeCollapsed',
-    '_isClusterMode',
-    '_resolvedFocusArc',
-    '_onEdgeHover',
-    '_onEdgeHoverEnd',
-    '_isRowExpanded',
-    '_onRowToggle',
-    '_onRowPinClick',
-    '_onRowFollow',
-    '_onRowsExpandAll',
-    '_onRowsCollapseAll',
   ]) {
     SidebarLogic[hook] = null;
   }
@@ -114,16 +104,6 @@ describe('jumpIdFromClick', () => {
           : null,
     };
     expect(jumpIdFromClick(target)).toBe(9);
-  });
-
-  test('returns the jump id of a tangle sidebar symbol row', () => {
-    const target = {
-      closest: (sel) =>
-        sel.includes('.sidebar-edge-symbol[data-jump]')
-          ? { dataset: { jump: '3' } }
-          : null,
-    };
-    expect(jumpIdFromClick(target)).toBe(3);
   });
 
   test('returns null when no ancestor row has data-jump', () => {
@@ -348,16 +328,9 @@ function makeSvgPageStaticData() {
         cycleNode: 'sidebar-cycle-node',
         extInfo: 'sidebar-ext-info',
         collapseIndicator: 'sidebar-collapse-indicator',
-        subheader: 'sidebar-subheader',
         locality: 'sidebar-locality',
         definition: 'sidebar-definition',
         jump: 'sidebar-jump',
-        edgeRow: 'sidebar-edge-row',
-        edgeRowFocus: 'sidebar-edge-row-focus',
-        edgeHead: 'sidebar-edge-head',
-        edgeMeta: 'sidebar-edge-meta',
-        edgeClosingMarker: 'sidebar-edge-closing-marker',
-        edgeSymbol: 'sidebar-edge-symbol',
       },
     },
     expandLevel: null,

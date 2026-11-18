@@ -6,4 +6,8 @@ export type ArcData = { from: string, to: string, context: ArcContext, usages: A
 /**
  * Whether the edge is an upward edge. Left out when it is not.
  */
-upward?: boolean, };
+upward?: boolean, 
+/**
+ * Counted cycles through the edge. Left out when 0.
+ */
+traffic?: number, };

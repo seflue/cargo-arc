@@ -4,8 +4,7 @@ use super::theme::{Mode, Theme};
 use crate::diagnose::ConsumerLocality;
 use crate::js_bundle::bundle;
 use crate::layout::{
-    CyclicEdgeInfo, ItemKind, LayoutIR, LocatedSource, LocationId, NodeId, TargetKind,
-    symbol_groups,
+    ItemKind, LayoutIR, LocatedSource, LocationId, NodeId, TargetKind, symbol_groups,
 };
 use crate::model::Wording;
 use serde::Serialize;
@@ -21,7 +20,6 @@ struct StaticData {
     arcs: BTreeMap<String, ArcData>,
     cycles: Vec<CycleData>,
     classes: &'static CssClassNames,
-    clusters: BTreeMap<String, ClusterData>,
     symbol_localities: BTreeMap<String, BTreeMap<String, SymbolLocalityData>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(test, ts(optional))]
@@ -150,6 +148,15 @@ struct ArcData {
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     #[cfg_attr(test, ts(as = "Option<bool>", optional))]
     upward: bool,
+    /// Counted cycles through the edge. Left out when 0.
+    #[serde(skip_serializing_if = "is_zero")]
+    #[cfg_attr(test, ts(as = "Option<usize>", optional))]
+    traffic: usize,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde skip_serializing_if signature
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 #[derive(Serialize)]
@@ -223,34 +230,6 @@ struct CycleData {
     nodes: Vec<String>,
     arcs: Vec<String>,
     scc_id: usize,
-}
-
-#[derive(Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS))]
-#[serde(rename_all = "camelCase")]
-struct ClusterData {
-    #[serde(rename = "package")]
-    package_name: String,
-    module_count: usize,
-    cycle_count: usize,
-    cycles: Vec<Vec<CycleArcData>>,
-}
-
-#[derive(Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS))]
-#[serde(rename_all = "camelCase")]
-struct CycleArcData {
-    from_id: String,
-    to_id: String,
-    symbols: usize,
-}
-
-fn cycle_arc_data(edge: &CyclicEdgeInfo) -> CycleArcData {
-    CycleArcData {
-        from_id: edge.from_id.to_string(),
-        to_id: edge.to_id.to_string(),
-        symbols: edge.symbols,
-    }
 }
 
 /// Consumer locality of one symbol of a provider. `module` names the common
@@ -439,6 +418,7 @@ fn generate_static_data(
                 cycle_ids: edge.cycle_ids.clone(),
                 scc_id: edge.scc_id,
                 upward: edge.direction.is_upward(),
+                traffic: edge.traffic,
             },
         );
     }
@@ -463,26 +443,6 @@ fn generate_static_data(
                 .collect(),
             arcs: accum.arcs.into_iter().collect(),
             scc_id: accum.scc_id.expect("every cycle lies in an SCC"),
-        })
-        .collect();
-
-    let clusters: BTreeMap<String, ClusterData> = ir
-        .clusters
-        .iter()
-        .map(|(&scc, c)| {
-            (
-                scc.to_string(),
-                ClusterData {
-                    package_name: c.package_name.clone(),
-                    module_count: c.module_count,
-                    cycle_count: c.cycle_count,
-                    cycles: c
-                        .cycles
-                        .iter()
-                        .map(|block| block.iter().map(cycle_arc_data).collect())
-                        .collect(),
-                },
-            )
         })
         .collect();
 
@@ -521,7 +481,6 @@ fn generate_static_data(
         arcs,
         cycles,
         classes: &CSS,
-        clusters,
         symbol_localities,
         expand_level: config.expand_level,
         theme: ThemeData::current(),
@@ -2143,174 +2102,60 @@ mod tests {
     }
 
     #[test]
-    fn test_static_data_clusters() {
-        let mut ir = LayoutIR::new();
-        let c = ir.add_item(ItemKind::Package, "app".into());
-        let a = ir.add_item(
-            ItemKind::Module {
-                nesting: 1,
-                parent: c,
-            },
-            "a".into(),
-        );
-        let b = ir.add_item(
-            ItemKind::Module {
-                nesting: 1,
-                parent: c,
-            },
-            "b".into(),
-        );
-        ir.edges
-            .push(LayoutEdge::new(a, b, EdgeContext::production()).with_cycle(
-                crate::layout::CycleKind::Direct,
-                vec![0],
-                0,
-            ));
-        ir.edges
-            .push(LayoutEdge::new(b, a, EdgeContext::production()).with_cycle(
-                crate::layout::CycleKind::Direct,
-                vec![0],
-                0,
-            ));
-        ir.clusters.insert(
-            0,
-            crate::layout::ClusterInfo {
-                package_name: "app".into(),
-                module_count: 2,
-                cycle_count: 1,
-                cycles: vec![vec![
-                    crate::layout::CyclicEdgeInfo {
-                        from_id: a,
-                        to_id: b,
-                        symbols: 2,
-                    },
-                    crate::layout::CyclicEdgeInfo {
-                        from_id: b,
-                        to_id: a,
-                        symbols: 1,
-                    },
-                ]],
-            },
-        );
-
-        let config = RenderConfig::new(&RUST_PROFILE.wording);
-        let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
-        let parents: HashSet<NodeId> = HashSet::from([0]);
-        let data = generate_static_data(&config, &ir, &positioned, &parents);
-
-        let cl = &data.clusters["0"];
-        assert_eq!(cl.package_name, "app");
-        assert_eq!(cl.module_count, 2);
-        assert_eq!(cl.cycle_count, 1);
-        assert_eq!(cl.cycles.len(), 1, "one block for the one cycle");
-        let block = &cl.cycles[0];
-        assert_eq!(block.len(), 2, "closing edge included");
-        assert_eq!(block[0].from_id, a.to_string());
-        assert_eq!(block[0].to_id, b.to_string());
-        assert_eq!(block[0].symbols, 2);
-        assert_eq!(block[1].from_id, b.to_string());
-        assert_eq!(block[1].to_id, a.to_string());
-        assert_eq!(block[1].symbols, 1);
-        // The edge's arc-id addresses a serialized arc.
-        assert!(data.arcs.contains_key(&format!("{a}-{b}")));
-    }
-
-    #[test]
-    fn test_static_data_tangle_cluster_two_edges_ranked_and_addressable() {
-        // Two 2-cycles sharing module "a" (a<->b, a<->c): one SCC, two feedback
-        // edges. Each lies on exactly one cycle, so ranking (ADR-021: cycles
-        // desc, then symbols asc) is decided by the symbol count, not by name —
-        // b->a (1 symbol) must rank before c->a (2 symbols).
+    #[allow(clippy::many_single_char_names)] // the bindings mirror the module names
+    fn an_arc_carries_the_traffic_of_its_edge_in_the_cluster_report() {
+        // Triangles a -> b -> c -> a and a -> b -> d -> a share a -> b. The
+        // edge c -> e leaves the tangle.
         let mut graph = ArcGraph::new();
         let package_idx = graph.add_node(package_node("app"));
-        let mods: Vec<_> = ["a", "b", "c"]
-            .iter()
-            .map(|&name| {
-                let idx = graph.add_node(module_node(name, package_idx));
-                graph.add_edge(package_idx, idx, EdgeWeight::Contains);
-                idx
-            })
-            .collect();
-        let (a, b, c) = (mods[0], mods[1], mods[2]);
-        let locations = |symbols: usize| {
-            // One symbol per line, so the edge reads the same whether the count
-            // takes sites or symbols.
-            (0..symbols)
-                .map(|i| SourceLocation {
-                    file: "src/lib.rs".into(),
-                    line: i + 1,
-                    symbols: vec![format!("Sym{i}")],
-                    module_path: String::new(),
-                    via_reexport: false,
-                    usage_categories: BTreeSet::new(),
-                })
-                .collect::<Vec<_>>()
+        let mut node = |name: &str| {
+            let idx = graph.add_node(module_node(name, package_idx));
+            graph.add_edge(package_idx, idx, EdgeWeight::Contains);
+            idx
         };
-        for (from, to, symbols) in [(a, b, 5), (b, a, 1), (a, c, 3), (c, a, 2)] {
+        let (a, b, c, d, e) = (node("a"), node("b"), node("c"), node("d"), node("e"));
+        for (from, to) in [(a, b), (b, c), (c, a), (b, d), (d, a), (c, e)] {
             graph.add_edge(
                 from,
                 to,
                 EdgeWeight::ModuleDep {
-                    locations: locations(symbols),
+                    locations: vec![SourceLocation {
+                        file: "src/lib.rs".into(),
+                        line: 1,
+                        symbols: vec!["Sym".into()],
+                        module_path: String::new(),
+                        via_reexport: false,
+                        usage_categories: BTreeSet::new(),
+                    }],
                     context: EdgeContext::production(),
                 },
             );
         }
 
-        let analysis = graph
-            .production_subgraph(Reexports::Excluded)
-            .representative_cycles();
+        let sub = graph.production_subgraph(Reexports::Excluded);
+        let analysis = sub.representative_cycles();
         let (ir, _) = build_layout(&graph, &analysis, Reexports::Excluded, None);
+        let report = graph.cluster_report(&sub, &analysis, |_| false);
 
-        assert_eq!(ir.clusters.len(), 1, "expected exactly one tangle cluster");
-
-        let id_of = |name: &str| ir.items.iter().find(|item| item.label == name).unwrap().id;
-        let (a_id, b_id, c_id) = (id_of("a"), id_of("b"), id_of("c"));
-
+        let id_of = |idx: petgraph::graph::NodeIndex| {
+            let name = graph[idx].name();
+            ir.items.iter().find(|item| item.label == name).unwrap().id
+        };
         let config = RenderConfig::new(&RUST_PROFILE.wording);
         let positioned = calculate_positions(&ir, &config, calculate_box_width(&ir));
-        let parents: HashSet<NodeId> = ir
-            .items
-            .iter()
-            .filter_map(|item| match &item.kind {
-                ItemKind::Module { parent, .. } | ItemKind::ExternalPackage { parent, .. } => {
-                    Some(*parent)
-                }
-                ItemKind::Package | ItemKind::ExternalSection => None,
-            })
-            .collect();
-        let data = generate_static_data(&config, &ir, &positioned, &parents);
+        let data = generate_static_data(&config, &ir, &positioned, &HashSet::from([0]));
+        let json = serde_json::to_value(&data.arcs).expect("arcs serialize");
+        let arc = |from, to| &json[format!("{}-{}", id_of(from), id_of(to))];
 
-        assert_eq!(data.clusters.len(), 1);
-
-        let cluster = data.clusters.values().next().unwrap();
-        let cycles = &cluster.cycles;
-        assert_eq!(cycles.len(), 2, "one block per cycle");
-
-        // Both cycles start at "a" (shared node); tie-break by rest-sequence
-        // rank puts a<->b before a<->c since b's layout rank precedes c's.
-        let block0 = &cycles[0];
-        assert_eq!(block0.len(), 2, "closing edge included");
-        assert_eq!(block0[0].from_id, a_id.to_string());
-        assert_eq!(block0[0].to_id, b_id.to_string());
-        assert_eq!(block0[0].symbols, 5);
-        assert_eq!(block0[1].from_id, b_id.to_string());
-        assert_eq!(block0[1].to_id, a_id.to_string());
-        assert_eq!(block0[1].symbols, 1);
-
-        let block1 = &cycles[1];
-        assert_eq!(block1.len(), 2, "closing edge included");
-        assert_eq!(block1[0].from_id, a_id.to_string());
-        assert_eq!(block1[0].to_id, c_id.to_string());
-        assert_eq!(block1[0].symbols, 3);
-        assert_eq!(block1[1].from_id, c_id.to_string());
-        assert_eq!(block1[1].to_id, a_id.to_string());
-        assert_eq!(block1[1].symbols, 2);
-
-        // Every block edge's fromId-toId addresses a serialized arc.
-        for edge in block0.iter().chain(block1.iter()) {
-            let arc_id = format!("{}-{}", edge.from_id, edge.to_id);
-            assert!(data.arcs.contains_key(&arc_id), "arc {arc_id} missing");
+        assert_eq!(arc(a, b)["traffic"], 2);
+        for (from, to) in [(b, c), (c, a), (b, d), (d, a)] {
+            assert_eq!(arc(from, to)["traffic"], 1);
+        }
+        assert!(arc(c, e).get("traffic").is_none());
+        let edges = &report.clusters[0].edges;
+        assert_eq!(edges.len(), 5);
+        for edge in edges {
+            assert_eq!(arc(edge.from, edge.to)["traffic"], edge.cycles);
         }
     }
 

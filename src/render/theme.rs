@@ -187,7 +187,6 @@ color_group!(
         text_muted => "text-muted",
         tag_border => "tag-border",
         row_focus_bg => "row-focus-bg",
-        ordinal_bg => "ordinal-bg",
         badge_bg => "badge-bg",
         badge_text => "badge-text",
         /// The one selected badge whose border is not the node's stroke: the
@@ -381,7 +380,6 @@ pub static LATTE: Theme = {
                 text_muted: GRAY_400,
                 tag_border: GRAY_300,
                 row_focus_bg: GRAY_100,
-                ordinal_bg: GRAY_200,
                 badge_bg: BLUE_100,
                 badge_text: BLUE,
                 node_external_transitive_selected_border: GRAY_400,
@@ -516,7 +514,6 @@ pub static MOCHA: Theme = {
                 text_muted: OVERLAY1,
                 tag_border: SURFACE1,
                 row_focus_bg: SURFACE0,
-                ordinal_bg: SURFACE1,
                 badge_bg: BLUE_TINT,
                 badge_text: BLUE,
                 node_external_transitive_selected_border: OVERLAY2,

@@ -5,8 +5,7 @@ mod jump;
 mod toposort;
 
 pub use build::{
-    ClusterInfo, CycleKind, CyclicEdgeInfo, EdgeDirection, ItemKind, LayoutEdge, LayoutIR,
-    LayoutItem, NodeId, SymbolLocality,
+    CycleKind, EdgeDirection, ItemKind, LayoutEdge, LayoutIR, LayoutItem, NodeId, SymbolLocality,
 };
 pub(crate) use build::{build_layout, symbol_groups};
 #[allow(dead_code, unused_imports)]
