@@ -610,7 +610,10 @@ if (typeof document !== 'undefined') {
       vb.height = height;
       svg.setAttribute('height', String(height));
       const width = CanvasSize.svgWidth(
-        contentSize.width,
+        Math.max(
+          contentSize.width,
+          PAGE_HOST ? SidebarLogic.minCanvasWidth() : 0,
+        ),
         CanvasSize.visibleArea().width,
       );
       vb.width = width;
@@ -684,14 +687,16 @@ if (typeof document !== 'undefined') {
       // point at the wrong spot.
       jumpIcons.hide();
 
+      // The canvas width reads the sidebar's label extent, so drop the stale
+      // layout cache (arc positions changed) before resizing.
+      SidebarLogic.invalidateLayout();
+
       // Resize SVG to fit visible content
       updateSvgViewport(currentY, visiblePositionY);
 
       // Re-apply highlights after edges were recreated
       highlightTiming.immediate();
 
-      // Invalidate sidebar layout cache after arc positions changed
-      SidebarLogic.invalidateLayout();
       if (SidebarLogic.isVisible()) SidebarLogic.updatePosition();
     }
 
@@ -1555,7 +1560,7 @@ if (typeof document !== 'undefined') {
       fo.setAttribute('width', String(visibleWidth));
     }
 
-    if (!PAGE_HOST) window.addEventListener('scroll', followScroll);
+    window.addEventListener('scroll', followScroll);
     const scrollState = ScrollState.createScrollState({
       setScrolling: (scrolling) => {
         DomAdapter.getSvgRoot()?.classList.toggle(

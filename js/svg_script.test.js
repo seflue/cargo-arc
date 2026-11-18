@@ -592,11 +592,11 @@ describe("the scroll listener on each overlay host (svg_script.ts's init)", () =
     expect(toolbarFo.getAttribute('y')).not.toBe('before-scroll');
   });
 
-  test('the page host registers only the scroll state, no follower', () => {
+  test('the page host registers the scroll state and a follower for the sidebar width', () => {
     const { windowListeners } = loadSvgPage({ overlays: 'page' });
     const types = windowListeners.map((l) => l.type);
 
-    expect(types.filter((t) => t === 'scroll')).toHaveLength(1);
+    expect(types.filter((t) => t === 'scroll')).toHaveLength(2);
     expect(types).toContain('resize');
   });
 

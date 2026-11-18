@@ -32,6 +32,52 @@ function svgWidth(contentWidth: number, visibleWidth: number): number {
   return Math.max(contentWidth, visibleWidth);
 }
 
-const CanvasSize = { visibleArea, svgHeight, svgWidth };
+/**
+ * Return the room for the page host's sidebar: from `gap` right of the labels
+ * (`labelRight`, in viewport pixels) to `marginRight` before the viewport's
+ * right edge.
+ */
+function sidebarRoom(
+  viewportWidth: number,
+  labelRight: number,
+  gap: number,
+  marginRight: number,
+): number {
+  return viewportWidth - marginRight - (labelRight + gap);
+}
+
+/**
+ * Return the page host's sidebar width: its content's `naturalWidth`, cut to
+ * the `room` right of the labels, but never below `minWidth`.
+ */
+function sidebarWidth(
+  naturalWidth: number,
+  room: number,
+  minWidth: number,
+): number {
+  return Math.max(minWidth, Math.min(naturalWidth, room));
+}
+
+/**
+ * Return the narrowest SVG that still leaves a minimum-width sidebar right of
+ * the labels (`labelRight`, in SVG coordinates) when scrolled fully right.
+ */
+function minSvgWidth(
+  labelRight: number,
+  gap: number,
+  minWidth: number,
+  marginRight: number,
+): number {
+  return labelRight + gap + minWidth + marginRight;
+}
+
+const CanvasSize = {
+  visibleArea,
+  svgHeight,
+  svgWidth,
+  sidebarRoom,
+  sidebarWidth,
+  minSvgWidth,
+};
 
 export { CanvasSize };

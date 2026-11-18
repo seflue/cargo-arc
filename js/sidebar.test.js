@@ -144,12 +144,20 @@ globalThis.STATIC_DATA = {
       definition: 'sidebar-definition',
       jump: 'sidebar-jump',
     },
+    nodes: { collapsed: 'collapsed' },
+    labels: { hiddenByFilter: 'hidden-by-filter' },
   },
   wording: { package: 'crate', packages: 'crates', manifest: 'Cargo.toml' },
 };
 
+// The module rects of the page host's label extent; a test fills it.
+const labelRects = new Map();
+
 // Mock StaticData module (sidebar.ts uses StaticData.getNode for name resolution)
 substitute(StaticData, {
+  getAllNodeIds() {
+    return [...labelRects.keys()];
+  },
   getNode(id) {
     return globalThis.STATIC_DATA.nodes?.[id] || null;
   },
@@ -1673,8 +1681,22 @@ describe('SidebarLogic', () => {
     let svgMock;
     /** @type {string[]} */
     let svgTouched;
+    let svgLeft;
+
+    function rectAt(x, width, ...classes) {
+      const rect = createFakeElement('rect');
+      rect.setAttribute('x', String(x));
+      rect.setAttribute('width', String(width));
+      for (const c of classes) rect.classList.add(c);
+      return rect;
+    }
+
+    function placeLabels(rects) {
+      for (const [id, rect] of rects) labelRects.set(id, rect);
+    }
 
     beforeEach(() => {
+      svgLeft = 0;
       hostEl = createFakeElement('div');
       innerDiv = createFakeElement('div');
       innerDiv.offsetWidth = 400;
@@ -1684,7 +1706,7 @@ describe('SidebarLogic', () => {
       svgMock = {
         getBoundingClientRect() {
           svgTouched.push('getBoundingClientRect');
-          return { left: 0, top: -500, width: 1000, height: 800 };
+          return { left: svgLeft, top: -500, width: 1000, height: 800 };
         },
         get viewBox() {
           svgTouched.push('viewBox');
@@ -1698,6 +1720,9 @@ describe('SidebarLogic', () => {
         getElementById(id) {
           if (id === 'relation-sidebar') return hostEl;
           return null;
+        },
+        getNode(id) {
+          return labelRects.get(id) ?? null;
         },
         getSvgRoot() {
           return svgMock;
@@ -1717,6 +1742,8 @@ describe('SidebarLogic', () => {
       SidebarLogic.useHost('svg');
       SidebarLogic.setToolbarHeight(0);
       SidebarLogic.hide();
+      SidebarLogic.invalidateLayout();
+      labelRects.clear();
     });
 
     test('docks below the toolbar at the right edge without SVG coordinates', () => {
@@ -1728,18 +1755,72 @@ describe('SidebarLogic', () => {
       expect(hostEl.getAttribute('y')).toBeNull();
     });
 
-    test('takes the natural width when it lies between the minimum and half the viewport', () => {
+    test('takes the natural width when it fits right of the labels', () => {
       SidebarLogic.show('crate_a-crate_b');
       expect(hostEl.style.width).toBe('400px');
     });
 
-    test('clamps the width to the minimum and to half the viewport', () => {
+    test('clamps the width to the minimum and to the room right of the labels', () => {
       innerDiv.offsetWidth = 100;
       SidebarLogic.show('crate_a-crate_b');
       expect(hostEl.style.width).toBe('280px');
-      innerDiv.offsetWidth = 900;
+      innerDiv.offsetWidth = 1200;
       SidebarLogic.updatePosition();
-      expect(hostEl.style.width).toBe('500px');
+      // 1000 (window) - 16 (margin) - 24 (gap) - 0 (no labels)
+      expect(hostEl.style.width).toBe('960px');
+    });
+
+    test('keeps the left edge right of the widest label that is neither hidden nor collapsed', () => {
+      placeLabels(
+        new Map([
+          ['a', rectAt(0, 300)],
+          ['b', rectAt(0, 450)],
+          ['hidden', rectAt(0, 900, 'hidden-by-filter')],
+          ['folded', rectAt(0, 800, 'collapsed')],
+        ]),
+      );
+      innerDiv.offsetWidth = 900;
+      SidebarLogic.show('crate_a-crate_b');
+      // 1000 - 16 - (450 + 24)
+      expect(hostEl.style.width).toBe('510px');
+    });
+
+    test('opens with the minimum width when the labels leave less room', () => {
+      placeLabels(new Map([['a', rectAt(0, 800)]]));
+      innerDiv.offsetWidth = 900;
+      SidebarLogic.show('crate_a-crate_b');
+      expect(hostEl.style.width).toBe('280px');
+    });
+
+    test('keeps the right edge at the viewport and moves the left edge when scrolled horizontally', () => {
+      placeLabels(new Map([['a', rectAt(0, 400)]]));
+      innerDiv.offsetWidth = 900;
+      SidebarLogic.show('crate_a-crate_b');
+      const right = hostEl.style.right;
+      const width = Number.parseInt(hostEl.style.width, 10);
+      svgLeft = -200;
+      SidebarLogic.updatePosition();
+      expect(hostEl.style.right).toBe(right);
+      expect(Number.parseInt(hostEl.style.width, 10)).toBe(width + 200);
+    });
+
+    test('follows a horizontal scroll with the width of the new room', () => {
+      placeLabels(new Map([['a', rectAt(0, 400)]]));
+      innerDiv.offsetWidth = 900;
+      SidebarLogic.show('crate_a-crate_b');
+      const width = Number.parseInt(hostEl.style.width, 10);
+      svgLeft = -200;
+      SidebarLogic.followScroll();
+      expect(Number.parseInt(hostEl.style.width, 10)).toBe(width + 200);
+    });
+
+    test('a vertical scroll does not measure the sidebar again', () => {
+      placeLabels(new Map([['a', rectAt(0, 400)]]));
+      innerDiv.offsetWidth = 300;
+      SidebarLogic.show('crate_a-crate_b');
+      innerDiv.offsetWidth = 500;
+      SidebarLogic.followScroll();
+      expect(hostEl.style.width).toBe('300px');
     });
 
     test('ends where the content ends and scrolls inside when it is longer than the window', () => {
@@ -1752,11 +1833,14 @@ describe('SidebarLogic', () => {
       expect(innerDiv.style.height).toBe('500px');
     });
 
-    test('measures no arcs and leaves the SVG untouched on show, followScroll and hide', () => {
+    test('measures no arcs and does not write to the SVG on show, followScroll and hide', () => {
       SidebarLogic.show('crate_a-crate_b');
       SidebarLogic.followScroll();
       SidebarLogic.hide();
-      expect(svgTouched).toEqual([]);
+      expect(svgTouched).not.toContain('querySelectorAll');
+      expect(svgTouched.filter((t) => t.startsWith('setAttribute'))).toEqual(
+        [],
+      );
     });
   });
 

@@ -1,5 +1,5 @@
 import { CanvasSize } from './canvas_size.js';
-import { DomAdapter } from './dom_adapter.js';
+import { DomAdapter, numberAttribute } from './dom_adapter.js';
 import { PathFit } from './path_fit.js';
 import { Selectors } from './selectors.js';
 import { StaticData } from './static_data.js';
@@ -552,11 +552,63 @@ const SidebarLogic = {
   },
 
   /**
+   * Find the right edge, in SVG coordinates, of the widest module label that
+   * is neither hidden by a filter nor inside a collapsed parent. All such
+   * modules count, not only the rows on screen, so the value does not change
+   * while scrolling vertically. Cached like _getMaxArcRightX.
+   */
+  getMaxLabelRightX(): number {
+    if (this._cachedMaxLabelRightX != null) return this._cachedMaxLabelRightX;
+    const C = STATIC_DATA.classes;
+    let maxX = 0;
+    for (const nodeId of StaticData.getAllNodeIds()) {
+      const node = DomAdapter.getNode(nodeId);
+      if (!node) continue;
+      if (node.classList.contains(C.nodes.collapsed)) continue;
+      if (node.classList.contains(C.labels.hiddenByFilter)) continue;
+      const right = numberAttribute(node, 'x') + numberAttribute(node, 'width');
+      if (!Number.isNaN(right)) maxX = Math.max(maxX, right);
+    }
+    this._cachedMaxLabelRightX = maxX;
+    return maxX;
+  },
+
+  /**
+   * The widest label's right edge in viewport pixels. Converted on every call
+   * because horizontal scrolling moves the SVG under the viewport.
+   */
+  _labelRightOnPage(): number {
+    const svg = DomAdapter.getSvgRoot();
+    if (!svg) return 0;
+    const rect = svg.getBoundingClientRect();
+    this._pageSvgLeft = rect.left;
+    const scaleX = svg.viewBox.baseVal.width / rect.width;
+    return rect.left + this.getMaxLabelRightX() / scaleX;
+  },
+
+  /** The SVG's left edge in viewport pixels when the page host last took its width. */
+  _pageSvgLeft: null as number | null,
+
+  /**
+   * The narrowest canvas width that leaves a minimum-width sidebar right of
+   * the labels when scrolled fully right.
+   */
+  minCanvasWidth(): number {
+    return CanvasSize.minSvgWidth(
+      this.getMaxLabelRightX(),
+      SIDEBAR_GAP_X,
+      SIDEBAR_MIN_WIDTH,
+      SIDEBAR_MARGIN_RIGHT,
+    );
+  },
+
+  /**
    * Invalidate cached layout values. Call after collapse/expand or relayout
    * so the next sidebar positioning recomputes arc extents.
    */
   invalidateLayout() {
     this._cachedMaxArcRightX = null;
+    this._cachedMaxLabelRightX = null;
     this._cachedX = null;
   },
 
@@ -586,6 +638,8 @@ const SidebarLogic = {
   _cachedX: null as number | null,
   /** Cached max arc right X — only changes on collapse/relayout, not on hover. */
   _cachedMaxArcRightX: null as number | null,
+  /** Cached widest label right X — only changes on collapse/relayout/filter. */
+  _cachedMaxLabelRightX: null as number | null,
   /** Original SVG viewBox height — stored to restore after sidebar close. */
   _originalViewBoxHeight: null as number | null,
   /** Original SVG viewBox width — stored to restore after sidebar close. */
@@ -1036,10 +1090,19 @@ const SidebarLogic = {
       naturalH > 0 ? Math.min(naturalH, pos.height) : pos.height;
 
     const vpWidth = CanvasSize.visibleArea().width;
-    const width = Math.max(
-      SIDEBAR_MIN_WIDTH,
-      Math.min(naturalW, vpWidth * 0.5),
-    );
+    const width =
+      this._host === 'page'
+        ? CanvasSize.sidebarWidth(
+            naturalW,
+            CanvasSize.sidebarRoom(
+              vpWidth,
+              this._labelRightOnPage(),
+              SIDEBAR_GAP_X,
+              SIDEBAR_MARGIN_RIGHT,
+            ),
+            SIDEBAR_MIN_WIDTH,
+          )
+        : Math.max(SIDEBAR_MIN_WIDTH, Math.min(naturalW, vpWidth * 0.5));
 
     if (this._host === 'page') {
       this._placeOnPage(el, innerDiv, pos.y, width, effectiveH);
@@ -1127,12 +1190,18 @@ const SidebarLogic = {
   },
 
   /**
-   * Move the sidebar to the current scroll position. Width, height and x
-   * depend only on content and viewport, so they keep the values of the last
-   * updatePosition(). The page host is fixed and has nothing to follow.
+   * Move the sidebar to the current scroll position. On the SVG host width,
+   * height and x depend only on content and viewport, so they keep the values
+   * of the last updatePosition(). The page host is fixed in the viewport, but horizontal
+   * scrolling changes the room left of it, so it takes its width again when
+   * the SVG moved sideways.
    */
   followScroll() {
-    if (this._host === 'page') return;
+    if (this._host === 'page') {
+      const left = DomAdapter.getSvgRoot()?.getBoundingClientRect().left;
+      if (left !== this._pageSvgLeft) this.updatePosition();
+      return;
+    }
     if (this._effectiveHeight === null) {
       this.updatePosition();
       return;
