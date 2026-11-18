@@ -5,6 +5,8 @@
 const ARROW_LENGTH = 8;
 const ARROW_HALF_WIDTH = 4;
 const BASE_STROKE_WIDTH = 1.5;
+const STROKE_MIN = 0.5;
+const STROKE_MAX = 2.5;
 // The farthest an upward arc reaches to the left of the rows.
 const UPWARD_ARC_MAX = 420;
 // How far a straight segment may stray from the curve it replaces, in CSS px.
@@ -171,7 +173,8 @@ const ArcLogic = {
    * the filter for its type (package/module/reexport) and, if it lies on a cycle,
    * additionally under the cycles filter. The node filters are checked
    * separately, so a true answer here is a necessary and not a sufficient
-   * condition for visibility.
+   * condition for visibility. With the only-tangles filter on, an arc that is
+   * not a cyclic edge is never covered.
    */
   matchesActiveFilters(
     arcFilters: {
@@ -179,20 +182,34 @@ const ArcLogic = {
       isModuleDep?: boolean;
       isReexport?: boolean;
       isCycle?: boolean;
+      isCyclicEdge?: boolean;
     },
     activeFilters: {
       packageDep?: boolean;
       moduleDep?: boolean;
       reexport?: boolean;
       cycle?: boolean;
+      onlyTangles?: boolean;
     },
   ): boolean {
+    if (activeFilters.onlyTangles && !arcFilters.isCyclicEdge) return false;
     return Boolean(
       (arcFilters.isPackageDep && activeFilters.packageDep) ||
         (arcFilters.isModuleDep && activeFilters.moduleDep) ||
         (arcFilters.isReexport && activeFilters.reexport) ||
         (arcFilters.isCycle && activeFilters.cycle),
     );
+  },
+
+  /**
+   * Whether a virtual arc stays under the only-tangles filter: at least one
+   * of the arcs it aggregates is a cyclic edge.
+   */
+  virtualArcOnTangle(
+    originalArcIds: string[],
+    isCyclicEdge: (arcId: string) => boolean,
+  ): boolean {
+    return originalArcIds.some(isCyclicEdge);
   },
 
   // Expose constants for testing
@@ -363,12 +380,26 @@ const ArcLogic = {
    * @returns - Stroke width in pixels (0.5 to 2.5)
    */
   calculateStrokeWidth(locationCount: number): number {
-    const MIN = 0.5,
-      MAX = 2.5,
-      CAP = 50;
-    if (locationCount <= 0) return MIN;
+    const CAP = 50;
+    if (locationCount <= 0) return STROKE_MIN;
     const count = Math.min(locationCount, CAP);
-    return MIN + ((MAX - MIN) * Math.log(count)) / Math.log(CAP);
+    return (
+      STROKE_MIN + ((STROKE_MAX - STROKE_MIN) * Math.log(count)) / Math.log(CAP)
+    );
+  },
+
+  /**
+   * Calculate stroke width from traffic: linear from the minimum width at
+   * traffic 1 to the maximum width at the largest traffic of the diagram.
+   * With a largest traffic of 1 every arc gets the minimum.
+   * @param traffic - Counted cycles through the edge
+   * @param maxTraffic - Largest traffic among the arcs of the diagram
+   * @returns - Stroke width in pixels (0.5 to 2.5)
+   */
+  calculateTrafficStrokeWidth(traffic: number, maxTraffic: number): number {
+    if (maxTraffic <= 1 || traffic <= 1) return STROKE_MIN;
+    const share = Math.min(traffic, maxTraffic) - 1;
+    return STROKE_MIN + ((STROKE_MAX - STROKE_MIN) * share) / (maxTraffic - 1);
   },
 
   /**

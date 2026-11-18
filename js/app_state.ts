@@ -11,6 +11,8 @@ type AppState = {
   clickSelection: { type: 'node' | 'arc' | null; id: string | null };
   hoverSelection: { type: 'node' | 'arc' | null; id: string | null };
   hiddenArcIds: Set<string>;
+  onlyTangles: boolean;
+  trafficWidth: boolean;
 };
 
 const AppState = {
@@ -23,6 +25,8 @@ const AppState = {
       clickSelection: { type: null, id: null },
       hoverSelection: { type: null, id: null },
       hiddenArcIds: new Set(),
+      onlyTangles: false,
+      trafficWidth: false,
     };
   },
 
@@ -163,6 +167,22 @@ const AppState = {
 
   isArcHidden(state: AppState, arcId: string): boolean {
     return state.hiddenArcIds.has(arcId);
+  },
+
+  /**
+   * Set the only-tangles filter. Turning it off turns traffic width off, as
+   * traffic width exists only for arcs on a tangle.
+   */
+  setOnlyTangles(state: AppState, on: boolean) {
+    state.onlyTangles = on;
+    if (!on) state.trafficWidth = false;
+  },
+
+  /**
+   * Set traffic width. Turning it on is ignored while only-tangles is off.
+   */
+  setTrafficWidth(state: AppState, on: boolean) {
+    state.trafficWidth = on && state.onlyTangles;
   },
 
   /**

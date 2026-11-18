@@ -112,6 +112,10 @@ A node filter cannot force an arc back into view, and an arc filter cannot bring
 The circular-dependency checkbox does one thing beyond its filter.
 It colors the [upward edges](GLOSSARY.md#upward-edge) red, which close the cycles against the order shown, and the labels of modules on a cycle.
 
+**Show Only Tangles**, off by default, hides every arc that is not a cyclic edge, whatever the other arc filters say.
+While it is on, **Traffic as Width** can be turned on as well: each arc is then drawn as wide as its [traffic](GLOSSARY.md#traffic) instead of its number of references.
+Turning off Show Only Tangles turns Traffic as Width off with it.
+
 The menu also holds **Show Levels**, which shows or hides the level numbers in the module boxes and is on by default.
 
 ## Test code

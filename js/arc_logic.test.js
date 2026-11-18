@@ -130,6 +130,85 @@ describe('ArcLogic.matchesActiveFilters', () => {
   });
 });
 
+describe('ArcLogic only-tangles filter', () => {
+  test('hides a non-cyclic module-dep arc and keeps a cyclic one', () => {
+    const active = { moduleDep: true, onlyTangles: true };
+    expect(
+      ArcLogic.matchesActiveFilters(
+        { isModuleDep: true, isCyclicEdge: false },
+        active,
+      ),
+    ).toBe(false);
+    expect(
+      ArcLogic.matchesActiveFilters(
+        { isModuleDep: true, isCyclicEdge: true },
+        active,
+      ),
+    ).toBe(true);
+  });
+
+  test('a cyclic arc still follows the other filters', () => {
+    expect(
+      ArcLogic.matchesActiveFilters(
+        { isModuleDep: true, isCyclicEdge: true },
+        { moduleDep: false, onlyTangles: true },
+      ),
+    ).toBe(false);
+  });
+
+  test('both kinds follow the existing rules when the filter is off', () => {
+    const active = { moduleDep: true, onlyTangles: false };
+    expect(
+      ArcLogic.matchesActiveFilters(
+        { isModuleDep: true, isCyclicEdge: false },
+        active,
+      ),
+    ).toBe(true);
+    expect(
+      ArcLogic.matchesActiveFilters(
+        { isModuleDep: true, isCyclicEdge: true },
+        active,
+      ),
+    ).toBe(true);
+  });
+
+  test('a virtual arc is on a tangle when one aggregated arc is cyclic', () => {
+    const cyclic = (id) => id === 'b';
+    expect(ArcLogic.virtualArcOnTangle(['a', 'b'], cyclic)).toBe(true);
+    expect(ArcLogic.virtualArcOnTangle(['a', 'c'], cyclic)).toBe(false);
+    expect(ArcLogic.virtualArcOnTangle([], cyclic)).toBe(false);
+  });
+});
+
+describe('ArcLogic.calculateTrafficStrokeWidth', () => {
+  const min = ArcLogic.calculateStrokeWidth(1);
+  const max = ArcLogic.calculateStrokeWidth(50);
+
+  test('traffic 1 gives the minimum width', () => {
+    expect(ArcLogic.calculateTrafficStrokeWidth(1, 7)).toBe(min);
+  });
+
+  test('the largest traffic gives the maximum width', () => {
+    expect(ArcLogic.calculateTrafficStrokeWidth(7, 7)).toBe(max);
+  });
+
+  test('a traffic in between lies strictly between', () => {
+    const width = ArcLogic.calculateTrafficStrokeWidth(4, 7);
+    expect(width).toBeGreaterThan(min);
+    expect(width).toBeLessThan(max);
+  });
+
+  test('width rises linearly with traffic', () => {
+    const w = (t) => ArcLogic.calculateTrafficStrokeWidth(t, 5);
+    expect(w(3) - w(2)).toBeCloseTo(w(4) - w(3));
+  });
+
+  test('a largest traffic of 1 gives the minimum for all', () => {
+    expect(ArcLogic.calculateTrafficStrokeWidth(1, 1)).toBe(min);
+    expect(ArcLogic.calculateTrafficStrokeWidth(0, 1)).toBe(min);
+  });
+});
+
 describe('ArcLogic (upward arcs)', () => {
   const from = { x: 120, y: 100, width: 80, height: 20 };
   const to = { x: 100, y: 40, width: 80, height: 20 };

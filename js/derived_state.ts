@@ -344,7 +344,9 @@ const DerivedState = {
         selectedId,
       ),
       ...this._collectVirtualArcDescs(
+        staticData,
         virtualArcUsages,
+        hiddenByFilter,
         highlightSet,
         groupMode,
         selectedId,
@@ -413,7 +415,7 @@ const DerivedState = {
       });
     }
     const usages = virtualArcUsages.get(arcId);
-    if (usages) {
+    if (usages && !hiddenByFilter.has(`v:${arcId}`)) {
       const count = usages.reduce((sum, g) => sum + g.locations.length, 0);
       descs.push({
         key: `v:${arcId}`,
@@ -421,7 +423,7 @@ const DerivedState = {
         toId,
         fromInSet: true,
         toInSet: true,
-        originalWidth: ArcLogic.calculateStrokeWidth(count),
+        originalWidth: staticData.getVirtualArcStrokeWidth(arcId, count),
         isVirtual: true,
         upward: VirtualEdgeLogic.isUpwardArcId(arcId),
       });
@@ -474,13 +476,16 @@ const DerivedState = {
    *  @param selectionId - The primarily selected node (parent).
    */
   _collectVirtualArcDescs(
+    staticData: typeof StaticData,
     virtualArcUsages: Map<string, ArcData['usages']>,
+    hiddenByFilter: Set<string>,
     highlightSet: Set<string>,
     groupMode: boolean,
     selectionId: string,
   ): ArcDescriptor[] {
     const descs: ArcDescriptor[] = [];
     for (const [vArcId, usages] of virtualArcUsages) {
+      if (hiddenByFilter.has(`v:${vArcId}`)) continue;
       const [fromId, toId] = vArcId.split('-');
       const fromInSet = highlightSet.has(fromId);
       const toInSet = highlightSet.has(toId);
@@ -493,7 +498,7 @@ const DerivedState = {
         toId,
         fromInSet,
         toInSet,
-        originalWidth: ArcLogic.calculateStrokeWidth(count),
+        originalWidth: staticData.getVirtualArcStrokeWidth(vArcId, count),
         isVirtual: true,
         upward: VirtualEdgeLogic.isUpwardArcId(vArcId),
       });

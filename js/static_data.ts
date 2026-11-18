@@ -6,6 +6,10 @@ import { ArcLogic } from './arc_logic.js';
 
 const StaticData = {
   _cycleNodeIds: null as Set<string> | null,
+  _maxTraffic: null as number | null,
+  _virtualArcTraffic: new Map<string, number>(),
+  // Mirrors AppState.trafficWidth, so width lookups need no state argument.
+  trafficWidth: false,
 
   /**
    * Get node data by ID
@@ -56,7 +60,63 @@ const StaticData = {
    * @returns Stroke width in pixels (0.5 to 2.5)
    */
   getArcStrokeWidth(arcId: string): number {
+    if (this.trafficWidth) {
+      const traffic = STATIC_DATA.arcs[arcId]?.traffic ?? 0;
+      return ArcLogic.calculateTrafficStrokeWidth(
+        traffic,
+        this.getMaxTraffic(),
+      );
+    }
     return ArcLogic.calculateStrokeWidth(this.getArcWeight(arcId));
+  },
+
+  /**
+   * Stroke width of a virtual arc: from its usage count, or while traffic
+   * width is on, from the largest traffic among the arcs it aggregates.
+   */
+  getVirtualArcStrokeWidth(arcId: string, usageCount: number): number {
+    if (this.trafficWidth) {
+      return ArcLogic.calculateTrafficStrokeWidth(
+        this._virtualArcTraffic.get(arcId) ?? 0,
+        this.getMaxTraffic(),
+      );
+    }
+    return ArcLogic.calculateStrokeWidth(usageCount);
+  },
+
+  /** Switch arc widths between usage count and traffic. */
+  setTrafficWidth(on: boolean) {
+    this.trafficWidth = on;
+  },
+
+  /**
+   * Record the traffic of a virtual arc: the largest among the arcs it
+   * aggregates, taken once so a hover does not scan them.
+   */
+  setVirtualArcTraffic(arcId: string, originalArcIds: string[]) {
+    let largest = 0;
+    for (const id of originalArcIds) {
+      largest = Math.max(largest, STATIC_DATA.arcs[id]?.traffic ?? 0);
+    }
+    this._virtualArcTraffic.set(arcId, largest);
+  },
+
+  clearVirtualArcTraffic() {
+    this._virtualArcTraffic.clear();
+  },
+
+  /**
+   * Largest traffic among the arcs of the diagram. Derived once, since
+   * STATIC_DATA never changes.
+   */
+  getMaxTraffic(): number {
+    if (this._maxTraffic === null) {
+      this._maxTraffic = 0;
+      for (const arc of Object.values(STATIC_DATA.arcs)) {
+        this._maxTraffic = Math.max(this._maxTraffic, arc.traffic ?? 0);
+      }
+    }
+    return this._maxTraffic;
   },
 
   /**

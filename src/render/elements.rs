@@ -180,6 +180,14 @@ fn toolbar_content(
             "            Show Circular Dependencies\n",
             "          </label>\n",
             "          <label class=\"{}\">\n",
+            "            <span class=\"{}\" id=\"only-tangles-checkbox\"></span>\n",
+            "            Show Only Tangles\n",
+            "          </label>\n",
+            "          <label class=\"{} {}\">\n",
+            "            <span class=\"{}\" id=\"traffic-checkbox\"></span>\n",
+            "            Traffic as Width\n",
+            "          </label>\n",
+            "          <label class=\"{}\">\n",
             "            <span class=\"{} {}\" id=\"levels-checkbox\"></span>\n",
             "            Show Levels\n",
             "          </label>\n",
@@ -196,8 +204,13 @@ fn toolbar_content(
         ct.checkbox, // checkbox span (unchecked → default hidden)
         ct.toggle,   // label.toolbar-toggle (cycles)
         ct.checkbox,
-        ct.checked, // checkbox span (checked → cluster mode on)
-        ct.toggle,  // label.toolbar-toggle (levels)
+        ct.checked,  // checkbox span (checked → cluster mode on)
+        ct.toggle,   // label.toolbar-toggle (only tangles)
+        ct.checkbox, // checkbox span (unchecked → all arcs shown)
+        ct.toggle,   // label.toolbar-toggle (traffic)
+        ct.disabled, // disabled while only tangles is off
+        ct.checkbox, // checkbox span (unchecked → stroke width from usages)
+        ct.toggle,   // label.toolbar-toggle (levels)
         ct.checkbox,
         ct.checked,        // checkbox span (checked → level numbers shown)
         external_checkbox, // optional external dep checkbox
@@ -892,6 +905,61 @@ mod tests {
     }
 
     #[test]
+    fn test_toolbar_has_unchecked_only_tangles_checkbox_after_cycles() {
+        let toolbar = render_toolbar(
+            800.0,
+            ToolbarFacts::default(),
+            &RenderConfig::new(&RUST_PROFILE.wording),
+        );
+        let cycles = toolbar
+            .find("id=\"cycles-checkbox\"")
+            .expect("Toolbar should render the cycles checkbox");
+        let idx = toolbar
+            .find("id=\"only-tangles-checkbox\"")
+            .expect("Toolbar should render the only-tangles checkbox");
+        assert!(idx > cycles, "only-tangles checkbox follows cycles");
+        let span_start = toolbar[..idx]
+            .rfind("<span")
+            .expect("only-tangles checkbox should be a span");
+        assert!(
+            !toolbar[span_start..idx].contains(CSS.toolbar.checked),
+            "Only-tangles checkbox is unchecked by default"
+        );
+        assert!(toolbar.contains("Show Only Tangles"));
+    }
+
+    #[test]
+    fn test_toolbar_has_unchecked_disabled_traffic_checkbox_after_only_tangles() {
+        let toolbar = render_toolbar(
+            800.0,
+            ToolbarFacts::default(),
+            &RenderConfig::new(&RUST_PROFILE.wording),
+        );
+        let tangles = toolbar
+            .find("id=\"only-tangles-checkbox\"")
+            .expect("Toolbar should render the only-tangles checkbox");
+        let idx = toolbar
+            .find("id=\"traffic-checkbox\"")
+            .expect("Toolbar should render the traffic checkbox");
+        assert!(idx > tangles, "traffic checkbox follows only-tangles");
+        let span_start = toolbar[..idx]
+            .rfind("<span")
+            .expect("traffic checkbox should be a span");
+        assert!(
+            !toolbar[span_start..idx].contains(CSS.toolbar.checked),
+            "Traffic checkbox is unchecked by default"
+        );
+        let label_start = toolbar[..idx]
+            .rfind("<label")
+            .expect("traffic checkbox should sit in a label");
+        assert!(
+            toolbar[label_start..idx].contains(CSS.toolbar.disabled),
+            "Traffic label starts disabled, as only-tangles is off"
+        );
+        assert!(toolbar.contains("Traffic as Width"));
+    }
+
+    #[test]
     fn test_xml_escaping() {
         let escaped = escape_xml("foo<bar>&baz");
         assert_eq!(escaped, "foo&lt;bar&gt;&amp;baz");
@@ -1290,6 +1358,7 @@ mod tests {
     /// (`hotspots::render_toolbar`), but the arc page's own emitted markup
     /// must not move as a result.
     #[test]
+    #[allow(clippy::too_many_lines, reason = "the pinned markup is one literal")]
     fn arc_toolbar_markup_is_pinned() {
         let facts = ToolbarFacts {
             has_externals: true,
@@ -1332,6 +1401,14 @@ mod tests {
 \u{20}         <label class=\"toolbar-toggle\">\n\
 \u{20}           <span class=\"toolbar-checkbox checked\" id=\"cycles-checkbox\"></span>\n\
 \u{20}           Show Circular Dependencies\n\
+\u{20}         </label>\n\
+\u{20}         <label class=\"toolbar-toggle\">\n\
+\u{20}           <span class=\"toolbar-checkbox\" id=\"only-tangles-checkbox\"></span>\n\
+\u{20}           Show Only Tangles\n\
+\u{20}         </label>\n\
+\u{20}         <label class=\"toolbar-toggle toolbar-disabled\">\n\
+\u{20}           <span class=\"toolbar-checkbox\" id=\"traffic-checkbox\"></span>\n\
+\u{20}           Traffic as Width\n\
 \u{20}         </label>\n\
 \u{20}         <label class=\"toolbar-toggle\">\n\
 \u{20}           <span class=\"toolbar-checkbox checked\" id=\"levels-checkbox\"></span>\n\

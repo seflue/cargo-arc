@@ -743,6 +743,7 @@ if (typeof document !== 'undefined') {
       }
       virtualArcUsages.clear();
       virtualArcOriginals.clear();
+      StaticData.clearVirtualArcTraffic();
     }
 
     // Hide original elements when from/to hidden, update visible arc paths
@@ -913,6 +914,7 @@ if (typeof document !== 'undefined') {
         ROW_HEIGHT,
       );
       renderVirtualElements(mergedEdges, layers);
+      applyVirtualArcFilter(readActiveArcFilters());
     }
 
     // Create virtual arc elements (arcs, arrows, labels, hitareas)
@@ -936,16 +938,20 @@ if (typeof document !== 'undefined') {
           originalArcs,
         } = data;
 
+        StaticData.setVirtualArcTraffic(arcId, originalArcs ?? []);
+        const width = StaticData.trafficWidth
+          ? StaticData.getVirtualArcStrokeWidth(arcId, 0)
+          : strokeWidth;
         const group = DomAdapter.createSvgElement('g');
         group.classList.add(C.direction.virtualArc, direction);
         group.setAttribute('data-arc-id', arcId);
         group.setAttribute('data-from', fromId);
         group.setAttribute('data-to', toId);
-        ArcStroke.draw(group, arc.path, strokeWidth, pixelDensity());
+        ArcStroke.draw(group, arc.path, width, pixelDensity());
         arcElements.push(group);
 
         // Arrow (scaled to match stroke width)
-        const scale = strokeWidth / 1.5;
+        const scale = width / 1.5;
         const arrow = DomAdapter.createSvgElement('polygon');
         arrow.setAttribute('class', `${C.direction.virtualArrow} ${direction}`);
         arrow.setAttribute('data-vedge', arcId);
@@ -1226,17 +1232,50 @@ if (typeof document !== 'undefined') {
         moduleDep: isOn('#module-dep-checkbox'),
         reexport: isOn('#reexport-dep-checkbox'),
         cycle: isOn('#cycles-checkbox'),
+        onlyTangles: isOn('#only-tangles-checkbox'),
       };
     }
 
+    function isCyclicEdge(arcId: string) {
+      return !!StaticData.getArc(arcId)?.cycleIds?.length;
+    }
+
     // Derive from an arc's classes which filters cover it.
-    function arcFilters(arc: Element) {
+    function arcFilters(arc: Element, arcId: string) {
       return {
+        isCyclicEdge: isCyclicEdge(arcId),
         isPackageDep: arc.classList.contains(C.direction.packageDepArc),
         isModuleDep: arc.classList.contains(C.direction.moduleDepArc),
         isReexport: arc.classList.contains(C.direction.reexportArc),
         isCycle: arc.classList.contains(C.direction.cycleArc),
       };
+    }
+
+    // Hide the virtual arcs the active filters rule out.
+    function applyVirtualArcFilter(
+      activeFilters: ReturnType<typeof readActiveArcFilters>,
+    ) {
+      // Virtual arcs are aggregated module-deps — they follow module-dep, and
+      // under only-tangles they need a cyclic edge among the arcs they stand for.
+      DomAdapter.querySelectorAll(Selectors.allVirtualElements()).forEach(
+        (el) => {
+          const arcId =
+            el.getAttribute('data-arc-id') ??
+            el.closest('[data-vedge]')?.getAttribute('data-vedge') ??
+            '';
+          const onTangle =
+            !activeFilters.onlyTangles ||
+            ArcLogic.virtualArcOnTangle(
+              virtualArcOriginals.get(arcId) || [],
+              isCyclicEdge,
+            );
+          const hidden = !activeFilters.moduleDep || !onTangle;
+          el.classList.toggle(C.labels.hiddenByFilter, hidden);
+          // The highlight derivation skips hidden arcs by their `v:` key.
+          if (hidden) AppState.hideArc(appState, `v:${arcId}`);
+          else AppState.showArc(appState, `v:${arcId}`);
+        },
+      );
     }
 
     // Recompute visibility of every arc from the active filters. An arc is
@@ -1265,7 +1304,7 @@ if (typeof document !== 'undefined') {
             filterHiddenNodes.has(endpoints.to));
         const visible =
           !nodeFilteredOut &&
-          ArcLogic.matchesActiveFilters(arcFilters(arc), activeFilters);
+          ArcLogic.matchesActiveFilters(arcFilters(arc, arcId), activeFilters);
         arc.classList.toggle(C.labels.hiddenByFilter, !visible);
         hitarea.classList.toggle(C.labels.hiddenByFilter, !visible);
         DomAdapter.getArrows(arcId).forEach((arrow) => {
@@ -1278,15 +1317,7 @@ if (typeof document !== 'undefined') {
         }
       });
 
-      // Virtual arcs are aggregated module-deps — they follow module-dep.
-      DomAdapter.querySelectorAll(Selectors.allVirtualElements()).forEach(
-        (el) => {
-          el.classList.toggle(
-            C.labels.hiddenByFilter,
-            !activeFilters.moduleDep,
-          );
-        },
-      );
+      applyVirtualArcFilter(activeFilters);
 
       invalidateFilterHiddenNodeIds();
       highlightTiming.immediate();
@@ -1298,6 +1329,50 @@ if (typeof document !== 'undefined') {
         C.toolbar.checked,
       );
       recomputeArcVisibility();
+    }
+
+    // Flip the only-tangles checkbox. Turning it off also turns traffic width
+    // off, which the traffic checkbox and the arc widths follow.
+    function toggleOnlyTangles() {
+      const hadTrafficWidth = appState.trafficWidth;
+      AppState.setOnlyTangles(appState, !appState.onlyTangles);
+      DomAdapter.querySelector('#only-tangles-checkbox')?.classList.toggle(
+        C.toolbar.checked,
+        appState.onlyTangles,
+      );
+      recomputeArcVisibility();
+      applyTrafficWidth(hadTrafficWidth !== appState.trafficWidth);
+    }
+
+    // Flip the traffic checkbox. It does nothing while only-tangles is off.
+    function toggleTrafficWidth() {
+      const hadTrafficWidth = appState.trafficWidth;
+      AppState.setTrafficWidth(appState, !appState.trafficWidth);
+      applyTrafficWidth(hadTrafficWidth !== appState.trafficWidth);
+    }
+
+    // Show the traffic checkbox as the state says, and redraw the arcs at the
+    // widths it implies when the layer changed.
+    function applyTrafficWidth(changed: boolean) {
+      const checkbox = DomAdapter.querySelector('#traffic-checkbox');
+      checkbox?.classList.toggle(C.toolbar.checked, appState.trafficWidth);
+      checkbox
+        ?.closest('label')
+        ?.classList.toggle(C.toolbar.disabled, !appState.onlyTangles);
+      if (!changed) return;
+      StaticData.setTrafficWidth(appState.trafficWidth);
+      applyInitialArcWeights();
+      const dpr = pixelDensity();
+      for (const [arcId, usages] of virtualArcUsages) {
+        const width = StaticData.getVirtualArcStrokeWidth(
+          arcId,
+          ArcLogic.countLocations(usages),
+        );
+        const group = DomAdapter.getArc(arcId);
+        if (group) ArcStroke.redraw(group, width, dpr);
+        ArcLogic.scaleArrow(DomAdapter, arcId, width);
+      }
+      highlightTiming.immediate();
     }
 
     // Flip the cycles checkbox. Cluster mode CSS-gates the red cycle styling on
@@ -1532,6 +1607,8 @@ if (typeof document !== 'undefined') {
       'module-dep-checkbox',
       'reexport-dep-checkbox',
       'cycles-checkbox',
+      'only-tangles-checkbox',
+      'traffic-checkbox',
       'levels-checkbox',
       'external-dep-checkbox',
       'transitive-dep-checkbox',
@@ -1552,6 +1629,8 @@ if (typeof document !== 'undefined') {
       const box = DomAdapter.getElementById(id);
       if (!box || box.classList.contains(C.toolbar.checked) === on) return;
       if (id === 'cycles-checkbox') toggleClusterMode();
+      else if (id === 'only-tangles-checkbox') toggleOnlyTangles();
+      else if (id === 'traffic-checkbox') toggleTrafficWidth();
       else if (id === 'levels-checkbox') toggleLevels();
       else if (id === 'external-dep-checkbox') toggleExternalDepVisibility();
       else if (id === 'transitive-dep-checkbox')
@@ -1788,6 +1867,20 @@ if (typeof document !== 'undefined') {
       ?.addEventListener('click', (e) => {
         e.stopPropagation();
         toggleClusterMode();
+      });
+
+    DomAdapter.querySelector('#only-tangles-checkbox')
+      ?.closest('label')
+      ?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleOnlyTangles();
+      });
+
+    DomAdapter.querySelector('#traffic-checkbox')
+      ?.closest('label')
+      ?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleTrafficWidth();
       });
 
     DomAdapter.querySelector('#levels-checkbox')

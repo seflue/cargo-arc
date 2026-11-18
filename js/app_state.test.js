@@ -240,6 +240,35 @@ describe('AppState', () => {
     });
   });
 
+  describe('traffic width', () => {
+    test('is off by default, as is only-tangles', () => {
+      const state = AppState.create();
+      expect(state.onlyTangles).toBe(false);
+      expect(state.trafficWidth).toBe(false);
+    });
+
+    test('cannot be turned on while only-tangles is off', () => {
+      const state = AppState.create();
+      AppState.setTrafficWidth(state, true);
+      expect(state.trafficWidth).toBe(false);
+    });
+
+    test('can be turned on while only-tangles is on', () => {
+      const state = AppState.create();
+      AppState.setOnlyTangles(state, true);
+      AppState.setTrafficWidth(state, true);
+      expect(state.trafficWidth).toBe(true);
+    });
+
+    test('turning only-tangles off turns it off', () => {
+      const state = AppState.create();
+      AppState.setOnlyTangles(state, true);
+      AppState.setTrafficWidth(state, true);
+      AppState.setOnlyTangles(state, false);
+      expect(state.trafficWidth).toBe(false);
+    });
+  });
+
   describe('clickEmpty', () => {
     test('resets pin and hover', () => {
       const state = AppState.create();

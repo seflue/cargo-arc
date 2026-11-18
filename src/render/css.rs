@@ -582,6 +582,10 @@ fn build_css_rules(palette: &ColorPalette) -> Vec<CssRule> {
                 ("user-select", "none"),
             ],
         ),
+        CssRule::new(
+            &format!(".{}.{}", c.toolbar.toggle, c.toolbar.disabled),
+            &[("opacity", "0.4"), ("cursor", "not-allowed")],
+        ),
         CssRule::class(
             c.toolbar.checkbox,
             &[
@@ -2206,6 +2210,16 @@ mod tests {
         assert!(
             hovered.contains("visibility: visible"),
             "hovering the row must reveal its icon, got: {hovered}"
+        );
+    }
+
+    #[test]
+    fn test_css_dims_a_disabled_toggle() {
+        let css = render_styles();
+
+        assert!(
+            css.contains(&format!(".{}.{}", CSS.toolbar.toggle, CSS.toolbar.disabled)),
+            "CSS should style a disabled toolbar toggle"
         );
     }
 

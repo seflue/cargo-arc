@@ -89,7 +89,7 @@ const HighlightRenderer = {
     this._clearShadowLayer(dom);
     this._resetNodeClasses(dom, C);
     this._resetArcStyles(dom, C, staticData, dpr);
-    this._resetVirtualArcStyles(dom, C, virtualArcUsages, dpr);
+    this._resetVirtualArcStyles(dom, C, staticData, virtualArcUsages, dpr);
   },
 
   /**
@@ -395,6 +395,7 @@ const HighlightRenderer = {
   _resetVirtualArcStyles(
     dom: Dom,
     C: Classes,
+    staticData: typeof StaticData,
     virtualArcUsages: Map<string, ArcData['usages']>,
     dpr: number,
   ) {
@@ -402,7 +403,7 @@ const HighlightRenderer = {
       const usages = virtualArcUsages.get(arcId);
       if (!usages) continue;
       const count = usages.reduce((sum, g) => sum + g.locations.length, 0);
-      const strokeWidth = ArcLogic.calculateStrokeWidth(count);
+      const strokeWidth = staticData.getVirtualArcStrokeWidth(arcId, count);
       const scale = ArcLogic.scaleFromStrokeWidth(strokeWidth);
 
       // Virtual arc group (from cache)

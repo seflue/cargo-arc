@@ -66,6 +66,8 @@ function createRendererStaticData(nodeIds, arcData) {
     getAllNodeIds: () => nodeIds,
     getAllArcIds: () => Object.keys(arcData),
     getArcStrokeWidth: (arcId) => arcData[arcId]?.strokeWidth ?? 0.5,
+    getVirtualArcStrokeWidth: (_arcId, count) =>
+      ArcLogic.calculateStrokeWidth(count),
     getArc: (arcId) => arcData[arcId],
   };
 }

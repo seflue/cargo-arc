@@ -199,6 +199,8 @@ function createMockStaticData(data = TEST_STATIC_DATA) {
       const count = arc.usages.reduce((sum, g) => sum + g.locations.length, 0);
       return ArcLogic.calculateStrokeWidth(count);
     },
+    getVirtualArcStrokeWidth: (_arcId, count) =>
+      ArcLogic.calculateStrokeWidth(count),
     buildParentMap: () => {
       const parentMap = new Map();
       for (const [nodeId, node] of Object.entries(data.nodes)) {
@@ -1231,6 +1233,33 @@ describe('DerivedState', () => {
       expect(result.arcHighlights.has('v:fn_1-fn_3')).toBe(true);
       const vArc = result.arcHighlights.get('v:fn_1-fn_3');
       expect(vArc.isVirtual).toBe(true);
+    });
+
+    test('a virtual arc hidden by a filter is left out', () => {
+      AppState.setSelection(appState, 'node', 'fn_1');
+      const virtualArcUsages = new Map([
+        [
+          'fn_1-fn_3',
+          [
+            {
+              symbol: 'virt',
+              modulePath: null,
+              locations: [{ file: 'v.rs', line: 1 }],
+            },
+          ],
+        ],
+      ]);
+
+      const result = DerivedState.deriveHighlightState(
+        appState,
+        staticData,
+        virtualArcUsages,
+        new Set(['v:fn_1-fn_3']),
+        positions,
+        ROW_HEIGHT,
+      );
+
+      expect(result.arcHighlights.has('v:fn_1-fn_3')).toBe(false);
     });
 
     test('virtual arcs not promoted to hitareas', () => {
